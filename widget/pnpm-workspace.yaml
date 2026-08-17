@@ -1,0 +1,5 @@
+packages:
+  - preact-ui
+
+allowBuilds:
+  esbuild: true
