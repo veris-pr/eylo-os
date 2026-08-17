@@ -51,10 +51,7 @@ class KnowledgeDraftStorage {
     }
   }
 
-  write(
-    context: KnowledgeDraftContext,
-    draft: StoredKnowledgeDraft,
-  ): boolean {
+  write(context: KnowledgeDraftContext, draft: StoredKnowledgeDraft): boolean {
     try {
       this.storage.setItem(buildDraftKey(context), JSON.stringify(draft));
       return true;
@@ -152,7 +149,7 @@ function nullableBoundedString(
   value: unknown,
   maximum: number,
 ): string | null | undefined {
-  return value === null ? null : boundedString(value, maximum) ?? undefined;
+  return value === null ? null : (boundedString(value, maximum) ?? undefined);
 }
 
 function parseDate(value: unknown): string | null {

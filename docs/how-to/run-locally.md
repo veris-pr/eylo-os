@@ -18,12 +18,20 @@ Docker auth secret or DB password for a hosted deployment.
 ## Start backend services
 
 ```bash
-docker compose -f infra/docker/eylo/docker-compose.yml up -d --build
-docker compose -f infra/docker/eylo/docker-compose.yml ps
+docker compose \
+  -f infra/docker/eylo/docker-compose.yml \
+  -f infra/docker/eylo/docker-compose.dev.yml \
+  up -d --build
+docker compose \
+  -f infra/docker/eylo/docker-compose.yml \
+  -f infra/docker/eylo/docker-compose.dev.yml \
+  ps
 ```
 
 The API container applies the single Alembic baseline before Gunicorn starts.
-The worker starts only after the API is healthy.
+The worker starts only after the API is healthy. The development overlay binds
+the API to `127.0.0.1:8000`. PostgreSQL and Redis are reachable only by Compose
+services; neither publishes a host port.
 
 Check the public health endpoint:
 
@@ -56,7 +64,10 @@ Open `http://127.0.0.1:5174`.
 ## Inspect runtime logs
 
 ```bash
-docker compose -f infra/docker/eylo/docker-compose.yml logs --since=10m eylo-server worker
+docker compose \
+  -f infra/docker/eylo/docker-compose.yml \
+  -f infra/docker/eylo/docker-compose.dev.yml \
+  logs --since=10m eylo-server worker
 ```
 
 PostgreSQL checkpoint messages are routine. Investigate constraint errors,
@@ -66,7 +77,10 @@ unhandled task exceptions.
 ## Stop the runtime
 
 ```bash
-docker compose -f infra/docker/eylo/docker-compose.yml down
+docker compose \
+  -f infra/docker/eylo/docker-compose.yml \
+  -f infra/docker/eylo/docker-compose.dev.yml \
+  down
 ```
 
 This preserves PostgreSQL and Redis volumes. Use the dedicated

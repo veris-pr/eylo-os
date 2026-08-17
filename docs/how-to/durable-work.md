@@ -6,8 +6,14 @@ waits, cancellation, and worker execution.
 ## Confirm the worker is running
 
 ```bash
-docker compose -f infra/docker/eylo/docker-compose.yml ps
-docker compose -f infra/docker/eylo/docker-compose.yml logs --since=10m worker
+docker compose \
+  -f infra/docker/eylo/docker-compose.yml \
+  -f infra/docker/eylo/docker-compose.dev.yml \
+  ps
+docker compose \
+  -f infra/docker/eylo/docker-compose.yml \
+  -f infra/docker/eylo/docker-compose.dev.yml \
+  logs --since=10m worker
 ```
 
 Startup logs should show the Agent-run workflow and queue registration. A

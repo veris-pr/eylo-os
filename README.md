@@ -12,8 +12,8 @@ The repository contains the complete application:
 - `web/` — React operator console built with MobX, Tailwind CSS, and Base UI.
 - `widget/` — embeddable TypeScript SDK plus a Preact chat and voice UI.
 - `cli/` — human-friendly client generated from the running API contract.
-- `infra/docker/eylo/` — local Docker deployment for the API, worker,
-  PostgreSQL with pgvector, and Redis.
+- `infra/docker/eylo/` — shared Docker services plus explicit development and
+  production overlays for the API, worker, PostgreSQL with pgvector, and Redis.
 
 ## What Eylo supports
 
@@ -99,8 +99,17 @@ anything beyond disposable local development.
 Start the API, worker, PostgreSQL, and Redis:
 
 ```bash
-docker compose -f infra/docker/eylo/docker-compose.yml up -d --build
+docker compose \
+  -f infra/docker/eylo/docker-compose.yml \
+  -f infra/docker/eylo/docker-compose.dev.yml \
+  up -d --build
 ```
+
+Only the API is published, on the host loopback interface. PostgreSQL and
+Redis remain on the Compose network and have no host port mapping. Hosted
+deployments use the separate production overlay described in
+[Deploy with Docker](docs/how-to/deploy-with-docker.md); do not run the base
+file by itself.
 
 The API is available at `http://127.0.0.1:8000`; its interactive contract is at
 `http://127.0.0.1:8000/docs`.

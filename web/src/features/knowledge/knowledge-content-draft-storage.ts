@@ -48,10 +48,7 @@ class KnowledgeContentDraftStorage {
   readCorpus(
     context: KnowledgeContentDraftContext,
   ): StoredContentDraft<CorpusImportDraftValues> | null {
-    return this.read(
-      buildKey(context, "corpus"),
-      parseCorpusImportDraftValues,
-    );
+    return this.read(buildKey(context, "corpus"), parseCorpusImportDraftValues);
   }
 
   writeInline(
@@ -95,7 +92,10 @@ class KnowledgeContentDraftStorage {
     }
   }
 
-  private write<Values>(key: string, draft: StoredContentDraft<Values>): boolean {
+  private write<Values>(
+    key: string,
+    draft: StoredContentDraft<Values>,
+  ): boolean {
     try {
       this.storage.setItem(key, JSON.stringify(draft));
       return true;
@@ -161,7 +161,7 @@ function nullableBoundedString(
   value: unknown,
   maximum: number,
 ): string | null | undefined {
-  return value === null ? null : boundedString(value, maximum) ?? undefined;
+  return value === null ? null : (boundedString(value, maximum) ?? undefined);
 }
 
 function parseDate(value: unknown): string | null {

@@ -213,10 +213,7 @@ const KnowledgebaseFormPage = observer(function KnowledgebaseFormPage({
           aria-label="Knowledgebase form sections"
         >
           {FORM_SECTIONS.map((formSection) => {
-            const hasError = sectionHasErrors(
-              form.fieldErrors,
-              formSection.id,
-            );
+            const hasError = sectionHasErrors(form.fieldErrors, formSection.id);
             return (
               <button
                 key={formSection.id}
@@ -267,7 +264,11 @@ const KnowledgebaseFormPage = observer(function KnowledgebaseFormPage({
             mode === "edit" ? (
             <div className="border p-8 text-center">
               <p className="text-sm text-destructive">{form.errorMessage}</p>
-              <Button className="mt-4" variant="outline" onClick={returnToCollection}>
+              <Button
+                className="mt-4"
+                variant="outline"
+                onClick={returnToCollection}
+              >
                 Back to Knowledge
               </Button>
             </div>
@@ -447,7 +448,8 @@ function RetrievalSection({
               ))}
             </SelectContent>
           </Select>
-          {!form.isReferencesLoading && form.readyEmbeddingConfigs.length === 0 ? (
+          {!form.isReferencesLoading &&
+          form.readyEmbeddingConfigs.length === 0 ? (
             <p className="mt-2 text-xs text-muted-foreground">
               No ready embedding configuration. Configure and verify one in{" "}
               <a className="underline underline-offset-4" href={embeddingPath}>
@@ -465,7 +467,9 @@ function RetrievalSection({
           <dl className="grid gap-3 text-sm sm:grid-cols-2">
             <ReadOnlyValue
               label="Provider"
-              value={form.serverKnowledgebase.embedding_provider ?? "Unavailable"}
+              value={
+                form.serverKnowledgebase.embedding_provider ?? "Unavailable"
+              }
             />
             <ReadOnlyValue
               label="Model"
@@ -662,7 +666,8 @@ function ScopeSection({
                 <SelectContent>
                   {form.agentOptions.map((agent) => (
                     <SelectItem key={agent.id} value={agent.id}>
-                      {agent.label} · {agent.kind.toLowerCase()} · {agent.lifecycle}
+                      {agent.label} · {agent.kind.toLowerCase()} ·{" "}
+                      {agent.lifecycle}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -689,7 +694,9 @@ function ScopeSection({
                 spellCheck={false}
                 aria-invalid={form.fieldErrors.scopeId !== undefined}
                 value={form.values.scopeId}
-                onChange={(event) => form.setField("scopeId", event.target.value)}
+                onChange={(event) =>
+                  form.setField("scopeId", event.target.value)
+                }
               />
             </FormField>
           ) : null}
@@ -813,9 +820,19 @@ function FormMessages({
         </div>
       ) : null}
       {referenceErrorMessage !== null ? (
-        <div className="flex flex-wrap items-center justify-between gap-3 border p-3" role="alert">
-          <p className="text-sm text-muted-foreground">{referenceErrorMessage}</p>
-          <Button type="button" variant="outline" size="sm" onClick={onRetryReferences}>
+        <div
+          className="flex flex-wrap items-center justify-between gap-3 border p-3"
+          role="alert"
+        >
+          <p className="text-sm text-muted-foreground">
+            {referenceErrorMessage}
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={onRetryReferences}
+          >
             Retry options
           </Button>
         </div>
@@ -868,9 +885,8 @@ function firstErrorSection(
   errors: Partial<Record<keyof KnowledgebaseFormValues, string>>,
 ): KnowledgeFormSection | null {
   return (
-    FORM_SECTIONS.find((section) =>
-      sectionHasErrors(errors, section.id),
-    )?.id ?? null
+    FORM_SECTIONS.find((section) => sectionHasErrors(errors, section.id))?.id ??
+    null
   );
 }
 

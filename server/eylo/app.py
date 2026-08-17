@@ -145,7 +145,7 @@ app.include_router(private_router, prefix="/api")
 app.include_router(public_router, prefix="/api")
 # widget routes with session-based authentication
 app.include_router(widget_router, prefix="/api")
-# Mount static files for playground
+# Mount the server landing page and the built widget assets.
 server_dir = Path(os.path.dirname(os.path.dirname(__file__)))
 project_root = server_dir.parent
 widget_dist = project_root / "widget" / "preact-ui" / "dist"
@@ -169,16 +169,6 @@ else:
 def read_root():
     """Root endpoint for the Eylo Server."""
     return FileResponse(str(server_dir / "static" / "index.html"))
-
-
-@app.get("/webrtc-playground.html", response_class=FileResponse)
-async def get_webrtc_playground():
-    return FileResponse(str(server_dir / "static" / "webrtc-playground.html"))
-
-
-@app.get("/webrtc-test-updated.html", response_class=FileResponse)
-async def get_webrtc_test_updated():
-    return FileResponse(str(server_dir / "static" / "webrtc-test-updated.html"))
 
 
 @app.get("/health")

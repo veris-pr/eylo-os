@@ -12,19 +12,6 @@ export interface paths {
         /**
          * Create Agent
          * @description Create a new agent for the current user's organization.
-         *
-         *     Args:
-         *         request (AgentCreateRequestSchema): The data for creating a new agent.
-         *         current_user (CurrentUserSchema): The authenticated user making the request.
-         *
-         *     Returns:
-         *         AgentResponseSchema: The created agent's data.
-         *
-         *     Raises:
-         *         HTTPException: If there's a duplicate agent or other creation error.
-         *
-         *     TODO: Implement input validation for the request data.
-         *     TODO: Add support for asynchronous agent creation for complex setups.
          */
         post: operations["create_agent_api__organization_id__agents_post"];
         delete?: never;
@@ -43,37 +30,11 @@ export interface paths {
         /**
          * Get Agent
          * @description Retrieve details of a specific agent.
-         *
-         *     Args:
-         *         agent_id (UUID): The ID of the agent to retrieve.
-         *         current_user (CurrentUserSchema): The authenticated user making the request.
-         *
-         *     Returns:
-         *         AgentInDb: The agent's details.
-         *
-         *     Raises:
-         *         HTTPException: If the agent is not found or the user doesn't have access.
-         *
-         *     TODO: Implement caching for frequently accessed agents.
-         *     TODO: Add support for including related data (e.g., recent conversations) in the response.
          */
         get: operations["get_agent_api__organization_id__agents__agent_id__get"];
         /**
          * Update Agent
          * @description Create a new agent for the current user's organization.
-         *
-         *     Args:
-         *         request (AgentCreateRequestSchema): The data for creating a new agent.
-         *         current_user (CurrentUserSchema): The authenticated user making the request.
-         *
-         *     Returns:
-         *         AgentResponseSchema: The created agent's data.
-         *
-         *     Raises:
-         *         HTTPException: If there's a duplicate agent or other creation error.
-         *
-         *     TODO: Implement input validation for the request data.
-         *     TODO: Add support for asynchronous agent creation for complex setups.
          */
         put: operations["update_agent_api__organization_id__agents__agent_id__put"];
         post?: never;
@@ -142,17 +103,6 @@ export interface paths {
         /**
          * Assign Tool To Agent
          * @description Assign a tool to an agent.
-         *
-         *     Args:
-         *         agent_id (UUID): The ID of the agent to assign the tool to.
-         *         request (AgentToolRequest): The details of the tool to assign.
-         *
-         *     Returns:
-         *         AgentToolInDb: The created agent-tool mapping.
-         *
-         *     TODO: Implement validation to ensure the tool is compatible with the agent.
-         *     TODO: Add support for bulk tool assignment.
-         *     TODO: Implement a mechanism to check and maintain tool version compatibility.
          */
         post: operations["assign_tool_to_agent_api__organization_id__agents__agent_id__tools_post"];
         delete?: never;
@@ -2539,23 +2489,7 @@ export interface paths {
         };
         /**
          * Get Me
-         * @description # Get Current User Profile
-         *
-         *     Retrieves the profile of the currently authenticated user.
-         *
-         *     ## Workflow Steps
-         *     1. Authenticate user via the get_current_user dependency
-         *     2. Start a read-only transaction
-         *     3. Delegate to the auth controller to retrieve user details
-         *
-         *     Args:
-         *         current_user: The currently authenticated user, injected by FastAPI
-         *
-         *     Returns:
-         *         The member response schema containing user profile information
-         *
-         *     Raises:
-         *         HTTPException: If authentication fails or user doesn't exist
+         * @description Get Current User Profile.
          */
         get: operations["get_me_api_auth_me_get"];
         put?: never;
@@ -2592,17 +2526,13 @@ export interface paths {
         };
         /**
          * List Api Keys
-         * @description # List API Keys
-         *
-         *     Lists all active API keys for the current organization.
+         * @description List API Keys.
          */
         get: operations["list_api_keys_api_auth_api_keys_get"];
         put?: never;
         /**
          * Create Api Key
-         * @description # Create API Key
-         *
-         *     Generates a new API key for the organization. The raw key is only returned once.
+         * @description Create API Key.
          */
         post: operations["create_api_key_api_auth_api_keys_post"];
         delete?: never;
@@ -2623,9 +2553,7 @@ export interface paths {
         post?: never;
         /**
          * Revoke Api Key
-         * @description # Revoke API Key
-         *
-         *     Soft-deletes an API key, immediately invalidating it.
+         * @description Revoke API Key.
          */
         delete: operations["revoke_api_key_api_auth_api_keys__api_key_id__delete"];
         options?: never;
@@ -3910,37 +3838,6 @@ export interface paths {
         /**
          * Validate Session
          * @description Validate a session using auth session token and verify all relationships.
-         *
-         *     This endpoint validates that the session token is valid and that all
-         *     provided identifiers match the relationships in the database.
-         *
-         *     After successful validation, the frontend should:
-         *     1. Establish WebSocket connection using the validated session_token
-         *     2. Receive conversation history, messages, and updates via WebSocket events
-         *     3. Follow the same pattern as the embeddable widget
-         *
-         *     This ensures consistent data flow and avoids duplicate REST endpoints for
-         *     data that's already streamed via WebSocket.
-         *
-         *     Security is enforced by the controller and service layers through:
-         *     - Session token validation (auth_sessions table)
-         *     - Token expiration checking
-         *     - Organization-session matching
-         *     - Contact-session matching
-         *     - Conversation-organization matching
-         *     - Contact-participant verification
-         *     - Data sanitization in responses
-         *
-         *     Args:
-         *         payload: SessionValidationRequest with session_token + UUIDs
-         *
-         *     Returns:
-         *         SessionValidationResponse with contact and conversation details
-         *
-         *     Raises:
-         *         HTTPException 401: If session validation fails (invalid/expired token or mismatched relationships)
-         *         HTTPException 404: If any of the resources are not found
-         *         HTTPException 500: If a server error occurs
          */
         post: operations["validate_session_api_public_session_validate_post"];
         delete?: never;
@@ -4173,47 +4070,8 @@ export interface paths {
         /**
          * Read Root
          * @description Root endpoint for the Eylo Server.
-         *
-         *     Returns:
-         *         dict: A simple greeting message.
-         *
-         *     TODO: Consider returning more useful information about the API
          */
         get: operations["read_root__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/webrtc-playground.html": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Webrtc Playground */
-        get: operations["get_webrtc_playground_webrtc_playground_html_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/webrtc-test-updated.html": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Webrtc Test Updated */
-        get: operations["get_webrtc_test_updated_webrtc_test_updated_html_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -4232,19 +4090,6 @@ export interface paths {
         /**
          * Health Check
          * @description Health check endpoint for the Eylo Server.
-         *
-         *     Returns:
-         *         int: HTTP 200 OK status code.
-         *
-         *     TODO: Implement a more comprehensive health check
-         *          WHAT: Check critical dependencies (database, redis, external APIs) and return detailed status
-         *          WHY: Enables proper health monitoring and prevents routing traffic to unhealthy instances
-         *          HOW: Add checks for DB connectivity, redis ping, worker status; return 503 if any fail
-         *
-         *     TODO: Add checks for database connectivity, cache availability, and other critical services
-         *          WHAT: Verify each critical service is reachable and responding correctly
-         *          WHY: Detect partial failures that could cause cascading errors
-         *          HOW: Implement timeout-based checks with fallback, return service-level health details
          */
         get: operations["health_check_health_get"];
         put?: never;
@@ -4798,9 +4643,6 @@ export interface components {
         /**
          * AgentStatus
          * @description Enum representing the possible statuses of an agent.
-         *
-         *     TODO: Consider adding more granular statuses (e.g., TRAINING, UPDATING).
-         *     TODO: Implement status transition logic to ensure valid state changes.
          * @enum {string}
          */
         AgentStatus: "DRAFT" | "ACTIVE" | "INACTIVE" | "ARCHIVED";
@@ -6032,15 +5874,7 @@ export interface components {
         };
         /**
          * ConnectionKind
-         * @description # ConnectionKind
-         *
-         *     Enum defining the entity type that owns a connection.
-         *
-         *     ## Responsibilities
-         *     - Distinguish between organization-level and contact-level connections
-         *     - Enable appropriate authorization and access control based on ownership
-         *
-         *     TODO: Consider adding team-level connections for larger organizations
+         * @description ConnectionKind behavior for the "mappers" domain.
          * @enum {string}
          */
         ConnectionKind: "ORGANIZATION" | "CONTACT";
@@ -6085,17 +5919,7 @@ export interface components {
         };
         /**
          * ConnectionStatus
-         * @description # ConnectionStatus
-         *
-         *     Enum representing the lifecycle state of a connection.
-         *
-         *     ## Responsibilities
-         *     - Track the current state of connections
-         *     - Enable filtering and management of connections based on status
-         *     - Support the connection lifecycle workflow
-         *
-         *     TODO: Add more granular status values for better error reporting
-         *     TODO: Consider adding warning states for connections with issues
+         * @description ConnectionStatus behavior for the "connections" domain.
          * @enum {string}
          */
         ConnectionStatus: "INITIATED" | "ACTIVE" | "INACTIVE" | "FAILED" | "REVOKED";
@@ -7447,18 +7271,7 @@ export interface components {
         JsonValue: unknown;
         /**
          * KeypadInputPlan
-         * @description Per-agent keypad behaviour. Stored, and not yet read by anything.
-         *
-         *     The runtime exists but does not come from here: `DTMFCollector` is built in
-         *     `sockets/telephony/media_stream.py` from the session's `extra_data` and the
-         *     websocket query string, with its own defaults. So an operator who sets
-         *     `digit_limit` on their agent receives a 200 and keeps collecting 16 digits.
-         *
-         *     Marked rather than removed because the shape is right and the wiring is a
-         *     known, small piece of work — the collector needs the agent's plan passed in
-         *     where it currently reads query params. Marked rather than left silent
-         *     because R2 forbids configuration that does nothing, and this is the last
-         *     unmarked instance of it in this file.
+         * @description Per-agent keypad behaviour.
          */
         KeypadInputPlan: {
             /**
@@ -21981,42 +21794,6 @@ export interface operations {
                 content: {
                     "application/json": unknown;
                 };
-            };
-        };
-    };
-    get_webrtc_playground_webrtc_playground_html_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    get_webrtc_test_updated_webrtc_test_updated_html_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
             };
         };
     };

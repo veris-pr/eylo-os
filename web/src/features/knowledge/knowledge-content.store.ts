@@ -67,10 +67,7 @@ class KnowledgeContentStore {
   private refreshRequest: AbortController | null = null;
   private readonly service: KnowledgeService;
 
-  constructor(
-    service: KnowledgeService,
-    drafts: KnowledgeContentDraftStorage,
-  ) {
+  constructor(service: KnowledgeService, drafts: KnowledgeContentDraftStorage) {
     this.service = service;
     this.drafts = drafts;
     makeAutoObservable<
@@ -111,7 +108,9 @@ class KnowledgeContentStore {
   get readyStorageConfigs(): StorageConfig[] {
     return this.storageConfigs.filter(
       (config) =>
-        config.ready && config.capabilities.list && config.capabilities.download,
+        config.ready &&
+        config.capabilities.list &&
+        config.capabilities.download,
     );
   }
 
@@ -235,7 +234,8 @@ class KnowledgeContentStore {
       return null;
     }
     if (content.length > 1_000_000) {
-      this.inlineErrorMessage = "Document content must not exceed 1,000,000 characters.";
+      this.inlineErrorMessage =
+        "Document content must not exceed 1,000,000 characters.";
       return null;
     }
     if (title.length > 512 || sourceUri.length > 4_096) {
@@ -546,7 +546,9 @@ function emptyCorpusValues(): CorpusImportDraftValues {
 }
 
 function inlineValuesEmpty(values: InlineContentDraftValues): boolean {
-  return values.content === "" && values.sourceUri === "" && values.title === "";
+  return (
+    values.content === "" && values.sourceUri === "" && values.title === ""
+  );
 }
 
 function corpusValuesEmpty(values: CorpusImportDraftValues): boolean {
@@ -557,10 +559,13 @@ function buildContextKey(context: KnowledgeContentDraftContext): string {
   return `${context.organizationId}:${context.knowledgebaseId}:${context.memberKey.toLowerCase()}`;
 }
 
-function newestFirst<Item extends { created_at: string }>(items: Item[]): Item[] {
+function newestFirst<Item extends { created_at: string }>(
+  items: Item[],
+): Item[] {
   return [...items].sort(
     (left, right) =>
-      new Date(right.created_at).getTime() - new Date(left.created_at).getTime(),
+      new Date(right.created_at).getTime() -
+      new Date(left.created_at).getTime(),
   );
 }
 

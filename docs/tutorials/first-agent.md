@@ -29,7 +29,10 @@ revision.
 From the repository root:
 
 ```bash
-docker compose -f infra/docker/eylo/docker-compose.yml up -d --build
+docker compose \
+  -f infra/docker/eylo/docker-compose.yml \
+  -f infra/docker/eylo/docker-compose.dev.yml \
+  up -d --build
 ```
 
 In a second terminal:

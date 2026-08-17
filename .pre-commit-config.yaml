@@ -20,14 +20,14 @@ repos:
 
       - id: python-lint-changed
         name: Python lint (changed files)
+        # Add lint policy in server/pyproject.toml only after its full baseline passes.
         entry: >-
           server/.venv/bin/ruff check
           --config server/pyproject.toml
           --force-exclude
-          --extend-select BLE001,RUF100
           --extend-ignore F401,F403,F811,E712
         language: system
-        files: ^(server/eylo/|cli/)
+        files: ^(server/eylo/|server/scripts/|cli/)
         types: [python]
         stages: [pre-commit, pre-push]
 

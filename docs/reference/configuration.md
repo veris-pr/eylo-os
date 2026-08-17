@@ -17,6 +17,13 @@ authority planes.
 
 `DATABASE_URL` and `REDIS_URL` are derived by `EyloSettings`.
 
+The Docker deployment has one shared service definition and two explicit
+overlays. `docker-compose.dev.yml` supplies disposable local values;
+`docker-compose.prod.yml` requires deployment values from the ignored
+`.env.production.docker` file. PostgreSQL and Redis are internal-only in both
+models. Compose publishes only the API port, bound to loopback unless the
+production operator explicitly sets `EYLO_API_BIND_ADDRESS`.
+
 ## Public origins and callbacks
 
 | Variable | Meaning |

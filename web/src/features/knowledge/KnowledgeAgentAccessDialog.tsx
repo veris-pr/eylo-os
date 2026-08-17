@@ -77,7 +77,10 @@ const KnowledgeAgentAccessDialog = observer(
             <DialogTitle>Configure Agent access</DialogTitle>
             <DialogDescription>
               Choose an Agent, then grant {knowledgebaseName} from its
-              Relationships section. {writable ? "Read or read-write access is available." : "This knowledgebase is read-only."}
+              Relationships section.{" "}
+              {writable
+                ? "Read or read-write access is available."
+                : "This knowledgebase is read-only."}
             </DialogDescription>
           </DialogHeader>
 
@@ -96,7 +99,8 @@ const KnowledgeAgentAccessDialog = observer(
           </div>
 
           <div className="max-h-80 min-h-36 overflow-y-auto border">
-            {knowledge.isAgentOptionsLoading && knowledge.agentOptions.length === 0 ? (
+            {knowledge.isAgentOptionsLoading &&
+            knowledge.agentOptions.length === 0 ? (
               <p className="p-6 text-center text-sm text-muted-foreground">
                 Loading Agents…
               </p>
@@ -108,7 +112,9 @@ const KnowledgeAgentAccessDialog = observer(
                 <Button
                   className="mt-3"
                   variant="outline"
-                  onClick={() => void knowledge.loadAgentOptions(organizationId, true)}
+                  onClick={() =>
+                    void knowledge.loadAgentOptions(organizationId, true)
+                  }
                 >
                   Try again
                 </Button>
@@ -136,7 +142,10 @@ const KnowledgeAgentAccessDialog = observer(
                         {agent.kind.toLowerCase()} · {agent.lifecycle}
                       </span>
                     </span>
-                    <ArrowRight className="size-4 text-muted-foreground" aria-hidden="true" />
+                    <ArrowRight
+                      className="size-4 text-muted-foreground"
+                      aria-hidden="true"
+                    />
                   </button>
                 ))}
               </div>

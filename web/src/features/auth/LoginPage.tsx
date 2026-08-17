@@ -24,7 +24,6 @@ const LoginPage = observer(function LoginPage() {
     password: "",
   });
 
-
   if (auth.status === "checking") {
     return <FullPageStatus message="Verifying session…" />;
   }

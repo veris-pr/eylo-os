@@ -236,10 +236,7 @@ function KnowledgeRow({
         {updatedAt.exact === null ? (
           updatedAt.label
         ) : (
-          <time
-            dateTime={updatedAt.exact}
-            title={`${updatedAt.exact} (UTC)`}
-          >
+          <time dateTime={updatedAt.exact} title={`${updatedAt.exact} (UTC)`}>
             {updatedAt.label}
           </time>
         )}
@@ -269,7 +266,10 @@ function KnowledgeCard({
 }) {
   const updatedAt = formatKnowledgeDate(knowledgebase.updated_at);
   return (
-    <article className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 p-4" role="listitem">
+    <article
+      className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 p-4"
+      role="listitem"
+    >
       <button
         className="min-w-0 text-left focus-visible:rounded-sm focus-visible:outline-2"
         type="button"

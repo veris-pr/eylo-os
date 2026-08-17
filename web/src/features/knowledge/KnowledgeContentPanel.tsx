@@ -114,7 +114,10 @@ const KnowledgeContentPanel = observer(function KnowledgeContentPanel({
       ) : null}
 
       {content.isMonitoring ? (
-        <p className="flex items-center gap-2 text-xs text-muted-foreground" role="status">
+        <p
+          className="flex items-center gap-2 text-xs text-muted-foreground"
+          role="status"
+        >
           <RefreshCw className="size-3 animate-spin" aria-hidden="true" />
           Watching active work
         </p>
@@ -341,7 +344,8 @@ const CorpusImportDialog = observer(function CorpusImportDialog({
               <SelectContent>
                 {content.readyStorageConfigs.map((config) => (
                   <SelectItem key={config.id} value={config.id}>
-                    {config.name} · {config.provider} · revision {config.revision}
+                    {config.name} · {config.provider} · revision{" "}
+                    {config.revision}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -417,14 +421,20 @@ function IngestionJobCard({
           <h4 className="truncate text-sm font-medium">
             {job.title?.trim() || source}
           </h4>
-          <p className="mt-1 truncate text-xs text-muted-foreground" title={source}>
+          <p
+            className="mt-1 truncate text-xs text-muted-foreground"
+            title={source}
+          >
             {source}
           </p>
         </div>
         <StateBadge state={job.state} />
       </div>
       <dl className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-3">
-        <CompactValue label="Attempts" value={`${job.attempts} / ${job.max_attempts}`} />
+        <CompactValue
+          label="Attempts"
+          value={`${job.attempts} / ${job.max_attempts}`}
+        />
         <CompactValue label="Filed" value={createdAt.label} />
         <CompactValue label="Started" value={startedAt.label} />
         <CompactValue label="Finished" value={finishedAt.label} />
@@ -438,7 +448,12 @@ function IngestionJobCard({
       ) : null}
       {!TERMINAL_STATES.has(job.state) ? (
         <div className="flex justify-end">
-          <Button variant="outline" size="sm" disabled={isActing} onClick={onCancel}>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={isActing}
+            onClick={onCancel}
+          >
             <X aria-hidden="true" />
             {isActing ? "Cancelling…" : "Cancel job"}
           </Button>
@@ -477,8 +492,14 @@ function CorpusImportCard({
       </div>
       <dl className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
         <CompactValue label="Attempts" value={String(corpusImport.attempts)} />
-        <CompactValue label="Discovered" value={String(corpusImport.discovered_count)} />
-        <CompactValue label="Queued" value={String(corpusImport.queued_count)} />
+        <CompactValue
+          label="Discovered"
+          value={String(corpusImport.discovered_count)}
+        />
+        <CompactValue
+          label="Queued"
+          value={String(corpusImport.queued_count)}
+        />
         <CompactValue label="Skipped" value={String(skippedReport.total)} />
         <CompactValue label="Filed" value={createdAt.label} />
         <CompactValue label="Started" value={startedAt.label} />
@@ -513,7 +534,12 @@ function CorpusImportCard({
       ) : null}
       {!TERMINAL_STATES.has(corpusImport.state) ? (
         <div className="flex justify-end">
-          <Button variant="outline" size="sm" disabled={isActing} onClick={onCancel}>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={isActing}
+            onClick={onCancel}
+          >
             <X aria-hidden="true" />
             {isActing ? "Cancelling…" : "Cancel sweep"}
           </Button>
@@ -571,10 +597,7 @@ function CompactValue({
   return (
     <div className="min-w-0">
       <dt className="text-muted-foreground">{label}</dt>
-      <dd
-        className={cn("mt-1 truncate", code && "font-mono")}
-        title={value}
-      >
+      <dd className={cn("mt-1 truncate", code && "font-mono")} title={value}>
         {value}
       </dd>
     </div>
@@ -628,12 +651,18 @@ function DialogMessage({
   return (
     <div className="space-y-2">
       {draftError !== null ? (
-        <p className="border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive" role="alert">
+        <p
+          className="border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive"
+          role="alert"
+        >
           {draftError}
         </p>
       ) : null}
       {error !== null ? (
-        <p className="border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive" role="alert">
+        <p
+          className="border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive"
+          role="alert"
+        >
           {error}
         </p>
       ) : null}
@@ -652,7 +681,12 @@ function DialogMessage({
 }
 
 function DraftMarker() {
-  return <span className="size-1.5 rounded-full bg-current" aria-label="Draft saved" />;
+  return (
+    <span
+      className="size-1.5 rounded-full bg-current"
+      aria-label="Draft saved"
+    />
+  );
 }
 
 function ContentSkeleton() {

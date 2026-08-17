@@ -291,7 +291,8 @@ class KnowledgeFormStore {
         this.agentOptions = agentResult.value;
       }
       this.referenceErrorMessage =
-        embeddingResult.status === "rejected" || agentResult.status === "rejected"
+        embeddingResult.status === "rejected" ||
+        agentResult.status === "rejected"
           ? "Some scope or provider options could not be loaded."
           : null;
       this.isReferencesLoading = false;
@@ -418,7 +419,9 @@ function validateValues(
       errors.scope = "Choose who this knowledge belongs to.";
     } else {
       const scopeId =
-        values.scope === "organization" ? organizationId : values.scopeId.trim();
+        values.scope === "organization"
+          ? organizationId
+          : values.scopeId.trim();
       if (!isUuid(scopeId)) {
         errors.scopeId =
           values.scope === "agent"
@@ -469,8 +472,7 @@ function toCreateInput(
     },
     name: values.name.trim(),
     scope,
-    scope_id:
-      scope === "organization" ? organizationId : values.scopeId.trim(),
+    scope_id: scope === "organization" ? organizationId : values.scopeId.trim(),
     vendor: values.vendor,
     writable: values.writable,
   };

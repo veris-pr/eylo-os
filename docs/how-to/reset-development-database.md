@@ -6,14 +6,21 @@ rows. Never use it against an operator database.
 ## Confirm the target
 
 Check that the Compose project is `eylo` and that the target is the local
-`postgres-17` service from `infra/docker/eylo/docker-compose.yml`. Export any
-provider configuration backup you intend to preserve before continuing.
+`postgres-17` service produced by the base and development Compose files.
+Export any provider configuration backup you intend to preserve before
+continuing.
 
 ## Remove local volumes
 
 ```bash
-docker compose -f infra/docker/eylo/docker-compose.yml down -v
-docker compose -f infra/docker/eylo/docker-compose.yml up -d --build
+docker compose \
+  -f infra/docker/eylo/docker-compose.yml \
+  -f infra/docker/eylo/docker-compose.dev.yml \
+  down -v
+docker compose \
+  -f infra/docker/eylo/docker-compose.yml \
+  -f infra/docker/eylo/docker-compose.dev.yml \
+  up -d --build
 ```
 
 The API recreates the schema by applying `eylo0001`.

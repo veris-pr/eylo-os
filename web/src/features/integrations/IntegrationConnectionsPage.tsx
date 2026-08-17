@@ -513,7 +513,11 @@ function ConnectionKindBadge({ kind }: { kind: CuratedConnectionKind }) {
   return <Badge variant="outline">{CONNECTION_KIND_LABELS[kind]}</Badge>;
 }
 
-function ConnectionStatusBadge({ status }: { status: CuratedConnectionStatus }) {
+function ConnectionStatusBadge({
+  status,
+}: {
+  status: CuratedConnectionStatus;
+}) {
   return (
     <Badge variant={connectionStatusVariant(status)}>
       {CONNECTION_STATUS_LABELS[status]}

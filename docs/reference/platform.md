@@ -8,7 +8,7 @@
 | `web/` | Member-facing React operator console using MobX, Tailwind CSS, and Base UI |
 | `widget/` | Headless TypeScript transport/state SDK plus the Preact contact UI |
 | `cli/` | OpenAPI-driven command-line client for public platform APIs |
-| `infra/docker/eylo/` | Local API, worker, pgvector/PostgreSQL, and Redis deployment |
+| `infra/docker/eylo/` | Shared API, worker, pgvector/PostgreSQL, and Redis services with explicit development and production overlays |
 | `design-system/` | Design references and component showcases; not a production runtime |
 
 ## Backend layers
