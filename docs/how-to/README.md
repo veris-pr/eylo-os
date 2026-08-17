@@ -3,6 +3,7 @@
 Use these guides when you already know the outcome you need.
 
 - [Run the platform locally](run-locally.md)
+- [Use the Widget SDK from Preact](use-widget-sdk.md)
 - [Configure and rotate a provider](configure-provider.md)
 - [Add a capability provider vendor](add-provider-vendor.md)
 - [Build and publish an Agent](build-and-publish-agent.md)

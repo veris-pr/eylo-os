@@ -29,6 +29,16 @@ architecture rationale do not compete for attention.
 3. Check the [provider reference](reference/providers.md) for current vendors,
    catalogs, factories, and configuration ownership.
 
+### Widget integrator
+
+1. Read the [Widget SDK reference](reference/widget-sdk.md) for the current
+   session, lifecycle, service, store, event, Knowledge, integration, and voice
+   contracts.
+2. Follow [Use the Widget SDK from Preact](how-to/use-widget-sdk.md), which is
+   reduced from the running Preact implementation.
+3. Use the server-issued invitation/session flow; never let browser input
+   choose organization or contact authority.
+
 ### Platform maintainer
 
 1. Read [Platform architecture](explanation/architecture.md).

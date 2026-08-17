@@ -45,6 +45,9 @@ The [platform documentation](docs/README.md) follows Diátaxis:
 - [how-to guides](docs/how-to/README.md) cover operator and maintainer tasks;
 - [reference](docs/reference/README.md) catalogs modules, providers, events,
   lifecycles, and runtime surfaces;
+- [Widget SDK](docs/reference/widget-sdk.md) documents the headless runtime,
+  with a [Preact integration guide](docs/how-to/use-widget-sdk.md) grounded in
+  the working widget;
 - [explanation](docs/explanation/README.md) describes the architecture and
   design choices;
 - [architecture](docs/diagrams/architecture.md) and

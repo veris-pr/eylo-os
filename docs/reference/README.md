@@ -9,6 +9,7 @@ Reference pages describe current contracts without teaching a workflow.
 - [Curated integration catalog](integrations.md)
 - [Events and delivery contracts](events.md)
 - [Runtime surfaces](runtime-surfaces.md)
+- [Widget SDK](widget-sdk.md)
 - [Configuration](configuration.md)
 - [Lifecycle states](lifecycles.md)
 - [Source documentation policy](source-documentation.md)

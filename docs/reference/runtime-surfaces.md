@@ -45,7 +45,7 @@ shareable list/detail/filter state. Components own transient interaction state.
 
 `widget/src/` owns transport and reactive state:
 
-- public session/invitation exchange;
+- contact-session consumption after a host bootstrap resolves authority;
 - Agent and conversation selection;
 - WebSocket protocol and reconnect behavior;
 - message, participant, auth, tool, and interface events;
@@ -55,12 +55,19 @@ shareable list/detail/filter state. Components own transient interaction state.
 The SDK does not choose an organization or contact in production. Local-only
 fixed identity comes from paired server environment variables.
 
+See the [Widget SDK reference](widget-sdk.md) for its current source API and
+distribution status.
+
 ## Preact widget UI
 
 `widget/preact-ui/` composes the SDK into the contact journey: Agent list,
 conversation list/unread state, message exchange, file upload, connection
 authorization signals, and voice controls. The SDK's state machine is
 authoritative; the UI does not invent a parallel call lifecycle.
+
+The Preact/host bootstrap exchanges production invitations and starts
+local-only development sessions before passing the resulting contact session to
+the SDK. See [Use the Widget SDK from Preact](../how-to/use-widget-sdk.md).
 
 ## CLI
 
