@@ -4,9 +4,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
 
+import jwt
 from fastapi import Depends, HTTPException, Header, status
 from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError, jwt
+from jwt.exceptions import PyJWTError as JWTError
 from passlib.context import CryptContext
 from pydantic import EmailStr, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession

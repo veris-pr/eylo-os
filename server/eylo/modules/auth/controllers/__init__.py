@@ -5,7 +5,7 @@ from typing import Dict, Union
 
 from fastapi import HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
-from jose import JWTError
+from jwt.exceptions import PyJWTError as JWTError
 from uuid_utils import uuid7
 
 from eylo.common.database import get_transaction

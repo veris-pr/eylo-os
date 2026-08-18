@@ -1,6 +1,19 @@
 # esbuild: needs its postinstall to fetch the platform binary (Vite depends on it).
 # @astryxdesign/core: its postinstall only prints a "run astryx init" nudge —
 #   no writes, no network — so there is nothing to gain by running it.
+minimumReleaseAge: 10080
+minimumReleaseAgeStrict: true
+minimumReleaseAgeIgnoreMissingTime: false
+trustPolicy: no-downgrade
+trustLockfile: false
+blockExoticSubdeps: true
+trustPolicyExclude:
+  # Babel still requires this mature, signed semver 6 release.
+  - semver@6.3.1
+
+overrides:
+  "nanoid@": 3.3.18
+
 allowBuilds:
   esbuild: true
   '@astryxdesign/core': false
