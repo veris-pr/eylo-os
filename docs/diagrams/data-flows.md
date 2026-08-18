@@ -1,5 +1,17 @@
 # Data-flow diagrams
 
+This page shows the main end-to-end user and operator journeys. For the same
+runtime organized by code ownership, use the
+[pipeline data-flow atlas](pipeline-data-flows.md). For complete
+definition-to-outcome ownership, use the
+[product data-flow atlas](product-data-flows.md).
+
+| View | Question answered |
+| --- | --- |
+| This page | What happens across the system for a common journey? |
+| [Pipeline atlas](pipeline-data-flows.md) | What enters and leaves each `eylo/pipelines` unit? |
+| [Product atlas](product-data-flows.md) | How does each `eylo/products` package own a complete outcome? |
+
 ## Text conversation and Agent run
 
 ```mermaid

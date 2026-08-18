@@ -51,7 +51,12 @@ The [platform documentation](docs/README.md) follows Diátaxis:
 - [explanation](docs/explanation/README.md) describes the architecture and
   design choices;
 - [architecture](docs/diagrams/architecture.md) and
-  [data-flow](docs/diagrams/data-flows.md) diagrams map the current runtime.
+  [journey data-flow](docs/diagrams/data-flows.md) diagrams map the current
+  runtime;
+- the [pipeline data-flow atlas](docs/diagrams/pipeline-data-flows.md) shows
+  every orchestration boundary, while the
+  [product data-flow atlas](docs/diagrams/product-data-flows.md) shows complete
+  product ownership and outcomes.
 
 Signed-in organization members can read the same source-backed pages in the
 operator console under **Resources → Documentation**. The console does not
@@ -72,6 +77,47 @@ The backend keeps domain and provider concerns separate:
 | `eylo/pipelines/` | Cross-layer orchestration and durable effects      |
 | `eylo/listeners/` | In-process event reactions                         |
 | `eylo/products/`  | Product-level composition                          |
+
+### How data moves
+
+```mermaid
+flowchart LR
+    people["Organization members and contacts"]
+    clients["Console, Widget SDK, or CLI"]
+    api["Authenticated API and live transports"]
+    domain["Owning domain module"]
+    state[("PostgreSQL canonical state")]
+    live["Ephemeral live projection"]
+    absurd["DB-backed Absurd task"]
+    worker["Durable worker"]
+    pipeline["Cross-layer pipeline"]
+    framework["Provider-neutral Agent framework"]
+    socket["Vendor socket adapter"]
+    provider["External provider"]
+
+    people --> clients --> api --> domain --> state
+    state -. "post-commit" .-> live --> clients
+    state --> absurd --> worker --> pipeline
+    api --> pipeline
+    pipeline --> framework
+    pipeline --> socket --> provider
+    pipeline --> state
+```
+
+The owning module commits canonical intent first. Live reactions are
+best-effort; required background effects are claimed from DB-backed durable
+work. Pipelines reload organization and revision authority, then compose the
+standalone Agent framework and vendor sockets without making either one the
+domain model.
+
+Follow the flow at three levels:
+
+1. [End-to-end journeys](docs/diagrams/data-flows.md) — text, knowledge,
+   memory, voice, integrations, and Campaign attempts.
+2. [Every pipeline](docs/diagrams/pipeline-data-flows.md) — trigger, authority,
+   orchestration, provider effect, sink, recovery, and failure boundary.
+3. [Every product](docs/diagrams/product-data-flows.md) — definition,
+   lifecycle, audience, execution, and outcome ownership.
 
 `modules/` and `sockets/` do not import one another. A flow that needs both
 belongs in `pipelines/`. The framework has no dependency on the Eylo platform.

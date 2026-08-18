@@ -2,7 +2,9 @@
 
 Pipelines coordinate domain modules, provider sockets, durable work, and
 transport effects. This is the only backend layer allowed to import both
-`eylo.modules` and `eylo.sockets`.
+`eylo.modules` and `eylo.sockets`. The
+[pipeline data-flow atlas](../diagrams/pipeline-data-flows.md) maps the trigger,
+authority, transforms, sinks, and recovery path for every entry below.
 
 | Pipeline | Responsibility |
 | --- | --- |

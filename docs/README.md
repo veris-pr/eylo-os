@@ -44,8 +44,10 @@ architecture rationale do not compete for attention.
 1. Read [Platform architecture](explanation/architecture.md).
 2. Use the [module catalog](reference/modules.md), [pipeline catalog](reference/pipelines.md),
    and [runtime-surface reference](reference/runtime-surfaces.md).
-3. Inspect the [architecture diagrams](diagrams/architecture.md) and
-   [data-flow diagrams](diagrams/data-flows.md).
+3. Inspect the [architecture diagrams](diagrams/architecture.md),
+   [end-to-end data flows](diagrams/data-flows.md),
+   [pipeline data-flow atlas](diagrams/pipeline-data-flows.md), and
+   [product data-flow atlas](diagrams/product-data-flows.md).
 4. Follow [source documentation rules](reference/source-documentation.md) when
    changing docstrings or comments.
 
