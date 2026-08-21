@@ -1,7 +1,13 @@
 type FilterGroupOperator = "and" | "or";
 
 type FilterValueType =
-  "single-select" | "multi-select" | "date" | "labels" | "links";
+  | "single-select"
+  | "multi-select"
+  | "text"
+  | "number"
+  | "date"
+  | "labels"
+  | "links";
 
 type FilterOperator =
   | "is"

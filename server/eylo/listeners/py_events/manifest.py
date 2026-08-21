@@ -52,6 +52,15 @@ from eylo.events.schema.py_events.memory import (
     MemoryReconciliationLifecycleEvent,
     MemoryReindexLifecycleEvent,
 )
+from eylo.events.schema.py_events.sor import (
+    SorMappingPublishedEvent,
+    SorRecordProjectedEvent,
+    SorRecordsTombstonedEvent,
+    SorSchemaChangedEvent,
+    SorSourceActivatedEvent,
+    SorSourceDegradedEvent,
+    SorSyncCompletedEvent,
+)
 from eylo.events.schema.py_events.voice import (
     STTStateEvent,
     TTSStateEvent,
@@ -89,6 +98,7 @@ from eylo.listeners.py_events.messages import (
     broadcast_created_message,
 )
 from eylo.listeners.py_events.participants import handle_participant_created
+from eylo.listeners.py_events.sor import observe_sor_event
 from eylo.listeners.py_events.voice_lifecycle import (
     handle_stt_state,
     handle_tts_state,
@@ -391,6 +401,48 @@ LISTENER_MANIFEST = (
         "local.memory.recall.observed.v1",
         MemoryRecallObservedEvent,
         observe_memory_event,
+        ListenerRole.OBSERVABILITY,
+    ),
+    _entry(
+        "local.sor.source.activated.v1",
+        SorSourceActivatedEvent,
+        observe_sor_event,
+        ListenerRole.OBSERVABILITY,
+    ),
+    _entry(
+        "local.sor.source.degraded.v1",
+        SorSourceDegradedEvent,
+        observe_sor_event,
+        ListenerRole.OBSERVABILITY,
+    ),
+    _entry(
+        "local.sor.schema.changed.v1",
+        SorSchemaChangedEvent,
+        observe_sor_event,
+        ListenerRole.OBSERVABILITY,
+    ),
+    _entry(
+        "local.sor.mapping.published.v1",
+        SorMappingPublishedEvent,
+        observe_sor_event,
+        ListenerRole.OBSERVABILITY,
+    ),
+    _entry(
+        "local.sor.record.projected.v1",
+        SorRecordProjectedEvent,
+        observe_sor_event,
+        ListenerRole.OBSERVABILITY,
+    ),
+    _entry(
+        "local.sor.record.tombstoned.v1",
+        SorRecordsTombstonedEvent,
+        observe_sor_event,
+        ListenerRole.OBSERVABILITY,
+    ),
+    _entry(
+        "local.sor.sync.completed.v1",
+        SorSyncCompletedEvent,
+        observe_sor_event,
         ListenerRole.OBSERVABILITY,
     ),
 )

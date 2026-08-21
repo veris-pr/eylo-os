@@ -82,6 +82,7 @@ API_RESOURCES = (
     "sandbox-configs",
     "sandboxes",
     "schedules",
+    "sor",
     "storage-configs",
     "stt-configs",
     "system",
@@ -429,7 +430,11 @@ def operations_from_openapi(schema: Mapping[str, Any]) -> tuple[Operation, ...]:
             if method not in HTTP_METHODS or not isinstance(definition, dict):
                 continue
             operation_id = str(definition.get("operationId") or f"{method}_{path}")
-            handler_name = operation_id.split("_api_", maxsplit=1)[0]
+            handler_name = handler_name_from_operation_id(
+                operation_id,
+                path=path,
+                method=method,
+            )
             discovered.append(
                 {
                     "resource": resource_for_path(path),
@@ -476,6 +481,21 @@ def operations_from_openapi(schema: Mapping[str, Any]) -> tuple[Operation, ...]:
         used.add(key)
         operations.append(Operation(action=action, **item))
     return tuple(sorted(operations, key=lambda item: (item.resource, item.action)))
+
+
+def handler_name_from_operation_id(
+    operation_id: str,
+    *,
+    path: str,
+    method: str,
+) -> str:
+    """Remove FastAPI's exact path suffix without splitting valid `api` names."""
+    generated_suffix = f"{re.sub(r'\W', '_', path)}_{method.lower()}"
+    if operation_id.endswith(generated_suffix):
+        handler_name = operation_id[: -len(generated_suffix)]
+        if handler_name:
+            return handler_name
+    return operation_id
 
 
 def required_input_hints(
@@ -540,6 +560,10 @@ def resolve_openapi_schema(
 
 def preferred_action(resource: str, handler_name: str, method: str) -> str:
     cleaned = handler_name.removesuffix("_route")
+    if resource == "sor":
+        # The resource already supplies the namespace. Keep commands concise:
+        # `eylo sor list-sources`, not `eylo sor list-sor-sources`.
+        return "-".join(part for part in cleaned.split("_") if part != "sor")
     if cleaned == "list_all":
         return "list"
     if cleaned == "read_one":

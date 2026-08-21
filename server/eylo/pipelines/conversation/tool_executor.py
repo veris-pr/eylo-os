@@ -31,6 +31,10 @@ from eylo.pipelines.sandbox.tool_execution import (
     SANDBOX_TOOL_SLUGS,
     execute_agent_sandbox_tool,
 )
+from eylo.pipelines.sor.tool_execution import (
+    execute_sor_mutation_tool,
+    execute_sor_read_tool,
+)
 from eylo.pipelines.telephony.tool_execution import (
     PLACE_CALL_TOOL_NAME,
     execute_agent_place_call_tool,
@@ -42,6 +46,8 @@ from eylo.pipelines.voice.end_call import (
 )
 from eylo.pipelines.voice.live_buffer import LiveVoiceBufferIdentity
 from eylo.sockets.llm import LLMToolUseBlock
+from eylo.sor.runtime.tools import resolve_sor_tool
+from eylo.sor.shared.contracts import SorToolEffect
 
 if TYPE_CHECKING:
     from eylo.modules.conversations.schemas.conversations import ConversationContext
@@ -138,6 +144,61 @@ class PlatformToolExecutor:
                     "error": "tool_not_available",
                 },
                 is_error=True,
+            )
+        sor_tool = (
+            resolve_sor_tool(requested_tool.slug)
+            if requested_tool.kind is ToolKind.SYSTEM
+            else None
+        )
+        if sor_tool is not None:
+            try:
+                require_tool_execution_allowed(requested_tool)
+            except (ToolExecutionBlockedError, ToolApprovalRequiredError) as error:
+                return ToolResult(
+                    tool_call_id=call.id,
+                    content={
+                        "kind": "sor_error",
+                        "error": "tool_execution_blocked",
+                    },
+                    is_error=True,
+                    metadata={
+                        "sor_execution": True,
+                        "tool_policy_error": type(error).__name__,
+                    },
+                )
+            if sor_tool[1].effect is SorToolEffect.READ:
+                outcome = await execute_sor_read_tool(
+                    tool_name=requested_tool.slug,
+                    tool_input=call.arguments,
+                    conversation_context=conversation_context,
+                )
+            else:
+                state = _durable_execution_state(context.local_context, call.id)
+                agent_run_id = _agent_run_id_from(context.local_context)
+                if state is None or agent_run_id is None:
+                    return ToolResult(
+                        tool_call_id=call.id,
+                        content={
+                            "kind": "sor_error",
+                            "error": "durable_agent_run_required",
+                        },
+                        is_error=True,
+                        metadata={"sor_execution": True},
+                    )
+                _tool_use_message_id, durable_context = state
+                outcome = await execute_sor_mutation_tool(
+                    tool_name=requested_tool.slug,
+                    tool_call_id=call.id,
+                    tool_input=call.arguments,
+                    conversation_context=conversation_context,
+                    agent_run_id=agent_run_id,
+                    durable_context=durable_context,
+                )
+            return ToolResult(
+                tool_call_id=call.id,
+                content=outcome.content,
+                is_error=outcome.is_error,
+                metadata=dict(outcome.metadata),
             )
         if (
             requested_tool.kind is ToolKind.SYSTEM

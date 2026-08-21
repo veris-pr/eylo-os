@@ -24,6 +24,7 @@ import type {
   AgentCuratedTool,
   Tool,
 } from "@/features/agents/agents.types";
+import { SorAgentSourceGrantsSection } from "@/features/sor/SorAgentSourceGrantsSection";
 
 interface AgentRelationshipsSectionProps {
   agentId: string;
@@ -211,6 +212,11 @@ const AgentRelationshipsSection = observer(function AgentRelationshipsSection({
           </div>
         )}
       </RelationshipCard>
+
+      <SorAgentSourceGrantsSection
+        agentId={agentId}
+        organizationId={organizationId}
+      />
 
       <RelationshipCard
         title="Background Agents"

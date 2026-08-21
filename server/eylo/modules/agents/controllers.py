@@ -282,7 +282,13 @@ class AgentController:
             raise HTTPException(status_code=404)
         async with start_transaction():
             try:
-                agent = await AgentService().publish_agent(
+                service = AgentService()
+                from eylo.pipelines.agents.publication import (
+                    publish_agent_definition,
+                )
+
+                agent = await publish_agent_definition(
+                    session=service.repository.db_session,
                     organization_id=organization_id,
                     agent_id=agent_id,
                     expected_draft_version=expected_draft_version,

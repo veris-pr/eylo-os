@@ -3640,6 +3640,722 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/{organization_id}/sor/knowledge/documents/{record_id}/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Knowledge Document Audit
+         * @description Return bounded document content context without widening tenant scope.
+         */
+        get: operations["get_knowledge_document_audit_api__organization_id__sor_knowledge_documents__record_id__audit_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/ticketing/issues/{record_id}/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Ticketing Issue Audit
+         * @description Return bounded comments and explicit history availability for one issue.
+         */
+        get: operations["get_ticketing_issue_audit_api__organization_id__sor_ticketing_issues__record_id__audit_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/support/tickets/{record_id}/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Support Ticket Audit
+         * @description Return bounded chronology and explicit metadata availability for a ticket.
+         */
+        get: operations["get_support_ticket_audit_api__organization_id__sor_support_tickets__record_id__audit_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/connectors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Sor Connectors
+         * @description List safe organization-owned OAuth configurations and account state.
+         */
+        get: operations["list_sor_connectors_api__organization_id__sor_connectors_get"];
+        put?: never;
+        /**
+         * Create Sor Connector
+         * @description Store one encrypted OAuth app configuration for an executable adapter.
+         */
+        post: operations["create_sor_connector_api__organization_id__sor_connectors_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/connectors/{connector_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Sor Connector
+         * @description Get one connector without returning encrypted or plaintext secrets.
+         */
+        get: operations["get_sor_connector_api__organization_id__sor_connectors__connector_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/connectors/{connector_id}/authorize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Authorize Sor Connector
+         * @description Begin consent for selected streams and the requested source access.
+         */
+        post: operations["authorize_sor_connector_api__organization_id__sor_connectors__connector_id__authorize_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Sor Catalog
+         * @description List profiles and factory-derived vendor implementation status.
+         */
+        get: operations["get_sor_catalog_api__organization_id__sor_catalog_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/oauth/configuration": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Sor Oauth Configuration
+         * @description Return the exact callback URI to register before entering credentials.
+         */
+        get: operations["get_sor_oauth_configuration_api__organization_id__sor_oauth_configuration_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Sor Sources
+         * @description List organization-owned source headers without credential material.
+         */
+        get: operations["list_sor_sources_api__organization_id__sor_sources_get"];
+        put?: never;
+        /**
+         * Create Sor Source
+         * @description Create an unusable draft only for an executable adapter and connection.
+         */
+        post: operations["create_sor_source_api__organization_id__sor_sources_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/sources/api-key": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Api Key Sor Source
+         * @description Verify a transient API key, then atomically create its source draft.
+         */
+        post: operations["create_api_key_sor_source_api__organization_id__sor_sources_api_key_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/sources/{source_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Sor Source
+         * @description Get one exact source or preserve the cross-tenant 404 boundary.
+         */
+        get: operations["get_sor_source_api__organization_id__sor_sources__source_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/sources/{source_id}/selection": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update Sor Source Selection
+         * @description Enable standard or discovered custom objects before mapping publication.
+         */
+        patch: operations["update_sor_source_selection_api__organization_id__sor_sources__source_id__selection_patch"];
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/sources/{source_id}/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Verify Sor Source
+         * @description Verify credentials and commit one complete initial schema discovery.
+         */
+        post: operations["verify_sor_source_api__organization_id__sor_sources__source_id__verify_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/sources/{source_id}/rediscover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rediscover Sor Source
+         * @description Refresh an active source schema without hiding its current projection.
+         */
+        post: operations["rediscover_sor_source_api__organization_id__sor_sources__source_id__rediscover_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/sources/{source_id}/schema": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Sor Source Schema
+         * @description Return the active immutable vendor schema used by mapping UI.
+         */
+        get: operations["get_sor_source_schema_api__organization_id__sor_sources__source_id__schema_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/sources/{source_id}/mappings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Sor Mapping
+         * @description Create one immutable draft from explicit discovered-field selections.
+         */
+        post: operations["create_sor_mapping_api__organization_id__sor_sources__source_id__mappings_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/sources/{source_id}/mappings/{mapping_revision_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Sor Mapping
+         * @description Return one exact mapping revision and its selected fields.
+         */
+        get: operations["get_sor_mapping_api__organization_id__sor_sources__source_id__mappings__mapping_revision_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/sources/{source_id}/mappings/{mapping_revision_id}/publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Publish Sor Mapping
+         * @description Publish one mapping and move its source into bootstrap state.
+         */
+        post: operations["publish_sor_mapping_api__organization_id__sor_sources__source_id__mappings__mapping_revision_id__publish_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/sources/{source_id}/activate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Activate Sor Source
+         * @description Atomically persist mapping, streams, and every bootstrap work intent.
+         */
+        post: operations["activate_sor_source_api__organization_id__sor_sources__source_id__activate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/agents/{agent_id}/source-grants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Agent Sor Source Grants
+         * @description List live source authority configured on one Agent draft.
+         */
+        get: operations["list_agent_sor_source_grants_api__organization_id__sor_agents__agent_id__source_grants_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/agents/{agent_id}/source-grants/{source_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Grant Agent Sor Source
+         * @description Create or replace one explicit Agent/source draft grant.
+         */
+        put: operations["grant_agent_sor_source_api__organization_id__sor_agents__agent_id__source_grants__source_id__put"];
+        post?: never;
+        /**
+         * Revoke Agent Sor Source
+         * @description Revoke one live grant and invalidate its published snapshots.
+         */
+        delete: operations["revoke_agent_sor_source_api__organization_id__sor_agents__agent_id__source_grants__source_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/agents/{agent_id}/view/{profile}/{entity}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Agent Sor View
+         * @description Return exactly what the Agent's current published revision may perceive.
+         */
+        get: operations["get_agent_sor_view_api__organization_id__sor_agents__agent_id__view__profile___entity__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/sources/{source_id}/webhook-endpoint": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rotate Sor Webhook Endpoint
+         * @description Rotate a source webhook secret and reveal the new endpoint once.
+         */
+        post: operations["rotate_sor_webhook_endpoint_api__organization_id__sor_sources__source_id__webhook_endpoint_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/sources/{source_id}/webhook-signing-secret": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Update Sor Webhook Signing Secret
+         * @description Rotate a source-owned vendor secret without exposing it on reads.
+         */
+        put: operations["update_sor_webhook_signing_secret_api__organization_id__sor_sources__source_id__webhook_signing_secret_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/sources/{source_id}/streams": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Sor Source Streams
+         * @description List operational streams without revealing encrypted checkpoints.
+         */
+        get: operations["list_sor_source_streams_api__organization_id__sor_sources__source_id__streams_get"];
+        put?: never;
+        /**
+         * Create Sor Source Stream
+         * @description Create one explicit vendor-object to canonical-entity stream.
+         */
+        post: operations["create_sor_source_stream_api__organization_id__sor_sources__source_id__streams_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/sources/{source_id}/streams/{stream_id}/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start Sor Stream Run
+         * @description Commit sync intent before best-effort durable spawn.
+         */
+        post: operations["start_sor_stream_run_api__organization_id__sor_sources__source_id__streams__stream_id__runs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/custom-datasets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Sor Custom Datasets
+         * @description List explicitly enabled custom objects without granting Agent access.
+         */
+        get: operations["list_sor_custom_datasets_api__organization_id__sor_custom_datasets_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/custom-datasets/{dataset_id}/records": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Sor Custom Dataset Records
+         * @description Execute the shareable basic grid query for one custom dataset.
+         */
+        get: operations["list_sor_custom_dataset_records_api__organization_id__sor_custom_datasets__dataset_id__records_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/custom-datasets/{dataset_id}/records/query": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Query Sor Custom Dataset Records
+         * @description Apply Eylo filters, grouping, sorting, and cursors to one dataset.
+         */
+        post: operations["query_sor_custom_dataset_records_api__organization_id__sor_custom_datasets__dataset_id__records_query_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/custom-datasets/{dataset_id}/grid": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Sor Custom Dataset Grid
+         * @description Return the Eylo-owned grid contract for one custom dataset.
+         */
+        get: operations["get_sor_custom_dataset_grid_api__organization_id__sor_custom_datasets__dataset_id__grid_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/custom-datasets/{dataset_id}/records/{record_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Sor Custom Dataset Record
+         * @description Return selected custom values plus source provenance for one record.
+         */
+        get: operations["get_sor_custom_dataset_record_api__organization_id__sor_custom_datasets__dataset_id__records__record_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/{profile}/{entity}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Sor Records
+         * @description Execute the shareable basic form of one canonical collection query.
+         */
+        get: operations["list_sor_records_api__organization_id__sor__profile___entity__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/{profile}/{entity}/query": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Query Sor Records
+         * @description Execute nested filters, grouping, sorting, and cursor pagination.
+         */
+        post: operations["query_sor_records_api__organization_id__sor__profile___entity__query_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/{profile}/{entity}/grid": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Sor Grid Contract
+         * @description Return Eylo field semantics for any replaceable grid renderer.
+         */
+        get: operations["get_sor_grid_contract_api__organization_id__sor__profile___entity__grid_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/{profile}/{entity}/{record_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Sor Record
+         * @description Return canonical values, custom data, relations, and provenance.
+         */
+        get: operations["get_sor_record_api__organization_id__sor__profile___entity___record_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/voice/outbound": {
         parameters: {
             query?: never;
@@ -3914,6 +4630,46 @@ export interface paths {
         put?: never;
         /** Status Callback */
         post: operations["status_callback_api_telephony_webhooks__provider__status_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sor/webhooks/{vendor_key}/{endpoint_token}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Receive Sor Webhook
+         * @description Verify raw bytes before recording a deduplicated durable receipt.
+         */
+        post: operations["receive_sor_webhook_api_sor_webhooks__vendor_key___endpoint_token__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sor/oauth/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Complete Sor Authorization
+         * @description Consume provider state and activate its exact SOR external connection.
+         */
+        get: operations["complete_sor_authorization_api_sor_oauth_callback_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -4469,7 +5225,7 @@ export interface components {
          * @description Execution/export lifecycle, separate from goal achievement.
          * @enum {string}
          */
-        AgentRunLifecycle: "queued" | "running" | "waiting_for_input" | "waiting_for_approval" | "completed" | "failed" | "cancelled";
+        AgentRunLifecycle: "queued" | "running" | "waiting_for_input" | "waiting_for_approval" | "waiting_for_tool" | "completed" | "failed" | "cancelled";
         /**
          * AgentRunOriginKind
          * @description Immutable V1 origins for an agent run.
@@ -5861,7 +6617,7 @@ export interface components {
             /** Displayname */
             displayName?: string | null;
             connectionKind: components["schemas"]["ConnectionKind"];
-            status: components["schemas"]["ConnectionStatus"];
+            status: components["schemas"]["ExternalConnectionStatus"];
             /** Contactid */
             contactId?: string | null;
             /** Credentialsexpiresat */
@@ -5872,6 +6628,12 @@ export interface components {
             updatedAt?: string | null;
             owner: components["schemas"]["ConnectionOwnerSummarySchema"];
         };
+        /**
+         * ConnectionAuthKind
+         * @description Credential protocol used by an external account.
+         * @enum {string}
+         */
+        ConnectionAuthKind: "no_auth" | "api_key" | "basic" | "oauth2";
         /**
          * ConnectionKind
          * @description ConnectionKind behavior for the "mappers" domain.
@@ -5907,7 +6669,7 @@ export interface components {
             /** Displayname */
             displayName?: string | null;
             connectionKind: components["schemas"]["ConnectionKind"];
-            status: components["schemas"]["ConnectionStatus"];
+            status: components["schemas"]["ExternalConnectionStatus"];
             /** Contactid */
             contactId?: string | null;
             /** Credentialsexpiresat */
@@ -5917,12 +6679,6 @@ export interface components {
             /** Updatedat */
             updatedAt?: string | null;
         };
-        /**
-         * ConnectionStatus
-         * @description ConnectionStatus behavior for the "connections" domain.
-         * @enum {string}
-         */
-        ConnectionStatus: "INITIATED" | "ACTIVE" | "INACTIVE" | "FAILED" | "REVOKED";
         /** ContactApiResponseSchema */
         ContactApiResponseSchema: {
             /**
@@ -6890,6 +7646,12 @@ export interface components {
          * @enum {string}
          */
         ExecutionBudgetDimension: "concurrency" | "tokens" | "active_time" | "cost";
+        /**
+         * ExternalConnectionStatus
+         * @description Lifecycle state of a source-neutral external account connection.
+         * @enum {string}
+         */
+        ExternalConnectionStatus: "INITIATED" | "ACTIVE" | "DEGRADED" | "REAUTH_REQUIRED" | "REVOKED";
         /** FallbackChainsConfig */
         FallbackChainsConfig: {
             /**
@@ -7306,11 +8068,173 @@ export interface components {
          */
         KnowledgeAccess: "read" | "read_write";
         /**
+         * KnowledgeAuditAvailability
+         * @description Why one optional Documents audit surface is or is not populated.
+         * @enum {string}
+         */
+        KnowledgeAuditAvailability: "AVAILABLE" | "NOT_SELECTED" | "UNSUPPORTED";
+        /**
          * KnowledgeChunkingStrategy
          * @description Stable strategy names shared by config validation and chunking adapters.
          * @enum {string}
          */
         KnowledgeChunkingStrategy: "fixed" | "markdown" | "paragraph";
+        /** KnowledgeDocumentAttachmentResponse */
+        KnowledgeDocumentAttachmentResponse: {
+            /**
+             * Record Id
+             * Format: uuid
+             */
+            record_id: string;
+            /** External Id */
+            external_id: string;
+            /** Name */
+            name: string;
+            /** Media Type */
+            media_type: string | null;
+            /** Size Bytes */
+            size_bytes: number | null;
+            /** Source Url */
+            source_url: string | null;
+            /** Source Url Expires At */
+            source_url_expires_at: string | null;
+        };
+        /** KnowledgeDocumentAuditResponse */
+        KnowledgeDocumentAuditResponse: {
+            blocks_status: components["schemas"]["KnowledgeAuditAvailability"];
+            /** Blocks Truncated */
+            blocks_truncated: boolean;
+            /** Blocks */
+            blocks: components["schemas"]["KnowledgeDocumentBlockResponse"][];
+            versions_status: components["schemas"]["KnowledgeAuditAvailability"];
+            /** Versions Truncated */
+            versions_truncated: boolean;
+            /** Versions */
+            versions: components["schemas"]["KnowledgeDocumentVersionResponse"][];
+            properties_status: components["schemas"]["KnowledgeAuditAvailability"];
+            /** Properties Truncated */
+            properties_truncated: boolean;
+            /** Properties */
+            properties: components["schemas"]["KnowledgeDocumentPropertyResponse"][];
+            attachments_status: components["schemas"]["KnowledgeAuditAvailability"];
+            /** Attachments Truncated */
+            attachments_truncated: boolean;
+            /** Attachments */
+            attachments: components["schemas"]["KnowledgeDocumentAttachmentResponse"][];
+            space_status: components["schemas"]["KnowledgeAuditAvailability"];
+            space: components["schemas"]["KnowledgeDocumentSpaceResponse"] | null;
+            author_status: components["schemas"]["KnowledgeAuditAvailability"];
+            author: components["schemas"]["KnowledgeDocumentAuthorResponse"] | null;
+        };
+        /** KnowledgeDocumentAuthorResponse */
+        KnowledgeDocumentAuthorResponse: {
+            /**
+             * Record Id
+             * Format: uuid
+             */
+            record_id: string;
+            /** External Id */
+            external_id: string;
+            /** Name */
+            name: string;
+            /** Primary Email */
+            primary_email: string | null;
+            /** Kind */
+            kind: string | null;
+            /** Avatar Url */
+            avatar_url: string | null;
+        };
+        /** KnowledgeDocumentBlockResponse */
+        KnowledgeDocumentBlockResponse: {
+            /**
+             * Record Id
+             * Format: uuid
+             */
+            record_id: string;
+            /** External Id */
+            external_id: string;
+            /** Parent External Id */
+            parent_external_id: string | null;
+            /** Kind */
+            kind: string;
+            /** Position */
+            position: number;
+            /** Text */
+            text: string | null;
+            /** Text Truncated */
+            text_truncated: boolean;
+            /** Supported */
+            supported: boolean;
+            /** Created At */
+            created_at: string | null;
+            /** Updated At */
+            updated_at: string | null;
+        };
+        /** KnowledgeDocumentPropertyResponse */
+        KnowledgeDocumentPropertyResponse: {
+            /**
+             * Record Id
+             * Format: uuid
+             */
+            record_id: string;
+            /** External Id */
+            external_id: string;
+            /** Key */
+            key: string;
+            /** Label */
+            label: string;
+            /** Value Type */
+            value_type: string;
+            /** Value Preview */
+            value_preview: string;
+            /** Value Truncated */
+            value_truncated: boolean;
+            /** Updated At */
+            updated_at: string | null;
+        };
+        /** KnowledgeDocumentSpaceResponse */
+        KnowledgeDocumentSpaceResponse: {
+            /**
+             * Record Id
+             * Format: uuid
+             */
+            record_id: string;
+            /** External Id */
+            external_id: string;
+            /** Name */
+            name: string;
+            /** Kind */
+            kind: string;
+            /** Source Url */
+            source_url: string | null;
+        };
+        /** KnowledgeDocumentVersionResponse */
+        KnowledgeDocumentVersionResponse: {
+            /**
+             * Record Id
+             * Format: uuid
+             */
+            record_id: string;
+            /** External Id */
+            external_id: string;
+            /** Number */
+            number: string;
+            /** Author External Id */
+            author_external_id: string | null;
+            /** Message */
+            message: string | null;
+            /** Message Truncated */
+            message_truncated: boolean;
+            /** Source Format */
+            source_format: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Source Url */
+            source_url: string | null;
+        };
         /** KnowledgeEmbeddingSpaceRead */
         KnowledgeEmbeddingSpaceRead: {
             /**
@@ -9716,6 +10640,1585 @@ export interface components {
              */
             end_call_after_silence_ms: number;
         };
+        /** SorAdapterCapabilityResponse */
+        SorAdapterCapabilityResponse: {
+            /** Auth Kinds */
+            auth_kinds: components["schemas"]["ConnectionAuthKind"][];
+            /** Streams */
+            streams: components["schemas"]["SorVendorStreamResponse"][];
+            /** Readable Entities */
+            readable_entities: string[];
+            /**
+             * Writable Entities
+             * @default []
+             */
+            writable_entities: string[];
+            /** Readable Tools */
+            readable_tools: string[];
+            /**
+             * Writable Tools
+             * @default []
+             */
+            writable_tools: string[];
+            /** Change Strategies */
+            change_strategies: components["schemas"]["SorChangeStrategy"][];
+            /**
+             * Configuration Fields
+             * @default []
+             */
+            configuration_fields: components["schemas"]["SorAdapterConfigurationFieldResponse"][];
+            /** Required Scopes */
+            required_scopes?: {
+                [key: string]: string[];
+            };
+            /**
+             * Custom Object Required Scopes
+             * @default []
+             */
+            custom_object_required_scopes: string[];
+            /**
+             * Custom Object Change Strategies
+             * @default []
+             */
+            custom_object_change_strategies: components["schemas"]["SorChangeStrategy"][];
+            /** Tool Required Scopes */
+            tool_required_scopes?: {
+                [key: string]: string[];
+            };
+            /** Fixed Origin */
+            fixed_origin?: string | null;
+            /**
+             * Requires Instance Origin
+             * @default false
+             */
+            requires_instance_origin: boolean;
+            /**
+             * Requires Instance Origin Input
+             * @default false
+             */
+            requires_instance_origin_input: boolean;
+            /**
+             * Instance Origin Options
+             * @default []
+             */
+            instance_origin_options: components["schemas"]["SorInstanceOriginOptionResponse"][];
+            /**
+             * Supports Webhooks
+             * @default false
+             */
+            supports_webhooks: boolean;
+            /**
+             * Supports Deletions
+             * @default false
+             */
+            supports_deletions: boolean;
+            /**
+             * Supports Custom Fields
+             * @default false
+             */
+            supports_custom_fields: boolean;
+            /**
+             * Supports Custom Objects
+             * @default false
+             */
+            supports_custom_objects: boolean;
+            /**
+             * Supports Conditional Writes
+             * @default false
+             */
+            supports_conditional_writes: boolean;
+            /**
+             * Supports History
+             * @default false
+             */
+            supports_history: boolean;
+            /**
+             * Supports Comments
+             * @default false
+             */
+            supports_comments: boolean;
+            /**
+             * Supports Attachments
+             * @default false
+             */
+            supports_attachments: boolean;
+            /**
+             * Supports Structured Documents
+             * @default false
+             */
+            supports_structured_documents: boolean;
+        };
+        /** SorAdapterConfigurationFieldResponse */
+        SorAdapterConfigurationFieldResponse: {
+            /** Key */
+            key: string;
+            /** Label */
+            label: string;
+            /** Description */
+            description: string;
+            kind: components["schemas"]["SorConfigurationFieldKind"];
+            /** Required */
+            required: boolean;
+            /** Placeholder */
+            placeholder: string | null;
+            /** Minimum Items */
+            minimum_items: number;
+            /** Maximum Items */
+            maximum_items: number;
+        };
+        /**
+         * SorAgentRecordResponse
+         * @description Agent-safe record projection with provenance and no hidden source payload.
+         */
+        SorAgentRecordResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Source Id
+             * Format: uuid
+             */
+            source_id: string;
+            /** Source Name */
+            source_name: string;
+            /** Vendor Key */
+            vendor_key: string;
+            profile: components["schemas"]["SorProfile"];
+            /** Entity */
+            entity: string;
+            /** Human External Key */
+            human_external_key: string | null;
+            /** Values */
+            values: {
+                [key: string]: components["schemas"]["JsonValue"];
+            };
+            /** Source Url */
+            source_url: string | null;
+            /** Source Updated At */
+            source_updated_at: string | null;
+            /** Source Revision */
+            source_revision: string | null;
+            /**
+             * Mapping Revision Id
+             * Format: uuid
+             */
+            mapping_revision_id: string;
+            /**
+             * Projected At
+             * Format: date-time
+             */
+            projected_at: string;
+            freshness: components["schemas"]["SorFreshnessResponse"];
+            /**
+             * Relations
+             * @default []
+             */
+            relations: components["schemas"]["SorRecordRelationResponse"][];
+        };
+        /**
+         * SorAgentRelatedAvailability
+         * @description Why a tool's declared related entity is or is not available.
+         * @enum {string}
+         */
+        SorAgentRelatedAvailability: "AVAILABLE" | "NOT_SELECTED" | "NOT_MAPPED";
+        /**
+         * SorAgentRelatedCollectionResponse
+         * @description Bounded related records tied to one exact primary Agent-visible record.
+         */
+        SorAgentRelatedCollectionResponse: {
+            /**
+             * Parent Record Id
+             * Format: uuid
+             */
+            parent_record_id: string;
+            /** Entity */
+            entity: string;
+            availability: components["schemas"]["SorAgentRelatedAvailability"];
+            /** Fields */
+            fields: components["schemas"]["SorAgentVisibleFieldResponse"][];
+            /** Items */
+            items: components["schemas"]["SorAgentRecordResponse"][];
+            /** Truncated */
+            truncated: boolean;
+        };
+        /**
+         * SorAgentViewResponse
+         * @description What one exact Agent revision can perceive for one canonical entity.
+         */
+        SorAgentViewResponse: {
+            /**
+             * Agent Id
+             * Format: uuid
+             */
+            agent_id: string;
+            /** Agent Revision */
+            agent_revision: number;
+            profile: components["schemas"]["SorProfile"];
+            /** Entity */
+            entity: string;
+            /** Authorized Tools */
+            authorized_tools: string[];
+            /** Fields */
+            fields: components["schemas"]["SorAgentVisibleFieldResponse"][];
+            /** Items */
+            items: components["schemas"]["SorAgentRecordResponse"][];
+            /**
+             * Related
+             * @default []
+             */
+            related: components["schemas"]["SorAgentRelatedCollectionResponse"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+            /** Has More */
+            has_more: boolean;
+        };
+        /**
+         * SorAgentVisibleFieldResponse
+         * @description One source field the exact published Agent revision may perceive.
+         */
+        SorAgentVisibleFieldResponse: {
+            /**
+             * Source Id
+             * Format: uuid
+             */
+            source_id: string;
+            /** Key */
+            key: string;
+            /** Label */
+            label: string;
+            /** Data Type */
+            data_type: string;
+            /** Custom */
+            custom: boolean;
+            /** Writable */
+            writable: boolean;
+            sensitivity: components["schemas"]["SorSensitivity"];
+        };
+        /**
+         * SorApiKeySourceCreateRequest
+         * @description Create one source whose org connection uses a transient API key.
+         */
+        SorApiKeySourceCreateRequest: {
+            /** Name */
+            name: string;
+            profile: components["schemas"]["SorProfile"];
+            /** Vendor Key */
+            vendor_key: string;
+            /** Api Key */
+            api_key: string;
+            /** Instance Origin */
+            instance_origin?: string | null;
+            /** Configuration */
+            configuration?: {
+                [key: string]: unknown;
+            };
+            /** Selected Objects */
+            selected_objects: string[];
+            /**
+             * Freshness Target Seconds
+             * @default 900
+             */
+            freshness_target_seconds: number;
+            /**
+             * Required Sync Interval Seconds
+             * @default 900
+             */
+            required_sync_interval_seconds: number;
+        };
+        /** SorAuthorizationRedirectResponse */
+        SorAuthorizationRedirectResponse: {
+            /** Authorization Url */
+            authorization_url: string;
+            /** Callback Url */
+            callback_url: string;
+            /** Callback Origin */
+            callback_origin: string;
+        };
+        /** SorCanonicalFieldCatalogResponse */
+        SorCanonicalFieldCatalogResponse: {
+            /** Key */
+            key: string;
+            /** Label */
+            label: string;
+            /** Description */
+            description: string;
+            /** Data Type */
+            data_type: string;
+            /** Writable */
+            writable: boolean;
+            /** Required */
+            required: boolean;
+        };
+        /** SorCatalogResponse */
+        SorCatalogResponse: {
+            /** Profiles */
+            profiles: components["schemas"]["SorProfileCatalogResponse"][];
+        };
+        /**
+         * SorChangeStrategy
+         * @description How an adapter advances one selected stream.
+         * @enum {string}
+         */
+        SorChangeStrategy: "DELTA" | "CURSOR" | "UPDATED_AT" | "FULL_RECONCILE";
+        /** SorCollectionPageResponse */
+        SorCollectionPageResponse: {
+            query: components["schemas"]["SorCollectionQuery-Output"];
+            grid: components["schemas"]["SorGridContract"];
+            /** Items */
+            items: components["schemas"]["SorCollectionRowResponse"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+            /** Has More */
+            has_more: boolean;
+        };
+        /**
+         * SorCollectionQuery
+         * @description Renderer-independent server query for any canonical SOR collection.
+         */
+        "SorCollectionQuery-Input": {
+            /**
+             * Source Ids
+             * @default []
+             */
+            source_ids: string[];
+            /**
+             * Search
+             * @default
+             */
+            search: string;
+            filters?: components["schemas"]["SorFilterGroup-Input"];
+            /**
+             * Sort
+             * @default []
+             */
+            sort: components["schemas"]["SorSortTerm"][];
+            /**
+             * Group
+             * @default []
+             */
+            group: components["schemas"]["SorGroupTerm"][];
+            /**
+             * Columns
+             * @default []
+             */
+            columns: string[];
+            /** Cursor */
+            cursor?: string | null;
+            /**
+             * Limit
+             * @default 50
+             */
+            limit: number;
+        };
+        /**
+         * SorCollectionQuery
+         * @description Renderer-independent server query for any canonical SOR collection.
+         */
+        "SorCollectionQuery-Output": {
+            /**
+             * Source Ids
+             * @default []
+             */
+            source_ids: string[];
+            /**
+             * Search
+             * @default
+             */
+            search: string;
+            filters?: components["schemas"]["SorFilterGroup-Output"];
+            /**
+             * Sort
+             * @default []
+             */
+            sort: components["schemas"]["SorSortTerm"][];
+            /**
+             * Group
+             * @default []
+             */
+            group: components["schemas"]["SorGroupTerm"][];
+            /**
+             * Columns
+             * @default []
+             */
+            columns: string[];
+            /** Cursor */
+            cursor?: string | null;
+            /**
+             * Limit
+             * @default 50
+             */
+            limit: number;
+        };
+        /** SorCollectionRowResponse */
+        SorCollectionRowResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Source Id
+             * Format: uuid
+             */
+            source_id: string;
+            /** Source Name */
+            source_name: string;
+            /** Vendor Key */
+            vendor_key: string;
+            profile: components["schemas"]["SorProfile"];
+            /** Entity */
+            entity: string;
+            /** Human External Key */
+            human_external_key: string | null;
+            /** Values */
+            values: {
+                [key: string]: components["schemas"]["JsonValue"];
+            };
+            /** Custom Fields */
+            custom_fields: components["schemas"]["SorCustomFieldValueResponse"][];
+            /** Source Url */
+            source_url: string | null;
+            /** Source Created At */
+            source_created_at: string | null;
+            /** Source Updated At */
+            source_updated_at: string | null;
+            /**
+             * Projected At
+             * Format: date-time
+             */
+            projected_at: string;
+            freshness: components["schemas"]["SorFreshnessResponse"];
+        };
+        /**
+         * SorConfigurationFieldKind
+         * @description Input shape for one non-secret, adapter-owned source setting.
+         * @enum {string}
+         */
+        SorConfigurationFieldKind: "STRING_LIST";
+        /** SorConnectionVerificationResponse */
+        SorConnectionVerificationResponse: {
+            /** Account External Id */
+            account_external_id: string | null;
+            /** Account Display Name */
+            account_display_name: string | null;
+            /** Granted Scopes */
+            granted_scopes: string[];
+            /** Vendor Api Version */
+            vendor_api_version: string | null;
+        };
+        /** SorConnectorAuthorizationRequest */
+        SorConnectorAuthorizationRequest: {
+            /** Selected Objects */
+            selected_objects: string[];
+            access: components["schemas"]["SorSourceAccess"];
+            /** Instance Origin */
+            instance_origin?: string | null;
+        };
+        /** SorConnectorConnectionResponse */
+        SorConnectorConnectionResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            status: components["schemas"]["ExternalConnectionStatus"];
+            /** Instance Origin */
+            instance_origin: string | null;
+            /** Granted Scopes */
+            granted_scopes: string[];
+            /** Credentials Expires At */
+            credentials_expires_at: string | null;
+            /** Revision */
+            revision: number;
+        };
+        /**
+         * SorConnectorCreateRequest
+         * @description Configure one organization-owned OAuth application for a SOR vendor.
+         */
+        SorConnectorCreateRequest: {
+            /** Name */
+            name: string;
+            profile: components["schemas"]["SorProfile"];
+            /** Vendor Key */
+            vendor_key: string;
+            auth_kind: components["schemas"]["ConnectionAuthKind"];
+            /** Oauth Client Id */
+            oauth_client_id: string;
+            /** Oauth Client Secret */
+            oauth_client_secret: string;
+        };
+        /** SorConnectorListResponse */
+        SorConnectorListResponse: {
+            /** Items */
+            items: components["schemas"]["SorConnectorResponse"][];
+        };
+        /** SorConnectorResponse */
+        SorConnectorResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Organization Id
+             * Format: uuid
+             */
+            organization_id: string;
+            /** Name */
+            name: string;
+            profile: components["schemas"]["SorProfile"];
+            /** Vendor Key */
+            vendor_key: string;
+            auth_kind: components["schemas"]["ConnectionAuthKind"];
+            /** Oauth Client Id */
+            oauth_client_id: string;
+            /** Oauth Callback Url */
+            oauth_callback_url: string;
+            /** Has Oauth Client Secret */
+            has_oauth_client_secret: boolean;
+            /** Config Revision */
+            config_revision: number;
+            /**
+             * Configured By
+             * Format: uuid
+             */
+            configured_by: string;
+            connection: components["schemas"]["SorConnectorConnectionResponse"] | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** SorCustomDatasetListResponse */
+        SorCustomDatasetListResponse: {
+            /** Items */
+            items: components["schemas"]["SorCustomDatasetResponse"][];
+        };
+        /**
+         * SorCustomDatasetResponse
+         * @description One audit-only custom object and its source identity.
+         */
+        SorCustomDatasetResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Source Id
+             * Format: uuid
+             */
+            source_id: string;
+            /** Source Name */
+            source_name: string;
+            profile: components["schemas"]["SorProfile"];
+            /** Vendor Key */
+            vendor_key: string;
+            /** Vendor Object Key */
+            vendor_object_key: string;
+            /** Label */
+            label: string;
+            /** Description */
+            description: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * SorCustomFieldType
+         * @description Queryable storage type for one source-defined field.
+         * @enum {string}
+         */
+        SorCustomFieldType: "TEXT" | "DECIMAL" | "BOOLEAN" | "DATE" | "TIMESTAMP" | "STRING_ARRAY" | "REFERENCE" | "BOUNDED_JSON";
+        /** SorCustomFieldValueResponse */
+        SorCustomFieldValueResponse: {
+            /** Key */
+            key: string;
+            /** Label */
+            label: string;
+            data_type: components["schemas"]["SorCustomFieldType"];
+            value: components["schemas"]["JsonValue"];
+            sensitivity: components["schemas"]["SorSensitivity"];
+            /** Agent Visible */
+            agent_visible: boolean;
+            /** Writable */
+            writable: boolean;
+        };
+        /** SorDiscoveredFieldResponse */
+        SorDiscoveredFieldResponse: {
+            /** Key */
+            key: string;
+            /** Label */
+            label: string;
+            /** Data Type */
+            data_type: string;
+            /** Nullable */
+            nullable: boolean;
+            /** Writable */
+            writable: boolean;
+            /**
+             * Choices
+             * @default []
+             */
+            choices: string[];
+            /** Description */
+            description?: string | null;
+            /** Group */
+            group?: string | null;
+        };
+        /** SorDiscoveredObjectResponse */
+        SorDiscoveredObjectResponse: {
+            /** Key */
+            key: string;
+            /** Label */
+            label: string;
+            /**
+             * Custom
+             * @default false
+             */
+            custom: boolean;
+            /** Fields */
+            fields: components["schemas"]["SorDiscoveredFieldResponse"][];
+        };
+        /** SorDiscoveryResponse */
+        SorDiscoveryResponse: {
+            verification: components["schemas"]["SorConnectionVerificationResponse"];
+            schema_revision: components["schemas"]["SorSchemaRevisionResponse"];
+            difference: components["schemas"]["SorSchemaDifferenceResponse"];
+        };
+        /** SorEntityCatalogResponse */
+        SorEntityCatalogResponse: {
+            /** Key */
+            key: string;
+            /** Label */
+            label: string;
+            /** Description */
+            description: string;
+            /**
+             * Fields
+             * @default []
+             */
+            fields: components["schemas"]["SorCanonicalFieldCatalogResponse"][];
+        };
+        /**
+         * SorFieldMappingDirection
+         * @description Permitted flow for one discovered source field.
+         * @enum {string}
+         */
+        SorFieldMappingDirection: "READ_ONLY" | "READ_WRITE" | "IGNORE";
+        /** SorFieldMappingDraftRequest */
+        SorFieldMappingDraftRequest: {
+            /** Vendor Object Key */
+            vendor_object_key: string;
+            /** Vendor Field Key */
+            vendor_field_key: string;
+            /** Canonical Target Path */
+            canonical_target_path?: string | null;
+            custom_type?: components["schemas"]["SorCustomFieldType"] | null;
+            /** @default DIRECT */
+            transform_kind: components["schemas"]["SorTransformKind"];
+            /** Transform Config */
+            transform_config?: {
+                [key: string]: unknown;
+            };
+            /** @default READ_ONLY */
+            direction: components["schemas"]["SorFieldMappingDirection"];
+            /**
+             * Agent Visible
+             * @default false
+             */
+            agent_visible: boolean;
+            /**
+             * Ui Default Column
+             * @default false
+             */
+            ui_default_column: boolean;
+            /** @default STANDARD */
+            sensitivity: components["schemas"]["SorSensitivity"];
+        };
+        /** SorFieldMappingResponse */
+        SorFieldMappingResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Vendor Object Key */
+            vendor_object_key: string;
+            /** Vendor Field Key */
+            vendor_field_key: string;
+            /** Source Label */
+            source_label: string;
+            /** Source Data Type */
+            source_data_type: string;
+            /** Canonical Target Path */
+            canonical_target_path: string | null;
+            /** Custom Field Definition Id */
+            custom_field_definition_id: string | null;
+            transform_kind: components["schemas"]["SorTransformKind"];
+            /** Transform Config */
+            transform_config: {
+                [key: string]: unknown;
+            };
+            direction: components["schemas"]["SorFieldMappingDirection"];
+            /** Agent Visible */
+            agent_visible: boolean;
+            /** Ui Default Column */
+            ui_default_column: boolean;
+            /** Nullable */
+            nullable: boolean;
+            /** Enum Choices */
+            enum_choices: string[];
+            sensitivity: components["schemas"]["SorSensitivity"];
+            /** Writable Capability */
+            writable_capability: boolean;
+            state: components["schemas"]["SorFieldMappingState"];
+            /** Incompatibility Reason */
+            incompatibility_reason: string | null;
+        };
+        /**
+         * SorFieldMappingState
+         * @description Compatibility of one field mapping with its source schema.
+         * @enum {string}
+         */
+        SorFieldMappingState: "ACTIVE" | "INCOMPATIBLE";
+        /**
+         * SorFilterCondition
+         * @description One typed predicate whose field is resolved by an entity contract.
+         */
+        SorFilterCondition: {
+            /**
+             * Type
+             * @default condition
+             * @constant
+             */
+            type: "condition";
+            /** Field */
+            field: string;
+            operator: components["schemas"]["SorFilterOperator"];
+            /** Values */
+            values: (string | number | boolean | null)[];
+        };
+        /**
+         * SorFilterGroup
+         * @description Recursive AND/OR expression; the empty root means no filtering.
+         */
+        "SorFilterGroup-Input": {
+            /**
+             * Type
+             * @default group
+             * @constant
+             */
+            type: "group";
+            /** @default and */
+            op: components["schemas"]["SorFilterGroupOperator"];
+            /**
+             * Children
+             * @default []
+             */
+            children: (components["schemas"]["SorFilterCondition"] | components["schemas"]["SorFilterGroup-Input"])[];
+        };
+        /**
+         * SorFilterGroup
+         * @description Recursive AND/OR expression; the empty root means no filtering.
+         */
+        "SorFilterGroup-Output": {
+            /**
+             * Type
+             * @default group
+             * @constant
+             */
+            type: "group";
+            /** @default and */
+            op: components["schemas"]["SorFilterGroupOperator"];
+            /**
+             * Children
+             * @default []
+             */
+            children: (components["schemas"]["SorFilterCondition"] | components["schemas"]["SorFilterGroup-Output"])[];
+        };
+        /**
+         * SorFilterGroupOperator
+         * @enum {string}
+         */
+        SorFilterGroupOperator: "and" | "or";
+        /**
+         * SorFilterOperator
+         * @enum {string}
+         */
+        SorFilterOperator: "is" | "is_not" | "is_any_of" | "includes_any" | "includes_all" | "includes_none" | "before" | "after";
+        /** SorFreshnessResponse */
+        SorFreshnessResponse: {
+            /**
+             * As Of
+             * Format: date-time
+             */
+            as_of: string;
+            /** Target Seconds */
+            target_seconds: number;
+            /** Stale */
+            stale: boolean;
+        };
+        /**
+         * SorGridColumn
+         * @description Product column semantics consumed by any replaceable grid renderer.
+         */
+        SorGridColumn: {
+            /** Key */
+            key: string;
+            /** Label */
+            label: string;
+            kind: components["schemas"]["SorGridColumnKind"];
+            importance: components["schemas"]["SorGridColumnImportance"];
+            /**
+             * Default Visible
+             * @default true
+             */
+            default_visible: boolean;
+            /**
+             * Filterable
+             * @default true
+             */
+            filterable: boolean;
+            /**
+             * Sortable
+             * @default true
+             */
+            sortable: boolean;
+            /**
+             * Groupable
+             * @default false
+             */
+            groupable: boolean;
+            /**
+             * Wraps
+             * @default false
+             */
+            wraps: boolean;
+            /**
+             * Custom
+             * @default false
+             */
+            custom: boolean;
+        };
+        /**
+         * SorGridColumnImportance
+         * @enum {string}
+         */
+        SorGridColumnImportance: "PRIMARY" | "SECONDARY" | "METADATA";
+        /**
+         * SorGridColumnKind
+         * @enum {string}
+         */
+        SorGridColumnKind: "TEXT" | "LONG_TEXT" | "ENUM" | "NUMBER" | "BOOLEAN" | "DATE" | "DATETIME" | "REFERENCE" | "LINK" | "STRING_ARRAY";
+        /**
+         * SorGridContract
+         * @description Versioned Eylo contract; a grid package may only render this model.
+         */
+        SorGridContract: {
+            /**
+             * Version
+             * @default sor-grid-v1
+             * @constant
+             */
+            version: "sor-grid-v1";
+            profile: components["schemas"]["SorProfile"];
+            /** Entity */
+            entity: string;
+            /** Columns */
+            columns: components["schemas"]["SorGridColumn"][];
+            /**
+             * Row Actions
+             * @default [
+             *       "VIEW"
+             *     ]
+             */
+            row_actions: components["schemas"]["SorGridRowAction"][];
+        };
+        /**
+         * SorGridRowAction
+         * @enum {string}
+         */
+        SorGridRowAction: "VIEW";
+        /** SorGroupTerm */
+        SorGroupTerm: {
+            /** Field */
+            field: string;
+            /** @default asc */
+            direction: components["schemas"]["SorSortDirection"];
+        };
+        /**
+         * SorImplementationStatus
+         * @description Catalog status derived from whether an executable factory exists.
+         * @enum {string}
+         */
+        SorImplementationStatus: "PLANNED" | "AVAILABLE";
+        /**
+         * SorInstanceOriginOptionResponse
+         * @description One operator-selectable provider data region.
+         */
+        SorInstanceOriginOptionResponse: {
+            /** Value */
+            value: string;
+            /** Label */
+            label: string;
+        };
+        /** SorMappingDraftRequest */
+        SorMappingDraftRequest: {
+            /** Fields */
+            fields: components["schemas"]["SorFieldMappingDraftRequest"][];
+            /**
+             * Projection Version
+             * @default 1
+             */
+            projection_version: number;
+        };
+        /** SorMappingRevisionResponse */
+        SorMappingRevisionResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Source Id
+             * Format: uuid
+             */
+            source_id: string;
+            /** Revision */
+            revision: number;
+            /**
+             * Source Schema Revision Id
+             * Format: uuid
+             */
+            source_schema_revision_id: string;
+            state: components["schemas"]["SorMappingState"];
+            /** Projection Version */
+            projection_version: number;
+            /** Created By */
+            created_by: string | null;
+            /** Published By */
+            published_by: string | null;
+            /** Published At */
+            published_at: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Fields */
+            fields: components["schemas"]["SorFieldMappingResponse"][];
+        };
+        /**
+         * SorMappingState
+         * @description Lifecycle of one immutable mapping revision.
+         * @enum {string}
+         */
+        SorMappingState: "DRAFT" | "ACTIVE" | "STALE" | "INVALID" | "SUPERSEDED";
+        /**
+         * SorNullPlacement
+         * @enum {string}
+         */
+        SorNullPlacement: "first" | "last";
+        /**
+         * SorOAuthConfigurationResponse
+         * @description Public operator input required before creating a vendor OAuth app.
+         */
+        SorOAuthConfigurationResponse: {
+            /** Callback Url */
+            callback_url: string;
+        };
+        /**
+         * SorProfile
+         * @description Stable domain namespaces exposed by the SOR product.
+         * @enum {string}
+         */
+        SorProfile: "crm" | "ticketing" | "support" | "knowledge";
+        /** SorProfileCatalogResponse */
+        SorProfileCatalogResponse: {
+            profile: components["schemas"]["SorProfile"];
+            /** Label */
+            label: string;
+            /** Description */
+            description: string;
+            /** Entities */
+            entities: components["schemas"]["SorEntityCatalogResponse"][];
+            /** Tools */
+            tools: components["schemas"]["SorToolCatalogResponse"][];
+            /** Vendors */
+            vendors: components["schemas"]["SorVendorCatalogResponse"][];
+        };
+        /** SorRecordDetailResponse */
+        SorRecordDetailResponse: {
+            record: components["schemas"]["SorCollectionRowResponse"];
+            /** Selected Source Payload */
+            selected_source_payload: {
+                [key: string]: components["schemas"]["JsonValue"];
+            };
+            /** Source Revision */
+            source_revision: string | null;
+            /**
+             * Mapping Revision Id
+             * Format: uuid
+             */
+            mapping_revision_id: string;
+            /** Mapping Projection Version */
+            mapping_projection_version: number;
+            /** Relations */
+            relations: components["schemas"]["SorRecordRelationResponse"][];
+        };
+        /** SorRecordRelationResponse */
+        SorRecordRelationResponse: {
+            /** Kind */
+            kind: string;
+            /** Native Kind */
+            native_kind: string;
+            /** Direction */
+            direction: string;
+            /**
+             * Record Id
+             * Format: uuid
+             */
+            record_id: string;
+            /** Record Entity */
+            record_entity: string;
+            /** Record Key */
+            record_key: string | null;
+            /** Source Url */
+            source_url: string | null;
+        };
+        /** SorSchemaDifferenceResponse */
+        SorSchemaDifferenceResponse: {
+            /**
+             * Added
+             * @default []
+             */
+            added: string[];
+            /**
+             * Removed
+             * @default []
+             */
+            removed: string[];
+            /**
+             * Renamed
+             * @default []
+             */
+            renamed: string[];
+            /**
+             * Type Changed
+             * @default []
+             */
+            type_changed: string[];
+        };
+        /** SorSchemaRevisionResponse */
+        SorSchemaRevisionResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Source Id
+             * Format: uuid
+             */
+            source_id: string;
+            /** Revision */
+            revision: number;
+            /** Schema Hash */
+            schema_hash: string;
+            /** Objects */
+            objects: components["schemas"]["SorDiscoveredObjectResponse"][];
+            /** Vendor Api Version */
+            vendor_api_version: string | null;
+            /**
+             * Discovered At
+             * Format: date-time
+             */
+            discovered_at: string;
+        };
+        /**
+         * SorSensitivity
+         * @description Operator-selected handling label for projected source data.
+         * @enum {string}
+         */
+        SorSensitivity: "STANDARD" | "PERSONAL" | "SENSITIVE";
+        /**
+         * SorSortDirection
+         * @enum {string}
+         */
+        SorSortDirection: "asc" | "desc";
+        /** SorSortTerm */
+        SorSortTerm: {
+            /** Field */
+            field: string;
+            /** @default asc */
+            direction: components["schemas"]["SorSortDirection"];
+            /** @default last */
+            nulls: components["schemas"]["SorNullPlacement"];
+        };
+        /**
+         * SorSourceAccess
+         * @description Maximum source authority granted to one Agent.
+         * @enum {string}
+         */
+        SorSourceAccess: "READ" | "READ_WRITE";
+        /** SorSourceActivationRequest */
+        SorSourceActivationRequest: {
+            mapping: components["schemas"]["SorMappingDraftRequest"];
+            /** Streams */
+            streams: components["schemas"]["SorStreamCreateRequest"][];
+        };
+        /** SorSourceActivationResponse */
+        SorSourceActivationResponse: {
+            source: components["schemas"]["SorSourceResponse"];
+            mapping: components["schemas"]["SorMappingRevisionResponse"];
+            /** Streams */
+            streams: components["schemas"]["SorStreamResponse"][];
+            /** Runs */
+            runs: components["schemas"]["SorSyncRunResponse"][];
+        };
+        /** SorSourceCreateRequest */
+        SorSourceCreateRequest: {
+            /** Name */
+            name: string;
+            profile: components["schemas"]["SorProfile"];
+            /** Vendor Key */
+            vendor_key: string;
+            /**
+             * External Connection Id
+             * Format: uuid
+             */
+            external_connection_id: string;
+            /** Configuration */
+            configuration?: {
+                [key: string]: unknown;
+            };
+            /** Selected Objects */
+            selected_objects: string[];
+            /**
+             * Freshness Target Seconds
+             * @default 900
+             */
+            freshness_target_seconds: number;
+            /**
+             * Required Sync Interval Seconds
+             * @default 900
+             */
+            required_sync_interval_seconds: number;
+        };
+        /** SorSourceGrantListResponse */
+        SorSourceGrantListResponse: {
+            /** Items */
+            items: components["schemas"]["SorSourceGrantResponse"][];
+        };
+        /**
+         * SorSourceGrantRequest
+         * @description Create or replace one Agent draft's source authority.
+         */
+        SorSourceGrantRequest: {
+            access: components["schemas"]["SorSourceAccess"];
+            /** Expected Draft Version */
+            expected_draft_version: number;
+        };
+        /**
+         * SorSourceGrantResponse
+         * @description One live grant plus safe source identity for configuration UI.
+         */
+        SorSourceGrantResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Organization Id
+             * Format: uuid
+             */
+            organization_id: string;
+            /**
+             * Agent Id
+             * Format: uuid
+             */
+            agent_id: string;
+            /**
+             * Source Id
+             * Format: uuid
+             */
+            source_id: string;
+            /** Source Name */
+            source_name: string;
+            profile: components["schemas"]["SorProfile"];
+            /** Vendor Key */
+            vendor_key: string;
+            access: components["schemas"]["SorSourceAccess"];
+            /** Revision */
+            revision: number;
+            /** Granted By */
+            granted_by: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** SorSourceListResponse */
+        SorSourceListResponse: {
+            /** Items */
+            items: components["schemas"]["SorSourceResponse"][];
+        };
+        /** SorSourceResponse */
+        SorSourceResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Organization Id
+             * Format: uuid
+             */
+            organization_id: string;
+            /** Name */
+            name: string;
+            profile: components["schemas"]["SorProfile"];
+            /** Vendor Key */
+            vendor_key: string;
+            /**
+             * External Connection Id
+             * Format: uuid
+             */
+            external_connection_id: string;
+            /** Configuration */
+            configuration: {
+                [key: string]: unknown;
+            };
+            /** Selected Objects */
+            selected_objects: string[];
+            /** Config Revision */
+            config_revision: number;
+            state: components["schemas"]["SorSourceState"];
+            /** Active Schema Revision Id */
+            active_schema_revision_id: string | null;
+            /** Active Mapping Revision Id */
+            active_mapping_revision_id: string | null;
+            /** Has Webhook Signing Secret */
+            has_webhook_signing_secret: boolean;
+            /** Webhook Signing Secret Revision */
+            webhook_signing_secret_revision: number;
+            /** Freshness Target Seconds */
+            freshness_target_seconds: number;
+            /** Required Sync Interval Seconds */
+            required_sync_interval_seconds: number;
+            /** Last Verified At */
+            last_verified_at: string | null;
+            /** Last Successful Sync At */
+            last_successful_sync_at: string | null;
+            /** Last Reconciliation At */
+            last_reconciliation_at: string | null;
+            /** Last Error Code */
+            last_error_code: string | null;
+            /** Last Error Summary */
+            last_error_summary: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * SorSourceSelectionUpdateRequest
+         * @description Select only objects proven by the active discovery revision.
+         */
+        SorSourceSelectionUpdateRequest: {
+            /** Selected Objects */
+            selected_objects: string[];
+            /** Expected Config Revision */
+            expected_config_revision: number;
+        };
+        /**
+         * SorSourceState
+         * @description Persisted lifecycle of one configured source.
+         * @enum {string}
+         */
+        SorSourceState: "DRAFT" | "VERIFYING" | "DISCOVERING" | "BOOTSTRAPPING" | "ACTIVE" | "DEGRADED" | "REAUTH_REQUIRED" | "DISABLED";
+        /** SorStreamCreateRequest */
+        SorStreamCreateRequest: {
+            /** Vendor Object Key */
+            vendor_object_key: string;
+            /** Canonical Entity Kind */
+            canonical_entity_kind: string;
+            strategy: components["schemas"]["SorChangeStrategy"];
+            /**
+             * Lookback Seconds
+             * @default 0
+             */
+            lookback_seconds: number;
+            /** Schedule */
+            schedule?: string | null;
+        };
+        /** SorStreamResponse */
+        SorStreamResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Organization Id
+             * Format: uuid
+             */
+            organization_id: string;
+            /**
+             * Source Id
+             * Format: uuid
+             */
+            source_id: string;
+            /** Vendor Object Key */
+            vendor_object_key: string;
+            /** Canonical Entity Kind */
+            canonical_entity_kind: string;
+            strategy: components["schemas"]["SorChangeStrategy"];
+            /** Lookback Seconds */
+            lookback_seconds: number;
+            /** Cursor Version */
+            cursor_version: number;
+            /** Schedule */
+            schedule: string | null;
+            /** Next Due At */
+            next_due_at: string | null;
+            state: components["schemas"]["SorStreamState"];
+            /** Last Success At */
+            last_success_at: string | null;
+            /** Last Failure At */
+            last_failure_at: string | null;
+            /** Last Error Code */
+            last_error_code: string | null;
+            /** Records Added */
+            records_added: number;
+            /** Records Updated */
+            records_updated: number;
+            /** Records Tombstoned */
+            records_tombstoned: number;
+            /** Records Unchanged */
+            records_unchanged: number;
+            /** Records Rejected */
+            records_rejected: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * SorStreamState
+         * @description Operational availability of one selected source stream.
+         * @enum {string}
+         */
+        SorStreamState: "ACTIVE" | "PAUSED" | "DEGRADED";
+        /** SorSyncRunCreateRequest */
+        SorSyncRunCreateRequest: {
+            kind: components["schemas"]["SorSyncRunKind"];
+            /**
+             * Max Attempts
+             * @default 3
+             */
+            max_attempts: number;
+        };
+        /**
+         * SorSyncRunKind
+         * @description Reason one durable projection run exists.
+         * @enum {string}
+         */
+        SorSyncRunKind: "SCHEMA" | "BOOTSTRAP" | "INCREMENTAL" | "WEBHOOK_REFETCH" | "RECONCILIATION" | "REPROJECTION";
+        /** SorSyncRunResponse */
+        SorSyncRunResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Organization Id
+             * Format: uuid
+             */
+            organization_id: string;
+            /**
+             * Source Id
+             * Format: uuid
+             */
+            source_id: string;
+            /** Stream Id */
+            stream_id: string | null;
+            /**
+             * Mapping Revision Id
+             * Format: uuid
+             */
+            mapping_revision_id: string;
+            kind: components["schemas"]["SorSyncRunKind"];
+            state: components["schemas"]["SorWorkState"];
+            /** Absurd Task Id */
+            absurd_task_id: string | null;
+            /** Attempts */
+            attempts: number;
+            /** Max Attempts */
+            max_attempts: number;
+            /** Scan Complete */
+            scan_complete: boolean;
+            /** Started At */
+            started_at: string | null;
+            /** Finished At */
+            finished_at: string | null;
+            /** Safe Error Code */
+            safe_error_code: string | null;
+            /** Safe Error Summary */
+            safe_error_summary: string | null;
+            /** Records Added */
+            records_added: number;
+            /** Records Updated */
+            records_updated: number;
+            /** Records Tombstoned */
+            records_tombstoned: number;
+            /** Records Unchanged */
+            records_unchanged: number;
+            /** Records Rejected */
+            records_rejected: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** SorToolCatalogResponse */
+        SorToolCatalogResponse: {
+            /** Name */
+            name: string;
+            effect: components["schemas"]["SorToolEffect"];
+            /** Description */
+            description: string;
+            /** Target Entities */
+            target_entities: string[];
+            /** Entities */
+            entities: string[];
+        };
+        /**
+         * SorToolEffect
+         * @description Whether a profile tool reads or mutates the authoritative source.
+         * @enum {string}
+         */
+        SorToolEffect: "READ" | "MUTATION";
+        /**
+         * SorTransformKind
+         * @description Bounded code-owned transforms available to mapping rows.
+         * @enum {string}
+         */
+        SorTransformKind: "DIRECT" | "BOOLEAN" | "DATE" | "TIMESTAMP" | "MONEY" | "RICH_TEXT_TO_PLAIN_TEXT" | "ENUM" | "IDENTITY_REFERENCE" | "ARRAY";
+        /** SorVendorCatalogResponse */
+        SorVendorCatalogResponse: {
+            /** Vendor Key */
+            vendor_key: string;
+            /** Display Name */
+            display_name: string;
+            /** Description */
+            description: string;
+            status: components["schemas"]["SorImplementationStatus"];
+            /** Planned Auth Kinds */
+            planned_auth_kinds: components["schemas"]["ConnectionAuthKind"][];
+            /**
+             * Requires Instance Origin
+             * @default false
+             */
+            requires_instance_origin: boolean;
+            /**
+             * Setup Notes
+             * @default []
+             */
+            setup_notes: string[];
+            capabilities?: components["schemas"]["SorAdapterCapabilityResponse"] | null;
+        };
+        /** SorVendorStreamResponse */
+        SorVendorStreamResponse: {
+            /** Key */
+            key: string;
+            /** Label */
+            label: string;
+            /** Description */
+            description: string;
+            /** Canonical Entity */
+            canonical_entity: string;
+            /** Change Strategies */
+            change_strategies: components["schemas"]["SorChangeStrategy"][];
+        };
+        /**
+         * SorWebhookAcceptedResponse
+         * @description Safe receipt identity returned after verified persistence.
+         */
+        SorWebhookAcceptedResponse: {
+            /**
+             * Receipt Id
+             * Format: uuid
+             */
+            receipt_id: string;
+            /** Duplicate */
+            duplicate: boolean;
+        };
+        /** SorWebhookEndpointResponse */
+        SorWebhookEndpointResponse: {
+            /** Endpoint Path */
+            endpoint_path: string;
+            /** Endpoint Token */
+            endpoint_token: string;
+        };
+        /**
+         * SorWebhookSigningSecretUpdateRequest
+         * @description Rotate one source-owned vendor signing secret without returning it.
+         */
+        SorWebhookSigningSecretUpdateRequest: {
+            /** Signing Secret */
+            signing_secret: string;
+            /** Expected Config Revision */
+            expected_config_revision: number;
+        };
+        /**
+         * SorWorkState
+         * @description Product projection of Absurd-owned durable work.
+         * @enum {string}
+         */
+        SorWorkState: "PENDING" | "RUNNING" | "WAITING" | "SUCCEEDED" | "FAILED" | "CANCELLED";
         /**
          * SortDirection
          * @enum {string}
@@ -9870,6 +12373,105 @@ export interface components {
              */
             verifiedAt: string;
             capabilities: components["schemas"]["StorageCapabilitiesResponse"];
+        };
+        /**
+         * SupportAuditAvailability
+         * @description Why one optional Support audit surface is or is not populated.
+         * @enum {string}
+         */
+        SupportAuditAvailability: "AVAILABLE" | "NOT_SELECTED" | "UNSUPPORTED";
+        /** SupportTicketAttachmentResponse */
+        SupportTicketAttachmentResponse: {
+            /**
+             * Record Id
+             * Format: uuid
+             */
+            record_id: string;
+            /** External Id */
+            external_id: string;
+            /** Message External Id */
+            message_external_id: string | null;
+            /** Name */
+            name: string;
+            /** Content Type */
+            content_type: string | null;
+            /** Size Bytes */
+            size_bytes: number | null;
+            /** Source Url */
+            source_url: string | null;
+        };
+        /** SupportTicketAuditResponse */
+        SupportTicketAuditResponse: {
+            messages_status: components["schemas"]["SupportAuditAvailability"];
+            /** Messages Truncated */
+            messages_truncated: boolean;
+            /** Messages */
+            messages: components["schemas"]["SupportTicketMessageResponse"][];
+            attachments_status: components["schemas"]["SupportAuditAvailability"];
+            /** Attachments Truncated */
+            attachments_truncated: boolean;
+            /** Attachments */
+            attachments: components["schemas"]["SupportTicketAttachmentResponse"][];
+            sla_metrics_status: components["schemas"]["SupportAuditAvailability"];
+            /** Sla Metrics Truncated */
+            sla_metrics_truncated: boolean;
+            /** Sla Metrics */
+            sla_metrics: components["schemas"]["SupportTicketSlaMetricResponse"][];
+        };
+        /** SupportTicketMessageResponse */
+        SupportTicketMessageResponse: {
+            /**
+             * Record Id
+             * Format: uuid
+             */
+            record_id: string;
+            /** External Id */
+            external_id: string;
+            /** Visibility */
+            visibility: string;
+            /** Direction */
+            direction: string | null;
+            /** Author External Id */
+            author_external_id: string | null;
+            /** Text */
+            text: string;
+            /** Body Format */
+            body_format: string | null;
+            /** Attachment External Ids */
+            attachment_external_ids: string[];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Updated At */
+            updated_at: string | null;
+            /** Source Url */
+            source_url: string | null;
+        };
+        /** SupportTicketSlaMetricResponse */
+        SupportTicketSlaMetricResponse: {
+            /**
+             * Record Id
+             * Format: uuid
+             */
+            record_id: string;
+            /** Metric */
+            metric: string;
+            /** Value */
+            value: string | null;
+            /** Unit */
+            unit: string | null;
+            /** Native State */
+            native_state: string | null;
+            /** Normalized State */
+            normalized_state: string | null;
+            /** Target At */
+            target_at: string | null;
+            /** Achieved At */
+            achieved_at: string | null;
+            /** Breached At */
+            breached_at: string | null;
         };
         /** SystemMessageContent */
         SystemMessageContent: {
@@ -10221,6 +12823,42 @@ export interface components {
              * @description The text content
              */
             text: string;
+        };
+        /**
+         * TicketingAuditAvailability
+         * @description Why one optional ticketing audit surface is or is not populated.
+         * @enum {string}
+         */
+        TicketingAuditAvailability: "AVAILABLE" | "NOT_SELECTED" | "UNSUPPORTED";
+        /** TicketingIssueAuditResponse */
+        TicketingIssueAuditResponse: {
+            comments_status: components["schemas"]["TicketingAuditAvailability"];
+            /** Comments Truncated */
+            comments_truncated: boolean;
+            /** Comments */
+            comments: components["schemas"]["TicketingIssueCommentResponse"][];
+            history_status: components["schemas"]["TicketingAuditAvailability"];
+        };
+        /** TicketingIssueCommentResponse */
+        TicketingIssueCommentResponse: {
+            /**
+             * Record Id
+             * Format: uuid
+             */
+            record_id: string;
+            /** Author External Id */
+            author_external_id: string | null;
+            /** Text */
+            text: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Updated At */
+            updated_at: string | null;
+            /** Source Url */
+            source_url: string | null;
         };
         /**
          * TimelineCategory
@@ -10815,6 +13453,10 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
+            /** Input */
+            input?: unknown;
+            /** Context */
+            ctx?: Record<string, never>;
         };
         /**
          * VendorAuthKind
@@ -21073,6 +23715,1445 @@ export interface operations {
             };
         };
     };
+    get_knowledge_document_audit_api__organization_id__sor_knowledge_documents__record_id__audit_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                record_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KnowledgeDocumentAuditResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_ticketing_issue_audit_api__organization_id__sor_ticketing_issues__record_id__audit_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                record_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TicketingIssueAuditResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_support_ticket_audit_api__organization_id__sor_support_tickets__record_id__audit_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                record_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SupportTicketAuditResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_sor_connectors_api__organization_id__sor_connectors_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorConnectorListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_sor_connector_api__organization_id__sor_connectors_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SorConnectorCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorConnectorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_sor_connector_api__organization_id__sor_connectors__connector_id__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                connector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorConnectorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    authorize_sor_connector_api__organization_id__sor_connectors__connector_id__authorize_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                connector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SorConnectorAuthorizationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorAuthorizationRedirectResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_sor_catalog_api__organization_id__sor_catalog_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorCatalogResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_sor_oauth_configuration_api__organization_id__sor_oauth_configuration_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorOAuthConfigurationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_sor_sources_api__organization_id__sor_sources_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorSourceListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_sor_source_api__organization_id__sor_sources_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SorSourceCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorSourceResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_api_key_sor_source_api__organization_id__sor_sources_api_key_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SorApiKeySourceCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorSourceResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_sor_source_api__organization_id__sor_sources__source_id__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorSourceResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_sor_source_selection_api__organization_id__sor_sources__source_id__selection_patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SorSourceSelectionUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorSourceResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    verify_sor_source_api__organization_id__sor_sources__source_id__verify_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorDiscoveryResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rediscover_sor_source_api__organization_id__sor_sources__source_id__rediscover_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorDiscoveryResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_sor_source_schema_api__organization_id__sor_sources__source_id__schema_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorSchemaRevisionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_sor_mapping_api__organization_id__sor_sources__source_id__mappings_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SorMappingDraftRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorMappingRevisionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_sor_mapping_api__organization_id__sor_sources__source_id__mappings__mapping_revision_id__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                source_id: string;
+                mapping_revision_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorMappingRevisionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    publish_sor_mapping_api__organization_id__sor_sources__source_id__mappings__mapping_revision_id__publish_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                source_id: string;
+                mapping_revision_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorMappingRevisionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    activate_sor_source_api__organization_id__sor_sources__source_id__activate_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SorSourceActivationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorSourceActivationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_agent_sor_source_grants_api__organization_id__sor_agents__agent_id__source_grants_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorSourceGrantListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    grant_agent_sor_source_api__organization_id__sor_agents__agent_id__source_grants__source_id__put: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                agent_id: string;
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SorSourceGrantRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorSourceGrantResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_agent_sor_source_api__organization_id__sor_agents__agent_id__source_grants__source_id__delete: {
+        parameters: {
+            query: {
+                expected_draft_version: number;
+            };
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                agent_id: string;
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_agent_sor_view_api__organization_id__sor_agents__agent_id__view__profile___entity__get: {
+        parameters: {
+            query?: {
+                source_id?: string[] | null;
+                record_id?: string | null;
+                search?: string;
+                cursor?: string | null;
+                limit?: number;
+            };
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                agent_id: string;
+                profile: components["schemas"]["SorProfile"];
+                entity: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorAgentViewResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rotate_sor_webhook_endpoint_api__organization_id__sor_sources__source_id__webhook_endpoint_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorWebhookEndpointResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_sor_webhook_signing_secret_api__organization_id__sor_sources__source_id__webhook_signing_secret_put: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SorWebhookSigningSecretUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorSourceResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_sor_source_streams_api__organization_id__sor_sources__source_id__streams_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorStreamResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_sor_source_stream_api__organization_id__sor_sources__source_id__streams_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SorStreamCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorStreamResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_sor_stream_run_api__organization_id__sor_sources__source_id__streams__stream_id__runs_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                source_id: string;
+                stream_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SorSyncRunCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorSyncRunResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_sor_custom_datasets_api__organization_id__sor_custom_datasets_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorCustomDatasetListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_sor_custom_dataset_records_api__organization_id__sor_custom_datasets__dataset_id__records_get: {
+        parameters: {
+            query?: {
+                search?: string;
+                cursor?: string | null;
+                limit?: number;
+            };
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                dataset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorCollectionPageResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    query_sor_custom_dataset_records_api__organization_id__sor_custom_datasets__dataset_id__records_query_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                dataset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SorCollectionQuery-Input"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorCollectionPageResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_sor_custom_dataset_grid_api__organization_id__sor_custom_datasets__dataset_id__grid_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                dataset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorGridContract"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_sor_custom_dataset_record_api__organization_id__sor_custom_datasets__dataset_id__records__record_id__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                dataset_id: string;
+                record_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorRecordDetailResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_sor_records_api__organization_id__sor__profile___entity__get: {
+        parameters: {
+            query?: {
+                source_id?: string[] | null;
+                search?: string;
+                cursor?: string | null;
+                limit?: number;
+            };
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                profile: components["schemas"]["SorProfile"];
+                entity: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorCollectionPageResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    query_sor_records_api__organization_id__sor__profile___entity__query_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                profile: components["schemas"]["SorProfile"];
+                entity: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SorCollectionQuery-Input"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorCollectionPageResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_sor_grid_contract_api__organization_id__sor__profile___entity__grid_get: {
+        parameters: {
+            query?: {
+                source_id?: string[] | null;
+            };
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                profile: components["schemas"]["SorProfile"];
+                entity: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorGridContract"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_sor_record_api__organization_id__sor__profile___entity___record_id__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                profile: components["schemas"]["SorProfile"];
+                entity: string;
+                record_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorRecordDetailResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     outbound_call_api_voice_outbound_post: {
         parameters: {
             query?: never;
@@ -21501,6 +25582,71 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    receive_sor_webhook_api_sor_webhooks__vendor_key___endpoint_token__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                vendor_key: string;
+                endpoint_token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorWebhookAcceptedResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    complete_sor_authorization_api_sor_oauth_callback_get: {
+        parameters: {
+            query: {
+                state: string;
+                code?: string | null;
+                error?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/html": string;
                 };
             };
             /** @description Validation Error */

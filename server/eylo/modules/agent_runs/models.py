@@ -154,9 +154,19 @@ class AgentRunModel(EyloOrganizationModel):
             name="ck_agent_runs_conclusion_reason",
         ),
         CheckConstraint(
-            "lifecycle NOT IN ('waiting_for_input', 'waiting_for_approval') "
+            "lifecycle NOT IN "
+            "('waiting_for_input', 'waiting_for_approval', 'waiting_for_tool') "
             "OR waiting_at IS NOT NULL",
             name="ck_agent_runs_waiting_time",
+        ),
+        CheckConstraint(
+            "(lifecycle = 'waiting_for_tool' "
+            "AND waiting_tool_owner_kind ~ '^[a-z][a-z0-9_]{0,63}$' "
+            "AND waiting_tool_owner_id IS NOT NULL) OR "
+            "(lifecycle <> 'waiting_for_tool' "
+            "AND waiting_tool_owner_kind IS NULL "
+            "AND waiting_tool_owner_id IS NULL)",
+            name="ck_agent_runs_tool_wait_identity",
         ),
         CheckConstraint(
             "lifecycle = 'queued' OR absurd_task_id IS NOT NULL OR "
@@ -225,6 +235,12 @@ class AgentRunModel(EyloOrganizationModel):
     )
     waiting_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    waiting_tool_owner_kind: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    waiting_tool_owner_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
     )
     cancellation_requested_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

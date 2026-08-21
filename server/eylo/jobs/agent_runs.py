@@ -22,6 +22,7 @@ _NONTERMINAL_LIFECYCLES = (
     AgentRunLifecycle.RUNNING,
     AgentRunLifecycle.WAITING_FOR_INPUT,
     AgentRunLifecycle.WAITING_FOR_APPROVAL,
+    AgentRunLifecycle.WAITING_FOR_TOOL,
 )
 _FAILED_ENGINE_SUMMARY = "Durable execution exhausted its retry attempts."
 _COMPLETED_ENGINE_SUMMARY = (

@@ -111,6 +111,31 @@ const IntegrationsPage = lazy(() =>
     default: module.IntegrationsPage,
   })),
 );
+const SorCatalogPage = lazy(() =>
+  import("@/features/sor/SorCatalogPage").then((module) => ({
+    default: module.SorCatalogPage,
+  })),
+);
+const SorSourcesPage = lazy(() =>
+  import("@/features/sor/SorSourcesPage").then((module) => ({
+    default: module.SorSourcesPage,
+  })),
+);
+const SorSourceFormPage = lazy(() =>
+  import("@/features/sor/SorSourceFormPage").then((module) => ({
+    default: module.SorSourceFormPage,
+  })),
+);
+const SorCustomDatasetsPage = lazy(() =>
+  import("@/features/sor/SorCustomDatasetsPage").then((module) => ({
+    default: module.SorCustomDatasetsPage,
+  })),
+);
+const SorCollectionPage = lazy(() =>
+  import("@/features/sor/SorCollectionPage").then((module) => ({
+    default: module.SorCollectionPage,
+  })),
+);
 const ConfiguredIntegrationsPage = lazy(() =>
   import("@/features/integrations/ConfiguredIntegrationsPage").then(
     (module) => ({ default: module.ConfiguredIntegrationsPage }),
@@ -653,6 +678,62 @@ function App() {
                   element={
                     <LazyRoute>
                       <IntegrationsPage />
+                    </LazyRoute>
+                  }
+                />
+                <Route
+                  path="sor"
+                  element={
+                    <LazyRoute>
+                      <SorCatalogPage />
+                    </LazyRoute>
+                  }
+                />
+                <Route
+                  path="sor/sources"
+                  element={
+                    <LazyRoute>
+                      <SorSourcesPage />
+                    </LazyRoute>
+                  }
+                />
+                <Route
+                  path="sor/new"
+                  element={
+                    <LazyRoute>
+                      <SorSourceFormPage />
+                    </LazyRoute>
+                  }
+                />
+                <Route
+                  path="sor/custom-datasets"
+                  element={
+                    <LazyRoute>
+                      <SorCustomDatasetsPage />
+                    </LazyRoute>
+                  }
+                />
+                <Route
+                  path="sor/custom-datasets/:datasetId"
+                  element={
+                    <LazyRoute>
+                      <SorCollectionPage />
+                    </LazyRoute>
+                  }
+                />
+                <Route
+                  path="sor/sources/:sourceId"
+                  element={
+                    <LazyRoute>
+                      <SorSourcesPage />
+                    </LazyRoute>
+                  }
+                />
+                <Route
+                  path="sor/:profile/:entity"
+                  element={
+                    <LazyRoute>
+                      <SorCollectionPage />
                     </LazyRoute>
                   }
                 />

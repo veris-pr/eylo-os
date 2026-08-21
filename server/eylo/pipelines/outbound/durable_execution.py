@@ -55,6 +55,13 @@ class DurableStepContext(Protocol):
         operation: Callable[[], Awaitable[T]],
     ) -> T: ...
 
+    async def await_event(
+        self,
+        event_name: str,
+        step_name: str | None = None,
+        timeout: int | None = None,
+    ) -> Any: ...
+
 
 @dataclass(frozen=True, slots=True)
 class OutboundExecutionReceipt:

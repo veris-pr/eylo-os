@@ -727,6 +727,7 @@ async def check_agent_run_active_time(*, organization_id: UUID, run_id: UUID) ->
             if lifecycle in {
                 AgentRunLifecycle.WAITING_FOR_INPUT,
                 AgentRunLifecycle.WAITING_FOR_APPROVAL,
+                AgentRunLifecycle.WAITING_FOR_TOOL,
                 AgentRunLifecycle.COMPLETED,
                 AgentRunLifecycle.FAILED,
                 AgentRunLifecycle.CANCELLED,

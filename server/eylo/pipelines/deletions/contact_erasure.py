@@ -17,7 +17,7 @@ from eylo.common.outbound import OutboundOwnerKind
 from eylo.events.durable.models import EventOutboxModel
 from eylo.modules.agent_runs.models import AgentRunModel
 from eylo.modules.auth.models import AuthSessionModel, WidgetInvitationModel
-from eylo.modules.connections.models import ConnectionModel, OAuthStateModel
+from eylo.modules.connections.models import ExternalConnectionModel
 from eylo.modules.contacts.domain import CONTACT_SUBJECT_TYPE, ContactLifecycle
 from eylo.modules.contacts.models import ContactsModel
 from eylo.modules.conversations.constants import DELETED_CONTACT_ENTITY_ID
@@ -254,15 +254,9 @@ async def _erase_contact_graph(
                 user_session_ids=user_session_ids,
             )
         await session.execute(
-            delete(OAuthStateModel).where(
-                OAuthStateModel.organization_id == organization_id,
-                OAuthStateModel.contact_id == contact_id,
-            )
-        )
-        await session.execute(
-            delete(ConnectionModel).where(
-                ConnectionModel.organization_id == organization_id,
-                ConnectionModel.contact_id == contact_id,
+            delete(ExternalConnectionModel).where(
+                ExternalConnectionModel.organization_id == organization_id,
+                ExternalConnectionModel.contact_id == contact_id,
             )
         )
         await session.execute(
@@ -783,13 +777,9 @@ async def _require_contact_absent(
             WidgetInvitationModel.organization_id == organization_id,
             WidgetInvitationModel.contact_id == contact_id,
         ),
-        select(ConnectionModel.id).where(
-            ConnectionModel.organization_id == organization_id,
-            ConnectionModel.contact_id == contact_id,
-        ),
-        select(OAuthStateModel.id).where(
-            OAuthStateModel.organization_id == organization_id,
-            OAuthStateModel.contact_id == contact_id,
+        select(ExternalConnectionModel.id).where(
+            ExternalConnectionModel.organization_id == organization_id,
+            ExternalConnectionModel.contact_id == contact_id,
         ),
         select(CampaignContactModel.id).where(
             CampaignContactModel.organization_id == organization_id,

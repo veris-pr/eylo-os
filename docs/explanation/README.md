@@ -6,6 +6,7 @@ These pages explain the design choices connecting Eylo's modules.
 - [Agent execution](agent-execution.md)
 - [Provider architecture](provider-architecture.md)
 - [Knowledge and memory](knowledge-and-memory.md)
+- [Systems of Record](systems-of-record.md)
 - [Voice runtime](voice-runtime.md)
 - [Events and durable work](events-and-durable-work.md)
 - [Sessions, conversations, and ownership](sessions-and-conversations.md)

@@ -686,7 +686,7 @@ function ConnectionSummary({
             {CONNECTION_KIND_LABELS[connection.connectionKind]}
           </Badge>
           <Badge
-            variant={connection.status === "FAILED" ? "destructive" : "outline"}
+            variant={connection.status === "ACTIVE" ? "secondary" : "outline"}
           >
             {CONNECTION_STATUS_LABELS[connection.status]}
           </Badge>

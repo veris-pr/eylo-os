@@ -483,6 +483,25 @@ class AgentRelationshipsStore {
     });
   }
 
+  async synchronizeAfterExternalRelatedWrite(
+    organizationId: string,
+    agentId: string,
+  ): Promise<boolean> {
+    const contextKey = buildContextKey(organizationId, agentId);
+    if (!this.isCurrentContext(contextKey)) return false;
+    const updatedAgent = await this.fetchAgent(organizationId, agentId);
+    if (!this.isCurrentContext(contextKey) || updatedAgent === null) {
+      runInAction(() => {
+        this.actionErrorMessage = RELATIONSHIP_ACTION_ERROR;
+      });
+      return false;
+    }
+    runInAction(() => {
+      this.form.synchronizeAfterRelatedWrite(updatedAgent);
+    });
+    return true;
+  }
+
   private async runAction(
     organizationId: string,
     agentId: string,

@@ -1,0 +1,606 @@
+"""Explicit ticketing field contracts for shared SOR audit queries."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+
+from eylo.sor.shared.contracts import SorProfile
+from eylo.sor.shared.models import (
+    SorProfileRecordModel,
+    SorRecordModel,
+    SorSourceModel,
+)
+from eylo.sor.shared.query import (
+    SorGridColumnImportance,
+    SorGridColumnKind,
+)
+from eylo.sor.shared.reads import SorEntityReadSpec, SorReadFieldSpec
+
+from .models import (
+    TicketingCommentModel,
+    TicketingCycleModel,
+    TicketingIssueModel,
+    TicketingIssueRelationModel,
+    TicketingLabelModel,
+    TicketingProjectModel,
+    TicketingUserModel,
+    TicketingWorkflowStateModel,
+)
+
+
+def _extension_value(
+    name: str,
+) -> Callable[[SorRecordModel, SorProfileRecordModel | None, SorSourceModel], object]:
+    return lambda _record, extension, _source: (
+        getattr(extension, name) if extension is not None else None
+    )
+
+
+def _field(
+    *,
+    key: str,
+    label: str,
+    kind: SorGridColumnKind,
+    importance: SorGridColumnImportance,
+    expression,
+    attribute: str,
+    default_visible: bool = True,
+    filterable: bool = True,
+    sortable: bool = True,
+    groupable: bool = False,
+    wraps: bool = False,
+) -> SorReadFieldSpec:
+    return SorReadFieldSpec(
+        key=key,
+        label=label,
+        kind=kind,
+        importance=importance,
+        expression=expression,
+        read_value=_extension_value(attribute),
+        default_visible=default_visible,
+        filterable=filterable,
+        sortable=sortable,
+        groupable=groupable,
+        wraps=wraps,
+    )
+
+
+TICKETING_ISSUE_READ_SPEC = SorEntityReadSpec(
+    profile=SorProfile.TICKETING,
+    entity="issue",
+    model=TicketingIssueModel,
+    fields=(
+        _field(
+            key="key",
+            label="Key",
+            kind=SorGridColumnKind.TEXT,
+            importance=SorGridColumnImportance.PRIMARY,
+            expression=TicketingIssueModel.key,
+            attribute="key",
+        ),
+        _field(
+            key="title",
+            label="Title",
+            kind=SorGridColumnKind.LONG_TEXT,
+            importance=SorGridColumnImportance.PRIMARY,
+            expression=TicketingIssueModel.title,
+            attribute="title",
+            wraps=True,
+        ),
+        _field(
+            key="status",
+            label="Status",
+            kind=SorGridColumnKind.ENUM,
+            importance=SorGridColumnImportance.PRIMARY,
+            expression=TicketingIssueModel.normalized_status,
+            attribute="normalized_status",
+            groupable=True,
+        ),
+        _field(
+            key="native_status",
+            label="Source status",
+            kind=SorGridColumnKind.ENUM,
+            importance=SorGridColumnImportance.SECONDARY,
+            expression=TicketingIssueModel.native_status,
+            attribute="native_status",
+            default_visible=False,
+            groupable=True,
+        ),
+        _field(
+            key="priority",
+            label="Priority",
+            kind=SorGridColumnKind.ENUM,
+            importance=SorGridColumnImportance.SECONDARY,
+            expression=TicketingIssueModel.priority,
+            attribute="priority",
+            groupable=True,
+        ),
+        _field(
+            key="issue_type",
+            label="Type",
+            kind=SorGridColumnKind.ENUM,
+            importance=SorGridColumnImportance.SECONDARY,
+            expression=TicketingIssueModel.issue_type,
+            attribute="issue_type",
+            default_visible=False,
+            groupable=True,
+        ),
+        _field(
+            key="project",
+            label="Project",
+            kind=SorGridColumnKind.REFERENCE,
+            importance=SorGridColumnImportance.SECONDARY,
+            expression=TicketingIssueModel.project_external_id,
+            attribute="project_external_id",
+            groupable=True,
+        ),
+        _field(
+            key="team",
+            label="Team",
+            kind=SorGridColumnKind.REFERENCE,
+            importance=SorGridColumnImportance.SECONDARY,
+            expression=TicketingIssueModel.team_external_id,
+            attribute="team_external_id",
+            default_visible=False,
+            groupable=True,
+        ),
+        _field(
+            key="assignee",
+            label="Assignee",
+            kind=SorGridColumnKind.REFERENCE,
+            importance=SorGridColumnImportance.SECONDARY,
+            expression=TicketingIssueModel.assignee_external_id,
+            attribute="assignee_external_id",
+            groupable=True,
+        ),
+        _field(
+            key="reporter",
+            label="Reporter",
+            kind=SorGridColumnKind.REFERENCE,
+            importance=SorGridColumnImportance.METADATA,
+            expression=TicketingIssueModel.reporter_external_id,
+            attribute="reporter_external_id",
+            default_visible=False,
+            groupable=True,
+        ),
+        _field(
+            key="estimate",
+            label="Estimate",
+            kind=SorGridColumnKind.NUMBER,
+            importance=SorGridColumnImportance.SECONDARY,
+            expression=TicketingIssueModel.estimate,
+            attribute="estimate",
+            default_visible=False,
+        ),
+        _field(
+            key="labels",
+            label="Labels",
+            kind=SorGridColumnKind.STRING_ARRAY,
+            importance=SorGridColumnImportance.SECONDARY,
+            expression=TicketingIssueModel.label_external_ids,
+            attribute="label_external_ids",
+            sortable=False,
+            wraps=True,
+        ),
+        _field(
+            key="cycle",
+            label="Cycle",
+            kind=SorGridColumnKind.REFERENCE,
+            importance=SorGridColumnImportance.SECONDARY,
+            expression=TicketingIssueModel.cycle_external_id,
+            attribute="cycle_external_id",
+            default_visible=False,
+            groupable=True,
+        ),
+        _field(
+            key="due_date",
+            label="Due date",
+            kind=SorGridColumnKind.DATE,
+            importance=SorGridColumnImportance.SECONDARY,
+            expression=TicketingIssueModel.due_date,
+            attribute="due_date",
+        ),
+        _field(
+            key="completed_at",
+            label="Completed",
+            kind=SorGridColumnKind.DATETIME,
+            importance=SorGridColumnImportance.METADATA,
+            expression=TicketingIssueModel.completed_at,
+            attribute="completed_at",
+            default_visible=False,
+        ),
+        _field(
+            key="cancelled_at",
+            label="Cancelled",
+            kind=SorGridColumnKind.DATETIME,
+            importance=SorGridColumnImportance.METADATA,
+            expression=TicketingIssueModel.cancelled_at,
+            attribute="cancelled_at",
+            default_visible=False,
+        ),
+    ),
+)
+
+TICKETING_PROJECT_READ_SPEC = SorEntityReadSpec(
+    profile=SorProfile.TICKETING,
+    entity="project",
+    model=TicketingProjectModel,
+    fields=(
+        _field(
+            key="key",
+            label="Key",
+            kind=SorGridColumnKind.TEXT,
+            importance=SorGridColumnImportance.PRIMARY,
+            expression=TicketingProjectModel.key,
+            attribute="key",
+        ),
+        _field(
+            key="name",
+            label="Name",
+            kind=SorGridColumnKind.TEXT,
+            importance=SorGridColumnImportance.PRIMARY,
+            expression=TicketingProjectModel.name,
+            attribute="name",
+        ),
+        _field(
+            key="description",
+            label="Description",
+            kind=SorGridColumnKind.LONG_TEXT,
+            importance=SorGridColumnImportance.SECONDARY,
+            expression=TicketingProjectModel.description,
+            attribute="description",
+            default_visible=False,
+            wraps=True,
+        ),
+    ),
+)
+
+TICKETING_WORKFLOW_STATE_READ_SPEC = SorEntityReadSpec(
+    profile=SorProfile.TICKETING,
+    entity="workflow_state",
+    model=TicketingWorkflowStateModel,
+    fields=(
+        _field(
+            key="name",
+            label="Name",
+            kind=SorGridColumnKind.TEXT,
+            importance=SorGridColumnImportance.PRIMARY,
+            expression=TicketingWorkflowStateModel.name,
+            attribute="name",
+        ),
+        _field(
+            key="category",
+            label="Category",
+            kind=SorGridColumnKind.ENUM,
+            importance=SorGridColumnImportance.PRIMARY,
+            expression=TicketingWorkflowStateModel.normalized_category,
+            attribute="normalized_category",
+            groupable=True,
+        ),
+        _field(
+            key="native_category",
+            label="Source category",
+            kind=SorGridColumnKind.ENUM,
+            importance=SorGridColumnImportance.SECONDARY,
+            expression=TicketingWorkflowStateModel.native_category,
+            attribute="native_category",
+            default_visible=False,
+            groupable=True,
+        ),
+        _field(
+            key="order",
+            label="Order",
+            kind=SorGridColumnKind.NUMBER,
+            importance=SorGridColumnImportance.METADATA,
+            expression=TicketingWorkflowStateModel.display_order,
+            attribute="display_order",
+        ),
+    ),
+)
+
+TICKETING_USER_READ_SPEC = SorEntityReadSpec(
+    profile=SorProfile.TICKETING,
+    entity="user",
+    model=TicketingUserModel,
+    fields=(
+        _field(
+            key="name",
+            label="Name",
+            kind=SorGridColumnKind.TEXT,
+            importance=SorGridColumnImportance.PRIMARY,
+            expression=TicketingUserModel.name,
+            attribute="name",
+        ),
+        _field(
+            key="display_name",
+            label="Display name",
+            kind=SorGridColumnKind.TEXT,
+            importance=SorGridColumnImportance.SECONDARY,
+            expression=TicketingUserModel.display_name,
+            attribute="display_name",
+            default_visible=False,
+        ),
+        _field(
+            key="email",
+            label="Email",
+            kind=SorGridColumnKind.TEXT,
+            importance=SorGridColumnImportance.SECONDARY,
+            expression=TicketingUserModel.primary_email,
+            attribute="primary_email",
+        ),
+        _field(
+            key="active",
+            label="Active",
+            kind=SorGridColumnKind.BOOLEAN,
+            importance=SorGridColumnImportance.SECONDARY,
+            expression=TicketingUserModel.active,
+            attribute="active",
+            groupable=True,
+        ),
+        _field(
+            key="assignable",
+            label="Assignable",
+            kind=SorGridColumnKind.BOOLEAN,
+            importance=SorGridColumnImportance.METADATA,
+            expression=TicketingUserModel.assignable,
+            attribute="assignable",
+            default_visible=False,
+            groupable=True,
+        ),
+    ),
+)
+
+TICKETING_LABEL_READ_SPEC = SorEntityReadSpec(
+    profile=SorProfile.TICKETING,
+    entity="label",
+    model=TicketingLabelModel,
+    fields=(
+        _field(
+            key="name",
+            label="Name",
+            kind=SorGridColumnKind.TEXT,
+            importance=SorGridColumnImportance.PRIMARY,
+            expression=TicketingLabelModel.name,
+            attribute="name",
+        ),
+        _field(
+            key="description",
+            label="Description",
+            kind=SorGridColumnKind.LONG_TEXT,
+            importance=SorGridColumnImportance.SECONDARY,
+            expression=TicketingLabelModel.description,
+            attribute="description",
+            default_visible=False,
+            wraps=True,
+        ),
+        _field(
+            key="project",
+            label="Project or team",
+            kind=SorGridColumnKind.REFERENCE,
+            importance=SorGridColumnImportance.SECONDARY,
+            expression=TicketingLabelModel.project_external_id,
+            attribute="project_external_id",
+            groupable=True,
+        ),
+        _field(
+            key="parent",
+            label="Parent label",
+            kind=SorGridColumnKind.REFERENCE,
+            importance=SorGridColumnImportance.METADATA,
+            expression=TicketingLabelModel.parent_external_id,
+            attribute="parent_external_id",
+            default_visible=False,
+        ),
+        _field(
+            key="is_group",
+            label="Group",
+            kind=SorGridColumnKind.BOOLEAN,
+            importance=SorGridColumnImportance.METADATA,
+            expression=TicketingLabelModel.is_group,
+            attribute="is_group",
+            default_visible=False,
+            groupable=True,
+        ),
+    ),
+)
+
+TICKETING_CYCLE_READ_SPEC = SorEntityReadSpec(
+    profile=SorProfile.TICKETING,
+    entity="cycle",
+    model=TicketingCycleModel,
+    fields=(
+        _field(
+            key="name",
+            label="Name",
+            kind=SorGridColumnKind.TEXT,
+            importance=SorGridColumnImportance.PRIMARY,
+            expression=TicketingCycleModel.name,
+            attribute="name",
+        ),
+        _field(
+            key="number",
+            label="Number",
+            kind=SorGridColumnKind.NUMBER,
+            importance=SorGridColumnImportance.SECONDARY,
+            expression=TicketingCycleModel.number,
+            attribute="number",
+        ),
+        _field(
+            key="project",
+            label="Project or team",
+            kind=SorGridColumnKind.REFERENCE,
+            importance=SorGridColumnImportance.SECONDARY,
+            expression=TicketingCycleModel.project_external_id,
+            attribute="project_external_id",
+            groupable=True,
+        ),
+        _field(
+            key="starts_at",
+            label="Starts",
+            kind=SorGridColumnKind.DATETIME,
+            importance=SorGridColumnImportance.SECONDARY,
+            expression=TicketingCycleModel.starts_at,
+            attribute="starts_at",
+        ),
+        _field(
+            key="ends_at",
+            label="Ends",
+            kind=SorGridColumnKind.DATETIME,
+            importance=SorGridColumnImportance.SECONDARY,
+            expression=TicketingCycleModel.ends_at,
+            attribute="ends_at",
+        ),
+        _field(
+            key="active",
+            label="Active",
+            kind=SorGridColumnKind.BOOLEAN,
+            importance=SorGridColumnImportance.SECONDARY,
+            expression=TicketingCycleModel.active,
+            attribute="active",
+            groupable=True,
+        ),
+        _field(
+            key="completed_at",
+            label="Completed",
+            kind=SorGridColumnKind.DATETIME,
+            importance=SorGridColumnImportance.METADATA,
+            expression=TicketingCycleModel.completed_at,
+            attribute="completed_at",
+            default_visible=False,
+        ),
+        _field(
+            key="description",
+            label="Description",
+            kind=SorGridColumnKind.LONG_TEXT,
+            importance=SorGridColumnImportance.METADATA,
+            expression=TicketingCycleModel.description,
+            attribute="description",
+            default_visible=False,
+            wraps=True,
+        ),
+    ),
+)
+
+TICKETING_RELATION_READ_SPEC = SorEntityReadSpec(
+    profile=SorProfile.TICKETING,
+    entity="relation",
+    model=TicketingIssueRelationModel,
+    fields=(
+        _field(
+            key="from_issue",
+            label="From issue",
+            kind=SorGridColumnKind.REFERENCE,
+            importance=SorGridColumnImportance.PRIMARY,
+            expression=TicketingIssueRelationModel.from_issue_external_id,
+            attribute="from_issue_external_id",
+            groupable=True,
+        ),
+        _field(
+            key="relation",
+            label="Relation",
+            kind=SorGridColumnKind.ENUM,
+            importance=SorGridColumnImportance.PRIMARY,
+            expression=TicketingIssueRelationModel.canonical_relation_kind,
+            attribute="canonical_relation_kind",
+            groupable=True,
+        ),
+        _field(
+            key="to_issue",
+            label="To issue",
+            kind=SorGridColumnKind.REFERENCE,
+            importance=SorGridColumnImportance.PRIMARY,
+            expression=TicketingIssueRelationModel.to_issue_external_id,
+            attribute="to_issue_external_id",
+            groupable=True,
+        ),
+        _field(
+            key="source_relation",
+            label="Source relation",
+            kind=SorGridColumnKind.ENUM,
+            importance=SorGridColumnImportance.METADATA,
+            expression=TicketingIssueRelationModel.native_relation_kind,
+            attribute="native_relation_kind",
+            default_visible=False,
+            groupable=True,
+        ),
+    ),
+)
+
+TICKETING_COMMENT_READ_SPEC = SorEntityReadSpec(
+    profile=SorProfile.TICKETING,
+    entity="comment",
+    model=TicketingCommentModel,
+    fields=(
+        _field(
+            key="issue",
+            label="Issue",
+            kind=SorGridColumnKind.REFERENCE,
+            importance=SorGridColumnImportance.PRIMARY,
+            expression=TicketingCommentModel.issue_external_id,
+            attribute="issue_external_id",
+            groupable=True,
+        ),
+        _field(
+            key="text",
+            label="Comment",
+            kind=SorGridColumnKind.LONG_TEXT,
+            importance=SorGridColumnImportance.PRIMARY,
+            expression=TicketingCommentModel.normalized_text,
+            attribute="normalized_text",
+            wraps=True,
+        ),
+        _field(
+            key="author",
+            label="Author",
+            kind=SorGridColumnKind.REFERENCE,
+            importance=SorGridColumnImportance.SECONDARY,
+            expression=TicketingCommentModel.author_external_id,
+            attribute="author_external_id",
+            groupable=True,
+        ),
+        _field(
+            key="created_at",
+            label="Created",
+            kind=SorGridColumnKind.DATETIME,
+            importance=SorGridColumnImportance.METADATA,
+            expression=TicketingCommentModel.source_created_at,
+            attribute="source_created_at",
+        ),
+        _field(
+            key="updated_at",
+            label="Updated",
+            kind=SorGridColumnKind.DATETIME,
+            importance=SorGridColumnImportance.METADATA,
+            expression=TicketingCommentModel.source_updated_at,
+            attribute="source_updated_at",
+            default_visible=False,
+        ),
+    ),
+)
+
+TICKETING_READ_SPECS = {
+    spec.entity: spec
+    for spec in (
+        TICKETING_ISSUE_READ_SPEC,
+        TICKETING_PROJECT_READ_SPEC,
+        TICKETING_WORKFLOW_STATE_READ_SPEC,
+        TICKETING_USER_READ_SPEC,
+        TICKETING_LABEL_READ_SPEC,
+        TICKETING_CYCLE_READ_SPEC,
+        TICKETING_COMMENT_READ_SPEC,
+        TICKETING_RELATION_READ_SPEC,
+    )
+}
+
+
+__all__ = [
+    "TICKETING_COMMENT_READ_SPEC",
+    "TICKETING_CYCLE_READ_SPEC",
+    "TICKETING_ISSUE_READ_SPEC",
+    "TICKETING_LABEL_READ_SPEC",
+    "TICKETING_PROJECT_READ_SPEC",
+    "TICKETING_READ_SPECS",
+    "TICKETING_RELATION_READ_SPEC",
+    "TICKETING_USER_READ_SPEC",
+    "TICKETING_WORKFLOW_STATE_READ_SPEC",
+]

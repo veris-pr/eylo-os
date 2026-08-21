@@ -19,11 +19,11 @@ function CollectionToolbar({
     <div className="min-w-0 space-y-2">
       <div
         aria-label={`${listLabel} list controls`}
-        className="flex min-w-0 items-center gap-2"
+        className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center"
         role="group"
       >
-        <div className="min-w-0 flex-1">{search}</div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="w-full min-w-0 flex-1">{search}</div>
+        <div className="flex w-full shrink-0 items-center justify-end gap-2 sm:w-auto">
           {filter}
           {sort}
         </div>

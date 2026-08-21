@@ -11,6 +11,7 @@ Use these guides when you already know the outcome you need.
 - [Operate knowledge and memory](knowledge-and-memory.md)
 - [Configure a voice Agent](voice.md)
 - [Install and grant curated integrations](integrations.md)
+- [Configure a System of Record](systems-of-record.md)
 - [Operate durable work](durable-work.md)
 - [Reset a disposable development database](reset-development-database.md)
 

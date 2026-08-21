@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { observer } from "mobx-react-lite";
 import { Navigate, useLocation } from "react-router";
 
@@ -23,6 +23,10 @@ const LoginPage = observer(function LoginPage() {
     email: "",
     password: "",
   });
+
+  useEffect(() => {
+    void auth.hydrate();
+  }, [auth]);
 
   if (auth.status === "checking") {
     return <FullPageStatus message="Verifying session…" />;

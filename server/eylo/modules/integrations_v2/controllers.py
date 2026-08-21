@@ -45,7 +45,7 @@ from .schemas.api import (
 from .services.installations import CuratedIntegrationService
 
 if TYPE_CHECKING:
-    from eylo.modules.connections.schemas.indb import ConnectionInDb
+    from eylo.modules.connections.schemas.external import ExternalConnectionInDb
     from eylo.modules.contacts.schemas.indb import ContactInDb
     from eylo.pipelines.integrations_v2.contracts import CuratedToolSpec
 
@@ -210,28 +210,22 @@ class CuratedIntegrationController:
         organization_id: uuid.UUID,
     ) -> list[ConnectionSchema]:
         """List curated connections without allowing credential projection."""
-        from eylo.modules.connections.services.indb import ConnectionService
-
         registry = self._registry()
         async with start_transaction(ro=True) as session:
             service = CuratedIntegrationService(session)
-            installations = await service.list_installations(
+            connections = await service.list_external_connections(
                 organization_id=organization_id
             )
-            connections = await ConnectionService(session).list_by_organization(
-                organization_id=organization_id
-            )
-        vendors = {row.id: row.vendor for row in installations}
         result: list[ConnectionSchema] = []
         for connection in connections:
-            vendor = vendors.get(connection.integration_id)
-            spec = registry.vendor(vendor) if vendor is not None else None
+            vendor = connection.vendor_key
+            spec = registry.vendor(vendor)
             result.append(
                 ConnectionSchema(
                     id=connection.id,
-                    vendor=vendor or "unknown",
+                    vendor=vendor,
                     display_name=spec.display_name if spec is not None else vendor,
-                    connection_kind=connection.connection_kind.value,
+                    connection_kind=connection.owner_kind.value,
                     status=connection.status.value,
                     contact_id=connection.contact_id,
                     credentials_expires_at=connection.credentials_expires_at,
@@ -247,16 +241,14 @@ class CuratedIntegrationController:
         organization_id: uuid.UUID,
     ) -> list[ConnectionAggregateSchema]:
         """List connections with tenant-scoped, human-readable owners."""
-        from eylo.modules.connections.services.indb import ConnectionService
         from eylo.modules.contacts.service import ContactService
         from eylo.modules.organizations.services import OrganizationService
 
         registry = self._registry()
         async with start_transaction(ro=True) as session:
-            installations = await CuratedIntegrationService(
+            connections = await CuratedIntegrationService(
                 session
-            ).list_installations(organization_id=organization_id)
-            connections = await ConnectionService(session).list_by_organization(
+            ).list_external_connections(
                 organization_id=organization_id
             )
             contact_ids = [
@@ -270,12 +262,11 @@ class CuratedIntegrationController:
             )
             organization = await OrganizationService(session).get_(organization_id)
 
-        vendors = {row.id: row.vendor for row in installations}
         contacts_by_id = {contact.id: contact for contact in contacts}
         result: list[ConnectionAggregateSchema] = []
         for connection in connections:
-            vendor = vendors.get(connection.integration_id)
-            spec = registry.vendor(vendor) if vendor is not None else None
+            vendor = connection.vendor_key
+            spec = registry.vendor(vendor)
             owner = self._connection_owner_summary(
                 connection=connection,
                 organization_id=organization_id,
@@ -285,9 +276,9 @@ class CuratedIntegrationController:
             result.append(
                 ConnectionAggregateSchema(
                     id=connection.id,
-                    vendor=vendor or "unknown",
+                    vendor=vendor,
                     display_name=spec.display_name if spec is not None else vendor,
-                    connection_kind=connection.connection_kind,
+                    connection_kind=connection.owner_kind.value,
                     status=connection.status,
                     contact_id=connection.contact_id,
                     credentials_expires_at=connection.credentials_expires_at,
@@ -301,7 +292,7 @@ class CuratedIntegrationController:
     @staticmethod
     def _connection_owner_summary(
         *,
-        connection: ConnectionInDb,
+        connection: ExternalConnectionInDb,
         organization_id: uuid.UUID,
         organization_name: str,
         contacts_by_id: dict[uuid.UUID, ContactInDb],
@@ -309,7 +300,7 @@ class CuratedIntegrationController:
         if connection.contact_id is None:
             return ConnectionOwnerSummarySchema(
                 id=organization_id,
-                kind=connection.connection_kind,
+                kind=connection.owner_kind.value,
                 display_name=organization_name,
             )
 
@@ -330,7 +321,7 @@ class CuratedIntegrationController:
         )
         return ConnectionOwnerSummarySchema(
             id=connection.contact_id,
-            kind=connection.connection_kind,
+            kind=connection.owner_kind.value,
             display_name=display_name,
         )
 
@@ -341,13 +332,14 @@ class CuratedIntegrationController:
         connection_id: uuid.UUID,
     ) -> None:
         """Delete one curated connection without exposing cross-tenant existence."""
-        from eylo.modules.connections.services.indb import ConnectionService
+        from eylo.pipelines.external_connections.revocation import (
+            revoke_external_connection,
+        )
 
-        async with start_transaction() as session:
-            deleted = await ConnectionService(session).delete_connection(
-                organization_id=organization_id,
-                connection_id=connection_id,
-            )
+        deleted = await revoke_external_connection(
+            organization_id=organization_id,
+            connection_id=connection_id,
+        )
         if not deleted:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
@@ -455,36 +447,28 @@ class CuratedIntegrationController:
         contact_id: uuid.UUID | None,
     ) -> ConnectionSchema:
         """Store a directly-entered credential for a non-OAuth vendor."""
-        from eylo.modules.connections.schemas.indb import (
-            ConnectionCreateSchema,
-            ConnectionKind,
-            ConnectionStatus,
+        from eylo.modules.connections.domain import ExternalConnectionStatus
+        from eylo.pipelines.integrations_v2.connections import (
+            create_curated_external_connection,
         )
-        from eylo.modules.connections.services.indb import ConnectionService
 
         _offer, spec = self._offer(vendor)
         async with start_transaction():
             installation = await self._installation(organization_id, vendor)
             credentials = _credential_values(installation.auth_kind, api_key, username, password)
-            connection = await ConnectionService().create_(
-                ConnectionCreateSchema(
-                    organization_id=organization_id,
-                    integration_id=installation.id,
-                    contact_id=contact_id,
-                    connection_kind=(
-                        ConnectionKind.CONTACT
-                        if contact_id is not None
-                        else ConnectionKind.ORGANIZATION
-                    ),
-                    status=ConnectionStatus.ACTIVE,
-                    credentials=credentials,
-                )
+            connection = await create_curated_external_connection(
+                installation=installation,
+                contact_id=contact_id,
+                credentials=credentials,
+                credentials_expires_at=None,
+                granted_scopes=(),
+                status=ExternalConnectionStatus.ACTIVE,
             )
         return ConnectionSchema(
             id=connection.id,
             vendor=spec.vendor,
             display_name=spec.display_name,
-            connection_kind=connection.connection_kind.value,
+            connection_kind=connection.owner_kind.value,
             status=connection.status.value,
             contact_id=connection.contact_id,
             credentials_expires_at=connection.credentials_expires_at,

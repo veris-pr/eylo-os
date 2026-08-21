@@ -52,6 +52,9 @@ from eylo.pipelines.scheduler import ScheduledAgentRunExecutor
 from eylo.pipelines.voice.recording_durable_execution import (
     register_voice_recording_upload_workflow,
 )
+from eylo.sor.runtime.commands import register_sor_command_workflow
+from eylo.sor.runtime.sync import register_sor_sync_workflow
+from eylo.sor.runtime.webhooks import register_sor_webhook_workflow
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +85,9 @@ async def run_worker() -> None:
     register_deletion_workflow(adapter.runtime)
     register_voice_recording_upload_workflow(adapter.runtime)
     register_campaign_attempt_workflow(adapter.runtime)
+    register_sor_command_workflow(adapter.runtime)
+    register_sor_sync_workflow(adapter.runtime)
+    register_sor_webhook_workflow(adapter.runtime)
     event_registry = build_event_consumer_registry()
     register_event_delivery_workflow(adapter.runtime, event_registry)
     register_periodic_workflow(adapter.runtime)

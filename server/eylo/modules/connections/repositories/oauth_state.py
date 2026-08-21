@@ -1,5 +1,6 @@
 """Repository for OAuth state management."""
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Optional
 from uuid import UUID
@@ -10,6 +11,15 @@ from eylo.common.repositories import BaseORMRepository as EyloBaseRepository
 from eylo.common.repositories import map_schema_to_model
 from eylo.modules.connections.models import OAuthStateModel
 from eylo.modules.connections.schemas.oauth import OAuthStateCreateSchema
+
+
+@dataclass(frozen=True, slots=True)
+class ExpiredOAuthState:
+    """Unconsumed state whose initiated connection must also be revoked."""
+
+    id: UUID
+    organization_id: UUID
+    external_connection_id: UUID
 
 
 class OAuthStateRepository(EyloBaseRepository[OAuthStateModel]):
@@ -75,7 +85,9 @@ class OAuthStateRepository(EyloBaseRepository[OAuthStateModel]):
         await self.delete_(oauth_state)
         return oauth_state
 
-    async def delete_expired_states(self, current_time: datetime) -> List[UUID]:
+    async def delete_expired_states(
+        self, current_time: datetime
+    ) -> List[ExpiredOAuthState]:
         """Delete OAuth states that have expired.
 
         Deletes OAuth state records where:
@@ -89,21 +101,23 @@ class OAuthStateRepository(EyloBaseRepository[OAuthStateModel]):
             List of deleted OAuth state IDs
 
         """
-        # First fetch the state IDs to delete
-        select_stmt = select(OAuthStateModel.id).where(
-            OAuthStateModel.expires_at < current_time
+        active_result = await self.db_session.execute(
+            select(
+                OAuthStateModel.id,
+                OAuthStateModel.organization_id,
+                OAuthStateModel.external_connection_id,
+            ).where(
+                OAuthStateModel.expires_at < current_time,
+                OAuthStateModel.deleted.is_(False),
+            )
         )
+        active_states = [ExpiredOAuthState(*row) for row in active_result.all()]
 
-        result = await self.db_session.execute(select_stmt)
-        state_ids = [row[0] for row in result.all()]
-
-        if not state_ids:
-            return []
-
-        # Delete the expired states
-        delete_stmt = delete(OAuthStateModel).where(OAuthStateModel.id.in_(state_ids))
-
-        await self.db_session.execute(delete_stmt)
+        await self.db_session.execute(
+            delete(OAuthStateModel).where(OAuthStateModel.expires_at < current_time)
+        )
         await self.db_session.flush()
+        return active_states
 
-        return state_ids
+
+__all__ = ["ExpiredOAuthState", "OAuthStateRepository"]

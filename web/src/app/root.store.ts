@@ -32,6 +32,9 @@ import { ProvidersService } from "@/features/providers/providers.service";
 import { ProvidersStore } from "@/features/providers/providers.store";
 import { SessionsService } from "@/features/sessions/sessions.service";
 import { SessionsStore } from "@/features/sessions/sessions.store";
+import { SorOnboardingDraftStorage } from "@/features/sor/sor-onboarding-draft-storage";
+import { SorService } from "@/features/sor/sor.service";
+import { SorStore } from "@/features/sor/sor.store";
 import { SwarmDraftStorage } from "@/features/swarms/swarm-draft-storage";
 import { SwarmsService } from "@/features/swarms/swarms.service";
 import { SwarmsStore } from "@/features/swarms/swarms.store";
@@ -58,6 +61,7 @@ class RootStore {
   readonly operations: OperationsStore;
   readonly providers: ProvidersStore;
   readonly sessions: SessionsStore;
+  readonly sor: SorStore;
   readonly swarms: SwarmsStore;
   readonly telephony: TelephonyStore;
   readonly theme: ThemeStore;
@@ -79,6 +83,7 @@ class RootStore {
     operations: OperationsStore,
     providers: ProvidersStore,
     sessions: SessionsStore,
+    sor: SorStore,
     swarms: SwarmsStore,
     telephony: TelephonyStore,
     theme: ThemeStore,
@@ -99,6 +104,7 @@ class RootStore {
     this.operations = operations;
     this.providers = providers;
     this.sessions = sessions;
+    this.sor = sor;
     this.swarms = swarms;
     this.telephony = telephony;
     this.theme = theme;
@@ -152,6 +158,10 @@ function createRootStore(): RootStore {
       new ProviderDraftStorage(window.localStorage),
     ),
     new SessionsStore(new SessionsService(api)),
+    new SorStore(
+      new SorService(api),
+      new SorOnboardingDraftStorage(window.localStorage),
+    ),
     new SwarmsStore(
       new SwarmsService(api),
       new SwarmDraftStorage(window.localStorage),

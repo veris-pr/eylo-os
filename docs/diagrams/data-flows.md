@@ -150,6 +150,47 @@ sequenceDiagram
     H-->>A: Normalized tool result
 ```
 
+## System of Record source and Agent action
+
+```mermaid
+flowchart LR
+    operator[Organization Member]
+    onboarding[SOR Onboarding]
+    connection[(Encrypted External Connection)]
+    discovery[(Immutable Schema Revision)]
+    mapping[(Published Field Mapping)]
+    run[(Persisted Sync Run)]
+    worker[Absurd SOR Worker]
+    vendor[External System]
+    projection[(Canonical Records and Custom Fields)]
+    grid[Eylo Audit Grid]
+    grant[(Published Agent Source Grant)]
+    read[Profile-native Read Tool]
+    command[(Durable Mutation Receipt)]
+    revoke[Connection or Grant Revocation]
+    fence[(Persisted Authority Fence)]
+    cancel[Exact Task Cancellation]
+    recovery[Periodic Fenced-work Recovery]
+
+    operator --> onboarding --> connection
+    connection --> discovery --> mapping --> run --> worker
+    worker --> vendor --> projection --> grid
+    grant --> read --> projection
+    grant --> command --> worker
+    worker --> vendor
+    vendor --> projection
+    revoke --> fence --> cancel -.-> worker
+    fence -.-> recovery -.-> cancel
+```
+
+Source verification discovers the account schema before an operator publishes
+a mapping. Activation commits every stream and bootstrap work row before queue
+binding. Reads use the synchronized projection. Mutations use one idempotent
+command receipt, execute the vendor write once, then read the authoritative
+record back into the same projection. Revocation commits the authority fence
+before task cancellation; periodic recovery prevents a stranded task or
+unbound work row from crossing that fence.
+
 ## Campaign attempt
 
 ```mermaid

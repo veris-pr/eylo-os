@@ -16,7 +16,7 @@ from datetime import datetime
 from pydantic import Field
 
 from eylo.common.schemas import EyloBaseApiSchema
-from eylo.modules.connections.models import ConnectionStatus
+from eylo.modules.connections.domain import ExternalConnectionStatus
 from eylo.modules.mappers.enums import ConnectionKind
 
 from ..domain.enums import ToolEffect, ToolExecutionMode, VendorAuthKind
@@ -144,7 +144,7 @@ class ConnectionSchema(EyloBaseApiSchema):
     vendor: str
     display_name: str | None = None
     connection_kind: ConnectionKind
-    status: ConnectionStatus
+    status: ExternalConnectionStatus
     contact_id: uuid.UUID | None = None
     credentials_expires_at: datetime | None = None
     created_at: datetime | None = None

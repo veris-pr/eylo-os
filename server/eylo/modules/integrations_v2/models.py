@@ -18,6 +18,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from eylo.common.models import EyloOrganizationModel
+from eylo.modules.connections.models import ExternalConnectionModel
 
 from .constants import APP_DB_PREFIX
 from .domain.enums import ToolExecutionMode, VendorAuthKind
@@ -34,6 +35,12 @@ class IntegrationV2InstallationModel(EyloOrganizationModel):
             "id",
             "organization_id",
             name="uq_integration_v2_installations_id_organization_id",
+        ),
+        UniqueConstraint(
+            "id",
+            "organization_id",
+            "vendor",
+            name="uq_integration_v2_installations_id_org_vendor",
         ),
         Index(
             "uq_integration_v2_installations_org_vendor_active",
@@ -87,6 +94,59 @@ class IntegrationV2InstallationModel(EyloOrganizationModel):
         nullable=False,
         doc="Member who installed the vendor.",
     )
+
+
+class IntegrationV2ConnectionLinkModel(EyloOrganizationModel):
+    """Integration V2 ownership link to a source-neutral external account."""
+
+    __tablename__ = f"{APP_DB_PREFIX}connection_links"
+
+    __table_args__ = (
+        *EyloOrganizationModel.get_organization_constraints(__tablename__),
+        ForeignKeyConstraint(
+            ["installation_id", "organization_id", "vendor"],
+            [
+                f"{IntegrationV2InstallationModel.__tablename__}.id",
+                f"{IntegrationV2InstallationModel.__tablename__}.organization_id",
+                f"{IntegrationV2InstallationModel.__tablename__}.vendor",
+            ],
+            name="fk_integration_v2_connection_links_installation",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["external_connection_id", "organization_id", "vendor"],
+            [
+                f"{ExternalConnectionModel.__tablename__}.id",
+                f"{ExternalConnectionModel.__tablename__}.organization_id",
+                f"{ExternalConnectionModel.__tablename__}.vendor_key",
+            ],
+            name="fk_integration_v2_connection_links_external_connection",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "installation_id",
+            "external_connection_id",
+            "organization_id",
+            name="uq_integration_v2_connection_links_installation_connection",
+        ),
+        UniqueConstraint(
+            "external_connection_id",
+            "organization_id",
+            name="uq_integration_v2_connection_links_connection_org",
+        ),
+    )
+
+    installation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=False,
+        index=True,
+    )
+    external_connection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=False,
+        index=True,
+    )
+    vendor: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
 class IntegrationV2ToolModel(EyloOrganizationModel):
@@ -149,6 +209,7 @@ class IntegrationV2ToolModel(EyloOrganizationModel):
 
 
 __all__ = [
+    "IntegrationV2ConnectionLinkModel",
     "IntegrationV2InstallationModel",
     "IntegrationV2ToolModel",
 ]

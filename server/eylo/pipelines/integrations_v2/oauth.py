@@ -32,24 +32,26 @@ from eylo.events.schema.py_events.connections import (
     ConnectionFailedEvent,
     ConnectionSuccessEvent,
 )
+from eylo.modules.connections.domain import ExternalConnectionStatus
 from eylo.modules.connections.repositories.oauth_state import OAuthStateRepository
-from eylo.modules.connections.schemas.indb import (
-    ConnectionCreateSchema,
-    ConnectionKind,
-    ConnectionStatus,
-)
 from eylo.modules.connections.schemas.oauth import OAuthStateCreateSchema
-from eylo.modules.connections.services.indb import ConnectionService
+from eylo.modules.connections.services.external import ExternalConnectionService
 from eylo.modules.integrations_v2.constants import OAUTH_CALLBACK_PATH
 from eylo.modules.integrations_v2.domain.errors import (
     IntegrationsV2Error,
     VendorNotFoundError,
 )
-from eylo.modules.integrations_v2.repositories import InstallationRepository
 from eylo.modules.integrations_v2.schemas.indb import InstallationInDb
+from eylo.modules.integrations_v2.services.installations import (
+    CuratedIntegrationService,
+)
 from eylo.modules.provider_configs.crypto import get_secret_cipher
 from eylo.sockets.http.transport import SafeHttpTransport
 
+from .connections import (
+    activate_curated_external_connection,
+    create_curated_external_connection,
+)
 from .contracts import CuratedVendorSpec
 from .http_client import VendorTransport
 from .registry import CuratedRegistry, load_vendors
@@ -101,14 +103,24 @@ async def begin_authorization(
     state_token = secrets.token_urlsafe(32)
     verifier, challenge = _pkce_pair() if oauth.pkce else (None, None)
 
+    connection = await create_curated_external_connection(
+        installation=installation,
+        contact_id=contact_id,
+        credentials=None,
+        credentials_expires_at=None,
+        granted_scopes=oauth.scopes,
+        status=ExternalConnectionStatus.INITIATED,
+    )
+
     await (states or OAuthStateRepository()).create_state(
         OAuthStateCreateSchema(
             state=state_token,
             organization_id=installation.organization_id,
-            integration_id=installation.id,
-            contact_id=contact_id,
+            external_connection_id=connection.id,
             redirect_uri=redirect_uri,
             code_verifier=verifier,
+            requested_scopes=list(oauth.scopes),
+            expected_connection_revision=connection.revision,
             expires_at=datetime.now(timezone.utc)
             + timedelta(minutes=STATE_TTL_MINUTES),
         )
@@ -146,7 +158,7 @@ async def complete_authorization(
     installation: InstallationInDb,
     vendor: CuratedVendorSpec,
     states: OAuthStateRepository | None = None,
-    connections: ConnectionService | None = None,
+    connections: ExternalConnectionService | None = None,
     transport: VendorTransport | None = None,
 ) -> UUID:
     """Exchange the authorization code and store the resulting connection.
@@ -159,17 +171,42 @@ async def complete_authorization(
     """
     async with start_transaction():
         consumed = states or OAuthStateRepository()
+        candidate = await consumed.get_by_state(state)
+        if candidate is None or candidate.redirect_uri != default_callback_url():
+            raise CuratedOAuthError(
+                "oauth_state_invalid", "Authorization state is unknown."
+            )
         stored = await consumed.consume_by_state(state)
-        if stored is None or stored.integration_id != installation.id:
+        if stored is None:
+            raise CuratedOAuthError(
+                "oauth_state_invalid", "Authorization state is unknown."
+            )
+        connection_service = connections or ExternalConnectionService()
+        connection = await connection_service.get(
+            organization_id=installation.organization_id,
+            connection_id=UUID(str(stored.external_connection_id)),
+        )
+        linked_installation = await CuratedIntegrationService().resolve_installation_for_connection(
+            organization_id=installation.organization_id,
+            connection_id=UUID(str(stored.external_connection_id)),
+        )
+        if (
+            connection is None
+            or linked_installation is None
+            or linked_installation.id != installation.id
+        ):
             raise CuratedOAuthError(
                 "oauth_state_invalid", "Authorization state is unknown."
             )
         expired = stored.is_expired()
         redirect_uri = stored.redirect_uri or default_callback_url()
         code_verifier = stored.code_verifier
-        contact_id = stored.contact_id
-
     if expired:
+        async with start_transaction():
+            await ExternalConnectionService().revoke(
+                organization_id=installation.organization_id,
+                connection_id=connection.id,
+            )
         raise CuratedOAuthError(
             "oauth_state_expired", "Authorization state has expired."
         )
@@ -201,22 +238,18 @@ async def complete_authorization(
         )
 
     async with start_transaction():
-        connection = await (connections or ConnectionService()).create_(
-            ConnectionCreateSchema(
-                organization_id=installation.organization_id,
-                integration_id=installation.id,
-                contact_id=contact_id,
-                connection_kind=(
-                    ConnectionKind.CONTACT
-                    if contact_id is not None
-                    else ConnectionKind.ORGANIZATION
-                ),
-                status=ConnectionStatus.ACTIVE,
-                credentials=credentials,
-                credentials_expires_at=expires_at,
-            )
+        activated = await activate_curated_external_connection(
+            connection=connection,
+            credentials=credentials,
+            credentials_expires_at=expires_at,
+            granted_scopes=_granted_scopes(
+                tokens=tokens,
+                requested=oauth.scopes,
+                delimiter=oauth.scope_delimiter,
+            ),
+            service=connections,
         )
-        return UUID(str(connection.id))
+        return UUID(str(activated.id))
 
 
 async def complete_authorization_from_state(
@@ -243,11 +276,19 @@ async def complete_authorization_from_state(
             raise CuratedOAuthError(
                 "oauth_state_invalid", "Authorization state is unknown."
             )
-        installation_row = await InstallationRepository().get(
+        if stored.redirect_uri != default_callback_url():
+            raise CuratedOAuthError(
+                "oauth_state_invalid", "Authorization state is unknown."
+            )
+        connection = await ExternalConnectionService().get(
             organization_id=UUID(str(stored.organization_id)),
-            installation_id=UUID(str(stored.integration_id)),
+            connection_id=UUID(str(stored.external_connection_id)),
         )
-        if installation_row is None:
+        installation = await CuratedIntegrationService().resolve_installation_for_connection(
+            organization_id=UUID(str(stored.organization_id)),
+            connection_id=UUID(str(stored.external_connection_id)),
+        )
+        if connection is None or installation is None:
             # Consume the state: it can never complete, and leaving it alive
             # only keeps an authorization code replayable.
             await repository.consume_by_state(state)
@@ -255,8 +296,7 @@ async def complete_authorization_from_state(
                 "installation_removed",
                 "The vendor installation this authorization belongs to is gone.",
             )
-        installation = InstallationInDb.model_validate(installation_row)
-        contact_id = UUID(str(stored.contact_id)) if stored.contact_id else None
+        contact_id = connection.contact_id
         organization_id = UUID(str(stored.organization_id))
 
     vendor = (registry or load_vendors()).vendor(installation.vendor)
@@ -406,6 +446,19 @@ def _pkce_pair() -> tuple[str, str]:
     digest = hashlib.sha256(verifier.encode("ascii")).digest()
     challenge = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
     return verifier, challenge
+
+
+def _granted_scopes(
+    *,
+    tokens: dict[str, object],
+    requested: tuple[str, ...],
+    delimiter: str,
+) -> list[str]:
+    raw = tokens.get("scope")
+    if not isinstance(raw, str) or not raw.strip():
+        return list(requested)
+    separator = delimiter or " "
+    return [scope.strip() for scope in raw.split(separator) if scope.strip()]
 
 
 __all__ = [

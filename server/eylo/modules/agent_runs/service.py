@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -69,6 +70,7 @@ _MAX_INPUT_SCHEMA_BYTES = 32_768
 _MAX_INPUT_RESPONSE_BYTES = 65_536
 _MAX_INPUT_SCHEMA_DEPTH = 32
 _MAX_INPUT_SCHEMA_NODES = 1_024
+_TOOL_WAIT_OWNER_KIND = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -418,6 +420,122 @@ async def pause_agent_run_in_transaction(
     return request
 
 
+async def pause_agent_run_for_tool_in_transaction(
+    session: AsyncSession,
+    *,
+    organization_id: UUID,
+    run_id: UUID,
+    owner_kind: str,
+    owner_id: UUID,
+) -> AgentRunModel:
+    """Release execution capacity while one identified durable tool completes."""
+    normalized_kind = owner_kind.strip()
+    if _TOOL_WAIT_OWNER_KIND.fullmatch(normalized_kind) is None:
+        raise ValueError("AgentRun tool-wait owner kind is invalid.")
+
+    run = await AgentRunRepository(session).get(
+        organization_id=organization_id,
+        run_id=run_id,
+        for_update=True,
+    )
+    if run is None:
+        raise AgentRunNotFound
+    if run.cancellation_requested_at is not None:
+        raise AgentRunConflict("A cancelling AgentRun cannot start a tool wait.")
+    if run.lifecycle is AgentRunLifecycle.WAITING_FOR_TOOL:
+        if (
+            run.waiting_tool_owner_kind == normalized_kind
+            and run.waiting_tool_owner_id == owner_id
+        ):
+            return run
+        raise AgentRunConflict("AgentRun is waiting for a different tool operation.")
+    if run.lifecycle is not AgentRunLifecycle.RUNNING:
+        raise AgentRunConflict(
+            f"A {run.lifecycle.value} AgentRun cannot start a tool wait."
+        )
+
+    run.lifecycle = AgentRunLifecycle.WAITING_FOR_TOOL
+    run.waiting_at = datetime.now(timezone.utc)
+    run.waiting_tool_owner_kind = normalized_kind
+    run.waiting_tool_owner_id = owner_id
+    run.state_revision += 1
+    exceeded = await release_agent_run_reservation_in_transaction(
+        session,
+        organization_id=organization_id,
+        run_id=run_id,
+    )
+    if exceeded is not None:
+        raise ExecutionBudgetExceeded(exceeded)
+    await session.flush()
+    await _file_agent_run_fact(
+        session,
+        run,
+        event_type="agent.run.waiting_for_tool",
+        payload={
+            "tool_owner_kind": normalized_kind,
+            "tool_owner_id": str(owner_id),
+        },
+    )
+    return run
+
+
+async def resume_agent_run_from_tool_in_transaction(
+    session: AsyncSession,
+    *,
+    organization_id: UUID,
+    run_id: UUID,
+    owner_kind: str,
+    owner_id: UUID,
+) -> AgentRunModel:
+    """Reacquire execution capacity after an exact durable tool becomes terminal."""
+    normalized_kind = owner_kind.strip()
+    if _TOOL_WAIT_OWNER_KIND.fullmatch(normalized_kind) is None:
+        raise ValueError("AgentRun tool-wait owner kind is invalid.")
+
+    run = await AgentRunRepository(session).get(
+        organization_id=organization_id,
+        run_id=run_id,
+        for_update=True,
+    )
+    if run is None:
+        raise AgentRunNotFound
+    if run.cancellation_requested_at is not None:
+        raise AgentRunConflict("A cancelling AgentRun cannot resume.")
+    if run.lifecycle is AgentRunLifecycle.RUNNING:
+        return run
+    if run.lifecycle is not AgentRunLifecycle.WAITING_FOR_TOOL:
+        raise AgentRunConflict(
+            f"A {run.lifecycle.value} AgentRun cannot resume from a tool wait."
+        )
+    if (
+        run.waiting_tool_owner_kind != normalized_kind
+        or run.waiting_tool_owner_id != owner_id
+    ):
+        raise AgentRunConflict("AgentRun is waiting for a different tool operation.")
+
+    await activate_agent_run_reservation_in_transaction(
+        session,
+        organization_id=organization_id,
+        run_id=run_id,
+    )
+    run.lifecycle = AgentRunLifecycle.RUNNING
+    run.waiting_at = None
+    run.waiting_tool_owner_kind = None
+    run.waiting_tool_owner_id = None
+    run.state_revision += 1
+    await session.flush()
+    await _file_agent_run_fact(
+        session,
+        run,
+        event_type="agent.run.resumed",
+        payload={
+            "tool_owner_kind": normalized_kind,
+            "tool_owner_id": str(owner_id),
+        },
+    )
+    return run
+
+
 async def load_agent_run_wait(
     *,
     organization_id: UUID,
@@ -638,6 +756,7 @@ async def fail_agent_run_in_transaction(
         AgentRunLifecycle.RUNNING,
         AgentRunLifecycle.WAITING_FOR_INPUT,
         AgentRunLifecycle.WAITING_FOR_APPROVAL,
+        AgentRunLifecycle.WAITING_FOR_TOOL,
     }:
         raise AgentRunConflict(
             f"A {run.lifecycle.value} AgentRun cannot accept an execution failure."
@@ -656,6 +775,8 @@ async def fail_agent_run_in_transaction(
     run.outcome_reason = None
     run.failure_summary = failure_summary
     run.waiting_at = None
+    run.waiting_tool_owner_kind = None
+    run.waiting_tool_owner_id = None
     run.finished_at = datetime.now(timezone.utc)
     run.state_revision += 1
     await release_agent_run_reservation_in_transaction(
@@ -888,6 +1009,9 @@ async def accept_agent_run_cancellation(
             run.cancellation_requested_at = now
         run.lifecycle = AgentRunLifecycle.CANCELLED
         run.outcome = AgentRunOutcome.CANCELLED
+        run.waiting_at = None
+        run.waiting_tool_owner_kind = None
+        run.waiting_tool_owner_id = None
         run.cancelled_at = now
         run.finished_at = now
         run.state_revision += 1

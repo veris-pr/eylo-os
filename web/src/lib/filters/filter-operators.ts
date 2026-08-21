@@ -7,6 +7,8 @@ import type {
 const DEFAULT_OPERATORS: Record<FilterValueType, readonly FilterOperator[]> = {
   "single-select": ["is", "is_not"],
   "multi-select": ["is", "is_not"],
+  text: ["is", "is_not"],
+  number: ["is", "is_not"],
   date: ["before", "after"],
   labels: ["includes_any", "includes_all", "includes_none"],
   links: ["includes_any", "includes_all", "includes_none"],
@@ -15,6 +17,8 @@ const DEFAULT_OPERATORS: Record<FilterValueType, readonly FilterOperator[]> = {
 const DEFAULT_OPERATOR: Record<FilterValueType, FilterOperator> = {
   "single-select": "is",
   "multi-select": "is",
+  text: "is",
+  number: "is",
   date: "before",
   labels: "includes_any",
   links: "includes_any",

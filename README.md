@@ -30,6 +30,8 @@ The repository contains the complete application:
   expiry, and reindexing.
 - Curated integrations, per-user or organization-owned connections, MCP
   servers, and per-agent tool grants.
+- Systems of Record with canonical domain tools, organization-owned source
+  projections, explicit Agent grants, and operator audit grids.
 - Campaigns, schedules, swarms, handoffs, and durable agent runs.
 
 Nothing is preconfigured. Eylo never silently selects a vendor, model, or
@@ -73,6 +75,7 @@ The backend keeps domain and provider concerns separate:
 | ----------------- | -------------------------------------------------- |
 | `eylo/framework/` | Standalone, platform-neutral agent loop            |
 | `eylo/modules/`   | Domain models, rules, services, and HTTP contracts |
+| `eylo/sor/`       | Canonical System of Record profiles and adapters   |
 | `eylo/sockets/`   | Vendor protocol adapters                           |
 | `eylo/pipelines/` | Cross-layer orchestration and durable effects      |
 | `eylo/listeners/` | In-process event reactions                         |

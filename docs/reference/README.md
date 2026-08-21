@@ -7,6 +7,7 @@ Reference pages describe current contracts without teaching a workflow.
 - [Pipeline catalog](pipelines.md)
 - [Provider and socket catalog](providers.md)
 - [Curated integration catalog](integrations.md)
+- [System of Record contracts](systems-of-record.md)
 - [Events and delivery contracts](events.md)
 - [Runtime surfaces](runtime-surfaces.md)
 - [Widget SDK](widget-sdk.md)

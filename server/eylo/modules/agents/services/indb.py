@@ -413,24 +413,6 @@ class AgentService(EyloBaseService[AgentInDb]):
         updated_agent_model = await self.repository.save_(updated_agent_model)
         return self.orm_to_schema(updated_agent_model)
 
-    async def publish_agent(
-        self,
-        *,
-        organization_id: UUID,
-        agent_id: UUID,
-        expected_draft_version: int,
-        actor_id: UUID | None = None,
-    ) -> AgentInDb:
-        from eylo.modules.agents.services.revisions import AgentRevisionService
-
-        await AgentRevisionService(self.repository.db_session).publish(
-            organization_id=organization_id,
-            agent_id=agent_id,
-            expected_draft_version=expected_draft_version,
-            actor_id=actor_id,
-        )
-        return await self.get_by_organization_and_id(organization_id, agent_id)
-
     async def withdraw_agent(
         self,
         *,

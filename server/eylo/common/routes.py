@@ -87,6 +87,10 @@ def setup_private_routes():
         router as _number_management,
     )
     from eylo.products.campaigns.routes import router as _campaigns
+    from eylo.sor.knowledge.routes import router as _sor_knowledge
+    from eylo.sor.shared.routes import router as _sor
+    from eylo.sor.support.routes import router as _sor_support
+    from eylo.sor.ticketing.routes import router as _sor_ticketing
 
     private_router.include_router(_agents)
     private_router.include_router(_agent_runs)
@@ -139,6 +143,10 @@ def setup_private_routes():
     private_router.include_router(_voice_transcript_conversations)
     private_router.include_router(_agent_swarm)
     private_router.include_router(_campaigns)
+    private_router.include_router(_sor_knowledge)
+    private_router.include_router(_sor_ticketing)
+    private_router.include_router(_sor_support)
+    private_router.include_router(_sor)
 
 def setup_public_routes():
     """Set up public routes that don't require authentication."""
@@ -157,6 +165,8 @@ def setup_public_routes():
     from eylo.pipelines.telephony.media_stream import router as _generic_telephony_ws
     from eylo.pipelines.telephony.webhook_routes import router as _webhooks
     from eylo.pipelines.websocket.routes import router as _websocket
+    from eylo.sor.runtime.oauth_routes import router as _sor_oauth
+    from eylo.sor.runtime.webhook_routes import router as _sor_webhooks
 
     public_router.include_router(_auth)
     public_router.include_router(_conversations)
@@ -172,6 +182,8 @@ def setup_public_routes():
     public_router.include_router(_websocket)
     public_router.include_router(_webhooks)
     public_router.include_router(_generic_telephony_ws)
+    public_router.include_router(_sor_webhooks)
+    public_router.include_router(_sor_oauth)
 
     # voice_routes mounted on private_router — outbound calls require auth
     private_router.include_router(_voice_routes)

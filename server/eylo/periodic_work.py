@@ -28,6 +28,7 @@ from eylo.jobs.objectives import (
 )
 from eylo.jobs.recording_upload import nudge_unbound_recording_uploads
 from eylo.jobs.scheduler import dispatch_due_schedules, recover_stranded_schedules
+from eylo.jobs.sor import dispatch_due_sor_syncs, nudge_sor_work
 from eylo.modules.connections.tasks import (
     cleanup_expired_oauth_states,
     cleanup_invalidated_connections,
@@ -78,6 +79,8 @@ _ACTIONS = (
     ),
     PeriodicAction("nudge-memory-formations", 5, nudge_unbound_memory_formations),
     PeriodicAction("nudge-deletions", 1, nudge_unbound_deletions),
+    PeriodicAction("dispatch-due-sor-syncs", 1, dispatch_due_sor_syncs),
+    PeriodicAction("nudge-sor-work", 1, nudge_sor_work),
     PeriodicAction("reap-sandbox-resources", 5, reap_sandbox_resources),
     PeriodicAction(
         "refresh-expiring-curated-tokens", 5, refresh_expiring_curated_tokens

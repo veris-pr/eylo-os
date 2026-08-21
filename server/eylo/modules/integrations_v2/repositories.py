@@ -12,13 +12,23 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Sequence
+from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import case, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.database import get_transaction
+from eylo.modules.connections.domain import (
+    ConnectionOwnerKind,
+    ExternalConnectionStatus,
+)
+from eylo.modules.connections.models import ExternalConnectionModel
 
-from .models import IntegrationV2InstallationModel, IntegrationV2ToolModel
+from .models import (
+    IntegrationV2ConnectionLinkModel,
+    IntegrationV2InstallationModel,
+    IntegrationV2ToolModel,
+)
 
 
 class InstallationRepository:
@@ -155,4 +165,150 @@ class CuratedToolRepository:
         return tool
 
 
-__all__ = ["CuratedToolRepository", "InstallationRepository"]
+class IntegrationConnectionLinkRepository:
+    """Persist Integration V2 links and query their external account rows."""
+
+    def __init__(self, db: AsyncSession | None = None) -> None:
+        self._db = db or get_transaction()
+
+    async def add(
+        self,
+        link: IntegrationV2ConnectionLinkModel,
+    ) -> IntegrationV2ConnectionLinkModel:
+        self._db.add(link)
+        await self._db.flush()
+        return link
+
+    async def list_connections(
+        self,
+        *,
+        organization_id: uuid.UUID,
+    ) -> Sequence[ExternalConnectionModel]:
+        result = await self._db.scalars(
+            select(ExternalConnectionModel)
+            .join(
+                IntegrationV2ConnectionLinkModel,
+                IntegrationV2ConnectionLinkModel.external_connection_id
+                == ExternalConnectionModel.id,
+            )
+            .where(
+                IntegrationV2ConnectionLinkModel.organization_id == organization_id,
+                IntegrationV2ConnectionLinkModel.deleted.is_(False),
+                ExternalConnectionModel.organization_id == organization_id,
+                ExternalConnectionModel.deleted.is_(False),
+            )
+            .order_by(
+                ExternalConnectionModel.updated_at.desc(),
+                ExternalConnectionModel.id.desc(),
+            )
+        )
+        return result.all()
+
+    async def get_active_for_installation(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        installation_id: uuid.UUID,
+        contact_id: uuid.UUID | None,
+    ) -> ExternalConnectionModel | None:
+        statement = (
+            select(ExternalConnectionModel)
+            .join(
+                IntegrationV2ConnectionLinkModel,
+                IntegrationV2ConnectionLinkModel.external_connection_id
+                == ExternalConnectionModel.id,
+            )
+            .where(
+                IntegrationV2ConnectionLinkModel.installation_id == installation_id,
+                IntegrationV2ConnectionLinkModel.organization_id == organization_id,
+                IntegrationV2ConnectionLinkModel.deleted.is_(False),
+                ExternalConnectionModel.organization_id == organization_id,
+                ExternalConnectionModel.status.in_(
+                    (
+                        ExternalConnectionStatus.ACTIVE,
+                        ExternalConnectionStatus.DEGRADED,
+                    )
+                ),
+                ExternalConnectionModel.deleted.is_(False),
+            )
+        )
+        if contact_id is None:
+            statement = statement.where(
+                ExternalConnectionModel.owner_kind
+                == ConnectionOwnerKind.ORGANIZATION
+            )
+        else:
+            statement = statement.where(
+                or_(
+                    ExternalConnectionModel.contact_id == contact_id,
+                    ExternalConnectionModel.owner_kind
+                    == ConnectionOwnerKind.ORGANIZATION,
+                )
+            )
+        statement = statement.order_by(
+            case(
+                (ExternalConnectionModel.owner_kind == ConnectionOwnerKind.CONTACT, 0),
+                else_=1,
+            ),
+            ExternalConnectionModel.updated_at.desc(),
+            ExternalConnectionModel.id.desc(),
+        ).limit(1)
+        return await self._db.scalar(statement)
+
+    async def get_installation_for_connection(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        connection_id: uuid.UUID,
+    ) -> IntegrationV2InstallationModel | None:
+        return await self._db.scalar(
+            select(IntegrationV2InstallationModel)
+            .join(
+                IntegrationV2ConnectionLinkModel,
+                IntegrationV2ConnectionLinkModel.installation_id
+                == IntegrationV2InstallationModel.id,
+            )
+            .where(
+                IntegrationV2ConnectionLinkModel.external_connection_id
+                == connection_id,
+                IntegrationV2ConnectionLinkModel.organization_id == organization_id,
+                IntegrationV2ConnectionLinkModel.deleted.is_(False),
+                IntegrationV2InstallationModel.organization_id == organization_id,
+                IntegrationV2InstallationModel.deleted.is_(False),
+            )
+        )
+
+    async def list_expiring_connections(
+        self,
+        *,
+        expires_before: datetime,
+    ) -> Sequence[ExternalConnectionModel]:
+        result = await self._db.scalars(
+            select(ExternalConnectionModel)
+            .join(
+                IntegrationV2ConnectionLinkModel,
+                IntegrationV2ConnectionLinkModel.external_connection_id
+                == ExternalConnectionModel.id,
+            )
+            .where(
+                IntegrationV2ConnectionLinkModel.deleted.is_(False),
+                ExternalConnectionModel.status.in_(
+                    (
+                        ExternalConnectionStatus.ACTIVE,
+                        ExternalConnectionStatus.DEGRADED,
+                    )
+                ),
+                ExternalConnectionModel.deleted.is_(False),
+                ExternalConnectionModel.credentials_expires_at.is_not(None),
+                ExternalConnectionModel.credentials_expires_at < expires_before,
+            )
+            .order_by(ExternalConnectionModel.credentials_expires_at.asc())
+        )
+        return result.all()
+
+
+__all__ = [
+    "CuratedToolRepository",
+    "InstallationRepository",
+    "IntegrationConnectionLinkRepository",
+]

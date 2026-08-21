@@ -39,9 +39,9 @@ const CONNECTION_KIND_LABELS: Record<CuratedConnectionKind, string> = {
 
 const CONNECTION_STATUS_LABELS: Record<CuratedConnectionStatus, string> = {
   ACTIVE: "Active",
-  FAILED: "Failed",
-  INACTIVE: "Inactive",
+  DEGRADED: "Degraded",
   INITIATED: "Initiated",
+  REAUTH_REQUIRED: "Reconnect required",
   REVOKED: "Revoked",
 };
 

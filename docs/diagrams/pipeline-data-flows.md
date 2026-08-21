@@ -25,9 +25,11 @@ Empty compatibility directories are not runtime pipelines and are not listed.
   [Agent-run transcript](#agent-run-transcript),
   [parallel Agents](#parallel-agents), [system tools](#system-tools), and
   [MCP](#mcp).
-- Knowledge and capabilities: [curated integrations V2](#curated-integrations-v2),
-  [Knowledgebase](#knowledgebase), [Memory](#memory), [embedding](#embedding),
-  [reranking](#reranking), [storage](#storage), and [email](#email).
+- External systems, Knowledge, and capabilities:
+  [curated integrations V2](#curated-integrations-v2),
+  [Systems of Record](#systems-of-record), [Knowledgebase](#knowledgebase),
+  [Memory](#memory), [embedding](#embedding), [reranking](#reranking),
+  [storage](#storage), and [email](#email).
 - Voice and transports: [Voice](#voice), [WebRTC](#webrtc),
   [telephony](#telephony), and [WebSocket](#websocket).
 - Durable and product execution: [sandbox](#sandbox), [scheduler](#scheduler),
@@ -345,7 +347,7 @@ flowchart LR
     effect --> mutation --> server --> receipt
 ```
 
-## Knowledge, memory, and provider capabilities
+## External systems, knowledge, memory, and provider capabilities
 
 ### Curated integrations V2
 
@@ -390,6 +392,63 @@ flowchart LR
 OAuth state is consumed before token exchange so a later provider failure
 cannot make the authorization code replayable. Expiring tokens are refreshed
 by periodic durable work, not inside an Agent's request budget.
+
+### Systems of Record
+
+The SOR runtime keeps vendor adapters behind canonical profile contracts.
+Onboarding commits a source, immutable discovery, mapping, streams, and sync
+work. Agent reads use the projection; mutations use a durable command whose
+terminal receipt resumes the waiting Agent run.
+
+Sources: [`sync.py`](../../server/eylo/sor/runtime/sync.py),
+[`commands.py`](../../server/eylo/sor/runtime/commands.py),
+[`revocation.py`](../../server/eylo/sor/runtime/revocation.py),
+[`tool_execution.py`](../../server/eylo/pipelines/sor/tool_execution.py), and
+[`reads.py`](../../server/eylo/sor/shared/reads.py).
+
+```mermaid
+flowchart LR
+    source["Verified Source and Published Mapping"]
+    sync_intent[(Sync Run)]
+    commit[Commit]
+    worker[Absurd SOR Worker]
+    adapter[Profile Vendor Adapter]
+    vendor[External System]
+    projection[(Canonical Projection)]
+    local_event["Post-commit SOR lifecycle event"]
+    action_event[(Organization-visible action event)]
+    grid["SOR Grid and Detail API"]
+    model_call["Agent Profile Tool Call"]
+    authority["Published Tool and Source Grants"]
+    effect{Read or Mutation}
+    command[(Command Receipt)]
+    wait["Durable Agent Wait"]
+    recheck["Live Connection, Source, Run, Tool, and Grant Recheck"]
+    revoke["Connection or Source-grant Revocation"]
+    fence[("Persisted Source and Command Fence")]
+    cancel["Exact Absurd Task Cancellation"]
+    recovery["Periodic Fenced-work Recovery"]
+
+    source --> sync_intent --> commit --> worker --> recheck --> adapter --> vendor
+    vendor --> adapter --> projection --> grid
+    projection -. "after commit" .-> local_event
+    model_call --> authority --> effect
+    effect -->|read| projection
+    effect -->|mutation| command --> commit --> worker
+    command --> wait
+    worker --> command --> action_event
+    command --> wait
+    revoke --> fence --> cancel -.-> worker
+    fence -.-> recovery -.-> cancel
+```
+
+Projection never causes an outbound mutation. A command is keyed by Agent run
+and tool call, checkpoints the vendor result, then performs read-after-write.
+This separates source synchronization from Agent mutation and prevents a
+source-to-Eylo projection from bouncing back to the source.
+The DB fence commits before cancellation. Recovery refuses to respawn work for
+an ineligible source and periodically stops any task stranded by a process
+failure between commit and cancellation.
 
 ### Knowledgebase
 

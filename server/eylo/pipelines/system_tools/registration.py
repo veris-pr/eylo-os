@@ -28,6 +28,8 @@ from eylo.pipelines.system_tools.telephony_tools import (
     schedule_call,
     transfer_call,
 )
+from eylo.sor.runtime.tools import iter_sor_tool_declarations
+from eylo.sor.shared.contracts import SorToolEffect
 
 _NO_REQUIREMENTS = ToolRequirements()
 _MEMORY_REQUIREMENTS = ToolRequirements(
@@ -51,6 +53,11 @@ _PLACE_CALL_REQUIREMENTS = ToolRequirements(
     organization_capabilities=_OUTBOUND_CALL_REQUIREMENTS.organization_capabilities,
     agent_capabilities=_OUTBOUND_CALL_REQUIREMENTS.agent_capabilities,
     runtime_facts=frozenset({ToolRuntimeFact.DURABLE_EXECUTION}),
+)
+_SOR_MUTATION_REQUIREMENTS = ToolRequirements(
+    runtime_facts=frozenset(
+        {ToolRuntimeFact.DURABLE_EXECUTION, ToolRuntimeFact.AGENT_RUN}
+    ),
 )
 
 _PIPELINE_SYSTEM_TOOLS = (
@@ -83,11 +90,24 @@ def register_pipeline_system_tools() -> None:
             requirements=requirements,
             provider_capability=provider_capability,
         )
+    for declaration in iter_sor_tool_declarations():
+        system_tools_registry.register_tool(
+            declaration.spec.name,
+            declaration.function,
+            requirements=(
+                _NO_REQUIREMENTS
+                if declaration.spec.effect is SorToolEffect.READ
+                else _SOR_MUTATION_REQUIREMENTS
+            ),
+        )
 
 
 def pipeline_system_tool_names() -> tuple[str, ...]:
     """Return the frozen tool-name manifest used by startup verification."""
-    return tuple(name for name, _, _, _ in _PIPELINE_SYSTEM_TOOLS)
+    return (
+        *(name for name, _, _, _ in _PIPELINE_SYSTEM_TOOLS),
+        *(item.spec.name for item in iter_sor_tool_declarations()),
+    )
 
 
 __all__ = ["pipeline_system_tool_names", "register_pipeline_system_tools"]

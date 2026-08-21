@@ -17,7 +17,9 @@ authority, transforms, sinks, and recovery path for every entry below.
 | `parallel_agents` | durable worker dispatch for LLM tasks, swarm members, and attached background Agents |
 | `system_tools` | register platform tools and connect them to knowledge, memory, sandbox, telephony, and task pipelines |
 | `mcp` | discover and execute MCP tools through pinned server definitions |
+| `external_connections` | encrypt and decrypt external-account credentials with organization, connection, and revision binding at adapter composition boundaries |
 | `integrations_v2` | registry, OAuth, credential resolution, origin-pinned HTTP, refresh, durable mutations, and Agent-tool projection for curated vendors |
+| `sor` | execute profile-native System of Record reads under exact published Agent, tool, source, mapping, and field authority; bridge mutations into durable command receipts and Agent-run wait/resume |
 | `knowledgebase` | resolve vendor/index authority, ingest files/corpora, query with citations/top-k/reranking, and reindex durably |
 | `memory` | recall hooks, fact formation, reconciliation, config dependency references, and reindexing |
 | `embedding` | verify/delete/resolve embedding configs and build embedding runtime |
@@ -49,6 +51,7 @@ The worker registers these workflow families before it polls:
 - voice recording upload;
 - campaign attempts;
 - durable event delivery;
+- System of Record synchronization and mutation commands;
 - periodic work.
 
 Product rows are created first. Absurd owns the execution attempt, retry, wait,

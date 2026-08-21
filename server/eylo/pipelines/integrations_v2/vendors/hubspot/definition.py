@@ -13,6 +13,7 @@ CONTACTS_WRITE = "crm.objects.contacts.write"
 DEALS_READ = "crm.objects.deals.read"
 DEALS_WRITE = "crm.objects.deals.write"
 COMPANIES_READ = "crm.objects.companies.read"
+COMPANIES_WRITE = "crm.objects.companies.write"
 
 OAUTH_SCOPES: tuple[str, ...] = (
     CONTACTS_READ,
@@ -20,6 +21,7 @@ OAUTH_SCOPES: tuple[str, ...] = (
     DEALS_READ,
     DEALS_WRITE,
     COMPANIES_READ,
+    COMPANIES_WRITE,
 )
 
 vendor = registry.register_vendor(
@@ -45,6 +47,7 @@ vendor = registry.register_vendor(
 
 __all__ = [
     "COMPANIES_READ",
+    "COMPANIES_WRITE",
     "CONTACTS_READ",
     "CONTACTS_WRITE",
     "DEALS_READ",

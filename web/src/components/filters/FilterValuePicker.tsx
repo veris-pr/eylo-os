@@ -45,6 +45,21 @@ function FilterValuePicker<Item, Property extends string>({
     );
   }
 
+  if (
+    definition.valueType === "text" ||
+    definition.valueType === "number"
+  ) {
+    return (
+      <ScalarValuePicker
+        definition={definition}
+        onBack={onBack}
+        onChange={onChange}
+        onDone={onDone}
+        selectedValues={selectedValues}
+      />
+    );
+  }
+
   const allowsMultipleValues = definition.valueType !== "single-select";
   const emptyMessage = isLoading
     ? "Loading values…"
@@ -111,6 +126,52 @@ function FilterValuePicker<Item, Property extends string>({
           </Button>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function ScalarValuePicker<Item, Property extends string>({
+  definition,
+  onBack,
+  onChange,
+  onDone,
+  selectedValues,
+}: FilterValuePickerProps<Item, Property>) {
+  const value = selectedValues[0] ?? "";
+  return (
+    <div>
+      <PickerBackButton label={definition.label} onBack={onBack} />
+      <div className="space-y-2 p-3">
+        <label
+          className="text-sm font-medium"
+          htmlFor={`filter-${definition.property}`}
+        >
+          {definition.label}
+        </label>
+        <Input
+          id={`filter-${definition.property}`}
+          inputMode={definition.valueType === "number" ? "decimal" : undefined}
+          maxLength={definition.valueType === "number" ? 64 : 1000}
+          type={definition.valueType === "number" ? "number" : "text"}
+          value={value}
+          onChange={(event) =>
+            onChange(event.target.value === "" ? [] : [event.target.value])
+          }
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && value !== "") onDone?.();
+          }}
+        />
+        {onDone !== undefined ? (
+          <Button
+            className="w-full"
+            disabled={value === ""}
+            size="sm"
+            onClick={onDone}
+          >
+            Apply value
+          </Button>
+        ) : null}
+      </div>
     </div>
   );
 }

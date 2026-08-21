@@ -76,4 +76,10 @@ calls public APIs. It stores base URL, organization ID, and bearer token in its
 local config. `--json` preserves machine-readable output; default rendering is
 human-oriented.
 
+System of Record operations use the concise `sor` resource. Run
+`eylo sor actions` against the target API to see the exact available actions
+and required identifiers. Examples include `eylo sor get-catalog`,
+`eylo sor list-sources`, and `eylo sor get-grid-contract knowledge document`.
+The resource name supplies the namespace, so actions do not repeat `sor`.
+
 The CLI never writes platform tables directly.

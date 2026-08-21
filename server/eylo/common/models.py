@@ -50,6 +50,11 @@ def register_models():
     from eylo.modules.voice_transcripts import models as voice_transcript_models
     from eylo.pipelines.outbound import models as outbound_models
     from eylo.products.campaigns import models as campaign_models
+    from eylo.sor.crm import models as sor_crm_models
+    from eylo.sor.knowledge import models as sor_knowledge_models
+    from eylo.sor.shared import models as sor_models
+    from eylo.sor.support import models as sor_support_models
+    from eylo.sor.ticketing import models as sor_ticketing_models
 
     _ = (
         durable_event_models,
@@ -78,6 +83,11 @@ def register_models():
         voice_models,
         voice_transcript_models,
         campaign_models,
+        sor_crm_models,
+        sor_knowledge_models,
+        sor_models,
+        sor_support_models,
+        sor_ticketing_models,
     )
 
 

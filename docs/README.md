@@ -18,7 +18,8 @@ architecture rationale do not compete for attention.
 1. Read the root [README](../README.md).
 2. Complete [Run your first Agent](tutorials/first-agent.md).
 3. Use the [operator how-to guides](how-to/README.md) for providers, knowledge,
-   memory, voice, integrations, campaigns, and runtime operations.
+   memory, voice, integrations, Systems of Record, campaigns, and runtime
+   operations.
 4. Use the running OpenAPI document at `/docs` for exact HTTP request and
    response schemas.
 
@@ -62,6 +63,8 @@ contract.
 - Provider availability and form fields: backend catalogs and factories.
 - Curated integration tools: the in-process curated registry.
 - Runtime composition: `eylo.app`, `eylo.agent_run_worker`, and pipeline wiring.
+- System of Record profiles, vendors, tools, and grid metadata: the SOR runtime
+  registry and public SOR API.
 - Frontend behavior: the console and widget stores, services, routes, and state
   machines.
 

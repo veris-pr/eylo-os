@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
@@ -11,13 +12,18 @@ from eylo.common.http_egress import (
     HttpOrigin,
     parse_https_target,
 )
-from eylo.modules.connections.services.indb import ConnectionService
 from eylo.modules.integrations_v2.domain.enums import VendorAuthKind
 from eylo.modules.integrations_v2.domain.errors import (
     CredentialUnavailableError,
     VendorNotFoundError,
 )
 from eylo.modules.integrations_v2.schemas.indb import ToolExecutionGrant
+from eylo.modules.integrations_v2.services.installations import (
+    CuratedIntegrationService,
+)
+from eylo.pipelines.external_connections.credentials import (
+    decrypt_connection_credentials,
+)
 
 from .contracts import CuratedVendorSpec, VendorAccount
 from .credentials import VendorWireAuth, build_vendor_wire_auth
@@ -42,7 +48,8 @@ async def resolve_vendor_auth(
     grant: ToolExecutionGrant,
     contact_id: UUID | None = None,
     registry: CuratedRegistry | None = None,
-    connections: ConnectionService | None = None,
+    connections: CuratedIntegrationService | None = None,
+    required_scopes: Sequence[str] = (),
     request_budget_seconds: float = 20.0,
 ) -> ResolvedVendorAuth:
     """Resolve the credential authorizing one curated tool call.
@@ -74,9 +81,9 @@ async def resolve_vendor_auth(
             account=VendorAccount(connection_id=NO_AUTH_CONNECTION_ID),
         )
 
-    service = connections or ConnectionService()
-    connection = await service.get_active_connection_for_execution(
-        integration_id=grant.installation_id,
+    service = connections or CuratedIntegrationService()
+    connection = await service.get_active_external_connection(
+        installation_id=grant.installation_id,
         organization_id=grant.organization_id,
         contact_id=contact_id,
     )
@@ -90,10 +97,37 @@ async def resolve_vendor_auth(
             "auth_required",
             f"The '{grant.vendor}' credential expires inside the request budget.",
         )
+    if (
+        connection.vendor_key != grant.vendor
+        or connection.auth_kind.value != grant.auth_kind.value
+        or connection.instance_origin != grant.instance_url
+    ):
+        raise CredentialUnavailableError(
+            "auth_required",
+            f"The stored '{grant.vendor}' authorization no longer matches its install.",
+        )
+    if grant.auth_kind is VendorAuthKind.OAUTH2 and not set(required_scopes).issubset(
+        connection.granted_scopes
+    ):
+        raise CredentialUnavailableError(
+            "auth_required",
+            f"The '{grant.vendor}' authorization requires additional scopes.",
+        )
+    if connection.credentials is None:
+        raise CredentialUnavailableError(
+            "auth_required",
+            f"The '{grant.vendor}' credential is unavailable.",
+        )
+    credentials = decrypt_connection_credentials(
+        connection.credentials,
+        organization_id=connection.organization_id,
+        connection_id=connection.id,
+        revision=connection.revision,
+    )
 
     auth = build_vendor_wire_auth(
         auth_kind=grant.auth_kind,
-        credentials=connection.credentials,
+        credentials=credentials,
         origin=origin,
         api_key_placement=vendor.api_key_placement,
     )

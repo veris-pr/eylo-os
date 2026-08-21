@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.database import get_transaction
 from eylo.common.http_egress import HttpEgressPolicyError, HttpOrigin
+from eylo.modules.connections.schemas.external import ExternalConnectionInDb
 
 from ..domain.enums import ToolExecutionMode, VendorAuthKind
 from ..domain.errors import (
@@ -31,8 +32,16 @@ from ..domain.errors import (
 )
 from ..domain.identity import curated_tool_id
 from ..domain.offers import CuratedVendorOffer
-from ..models import IntegrationV2InstallationModel, IntegrationV2ToolModel
-from ..repositories import CuratedToolRepository, InstallationRepository
+from ..models import (
+    IntegrationV2ConnectionLinkModel,
+    IntegrationV2InstallationModel,
+    IntegrationV2ToolModel,
+)
+from ..repositories import (
+    CuratedToolRepository,
+    InstallationRepository,
+    IntegrationConnectionLinkRepository,
+)
 from ..schemas.indb import CuratedToolInDb, InstallationInDb, ToolExecutionGrant
 
 
@@ -43,6 +52,7 @@ class CuratedIntegrationService:
         self._db = db or get_transaction()
         self._installations = InstallationRepository(self._db)
         self._tools = CuratedToolRepository(self._db)
+        self._connection_links = IntegrationConnectionLinkRepository(self._db)
 
     async def install_vendor(
         self,
@@ -103,6 +113,79 @@ class CuratedIntegrationService:
             organization_id=organization_id
         )
         return [InstallationInDb.model_validate(row) for row in rows]
+
+    async def link_external_connection(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        installation_id: uuid.UUID,
+        connection_id: uuid.UUID,
+        vendor: str,
+    ) -> None:
+        """Link a connection only when its installation still owns this vendor."""
+        installation = await self._installations.get(
+            organization_id=organization_id,
+            installation_id=installation_id,
+        )
+        if installation is None or installation.vendor != vendor:
+            raise VendorNotFoundError(
+                "vendor_not_installed",
+                "The external connection vendor is not installed.",
+            )
+        await self._connection_links.add(
+            IntegrationV2ConnectionLinkModel(
+                organization_id=organization_id,
+                installation_id=installation_id,
+                external_connection_id=connection_id,
+                vendor=vendor,
+            )
+        )
+
+    async def list_external_connections(
+        self,
+        *,
+        organization_id: uuid.UUID,
+    ) -> list[ExternalConnectionInDb]:
+        rows = await self._connection_links.list_connections(
+            organization_id=organization_id
+        )
+        return [ExternalConnectionInDb.model_validate(row) for row in rows]
+
+    async def get_active_external_connection(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        installation_id: uuid.UUID,
+        contact_id: uuid.UUID | None,
+    ) -> ExternalConnectionInDb | None:
+        row = await self._connection_links.get_active_for_installation(
+            organization_id=organization_id,
+            installation_id=installation_id,
+            contact_id=contact_id,
+        )
+        return ExternalConnectionInDb.model_validate(row) if row is not None else None
+
+    async def resolve_installation_for_connection(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        connection_id: uuid.UUID,
+    ) -> InstallationInDb | None:
+        row = await self._connection_links.get_installation_for_connection(
+            organization_id=organization_id,
+            connection_id=connection_id,
+        )
+        return InstallationInDb.model_validate(row) if row is not None else None
+
+    async def list_expiring_external_connections(
+        self,
+        *,
+        expires_before: datetime,
+    ) -> list[ExternalConnectionInDb]:
+        rows = await self._connection_links.list_expiring_connections(
+            expires_before=expires_before
+        )
+        return [ExternalConnectionInDb.model_validate(row) for row in rows]
 
     async def ensure_tool(
         self,

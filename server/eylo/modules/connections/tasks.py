@@ -5,19 +5,20 @@ from datetime import datetime, timezone
 
 from eylo.common.database import start_transaction
 from eylo.modules.connections.repositories.oauth_state import OAuthStateRepository
-from eylo.modules.connections.services.indb import ConnectionService
+from eylo.modules.connections.services.external import ExternalConnectionService
 
 logger = logging.getLogger(__name__)
 
 
 async def cleanup_invalidated_connections() -> dict:
-    """Delete REVOKED/FAILED/INACTIVE connections older than 30 days."""
+    """Delete old revoked contact-owned external connections after retention."""
     logger.info("[CleanupConnectionsTask] Starting cleanup")
     try:
         async with start_transaction() as db:
-            deleted_count, connection_ids = await ConnectionService(
+            connection_ids = await ExternalConnectionService(
                 db
-            ).cleanup_old_invalidated_connections(retention_days=30)
+            ).cleanup_old_revoked_contact_connections(retention_days=30)
+            deleted_count = len(connection_ids)
         logger.info(f"[CleanupConnectionsTask] Deleted {deleted_count} connections")
         return {"status": "success", "deleted_count": deleted_count}
     except Exception as error:
@@ -33,10 +34,16 @@ async def cleanup_expired_oauth_states() -> dict:
     logger.info("[CleanupOAuthStatesTask] Starting cleanup")
     try:
         async with start_transaction():
-            state_ids = await OAuthStateRepository().delete_expired_states(
+            expired_states = await OAuthStateRepository().delete_expired_states(
                 datetime.now(timezone.utc)
             )
-            deleted_count = len(state_ids)
+            service = ExternalConnectionService()
+            for state in expired_states:
+                await service.revoke(
+                    organization_id=state.organization_id,
+                    connection_id=state.external_connection_id,
+                )
+            deleted_count = len(expired_states)
         logger.info(f"[CleanupOAuthStatesTask] Deleted {deleted_count} states")
         return {"status": "success", "deleted_count": deleted_count}
     except Exception as error:

@@ -91,6 +91,7 @@ async def execute_curated_tool(
             grant=grant,
             contact_id=contact_id,
             registry=registry,
+            required_scopes=spec.scopes,
         )
     except IntegrationsV2Error as error:
         auth_required = error.code == "auth_required"

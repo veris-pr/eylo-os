@@ -28,7 +28,6 @@ from eylo.modules.agents.exceptions import AgentNotFoundError
 from eylo.modules.agents.services.revisions import AgentRevisionService
 from eylo.modules.auth.dependencies.widget_auth import get_current_contact
 from eylo.modules.auth.schemas.widget import CurrentContactSchema
-from eylo.modules.connections.services.indb import ConnectionService
 from eylo.modules.conversations.exceptions import ConversationNotFound
 from eylo.pipelines.conversation.widget_authority import (
     resolve_widget_conversation_authority,
@@ -153,7 +152,7 @@ async def _capabilities_by_agent(
     from eylo.pipelines.integrations_v2.registry import load_vendors
 
     registry = load_vendors()
-    connection_service = ConnectionService(db)
+    connection_service = CuratedIntegrationService(db)
     connection_by_installation = {}
     used_installation_ids = {
         row.installation_id
@@ -162,8 +161,8 @@ async def _capabilities_by_agent(
     }
     for installation_id in used_installation_ids:
         connection_by_installation[installation_id] = (
-            await connection_service.get_active_connection_for_execution(
-                integration_id=installation_id,
+            await connection_service.get_active_external_connection(
+                installation_id=installation_id,
                 organization_id=organization_id,
                 contact_id=contact_id,
             )
@@ -198,7 +197,7 @@ async def _capabilities_by_agent(
                         description=vendor.description,
                         auth_kind=installation.auth_kind,
                         connection_kind=(
-                            connection.connection_kind.value
+                            connection.owner_kind.value
                             if connection is not None
                             else "ORGANIZATION"
                             if no_auth

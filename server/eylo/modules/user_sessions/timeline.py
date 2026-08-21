@@ -161,6 +161,7 @@ TIMELINE_EVENT_CATALOG: dict[str, TimelineEventDefinition] = {
             "started",
             "waiting_for_input",
             "waiting_for_approval",
+            "waiting_for_tool",
             "resumed",
             "completed",
             "failed",

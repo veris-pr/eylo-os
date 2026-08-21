@@ -14,11 +14,8 @@ class OAuthStateCreateSchema(BaseModel):
     organization_id: UUID = Field(
         ..., description="Organization initiating the OAuth flow"
     )
-    integration_id: UUID = Field(
-        ..., description="Curated vendor installation this OAuth flow authorizes"
-    )
-    contact_id: Optional[UUID] = Field(
-        None, description="Optional contact to associate with resulting connection"
+    external_connection_id: UUID = Field(
+        ..., description="Initiated external connection this OAuth flow activates"
     )
     redirect_uri: Optional[str] = Field(
         None, description="Custom redirect URI for this flow"
@@ -26,4 +23,6 @@ class OAuthStateCreateSchema(BaseModel):
     code_verifier: Optional[str] = Field(
         None, description="PKCE code verifier retained for the token exchange"
     )
+    requested_scopes: list[str] = Field(default_factory=list)
+    expected_connection_revision: int | None = Field(default=None, ge=1)
     expires_at: datetime = Field(..., description="When this state token expires")

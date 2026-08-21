@@ -572,6 +572,9 @@ def _refuse_run(run: AgentRunModel, summary: str) -> AgentRunWorkflowReceipt:
     run.lifecycle = AgentRunLifecycle.FAILED
     run.outcome = AgentRunOutcome.FAILED
     run.failure_summary = summary
+    run.waiting_at = None
+    run.waiting_tool_owner_kind = None
+    run.waiting_tool_owner_id = None
     run.finished_at = now
     run.state_revision += 1
     return _receipt(run)
@@ -581,6 +584,9 @@ def _accept_cancellation(run: AgentRunModel) -> AgentRunWorkflowReceipt:
     now = datetime.now(timezone.utc)
     run.lifecycle = AgentRunLifecycle.CANCELLED
     run.outcome = AgentRunOutcome.CANCELLED
+    run.waiting_at = None
+    run.waiting_tool_owner_kind = None
+    run.waiting_tool_owner_id = None
     run.cancelled_at = now
     run.finished_at = now
     run.state_revision += 1

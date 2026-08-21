@@ -5,9 +5,13 @@ import {
   BookOpenText,
   Bot,
   Brain,
+  Building2,
   CalendarClock,
+  CalendarRange,
   Database,
   Gauge,
+  FolderKanban,
+  Handshake,
   History,
   Library,
   ListOrdered,
@@ -16,6 +20,7 @@ import {
   Mail,
   Megaphone,
   MessageSquareText,
+  MessageSquareMore,
   MessagesSquare,
   Mic,
   Network,
@@ -24,6 +29,9 @@ import {
   Plug,
   Radio,
   SquareTerminal,
+  Shapes,
+  TableProperties,
+  Workflow,
   type LucideIcon,
   Users,
   UsersRound,
@@ -111,6 +119,64 @@ const PLATFORM_NAVIGATION: readonly ModuleNavigationDefinition[] = [
   },
 ];
 
+const SOR_NAVIGATION: readonly ModuleNavigationDefinition[] = [
+  { icon: TableProperties, label: "Overview", path: "sor" },
+  { icon: Database, label: "Sources", path: "sor/sources" },
+  { icon: UsersRound, label: "CRM contacts", path: "sor/crm/contact" },
+  { icon: Building2, label: "CRM companies", path: "sor/crm/company" },
+  { icon: Handshake, label: "CRM deals", path: "sor/crm/deal" },
+  { icon: Activity, label: "CRM activities", path: "sor/crm/activity" },
+  { icon: ListChecks, label: "Issues", path: "sor/ticketing/issue" },
+  { icon: FolderKanban, label: "Projects", path: "sor/ticketing/project" },
+  {
+    icon: CalendarRange,
+    label: "Cycles and milestones",
+    path: "sor/ticketing/cycle",
+  },
+  {
+    icon: Workflow,
+    label: "Workflow states",
+    path: "sor/ticketing/workflow_state",
+  },
+  {
+    icon: MessageSquareMore,
+    label: "Comments",
+    path: "sor/ticketing/comment",
+  },
+  {
+    icon: MessageSquareText,
+    label: "Support tickets",
+    path: "sor/support/ticket",
+  },
+  {
+    icon: UsersRound,
+    label: "Support customers",
+    path: "sor/support/customer",
+  },
+  {
+    icon: ListOrdered,
+    label: "Support queues",
+    path: "sor/support/queue",
+  },
+  {
+    children: [
+      {
+        icon: Library,
+        label: "Spaces and data sources",
+        path: "sor/knowledge/space",
+      },
+      {
+        icon: Shapes,
+        label: "Custom datasets",
+        path: "sor/custom-datasets",
+      },
+    ],
+    icon: BookOpenText,
+    label: "Documents",
+    path: "sor/knowledge/document",
+  },
+];
+
 const OPERATIONS_NAVIGATION: readonly ModuleNavigationDefinition[] = [
   { icon: History, label: "Sessions", path: "sessions" },
   { icon: Activity, label: "Agent runs", path: "agent-runs" },
@@ -171,6 +237,14 @@ function OrganizationNavigation({
       <NavigationGroup label="Platform">
         <ModuleNavigation
           definitions={PLATFORM_NAVIGATION}
+          onNavigate={onNavigate}
+          organizationPath={organizationPath}
+        />
+      </NavigationGroup>
+
+      <NavigationGroup label="Systems of Record">
+        <ModuleNavigation
+          definitions={SOR_NAVIGATION}
           onNavigate={onNavigate}
           organizationPath={organizationPath}
         />

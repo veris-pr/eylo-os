@@ -32,6 +32,7 @@ class AgentRunLifecycle(str, Enum):
     RUNNING = "running"
     WAITING_FOR_INPUT = "waiting_for_input"
     WAITING_FOR_APPROVAL = "waiting_for_approval"
+    WAITING_FOR_TOOL = "waiting_for_tool"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"

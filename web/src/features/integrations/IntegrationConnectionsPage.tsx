@@ -542,7 +542,6 @@ function connectionStatusVariant(
   status: CuratedConnectionStatus,
 ): "default" | "destructive" | "outline" | "secondary" {
   if (status === "ACTIVE") return "secondary";
-  if (status === "FAILED") return "destructive";
   return "outline";
 }
 
