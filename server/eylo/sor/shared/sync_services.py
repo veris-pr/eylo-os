@@ -416,6 +416,11 @@ class SorSyncRunService:
         tombstoned = 0
         tombstoned_record_ids: tuple[UUID, ...] = ()
         if context.run.kind is SorSyncRunKind.RECONCILIATION:
+            scan_started_at = context.run.started_at
+            if scan_started_at is None:
+                raise SorConfigurationError(
+                    "A reconciliation cannot finish before its run has started."
+                )
             result = await self.session.execute(
                 update(SorRecordModel)
                 .where(
@@ -424,6 +429,7 @@ class SorSyncRunService:
                     SorRecordModel.vendor_object_key == context.stream.vendor_object_key,
                     SorRecordModel.tombstoned_at.is_(None),
                     SorRecordModel.deleted.is_(False),
+                    SorRecordModel.projected_at <= scan_started_at,
                     SorRecordModel.last_successful_sync_run_id.is_distinct_from(
                         context.run.id
                     ),
@@ -485,11 +491,32 @@ class SorSyncRunService:
                     transition=SorSourceTransition.BOOTSTRAP_SUCCEEDED,
                 )
         else:
-            await self.sources.transition(
+            streams = await self.repository.list_streams(
                 organization_id=context.source.organization_id,
                 source_id=context.source.id,
-                transition=SorSourceTransition.SYNC_SUCCEEDED,
             )
+            degraded = next(
+                (
+                    stream
+                    for stream in streams
+                    if stream.state is SorStreamState.DEGRADED
+                ),
+                None,
+            )
+            if degraded is None:
+                await self.sources.transition(
+                    organization_id=context.source.organization_id,
+                    source_id=context.source.id,
+                    transition=SorSourceTransition.SYNC_SUCCEEDED,
+                )
+            elif context.source.state is SorSourceState.ACTIVE:
+                await self.sources.transition(
+                    organization_id=context.source.organization_id,
+                    source_id=context.source.id,
+                    transition=SorSourceTransition.SYNC_FAILED,
+                    error_code=degraded.last_error_code or "STREAM_DEGRADED",
+                    error_summary="One or more SOR source streams are degraded.",
+                )
         register_records_tombstoned(
             organization_id=context.source.organization_id,
             source_id=context.source.id,
@@ -572,7 +599,10 @@ class SorSyncRunService:
                 "Full-reconcile streams cannot create incremental runs."
             )
         if kind is SorSyncRunKind.BOOTSTRAP:
-            allowed = {SorSourceState.BOOTSTRAPPING}
+            allowed = {
+                SorSourceState.BOOTSTRAPPING,
+                SorSourceState.DEGRADED,
+            }
         else:
             allowed = {SorSourceState.ACTIVE, SorSourceState.DEGRADED}
         if source.state not in allowed:

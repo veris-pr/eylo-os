@@ -10,6 +10,7 @@ from typing import Any
 from uuid import UUID
 
 from absurd_sdk import AsyncTaskContext, CancelledTask
+from sqlalchemy import select
 
 from eylo.common.database import start_transaction
 from eylo.durable_runtime import PlatformDurableRuntime, run_with_durable_heartbeat
@@ -23,7 +24,9 @@ from eylo.sor.runtime.serialization import json_safe_payload
 from eylo.sor.runtime.work import (
     SorBoundWorkService,
     SorWorkBindingPending,
+    SorWorkConflict,
     SorWorkContract,
+    SorWorkNotFound,
     cancel_sor_bound_work,
     spawn_sor_bound_work,
     spawn_unbound_sor_work,
@@ -82,6 +85,13 @@ SOR_SYNC_WORK = SorWorkContract(
     error_code_field="safe_error_code",
 )
 
+_NONTERMINAL_SYNC_STATES = (
+    SorWorkState.PENDING,
+    SorWorkState.RUNNING,
+    SorWorkState.WAITING,
+)
+_TERMINAL_ENGINE_STATES = frozenset({"cancelled", "completed", "failed"})
+
 
 def register_sor_sync_workflow(runtime: PlatformDurableRuntime) -> None:
     """Register one shared workflow for every source stream run kind."""
@@ -135,6 +145,103 @@ async def cancel_sor_sync_run(*, organization_id: UUID, run_id: UUID) -> bool:
         organization_id=organization_id,
         work_id=run_id,
     )
+
+
+async def reconcile_terminal_sor_sync_runs(*, limit: int = 100) -> dict[str, int]:
+    """Converge nonterminal sync receipts whose exact Absurd task has stopped."""
+    if isinstance(limit, bool) or not 1 <= limit <= 1_000:
+        raise ValueError("SOR sync reconciliation limit must be between 1 and 1000.")
+    async with start_transaction(ro=True) as session:
+        rows = list(
+            (
+                await session.execute(
+                    select(
+                        SorSyncRunModel.id,
+                        SorSyncRunModel.organization_id,
+                        SorSyncRunModel.absurd_task_id,
+                    )
+                    .where(
+                        SorSyncRunModel.state.in_(_NONTERMINAL_SYNC_STATES),
+                        SorSyncRunModel.absurd_task_id.is_not(None),
+                        SorSyncRunModel.deleted.is_(False),
+                    )
+                    .order_by(SorSyncRunModel.created_at.asc())
+                    .limit(limit)
+                )
+            ).all()
+        )
+
+    counts = {
+        "checked": 0,
+        "failed": 0,
+        "cancelled": 0,
+        "raced": 0,
+        "errors": 0,
+    }
+    runtime = PlatformDurableRuntime()
+    try:
+        for candidate in rows:
+            task_id = candidate.absurd_task_id
+            if task_id is None:
+                continue
+            try:
+                engine_state = await runtime.task_state(task_id)
+            except Exception as error:  # noqa: BLE001 - one task must not block others
+                counts["errors"] += 1
+                logger.error(
+                    "Could not inspect SOR sync task run_id=%s error_type=%s",
+                    candidate.id,
+                    type(error).__name__,
+                )
+                continue
+            counts["checked"] += 1
+            if engine_state not in _TERMINAL_ENGINE_STATES:
+                continue
+
+            try:
+                async with start_transaction() as session:
+                    work = SorBoundWorkService(SOR_SYNC_WORK, session)
+                    row = await work.get(
+                        work_id=candidate.id,
+                        organization_id=candidate.organization_id,
+                        for_update=True,
+                    )
+                    if row.absurd_task_id != task_id:
+                        raise SorWorkConflict(
+                            "SOR sync task binding changed during reconciliation."
+                        )
+                    if engine_state == "cancelled":
+                        changed, _ = await work.cancel(
+                            work_id=candidate.id,
+                            organization_id=candidate.organization_id,
+                        )
+                    else:
+                        code, summary = _engine_terminal_failure(engine_state)
+                        row, changed = await work.converge_engine_failure(
+                            work_id=candidate.id,
+                            organization_id=candidate.organization_id,
+                            task_id=task_id,
+                            error_code=code,
+                            error_summary=summary,
+                        )
+                if not changed:
+                    counts["raced"] += 1
+                    continue
+                if engine_state == "cancelled":
+                    counts["cancelled"] += 1
+                    continue
+                await _project_sync_failure(
+                    organization_id=candidate.organization_id,
+                    run_id=candidate.id,
+                    error_code=code,
+                    requires_reauthorization=False,
+                )
+                counts["failed"] += 1
+            except (SorWorkConflict, SorWorkNotFound):
+                counts["raced"] += 1
+    finally:
+        await runtime.close()
+    return counts
 
 
 class SorSyncWorkflow:
@@ -213,14 +320,14 @@ class SorSyncWorkflow:
             rejected=int(attempt["records_rejected"]),
         )
         scan_complete = bool(attempt["scan_complete"])
-        while not scan_complete:
-            try:
-                async with acquire_source_adapter(
-                    organization_id=organization_id,
-                    source_id=source_id,
-                    registry=self.registry,
-                    invocation_budget_seconds=120.0,
-                ) as adapter:
+        try:
+            async with acquire_source_adapter(
+                organization_id=organization_id,
+                source_id=source_id,
+                registry=self.registry,
+                invocation_budget_seconds=120.0,
+            ) as adapter:
+                while not scan_complete:
                     page_data = await task_context.step(
                         _page_step(run_id, expected_checkpoint),
                         lambda: run_with_durable_heartbeat(
@@ -259,16 +366,16 @@ class SorSyncWorkflow:
                         page=page,
                         adapter=adapter,
                     )
-                total = total.add(page_counts)
-                expected_checkpoint = checkpoint_after
-                cursor = next_cursor
-                scan_complete = not page.has_more
-            except Exception as error:  # noqa: BLE001 - failure controls retry state
-                return await _handle_failure(
-                    organization_id=organization_id,
-                    run_id=run_id,
-                    error=error,
-                )
+                    total = total.add(page_counts)
+                    expected_checkpoint = checkpoint_after
+                    cursor = next_cursor
+                    scan_complete = not page.has_more
+        except Exception as error:  # noqa: BLE001 - failure controls retry state
+            return await _handle_failure(
+                organization_id=organization_id,
+                run_id=run_id,
+                error=error,
+            )
 
         async with start_transaction() as session:
             sync = SorSyncRunService(session)
@@ -418,17 +525,55 @@ async def _handle_failure(
             error_summary=summary,
             permanent=permanent,
         )
-        if state is SorWorkState.FAILED:
+        receipt = _receipt(row)
+    if state is SorWorkState.PENDING:
+        raise error
+    if state is SorWorkState.FAILED:
+        await _project_sync_failure(
+            organization_id=organization_id,
+            run_id=run_id,
+            error_code=code,
+            requires_reauthorization=reauthorization,
+        )
+    logger.warning("SOR sync failed id=%s code=%s", run_id, code)
+    return receipt
+
+
+async def _project_sync_failure(
+    *,
+    organization_id: UUID,
+    run_id: UUID,
+    error_code: str,
+    requires_reauthorization: bool,
+) -> None:
+    """Best-effort source projection after the authoritative receipt commits."""
+    try:
+        async with start_transaction() as session:
             await SorSyncRunService(session).mark_failure(
                 organization_id=organization_id,
                 run_id=run_id,
-                error_code=code,
-                requires_reauthorization=reauthorization,
+                error_code=error_code,
+                requires_reauthorization=requires_reauthorization,
             )
-    if state is SorWorkState.PENDING:
-        raise error
-    logger.warning("SOR sync failed id=%s code=%s", run_id, code)
-    return _receipt(row)
+    except Exception as projection_error:  # noqa: BLE001 - receipt is authoritative
+        logger.error(
+            "SOR sync failure committed but source projection failed "
+            "id=%s error_type=%s",
+            run_id,
+            type(projection_error).__name__,
+        )
+
+
+def _engine_terminal_failure(engine_state: str) -> tuple[str, str]:
+    if engine_state == "failed":
+        return (
+            "DURABLE_EXECUTION_FAILED",
+            "Durable synchronization exhausted its execution attempts.",
+        )
+    return (
+        "DURABLE_RESULT_MISSING",
+        "Durable synchronization completed without committing a product result.",
+    )
 
 
 def _classify_failure(error: Exception) -> tuple[str, str, bool, bool]:
@@ -653,6 +798,7 @@ __all__ = [
     "SOR_SYNC_WORKFLOW",
     "SorSyncWorkflow",
     "cancel_sor_sync_run",
+    "reconcile_terminal_sor_sync_runs",
     "register_sor_sync_workflow",
     "spawn_sor_sync_run",
     "spawn_unbound_sor_sync_runs",

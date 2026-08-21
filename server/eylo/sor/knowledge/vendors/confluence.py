@@ -52,10 +52,10 @@ CONFLUENCE_CURSOR_VERSION = 1
 MAX_CANONICAL_TEXT_CHARS = 1_000_000
 MAX_CANONICAL_BODY_BYTES = 1_048_576
 
-READ_CONTENT_SCOPE = "read:confluence-content.all"
-READ_SPACE_SCOPE = "read:confluence-space.summary"
-READ_PROPERTY_SCOPE = "read:confluence-props"
-WRITE_CONTENT_SCOPE = "write:confluence-content"
+READ_SPACE_SCOPE = "read:space:confluence"
+READ_PAGE_SCOPE = "read:page:confluence"
+READ_ATTACHMENT_SCOPE = "read:attachment:confluence"
+WRITE_PAGE_SCOPE = "write:page:confluence"
 OFFLINE_SCOPE = "offline_access"
 
 _STREAM_ENTITY = {
@@ -113,6 +113,7 @@ CONFLUENCE_MANIFEST = SorAdapterCapabilityManifest(
             }[stream_key],
             canonical_entity=entity,
             change_strategies=frozenset({SorChangeStrategy.FULL_RECONCILE}),
+            scope_category="Granular Confluence REST v2 scopes",
         )
         for stream_key, entity in _STREAM_ENTITY.items()
     ),
@@ -123,14 +124,14 @@ CONFLUENCE_MANIFEST = SorAdapterCapabilityManifest(
     change_strategies=frozenset({SorChangeStrategy.FULL_RECONCILE}),
     required_scopes={
         "spaces": (READ_SPACE_SCOPE,),
-        "pages": (READ_CONTENT_SCOPE,),
-        "page_bodies": (READ_CONTENT_SCOPE,),
-        "versions": (READ_CONTENT_SCOPE,),
-        "properties": (READ_CONTENT_SCOPE, READ_PROPERTY_SCOPE),
-        "attachments": (READ_CONTENT_SCOPE,),
+        "pages": (READ_PAGE_SCOPE,),
+        "page_bodies": (READ_PAGE_SCOPE,),
+        "versions": (READ_PAGE_SCOPE,),
+        "properties": (READ_PAGE_SCOPE,),
+        "attachments": (READ_ATTACHMENT_SCOPE,),
     },
     tool_required_scopes={
-        tool_name: (WRITE_CONTENT_SCOPE,) for tool_name in _WRITE_TOOLS
+        tool_name: (WRITE_PAGE_SCOPE,) for tool_name in _WRITE_TOOLS
     },
     tool_streams=_TOOL_STREAMS,
     mutation_result_streams={tool_name: "pages" for tool_name in _WRITE_TOOLS},
@@ -1312,12 +1313,19 @@ def _required_response(
 
 def _expect(response: SorJsonResponse, *, operation: str) -> object:
     if response.status_code in {401, 403}:
+        scope_mismatch = _is_scope_mismatch(response)
         raise SorVendorOperationError(
-            "vendor_authorization_failed",
-            f"Confluence refused authorization while attempting to {operation}.",
+            "vendor_scope_missing" if scope_mismatch else "vendor_authorization_failed",
+            (
+                f"Confluence requires additional scopes to {operation}."
+                if scope_mismatch
+                else f"Confluence refused authorization while attempting to {operation}."
+            ),
             retryable=False,
             requires_reauthorization=True,
-            refreshable_authorization=response.status_code == 401,
+            refreshable_authorization=(
+                response.status_code == 401 and not scope_mismatch
+            ),
         )
     if response.status_code == 429:
         raise SorVendorOperationError(
@@ -1337,6 +1345,13 @@ def _expect(response: SorJsonResponse, *, operation: str) -> object:
             f"Confluence rejected the request while attempting to {operation}.",
         )
     return response.data
+
+
+def _is_scope_mismatch(response: SorJsonResponse) -> bool:
+    if response.status_code != 401 or not isinstance(response.data, Mapping):
+        return False
+    message = response.data.get("message")
+    return isinstance(message, str) and "scope does not match" in message.casefold()
 
 
 def _expect_mutation(response: SorJsonResponse, *, operation: str) -> object:

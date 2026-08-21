@@ -12,6 +12,7 @@ from eylo.common.database import start_transaction
 from eylo.sor.runtime.commands import spawn_unbound_sor_commands
 from eylo.sor.runtime.revocation import recover_fenced_sor_work
 from eylo.sor.runtime.sync import (
+    reconcile_terminal_sor_sync_runs,
     spawn_sor_sync_run,
     spawn_unbound_sor_sync_runs,
 )
@@ -135,6 +136,7 @@ async def dispatch_due_sor_syncs() -> dict[str, int]:
 async def nudge_sor_work() -> dict[str, int]:
     """Recover every currently implemented SOR durable outbox."""
     stopped = await recover_fenced_sor_work(limit=100)
+    terminal_syncs = await reconcile_terminal_sor_sync_runs(limit=100)
     syncs = await spawn_unbound_sor_sync_runs(limit=100)
     webhooks = await spawn_unbound_sor_webhook_receipts(limit=100)
     commands = await spawn_unbound_sor_commands(limit=100)
@@ -144,6 +146,11 @@ async def nudge_sor_work() -> dict[str, int]:
         "cancelled_syncs": stopped.sync_runs,
         "cancelled_webhooks": stopped.webhook_receipts,
         "cancelled_commands": stopped.commands,
+        "terminal_syncs_checked": terminal_syncs["checked"],
+        "terminal_syncs_failed": terminal_syncs["failed"],
+        "terminal_syncs_cancelled": terminal_syncs["cancelled"],
+        "terminal_syncs_raced": terminal_syncs["raced"],
+        "terminal_sync_errors": terminal_syncs["errors"],
         "syncs": syncs,
         "webhooks": webhooks,
         "commands": commands,

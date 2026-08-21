@@ -92,7 +92,13 @@ _SOURCE_TRANSITIONS: dict[
     (SorSourceState.BOOTSTRAPPING, SorSourceTransition.BOOTSTRAP_SUCCEEDED): (
         SorSourceState.ACTIVE
     ),
+    (SorSourceState.DEGRADED, SorSourceTransition.BOOTSTRAP_SUCCEEDED): (
+        SorSourceState.ACTIVE
+    ),
     (SorSourceState.BOOTSTRAPPING, SorSourceTransition.BOOTSTRAP_FAILED): (
+        SorSourceState.DEGRADED
+    ),
+    (SorSourceState.DEGRADED, SorSourceTransition.BOOTSTRAP_FAILED): (
         SorSourceState.DEGRADED
     ),
     (SorSourceState.ACTIVE, SorSourceTransition.SYNC_SUCCEEDED): (

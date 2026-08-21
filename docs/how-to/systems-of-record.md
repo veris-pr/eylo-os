@@ -39,6 +39,24 @@ access level. See Atlassian's
 [Jira Software scope reference][jira-software-scopes], and
 [refresh-token guide][atlassian-refresh-tokens].
 
+### Confluence OAuth scope families
+
+Confluence REST v2 uses granular OAuth scopes. Configure the Atlassian app
+with the scopes shown for the selected objects:
+
+- **OAuth lifecycle scope:** `offline_access` requests a rotating refresh token.
+- **Spaces:** `read:space:confluence`.
+- **Pages, page bodies, versions, and properties:** `read:page:confluence`.
+- **Attachments:** `read:attachment:confluence`.
+- **Page mutations:** `write:page:confluence` for read/write sources.
+
+The classic scopes `read:confluence-space.summary`,
+`read:confluence-content.all`, `read:confluence-props`, and
+`write:confluence-content` do not authorize the REST v2 endpoints used by this
+adapter. Do not mix the classic and granular lists. See Atlassian's REST v2
+[space][confluence-spaces], [page][confluence-pages], and
+[attachment][confluence-attachments] contracts.
+
 ## Configure the source
 
 1. Open **Systems of Record → Overview**.
@@ -60,7 +78,8 @@ access level. See Atlassian's
      `https://<site>.atlassian.net` origin. The authorizing account must be able
      to open that site. For Jira, configure the separate lifecycle, classic,
      and granular scope groups described above. The exact scopes appear beside
-     every selectable source object before authorization.
+     every selectable source object before authorization. For Confluence,
+     configure the lifecycle and granular scope groups described above.
    - For Linear, create an OAuth 2.0 app and register the exact callback. Eylo
      uses a Linear app actor; grant that app access only to the intended public
      or selected teams. Scheduled reconciliation works in local development
@@ -228,5 +247,8 @@ source keeps its last synchronized projection for audit, but no new or resumed
 sync, webhook, or Agent command may use it.
 
 [atlassian-refresh-tokens]: https://developer.atlassian.com/cloud/oauth/getting-started/refresh-tokens/
+[confluence-spaces]: https://developer.atlassian.com/cloud/confluence/rest/v2/api-group-space/
+[confluence-pages]: https://developer.atlassian.com/cloud/confluence/rest/v2/api-group-page/
+[confluence-attachments]: https://developer.atlassian.com/cloud/confluence/rest/v2/api-group-attachment/
 [jira-platform-scopes]: https://developer.atlassian.com/cloud/jira/platform/scopes-for-oauth-2-3LO-and-forge-apps/
 [jira-software-scopes]: https://developer.atlassian.com/cloud/jira/software/scopes-for-oauth-2-3LO-and-forge-apps/

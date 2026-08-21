@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from collections.abc import Mapping, Sequence
@@ -48,7 +49,14 @@ from eylo.sor.ticketing.contracts import (
 JIRA_API_ORIGIN = "https://api.atlassian.com"
 JIRA_API_VERSION = "jira-cloud-rest-v3"
 JIRA_CURSOR_VERSION = 1
+JIRA_ISSUE_CURSOR_VERSION = 2
+JIRA_NESTED_CURSOR_VERSION = 3
+JIRA_RELATION_CURSOR_VERSION = 4
+JIRA_COMMENT_CURSOR_VERSION = 5
 JIRA_RECONCILIATION_OVERLAP = timedelta(minutes=5)
+JIRA_EMBEDDED_COMMENT_LIMIT = 20
+JIRA_COMMENT_ISSUE_BATCH_SIZE = 10
+JIRA_RELATION_ISSUE_BATCH_SIZE = 20
 
 READ_WORK_SCOPE = "read:jira-work"
 READ_USER_SCOPE = "read:jira-user"
@@ -330,19 +338,32 @@ _NORMALIZED_TO_JIRA_FIELD = {
 @dataclass(frozen=True, slots=True)
 class _IssueCursor:
     floor: datetime | None
+    project_offset: int
     next_token: str | None
     high: datetime | None
     started_at: datetime
+    completed: bool
 
 
 @dataclass(frozen=True, slots=True)
-class _NestedIssueCursor:
-    """Resume one bounded child collection while advancing issues one at a time."""
+class _CommentCursor:
+    """Resume missing comment ranges around Jira's embedded issue comments."""
 
+    project_offset: int
     next_issue_token: str | None
-    current_issue_id: str | None
-    current_issue_is_last: bool
-    item_offset: int
+    issue_ids: tuple[str, ...]
+    item_offsets: tuple[int, ...]
+    item_stops: tuple[int, ...]
+    issue_page_is_last: bool
+    current_project_is_last: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _RelationCursor:
+    """Resume project-bounded Jira issue-link search pages."""
+
+    project_offset: int
+    next_issue_token: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -374,6 +395,7 @@ class JiraTicketingAdapter:
         self._site_origin = _jira_site_origin(context.instance_origin)
         self._cloud_id: str | None = None
         self._site_name: str | None = None
+        self._project_pages: dict[int, tuple[str, bool] | None] = {}
         self._board_projects: dict[str, str | None] = {}
         self._client = SorJsonHttpClient(
             origin=JIRA_API_ORIGIN,
@@ -714,11 +736,11 @@ class JiraTicketingAdapter:
                 field="Jira relation target issue ID",
             ),
             canonical_kind=_jira_relation_kind(
-                values.get("canonical_kind"),
+                values.get("canonical_relation_kind"),
                 error_code="vendor_response_invalid",
             ),
             native_kind=_required_string(
-                values.get("native_kind"),
+                values.get("native_relation_kind"),
                 field="Jira relation type",
             ),
             source_revision=record.source_revision,
@@ -760,6 +782,7 @@ class JiraTicketingAdapter:
         query: Mapping[str, object] | None = None,
         payload: object | None = None,
         idempotency_key: str | None = None,
+        retry_transport_failures: bool = False,
     ) -> SorJsonResponse:
         cloud_id, _name = await self._resolve_site()
         return await self._client.request(
@@ -768,6 +791,7 @@ class JiraTicketingAdapter:
             query=query,
             payload=payload,
             idempotency_key=idempotency_key,
+            retry_transport_failures=retry_transport_failures,
         )
 
     async def _agile_request(
@@ -778,9 +802,36 @@ class JiraTicketingAdapter:
     ) -> SorJsonResponse:
         cloud_id, _name = await self._resolve_site()
         return await self._client.request(
-            f"/jira/software/cloud/{_path_segment(cloud_id)}/rest/agile/1.0{path}",
+            f"/ex/jira/{_path_segment(cloud_id)}/rest/agile/1.0{path}",
             query=query,
         )
+
+    async def _project_at(self, offset: int) -> tuple[str, bool] | None:
+        if offset in self._project_pages:
+            return self._project_pages[offset]
+        response = await self._jira_request(
+            "/project/search",
+            query={"startAt": offset, "maxResults": 1, "orderBy": "key"},
+        )
+        data = _object(
+            _expect(response, operation="list Jira projects"),
+            field="Jira projects",
+        )
+        rows = _object_list(data.get("values"), field="Jira projects")
+        if len(rows) > 1:
+            raise _invalid_response("Jira returned too many projects.")
+        is_last = _required_boolean(data.get("isLast"), field="Jira projects isLast")
+        if not rows:
+            if not is_last:
+                raise _invalid_response("Jira returned an empty partial project page.")
+            self._project_pages[offset] = None
+            return None
+        project_id = _required_id(rows[0].get("id"), field="Jira project ID")
+        if re.fullmatch(r"[0-9]+", project_id) is None:
+            raise _invalid_response("Jira returned an invalid project ID.")
+        page = (project_id, is_last)
+        self._project_pages[offset] = page
+        return page
 
     async def _read_page(
         self,
@@ -796,12 +847,16 @@ class JiraTicketingAdapter:
                 "Jira page limit must be positive.",
                 retryable=False,
             )
+        if stream_key == "comments":
+            return await self._read_comment_page(
+                cursor=cursor,
+                limit=min(limit, 200),
+            )
         page_limit = min(limit, 100)
         if stream_key == "issues":
             return await self._read_issues(cursor=cursor, limit=page_limit)
-        if stream_key in {"comments", "issue_relations"}:
-            return await self._read_issue_children(
-                stream_key=stream_key,
+        if stream_key == "issue_relations":
+            return await self._read_issue_relation_page(
                 cursor=cursor,
                 limit=page_limit,
             )
@@ -864,14 +919,23 @@ class JiraTicketingAdapter:
 
     async def _read_issues(self, *, cursor: str | None, limit: int) -> SorRecordPage:
         checkpoint = _decode_issue_cursor(cursor)
-        jql = "ORDER BY updated ASC, id ASC"
-        if checkpoint.floor is not None:
-            floor = checkpoint.floor.strftime("%Y-%m-%d %H:%M")
-            jql = f'updated >= "{floor}" ORDER BY updated ASC, id ASC'
+        project = await self._project_at(checkpoint.project_offset)
+        if project is None:
+            completed = _completed_issue_cursor(
+                floor=checkpoint.floor,
+                high=checkpoint.high,
+                started_at=checkpoint.started_at,
+            )
+            return SorRecordPage(
+                records=(),
+                next_cursor=_encode_issue_cursor(completed),
+                has_more=False,
+            )
+        project_id, project_is_last = project
         payload: dict[str, object] = {
             "fields": list(self._issue_fields()),
             "fieldsByKeys": True,
-            "jql": jql,
+            "jql": _issue_sync_jql(project_id, floor=checkpoint.floor),
             "maxResults": limit,
         }
         if checkpoint.next_token is not None:
@@ -880,6 +944,7 @@ class JiraTicketingAdapter:
             "/search/jql",
             method="POST",
             payload=payload,
+            retry_transport_failures=True,
         )
         data = _object(_expect(response, operation="search Jira issues"), field="Jira issue search")
         rows = _object_list(data.get("issues"), field="Jira issues")
@@ -890,7 +955,8 @@ class JiraTicketingAdapter:
         if not is_last and next_token is None:
             raise _invalid_response("Jira omitted the next issue page token.")
         high = _maximum_issue_updated_at(rows, current=checkpoint.high)
-        if is_last:
+        scan_complete = is_last and project_is_last
+        if scan_complete:
             next_cursor = _encode_issue_cursor(
                 _completed_issue_cursor(
                     floor=checkpoint.floor,
@@ -902,193 +968,360 @@ class JiraTicketingAdapter:
             next_cursor = _encode_issue_cursor(
                 _IssueCursor(
                     floor=checkpoint.floor,
-                    next_token=next_token,
+                    project_offset=(
+                        checkpoint.project_offset + 1
+                        if is_last
+                        else checkpoint.project_offset
+                    ),
+                    next_token=None if is_last else next_token,
                     high=high,
                     started_at=checkpoint.started_at,
+                    completed=False,
                 )
             )
         return SorRecordPage(
             records=tuple(self._external_record("issues", row) for row in rows),
             next_cursor=next_cursor,
-            has_more=not is_last,
+            has_more=not scan_complete,
         )
 
-    async def _read_issue_children(
+    async def _read_issue_relation_page(
         self,
         *,
-        stream_key: str,
         cursor: str | None,
         limit: int,
     ) -> SorRecordPage:
-        checkpoint = _decode_nested_issue_cursor(cursor, stream_key=stream_key)
-        scans = 0
-        while scans < 25:
-            if checkpoint.current_issue_id is None:
-                issue_id, next_token, is_last = await self._next_child_issue(
-                    checkpoint.next_issue_token
-                )
-                if issue_id is None:
-                    return SorRecordPage(records=(), next_cursor=None, has_more=False)
-                checkpoint = _NestedIssueCursor(
-                    next_issue_token=next_token,
-                    current_issue_id=issue_id,
-                    current_issue_is_last=is_last,
-                    item_offset=0,
-                )
-
-            assert checkpoint.current_issue_id is not None
-            if stream_key == "comments":
-                rows, child_has_more = await self._read_issue_comments(
-                    issue_id=checkpoint.current_issue_id,
-                    offset=checkpoint.item_offset,
-                    limit=limit,
-                )
-            else:
-                rows, child_has_more = await self._read_issue_relations(
-                    issue_id=checkpoint.current_issue_id,
-                    offset=checkpoint.item_offset,
-                    limit=limit,
-                )
-
-            if child_has_more:
-                if not rows:
-                    raise _invalid_response(
-                        f"Jira returned an empty partial {stream_key} page."
-                    )
-                next_checkpoint = _NestedIssueCursor(
-                    next_issue_token=checkpoint.next_issue_token,
-                    current_issue_id=checkpoint.current_issue_id,
-                    current_issue_is_last=checkpoint.current_issue_is_last,
-                    item_offset=checkpoint.item_offset + len(rows),
-                )
-                return SorRecordPage(
-                    records=tuple(self._external_record(stream_key, row) for row in rows),
-                    next_cursor=_encode_nested_issue_cursor(
-                        next_checkpoint,
-                        stream_key=stream_key,
-                    ),
-                    has_more=True,
-                )
-
-            records = tuple(self._external_record(stream_key, row) for row in rows)
-            if checkpoint.current_issue_is_last:
-                return SorRecordPage(
-                    records=records,
-                    next_cursor=None,
-                    has_more=False,
-                )
-
-            checkpoint = _NestedIssueCursor(
-                next_issue_token=checkpoint.next_issue_token,
-                current_issue_id=None,
-                current_issue_is_last=False,
-                item_offset=0,
-            )
-            if records:
-                return SorRecordPage(
-                    records=records,
-                    next_cursor=_encode_nested_issue_cursor(
-                        checkpoint,
-                        stream_key=stream_key,
-                    ),
-                    has_more=True,
-                )
-            scans += 1
-
-        return SorRecordPage(
-            records=(),
-            next_cursor=_encode_nested_issue_cursor(
-                checkpoint,
-                stream_key=stream_key,
-            ),
-            has_more=True,
-        )
-
-    async def _next_child_issue(
-        self,
-        next_page_token: str | None,
-    ) -> tuple[str | None, str | None, bool]:
+        checkpoint = _decode_relation_cursor(cursor)
+        project = await self._project_at(checkpoint.project_offset)
+        if project is None:
+            return SorRecordPage(records=(), next_cursor=None, has_more=False)
+        project_id, project_is_last = project
         payload: dict[str, object] = {
-            "fields": ["updated"],
+            "fields": ["issuelinks"],
             "fieldsByKeys": True,
-            "jql": "ORDER BY id ASC",
-            "maxResults": 1,
+            "jql": _issue_scan_jql(project_id),
+            "maxResults": min(limit, JIRA_RELATION_ISSUE_BATCH_SIZE),
         }
-        if next_page_token is not None:
-            payload["nextPageToken"] = next_page_token
+        if checkpoint.next_issue_token is not None:
+            payload["nextPageToken"] = checkpoint.next_issue_token
         response = await self._jira_request(
             "/search/jql",
             method="POST",
             payload=payload,
+            retry_transport_failures=True,
         )
         data = _object(
-            _expect(response, operation="scan Jira issues"),
-            field="Jira issue scan",
+            _expect(response, operation="scan Jira issue links"),
+            field="Jira issue-link scan",
         )
-        rows = _object_list(data.get("issues"), field="Jira issue scan")
-        if len(rows) > 1:
-            raise _invalid_response("Jira returned too many issues for a child scan.")
-        is_last = _required_boolean(data.get("isLast"), field="Jira issue scan isLast")
+        issues = _object_list(data.get("issues"), field="Jira issue-link scan")
+        if len(issues) > limit:
+            raise _invalid_response("Jira returned too many issues for a link scan.")
+        is_last = _required_boolean(
+            data.get("isLast"),
+            field="Jira issue-link scan isLast",
+        )
         following = _optional_string(data.get("nextPageToken"))
         if not is_last and following is None:
-            raise _invalid_response("Jira omitted the next child-scan page token.")
-        if not rows:
-            if not is_last:
-                raise _invalid_response("Jira returned an empty partial issue scan.")
-            return None, None, True
-        return (
-            _required_id(rows[0].get("id"), field="Jira issue ID"),
-            following,
-            is_last,
+            raise _invalid_response("Jira omitted the next issue-link page token.")
+
+        records: list[SorExternalRecord] = []
+        for issue in issues:
+            issue_id = _required_id(issue.get("id"), field="Jira issue ID")
+            fields = _object(issue.get("fields"), field="Jira issue fields")
+            for link in _object_list(
+                fields.get("issuelinks"),
+                field="Jira issue links",
+            ):
+                link["_current_issue_external_id"] = issue_id
+                records.append(self._external_record("issue_relations", link))
+        records = _deduplicate_child_records(
+            records,
+            stream_key="issue_relations",
+        )
+        if len(records) > limit:
+            raise _invalid_response(
+                "Jira returned more issue links than one bounded page can contain."
+            )
+
+        scan_complete = is_last and project_is_last
+        next_cursor = None
+        if not scan_complete:
+            next_cursor = _encode_relation_cursor(
+                _RelationCursor(
+                    project_offset=(
+                        checkpoint.project_offset + 1
+                        if is_last
+                        else checkpoint.project_offset
+                    ),
+                    next_issue_token=None if is_last else following,
+                )
+            )
+        return SorRecordPage(
+            records=tuple(records),
+            next_cursor=next_cursor,
+            has_more=not scan_complete,
         )
 
-    async def _read_issue_comments(
+    async def _read_comment_page(
+        self,
+        *,
+        cursor: str | None,
+        limit: int,
+    ) -> SorRecordPage:
+        checkpoint = _decode_comment_cursor(cursor)
+        scans = 0
+        while scans < 25:
+            if checkpoint.issue_ids:
+                page = await self._read_missing_comment_ranges(
+                    checkpoint=checkpoint,
+                    limit=limit,
+                )
+                if page is not None:
+                    return page
+                checkpoint = _advance_comment_cursor(checkpoint)
+                if checkpoint is None:
+                    return SorRecordPage(records=(), next_cursor=None, has_more=False)
+                scans += 1
+                continue
+
+            project = await self._project_at(checkpoint.project_offset)
+            if project is None:
+                return SorRecordPage(records=(), next_cursor=None, has_more=False)
+            project_id, project_is_last = project
+            issue_limit = max(
+                1,
+                min(
+                    JIRA_COMMENT_ISSUE_BATCH_SIZE,
+                    limit // JIRA_EMBEDDED_COMMENT_LIMIT,
+                ),
+            )
+            payload: dict[str, object] = {
+                "fields": ["comment"],
+                "fieldsByKeys": True,
+                "jql": _issue_scan_jql(project_id),
+                "maxResults": issue_limit,
+            }
+            if checkpoint.next_issue_token is not None:
+                payload["nextPageToken"] = checkpoint.next_issue_token
+            response = await self._jira_request(
+                "/search/jql",
+                method="POST",
+                payload=payload,
+                retry_transport_failures=True,
+            )
+            data = _object(
+                _expect(response, operation="scan Jira issue comments"),
+                field="Jira issue-comment scan",
+            )
+            issues = _object_list(
+                data.get("issues"),
+                field="Jira issue-comment scan",
+            )
+            if len(issues) > issue_limit:
+                raise _invalid_response(
+                    "Jira returned too many issues for a comment scan."
+                )
+            issue_page_is_last = _required_boolean(
+                data.get("isLast"),
+                field="Jira issue-comment scan isLast",
+            )
+            following = _optional_string(data.get("nextPageToken"))
+            if not issue_page_is_last and following is None:
+                raise _invalid_response(
+                    "Jira omitted the next issue-comment page token."
+                )
+            if not issues and not issue_page_is_last:
+                raise _invalid_response(
+                    "Jira returned an empty partial issue-comment scan."
+                )
+
+            records: list[SorExternalRecord] = []
+            pending_issue_ids: list[str] = []
+            pending_item_offsets: list[int] = []
+            pending_item_stops: list[int] = []
+            for issue in issues:
+                issue_id = _required_id(issue.get("id"), field="Jira issue ID")
+                fields = _object(issue.get("fields"), field="Jira issue fields")
+                comment_page = _object(
+                    fields.get("comment"),
+                    field="Jira embedded comments",
+                )
+                rows = _object_list(
+                    comment_page.get("comments"),
+                    field="Jira embedded comments",
+                )
+                start_at = _required_nonnegative_integer(
+                    comment_page.get("startAt"),
+                    field="Jira embedded comment startAt",
+                )
+                total = _required_nonnegative_integer(
+                    comment_page.get("total"),
+                    field="Jira embedded comment total",
+                )
+                embedded_end = start_at + len(rows)
+                if embedded_end > total:
+                    raise _invalid_response(
+                        "Jira embedded comments exceed their declared total."
+                    )
+                for row in rows:
+                    row["_issue_external_id"] = issue_id
+                    records.append(self._external_record("comments", row))
+                if start_at > 0:
+                    pending_issue_ids.append(issue_id)
+                    pending_item_offsets.append(0)
+                    pending_item_stops.append(start_at)
+                if embedded_end < total:
+                    pending_issue_ids.append(issue_id)
+                    pending_item_offsets.append(embedded_end)
+                    pending_item_stops.append(total)
+
+            if len(records) > limit:
+                raise _invalid_response(
+                    "Jira returned more embedded comments than one bounded page can contain."
+                )
+            checkpoint = _CommentCursor(
+                project_offset=checkpoint.project_offset,
+                next_issue_token=None if issue_page_is_last else following,
+                issue_ids=tuple(pending_issue_ids),
+                item_offsets=tuple(pending_item_offsets),
+                item_stops=tuple(pending_item_stops),
+                issue_page_is_last=issue_page_is_last,
+                current_project_is_last=project_is_last,
+            )
+            if checkpoint.issue_ids:
+                return SorRecordPage(
+                    records=tuple(records),
+                    next_cursor=_encode_comment_cursor(checkpoint),
+                    has_more=True,
+                )
+            following_checkpoint = _advance_comment_cursor(checkpoint)
+            if following_checkpoint is None:
+                return SorRecordPage(
+                    records=tuple(records),
+                    next_cursor=None,
+                    has_more=False,
+                )
+            if records:
+                return SorRecordPage(
+                    records=tuple(records),
+                    next_cursor=_encode_comment_cursor(following_checkpoint),
+                    has_more=True,
+                )
+            checkpoint = following_checkpoint
+            scans += 1
+
+        return SorRecordPage(
+            records=(),
+            next_cursor=_encode_comment_cursor(checkpoint),
+            has_more=True,
+        )
+
+    async def _read_missing_comment_ranges(
+        self,
+        *,
+        checkpoint: _CommentCursor,
+        limit: int,
+    ) -> SorRecordPage | None:
+        per_segment_limit = max(1, limit // len(checkpoint.issue_ids))
+        outcomes = await asyncio.gather(
+            *(
+                self._read_issue_comment_segment(
+                    issue_id=issue_id,
+                    offset=item_offset,
+                    stop=item_stop,
+                    limit=per_segment_limit,
+                )
+                for issue_id, item_offset, item_stop in zip(
+                    checkpoint.issue_ids,
+                    checkpoint.item_offsets,
+                    checkpoint.item_stops,
+                    strict=True,
+                )
+            )
+        )
+        records: list[SorExternalRecord] = []
+        pending_issue_ids: list[str] = []
+        pending_item_offsets: list[int] = []
+        pending_item_stops: list[int] = []
+        for issue_id, item_offset, item_stop, (rows, has_more) in zip(
+            checkpoint.issue_ids,
+            checkpoint.item_offsets,
+            checkpoint.item_stops,
+            outcomes,
+            strict=True,
+        ):
+            records.extend(self._external_record("comments", row) for row in rows)
+            if has_more:
+                pending_issue_ids.append(issue_id)
+                pending_item_offsets.append(item_offset + len(rows))
+                pending_item_stops.append(item_stop)
+        if pending_issue_ids:
+            next_checkpoint = _CommentCursor(
+                project_offset=checkpoint.project_offset,
+                next_issue_token=checkpoint.next_issue_token,
+                issue_ids=tuple(pending_issue_ids),
+                item_offsets=tuple(pending_item_offsets),
+                item_stops=tuple(pending_item_stops),
+                issue_page_is_last=checkpoint.issue_page_is_last,
+                current_project_is_last=checkpoint.current_project_is_last,
+            )
+            return SorRecordPage(
+                records=tuple(records),
+                next_cursor=_encode_comment_cursor(next_checkpoint),
+                has_more=True,
+            )
+        following_checkpoint = _advance_comment_cursor(checkpoint)
+        if following_checkpoint is None:
+            return SorRecordPage(
+                records=tuple(records),
+                next_cursor=None,
+                has_more=False,
+            )
+        if not records:
+            return None
+        return SorRecordPage(
+            records=tuple(records),
+            next_cursor=_encode_comment_cursor(following_checkpoint),
+            has_more=True,
+        )
+
+    async def _read_issue_comment_segment(
         self,
         *,
         issue_id: str,
         offset: int,
+        stop: int,
         limit: int,
     ) -> tuple[list[dict[str, object]], bool]:
+        page_limit = min(limit, stop - offset)
         response = await self._jira_request(
             f"/issue/{_path_segment(issue_id)}/comment",
-            query={"startAt": offset, "maxResults": limit, "orderBy": "created"},
+            query={"startAt": offset, "maxResults": page_limit, "orderBy": "created"},
         )
         data = _object(
             _expect(response, operation="list Jira issue comments"),
             field="Jira comments",
         )
         rows = _object_list(data.get("comments"), field="Jira comments")
-        if len(rows) > limit:
+        if len(rows) > page_limit:
             raise _invalid_response("Jira returned too many issue comments.")
+        start_at = _required_nonnegative_integer(
+            data.get("startAt"),
+            field="Jira comment startAt",
+        )
         total = _required_nonnegative_integer(
             data.get("total"),
             field="Jira comment total",
         )
+        if start_at != offset or total < stop:
+            raise _invalid_response("Jira comment pagination changed during the scan.")
+        has_more = offset + len(rows) < stop
+        if has_more and not rows:
+            raise _invalid_response("Jira returned an empty partial comment page.")
         for row in rows:
             row["_issue_external_id"] = issue_id
-        return rows, offset + len(rows) < total
-
-    async def _read_issue_relations(
-        self,
-        *,
-        issue_id: str,
-        offset: int,
-        limit: int,
-    ) -> tuple[list[dict[str, object]], bool]:
-        response = await self._jira_request(
-            f"/issue/{_path_segment(issue_id)}",
-            query={"fields": ["issuelinks"]},
-        )
-        issue = _object(
-            _expect(response, operation="list Jira issue links"),
-            field="Jira issue",
-        )
-        fields = _object(issue.get("fields"), field="Jira issue fields")
-        links = _object_list(fields.get("issuelinks"), field="Jira issue links")
-        rows = links[offset : offset + limit]
-        for row in rows:
-            row["_current_issue_external_id"] = issue_id
-        return rows, offset + len(rows) < len(links)
+        return rows, has_more
 
     async def _board_project_external_id(self, board_id: str) -> str | None:
         """Resolve one board's owning project once per adapter invocation."""
@@ -1866,12 +2099,21 @@ def _expect_mutation(response: SorJsonResponse, *, operation: str) -> object:
 def _decode_issue_cursor(value: str | None) -> _IssueCursor:
     now = datetime.now(timezone.utc)
     if value is None:
-        return _IssueCursor(floor=None, next_token=None, high=None, started_at=now)
+        return _IssueCursor(
+            floor=None,
+            project_offset=0,
+            next_token=None,
+            high=None,
+            started_at=now,
+            completed=False,
+        )
     try:
         payload = json.loads(value)
     except (TypeError, ValueError, json.JSONDecodeError) as error:
         raise _invalid_cursor("issue") from error
-    if not isinstance(payload, dict) or set(payload) != {
+    if not isinstance(payload, dict) or payload.get("stream") != "issues":
+        raise _invalid_cursor("issue")
+    if payload.get("v") == JIRA_CURSOR_VERSION and set(payload) == {
         "floor",
         "high",
         "next_token",
@@ -1879,36 +2121,76 @@ def _decode_issue_cursor(value: str | None) -> _IssueCursor:
         "stream",
         "v",
     }:
-        raise _invalid_cursor("issue")
-    if payload.get("v") != JIRA_CURSOR_VERSION or payload.get("stream") != "issues":
+        floor = _optional_datetime(payload.get("floor"))
+        return _IssueCursor(
+            floor=floor,
+            project_offset=0,
+            next_token=None,
+            high=None,
+            started_at=now,
+            completed=False,
+        )
+    if payload.get("v") != JIRA_ISSUE_CURSOR_VERSION or set(payload) != {
+        "completed",
+        "floor",
+        "high",
+        "next_token",
+        "project_offset",
+        "started_at",
+        "stream",
+        "v",
+    }:
         raise _invalid_cursor("issue")
     floor = _optional_datetime(payload.get("floor"))
     high = _optional_datetime(payload.get("high"))
     next_token = _optional_string(payload.get("next_token"))
     started_at = _optional_datetime(payload.get("started_at"))
-    if started_at is None or (next_token is not None and high is None):
+    project_offset = payload.get("project_offset")
+    completed = payload.get("completed")
+    if (
+        started_at is None
+        or not isinstance(completed, bool)
+        or isinstance(project_offset, bool)
+        or not isinstance(project_offset, int)
+        or project_offset < 0
+        or next_token is not None
+        and len(next_token) > 4_096
+    ):
         raise _invalid_cursor("issue")
-    if next_token is None:
-        return _IssueCursor(floor=floor, next_token=None, high=None, started_at=now)
-    if len(next_token) > 4_096:
+    if completed:
+        if project_offset != 0 or next_token is not None or high is not None:
+            raise _invalid_cursor("issue")
+        return _IssueCursor(
+            floor=floor,
+            project_offset=0,
+            next_token=None,
+            high=None,
+            started_at=now,
+            completed=False,
+        )
+    if next_token is not None and high is None:
         raise _invalid_cursor("issue")
     return _IssueCursor(
         floor=floor,
+        project_offset=project_offset,
         next_token=next_token,
         high=high,
         started_at=started_at,
+        completed=False,
     )
 
 
 def _encode_issue_cursor(cursor: _IssueCursor) -> str:
     return json.dumps(
         {
+            "completed": cursor.completed,
             "floor": _datetime_value(cursor.floor),
             "high": _datetime_value(cursor.high),
             "next_token": cursor.next_token,
+            "project_offset": cursor.project_offset,
             "started_at": _datetime_value(cursor.started_at),
             "stream": "issues",
-            "v": JIRA_CURSOR_VERSION,
+            "v": JIRA_ISSUE_CURSOR_VERSION,
         },
         separators=(",", ":"),
         sort_keys=True,
@@ -1926,9 +2208,11 @@ def _completed_issue_cursor(
         candidate = floor
     return _IssueCursor(
         floor=candidate,
+        project_offset=0,
         next_token=None,
         high=None,
         started_at=started_at,
+        completed=True,
     )
 
 
@@ -1960,80 +2244,228 @@ def _encode_offset_cursor(offset: int, *, stream_key: str) -> str:
     )
 
 
-def _decode_nested_issue_cursor(
-    value: str | None,
-    *,
-    stream_key: str,
-) -> _NestedIssueCursor:
+def _decode_comment_cursor(value: str | None) -> _CommentCursor:
+    stream_key = "comments"
+    initial = _CommentCursor(
+        project_offset=0,
+        next_issue_token=None,
+        issue_ids=(),
+        item_offsets=(),
+        item_stops=(),
+        issue_page_is_last=False,
+        current_project_is_last=False,
+    )
     if value is None:
-        return _NestedIssueCursor(
-            next_issue_token=None,
-            current_issue_id=None,
-            current_issue_is_last=False,
-            item_offset=0,
-        )
+        return initial
     try:
         payload = json.loads(value)
     except (TypeError, ValueError, json.JSONDecodeError) as error:
         raise _invalid_cursor(stream_key) from error
+    if not isinstance(payload, dict) or payload.get("stream") != stream_key:
+        raise _invalid_cursor(stream_key)
+    if payload.get("v") in {
+        JIRA_CURSOR_VERSION,
+        JIRA_ISSUE_CURSOR_VERSION,
+        JIRA_NESTED_CURSOR_VERSION,
+    }:
+        return initial
     if (
-        not isinstance(payload, dict)
+        payload.get("v") != JIRA_COMMENT_CURSOR_VERSION
         or set(payload)
         != {
-            "current_issue_id",
-            "current_issue_is_last",
-            "item_offset",
+            "current_project_is_last",
+            "issue_ids",
+            "issue_page_is_last",
+            "item_offsets",
+            "item_stops",
             "next_issue_token",
+            "project_offset",
             "stream",
             "v",
         }
-        or payload.get("stream") != stream_key
-        or payload.get("v") != JIRA_CURSOR_VERSION
     ):
         raise _invalid_cursor(stream_key)
-    current_issue_id = _optional_id(payload.get("current_issue_id"))
     next_issue_token = _optional_string(payload.get("next_issue_token"))
-    is_last = payload.get("current_issue_is_last")
-    item_offset = payload.get("item_offset")
+    raw_issue_ids = payload.get("issue_ids")
+    raw_item_offsets = payload.get("item_offsets")
+    raw_item_stops = payload.get("item_stops")
+    issue_page_is_last = payload.get("issue_page_is_last")
+    project_is_last = payload.get("current_project_is_last")
+    project_offset = payload.get("project_offset")
     if (
-        not isinstance(is_last, bool)
-        or isinstance(item_offset, bool)
-        or not isinstance(item_offset, int)
-        or item_offset < 0
+        not isinstance(raw_issue_ids, list)
+        or not isinstance(raw_item_offsets, list)
+        or not isinstance(raw_item_stops, list)
+        or len(raw_issue_ids) != len(raw_item_offsets)
+        or len(raw_issue_ids) != len(raw_item_stops)
+        or len(raw_issue_ids) > 2 * JIRA_COMMENT_ISSUE_BATCH_SIZE
+        or not isinstance(issue_page_is_last, bool)
+        or not isinstance(project_is_last, bool)
+        or isinstance(project_offset, bool)
+        or not isinstance(project_offset, int)
+        or project_offset < 0
         or next_issue_token is not None
         and len(next_issue_token) > 4_096
     ):
         raise _invalid_cursor(stream_key)
-    if current_issue_id is None:
-        if is_last or item_offset != 0:
-            raise _invalid_cursor(stream_key)
-    elif not is_last and next_issue_token is None:
+    try:
+        issue_ids = tuple(
+            _required_id(issue_id, field="Jira child cursor issue ID")
+            for issue_id in raw_issue_ids
+        )
+    except SorVendorOperationError as error:
+        raise _invalid_cursor(stream_key) from error
+    if any(
+        isinstance(offset, bool) or not isinstance(offset, int) or offset < 0
+        for offset in raw_item_offsets
+    ) or any(
+        isinstance(stop, bool) or not isinstance(stop, int) or stop <= 0
+        for stop in raw_item_stops
+    ):
         raise _invalid_cursor(stream_key)
-    return _NestedIssueCursor(
+    item_offsets = tuple(raw_item_offsets)
+    item_stops = tuple(raw_item_stops)
+    ranges = tuple(zip(issue_ids, item_offsets, item_stops, strict=True))
+    if any(offset >= stop for _issue_id, offset, stop in ranges):
+        raise _invalid_cursor(stream_key)
+    if len(ranges) != len(set(ranges)):
+        raise _invalid_cursor(stream_key)
+    if not issue_ids:
+        if issue_page_is_last or project_is_last:
+            raise _invalid_cursor(stream_key)
+    elif issue_page_is_last and next_issue_token is not None:
+        raise _invalid_cursor(stream_key)
+    elif not issue_page_is_last and next_issue_token is None:
+        raise _invalid_cursor(stream_key)
+    return _CommentCursor(
+        project_offset=project_offset,
         next_issue_token=next_issue_token,
-        current_issue_id=current_issue_id,
-        current_issue_is_last=is_last,
-        item_offset=item_offset,
+        issue_ids=issue_ids,
+        item_offsets=item_offsets,
+        item_stops=item_stops,
+        issue_page_is_last=issue_page_is_last,
+        current_project_is_last=project_is_last,
     )
 
 
-def _encode_nested_issue_cursor(
-    cursor: _NestedIssueCursor,
-    *,
-    stream_key: str,
-) -> str:
+def _encode_comment_cursor(cursor: _CommentCursor) -> str:
     return json.dumps(
         {
-            "current_issue_id": cursor.current_issue_id,
-            "current_issue_is_last": cursor.current_issue_is_last,
-            "item_offset": cursor.item_offset,
+            "current_project_is_last": cursor.current_project_is_last,
+            "issue_ids": cursor.issue_ids,
+            "issue_page_is_last": cursor.issue_page_is_last,
+            "item_offsets": cursor.item_offsets,
+            "item_stops": cursor.item_stops,
             "next_issue_token": cursor.next_issue_token,
-            "stream": stream_key,
-            "v": JIRA_CURSOR_VERSION,
+            "project_offset": cursor.project_offset,
+            "stream": "comments",
+            "v": JIRA_COMMENT_CURSOR_VERSION,
         },
         separators=(",", ":"),
         sort_keys=True,
     )
+
+
+def _advance_comment_cursor(cursor: _CommentCursor) -> _CommentCursor | None:
+    if cursor.issue_page_is_last and cursor.current_project_is_last:
+        return None
+    return _CommentCursor(
+        project_offset=(
+            cursor.project_offset + 1
+            if cursor.issue_page_is_last
+            else cursor.project_offset
+        ),
+        next_issue_token=(
+            None if cursor.issue_page_is_last else cursor.next_issue_token
+        ),
+        issue_ids=(),
+        item_offsets=(),
+        item_stops=(),
+        issue_page_is_last=False,
+        current_project_is_last=False,
+    )
+
+
+def _decode_relation_cursor(value: str | None) -> _RelationCursor:
+    initial = _RelationCursor(project_offset=0, next_issue_token=None)
+    if value is None:
+        return initial
+    try:
+        payload = json.loads(value)
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise _invalid_cursor("issue_relations") from error
+    if not isinstance(payload, dict) or payload.get("stream") != "issue_relations":
+        raise _invalid_cursor("issue_relations")
+    if payload.get("v") in {
+        JIRA_CURSOR_VERSION,
+        JIRA_ISSUE_CURSOR_VERSION,
+        JIRA_NESTED_CURSOR_VERSION,
+    }:
+        return initial
+    if payload.get("v") != JIRA_RELATION_CURSOR_VERSION or set(payload) != {
+        "next_issue_token",
+        "project_offset",
+        "stream",
+        "v",
+    }:
+        raise _invalid_cursor("issue_relations")
+    next_issue_token = _optional_string(payload.get("next_issue_token"))
+    project_offset = payload.get("project_offset")
+    if (
+        isinstance(project_offset, bool)
+        or not isinstance(project_offset, int)
+        or project_offset < 0
+        or next_issue_token is not None
+        and len(next_issue_token) > 4_096
+    ):
+        raise _invalid_cursor("issue_relations")
+    return _RelationCursor(
+        project_offset=project_offset,
+        next_issue_token=next_issue_token,
+    )
+
+
+def _encode_relation_cursor(cursor: _RelationCursor) -> str:
+    return json.dumps(
+        {
+            "next_issue_token": cursor.next_issue_token,
+            "project_offset": cursor.project_offset,
+            "stream": "issue_relations",
+            "v": JIRA_RELATION_CURSOR_VERSION,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _issue_sync_jql(project_id: str, *, floor: datetime | None) -> str:
+    clause = f"project = {project_id}"
+    if floor is not None:
+        value = floor.strftime("%Y-%m-%d %H:%M")
+        clause = f'{clause} AND updated >= "{value}"'
+    return f"{clause} ORDER BY updated ASC, id ASC"
+
+
+def _issue_scan_jql(project_id: str) -> str:
+    return f"project = {project_id} ORDER BY id ASC"
+
+
+def _deduplicate_child_records(
+    records: Sequence[SorExternalRecord],
+    *,
+    stream_key: str,
+) -> list[SorExternalRecord]:
+    """Collapse identical Jira child copies without hiding conflicting payloads."""
+    unique: dict[tuple[str, str], SorExternalRecord] = {}
+    for record in records:
+        identity = (record.vendor_object_key, record.external_id)
+        existing = unique.get(identity)
+        if existing is not None and existing != record:
+            raise _invalid_response(
+                f"Jira returned conflicting copies of one {stream_key} record."
+            )
+        unique[identity] = record
+    return list(unique.values())
 
 
 def _decode_sprint_cursor(value: str | None) -> _SprintCursor:

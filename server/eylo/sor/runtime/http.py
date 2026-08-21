@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -22,6 +23,7 @@ from eylo.sockets.http.transport import SafeHttpTransport
 from eylo.sor.shared.contracts import SorVendorOperationError
 
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+_SAFE_TRANSPORT_RETRY_DELAYS = (0.25, 1.0)
 _PROTECTED_HEADERS = frozenset(
     {
         "authorization",
@@ -43,6 +45,29 @@ class SorHttpTransport(Protocol):
 
 class SorVendorTransportError(SorVendorOperationError):
     """A vendor egress failure raised by the shared JSON transport."""
+
+
+def _transport_error(error: TimeoutError | HttpEgressPolicyError) -> SorVendorTransportError:
+    if isinstance(error, TimeoutError):
+        return SorVendorTransportError(
+            "vendor_timeout",
+            "The vendor did not answer within the operation budget.",
+            retryable=True,
+        )
+    code = {
+        "dns_resolution_failed": "vendor_dns_unavailable",
+        "transport_failed": "vendor_transport_failed",
+    }.get(error.code, "vendor_egress_rejected")
+    summary = (
+        "The vendor connection failed before a response was received."
+        if error.code == "transport_failed"
+        else "The vendor request was refused by the egress boundary."
+    )
+    return SorVendorTransportError(
+        code,
+        summary,
+        retryable=error.code in {"dns_resolution_failed", "transport_failed"},
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +134,7 @@ class SorJsonHttpClient:
         payload: object | None = None,
         idempotency_key: str | None = None,
         if_unmodified_since: str | None = None,
+        retry_transport_failures: bool = False,
     ) -> SorJsonResponse:
         request = self._build(
             path,
@@ -118,24 +144,21 @@ class SorJsonHttpClient:
             idempotency_key=idempotency_key,
             if_unmodified_since=if_unmodified_since,
         )
-        try:
-            response = await self._transport.send(request)
-        except TimeoutError as error:
-            raise SorVendorTransportError(
-                "vendor_timeout",
-                "The vendor did not answer within the operation budget.",
-                retryable=True,
-            ) from error
-        except HttpEgressPolicyError as error:
-            code = {
-                "dns_resolution_failed": "vendor_dns_unavailable",
-                "transport_failed": "vendor_transport_failed",
-            }.get(error.code, "vendor_egress_rejected")
-            raise SorVendorTransportError(
-                code,
-                "The vendor request was refused by the egress boundary.",
-                retryable=error.code in {"dns_resolution_failed", "transport_failed"},
-            ) from error
+        normalized_method = method.strip().upper()
+        retry_delays = (
+            _SAFE_TRANSPORT_RETRY_DELAYS
+            if normalized_method in _SAFE_METHODS or retry_transport_failures
+            else ()
+        )
+        for attempt in range(len(retry_delays) + 1):
+            try:
+                response = await self._transport.send(request)
+                break
+            except (TimeoutError, HttpEgressPolicyError) as error:
+                transport_error = _transport_error(error)
+                if attempt >= len(retry_delays) or not transport_error.retryable:
+                    raise transport_error from error
+                await asyncio.sleep(retry_delays[attempt])
         return SorJsonResponse(
             status_code=response.status_code,
             data=_parse_json(response),

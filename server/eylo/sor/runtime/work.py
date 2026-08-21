@@ -198,6 +198,32 @@ class SorBoundWorkService:
         await self.session.flush()
         return row.state
 
+    async def converge_engine_failure(
+        self,
+        *,
+        work_id: UUID,
+        organization_id: UUID,
+        task_id: UUID,
+        error_code: str,
+        error_summary: str,
+    ) -> tuple[Any, bool]:
+        """Terminalize product work after its exact durable task has stopped."""
+        row = await self.get(
+            work_id=work_id,
+            organization_id=organization_id,
+            for_update=True,
+        )
+        if row.absurd_task_id != task_id:
+            raise SorWorkConflict("SOR work is not bound to the inspected Absurd task.")
+        if row.state in self.contract.terminal:
+            return row, False
+        row.state = self.contract.failed
+        setattr(row, self.contract.error_code_field, error_code[:128])
+        setattr(row, self.contract.error_summary_field, error_summary[:8192])
+        row.finished_at = datetime.now(timezone.utc)
+        await self.session.flush()
+        return row, True
+
     async def finish_as(
         self,
         *,
