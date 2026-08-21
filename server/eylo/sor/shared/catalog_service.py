@@ -85,6 +85,7 @@ def _vendor_response(vendor: SorVendorRegistration) -> SorVendorCatalogResponse:
                     change_strategies=tuple(
                         sorted(stream.change_strategies, key=lambda item: item.value)
                     ),
+                    scope_category=stream.scope_category,
                 )
                 for stream in manifest.streams
             ),

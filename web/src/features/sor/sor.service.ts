@@ -191,6 +191,32 @@ class SorService {
     );
   }
 
+  async deleteSource(
+    organizationId: string,
+    sourceId: string,
+  ): Promise<void> {
+    const result = await this.api.DELETE(
+      "/api/{organization_id}/sor/sources/{source_id}",
+      {
+        params: {
+          path: {
+            organization_id: organizationId,
+            source_id: sourceId,
+          },
+        },
+      },
+    );
+    if (!result.response.ok) {
+      throw new SorServiceError(
+        errorMessage(
+          result.error,
+          "The System of Record source and its data could not be deleted.",
+        ),
+        result.response.status,
+      );
+    }
+  }
+
   async createSource(
     organizationId: string,
     input: SorSourceCreateInput,
@@ -243,6 +269,32 @@ class SorService {
     return requireData(
       result,
       "The selected source objects could not be saved.",
+    );
+  }
+
+  async reconnectSource(
+    organizationId: string,
+    sourceId: string,
+    connectionId: string,
+    selectedObjects: readonly string[],
+    expectedConfigRevision: number,
+  ): Promise<SorSource> {
+    const result = await this.api.PATCH(
+      "/api/{organization_id}/sor/sources/{source_id}/connection",
+      {
+        params: {
+          path: { organization_id: organizationId, source_id: sourceId },
+        },
+        body: {
+          external_connection_id: connectionId,
+          selected_objects: [...selectedObjects],
+          expected_config_revision: expectedConfigRevision,
+        },
+      },
+    );
+    return requireData(
+      result,
+      "The source could not be reconnected to the provider account.",
     );
   }
 
@@ -836,6 +888,7 @@ function mapCapabilities(response: CapabilityResponse): SorAdapterCapabilities {
       description: stream.description,
       canonicalEntity: stream.canonical_entity,
       changeStrategies: [...stream.change_strategies],
+      scopeCategory: stream.scope_category ?? null,
     })),
     readableEntities: [...response.readable_entities],
     writableEntities: [...response.writable_entities],

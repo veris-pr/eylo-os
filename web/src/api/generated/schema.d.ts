@@ -3862,10 +3862,34 @@ export interface paths {
         get: operations["get_sor_source_api__organization_id__sor_sources__source_id__get"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Delete Sor Source
+         * @description Delete one source and its Eylo projection without changing vendor data.
+         */
+        delete: operations["delete_sor_source_api__organization_id__sor_sources__source_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/sources/{source_id}/connection": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Reconnect Sor Source
+         * @description Rebind an unactivated source after a replacement connection is authorized.
+         */
+        patch: operations["reconnect_sor_source_api__organization_id__sor_sources__source_id__connection_patch"];
         trace?: never;
     };
     "/api/{organization_id}/sor/sources/{source_id}/selection": {
@@ -11886,6 +11910,21 @@ export interface components {
             /** Items */
             items: components["schemas"]["SorSourceResponse"][];
         };
+        /**
+         * SorSourceReconnectRequest
+         * @description Rebind an unactivated source to a newly authorized connection.
+         */
+        SorSourceReconnectRequest: {
+            /**
+             * External Connection Id
+             * Format: uuid
+             */
+            external_connection_id: string;
+            /** Selected Objects */
+            selected_objects: string[];
+            /** Expected Config Revision */
+            expected_config_revision: number;
+        };
         /** SorSourceResponse */
         SorSourceResponse: {
             /**
@@ -12182,6 +12221,8 @@ export interface components {
             canonical_entity: string;
             /** Change Strategies */
             change_strategies: components["schemas"]["SorChangeStrategy"][];
+            /** Scope Category */
+            scope_category?: string | null;
         };
         /**
          * SorWebhookAcceptedResponse
@@ -24158,6 +24199,78 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorSourceResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_sor_source_api__organization_id__sor_sources__source_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reconnect_sor_source_api__organization_id__sor_sources__source_id__connection_patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SorSourceReconnectRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

@@ -7,6 +7,7 @@ import {
   buildActivationInput,
   createInitialFieldMappings,
   emptySorOnboardingDraft,
+  repairRequiredFieldMappings,
   updateMappingTarget,
 } from "@/features/sor/sor-onboarding";
 import { SorService } from "@/features/sor/sor.service";
@@ -216,6 +217,30 @@ class SorOnboardingStore {
     this.updateDraft({ fieldMappings, selectedObjects: unique });
   }
 
+  repairRequiredMappings(
+    profile: SorProfileDefinition,
+    vendor: SorVendorDefinition,
+  ): void {
+    if (this.discovery === null) return;
+    const fieldMappings = repairRequiredFieldMappings(
+      this.draft.fieldMappings,
+      this.discovery,
+      profile,
+      vendor,
+      this.draft.access,
+      this.draft.selectedObjects,
+    );
+    if (
+      fieldMappings.length === this.draft.fieldMappings.length &&
+      fieldMappings.every(
+        (mapping, index) => mapping === this.draft.fieldMappings[index],
+      )
+    ) {
+      return;
+    }
+    this.updateDraft({ fieldMappings });
+  }
+
   setMappingTarget(
     objectKey: string,
     field: SorDiscoveredField,
@@ -417,6 +442,37 @@ class SorOnboardingStore {
             this.draft.requiredSyncIntervalSeconds,
           selected_objects: this.draft.selectedObjects,
           vendor_key: vendor.vendorKey,
+        });
+      } else if (
+        source.external_connection_id !== connector.connection.id
+      ) {
+        const standardObjects = new Set(
+          vendor.capabilities?.streams.map((stream) => stream.key) ?? [],
+        );
+        const selectedObjects = this.draft.selectedObjects.filter((objectKey) =>
+          standardObjects.has(objectKey),
+        );
+        if (selectedObjects.length === 0) {
+          throw new Error(
+            "Select at least one standard object before reconnecting the source.",
+          );
+        }
+        const reconnectedSource = await this.service.reconnectSource(
+          organizationId,
+          source.id,
+          connector.connection.id,
+          selectedObjects,
+          source.config_revision,
+        );
+        source = reconnectedSource;
+        runInAction(() => {
+          this.source = reconnectedSource;
+          this.discovery = null;
+          this.updateDraft({
+            fieldMappings: [],
+            selectedObjects,
+            sourceId: reconnectedSource.id,
+          });
         });
       }
       const discovery = await this.service.verifySource(

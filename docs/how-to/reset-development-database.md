@@ -23,9 +23,9 @@ docker compose \
   up -d --build
 ```
 
-The API recreates the schema by applying `eylo0001`.
+The API recreates the schema by applying every revision through `head`.
 
-## Verify the baseline
+## Verify migration history
 
 From `server/`, against the explicitly selected disposable database:
 
@@ -36,6 +36,6 @@ uv run alembic downgrade base
 uv run alembic upgrade head
 ```
 
-The repository carries no historical data migrations. A model change requires
-regenerating the single baseline for a fresh database, then repeating this
-round trip.
+Never regenerate an applied migration. A model change requires a new revision
+whose `down_revision` is the current head. Prove both the retained-database
+upgrade and this empty-database round trip before using the revision.

@@ -4,7 +4,9 @@ import { SorService } from "@/features/sor/sor.service";
 import type { SorSource, SorStream } from "@/features/sor/sor.types";
 
 class SorSourcesStore {
+  deleteErrorMessage: string | null = null;
   errorMessage: string | null = null;
+  isDeleting = false;
   isLoading = false;
   isSelectedLoading = false;
   selectedErrorMessage: string | null = null;
@@ -120,6 +122,40 @@ class SorSourcesStore {
     this.selectedStreams = [];
     this.selectedErrorMessage = null;
     this.isSelectedLoading = false;
+  }
+
+  clearDeleteError(): void {
+    this.deleteErrorMessage = null;
+  }
+
+  async deleteSource(
+    organizationId: string,
+    sourceId: string,
+  ): Promise<boolean> {
+    if (this.isDeleting) return false;
+    this.isDeleting = true;
+    this.deleteErrorMessage = null;
+    try {
+      await this.service.deleteSource(organizationId, sourceId);
+      runInAction(() => {
+        this.sourcesById.delete(sourceId);
+        this.sourceIds = this.sourceIds.filter((id) => id !== sourceId);
+        if (this.selectedSource?.id === sourceId) this.clearSelected();
+      });
+      return true;
+    } catch (error) {
+      runInAction(() => {
+        this.deleteErrorMessage = messageFrom(
+          error,
+          "The source and its synchronized data could not be deleted.",
+        );
+      });
+      return false;
+    } finally {
+      runInAction(() => {
+        this.isDeleting = false;
+      });
+    }
   }
 }
 

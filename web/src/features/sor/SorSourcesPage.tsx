@@ -1,4 +1,4 @@
-import { Eye, Plus, Search, TableProperties } from "lucide-react";
+import { Eye, Plus, Search, TableProperties, Trash2 } from "lucide-react";
 import { observer } from "mobx-react-lite";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
@@ -26,6 +26,7 @@ import {
   SorSourceDetailsDrawer,
   SourceStateBadge,
 } from "@/features/sor/SorSourceDetailsDrawer";
+import { SorSourceDeleteDialog } from "@/features/sor/SorSourceDeleteDialog";
 import {
   SOR_SOURCE_FILTER_SCHEMA,
   SOR_SOURCE_SORT_OPTIONS,
@@ -58,6 +59,7 @@ const SorSourcesPage = observer(function SorSourcesPage() {
     [query, sor.sources.items],
   );
   const [searchDraft, setSearchDraft] = useState(query.search);
+  const [sourceToDelete, setSourceToDelete] = useState<SorSource | null>(null);
 
   useEffect(() => setSearchDraft(query.search), [query.search]);
   useEffect(() => {
@@ -89,6 +91,24 @@ const SorSourcesPage = observer(function SorSourcesPage() {
     });
   }
 
+  function requestDelete(source: SorSource): void {
+    sor.sources.clearDeleteError();
+    setSourceToDelete(source);
+  }
+
+  async function confirmDelete(): Promise<boolean> {
+    if (sourceToDelete === null) return false;
+    const deleted = await sor.sources.deleteSource(
+      activeOrganizationId,
+      sourceToDelete.id,
+    );
+    if (deleted) {
+      if (sourceId === sourceToDelete.id) closeSource();
+      setSourceToDelete(null);
+    }
+    return deleted;
+  }
+
   return (
     <section
       aria-labelledby="sor-sources-title"
@@ -107,18 +127,13 @@ const SorSourcesPage = observer(function SorSourcesPage() {
             canonical profiles they feed.
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge variant="secondary">
-            {sor.sources.items.length} configured
-          </Badge>
-          <Button
-            nativeButton={false}
-            render={<Link to={`/org/${activeOrganizationId}/sor/new`} />}
-          >
-            <Plus aria-hidden="true" />
-            New source
-          </Button>
-        </div>
+        <Button
+          nativeButton={false}
+          render={<Link to={`/org/${activeOrganizationId}/sor/new`} />}
+        >
+          <Plus aria-hidden="true" />
+          New source
+        </Button>
       </header>
 
       {sor.sources.errorMessage !== null ? (
@@ -197,22 +212,42 @@ const SorSourcesPage = observer(function SorSourcesPage() {
           hasFilters={query.search !== "" || query.filters.children.length > 0}
         />
       ) : (
-        <SourcesTable onView={openSource} sources={visibleSources} />
+        <SourcesTable
+          onDelete={requestDelete}
+          onView={openSource}
+          sources={visibleSources}
+        />
       )}
 
       <SorSourceDetailsDrawer
         organizationId={activeOrganizationId}
         sourceId={sourceId}
         onClose={closeSource}
+        onDelete={requestDelete}
+      />
+      <SorSourceDeleteDialog
+        errorMessage={sor.sources.deleteErrorMessage}
+        isDeleting={sor.sources.isDeleting}
+        open={sourceToDelete !== null}
+        source={sourceToDelete}
+        onConfirm={confirmDelete}
+        onOpenChange={(open) => {
+          if (!open) {
+            sor.sources.clearDeleteError();
+            setSourceToDelete(null);
+          }
+        }}
       />
     </section>
   );
 });
 
 function SourcesTable({
+  onDelete,
   onView,
   sources,
 }: {
+  onDelete: (source: SorSource) => void;
   onView: (sourceId: string) => void;
   sources: readonly SorSource[];
 }) {
@@ -231,15 +266,25 @@ function SourcesTable({
               </div>
               <SourceStateBadge source={source} />
             </div>
-            <Button
-              className="w-full"
-              size="sm"
-              variant="outline"
-              onClick={() => onView(source.id)}
-            >
-              <Eye aria-hidden="true" />
-              View source
-            </Button>
+            <div className="grid grid-cols-2 gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => onView(source.id)}
+              >
+                <Eye aria-hidden="true" />
+                View
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="text-destructive hover:text-destructive"
+                onClick={() => onDelete(source)}
+              >
+                <Trash2 aria-hidden="true" />
+                Delete
+              </Button>
+            </div>
           </article>
         ))}
       </div>
@@ -254,7 +299,7 @@ function SourcesTable({
             <TableHead className="w-40">Vendor</TableHead>
             <TableHead className="w-36">State</TableHead>
             <TableHead className="w-40">Last sync</TableHead>
-            <TableHead className="w-16 text-right">Actions</TableHead>
+            <TableHead className="w-24 text-right">Actions</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -286,6 +331,16 @@ function SourcesTable({
                     onClick={() => onView(source.id)}
                   >
                     <Eye aria-hidden="true" />
+                  </Button>
+                  <Button
+                    aria-label={`Delete ${source.name}`}
+                    className="text-destructive hover:text-destructive"
+                    size="icon-sm"
+                    title="Delete source and data"
+                    variant="ghost"
+                    onClick={() => onDelete(source)}
+                  >
+                    <Trash2 aria-hidden="true" />
                   </Button>
                 </TableCell>
               </TableRow>

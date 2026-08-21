@@ -130,6 +130,7 @@ interface SorVendorStreamDefinition {
   description: string;
   canonicalEntity: string;
   changeStrategies: SorChangeStrategy[];
+  scopeCategory: string | null;
 }
 
 interface SorToolDefinition {

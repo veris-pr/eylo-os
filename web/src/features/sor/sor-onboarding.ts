@@ -55,6 +55,14 @@ const FIELD_ALIASES: Record<string, Record<string, readonly string[]>> = {
     stage_external_id: ["dealstage", "stageid"],
     title: ["dealname", "name", "title"],
   },
+  relation: {
+    canonical_relation_kind: [
+      "canonicalkind",
+      "canonicaltype",
+      "normalizedrelation",
+    ],
+    native_relation_kind: ["nativekind", "nativetype", "sourcerelation"],
+  },
 };
 
 function emptySorOnboardingDraft(
@@ -130,6 +138,81 @@ function createInitialFieldMappings(
     }
   }
   return mappings;
+}
+
+function repairRequiredFieldMappings(
+  currentMappings: readonly SorFieldMappingDraftInput[],
+  discovery: SorDiscovery,
+  profile: SorProfileDefinition,
+  vendor: SorVendorDefinition,
+  access: SorSourceAccess,
+  selectedObjects: readonly string[],
+): SorFieldMappingDraftInput[] {
+  const defaults = createInitialFieldMappings(
+    discovery,
+    profile,
+    vendor,
+    access,
+    selectedObjects,
+  );
+  const current = new Map(
+    currentMappings.map((mapping) => [
+      mappingIdentity(
+        mapping.vendor_object_key,
+        mapping.vendor_field_key,
+      ),
+      mapping,
+    ]),
+  );
+  const mappedTargets = new Map<string, Set<string>>();
+  for (const mapping of currentMappings) {
+    if (
+      mapping.direction === "IGNORE" ||
+      typeof mapping.canonical_target_path !== "string"
+    ) {
+      continue;
+    }
+    const targets = mappedTargets.get(mapping.vendor_object_key) ?? new Set();
+    targets.add(mapping.canonical_target_path);
+    mappedTargets.set(mapping.vendor_object_key, targets);
+  }
+  const requiredTargets = new Map<string, ReadonlySet<string>>();
+  for (const stream of vendor.capabilities?.streams ?? []) {
+    const entity = profile.entities.find(
+      (candidate) => candidate.key === stream.canonicalEntity,
+    );
+    requiredTargets.set(
+      stream.key,
+      new Set(
+        entity?.fields
+          .filter((field) => field.required)
+          .map((field) => field.key) ?? [],
+      ),
+    );
+  }
+
+  return defaults.map((suggested) => {
+    const existing = current.get(
+      mappingIdentity(
+        suggested.vendor_object_key,
+        suggested.vendor_field_key,
+      ),
+    );
+    if (existing === undefined) return suggested;
+    const target = suggested.canonical_target_path;
+    if (
+      existing.direction !== "IGNORE" ||
+      typeof target !== "string" ||
+      !requiredTargets.get(suggested.vendor_object_key)?.has(target) ||
+      mappedTargets.get(suggested.vendor_object_key)?.has(target)
+    ) {
+      return existing;
+    }
+    const targets = mappedTargets.get(suggested.vendor_object_key) ?? new Set();
+    targets.add(target);
+    mappedTargets.set(suggested.vendor_object_key, targets);
+    return suggested;
+  });
 }
 
 function activationIssues(
@@ -488,6 +571,7 @@ export {
   buildActivationInput,
   createInitialFieldMappings,
   emptySorOnboardingDraft,
+  repairRequiredFieldMappings,
   resolveSorOnboardingAuthKind,
   updateMappingTarget,
 };

@@ -5,7 +5,7 @@ from typing import Annotated
 from urllib.parse import urlsplit
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response, status
 from sqlalchemy import select
 
 from eylo.common.database import start_transaction
@@ -22,6 +22,7 @@ from eylo.sor.runtime.api_key_sources import (
 from eylo.sor.runtime.authority import SorAuthorityError
 from eylo.sor.runtime.catalog import get_sor_registry
 from eylo.sor.runtime.commands import cancel_active_sor_commands
+from eylo.sor.runtime.deletion import delete_sor_source as delete_source_with_data
 from eylo.sor.runtime.discovery import (
     SorDiscoveryResult,
     rediscover_source_schema,
@@ -90,6 +91,7 @@ from eylo.sor.shared.schemas import (
     SorSourceGrantRequest,
     SorSourceGrantResponse,
     SorSourceListResponse,
+    SorSourceReconnectRequest,
     SorSourceResponse,
     SorSourceSelectionUpdateRequest,
     SorStreamCreateRequest,
@@ -510,6 +512,56 @@ async def get_sor_source(
             )
     except SorReadNotFoundError as error:
         raise _read_error(error) from None
+
+
+@router.delete(
+    "/sources/{source_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_sor_source(
+    organization_id: UUID,
+    source_id: UUID,
+    current_user: CurrentUserSchema = Depends(get_current_user),
+) -> Response:
+    """Delete one source and its Eylo projection without changing vendor data."""
+    _authorize(organization_id, current_user)
+    try:
+        await delete_source_with_data(
+            organization_id=organization_id,
+            source_id=source_id,
+        )
+    except SorNotFoundError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(error),
+        ) from None
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.patch(
+    "/sources/{source_id}/connection",
+    response_model=SorSourceResponse,
+)
+async def reconnect_sor_source(
+    organization_id: UUID,
+    source_id: UUID,
+    request: SorSourceReconnectRequest,
+    current_user: CurrentUserSchema = Depends(get_current_user),
+) -> SorSourceResponse:
+    """Rebind an unactivated source after a replacement connection is authorized."""
+    _authorize(organization_id, current_user)
+    try:
+        async with start_transaction() as session:
+            source = await SorSourceService(session).reconnect_before_activation(
+                organization_id=organization_id,
+                source_id=source_id,
+                external_connection_id=request.external_connection_id,
+                selected_objects=request.selected_objects,
+                expected_config_revision=request.expected_config_revision,
+            )
+            return SorSourceResponse.model_validate(source)
+    except (SorConfigurationError, SorConflictError, SorNotFoundError) as error:
+        raise _configuration_error(error) from None
 
 
 @router.patch(

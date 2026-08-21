@@ -1,4 +1,4 @@
-import { X } from "lucide-react";
+import { Trash2, X } from "lucide-react";
 import { observer } from "mobx-react-lite";
 import { useEffect, type ReactNode } from "react";
 
@@ -21,10 +21,12 @@ import type { SorSource, SorStream } from "@/features/sor/sor.types";
 
 const SorSourceDetailsDrawer = observer(function SorSourceDetailsDrawer({
   onClose,
+  onDelete,
   organizationId,
   sourceId,
 }: {
   onClose: () => void;
+  onDelete: (source: SorSource) => void;
   organizationId: string;
   sourceId: string | undefined;
 }) {
@@ -79,6 +81,7 @@ const SorSourceDetailsDrawer = observer(function SorSourceDetailsDrawer({
             </div>
           ) : sources.selectedSource !== null ? (
             <SourceDetails
+              onDelete={onDelete}
               source={sources.selectedSource}
               streams={sources.selectedStreams}
             />
@@ -90,9 +93,11 @@ const SorSourceDetailsDrawer = observer(function SorSourceDetailsDrawer({
 });
 
 function SourceDetails({
+  onDelete,
   source,
   streams,
 }: {
+  onDelete: (source: SorSource) => void;
   source: SorSource;
   streams: readonly SorStream[];
 }) {
@@ -180,6 +185,19 @@ function SourceDetails({
           </pre>
         </DetailsSection>
       ) : null}
+
+      <section className="space-y-3 border-t pt-5">
+        <div className="space-y-1">
+          <h3 className="text-sm font-semibold">Delete source</h3>
+          <p className="text-sm leading-6 text-muted-foreground">
+            Permanently remove this source and all of its synchronized Eylo data.
+          </p>
+        </div>
+        <Button variant="destructive" onClick={() => onDelete(source)}>
+          <Trash2 aria-hidden="true" />
+          Delete source and data
+        </Button>
+      </section>
     </div>
   );
 }

@@ -18,6 +18,27 @@ You need:
 - the source objects and access level the organization intends to expose;
 - an Agent draft if the source will be used by an Agent.
 
+### Jira OAuth scope families
+
+Jira uses three separate scope groups. Do not treat them as one interchangeable
+list:
+
+- **OAuth lifecycle scope:** `offline_access` is not a Jira API scope. It asks
+  Atlassian for a refresh token so Eylo can keep the connection active.
+- **Classic Jira Cloud platform scopes:** `read:jira-work` and
+  `read:jira-user`; add `write:jira-work` for read/write sources. Atlassian
+  recommends classic scopes where they cover the operation.
+- **Granular Jira Software scopes:** selecting Sprints additionally requires
+  `read:board-scope:jira-software`, `read:project:jira`, and
+  `read:sprint:jira-software`. Adding classic scopes does not add these Jira
+  Software scopes.
+
+The console requests only the groups required by the selected objects and
+access level. See Atlassian's
+[Jira Cloud platform scope reference][jira-platform-scopes],
+[Jira Software scope reference][jira-software-scopes], and
+[refresh-token guide][atlassian-refresh-tokens].
+
 ## Configure the source
 
 1. Open **Systems of Record → Overview**.
@@ -37,8 +58,9 @@ You need:
    - For Jira or Confluence, create an Atlassian OAuth 2.0 (3LO) app, register
      the exact callback shown by Eylo, and enter the exact
      `https://<site>.atlassian.net` origin. The authorizing account must be able
-     to open that site. Selecting Jira sprints requests the additional Jira
-     Software board, project, and sprint read scopes.
+     to open that site. For Jira, configure the separate lifecycle, classic,
+     and granular scope groups described above. The exact scopes appear beside
+     every selectable source object before authorization.
    - For Linear, create an OAuth 2.0 app and register the exact callback. Eylo
      uses a Linear app actor; grant that app access only to the intended public
      or selected teams. Scheduled reconciliation works in local development
@@ -61,11 +83,16 @@ You need:
    The callback commits the provider connection before notifying the browser.
    If popup messaging is unavailable, the console checks the committed
    connection state after the window closes instead of treating the missing
-   browser message as a failed authorization.
+   browser message as a failed authorization. If a resumable, unactivated
+   source still references an older connection, the console rebinds it to the
+   newly authorized connection before verification. An active source never
+   changes accounts implicitly.
 8. Verify the OAuth source. API-key sources perform this step as part of
    **Connect and verify**. Eylo persists the returned account identity and one
    immutable schema discovery.
 9. In **Objects**, select the standard or discovered custom objects to sync.
+   Each card repeats the provider scope required by that object; custom objects
+   with no additional scope say so explicitly.
 10. In **Field mapping**, map each selected field to one canonical field,
     one typed custom field, or ignore it.
 11. In **Sync**, choose the freshness target and reconciliation interval.
@@ -162,6 +189,32 @@ that do not have canonical Agent semantics.
 The last known projection remains visible while a source is degraded or a new
 schema awaits mapping. Check its freshness before relying on it.
 
+## Delete a source and its Eylo data
+
+1. Open **Systems of Record → Sources**.
+2. Choose **Delete** from the source row or source detail drawer.
+3. Read the ownership boundary, then type the exact source name to confirm.
+
+Eylo first disables the source so new sync, webhook, and Agent command work
+cannot use it. Eylo then stops active durable work and permanently deletes the
+source-owned local projection: synchronized records and relations, custom
+fields and datasets, schema and mapping revisions, streams and sync history,
+webhook and command receipts, and Agent source grants.
+
+The reusable external connection remains available for another source. Eylo
+does not delete, modify, or revoke data or credentials in the vendor account.
+PII-safe durable action events already emitted by the source remain part of the
+organization's event history.
+
+The equivalent public API operation is:
+
+```http
+DELETE /api/{organization_id}/sor/sources/{source_id}
+```
+
+Success returns `204`. A missing source, another organization's source, or a
+second delete returns `404`.
+
 ## Revoke access
 
 - Delete an external connection to clear its stored credential and fence every
@@ -173,3 +226,7 @@ Both actions commit their authority change before asking the durable runtime to
 stop exact tasks. Periodic SOR recovery closes a process-crash gap. A fenced
 source keeps its last synchronized projection for audit, but no new or resumed
 sync, webhook, or Agent command may use it.
+
+[atlassian-refresh-tokens]: https://developer.atlassian.com/cloud/oauth/getting-started/refresh-tokens/
+[jira-platform-scopes]: https://developer.atlassian.com/cloud/jira/platform/scopes-for-oauth-2-3LO-and-forge-apps/
+[jira-software-scopes]: https://developer.atlassian.com/cloud/jira/software/scopes-for-oauth-2-3LO-and-forge-apps/

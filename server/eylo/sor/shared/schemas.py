@@ -75,6 +75,14 @@ class SorSourceSelectionUpdateRequest(SorApiModel):
     expected_config_revision: int = Field(gt=0)
 
 
+class SorSourceReconnectRequest(SorApiModel):
+    """Rebind an unactivated source to a newly authorized connection."""
+
+    external_connection_id: UUID
+    selected_objects: tuple[str, ...] = Field(min_length=1, max_length=100)
+    expected_config_revision: int = Field(gt=0)
+
+
 class SorWebhookSigningSecretUpdateRequest(SorApiModel):
     """Rotate one source-owned vendor signing secret without returning it."""
 
@@ -618,6 +626,7 @@ class SorVendorStreamResponse(BaseModel):
     description: str
     canonical_entity: str
     change_strategies: tuple[SorChangeStrategy, ...] = Field(min_length=1)
+    scope_category: str | None = None
 
 
 class SorAdapterConfigurationFieldResponse(BaseModel):
@@ -763,6 +772,7 @@ __all__ = [
     "SorSourceGrantResponse",
     "SorSourceListResponse",
     "SorSourceResponse",
+    "SorSourceReconnectRequest",
     "SorSourceSelectionUpdateRequest",
     "SorStreamCreateRequest",
     "SorStreamResponse",

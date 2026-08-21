@@ -77,6 +77,11 @@ interface ModuleNavigationChildDefinition {
   path: string;
 }
 
+interface NavigationCategoryDefinition {
+  definitions: readonly ModuleNavigationDefinition[];
+  label: string;
+}
+
 interface SocketNavigationDefinition {
   icon: LucideIcon;
 }
@@ -119,61 +124,74 @@ const PLATFORM_NAVIGATION: readonly ModuleNavigationDefinition[] = [
   },
 ];
 
-const SOR_NAVIGATION: readonly ModuleNavigationDefinition[] = [
+const SOR_PRIMARY_NAVIGATION: readonly ModuleNavigationDefinition[] = [
   { icon: TableProperties, label: "Overview", path: "sor" },
   { icon: Database, label: "Sources", path: "sor/sources" },
-  { icon: UsersRound, label: "CRM contacts", path: "sor/crm/contact" },
-  { icon: Building2, label: "CRM companies", path: "sor/crm/company" },
-  { icon: Handshake, label: "CRM deals", path: "sor/crm/deal" },
-  { icon: Activity, label: "CRM activities", path: "sor/crm/activity" },
-  { icon: ListChecks, label: "Issues", path: "sor/ticketing/issue" },
-  { icon: FolderKanban, label: "Projects", path: "sor/ticketing/project" },
+];
+
+const SOR_NAVIGATION_CATEGORIES: readonly NavigationCategoryDefinition[] = [
   {
-    icon: CalendarRange,
-    label: "Cycles and milestones",
-    path: "sor/ticketing/cycle",
+    definitions: [
+      { icon: UsersRound, label: "Contacts", path: "sor/crm/contact" },
+      { icon: Building2, label: "Companies", path: "sor/crm/company" },
+      { icon: Handshake, label: "Deals", path: "sor/crm/deal" },
+      { icon: Activity, label: "Activities", path: "sor/crm/activity" },
+    ],
+    label: "CRM",
   },
   {
-    icon: Workflow,
-    label: "Workflow states",
-    path: "sor/ticketing/workflow_state",
+    definitions: [
+      { icon: ListChecks, label: "Issues", path: "sor/ticketing/issue" },
+      { icon: FolderKanban, label: "Projects", path: "sor/ticketing/project" },
+      {
+        icon: CalendarRange,
+        label: "Cycles and milestones",
+        path: "sor/ticketing/cycle",
+      },
+      {
+        icon: Workflow,
+        label: "Workflow states",
+        path: "sor/ticketing/workflow_state",
+      },
+      {
+        icon: MessageSquareMore,
+        label: "Comments",
+        path: "sor/ticketing/comment",
+      },
+    ],
+    label: "Project management",
   },
   {
-    icon: MessageSquareMore,
-    label: "Comments",
-    path: "sor/ticketing/comment",
-  },
-  {
-    icon: MessageSquareText,
-    label: "Support tickets",
-    path: "sor/support/ticket",
-  },
-  {
-    icon: UsersRound,
-    label: "Support customers",
-    path: "sor/support/customer",
-  },
-  {
-    icon: ListOrdered,
-    label: "Support queues",
-    path: "sor/support/queue",
-  },
-  {
-    children: [
+    definitions: [
+      {
+        icon: BookOpenText,
+        label: "Documents",
+        path: "sor/knowledge/document",
+      },
       {
         icon: Library,
         label: "Spaces and data sources",
         path: "sor/knowledge/space",
       },
-      {
-        icon: Shapes,
-        label: "Custom datasets",
-        path: "sor/custom-datasets",
-      },
+      { icon: Shapes, label: "Custom datasets", path: "sor/custom-datasets" },
     ],
-    icon: BookOpenText,
     label: "Documents",
-    path: "sor/knowledge/document",
+  },
+  {
+    definitions: [
+      {
+        icon: MessageSquareText,
+        label: "Tickets",
+        path: "sor/support/ticket",
+      },
+      {
+        icon: UsersRound,
+        label: "Customers",
+        path: "sor/support/customer",
+      },
+      { icon: ListOrdered, label: "Queues", path: "sor/support/queue" },
+    ],
+    label: "Customer support",
   },
 ];
 
@@ -244,10 +262,22 @@ function OrganizationNavigation({
 
       <NavigationGroup label="Systems of Record">
         <ModuleNavigation
-          definitions={SOR_NAVIGATION}
+          definitions={SOR_PRIMARY_NAVIGATION}
           onNavigate={onNavigate}
           organizationPath={organizationPath}
         />
+        <div className="mt-3 space-y-3">
+          {SOR_NAVIGATION_CATEGORIES.map((category) => (
+            <NavigationSubgroup key={category.label} label={category.label}>
+              <ModuleNavigation
+                definitions={category.definitions}
+                nested
+                onNavigate={onNavigate}
+                organizationPath={organizationPath}
+              />
+            </NavigationSubgroup>
+          ))}
+        </div>
       </NavigationGroup>
 
       <NavigationGroup label="Sockets">
@@ -303,10 +333,12 @@ function OrganizationNavigation({
 
 function ModuleNavigation({
   definitions,
+  nested,
   onNavigate,
   organizationPath,
 }: {
   definitions: readonly ModuleNavigationDefinition[];
+  nested?: boolean;
   onNavigate?: () => void;
   organizationPath: string;
 }) {
@@ -325,6 +357,7 @@ function ModuleNavigation({
         end={definition.children !== undefined}
         icon={definition.icon}
         label={definition.label}
+        nested={nested}
         onNavigate={onNavigate}
         to={`${organizationPath}/${definition.path}`}
       />
@@ -355,6 +388,28 @@ function ModuleNavigation({
       </div>
     );
   });
+}
+
+function NavigationSubgroup({
+  children,
+  label,
+}: {
+  children: React.ReactNode;
+  label: string;
+}) {
+  const labelId = useId();
+
+  return (
+    <section aria-labelledby={labelId}>
+      <h3
+        id={labelId}
+        className="mb-1 px-3 text-xs font-medium text-muted-foreground"
+      >
+        {label}
+      </h3>
+      <div className="ml-3 space-y-0.5 border-l pl-2">{children}</div>
+    </section>
+  );
 }
 
 function UnavailableNavigationItem({

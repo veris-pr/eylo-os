@@ -276,9 +276,8 @@ belongs in `pipelines/`. The full procedure is
 - Provider secrets are organization-scoped and encrypted at rest.
 - Uploaded and recorded objects are namespaced by organization and owning
   resource before reaching a storage adapter.
-- The Alembic history is one resettable baseline. Apply it only to a new or
-  deliberately reset database; this project does not ship historical data
-  migrations.
+- Alembic migrations are incremental. `eylo0001` is the compatibility baseline;
+  later revisions upgrade retained databases without rewriting applied history.
 
 ## License
 

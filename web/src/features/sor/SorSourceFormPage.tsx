@@ -134,6 +134,13 @@ const SorSourceFormPage = observer(function SorSourceFormPage() {
   );
 
   useEffect(() => {
+    if (profile === null || vendor === null || onboarding.discovery === null) {
+      return;
+    }
+    onboarding.repairRequiredMappings(profile, vendor);
+  }, [onboarding, onboarding.discovery, profile, vendor]);
+
+  useEffect(() => {
     if (organizationId === undefined || authKind !== "oauth2") return;
     void onboarding.loadOAuthConfiguration(organizationId);
   }, [authKind, onboarding, organizationId]);
@@ -954,6 +961,8 @@ function ObjectScopeSelection({
       <div className="grid gap-2 sm:grid-cols-2">
         {streams.map((stream) => {
           const checked = onboarding.draft.selectedObjects.includes(stream.key);
+          const requiredScopes =
+            vendor?.capabilities?.requiredScopes[stream.key] ?? [];
           return (
             <label
               className="flex min-w-0 items-start gap-3 border p-3"
@@ -980,6 +989,12 @@ function ObjectScopeSelection({
                 <span className="block text-xs leading-5 text-muted-foreground">
                   {stream.description}
                 </span>
+                {requiredScopes.length > 0 ? (
+                  <span className="mt-1 block break-words text-xs leading-5 text-muted-foreground">
+                    {stream.scopeCategory ?? "Provider scopes"}:{" "}
+                    {requiredScopes.join(", ")}
+                  </span>
+                ) : null}
               </span>
             </label>
           );
@@ -1029,24 +1044,35 @@ function ObjectsSection({
         </p>
       ) : (
         <div className="grid gap-3 sm:grid-cols-2">
-          {objects.map((object) => (
-            <ObjectChoice
-              checked={onboarding.draft.selectedObjects.includes(object.key)}
-              key={object.key}
-              object={object}
-              onChange={(checked) =>
-                onboarding.setSelectedObjects(
-                  checked
-                    ? [...onboarding.draft.selectedObjects, object.key]
-                    : onboarding.draft.selectedObjects.filter(
-                        (key) => key !== object.key,
-                      ),
-                  profile,
-                  vendor,
-                )
-              }
-            />
-          ))}
+          {objects.map((object) => {
+            const stream = vendor?.capabilities?.streams.find(
+              (candidate) => candidate.key === object.key,
+            );
+            return (
+              <ObjectChoice
+                checked={onboarding.draft.selectedObjects.includes(object.key)}
+                key={object.key}
+                object={object}
+                scopeCategory={stream?.scopeCategory ?? null}
+                scopes={
+                  object.custom
+                    ? (vendor?.capabilities?.customObjectRequiredScopes ?? [])
+                    : (vendor?.capabilities?.requiredScopes[object.key] ?? [])
+                }
+                onChange={(checked) =>
+                  onboarding.setSelectedObjects(
+                    checked
+                      ? [...onboarding.draft.selectedObjects, object.key]
+                      : onboarding.draft.selectedObjects.filter(
+                          (key) => key !== object.key,
+                        ),
+                    profile,
+                    vendor,
+                  )
+                }
+              />
+            );
+          })}
         </div>
       )}
     </FormSection>
@@ -1057,18 +1083,22 @@ function ObjectChoice({
   checked,
   object,
   onChange,
+  scopeCategory,
+  scopes,
 }: {
   checked: boolean;
   object: SorDiscoveredObject;
   onChange: (checked: boolean) => void;
+  scopeCategory: string | null;
+  scopes: readonly string[];
 }) {
   return (
-    <label className="flex min-w-0 items-start gap-3 border p-4">
+    <label className="flex h-full min-w-0 items-start gap-3 border p-4">
       <Checkbox
         checked={checked}
         onCheckedChange={(value) => onChange(value === true)}
       />
-      <span className="min-w-0">
+      <span className="flex min-w-0 flex-1 self-stretch flex-col">
         <span className="flex flex-wrap items-center gap-2 text-sm font-medium">
           {object.label}
           {object.custom ? (
@@ -1077,6 +1107,11 @@ function ObjectChoice({
         </span>
         <span className="mt-1 block break-all text-xs text-muted-foreground">
           {object.key} · {object.fields.length} fields
+        </span>
+        <span className="mt-auto block break-words border-t pt-3 text-xs leading-5 text-muted-foreground">
+          {scopes.length > 0
+            ? `${scopeCategory ?? "Provider scopes"}: ${scopes.join(", ")}`
+            : "No additional provider scope"}
         </span>
       </span>
     </label>

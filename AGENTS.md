@@ -202,14 +202,18 @@ These rules are hard boundaries:
 
 ## Alembic and schema changes
 
-This repository carries one resettable Alembic baseline:
+Alembic history is incremental and immutable once a revision has been applied:
 
-- `server/alembic/versions/eylo0001_initial_schema.py`
-- `down_revision = None`
-- No historical or data migrations.
+- `eylo0001_initial_schema.py` creates the compatibility baseline.
+- Later model changes require a new revision with the previous head as
+  `down_revision`.
+- Never fold a new table, enum, constraint, or column into an applied revision.
+- Never reset migrations or rewrite Git history without an explicit request for
+  that exact operation.
 
-When models change, rebuild the baseline for a new database. Validate it on a
-disposable database with this sequence:
+Migration upgrades must preserve operator data or fail before destructive DDL
+when safe conversion is impossible. Validate each change on both a database at
+the previous revision and an empty disposable database:
 
 1. `alembic upgrade head`
 2. `alembic check`

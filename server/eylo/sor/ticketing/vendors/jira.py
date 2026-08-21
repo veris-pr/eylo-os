@@ -144,6 +144,11 @@ JIRA_MANIFEST = SorAdapterCapabilityManifest(
                 if stream_key == "issues"
                 else frozenset({SorChangeStrategy.FULL_RECONCILE})
             ),
+            scope_category=(
+                "Granular Jira Software scopes"
+                if stream_key == "sprints"
+                else "Classic Jira Cloud platform scopes"
+            ),
         )
         for stream_key, entity in _STREAM_ENTITY.items()
     ),

@@ -51,7 +51,9 @@ widget routes, WebSocket, and WebRTC rather than member credentials.
 
 ## Persistence
 
-`server/alembic/versions/eylo0001_initial_schema.py` is the only migration.
+`server/alembic/versions/eylo0001_initial_schema.py` is the compatibility
+baseline. Later revisions are incremental and immutable; `eylo0002` reconciles
+legacy `eylo0001` databases and installs SOR persistence.
 `register_models()` imports every ORM model explicitly so API startup, workers,
 Alembic, and standalone verification see the same metadata.
 

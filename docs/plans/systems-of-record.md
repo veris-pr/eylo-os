@@ -1114,7 +1114,8 @@ remain typed timestamps and render human-readably.
 ### Phase 1: shared projection and custom data
 
 - Add source, schema, mapping, record, relation, custom-field, stream, sync-run,
-  webhook-receipt, command, and source-grant models to the resettable baseline.
+  webhook-receipt, command, and source-grant models through the incremental SOR
+  migration.
 - Implement schema discovery, mapping publication, typed custom values, and
   source-scoped tenant constraints.
 - Implement shared read APIs and audit collection/detail templates.

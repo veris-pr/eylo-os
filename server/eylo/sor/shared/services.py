@@ -17,6 +17,7 @@ from eylo.modules.connections.domain import (
     ConnectionOwnerKind,
     ExternalConnectionStatus,
 )
+from eylo.modules.connections.models import ExternalConnectionModel
 from eylo.sor.runtime.catalog import get_sor_registry
 from eylo.sor.runtime.registry import SorRegistry
 
@@ -144,29 +145,6 @@ class SorSourceService:
         )
         if connection is None:
             raise SorNotFoundError("External connection not found.")
-        if connection.owner_kind is not ConnectionOwnerKind.ORGANIZATION:
-            raise SorConfigurationError(
-                "SOR V1 accepts organization-owned connections only."
-            )
-        if connection.status is not ExternalConnectionStatus.ACTIVE:
-            raise SorConfigurationError("External connection must be active.")
-        if connection.auth_kind not in manifest.auth_kinds:
-            raise SorConfigurationError(
-                "External connection authentication is unsupported by this adapter."
-            )
-        if manifest.requires_instance_origin and not connection.instance_origin:
-            raise SorConfigurationError(
-                "This source requires a verified instance origin."
-            )
-        if (
-            manifest.fixed_origin
-            and not manifest.requires_instance_origin
-            and connection.instance_origin not in {None, manifest.fixed_origin}
-        ):
-            raise SorConfigurationError(
-                "Connection origin does not match the adapter's pinned origin."
-            )
-
         objects = _unique_keys(selected_objects, field_name="selected object")
         if not objects:
             raise SorConfigurationError(
@@ -185,13 +163,11 @@ class SorSourceService:
             for object_key in objects
             for scope in manifest.required_scopes.get(object_key, ())
         }
-        missing_scopes = required_scopes - set(connection.granted_scopes or [])
-        if missing_scopes:
-            raise SorConfigurationError(
-                "Connection requires reauthorization for scopes: "
-                + ", ".join(sorted(missing_scopes))
-                + "."
-            )
+        _validate_source_connection(
+            connection=connection,
+            manifest=manifest,
+            required_scopes=required_scopes,
+        )
 
         normalized_configuration = _normalize_source_configuration(
             configuration,
@@ -210,6 +186,83 @@ class SorSourceService:
             state=SorSourceState.DRAFT,
         )
         self.session.add(source)
+        await self.session.flush()
+        return source
+
+    async def reconnect_before_activation(
+        self,
+        *,
+        organization_id: UUID,
+        source_id: UUID,
+        external_connection_id: UUID,
+        selected_objects: Sequence[str],
+        expected_config_revision: int,
+    ) -> SorSourceModel:
+        """Replace a draft source connection without changing an active source."""
+        source = await self.get(
+            organization_id=organization_id,
+            source_id=source_id,
+            for_update=True,
+        )
+        if source.config_revision != expected_config_revision:
+            raise SorConflictError("SOR source configuration changed.")
+        if source.active_mapping_revision_id is not None or source.state not in {
+            SorSourceState.DRAFT,
+            SorSourceState.DEGRADED,
+            SorSourceState.REAUTH_REQUIRED,
+        }:
+            raise SorConflictError(
+                "Only a source awaiting activation can change connections."
+            )
+
+        manifest = self.registry.get_manifest(
+            profile=source.profile,
+            vendor_key=source.vendor_key,
+        )
+        objects = _unique_keys(selected_objects, field_name="selected object")
+        if not objects:
+            raise SorConfigurationError("Select at least one vendor object.")
+        available_objects = {stream.key for stream in manifest.streams}
+        unknown_objects = set(objects) - available_objects
+        if unknown_objects:
+            raise SorConfigurationError(
+                "Reconnect using supported vendor objects only: "
+                + ", ".join(sorted(unknown_objects))
+                + "."
+            )
+
+        connection = await self.repository.get_connection(
+            organization_id=organization_id,
+            connection_id=external_connection_id,
+            vendor_key=source.vendor_key,
+            for_update=True,
+        )
+        if connection is None:
+            raise SorNotFoundError("External connection not found.")
+        required_scopes = {
+            scope
+            for object_key in objects
+            for scope in manifest.required_scopes.get(object_key, ())
+        }
+        _validate_source_connection(
+            connection=connection,
+            manifest=manifest,
+            required_scopes=required_scopes,
+        )
+
+        if (
+            source.external_connection_id == connection.id
+            and tuple(source.selected_objects or ()) == objects
+        ):
+            return source
+
+        source.external_connection_id = connection.id
+        source.selected_objects = list(objects)
+        source.active_schema_revision_id = None
+        source.config_revision += 1
+        source.last_verified_at = None
+        source.last_error_code = None
+        source.last_error_summary = None
         await self.session.flush()
         return source
 
@@ -289,11 +342,10 @@ class SorSourceService:
             connection_id=source.external_connection_id,
             vendor_key=source.vendor_key,
         )
-        if (
-            connection is None
-            or connection.status is not ExternalConnectionStatus.ACTIVE
-        ):
-            raise SorConfigurationError("Source connection must be active.")
+        if connection is None:
+            raise SorConfigurationError(
+                "The source connection is unavailable. Reconnect before continuing."
+            )
         required_scopes = {
             scope
             for object_key in objects
@@ -301,13 +353,14 @@ class SorSourceService:
         }
         if custom_keys:
             required_scopes.update(manifest.custom_object_required_scopes)
-        missing = required_scopes - set(connection.granted_scopes or ())
-        if missing:
-            raise SorConfigurationError(
-                "Connection requires reauthorization for scopes: "
-                + ", ".join(sorted(missing))
-                + "."
-            )
+        _validate_source_connection(
+            connection=connection,
+            manifest=manifest,
+            required_scopes=required_scopes,
+            unavailable_message=(
+                "The source connection is unavailable. Reconnect before continuing."
+            ),
+        )
         if tuple(source.selected_objects or ()) != objects:
             source.selected_objects = list(objects)
             source.config_revision += 1
@@ -1969,6 +2022,43 @@ def _normalize_source_configuration(
             )
         normalized[key] = items
     return normalized
+
+
+def _validate_source_connection(
+    *,
+    connection: ExternalConnectionModel,
+    manifest: SorAdapterCapabilityManifest,
+    required_scopes: set[str],
+    unavailable_message: str = "External connection must be active.",
+) -> None:
+    """Enforce the shared connection authority required by every source flow."""
+    if connection.owner_kind is not ConnectionOwnerKind.ORGANIZATION:
+        raise SorConfigurationError(
+            "SOR V1 accepts organization-owned connections only."
+        )
+    if connection.status is not ExternalConnectionStatus.ACTIVE:
+        raise SorConfigurationError(unavailable_message)
+    if connection.auth_kind not in manifest.auth_kinds:
+        raise SorConfigurationError(
+            "External connection authentication is unsupported by this adapter."
+        )
+    if manifest.requires_instance_origin and not connection.instance_origin:
+        raise SorConfigurationError("This source requires a verified instance origin.")
+    if (
+        manifest.fixed_origin
+        and not manifest.requires_instance_origin
+        and connection.instance_origin not in {None, manifest.fixed_origin}
+    ):
+        raise SorConfigurationError(
+            "Connection origin does not match the adapter's pinned origin."
+        )
+    missing_scopes = required_scopes - set(connection.granted_scopes or ())
+    if missing_scopes:
+        raise SorConfigurationError(
+            "Connection requires reauthorization for scopes: "
+            + ", ".join(sorted(missing_scopes))
+            + "."
+        )
 
 
 def _unique_keys(values: Sequence[str], *, field_name: str) -> tuple[str, ...]:

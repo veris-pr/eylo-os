@@ -363,6 +363,7 @@ class SorVendorStreamSpec:
     description: str
     canonical_entity: str
     change_strategies: frozenset[SorChangeStrategy]
+    scope_category: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

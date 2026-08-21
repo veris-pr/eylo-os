@@ -1521,7 +1521,13 @@ VENDOR_CANDIDATES = (
         setup_notes=(
             "Create an Atlassian OAuth 2.0 (3LO) app and register the exact Eylo callback URL shown below.",
             "Enter the exact Jira Cloud site origin, such as https://company.atlassian.net. The authorizing account must be able to open that site.",
-            "Selecting sprints also requests Jira Software board, project, and sprint read scopes; omit that stream when the site does not use Jira Software.",
+            "OAuth lifecycle scope (not a Jira API scope): offline_access lets "
+            "Eylo refresh the connection without asking the user to reconnect.",
+            "Classic Jira Cloud platform scopes: read:jira-work and "
+            "read:jira-user. Read/write sources also require write:jira-work.",
+            "Granular Jira Software scopes (only when Sprints is selected): "
+            "read:board-scope:jira-software, read:project:jira, and "
+            "read:sprint:jira-software. These are separate from classic scopes.",
         ),
     ),
     SorVendorCandidate(

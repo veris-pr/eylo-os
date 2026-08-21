@@ -305,6 +305,10 @@ class SorRegistry:
                     f"SOR stream {stream.key} requires code-owned canonical fields "
                     f"for {stream.canonical_entity}."
                 )
+            if stream.scope_category is not None and not stream.scope_category.strip():
+                raise ValueError(
+                    f"SOR vendor stream {stream.key} scope category cannot be blank."
+                )
         if not manifest.writable_entities.issubset(manifest.readable_entities):
             raise ValueError("Writable SOR entities must also be readable.")
         executable_tools = manifest.readable_tools | manifest.writable_tools

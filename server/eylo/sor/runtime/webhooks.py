@@ -183,6 +183,7 @@ async def cancel_sor_webhook_receipt(
     organization_id: UUID,
     receipt_id: UUID,
     error_code: str = "CONNECTION_REVOKED",
+    error_summary: str = "SOR webhook processing stopped after revocation.",
 ) -> bool:
     """Terminalize one source refetch before cancelling its exact durable task."""
     async with start_transaction() as session:
@@ -195,7 +196,7 @@ async def cancel_sor_webhook_receipt(
             return False
         row.state = SorWebhookReceiptState.FAILED
         row.safe_error_code = error_code[:128]
-        row.safe_error_summary = "SOR webhook processing stopped after revocation."
+        row.safe_error_summary = error_summary[:8192]
         row.finished_at = datetime.now(timezone.utc)
         task_id = row.absurd_task_id
         await session.flush()
