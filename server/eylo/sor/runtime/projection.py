@@ -22,6 +22,7 @@ from eylo.sor.shared.contracts import (
     SorExternalRecord,
     SorLifecycleAdapter,
     SorProfile,
+    SorProjectionDisposition,
     SorProjectionOutcome,
     SorRelationIntentDraft,
 )
@@ -145,6 +146,8 @@ async def _project_crm(
         ),
         sync_run_id=sync_run_id,
     )
+    if outcome.disposition is SorProjectionDisposition.UNCHANGED:
+        return outcome
     if entity == CUSTOM_DATASET_ENTITY:
         return outcome
     canonical_record = replace(record, payload=outcome.canonical_values)
@@ -238,6 +241,8 @@ async def _project_ticketing(
         canonical_entity_kind=entity,
         sync_run_id=sync_run_id,
     )
+    if outcome.disposition is SorProjectionDisposition.UNCHANGED:
+        return outcome
     canonical_record = replace(record, payload=outcome.canonical_values)
     human_key: str | None = None
     typed_service = TicketingProjectionService(session)
@@ -380,6 +385,8 @@ async def _project_support(
         ),
         sync_run_id=sync_run_id,
     )
+    if outcome.disposition is SorProjectionDisposition.UNCHANGED:
+        return outcome
     if entity == CUSTOM_DATASET_ENTITY:
         return outcome
     canonical_record = replace(record, payload=outcome.canonical_values)
@@ -522,6 +529,8 @@ async def _project_knowledge(
         canonical_entity_kind=entity,
         sync_run_id=sync_run_id,
     )
+    if outcome.disposition is SorProjectionDisposition.UNCHANGED:
+        return outcome
     canonical_record = replace(record, payload=outcome.canonical_values)
     typed_service = KnowledgeProjectionService(session)
     human_key: str | None = None

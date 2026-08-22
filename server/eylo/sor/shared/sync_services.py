@@ -474,7 +474,18 @@ class SorSyncRunService:
         organization_id: UUID,
         generation_id: UUID,
     ) -> tuple[UUID, ...]:
-        """Release ready descendants and terminalize dependency-blocked work."""
+        """Release ready descendants under the source-first lock order."""
+        identity = await self.repository.get_sync_generation(
+            organization_id=organization_id,
+            generation_id=generation_id,
+        )
+        if identity is None:
+            return ()
+        source = await self.sources.get(
+            organization_id=organization_id,
+            source_id=identity.source_id,
+            for_update=True,
+        )
         generation = await self.repository.get_sync_generation(
             organization_id=organization_id,
             generation_id=generation_id,
@@ -482,6 +493,8 @@ class SorSyncRunService:
         )
         if generation is None:
             return ()
+        if generation.source_id != source.id:
+            raise SorConflictError("SOR sync generation source changed while locking.")
         runs = await self.repository.list_generation_runs(
             organization_id=organization_id,
             generation_id=generation_id,
@@ -565,11 +578,6 @@ class SorSyncRunService:
                 generation.safe_error_code = None
                 generation.safe_error_summary = None
             if generation.kind is SorSyncRunKind.BOOTSTRAP:
-                source = await self.sources.get(
-                    organization_id=organization_id,
-                    source_id=generation.source_id,
-                    for_update=True,
-                )
                 if source.state in {
                     SorSourceState.BOOTSTRAPPING,
                     SorSourceState.DEGRADED,

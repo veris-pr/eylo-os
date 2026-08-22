@@ -1450,28 +1450,29 @@ class SorProjectionService:
                 if unchanged
                 else SorProjectionDisposition.UPDATED
             )
-            record.canonical_entity_kind = canonical_entity_kind
-            record.human_external_key = human_external_key
             record.source_created_at = external_record.source_created_at
             record.source_updated_at = external_record.source_updated_at
             record.source_revision = external_record.source_revision
-            record.selected_raw_payload = selected
-            record.agent_visible_payload = agent_visible
-            record.payload_hash = payload_hash
-            record.mapping_revision_id = mapping.id
-            record.mapping_projection_version = mapping.projection_version
+            record.source_url = external_record.source_url
             record.projected_at = datetime.now(timezone.utc)
             if sync_run_id is not None:
                 record.last_successful_sync_run_id = sync_run_id
-            record.tombstoned_at = None
-            record.deletion_reason = None
-            record.source_url = external_record.source_url
-            record.search_text = search_text
-            record.search_vector = func.to_tsvector("simple", record.search_text)
-            record.agent_search_text = agent_search_text
-            record.agent_search_vector = func.to_tsvector(
-                "simple", record.agent_search_text
-            )
+            if not unchanged:
+                record.canonical_entity_kind = canonical_entity_kind
+                record.human_external_key = human_external_key
+                record.selected_raw_payload = selected
+                record.agent_visible_payload = agent_visible
+                record.payload_hash = payload_hash
+                record.mapping_revision_id = mapping.id
+                record.mapping_projection_version = mapping.projection_version
+                record.tombstoned_at = None
+                record.deletion_reason = None
+                record.search_text = search_text
+                record.search_vector = func.to_tsvector("simple", record.search_text)
+                record.agent_search_text = agent_search_text
+                record.agent_search_vector = func.to_tsvector(
+                    "simple", record.agent_search_text
+                )
 
         if disposition is not SorProjectionDisposition.UNCHANGED:
             await self._replace_custom_values(
