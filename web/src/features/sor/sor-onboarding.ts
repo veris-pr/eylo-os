@@ -65,6 +65,17 @@ const FIELD_ALIASES: Record<string, Record<string, readonly string[]>> = {
   },
 };
 
+const VENDOR_FIELD_TARGETS: Record<
+  string,
+  Record<string, Record<string, string>>
+> = {
+  jira: {
+    issue: {
+      "com.pyxis.greenhopper.jira:gh-sprint": "cycle_external_id",
+    },
+  },
+};
+
 function emptySorOnboardingDraft(
   profile: SorProfileKey | null = null,
   vendorKey = "",
@@ -77,6 +88,7 @@ function emptySorOnboardingDraft(
     fieldMappings: [],
     freshnessTargetSeconds: 900,
     instanceOrigin: "",
+    onboardingAttemptId: crypto.randomUUID(),
     profile,
     requiredSyncIntervalSeconds: 900,
     selectedObjects: [],
@@ -112,7 +124,13 @@ function createInitialFieldMappings(
       const target =
         object.custom || entity === undefined
           ? null
-          : suggestedTarget(field, entity.key, entity.fields, usedTargets);
+          : suggestedTarget(
+              field,
+              vendor.vendorKey,
+              entity.key,
+              entity.fields,
+              usedTargets,
+            );
       if (target !== null) usedTargets.add(target.key);
       const useCustom = object.custom && customDefault.has(field.key);
       const customType = useCustom ? customTypeFor(field) : null;
@@ -157,10 +175,7 @@ function repairRequiredFieldMappings(
   );
   const current = new Map(
     currentMappings.map((mapping) => [
-      mappingIdentity(
-        mapping.vendor_object_key,
-        mapping.vendor_field_key,
-      ),
+      mappingIdentity(mapping.vendor_object_key, mapping.vendor_field_key),
       mapping,
     ]),
   );
@@ -193,10 +208,7 @@ function repairRequiredFieldMappings(
 
   return defaults.map((suggested) => {
     const existing = current.get(
-      mappingIdentity(
-        suggested.vendor_object_key,
-        suggested.vendor_field_key,
-      ),
+      mappingIdentity(suggested.vendor_object_key, suggested.vendor_field_key),
     );
     if (existing === undefined) return suggested;
     const target = suggested.canonical_target_path;
@@ -274,6 +286,14 @@ function activationIssues(
     }
     const stream = streams.get(objectKey);
     if (stream === undefined) continue;
+    const missingDependencies = stream.dependsOn.filter(
+      (dependency) => !selected.has(dependency),
+    );
+    if (missingDependencies.length > 0) {
+      issues.push(
+        `${stream.label} requires ${missingDependencies.join(", ")}.`,
+      );
+    }
     const entity = profile.entities.find(
       (candidate) => candidate.key === stream.canonicalEntity,
     );
@@ -496,10 +516,21 @@ function updateMappingTarget(
 
 function suggestedTarget(
   field: SorDiscoveredField,
+  vendorKey: string,
   entityKey: string,
   canonicalFields: SorProfileDefinition["entities"][number]["fields"],
   usedTargets: ReadonlySet<string>,
 ) {
+  const vendorTarget =
+    field.vendor_type === null || field.vendor_type === undefined
+      ? undefined
+      : VENDOR_FIELD_TARGETS[vendorKey]?.[entityKey]?.[field.vendor_type];
+  const semanticMatch = canonicalFields.find(
+    (candidate) =>
+      candidate.key === vendorTarget && !usedTargets.has(candidate.key),
+  );
+  if (semanticMatch !== undefined) return semanticMatch;
+
   const sourceKeys = [normalize(field.key), normalize(field.label)];
   const aliases = FIELD_ALIASES[entityKey] ?? {};
   return (

@@ -1,8 +1,42 @@
 function formatSorIdentifier(value: string): string {
-  return value
-    .replaceAll("_", " ")
-    .replaceAll("-", " ")
-    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+  const exactLabels: Readonly<Record<string, string>> = {
+    api_key: "API key",
+    crm: "CRM",
+    github: "GitHub",
+    hubspot: "HubSpot",
+    oauth2: "OAuth 2.0",
+    reauth_required: "Reauthorization required",
+  };
+  const wordLabels: Readonly<Record<string, string>> = {
+    api: "API",
+    ats: "ATS",
+    crm: "CRM",
+    hris: "HRIS",
+    id: "ID",
+    oauth: "OAuth",
+    pii: "PII",
+    sla: "SLA",
+    sor: "SOR",
+    url: "URL",
+  };
+  const canonicalKey = value
+    .trim()
+    .toLowerCase()
+    .replaceAll("-", "_")
+    .replace(/\s+/g, "_");
+  const exact = exactLabels[canonicalKey];
+  if (exact !== undefined) return exact;
+  if (canonicalKey.length === 0) return "";
+  return canonicalKey
+    .split("_")
+    .map((word, index) => {
+      const fixed = wordLabels[word];
+      if (fixed !== undefined) return fixed;
+      return index === 0
+        ? word.slice(0, 1).toUpperCase() + word.slice(1)
+        : word;
+    })
+    .join(" ");
 }
 
 function formatSorDate(value: string | null | undefined): {

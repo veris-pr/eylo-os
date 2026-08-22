@@ -20,6 +20,12 @@ Startup logs should show the Agent-run workflow and queue registration. A
 missing Absurd queue relation is a migration/runtime mismatch, not a transient
 Agent failure.
 
+The process starts four independently polling worker lanes. Each lane owns its
+own Absurd client and DB connection and claims one task at a time. A slow
+provider operation therefore occupies one configured lane while the remaining
+lanes continue claiming work; adding worker processes increases total bounded
+capacity.
+
 ## Inspect work from the console
 
 - **Operations → Agent runs**: origin, lifecycle, steps, usage, waits, result.

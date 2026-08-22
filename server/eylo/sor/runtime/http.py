@@ -7,7 +7,7 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urljoin
 
 from eylo.common.http_egress import (
     DEFAULT_RESPONSE_BODY_BYTES,
@@ -18,12 +18,15 @@ from eylo.common.http_egress import (
     HttpOrigin,
     HttpRoutePolicy,
     OriginBoundHeaders,
+    parse_https_target,
 )
 from eylo.sockets.http.transport import SafeHttpTransport
 from eylo.sor.shared.contracts import SorVendorOperationError
 
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _SAFE_TRANSPORT_RETRY_DELAYS = (0.25, 1.0)
+_REDIRECT_STATUS_CODES = frozenset({301, 302, 303, 307, 308})
+_MAX_BINARY_REDIRECTS = 3
 _PROTECTED_HEADERS = frozenset(
     {
         "authorization",
@@ -76,6 +79,25 @@ class SorJsonResponse:
 
     status_code: int
     data: Any = field(repr=False)
+    headers: tuple[tuple[str, str], ...] = ()
+
+    @property
+    def ok(self) -> bool:
+        return 200 <= self.status_code < 300
+
+    def header_values(self, name: str) -> tuple[str, ...]:
+        expected = name.casefold()
+        return tuple(
+            value for key, value in self.headers if key.casefold() == expected
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SorBinaryResponse:
+    """One bounded binary response with no request or credential material."""
+
+    status_code: int
+    content: bytes = field(repr=False)
     headers: tuple[tuple[str, str], ...] = ()
 
     @property
@@ -144,26 +166,147 @@ class SorJsonHttpClient:
             idempotency_key=idempotency_key,
             if_unmodified_since=if_unmodified_since,
         )
-        normalized_method = method.strip().upper()
-        retry_delays = (
-            _SAFE_TRANSPORT_RETRY_DELAYS
-            if normalized_method in _SAFE_METHODS or retry_transport_failures
-            else ()
+        response = await self._send(
+            request,
+            retry_transport_failures=retry_transport_failures,
         )
-        for attempt in range(len(retry_delays) + 1):
-            try:
-                response = await self._transport.send(request)
-                break
-            except (TimeoutError, HttpEgressPolicyError) as error:
-                transport_error = _transport_error(error)
-                if attempt >= len(retry_delays) or not transport_error.retryable:
-                    raise transport_error from error
-                await asyncio.sleep(retry_delays[attempt])
         return SorJsonResponse(
             status_code=response.status_code,
             data=_parse_json(response),
             headers=response.headers,
         )
+
+    async def request_binary(
+        self,
+        path: str,
+        *,
+        query: Mapping[str, object] | None = None,
+        response_body_limit: int,
+    ) -> SorBinaryResponse:
+        """Read bounded bytes while keeping auth on the configured origin only."""
+        request = self._build_binary(
+            path,
+            query=query,
+            response_body_limit=response_body_limit,
+        )
+        response = await self._send(request)
+        current_url = request.url
+        redirects = 0
+        while response.status_code in _REDIRECT_STATUS_CODES:
+            locations = response.header_values("location")
+            if len(locations) != 1 or not locations[0].strip():
+                raise SorVendorTransportError(
+                    "vendor_redirect_invalid",
+                    "The vendor returned an invalid download redirect.",
+                    retryable=False,
+                )
+            if redirects >= _MAX_BINARY_REDIRECTS:
+                raise SorVendorTransportError(
+                    "vendor_redirect_limit",
+                    "The vendor download exceeded its redirect limit.",
+                    retryable=False,
+                )
+            next_url = urljoin(current_url, locations[0].strip())
+            try:
+                origin, target_path = parse_https_target(next_url)
+                if origin.port != 443:
+                    raise HttpEgressPolicyError(
+                        "port_not_allowed",
+                        "Vendor downloads require the default HTTPS port.",
+                    )
+                policy = HttpDestinationPolicy(
+                    primary=HttpRoutePolicy(
+                        origin=origin,
+                        path_prefix=target_path,
+                    )
+                )
+                request = HttpEgressRequest(
+                    method="GET",
+                    url=next_url,
+                    policy=policy,
+                    headers={
+                        "Accept": "image/avif,image/webp,image/png,image/jpeg,image/gif",
+                        "User-Agent": "eylo-sor/1",
+                    },
+                    origin_headers=(
+                        self._origin_headers if origin == self._origin else None
+                    ),
+                    response_body_limit=response_body_limit,
+                    total_timeout_seconds=self._timeout_seconds,
+                )
+            except HttpEgressPolicyError as error:
+                raise SorVendorTransportError(
+                    "vendor_redirect_invalid",
+                    "The vendor returned an invalid download redirect.",
+                    retryable=False,
+                ) from error
+            current_url = next_url
+            redirects += 1
+            response = await self._send(request)
+        return SorBinaryResponse(
+            status_code=response.status_code,
+            content=response.body,
+            headers=response.headers,
+        )
+
+    async def _send(
+        self,
+        request: HttpEgressRequest,
+        *,
+        retry_transport_failures: bool = False,
+    ) -> HttpEgressResponse:
+        retry_delays = (
+            _SAFE_TRANSPORT_RETRY_DELAYS
+            if request.method in _SAFE_METHODS or retry_transport_failures
+            else ()
+        )
+        for attempt in range(len(retry_delays) + 1):
+            try:
+                return await self._transport.send(request)
+            except (TimeoutError, HttpEgressPolicyError) as error:
+                transport_error = _transport_error(error)
+                if attempt >= len(retry_delays) or not transport_error.retryable:
+                    raise transport_error from error
+                await asyncio.sleep(retry_delays[attempt])
+        raise AssertionError("Vendor transport retry loop did not return.")
+
+    def _build_binary(
+        self,
+        path: str,
+        *,
+        query: Mapping[str, object] | None,
+        response_body_limit: int,
+    ) -> HttpEgressRequest:
+        if "://" in path or not path.startswith("/"):
+            raise SorVendorTransportError(
+                "vendor_path_invalid",
+                "A SOR adapter must use an absolute path on its pinned origin.",
+                retryable=False,
+            )
+        pairs = _query_pairs(query)
+        url = f"{self._origin}{path}"
+        if pairs:
+            url = f"{url}?{urlencode(pairs)}"
+        try:
+            return HttpEgressRequest(
+                method="GET",
+                url=url,
+                policy=self._policy,
+                headers={
+                    "Accept": "*/*",
+                    "User-Agent": "eylo-sor/1",
+                    **self._default_headers,
+                },
+                origin_headers=self._origin_headers,
+                response_body_limit=response_body_limit,
+                total_timeout_seconds=self._timeout_seconds,
+            )
+        except HttpEgressPolicyError as error:
+            raise SorVendorTransportError(
+                "vendor_request_invalid",
+                "The vendor request was rejected before network access.",
+                retryable=False,
+            ) from error
 
     def _build(
         self,
@@ -331,6 +474,7 @@ def _parse_json(response: HttpEgressResponse) -> object | None:
 
 
 __all__ = [
+    "SorBinaryResponse",
     "SorHttpTransport",
     "SorJsonHttpClient",
     "SorJsonResponse",

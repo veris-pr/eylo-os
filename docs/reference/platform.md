@@ -43,8 +43,9 @@ widget routes, WebSocket, and WebRTC rather than member credentials.
   listeners before constructing FastAPI.
 - The API lifespan owns the WebSocket manager, WebRTC signalling service, and
   DB-pool cleanup.
-- `eylo.agent_run_worker` registers all durable workflows before polling the
-  shared Absurd queue.
+- `eylo.agent_run_worker` registers all durable workflows before four
+  independent lanes poll the shared Absurd queue. One lane claims one task, so
+  a long external operation cannot stall claim polling in the other lanes.
 - PostgreSQL is canonical business and durable-work storage.
 - Redis supports coordination and live transport state; it is not canonical
   business storage.

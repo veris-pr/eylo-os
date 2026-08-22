@@ -45,6 +45,7 @@ class SorApiModel(BaseModel):
 
 class SorSourceCreateRequest(SorApiModel):
     name: str = Field(min_length=1, max_length=160)
+    onboarding_attempt_id: UUID
     profile: SorProfile
     vendor_key: str = Field(min_length=1, max_length=64)
     external_connection_id: UUID
@@ -58,6 +59,7 @@ class SorApiKeySourceCreateRequest(SorApiModel):
     """Create one source whose org connection uses a transient API key."""
 
     name: str = Field(min_length=1, max_length=160)
+    onboarding_attempt_id: UUID
     profile: SorProfile
     vendor_key: str = Field(min_length=1, max_length=64)
     api_key: str = Field(min_length=1, max_length=4096, repr=False)
@@ -249,6 +251,8 @@ class SorStreamResponse(SorApiModel):
     source_id: UUID
     vendor_object_key: str
     canonical_entity_kind: str
+    depends_on: list[str]
+    relationship_targets: dict[str, str]
     strategy: SorChangeStrategy
     lookback_seconds: int
     cursor_version: int
@@ -286,6 +290,7 @@ class SorSyncRunResponse(SorApiModel):
     id: UUID
     organization_id: UUID
     source_id: UUID
+    generation_id: UUID
     stream_id: UUID | None
     mapping_revision_id: UUID
     kind: SorSyncRunKind
@@ -305,6 +310,39 @@ class SorSyncRunResponse(SorApiModel):
     records_rejected: int
     created_at: datetime
     updated_at: datetime
+
+
+class SorSyncGenerationResponse(SorApiModel):
+    """One source-level DAG execution and its ordered stream receipts."""
+
+    id: UUID
+    organization_id: UUID
+    source_id: UUID
+    kind: SorSyncRunKind
+    state: SorWorkState
+    started_at: datetime | None
+    finished_at: datetime | None
+    safe_error_code: str | None
+    safe_error_summary: str | None
+    created_at: datetime
+    updated_at: datetime
+    runs: tuple[SorSyncRunResponse, ...]
+
+
+class SorRelationshipHealthResponse(SorApiModel):
+    """Current relationship-intent totals for one source."""
+
+    pending: int = Field(ge=0)
+    resolved: int = Field(ge=0)
+    tombstoned: int = Field(ge=0)
+
+
+class SorSourceOperationsResponse(SorApiModel):
+    """Operator-facing source synchronization and relationship health."""
+
+    source_id: UUID
+    relationships: SorRelationshipHealthResponse
+    generations: tuple[SorSyncGenerationResponse, ...]
 
 
 class SorFreshnessResponse(SorApiModel):
@@ -332,6 +370,7 @@ class SorCollectionRowResponse(SorApiModel):
     entity: str
     human_external_key: str | None
     values: dict[str, JsonValue]
+    display_values: dict[str, JsonValue]
     custom_fields: tuple[SorCustomFieldValueResponse, ...]
     source_url: str | None
     source_created_at: datetime | None
@@ -442,6 +481,7 @@ class SorDiscoveredFieldResponse(SorApiModel):
     choices: tuple[str, ...] = ()
     description: str | None = None
     group: str | None = None
+    vendor_type: str | None = None
 
 
 class SorDiscoveredObjectResponse(SorApiModel):
@@ -627,6 +667,8 @@ class SorVendorStreamResponse(BaseModel):
     canonical_entity: str
     change_strategies: tuple[SorChangeStrategy, ...] = Field(min_length=1)
     scope_category: str | None = None
+    depends_on: tuple[str, ...] = ()
+    relationship_targets: dict[str, str] = Field(default_factory=dict)
 
 
 class SorAdapterConfigurationFieldResponse(BaseModel):
@@ -771,12 +813,15 @@ __all__ = [
     "SorSourceGrantRequest",
     "SorSourceGrantResponse",
     "SorSourceListResponse",
+    "SorSourceOperationsResponse",
     "SorSourceResponse",
     "SorSourceReconnectRequest",
     "SorSourceSelectionUpdateRequest",
     "SorStreamCreateRequest",
     "SorStreamResponse",
     "SorSyncRunCreateRequest",
+    "SorSyncGenerationResponse",
+    "SorRelationshipHealthResponse",
     "SorSyncRunResponse",
     "SorToolCatalogResponse",
     "SorVendorStreamResponse",

@@ -68,6 +68,18 @@ _STREAM_ENTITY = {
     "ticket_metrics": "sla_metric",
     "attachments": "attachment",
 }
+_RELATIONSHIP_TARGETS = {
+    "tickets": {
+        "requester": "customers",
+        "assignee": "agents",
+        "queue": "groups",
+        "inbox": "brands",
+        "tag": "tags",
+    },
+    "comments": {"ticket": "tickets"},
+    "ticket_metrics": {"ticket": "tickets"},
+    "attachments": {"ticket": "tickets", "message": "comments"},
+}
 _READ_TOOLS = frozenset(
     {
         "support_find_customer",
@@ -150,6 +162,11 @@ ZENDESK_MANIFEST = SorAdapterCapabilityManifest(
                 if stream_key in {"comments", "attachments"}
                 else frozenset({SorChangeStrategy.FULL_RECONCILE})
             ),
+            depends_on=frozenset(
+                set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values())
+                - {stream_key}
+            ),
+            relationship_targets=_RELATIONSHIP_TARGETS.get(stream_key, {}),
         )
         for stream_key, entity in _STREAM_ENTITY.items()
     ),

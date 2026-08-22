@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.modules.connections.models import ExternalConnectionModel
@@ -24,6 +24,7 @@ from .models import (
     SorSourceGrantModel,
     SorSourceModel,
     SorSourceStreamModel,
+    SorSyncGenerationModel,
     SorSyncRunModel,
     SorWebhookReceiptModel,
 )
@@ -98,6 +99,39 @@ class SorRepository:
             query = query.with_for_update()
         return await self.session.scalar(query)
 
+    async def acquire_source_onboarding_lock(
+        self,
+        *,
+        organization_id: UUID,
+        onboarding_attempt_id: UUID,
+    ) -> None:
+        """Serialize source creation for one tenant-owned onboarding attempt."""
+        await self.session.execute(
+            text(
+                "SELECT pg_advisory_xact_lock("
+                "hashtextextended(:attempt_identity, 0))"
+            ),
+            {
+                "attempt_identity": (
+                    f"sor-source:v1:{organization_id}:{onboarding_attempt_id}"
+                )
+            },
+        )
+
+    async def get_source_by_onboarding_attempt(
+        self,
+        *,
+        organization_id: UUID,
+        onboarding_attempt_id: UUID,
+    ) -> SorSourceModel | None:
+        """Return the source claimed by one attempt, including a deleted source."""
+        return await self.session.scalar(
+            select(SorSourceModel).where(
+                SorSourceModel.organization_id == organization_id,
+                SorSourceModel.onboarding_attempt_id == onboarding_attempt_id,
+            )
+        )
+
     async def get_custom_dataset(
         self,
         *,
@@ -163,6 +197,24 @@ class SorRepository:
         )
         return list(rows.all())
 
+    async def list_sources_for_connection(
+        self,
+        *,
+        organization_id: UUID,
+        connection_id: UUID,
+    ) -> list[SorSourceModel]:
+        """Return live sources bound to one tenant-owned external connection."""
+        rows = await self.session.scalars(
+            select(SorSourceModel)
+            .where(
+                SorSourceModel.organization_id == organization_id,
+                SorSourceModel.external_connection_id == connection_id,
+                SorSourceModel.deleted.is_(False),
+            )
+            .order_by(SorSourceModel.id.asc())
+        )
+        return list(rows.all())
+
     async def get_source_by_webhook_token_hash(
         self,
         *,
@@ -184,13 +236,15 @@ class SorRepository:
         connection_id: UUID,
         vendor_key: str,
         for_update: bool = False,
+        include_deleted: bool = False,
     ) -> ExternalConnectionModel | None:
         query = select(ExternalConnectionModel).where(
             ExternalConnectionModel.organization_id == organization_id,
             ExternalConnectionModel.id == connection_id,
             ExternalConnectionModel.vendor_key == vendor_key,
-            ExternalConnectionModel.deleted.is_(False),
         )
+        if not include_deleted:
+            query = query.where(ExternalConnectionModel.deleted.is_(False))
         if for_update:
             query = query.with_for_update()
         return await self.session.scalar(query)
@@ -430,6 +484,43 @@ class SorRepository:
         if for_update:
             query = query.with_for_update()
         return await self.session.scalar(query)
+
+    async def get_sync_generation(
+        self,
+        *,
+        organization_id: UUID,
+        generation_id: UUID,
+        for_update: bool = False,
+    ) -> SorSyncGenerationModel | None:
+        query = select(SorSyncGenerationModel).where(
+            SorSyncGenerationModel.organization_id == organization_id,
+            SorSyncGenerationModel.id == generation_id,
+            SorSyncGenerationModel.deleted.is_(False),
+        )
+        if for_update:
+            query = query.with_for_update()
+        return await self.session.scalar(query)
+
+    async def list_generation_runs(
+        self,
+        *,
+        organization_id: UUID,
+        generation_id: UUID,
+        for_update: bool = False,
+    ) -> list[SorSyncRunModel]:
+        query = (
+            select(SorSyncRunModel)
+            .where(
+                SorSyncRunModel.organization_id == organization_id,
+                SorSyncRunModel.generation_id == generation_id,
+                SorSyncRunModel.deleted.is_(False),
+            )
+            .order_by(SorSyncRunModel.created_at.asc(), SorSyncRunModel.id.asc())
+        )
+        if for_update:
+            query = query.with_for_update()
+        rows = await self.session.scalars(query)
+        return list(rows.all())
 
     async def get_active_sync_run(
         self,

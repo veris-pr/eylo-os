@@ -70,6 +70,19 @@ _STREAM_ENTITY = {
     "milestones": "cycle",
     "comments": "comment",
 }
+_RELATIONSHIP_TARGETS = {
+    "issues": {
+        "project": "repositories",
+        "assignee": "users",
+        "reporter": "users",
+        "label": "labels",
+        "parent": "issues",
+        "cycle": "milestones",
+    },
+    "labels": {"project": "repositories"},
+    "milestones": {"project": "repositories"},
+    "comments": {"issue": "issues", "author": "users"},
+}
 _UPDATED_STREAMS = frozenset({"issues", "comments"})
 _READ_TOOLS = frozenset(
     {
@@ -142,6 +155,11 @@ GITHUB_MANIFEST = SorAdapterCapabilityManifest(
                 if stream_key in _UPDATED_STREAMS
                 else frozenset({SorChangeStrategy.FULL_RECONCILE})
             ),
+            depends_on=frozenset(
+                set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values())
+                - {stream_key}
+            ),
+            relationship_targets=_RELATIONSHIP_TARGETS.get(stream_key, {}),
         )
         for stream_key, entity in _STREAM_ENTITY.items()
     ),

@@ -152,31 +152,38 @@ const ConversationDetails = observer(function ConversationDetails({
         )}
       </DetailsSection>
 
-      <DetailsSection title="References">
-        <dl>
-          <DetailRow label="Conversation ID">
-            <CodeValue>{conversation.id}</CodeValue>
-          </DetailRow>
-          <DetailRow label="External ID">
-            <CodeValue>{conversation.externalId}</CodeValue>
-          </DetailRow>
-          <DetailRow label="Swarm ID">
-            <CodeValue>{conversation.swarmId}</CodeValue>
-          </DetailRow>
-          <DetailRow label="Swarm revision">
-            {conversation.swarmRevision ?? "Not applicable"}
-          </DetailRow>
-        </dl>
-      </DetailsSection>
-
-      {conversation.meta == null ||
-      Object.keys(conversation.meta).length === 0 ? null : (
-        <DetailsSection title="Metadata">
-          <pre className="min-w-0 break-all border bg-muted/40 p-3 text-xs leading-5 whitespace-pre-wrap">
-            {JSON.stringify(conversation.meta, null, 2)}
-          </pre>
-        </DetailsSection>
-      )}
+      <details className="min-w-0 border p-4">
+        <summary className="cursor-pointer text-sm font-medium">
+          Technical details
+        </summary>
+        <div className="mt-4 min-w-0 space-y-5">
+          <dl>
+            <DetailRow label="Conversation ID">
+              <CodeValue>{conversation.id}</CodeValue>
+            </DetailRow>
+            <DetailRow label="External ID">
+              <CodeValue>{conversation.externalId}</CodeValue>
+            </DetailRow>
+            <DetailRow label="Swarm ID">
+              <CodeValue>{conversation.swarmId}</CodeValue>
+            </DetailRow>
+            <DetailRow label="Swarm revision">
+              {conversation.swarmRevision ?? "Not applicable"}
+            </DetailRow>
+          </dl>
+          {conversation.meta == null ||
+          Object.keys(conversation.meta).length === 0 ? null : (
+            <div className="min-w-0 space-y-2 border-t pt-4">
+              <p className="text-xs font-medium text-muted-foreground">
+                Metadata
+              </p>
+              <pre className="min-w-0 break-all bg-muted/40 p-3 text-xs leading-5 whitespace-pre-wrap">
+                {JSON.stringify(conversation.meta, null, 2)}
+              </pre>
+            </div>
+          )}
+        </div>
+      </details>
     </aside>
   );
 });
@@ -281,9 +288,6 @@ function ParticipantItem({
         </Badge>
       </div>
       <dl>
-        <DetailRow label="Entity ID">
-          <CodeValue>{participant.entityId}</CodeValue>
-        </DetailRow>
         <DetailRow label="Agent revision">
           {participant.agentRevision ?? "Not applicable"}
         </DetailRow>
@@ -301,7 +305,6 @@ function ParticipantItem({
               <Badge variant="outline">
                 {formatConversationEnum(participant.addedByKind)}
               </Badge>
-              <CodeValue>{participant.addedById}</CodeValue>
             </span>
           )}
         </DetailRow>
@@ -313,12 +316,40 @@ function ParticipantItem({
               <Badge variant="outline">
                 {formatConversationEnum(participant.removedByKind)}
               </Badge>
-              <CodeValue>{participant.removedById}</CodeValue>
             </span>
           )}
         </DetailRow>
       </dl>
+      <details className="text-xs text-muted-foreground">
+        <summary className="cursor-pointer select-none underline-offset-4 hover:underline">
+          Technical participant details
+        </summary>
+        <dl className="mt-3 grid min-w-0 gap-2 border-l pl-3 sm:grid-cols-[8rem_minmax(0,1fr)]">
+          <TechnicalValue label="Participant ID" value={participant.id} />
+          <TechnicalValue label="Entity ID" value={participant.entityId} />
+          <TechnicalValue label="Added by ID" value={participant.addedById} />
+          <TechnicalValue
+            label="Removed by ID"
+            value={participant.removedById}
+          />
+        </dl>
+      </details>
     </li>
+  );
+}
+
+function TechnicalValue({
+  label,
+  value,
+}: {
+  label: string;
+  value: string | null | undefined;
+}) {
+  return (
+    <>
+      <dt>{label}</dt>
+      <dd className="min-w-0 break-all font-mono">{value ?? "Not recorded"}</dd>
+    </>
   );
 }
 

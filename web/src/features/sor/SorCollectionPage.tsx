@@ -25,7 +25,7 @@ import { SorTableGridRenderer } from "@/features/sor/grid/SorTableGridRenderer";
 import type { SorGridModel } from "@/features/sor/grid/sor-grid.contract";
 import {
   buildSorFilterSchema,
-  sorCellValue,
+  sorDisplayValue,
 } from "@/features/sor/grid/sor-grid.presentation";
 import {
   buildSorCollectionSearchParams,
@@ -39,6 +39,41 @@ import type {
 import type { FilterGroup } from "@/lib/filters";
 
 const EMPTY_COLUMNS = [] as const;
+
+interface SorCollectionDefinition {
+  description: string;
+  plural: string;
+  singular: string;
+}
+
+const MEMBER_COLLECTION_DEFINITIONS: Partial<
+  Record<SorProfileKey, Record<string, SorCollectionDefinition>>
+> = {
+  knowledge: {
+    author: {
+      description:
+        "People imported from connected document sources, including authors and owners.",
+      plural: "Members",
+      singular: "member",
+    },
+  },
+  support: {
+    agent: {
+      description:
+        "People imported from connected customer-support sources who can own or handle tickets.",
+      plural: "Members",
+      singular: "member",
+    },
+  },
+  ticketing: {
+    user: {
+      description:
+        "People imported from connected project-management sources, including assignees and reporters.",
+      plural: "Members",
+      singular: "member",
+    },
+  },
+};
 
 const SorCollectionPage = observer(function SorCollectionPage() {
   const { sor } = useRootStore();
@@ -64,32 +99,35 @@ const SorCollectionPage = observer(function SorCollectionPage() {
       ? profile
       : null;
   const activeEntity = isCustomDataset ? "custom_dataset" : (entity ?? "");
-  const definition = useMemo(
-    () => {
-      if (isCustomDataset) {
-        return customDataset === null
-          ? undefined
-          : {
-              description:
-                customDataset.description ??
-                `Audit ${customDataset.label} records projected from ${customDataset.source_name}.`,
-              plural: customDataset.label,
-              singular: customDataset.label.toLocaleLowerCase(),
-            };
-      }
-      const canonicalEntity = sor.catalog?.profiles
-        .find((candidate) => candidate.profile === profileKey)
-        ?.entities.find((candidate) => candidate.key === entity);
-      return canonicalEntity === undefined
+  const definition = useMemo(() => {
+    if (isCustomDataset) {
+      return customDataset === null
         ? undefined
         : {
-            description: canonicalEntity.description,
-            plural: canonicalEntity.label,
-            singular: canonicalEntity.key.replaceAll("_", " "),
+            description:
+              customDataset.description ??
+              `Audit ${customDataset.label} records imported from ${customDataset.source_name}.`,
+            plural: customDataset.label,
+            singular: customDataset.label.toLocaleLowerCase(),
           };
-    },
-    [customDataset, entity, isCustomDataset, profileKey, sor.catalog],
-  );
+    }
+    const canonicalEntity = sor.catalog?.profiles
+      .find((candidate) => candidate.profile === profileKey)
+      ?.entities.find((candidate) => candidate.key === entity);
+    if (canonicalEntity === undefined) return undefined;
+
+    const memberDefinition =
+      profileKey === null
+        ? undefined
+        : MEMBER_COLLECTION_DEFINITIONS[profileKey]?.[canonicalEntity.key];
+    return (
+      memberDefinition ?? {
+        description: canonicalEntity.description,
+        plural: canonicalEntity.label,
+        singular: canonicalEntity.key.replaceAll("_", " "),
+      }
+    );
+  }, [customDataset, entity, isCustomDataset, profileKey, sor.catalog]);
   const columns = collection.grid?.columns ?? EMPTY_COLUMNS;
   const query = useMemo(() => {
     const value = toSorCollectionQuery(state, columns);
@@ -192,8 +230,7 @@ const SorCollectionPage = observer(function SorCollectionPage() {
           Collection unavailable
         </h1>
         <p className="text-sm text-muted-foreground">
-          This System of Record collection does not have an executable Eylo
-          contract.
+          This collection is not available for this System of Record profile.
         </p>
       </section>
     );
@@ -216,7 +253,7 @@ const SorCollectionPage = observer(function SorCollectionPage() {
           nextCursor: collection.nextCursor,
           rows: collection.items,
           state,
-          valueFor: sorCellValue,
+          valueFor: sorDisplayValue,
         };
 
   function setState(
@@ -249,6 +286,27 @@ const SorCollectionPage = observer(function SorCollectionPage() {
       activeProfile,
       activeEntity,
       query,
+    );
+  }
+
+  if (
+    !isCustomDataset &&
+    ((activeProfile === "knowledge" && activeEntity === "document") ||
+      (activeProfile === "support" && activeEntity === "ticket")) &&
+    state.selectedRecordId !== null
+  ) {
+    return (
+      <SorRecordDetailsDrawer
+        columns={columns}
+        entity={activeEntity}
+        organizationId={activeOrganizationId}
+        presentation="page"
+        profile={activeProfile}
+        recordId={state.selectedRecordId}
+        onClose={() =>
+          setState({ selectedRecordId: null }, { preserveCursor: true })
+        }
+      />
     );
   }
 
@@ -333,7 +391,7 @@ const SorCollectionPage = observer(function SorCollectionPage() {
           />
         }
         sort={
-          <div className="flex items-center gap-2">
+          <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
             {!isCustomDataset ? (
               <SorSourceControl
                 selectedIds={state.sourceIds}
@@ -449,7 +507,7 @@ function CollectionEmpty({
         <h2 className="font-medium">No {entityLabel} records</h2>
         <p className="max-w-md text-sm leading-6 text-muted-foreground">
           {hasSources
-            ? "No canonical records match this view. Adjust the filters or run the source sync."
+            ? "No records match this view. Adjust the filters or run the source sync."
             : "Configure and synchronize a source before records appear in this audit view."}
         </p>
       </div>

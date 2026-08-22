@@ -2,7 +2,6 @@ import { makeAutoObservable, runInAction } from "mobx";
 
 import { SorService } from "@/features/sor/sor.service";
 import type {
-  SorAgentView,
   SorCollectionQueryInput,
   SorCollectionRow,
   SorGridContract,
@@ -13,9 +12,19 @@ import type {
   SorTicketingIssueAudit,
 } from "@/features/sor/sor.types";
 
+interface SorDocumentImageState {
+  errorMessage: string | null;
+  objectUrl: string | null;
+  status: "idle" | "loading" | "ready" | "error";
+}
+
+const IDLE_DOCUMENT_IMAGE: SorDocumentImageState = {
+  errorMessage: null,
+  objectUrl: null,
+  status: "idle",
+};
+
 class SorCollectionStore {
-  agentView: SorAgentView | null = null;
-  agentViewErrorMessage: string | null = null;
   currentCursor: string | null = null;
   detail: SorRecordDetail | null = null;
   detailErrorMessage: string | null = null;
@@ -23,7 +32,6 @@ class SorCollectionStore {
   grid: SorGridContract | null = null;
   gridErrorMessage: string | null = null;
   hasMore = false;
-  isAgentViewLoading = false;
   isDetailLoading = false;
   isLoading = false;
   isGridLoading = false;
@@ -33,6 +41,7 @@ class SorCollectionStore {
   nextCursor: string | null = null;
   knowledgeDocumentAudit: SorKnowledgeDocumentAudit | null = null;
   knowledgeDocumentAuditErrorMessage: string | null = null;
+  knowledgeDocumentImages = new Map<string, SorDocumentImageState>();
   pageIds: string[] = [];
   recordsById = new Map<string, SorCollectionRow>();
   supportTicketAudit: SorSupportTicketAudit | null = null;
@@ -40,11 +49,12 @@ class SorCollectionStore {
   ticketingIssueAudit: SorTicketingIssueAudit | null = null;
   ticketingIssueAuditErrorMessage: string | null = null;
 
-  private agentViewRequestId = 0;
   private detailRequestId = 0;
   private gridContextKey: string | null = null;
   private gridRequestId = 0;
   private knowledgeDocumentAuditRequestId = 0;
+  private knowledgeDocumentImageContextKey: string | null = null;
+  private knowledgeDocumentImageRequests = new Map<string, AbortController>();
   private pageRequestId = 0;
   private readonly service: SorService;
   private supportTicketAuditRequestId = 0;
@@ -54,11 +64,12 @@ class SorCollectionStore {
     this.service = service;
     makeAutoObservable<
       this,
-      | "agentViewRequestId"
       | "detailRequestId"
       | "gridContextKey"
       | "gridRequestId"
       | "knowledgeDocumentAuditRequestId"
+      | "knowledgeDocumentImageContextKey"
+      | "knowledgeDocumentImageRequests"
       | "pageRequestId"
       | "service"
       | "supportTicketAuditRequestId"
@@ -66,11 +77,12 @@ class SorCollectionStore {
     >(
       this,
       {
-        agentViewRequestId: false,
         detailRequestId: false,
         gridContextKey: false,
         gridRequestId: false,
         knowledgeDocumentAuditRequestId: false,
+        knowledgeDocumentImageContextKey: false,
+        knowledgeDocumentImageRequests: false,
         pageRequestId: false,
         service: false,
         supportTicketAuditRequestId: false,
@@ -254,7 +266,6 @@ class SorCollectionStore {
     this.detail = null;
     this.detailErrorMessage = null;
     this.isDetailLoading = true;
-    this.clearAgentView();
 
     try {
       const detail = await load();
@@ -275,47 +286,6 @@ class SorCollectionStore {
       if (this.detailRequestId === requestId) {
         runInAction(() => {
           this.isDetailLoading = false;
-        });
-      }
-    }
-  }
-
-  async loadAgentView(
-    organizationId: string,
-    agentId: string,
-    profile: SorProfileKey,
-    entity: string,
-    recordId: string,
-  ): Promise<void> {
-    const requestId = ++this.agentViewRequestId;
-    this.agentView = null;
-    this.agentViewErrorMessage = null;
-    this.isAgentViewLoading = true;
-
-    try {
-      const view = await this.service.loadAgentView(
-        organizationId,
-        agentId,
-        profile,
-        entity,
-        recordId,
-      );
-      if (this.agentViewRequestId !== requestId) return;
-      runInAction(() => {
-        this.agentView = view;
-      });
-    } catch (error) {
-      if (this.agentViewRequestId !== requestId) return;
-      runInAction(() => {
-        this.agentViewErrorMessage = messageFrom(
-          error,
-          "The selected Agent view could not be loaded.",
-        );
-      });
-    } finally {
-      if (this.agentViewRequestId === requestId) {
-        runInAction(() => {
-          this.isAgentViewLoading = false;
         });
       }
     }
@@ -360,6 +330,9 @@ class SorCollectionStore {
     recordId: string,
   ): Promise<void> {
     const requestId = ++this.knowledgeDocumentAuditRequestId;
+    const imageContextKey = `${organizationId}:${recordId}`;
+    this.clearKnowledgeDocumentImages();
+    this.knowledgeDocumentImageContextKey = imageContextKey;
     this.knowledgeDocumentAudit = null;
     this.knowledgeDocumentAuditErrorMessage = null;
     this.isKnowledgeDocumentAuditLoading = true;
@@ -385,6 +358,80 @@ class SorCollectionStore {
         runInAction(() => {
           this.isKnowledgeDocumentAuditLoading = false;
         });
+      }
+    }
+  }
+
+  knowledgeDocumentImageFor(attachmentRecordId: string): SorDocumentImageState {
+    return (
+      this.knowledgeDocumentImages.get(attachmentRecordId) ??
+      IDLE_DOCUMENT_IMAGE
+    );
+  }
+
+  async loadKnowledgeDocumentImage(
+    organizationId: string,
+    documentRecordId: string,
+    attachmentRecordId: string,
+  ): Promise<void> {
+    const contextKey = `${organizationId}:${documentRecordId}`;
+    const current = this.knowledgeDocumentImages.get(attachmentRecordId);
+    if (
+      this.knowledgeDocumentImageContextKey !== contextKey ||
+      current?.status === "loading" ||
+      current?.status === "ready"
+    ) {
+      return;
+    }
+    const request = new AbortController();
+    this.knowledgeDocumentImageRequests.set(attachmentRecordId, request);
+    this.knowledgeDocumentImages.set(attachmentRecordId, {
+      errorMessage: null,
+      objectUrl: null,
+      status: "loading",
+    });
+    try {
+      const blob = await this.service.downloadKnowledgeDocumentImage(
+        organizationId,
+        documentRecordId,
+        attachmentRecordId,
+        request.signal,
+      );
+      if (
+        request.signal.aborted ||
+        this.knowledgeDocumentImageContextKey !== contextKey
+      ) {
+        return;
+      }
+      const objectUrl = URL.createObjectURL(blob);
+      runInAction(() => {
+        this.knowledgeDocumentImages.set(attachmentRecordId, {
+          errorMessage: null,
+          objectUrl,
+          status: "ready",
+        });
+      });
+    } catch (error) {
+      if (
+        !request.signal.aborted &&
+        this.knowledgeDocumentImageContextKey === contextKey
+      ) {
+        runInAction(() => {
+          this.knowledgeDocumentImages.set(attachmentRecordId, {
+            errorMessage: messageFrom(
+              error,
+              "This source image could not be loaded.",
+            ),
+            objectUrl: null,
+            status: "error",
+          });
+        });
+      }
+    } finally {
+      if (
+        this.knowledgeDocumentImageRequests.get(attachmentRecordId) === request
+      ) {
+        this.knowledgeDocumentImageRequests.delete(attachmentRecordId);
       }
     }
   }
@@ -428,17 +475,9 @@ class SorCollectionStore {
     this.detail = null;
     this.detailErrorMessage = null;
     this.isDetailLoading = false;
-    this.clearAgentView();
     this.clearKnowledgeDocumentAudit();
     this.clearSupportTicketAudit();
     this.clearTicketingIssueAudit();
-  }
-
-  clearAgentView(): void {
-    ++this.agentViewRequestId;
-    this.agentView = null;
-    this.agentViewErrorMessage = null;
-    this.isAgentViewLoading = false;
   }
 
   clearTicketingIssueAudit(): void {
@@ -450,9 +489,22 @@ class SorCollectionStore {
 
   clearKnowledgeDocumentAudit(): void {
     ++this.knowledgeDocumentAuditRequestId;
+    this.clearKnowledgeDocumentImages();
     this.knowledgeDocumentAudit = null;
     this.knowledgeDocumentAuditErrorMessage = null;
     this.isKnowledgeDocumentAuditLoading = false;
+  }
+
+  private clearKnowledgeDocumentImages(): void {
+    for (const request of this.knowledgeDocumentImageRequests.values()) {
+      request.abort();
+    }
+    this.knowledgeDocumentImageRequests.clear();
+    for (const state of this.knowledgeDocumentImages.values()) {
+      if (state.objectUrl !== null) URL.revokeObjectURL(state.objectUrl);
+    }
+    this.knowledgeDocumentImages.clear();
+    this.knowledgeDocumentImageContextKey = null;
   }
 
   clearSupportTicketAudit(): void {

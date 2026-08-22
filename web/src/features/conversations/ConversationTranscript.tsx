@@ -1,7 +1,13 @@
-import { AlertTriangle, Bot, Braces, UserRound, Wrench } from "lucide-react";
+import { AlertTriangle } from "lucide-react";
 import { observer } from "mobx-react-lite";
 
 import { useRootStore } from "@/app/use-root-store";
+import {
+  ConversationTimeline,
+  type ConversationActorKind,
+  type ConversationTimelineEntry,
+  type ConversationTimelineLabel,
+} from "@/components/audit/ConversationTimeline";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -28,6 +34,25 @@ const ConversationTranscript = observer(function ConversationTranscript({
       participant.id,
       participant.entityName ?? formatConversationEnum(participant.entityKind),
     ]),
+  );
+  const entries: ConversationTimelineEntry[] = conversations.messages.map(
+    (message) => {
+      const timestamp = formatConversationDate(message.createdAt);
+      return {
+        actorKind: messageActorKind(message.kind),
+        actorLabel: messageActorLabel(
+          message,
+          participantLabels.get(message.senderParticipantId),
+        ),
+        badges: messageBadges(message),
+        body: <MessageContent message={message} />,
+        id: message.id,
+        metadata: <MessageMetadata message={message} />,
+        occurredAt: message.createdAt ?? null,
+        occurredLabel: timestamp.label,
+        occurredTitle: timestamp.title,
+      };
+    },
   );
 
   return (
@@ -60,27 +85,16 @@ const ConversationTranscript = observer(function ConversationTranscript({
         </div>
       ) : null}
 
-      {conversations.messages.length === 0 &&
-      conversations.messagesErrorMessage === null ? (
-        <div className="px-4 py-16 text-center">
-          <p className="text-sm font-medium">No persisted messages</p>
-          <p className="mt-1 text-sm text-muted-foreground">
-            This conversation has metadata but no stored exchange yet.
-          </p>
+      {conversations.messagesErrorMessage !== null &&
+      entries.length === 0 ? null : (
+        <div className="p-4 sm:p-5">
+          <ConversationTimeline
+            ariaLabel="Conversation messages in chronological order"
+            emptyDescription="This conversation has metadata but no stored exchange yet."
+            emptyTitle="No persisted messages"
+            entries={entries}
+          />
         </div>
-      ) : (
-        <ol className="min-w-0 divide-y">
-          {conversations.messages.map((message) => (
-            <MessageItem
-              key={message.id}
-              message={message}
-              senderLabel={
-                participantLabels.get(message.senderParticipantId) ??
-                `Participant ${message.senderParticipantId}`
-              }
-            />
-          ))}
-        </ol>
       )}
 
       {conversations.messagesHasMore ? (
@@ -100,72 +114,62 @@ const ConversationTranscript = observer(function ConversationTranscript({
   );
 });
 
-function MessageItem({
-  message,
-  senderLabel,
-}: {
-  message: ConversationMessage;
-  senderLabel: string;
-}) {
-  const timestamp = formatConversationDate(message.createdAt);
+function MessageMetadata({ message }: { message: ConversationMessage }) {
   return (
-    <li className="min-w-0 p-4 sm:p-5">
-      <article className="min-w-0 space-y-3">
-        <header className="flex min-w-0 flex-wrap items-center gap-2">
-          <span className="flex min-w-0 items-center gap-2 text-sm font-medium">
-            <MessageKindIcon kind={message.kind} />
-            <span className="break-words">{senderLabel}</span>
-          </span>
-          <Badge variant="outline">
-            {formatConversationEnum(message.kind)}
-          </Badge>
-          <Badge variant="secondary">
-            {formatConversationEnum(message.contentKind)}
-          </Badge>
-          {message.requestStatus == null ? null : (
-            <Badge
-              variant={
-                message.requestStatus === "FAILED" ? "destructive" : "outline"
-              }
-            >
-              {formatConversationEnum(message.requestStatus)}
-            </Badge>
-          )}
-          <time
-            className="text-xs text-muted-foreground sm:ml-auto"
-            dateTime={message.createdAt}
-            title={timestamp.title}
-          >
-            {timestamp.label}
-          </time>
-        </header>
-
-        <div className="min-w-0 text-sm leading-6">
-          <MessageContent message={message} />
-        </div>
-
-        <details className="min-w-0 text-xs text-muted-foreground">
-          <summary className="cursor-pointer select-none underline-offset-4 hover:underline">
-            Message metadata
-          </summary>
-          <dl className="mt-3 grid min-w-0 gap-2 border-l pl-3 sm:grid-cols-[9rem_minmax(0,1fr)]">
-            <Metadata label="Message ID" value={message.id} />
-            <Metadata
-              label="Sender participant"
-              value={message.senderParticipantId}
-            />
-            <Metadata label="Request ID" value={message.requestId} />
-            <Metadata label="Agent run ID" value={message.agentRunId} />
-            <Metadata label="Parent message" value={message.parentMessageId} />
-          </dl>
-          {message.meta == null ||
-          Object.keys(message.meta).length === 0 ? null : (
-            <JsonValue className="mt-3" value={message.meta} />
-          )}
-        </details>
-      </article>
-    </li>
+    <details className="min-w-0 text-xs text-muted-foreground">
+      <summary className="cursor-pointer select-none underline-offset-4 hover:underline">
+        Message metadata
+      </summary>
+      <dl className="mt-3 grid min-w-0 gap-2 border-l pl-3 sm:grid-cols-[9rem_minmax(0,1fr)]">
+        <Metadata label="Message ID" value={message.id} />
+        <Metadata
+          label="Sender participant"
+          value={message.senderParticipantId}
+        />
+        <Metadata label="Request ID" value={message.requestId} />
+        <Metadata label="Agent run ID" value={message.agentRunId} />
+        <Metadata label="Parent message" value={message.parentMessageId} />
+      </dl>
+      {message.meta == null || Object.keys(message.meta).length === 0 ? null : (
+        <JsonValue className="mt-3" value={message.meta} />
+      )}
+    </details>
   );
+}
+
+function messageActorKind(
+  kind: ConversationMessage["kind"],
+): ConversationActorKind {
+  if (kind === "ASSISTANT") return "agent";
+  if (kind === "SYSTEM") return "system";
+  if (kind === "TOOL_USE" || kind === "TOOL_RESULT") return "tool";
+  return "human";
+}
+
+function messageActorLabel(
+  message: ConversationMessage,
+  participantLabel: string | undefined,
+): string {
+  if (message.kind === "SYSTEM") return "Eylo system";
+  if (message.kind === "TOOL_USE") return "Tool call";
+  if (message.kind === "TOOL_RESULT") return "Tool result";
+  return participantLabel ?? (message.kind === "ASSISTANT" ? "Agent" : "User");
+}
+
+function messageBadges(
+  message: ConversationMessage,
+): ConversationTimelineLabel[] {
+  const badges: ConversationTimelineLabel[] = [];
+  if (message.contentKind !== "TEXT") {
+    badges.push({ label: formatConversationEnum(message.contentKind) });
+  }
+  if (message.requestStatus !== null && message.requestStatus !== undefined) {
+    badges.push({
+      danger: message.requestStatus === "FAILED",
+      label: formatConversationEnum(message.requestStatus),
+    });
+  }
+  return badges;
 }
 
 function MessageContent({ message }: { message: ConversationMessage }) {
@@ -293,20 +297,6 @@ function Metadata({
       <dd className="min-w-0 break-all font-mono">{value ?? "Not recorded"}</dd>
     </>
   );
-}
-
-function MessageKindIcon({ kind }: { kind: ConversationMessage["kind"] }) {
-  const props = { "aria-hidden": true, className: "size-4 shrink-0" } as const;
-  if (kind === "ASSISTANT") {
-    return <Bot {...props} />;
-  }
-  if (kind === "SYSTEM") {
-    return <Braces {...props} />;
-  }
-  if (kind === "TOOL_USE" || kind === "TOOL_RESULT") {
-    return <Wrench {...props} />;
-  }
-  return <UserRound {...props} />;
 }
 
 function contentBlockKey(block: unknown, index: number): string {

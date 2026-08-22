@@ -20,6 +20,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { SorFieldMappingSection } from "@/features/sor/SorFieldMappingSection";
 import { formatSorIdentifier } from "@/features/sor/sor-formatters";
+import { openSorAuthorizationPopup } from "@/features/sor/sor-oauth-popup";
 import {
   availableSorOnboardingAuthKinds,
   resolveSorOnboardingAuthKind,
@@ -46,15 +47,15 @@ const SECTIONS: readonly {
     id: "connection",
     label: "Connection",
   },
-  { description: "Synced source objects", id: "objects", label: "Objects" },
+  { description: "Data to import", id: "objects", label: "Objects" },
   {
-    description: "Canonical field contract",
+    description: "Source fields in Eylo",
     id: "mapping",
     label: "Field mapping",
   },
   { description: "Freshness and cadence", id: "sync", label: "Sync" },
   { description: "Inbound change signals", id: "webhooks", label: "Webhooks" },
-  { description: "Explicit source grants", id: "agents", label: "Agents" },
+  { description: "Agents allowed to use this source", id: "agents", label: "Agents" },
   { description: "Validate and activate", id: "review", label: "Review" },
 ];
 
@@ -989,6 +990,11 @@ function ObjectScopeSelection({
                 <span className="block text-xs leading-5 text-muted-foreground">
                   {stream.description}
                 </span>
+                {stream.dependsOn.length > 0 ? (
+                  <span className="mt-1 block break-words text-xs leading-5 text-muted-foreground">
+                    Includes required objects: {stream.dependsOn.join(", ")}
+                  </span>
+                ) : null}
                 {requiredScopes.length > 0 ? (
                   <span className="mt-1 block break-words text-xs leading-5 text-muted-foreground">
                     {stream.scopeCategory ?? "Provider scopes"}:{" "}
@@ -1051,6 +1057,7 @@ function ObjectsSection({
             return (
               <ObjectChoice
                 checked={onboarding.draft.selectedObjects.includes(object.key)}
+                dependencies={stream?.dependsOn ?? []}
                 key={object.key}
                 object={object}
                 scopeCategory={stream?.scopeCategory ?? null}
@@ -1081,12 +1088,14 @@ function ObjectsSection({
 
 function ObjectChoice({
   checked,
+  dependencies,
   object,
   onChange,
   scopeCategory,
   scopes,
 }: {
   checked: boolean;
+  dependencies: readonly string[];
   object: SorDiscoveredObject;
   onChange: (checked: boolean) => void;
   scopeCategory: string | null;
@@ -1109,6 +1118,11 @@ function ObjectChoice({
           {object.key} · {object.fields.length} fields
         </span>
         <span className="mt-auto block break-words border-t pt-3 text-xs leading-5 text-muted-foreground">
+          {dependencies.length > 0 ? (
+            <span className="mb-1 block">
+              Includes required objects: {dependencies.join(", ")}
+            </span>
+          ) : null}
           {scopes.length > 0
             ? `${scopeCategory ?? "Provider scopes"}: ${scopes.join(", ")}`
             : "No additional provider scope"}
@@ -1125,7 +1139,7 @@ function SyncSection({
 }) {
   return (
     <FormSection
-      description="Define when projected data becomes stale and how frequently Eylo should reconcile it."
+      description="Define when imported data becomes stale and how frequently Eylo should reconcile it."
       title="Sync and freshness"
     >
       <NumberField
@@ -1474,55 +1488,6 @@ function boundedValue(value: string | null, maximum: number): string | null {
   return value !== null && value.length > 0 && value.length <= maximum
     ? value
     : null;
-}
-
-function openSorAuthorizationPopup(
-  url: string,
-  expectedOrigin: string,
-  expectedVendor: string,
-): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const popup = window.open(
-      url,
-      "eylo_sor_oauth",
-      "width=600,height=720,left=200,top=80",
-    );
-    if (popup === null) {
-      reject(new Error("Popup blocked. Allow popups and try again."));
-      return;
-    }
-    let settled = false;
-    const finish = (error?: Error) => {
-      if (settled) return;
-      settled = true;
-      window.removeEventListener("message", onMessage);
-      window.clearInterval(poll);
-      if (error) reject(error);
-      else resolve();
-    };
-    const onMessage = (event: MessageEvent) => {
-      if (event.source !== popup || event.origin !== expectedOrigin) return;
-      const data = event.data as {
-        error?: string;
-        ok?: boolean;
-        type?: string;
-        vendor?: string;
-      };
-      if (data.type !== "eylo:sor-oauth") return;
-      if (data.ok === true && data.vendor !== expectedVendor) return;
-      finish(
-        data.ok ? undefined : new Error(data.error || "Authorization failed."),
-      );
-    };
-    window.addEventListener("message", onMessage);
-    const poll = window.setInterval(() => {
-      // The provider callback commits the connection before notifying this
-      // window. Browsers may sever popup messaging across an OAuth redirect,
-      // so a closed popup is inconclusive; finishAuthorization verifies the
-      // server-authoritative connection state next.
-      if (popup.closed) finish();
-    }, 750);
-  });
 }
 
 export { SorSourceFormPage };

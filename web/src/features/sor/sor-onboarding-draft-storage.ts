@@ -41,7 +41,7 @@ class SorOnboardingDraftStorage {
     const draft: StoredSorOnboardingDraft = {
       savedAt: new Date().toISOString(),
       values,
-      version: 1,
+      version: 2,
     };
     try {
       this.storage.setItem(keyFor(context), JSON.stringify(draft));
@@ -61,20 +61,25 @@ function keyFor(context: SorOnboardingDraftContext): string {
 }
 
 function parseStoredDraft(value: unknown): StoredSorOnboardingDraft | null {
-  if (!isRecord(value) || value.version !== 1) return null;
+  if (!isRecord(value) || (value.version !== 1 && value.version !== 2)) {
+    return null;
+  }
   if (
     typeof value.savedAt !== "string" ||
     Number.isNaN(new Date(value.savedAt).getTime())
   ) {
     return null;
   }
-  const values = parseValues(value.values);
+  const values = parseValues(value.values, value.version === 1);
   return values === null
     ? null
-    : { savedAt: value.savedAt, values, version: 1 };
+    : { savedAt: value.savedAt, values, version: 2 };
 }
 
-function parseValues(value: unknown): SorOnboardingDraft | null {
+function parseValues(
+  value: unknown,
+  allowMissingAttemptId: boolean,
+): SorOnboardingDraft | null {
   if (!isRecord(value)) return null;
   const profile =
     value.profile === null || isProfile(value.profile)
@@ -85,6 +90,7 @@ function parseValues(value: unknown): SorOnboardingDraft | null {
   const selectedObjects = stringArray(value.selectedObjects, 100, 256);
   const fieldMappings = parseMappings(value.fieldMappings);
   const storedAuthKind = parseAuthKind(value.authKind);
+  const onboardingAttemptId = uuidText(value.onboardingAttemptId);
   if (
     profile === undefined ||
     (access !== "READ" && access !== "READ_WRITE") ||
@@ -102,7 +108,8 @@ function parseValues(value: unknown): SorOnboardingDraft | null {
     selectedObjects === null ||
     fieldMappings === null ||
     configuration === null ||
-    storedAuthKind === undefined
+    storedAuthKind === undefined ||
+    (onboardingAttemptId === null && !allowMissingAttemptId)
   ) {
     return null;
   }
@@ -121,6 +128,7 @@ function parseValues(value: unknown): SorOnboardingDraft | null {
     freshnessTargetSeconds: value.freshnessTargetSeconds,
     instanceOrigin:
       typeof value.instanceOrigin === "string" ? value.instanceOrigin : "",
+    onboardingAttemptId: onboardingAttemptId ?? crypto.randomUUID(),
     profile,
     requiredSyncIntervalSeconds: value.requiredSyncIntervalSeconds,
     selectedObjects,
@@ -128,6 +136,15 @@ function parseValues(value: unknown): SorOnboardingDraft | null {
     sourceName: value.sourceName,
     vendorKey: value.vendorKey,
   };
+}
+
+function uuidText(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    value,
+  )
+    ? value.toLowerCase()
+    : null;
 }
 
 function parseAuthKind(

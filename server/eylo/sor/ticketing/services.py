@@ -2,21 +2,18 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import TypeVar
 from uuid import UUID
 
-from sqlalchemy import and_, func, or_, select, update
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.sor.shared.contracts import SorProfile
 from eylo.sor.shared.models import (
     SorProfileRecordModel,
     SorRecordModel,
-    SorRecordRelationModel,
 )
 from eylo.sor.shared.repositories import SorRepository
 from eylo.sor.shared.services import SorProjectionError
@@ -120,7 +117,6 @@ class TicketingProjectionService:
             issue.priority,
         )
         await self.session.flush()
-        await self._materialize_relations_for_issue(record=record, issue=issue)
         return row
 
     async def upsert_project(
@@ -415,7 +411,7 @@ class TicketingProjectionService:
         record_id: UUID,
         relation: TicketingIssueRelation,
     ) -> TicketingIssueRelationModel:
-        """Persist one typed relation, then materialize its edge when endpoints exist."""
+        """Persist one typed relation; the shared resolver owns its canonical edge."""
         record = await self._require_record(
             organization_id=organization_id,
             source_id=source_id,
@@ -457,226 +453,7 @@ class TicketingProjectionService:
             relation.native_kind,
         )
         await self.session.flush()
-        await self._materialize_explicit_relation(row=row, record=record)
         return row
-
-    async def _materialize_relations_for_issue(
-        self,
-        *,
-        record: SorRecordModel,
-        issue: TicketingIssue,
-    ) -> None:
-        """Retry every edge that can become resolvable when one issue arrives."""
-        await self._materialize_parent_relation(
-            child_record=record,
-            parent_external_id=issue.parent_external_id,
-        )
-        children = (
-            await self.session.execute(
-                select(TicketingIssueModel, SorRecordModel)
-                .join(
-                    SorRecordModel,
-                    and_(
-                        SorRecordModel.id == TicketingIssueModel.record_id,
-                        SorRecordModel.source_id == TicketingIssueModel.source_id,
-                        SorRecordModel.organization_id
-                        == TicketingIssueModel.organization_id,
-                    ),
-                )
-                .where(
-                    TicketingIssueModel.organization_id == record.organization_id,
-                    TicketingIssueModel.source_id == record.source_id,
-                    TicketingIssueModel.parent_external_id
-                    == record.vendor_external_id,
-                    TicketingIssueModel.deleted.is_(False),
-                    SorRecordModel.vendor_object_key == record.vendor_object_key,
-                    SorRecordModel.tombstoned_at.is_(None),
-                    SorRecordModel.deleted.is_(False),
-                )
-            )
-        ).all()
-        for child, child_record in children:
-            await self._materialize_parent_relation(
-                child_record=child_record,
-                parent_external_id=child.parent_external_id,
-            )
-
-        relation_rows = (
-            await self.session.scalars(
-                select(TicketingIssueRelationModel).where(
-                    TicketingIssueRelationModel.organization_id
-                    == record.organization_id,
-                    TicketingIssueRelationModel.source_id == record.source_id,
-                    TicketingIssueRelationModel.issue_vendor_object_key
-                    == record.vendor_object_key,
-                    or_(
-                        TicketingIssueRelationModel.from_issue_external_id
-                        == record.vendor_external_id,
-                        TicketingIssueRelationModel.to_issue_external_id
-                        == record.vendor_external_id,
-                    ),
-                    TicketingIssueRelationModel.deleted.is_(False),
-                )
-            )
-        ).all()
-        for relation_row in relation_rows:
-            relation_record = await self.records.get_record(
-                organization_id=record.organization_id,
-                source_id=record.source_id,
-                record_id=relation_row.record_id,
-            )
-            if relation_record is not None:
-                await self._materialize_explicit_relation(
-                    row=relation_row,
-                    record=relation_record,
-                )
-
-    async def _materialize_parent_relation(
-        self,
-        *,
-        child_record: SorRecordModel,
-        parent_external_id: str | None,
-    ) -> None:
-        external_relation_id = _parent_relation_id(
-            issue_vendor_object_key=child_record.vendor_object_key,
-            child_external_id=child_record.vendor_external_id,
-        )
-        if parent_external_id is None:
-            await self._tombstone_edge(
-                organization_id=child_record.organization_id,
-                source_id=child_record.source_id,
-                external_relation_id=external_relation_id,
-            )
-            return
-        await self._materialize_edge(
-            organization_id=child_record.organization_id,
-            source_id=child_record.source_id,
-            issue_vendor_object_key=child_record.vendor_object_key,
-            from_issue_external_id=child_record.vendor_external_id,
-            to_issue_external_id=parent_external_id,
-            canonical_kind=TicketingRelationKind.PARENT,
-            native_kind="parent",
-            external_relation_id=external_relation_id,
-            source_revision=child_record.source_revision,
-        )
-
-    async def _materialize_explicit_relation(
-        self,
-        *,
-        row: TicketingIssueRelationModel,
-        record: SorRecordModel,
-    ) -> None:
-        if record.tombstoned_at is not None:
-            await self._tombstone_edge(
-                organization_id=record.organization_id,
-                source_id=record.source_id,
-                external_relation_id=record.vendor_external_id,
-            )
-            return
-        await self._materialize_edge(
-            organization_id=record.organization_id,
-            source_id=record.source_id,
-            issue_vendor_object_key=row.issue_vendor_object_key,
-            from_issue_external_id=row.from_issue_external_id,
-            to_issue_external_id=row.to_issue_external_id,
-            canonical_kind=TicketingRelationKind(row.canonical_relation_kind),
-            native_kind=row.native_relation_kind,
-            external_relation_id=record.vendor_external_id,
-            source_revision=record.source_revision,
-        )
-
-    async def _materialize_edge(
-        self,
-        *,
-        organization_id: UUID,
-        source_id: UUID,
-        issue_vendor_object_key: str,
-        from_issue_external_id: str,
-        to_issue_external_id: str,
-        canonical_kind: TicketingRelationKind,
-        native_kind: str,
-        external_relation_id: str,
-        source_revision: str | None,
-    ) -> None:
-        from_record = await self.records.get_record_by_identity(
-            organization_id=organization_id,
-            source_id=source_id,
-            vendor_object_key=issue_vendor_object_key,
-            vendor_external_id=from_issue_external_id,
-        )
-        to_record = await self.records.get_record_by_identity(
-            organization_id=organization_id,
-            source_id=source_id,
-            vendor_object_key=issue_vendor_object_key,
-            vendor_external_id=to_issue_external_id,
-        )
-        if (
-            from_record is None
-            or to_record is None
-            or from_record.tombstoned_at is not None
-            or to_record.tombstoned_at is not None
-        ):
-            await self._tombstone_edge(
-                organization_id=organization_id,
-                source_id=source_id,
-                external_relation_id=external_relation_id,
-            )
-            return
-
-        now = datetime.now(timezone.utc)
-        statement = pg_insert(SorRecordRelationModel).values(
-            organization_id=organization_id,
-            source_id=source_id,
-            from_record_id=from_record.id,
-            to_record_id=to_record.id,
-            canonical_relation_kind=canonical_kind.value,
-            native_relation_kind=native_kind,
-            external_relation_id=external_relation_id,
-            source_revision=source_revision,
-            tombstoned_at=None,
-        )
-        await self.session.execute(
-            statement.on_conflict_do_update(
-                index_elements=(
-                    SorRecordRelationModel.source_id,
-                    SorRecordRelationModel.external_relation_id,
-                ),
-                index_where=SorRecordRelationModel.external_relation_id.is_not(None),
-                set_={
-                    "from_record_id": from_record.id,
-                    "to_record_id": to_record.id,
-                    "canonical_relation_kind": canonical_kind.value,
-                    "native_relation_kind": native_kind,
-                    "source_revision": source_revision,
-                    "tombstoned_at": None,
-                    "updated_at": now,
-                },
-            )
-        )
-
-    async def _tombstone_edge(
-        self,
-        *,
-        organization_id: UUID,
-        source_id: UUID,
-        external_relation_id: str,
-    ) -> None:
-        now = datetime.now(timezone.utc)
-        await self.session.execute(
-            update(SorRecordRelationModel)
-            .where(
-                SorRecordRelationModel.organization_id == organization_id,
-                SorRecordRelationModel.source_id == source_id,
-                SorRecordRelationModel.external_relation_id
-                == external_relation_id,
-                SorRecordRelationModel.tombstoned_at.is_(None),
-                SorRecordRelationModel.deleted.is_(False),
-            )
-            .values(
-                tombstoned_at=now,
-                updated_at=now,
-            )
-        )
 
     async def _require_record(
         self,
@@ -953,15 +730,6 @@ def _validate_relation(relation: TicketingIssueRelation) -> None:
         maximum=512,
         field="relation source revision",
     )
-
-
-def _parent_relation_id(
-    *,
-    issue_vendor_object_key: str,
-    child_external_id: str,
-) -> str:
-    identity = f"{issue_vendor_object_key}\0{child_external_id}".encode("utf-8")
-    return f"eylo-parent:{hashlib.sha256(identity).hexdigest()}"
 
 
 def _validate_required(value: str, *, maximum: int, field: str) -> None:

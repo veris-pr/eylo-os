@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/table";
 import {
   formatSorDate,
+  formatSorIdentifier,
   formatSorNumber,
   formatSorValue,
 } from "@/features/sor/sor-formatters";
@@ -30,11 +31,16 @@ function SorTableGridRenderer({
 }: SorGridRendererProps) {
   const columns = visibleColumns(model.columns, model.state.visibleColumns);
   const wideColumnKey = preferredIdentityColumn(columns)?.key;
-  const groupedRows = groupRows(model.rows, model.state.group, model.valueFor);
+  const groupedRows = groupRows(
+    model.rows,
+    model.state.group,
+    model.valueFor,
+    model.columns,
+  );
 
   return (
     <div className="min-w-0 border">
-      <div className="divide-y xl:hidden" aria-label={ariaLabel}>
+      <div className="divide-y md:hidden" aria-label={ariaLabel}>
         {groupedRows.map((entry) =>
           entry.type === "group" ? (
             <div
@@ -55,7 +61,7 @@ function SorTableGridRenderer({
         )}
       </div>
 
-      <Table className="hidden table-fixed xl:table" aria-label={ariaLabel}>
+      <Table className="hidden table-fixed md:table" aria-label={ariaLabel}>
         <TableHeader>
           <TableRow className="hover:bg-transparent">
             {columns.map((column) => (
@@ -98,6 +104,7 @@ function SorTableGridRenderer({
                   >
                     <SorCell
                       column={column}
+                      rawValue={entry.row.values[column.key]}
                       value={model.valueFor(entry.row, column.key)}
                     />
                   </TableCell>
@@ -167,7 +174,11 @@ function MobileRecord({
               {column.label}
             </dt>
             <dd className="mt-0.5 min-w-0 break-words text-sm">
-              <SorCell column={column} value={valueFor(row, column.key)} />
+              <SorCell
+                column={column}
+                rawValue={row.values[column.key]}
+                value={valueFor(row, column.key)}
+              />
             </dd>
           </div>
         ))}
@@ -180,7 +191,15 @@ function MobileRecord({
   );
 }
 
-function SorCell({ column, value }: { column: SorGridColumn; value: unknown }) {
+function SorCell({
+  column,
+  rawValue,
+  value,
+}: {
+  column: SorGridColumn;
+  rawValue: unknown;
+  value: unknown;
+}) {
   if (value === null || value === undefined || value === "") {
     return <span className="text-muted-foreground">—</span>;
   }
@@ -191,7 +210,12 @@ function SorCell({ column, value }: { column: SorGridColumn; value: unknown }) {
   if (column.kind === "NUMBER") {
     return <span title={String(value)}>{formatSorNumber(value)}</span>;
   }
-  if (column.kind === "ENUM" || column.kind === "BOOLEAN") {
+  if (column.kind === "ENUM") {
+    return (
+      <Badge variant="outline">{formatCategoricalValue(value, rawValue)}</Badge>
+    );
+  }
+  if (column.kind === "BOOLEAN") {
     return <Badge variant="outline">{formatSorValue(value)}</Badge>;
   }
   if (column.kind === "STRING_ARRAY" && Array.isArray(value)) {
@@ -236,14 +260,20 @@ function groupRows(
   rows: readonly SorCollectionRow[],
   groups: SorGridRendererProps["model"]["state"]["group"],
   valueFor: SorGridRendererProps["model"]["valueFor"],
+  columns: readonly SorGridColumn[],
 ): GroupedRow[] {
   if (groups.length === 0) return rows.map((row) => ({ row, type: "row" }));
+  const columnsByKey = new Map(columns.map((column) => [column.key, column]));
   const result: GroupedRow[] = [];
   let previousKey: string | null = null;
   for (const row of rows) {
-    const values = groups.map((group) =>
-      formatSorValue(valueFor(row, group.field)),
-    );
+    const values = groups.map((group) => {
+      const column = columnsByKey.get(group.field);
+      const value = valueFor(row, group.field);
+      return column?.kind === "ENUM"
+        ? formatCategoricalValue(value, row.values[group.field])
+        : formatSorValue(value);
+    });
     const key = JSON.stringify(values);
     if (key !== previousKey) {
       result.push({
@@ -256,6 +286,12 @@ function groupRows(
     result.push({ row, type: "row" });
   }
   return result;
+}
+
+function formatCategoricalValue(value: unknown, rawValue: unknown): string {
+  return typeof value === "string" && value === rawValue
+    ? formatSorIdentifier(value)
+    : formatSorValue(value);
 }
 
 function visibleColumns(

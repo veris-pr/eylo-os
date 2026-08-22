@@ -121,7 +121,7 @@ class SupportAttachment:
 
 @runtime_checkable
 class SupportAdapter(SorLifecycleAdapter, Protocol):
-    """Support-specific normalization port layered on shared lifecycle."""
+    """Support port with pure, I/O-free synchronous normalization methods."""
 
     def normalize_ticket(self, record: SorExternalRecord) -> SupportTicket: ...
 

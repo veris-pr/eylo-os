@@ -1,22 +1,25 @@
 import {
-  Bot,
+  ArrowLeft,
   ExternalLink,
-  FileText,
   Gauge,
   History,
   Library,
   ListTree,
-  LockKeyhole,
-  MessageSquareMore,
   Paperclip,
   type LucideIcon,
   UserRound,
   X,
 } from "lucide-react";
 import { observer } from "mobx-react-lite";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 
 import { useRootStore } from "@/app/use-root-store";
+import {
+  ConversationTimeline,
+  type ConversationActorKind,
+  type ConversationTimelineEntry,
+  type ConversationTimelineLabel,
+} from "@/components/audit/ConversationTimeline";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -26,15 +29,9 @@ import {
   DrawerHeader,
   DrawerTitle,
 } from "@/components/ui/drawer";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { DEFAULT_AGENT_QUERY } from "@/features/agents/agents.query";
+import type { SorDocumentImageState } from "@/features/sor/SorDocumentBody";
+import { SorDocumentViewer } from "@/features/sor/SorDocumentViewer";
 import {
   formatSorDate,
   formatSorIdentifier,
@@ -42,7 +39,6 @@ import {
   formatSorValue,
 } from "@/features/sor/sor-formatters";
 import type {
-  SorAgentView,
   SorGridColumn,
   SorKnowledgeDocumentAudit,
   SorProfileKey,
@@ -58,6 +54,7 @@ interface SorRecordDetailsDrawerProps {
   onClose: () => void;
   organizationId: string;
   profile: SorProfileKey;
+  presentation?: "drawer" | "page";
   recordId: string | null;
 }
 
@@ -67,15 +64,14 @@ const SorRecordDetailsDrawer = observer(function SorRecordDetailsDrawer({
   entity,
   onClose,
   organizationId,
+  presentation = "drawer",
   profile,
   recordId,
 }: SorRecordDetailsDrawerProps) {
-  const { agents, sor } = useRootStore();
-  const [agentId, setAgentId] = useState<string | null>(null);
+  const { sor } = useRootStore();
   const collection = sor.collection;
 
   useEffect(() => {
-    setAgentId(null);
     if (recordId === null) {
       collection.clearDetail();
       return;
@@ -103,68 +99,123 @@ const SorRecordDetailsDrawer = observer(function SorRecordDetailsDrawer({
     } else {
       collection.clearKnowledgeDocumentAudit();
     }
-    void agents.loadCollection(organizationId, {
-      ...DEFAULT_AGENT_QUERY,
-      limit: 100,
-      page: 1,
-    });
-  }, [
-    agents,
-    collection,
-    datasetId,
-    entity,
-    organizationId,
-    profile,
-    recordId,
-  ]);
+  }, [collection, datasetId, entity, organizationId, profile, recordId]);
 
-  useEffect(() => {
-    if (datasetId !== undefined || agentId === null || recordId === null) {
-      collection.clearAgentView();
-      return;
-    }
-    void collection.loadAgentView(
-      organizationId,
-      agentId,
-      profile,
-      entity,
-      recordId,
-    );
-  }, [
-    agentId,
-    collection,
-    datasetId,
-    entity,
-    organizationId,
-    profile,
-    recordId,
-  ]);
-
-  const publishedAgents = useMemo(
-    () =>
-      agents.items.filter(
-        (agent) =>
-          agent.publishedRevision !== null &&
-          agent.publishedRevision !== undefined,
-      ),
-    [agents.items],
-  );
   const title = recordTitle(collection.detail);
-  const agentViewAudit =
-    datasetId === undefined ? (
-      <AgentViewAudit
-        agentId={agentId}
-        agentsLoading={agents.isCollectionLoading}
-        publishedAgents={publishedAgents}
-        view={collection.agentView}
-        errorMessage={collection.agentViewErrorMessage}
-        isLoading={collection.isAgentViewLoading}
-        onAgentChange={setAgentId}
-      />
-    ) : null;
   const isSupportTicket = profile === "support" && entity === "ticket";
-  const isKnowledgeDocument =
-    profile === "knowledge" && entity === "document";
+  const isKnowledgeDocument = profile === "knowledge" && entity === "document";
+
+  if (presentation === "page" && (isKnowledgeDocument || isSupportTicket)) {
+    const collectionLabel = isKnowledgeDocument ? "documents" : "tickets";
+    const recordLabel = isKnowledgeDocument ? "document" : "ticket";
+    return (
+      <section
+        aria-labelledby="sor-specialized-record-title"
+        className="min-w-0 space-y-6 p-4 sm:p-6"
+      >
+        <header className="min-w-0 space-y-4">
+          <Button size="sm" variant="ghost" onClick={onClose}>
+            <ArrowLeft aria-hidden="true" />
+            Back to {collectionLabel}
+          </Button>
+          <div className="flex min-w-0 flex-wrap items-start justify-between gap-4">
+            <div className="min-w-0 space-y-2">
+              <h1
+                className="break-words text-2xl font-semibold tracking-tight"
+                id="sor-specialized-record-title"
+              >
+                {title}
+              </h1>
+              {collection.detail === null ? null : (
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <Badge variant="outline">
+                    {collection.detail.record.source_name}
+                  </Badge>
+                  {vendorDiffersFromSource(
+                    collection.detail.record.source_name,
+                    collection.detail.record.vendor_key,
+                  ) ? (
+                    <Badge variant="outline">
+                      {formatSorIdentifier(collection.detail.record.vendor_key)}
+                    </Badge>
+                  ) : null}
+                  {collection.detail.record.source_url === null ? null : (
+                    <SourceLink
+                      href={collection.detail.record.source_url}
+                      label={`Open source ${recordLabel}`}
+                    />
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </header>
+
+        {collection.isDetailLoading && collection.detail === null ? (
+          <DetailsSkeleton />
+        ) : collection.detailErrorMessage !== null ? (
+          <div className="border py-16 text-center" role="alert">
+            <p className="text-sm font-medium">
+              {formatSorIdentifier(recordLabel)} unavailable
+            </p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {collection.detailErrorMessage}
+            </p>
+            <Button className="mt-4" variant="outline" onClick={onClose}>
+              Return to {collectionLabel}
+            </Button>
+          </div>
+        ) : collection.detail === null ? null : (
+          <div className="grid min-w-0 items-start gap-8 xl:grid-cols-[minmax(0,1fr)_22rem]">
+            <div className="min-w-0 border p-5 sm:p-8">
+              {isKnowledgeDocument ? (
+                <KnowledgeDocumentContent
+                  audit={collection.knowledgeDocumentAudit}
+                  detail={collection.detail}
+                  errorMessage={collection.knowledgeDocumentAuditErrorMessage}
+                  isLoading={collection.isKnowledgeDocumentAuditLoading}
+                  organizationId={organizationId}
+                  onLoadAttachmentImage={collection.loadKnowledgeDocumentImage}
+                  imageFor={collection.knowledgeDocumentImageFor}
+                />
+              ) : (
+                <SupportTicketChronology
+                  audit={collection.supportTicketAudit}
+                  errorMessage={collection.supportTicketAuditErrorMessage}
+                  isLoading={collection.isSupportTicketAuditLoading}
+                />
+              )}
+            </div>
+            <aside className="min-w-0 space-y-8">
+              <RecordOverview
+                columns={
+                  isKnowledgeDocument
+                    ? knowledgeDocumentMetadataColumns(columns)
+                    : columns
+                }
+                detail={collection.detail}
+              />
+              {isKnowledgeDocument ? (
+                <KnowledgeDocumentContext
+                  audit={collection.knowledgeDocumentAudit}
+                  errorMessage={collection.knowledgeDocumentAuditErrorMessage}
+                  isLoading={collection.isKnowledgeDocumentAuditLoading}
+                />
+              ) : (
+                <SupportTicketContext
+                  audit={collection.supportTicketAudit}
+                  errorMessage={collection.supportTicketAuditErrorMessage}
+                  isLoading={collection.isSupportTicketAuditLoading}
+                />
+              )}
+              <RecordRelationships detail={collection.detail} />
+              <RecordProvenance detail={collection.detail} />
+            </aside>
+          </div>
+        )}
+      </section>
+    );
+  }
 
   return (
     <Drawer
@@ -185,8 +236,8 @@ const SorRecordDetailsDrawer = observer(function SorRecordDetailsDrawer({
           <DrawerTitle>{title}</DrawerTitle>
           <DrawerDescription>
             {datasetId === undefined
-              ? "Canonical record, source provenance, sync health, and the exact view available to a published Agent revision."
-              : "Custom source record, typed fields, provenance, and sync health. Custom datasets are audit-only in v1."}
+              ? "Record details, relationships, source context, and freshness."
+              : "Custom record details, source context, and freshness. Custom datasets are audit-only in v1."}
           </DrawerDescription>
         </DrawerHeader>
         <Button
@@ -210,62 +261,67 @@ const SorRecordDetailsDrawer = observer(function SorRecordDetailsDrawer({
             >
               {collection.detailErrorMessage}
             </div>
-          ) : collection.detail !== null ? isKnowledgeDocument ? (
-            <div className="grid min-w-0 gap-8 xl:grid-cols-[minmax(0,1.45fr)_minmax(20rem,0.85fr)]">
-              <KnowledgeDocumentContent
-                audit={collection.knowledgeDocumentAudit}
-                detail={collection.detail}
-                errorMessage={collection.knowledgeDocumentAuditErrorMessage}
-                isLoading={collection.isKnowledgeDocumentAuditLoading}
-              />
-              <div className="min-w-0 space-y-8">
-                <RecordOverview
-                  columns={knowledgeDocumentMetadataColumns(columns)}
-                  detail={collection.detail}
-                />
-                <KnowledgeDocumentContext
+          ) : collection.detail !== null ? (
+            isKnowledgeDocument ? (
+              <div className="grid min-w-0 gap-8 xl:grid-cols-[minmax(0,1.45fr)_minmax(20rem,0.85fr)]">
+                <KnowledgeDocumentContent
                   audit={collection.knowledgeDocumentAudit}
+                  detail={collection.detail}
                   errorMessage={collection.knowledgeDocumentAuditErrorMessage}
                   isLoading={collection.isKnowledgeDocumentAuditLoading}
+                  organizationId={organizationId}
+                  onLoadAttachmentImage={collection.loadKnowledgeDocumentImage}
+                  imageFor={collection.knowledgeDocumentImageFor}
                 />
-                <RecordRelationships detail={collection.detail} />
-                <RecordProvenance detail={collection.detail} />
-                {agentViewAudit}
+                <div className="min-w-0 space-y-8">
+                  <RecordOverview
+                    columns={knowledgeDocumentMetadataColumns(columns)}
+                    detail={collection.detail}
+                  />
+                  <KnowledgeDocumentContext
+                    audit={collection.knowledgeDocumentAudit}
+                    errorMessage={collection.knowledgeDocumentAuditErrorMessage}
+                    isLoading={collection.isKnowledgeDocumentAuditLoading}
+                  />
+                  <RecordRelationships detail={collection.detail} />
+                  <RecordProvenance detail={collection.detail} />
+                </div>
               </div>
-            </div>
-          ) : isSupportTicket ? (
-            <div className="grid min-w-0 gap-8 xl:grid-cols-[minmax(0,1.45fr)_minmax(20rem,0.85fr)]">
-              <SupportTicketChronology
-                audit={collection.supportTicketAudit}
-                errorMessage={collection.supportTicketAuditErrorMessage}
-                isLoading={collection.isSupportTicketAuditLoading}
-              />
-              <div className="min-w-0 space-y-8">
-                <RecordOverview columns={columns} detail={collection.detail} />
-                <SupportTicketContext
+            ) : isSupportTicket ? (
+              <div className="grid min-w-0 gap-8 xl:grid-cols-[minmax(0,1.45fr)_minmax(20rem,0.85fr)]">
+                <SupportTicketChronology
                   audit={collection.supportTicketAudit}
                   errorMessage={collection.supportTicketAuditErrorMessage}
                   isLoading={collection.isSupportTicketAuditLoading}
                 />
-                <RecordRelationships detail={collection.detail} />
-                <RecordProvenance detail={collection.detail} />
-                {agentViewAudit}
+                <div className="min-w-0 space-y-8">
+                  <RecordOverview
+                    columns={columns}
+                    detail={collection.detail}
+                  />
+                  <SupportTicketContext
+                    audit={collection.supportTicketAudit}
+                    errorMessage={collection.supportTicketAuditErrorMessage}
+                    isLoading={collection.isSupportTicketAuditLoading}
+                  />
+                  <RecordRelationships detail={collection.detail} />
+                  <RecordProvenance detail={collection.detail} />
+                </div>
               </div>
-            </div>
-          ) : (
-            <div className="space-y-8">
-              <RecordOverview columns={columns} detail={collection.detail} />
-              <RecordRelationships detail={collection.detail} />
-              {profile === "ticketing" && entity === "issue" ? (
-                <TicketingIssueAuditSection
-                  audit={collection.ticketingIssueAudit}
-                  errorMessage={collection.ticketingIssueAuditErrorMessage}
-                  isLoading={collection.isTicketingIssueAuditLoading}
-                />
-              ) : null}
-              <RecordProvenance detail={collection.detail} />
-              {agentViewAudit}
-            </div>
+            ) : (
+              <div className="space-y-8">
+                <RecordOverview columns={columns} detail={collection.detail} />
+                <RecordRelationships detail={collection.detail} />
+                {profile === "ticketing" && entity === "issue" ? (
+                  <TicketingIssueAuditSection
+                    audit={collection.ticketingIssueAudit}
+                    errorMessage={collection.ticketingIssueAuditErrorMessage}
+                    isLoading={collection.isTicketingIssueAuditLoading}
+                  />
+                ) : null}
+                <RecordProvenance detail={collection.detail} />
+              </div>
+            )
           ) : null}
         </div>
       </DrawerContent>
@@ -283,10 +339,16 @@ function RecordOverview({
   const { record } = detail;
   const sourceUrl = safeExternalUrl(record.source_url);
   return (
-    <DetailsSection title="Canonical record">
+    <DetailsSection title="Record details">
       {columns.map((column) => (
         <DetailRow key={column.key} label={column.label}>
-          <FieldValue kind={column.kind} value={record.values[column.key]} />
+          <FieldValue
+            kind={column.kind}
+            rawValue={record.values[column.key]}
+            value={
+              record.display_values[column.key] ?? record.values[column.key]
+            }
+          />
         </DetailRow>
       ))}
       {sourceUrl ? (
@@ -311,12 +373,13 @@ function RecordRelationships({ detail }: { detail: SorRecordDetail }) {
     <DetailsSection title="Relationships">
       {detail.relations.length === 0 ? (
         <p className="text-sm text-muted-foreground">
-          No projected record relationships.
+          No record relationships are available.
         </p>
       ) : (
         <div className="divide-y border-y">
           {detail.relations.map((relation, index) => {
             const sourceUrl = safeExternalUrl(relation.source_url);
+            const recordLabel = relationRecordLabel(relation);
             return (
               <div
                 className="grid min-w-0 gap-1 py-3 sm:grid-cols-[9rem_minmax(0,1fr)]"
@@ -333,16 +396,16 @@ function RecordRelationships({ detail }: { detail: SorRecordDetail }) {
                       rel="noreferrer"
                       target="_blank"
                     >
-                      {relation.record_key ?? relation.record_id}
+                      {recordLabel}
                       <ExternalLink className="size-3" aria-hidden="true" />
                     </a>
                   ) : (
-                    (relation.record_key ?? relation.record_id)
+                    recordLabel
                   )}
                   <span className="ml-2 text-xs text-muted-foreground">
                     {formatSorIdentifier(relation.record_entity)} ·{" "}
                     {formatSorIdentifier(relation.direction)} ·{" "}
-                    {relation.native_kind}
+                    {formatSorIdentifier(relation.native_kind)}
                   </span>
                 </span>
               </div>
@@ -358,88 +421,88 @@ function KnowledgeDocumentContent({
   audit,
   detail,
   errorMessage,
+  imageFor,
   isLoading,
+  onLoadAttachmentImage,
+  organizationId,
 }: {
   audit: SorKnowledgeDocumentAudit | null;
   detail: SorRecordDetail;
   errorMessage: string | null;
+  imageFor: (attachmentRecordId: string) => SorDocumentImageState;
   isLoading: boolean;
+  onLoadAttachmentImage: (
+    organizationId: string,
+    documentRecordId: string,
+    attachmentRecordId: string,
+  ) => Promise<void>;
+  organizationId: string;
 }) {
   const normalizedText = textValue(detail.record.values.normalized_text);
+  const attachments = (audit?.attachments ?? []).map((attachment) => ({
+    externalId: attachment.external_id,
+    mediaType: attachment.media_type,
+    name: attachment.name,
+    recordId: attachment.record_id,
+  }));
+  const attachmentImages = new Map(
+    attachments.map((attachment) => [
+      attachment.recordId,
+      imageFor(attachment.recordId),
+    ]),
+  );
   const unsupportedKinds = stringArrayValue(
     detail.record.values.unsupported_blocks,
   );
+  const showProjectionStructure =
+    audit !== null &&
+    (audit.blocks.length > 1 ||
+      audit.blocks.some((block) => block.kind !== "confluence_storage"));
 
   return (
-    <div className="min-w-0 space-y-8">
-      <DetailsSection title="Document content">
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <FileText className="size-4" aria-hidden="true" />
-          <Badge variant="outline">
-            {formatSorIdentifier(
-              textValue(detail.record.values.source_format) ?? "normalized",
-            )}
-          </Badge>
-          {unsupportedKinds.length > 0 ? (
-            <Badge variant="outline">
-              {unsupportedKinds.length} unsupported block
-              {unsupportedKinds.length === 1 ? "" : "s"}
-            </Badge>
-          ) : null}
-        </div>
-        {normalizedText === null ? (
-          <p className="text-sm text-muted-foreground">
-            No normalized document text was projected.
-          </p>
-        ) : (
-          <div className="max-w-full whitespace-pre-wrap break-words border bg-muted/20 p-4 text-sm leading-7">
-            {normalizedText}
-          </div>
-        )}
-        {unsupportedKinds.length > 0 ? (
-          <div className="space-y-2 border p-3">
-            <p className="text-sm font-medium">Content not interpreted</p>
-            <p className="text-sm text-muted-foreground">
-              Eylo retained these source block types for audit. Their contents
-              are not represented as understood document text.
-            </p>
-            <div className="flex min-w-0 flex-wrap gap-1">
-              {unsupportedKinds.map((kind, index) => (
-                <Badge key={`${kind}-${index}`} variant="outline">
-                  {formatSorIdentifier(kind)}
-                </Badge>
-              ))}
-            </div>
-          </div>
-        ) : null}
-      </DetailsSection>
+    <div className="min-w-0">
+      <SorDocumentViewer
+        attachmentImages={attachmentImages}
+        attachments={attachments}
+        normalizedText={normalizedText}
+        onLoadAttachmentImage={(attachmentRecordId) => {
+          void onLoadAttachmentImage(
+            organizationId,
+            detail.record.id,
+            attachmentRecordId,
+          );
+        }}
+        sourceBody={detail.selected_source_payload.source_body}
+        sourceFormat={textValue(detail.record.values.source_format)}
+        sourceUrl={detail.record.source_url}
+        unsupportedKinds={unsupportedKinds}
+        version={textValue(detail.record.values.version)}
+      />
 
-      <DetailsSection title="Structured content">
-        {isLoading && audit === null ? (
-          <div className="space-y-3">
-            <Skeleton className="h-20 w-full" />
-            <Skeleton className="h-20 w-full" />
+      {isLoading && audit === null ? (
+        <Skeleton className="mt-8 h-12 w-full" />
+      ) : errorMessage !== null ? (
+        <div
+          className="mt-8 border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive"
+          role="alert"
+        >
+          Related document context could not be loaded. {errorMessage}
+        </div>
+      ) : showProjectionStructure && audit !== null ? (
+        <details className="mt-8 border p-4">
+          <summary className="cursor-pointer text-sm font-medium">
+            Document structure
+          </summary>
+          <div className="mt-4">
+            <KnowledgeBlockAudit audit={audit} />
           </div>
-        ) : errorMessage !== null ? (
-          <div
-            className="border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive"
-            role="alert"
-          >
-            {errorMessage}
-          </div>
-        ) : audit === null ? null : (
-          <KnowledgeBlockAudit audit={audit} />
-        )}
-      </DetailsSection>
+        </details>
+      ) : null}
     </div>
   );
 }
 
-function KnowledgeBlockAudit({
-  audit,
-}: {
-  audit: SorKnowledgeDocumentAudit;
-}) {
+function KnowledgeBlockAudit({ audit }: { audit: SorKnowledgeDocumentAudit }) {
   const depths = knowledgeBlockDepths(audit.blocks);
   return (
     <div className="space-y-3">
@@ -456,7 +519,7 @@ function KnowledgeBlockAudit({
         </p>
       ) : audit.blocks.length === 0 ? (
         <p className="text-sm text-muted-foreground">
-          No structured blocks were projected for this document.
+          No structured document sections are available.
         </p>
       ) : (
         <div className="space-y-2">
@@ -502,7 +565,7 @@ function KnowledgeBlockAudit({
       )}
       {audit.blocks_truncated ? (
         <p className="text-xs text-muted-foreground">
-          Showing the first 500 projected blocks in source order.
+          Showing the first 500 document sections in source order.
         </p>
       ) : null}
     </div>
@@ -539,7 +602,7 @@ function KnowledgeDocumentContext({
         >
           {audit.space === null ? (
             <p className="text-sm text-muted-foreground">
-              No matching space or data source was projected.
+              No matching space or data source is available.
             </p>
           ) : (
             <div className="min-w-0 space-y-1 text-sm">
@@ -562,7 +625,7 @@ function KnowledgeDocumentContext({
         >
           {audit.author === null ? (
             <p className="text-sm text-muted-foreground">
-              No matching author was projected.
+              No matching author is available.
             </p>
           ) : (
             <div className="min-w-0 space-y-1 text-sm">
@@ -583,7 +646,6 @@ function KnowledgeDocumentContext({
       </DetailsSection>
 
       <KnowledgeProperties audit={audit} />
-      <KnowledgeVersions audit={audit} />
       <KnowledgeAttachments audit={audit} />
     </>
   );
@@ -620,11 +682,7 @@ function KnowledgeResolvedContext({
   );
 }
 
-function KnowledgeProperties({
-  audit,
-}: {
-  audit: SorKnowledgeDocumentAudit;
-}) {
+function KnowledgeProperties({ audit }: { audit: SorKnowledgeDocumentAudit }) {
   return (
     <DetailsSection title="Source properties">
       <AuditStatus status={audit.properties_status} />
@@ -634,12 +692,15 @@ function KnowledgeProperties({
         </p>
       ) : audit.properties.length === 0 ? (
         <p className="text-sm text-muted-foreground">
-          No source-native properties were projected.
+          No source-native properties are available.
         </p>
       ) : (
         <div className="divide-y border-y">
           {audit.properties.map((propertyValue) => (
-            <div className="min-w-0 space-y-2 py-3" key={propertyValue.record_id}>
+            <div
+              className="min-w-0 space-y-2 py-3"
+              key={propertyValue.record_id}
+            >
               <div className="flex min-w-0 flex-wrap items-center gap-2">
                 <span className="break-words text-sm font-medium">
                   {propertyValue.label}
@@ -662,70 +723,7 @@ function KnowledgeProperties({
       )}
       {audit.properties_truncated ? (
         <p className="text-xs text-muted-foreground">
-          Showing the first 250 projected properties.
-        </p>
-      ) : null}
-    </DetailsSection>
-  );
-}
-
-function KnowledgeVersions({ audit }: { audit: SorKnowledgeDocumentAudit }) {
-  return (
-    <DetailsSection title="Version history">
-      <AuditStatus icon={History} status={audit.versions_status} />
-      {audit.versions_status !== "AVAILABLE" ? (
-        <p className="text-sm text-muted-foreground">
-          {auditAvailabilityCopy(audit.versions_status, "version history")}
-        </p>
-      ) : audit.versions.length === 0 ? (
-        <p className="text-sm text-muted-foreground">
-          No source-provided versions were projected.
-        </p>
-      ) : (
-        <div className="divide-y border-y">
-          {audit.versions.map((version) => {
-            const created = formatSorDate(version.created_at);
-            return (
-              <div className="min-w-0 space-y-2 py-3" key={version.record_id}>
-                <div className="flex min-w-0 flex-wrap items-center gap-2">
-                  <span className="text-sm font-medium">
-                    Version {version.number}
-                  </span>
-                  {version.source_format ? (
-                    <Badge variant="outline">
-                      {formatSorIdentifier(version.source_format)}
-                    </Badge>
-                  ) : null}
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  <time dateTime={version.created_at} title={created.title}>
-                    {created.label}
-                  </time>
-                  {version.author_external_id
-                    ? ` · ${version.author_external_id}`
-                    : ""}
-                </p>
-                {version.message ? (
-                  <p className="whitespace-pre-wrap break-words text-sm">
-                    {version.message}
-                  </p>
-                ) : null}
-                {version.message_truncated ? (
-                  <p className="text-xs text-muted-foreground">
-                    Message preview limited to 4,000 characters.
-                  </p>
-                ) : null}
-                {version.source_url ? (
-                  <SourceLink href={version.source_url} label="Open version" />
-                ) : null}
-              </div>
-            );
-          })}
-        </div>
-      )}
-      {audit.versions_truncated ? (
-        <p className="text-xs text-muted-foreground">
-          Showing the latest 100 projected versions.
+          Showing the first 250 imported properties.
         </p>
       ) : null}
     </DetailsSection>
@@ -742,7 +740,7 @@ function KnowledgeAttachments({ audit }: { audit: SorKnowledgeDocumentAudit }) {
         </p>
       ) : audit.attachments.length === 0 ? (
         <p className="text-sm text-muted-foreground">
-          No projected attachments.
+          No attachments are available.
         </p>
       ) : (
         <div className="space-y-2">
@@ -756,7 +754,7 @@ function KnowledgeAttachments({ audit }: { audit: SorKnowledgeDocumentAudit }) {
       )}
       {audit.attachments_truncated ? (
         <p className="text-xs text-muted-foreground">
-          Showing the first 250 projected attachments.
+          Showing the first 250 imported attachments.
         </p>
       ) : null}
     </DetailsSection>
@@ -880,11 +878,13 @@ function SupportTicketChronology({
     );
   }
   if (audit === null) return null;
+  const entries = audit.messages.map((message) =>
+    supportMessageTimelineEntry(message, audit),
+  );
 
   return (
     <DetailsSection title="Conversation">
       <div className="flex min-w-0 flex-wrap items-center gap-2 border-b pb-3">
-        <MessageSquareMore className="size-4" aria-hidden="true" />
         <span className="text-sm font-medium">Messages</span>
         <Badge variant="outline">
           {formatSorIdentifier(audit.messages_status)}
@@ -895,94 +895,144 @@ function SupportTicketChronology({
           {auditAvailabilityCopy(audit.messages_status, "messages")}
         </p>
       ) : audit.messages.length === 0 ? (
-        <p className="text-sm text-muted-foreground">
-          No projected replies or notes.
-        </p>
+        <ConversationTimeline
+          ariaLabel="Support conversation in chronological order"
+          emptyDescription="No public replies or private notes are available for this ticket."
+          emptyTitle="No conversation messages"
+          entries={entries}
+        />
       ) : (
-        <div className="divide-y border-y">
-          {audit.messages.map((message) => {
-            const created = formatSorDate(message.created_at);
-            const sourceUrl = safeExternalUrl(message.source_url);
-            const attachments = audit.attachments.filter(
-              (attachment) =>
-                attachment.message_external_id === message.external_id ||
-                message.attachment_external_ids.includes(attachment.external_id),
-            );
-            const VisibilityIcon =
-              message.visibility === "PRIVATE"
-                ? LockKeyhole
-                : MessageSquareMore;
-            return (
-              <article
-                className="min-w-0 space-y-3 py-4"
-                key={message.record_id}
-              >
-                <div className="flex min-w-0 flex-wrap items-center gap-2">
-                  <VisibilityIcon className="size-4" aria-hidden="true" />
-                  <Badge variant="outline">
-                    {message.visibility === "PRIVATE"
-                      ? "Private note"
-                      : "Public reply"}
-                  </Badge>
-                  {message.direction ? (
-                    <Badge variant="outline">
-                      {formatSorIdentifier(message.direction)}
-                    </Badge>
-                  ) : null}
-                </div>
-                <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-                  <span className="break-all">
-                    {message.author_external_id ?? "Unknown author"}
-                  </span>
-                  <span aria-hidden="true">·</span>
-                  <time dateTime={message.created_at} title={created.title}>
-                    {created.label}
-                  </time>
-                  {sourceUrl ? (
-                    <a
-                      className="inline-flex items-center gap-1 underline underline-offset-4"
-                      href={sourceUrl}
-                      rel="noreferrer"
-                      target="_blank"
-                    >
-                      Source
-                      <ExternalLink className="size-3" aria-hidden="true" />
-                    </a>
-                  ) : null}
-                </div>
-                <p className="whitespace-pre-wrap break-words text-sm leading-6">
-                  {message.text}
-                </p>
-                {attachments.length > 0 ? (
-                  <div className="flex min-w-0 flex-wrap gap-2">
-                    {attachments.map((attachment) => (
-                      <AttachmentLink
-                        attachment={attachment}
-                        key={attachment.record_id}
-                      />
-                    ))}
-                  </div>
-                ) : message.attachment_external_ids.length > 0 ? (
-                  <div className="flex min-w-0 flex-wrap gap-1">
-                    {message.attachment_external_ids.map((attachmentId) => (
-                      <Badge key={attachmentId} variant="outline">
-                        <Paperclip className="size-3" aria-hidden="true" />
-                        Attachment metadata unavailable
-                      </Badge>
-                    ))}
-                  </div>
-                ) : null}
-              </article>
-            );
-          })}
-        </div>
+        <ConversationTimeline
+          ariaLabel="Support conversation in chronological order"
+          emptyDescription="No public replies or private notes are available for this ticket."
+          emptyTitle="No conversation messages"
+          entries={entries}
+        />
       )}
       {audit.messages_truncated ? (
         <p className="text-xs text-muted-foreground">
-          Showing the latest 500 projected messages in exact chronology.
+          Showing the latest 500 imported messages in exact chronology.
         </p>
       ) : null}
     </DetailsSection>
+  );
+}
+
+function supportMessageTimelineEntry(
+  message: SorSupportTicketAudit["messages"][number],
+  audit: SorSupportTicketAudit,
+): ConversationTimelineEntry {
+  const created = formatSorDate(message.created_at);
+  const actor = supportMessageActor(message.direction, message.visibility);
+  const attachments = audit.attachments.filter(
+    (attachment) =>
+      attachment.message_external_id === message.external_id ||
+      message.attachment_external_ids.includes(attachment.external_id),
+  );
+  return {
+    actions:
+      message.source_url === null ? undefined : (
+        <SourceLink href={message.source_url} label="Open source message" />
+      ),
+    actorKind: actor.kind,
+    actorLabel: actor.label,
+    attachments:
+      attachments.length > 0 ? (
+        <div className="flex min-w-0 flex-wrap gap-2">
+          {attachments.map((attachment) => (
+            <AttachmentLink
+              attachment={attachment}
+              key={attachment.record_id}
+            />
+          ))}
+        </div>
+      ) : message.attachment_external_ids.length > 0 ? (
+        <Badge variant="outline">
+          <Paperclip className="size-3" aria-hidden="true" />
+          {message.attachment_external_ids.length} attachment
+          {message.attachment_external_ids.length === 1 ? "" : "s"} unavailable
+        </Badge>
+      ) : undefined,
+    badges: supportMessageBadges(message),
+    body: (
+      <p className="whitespace-pre-wrap break-words text-sm leading-6">
+        {message.text}
+      </p>
+    ),
+    id: message.record_id,
+    metadata: (
+      <SourceMessageMetadata
+        authorExternalId={message.author_external_id}
+        bodyFormat={message.body_format}
+        externalId={message.external_id}
+      />
+    ),
+    occurredAt: message.created_at,
+    occurredLabel: created.label,
+    occurredTitle: created.title,
+  };
+}
+
+function supportMessageActor(
+  direction: string | null,
+  visibility: string,
+): { kind: ConversationActorKind; label: string } {
+  if (direction === "SYSTEM") return { kind: "system", label: "System" };
+  if (direction === "INBOUND") return { kind: "human", label: "Customer" };
+  if (direction === "OUTBOUND") return { kind: "agent", label: "Support" };
+  if (visibility === "PRIVATE") {
+    return { kind: "human", label: "Support member" };
+  }
+  return { kind: "human", label: "Unknown author" };
+}
+
+function supportMessageBadges(
+  message: SorSupportTicketAudit["messages"][number],
+): ConversationTimelineLabel[] {
+  const badges: ConversationTimelineLabel[] = [
+    {
+      label: message.visibility === "PRIVATE" ? "Private note" : "Public reply",
+    },
+  ];
+  if (message.direction !== null && message.direction !== "UNKNOWN") {
+    badges.push({ label: formatSorIdentifier(message.direction) });
+  }
+  return badges;
+}
+
+function SourceMessageMetadata({
+  authorExternalId,
+  bodyFormat,
+  externalId,
+}: {
+  authorExternalId: string | null;
+  bodyFormat: string | null;
+  externalId: string | null;
+}) {
+  return (
+    <details className="min-w-0 text-xs text-muted-foreground">
+      <summary className="cursor-pointer select-none underline-offset-4 hover:underline">
+        Message metadata
+      </summary>
+      <dl className="mt-3 grid min-w-0 gap-2 border-l pl-3 sm:grid-cols-[8rem_minmax(0,1fr)]">
+        {externalId === null ? null : (
+          <>
+            <dt>External ID</dt>
+            <dd className="min-w-0 break-all font-mono">{externalId}</dd>
+          </>
+        )}
+        <dt>Author ID</dt>
+        <dd className="min-w-0 break-all font-mono">
+          {authorExternalId ?? "Not recorded"}
+        </dd>
+        <dt>Body format</dt>
+        <dd>
+          {bodyFormat === null
+            ? "Not recorded"
+            : formatSorIdentifier(bodyFormat)}
+        </dd>
+      </dl>
+    </details>
   );
 }
 
@@ -1020,7 +1070,7 @@ function SupportTicketContext({
           </p>
         ) : audit.sla_metrics.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            No source-supplied SLA metrics.
+            No source-supplied SLA metrics are available.
           </p>
         ) : (
           <div className="divide-y border-y">
@@ -1050,7 +1100,7 @@ function SupportTicketContext({
         )}
         {audit.sla_metrics_truncated ? (
           <p className="text-xs text-muted-foreground">
-            Showing the first 100 projected SLA metrics.
+            Showing the first 100 imported SLA metrics.
           </p>
         ) : null}
       </div>
@@ -1069,7 +1119,7 @@ function SupportTicketContext({
           </p>
         ) : audit.attachments.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            No projected attachments.
+            No attachments are available.
           </p>
         ) : (
           <div className="flex min-w-0 flex-wrap gap-2">
@@ -1083,7 +1133,7 @@ function SupportTicketContext({
         )}
         {audit.attachments_truncated ? (
           <p className="text-xs text-muted-foreground">
-            Showing the first 250 projected attachments.
+            Showing the first 250 imported attachments.
           </p>
         ) : null}
       </div>
@@ -1172,12 +1222,40 @@ function TicketingIssueAuditSection({
     );
   }
   if (audit === null) return null;
+  const commentEntries: ConversationTimelineEntry[] = audit.comments.map(
+    (comment) => {
+      const created = formatSorDate(comment.created_at);
+      return {
+        actions:
+          comment.source_url === null ? undefined : (
+            <SourceLink href={comment.source_url} label="Open source comment" />
+          ),
+        actorKind: "human",
+        actorLabel: comment.author_name ?? "Unknown author",
+        body: (
+          <p className="whitespace-pre-wrap break-words text-sm leading-6">
+            {comment.text}
+          </p>
+        ),
+        id: comment.record_id,
+        metadata: (
+          <SourceMessageMetadata
+            authorExternalId={comment.author_external_id}
+            bodyFormat={null}
+            externalId={null}
+          />
+        ),
+        occurredAt: comment.created_at,
+        occurredLabel: created.label,
+        occurredTitle: created.title,
+      };
+    },
+  );
 
   return (
     <DetailsSection title="Issue discussion">
       <div className="space-y-3">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <MessageSquareMore className="size-4" aria-hidden="true" />
           <span className="text-sm font-medium">Comments</span>
           <Badge variant="outline">
             {formatSorIdentifier(audit.comments_status)}
@@ -1192,50 +1270,23 @@ function TicketingIssueAuditSection({
             Select the comments stream on this source to audit issue discussion.
           </p>
         ) : audit.comments.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            No projected comments.
-          </p>
+          <ConversationTimeline
+            ariaLabel="Issue comments in chronological order"
+            emptyDescription="No source comments are available for this issue."
+            emptyTitle="No issue comments"
+            entries={commentEntries}
+          />
         ) : (
-          <div className="divide-y border-y">
-            {audit.comments.map((comment) => {
-              const created = formatSorDate(comment.created_at);
-              const sourceUrl = safeExternalUrl(comment.source_url);
-              return (
-                <article
-                  className="min-w-0 space-y-2 py-3"
-                  key={comment.record_id}
-                >
-                  <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-                    <span className="break-all">
-                      {comment.author_external_id ?? "Unknown author"}
-                    </span>
-                    <span aria-hidden="true">·</span>
-                    <time dateTime={comment.created_at} title={created.title}>
-                      {created.label}
-                    </time>
-                    {sourceUrl ? (
-                      <a
-                        className="inline-flex items-center gap-1 underline underline-offset-4"
-                        href={sourceUrl}
-                        rel="noreferrer"
-                        target="_blank"
-                      >
-                        Source
-                        <ExternalLink className="size-3" aria-hidden="true" />
-                      </a>
-                    ) : null}
-                  </div>
-                  <p className="whitespace-pre-wrap break-words text-sm leading-6">
-                    {comment.text}
-                  </p>
-                </article>
-              );
-            })}
-          </div>
+          <ConversationTimeline
+            ariaLabel="Issue comments in chronological order"
+            emptyDescription="No source comments are available for this issue."
+            emptyTitle="No issue comments"
+            entries={commentEntries}
+          />
         )}
         {audit.comments_truncated ? (
           <p className="text-xs text-muted-foreground">
-            Showing the latest 100 projected comments.
+            Showing the latest 100 imported comments.
           </p>
         ) : null}
       </div>
@@ -1260,14 +1311,19 @@ function RecordProvenance({ detail }: { detail: SorRecordDetail }) {
   const record = detail.record;
   const projected = formatSorDate(record.projected_at);
   const sourceUpdated = formatSorDate(record.source_updated_at);
+  const technicalPayload = summarizeSourcePayload(
+    detail.selected_source_payload,
+  );
   return (
-    <DetailsSection title="Provenance and freshness">
+    <DetailsSection title="Source and freshness">
       <DetailRow label="Source">
         <span className="flex flex-wrap items-center gap-2">
           {record.source_name}
-          <Badge variant="outline">
-            {formatSorIdentifier(record.vendor_key)}
-          </Badge>
+          {vendorDiffersFromSource(record.source_name, record.vendor_key) ? (
+            <Badge variant="outline">
+              {formatSorIdentifier(record.vendor_key)}
+            </Badge>
+          ) : null}
         </span>
       </DetailRow>
       <DetailRow label="Freshness">
@@ -1278,160 +1334,34 @@ function RecordProvenance({ detail }: { detail: SorRecordDetail }) {
       <DetailRow label="Source updated">
         <span title={sourceUpdated.title}>{sourceUpdated.label}</span>
       </DetailRow>
-      <DetailRow label="Projected">
+      <DetailRow label="Imported to Eylo">
         <span title={projected.title}>{projected.label}</span>
       </DetailRow>
-      <DetailRow label="Source revision">
-        <CodeValue>{detail.source_revision ?? "Not recorded"}</CodeValue>
-      </DetailRow>
-      <DetailRow label="Mapping revision">
-        <CodeValue>
-          {detail.mapping_revision_id} · v{detail.mapping_projection_version}
-        </CodeValue>
-      </DetailRow>
-      <div className="space-y-2 pt-2">
-        <h4 className="text-xs font-medium text-muted-foreground">
-          Selected source payload
-        </h4>
-        <pre className="max-w-full whitespace-pre-wrap break-all border bg-muted/30 p-3 text-xs leading-5">
-          {JSON.stringify(detail.selected_source_payload, null, 2)}
-        </pre>
-      </div>
+      <details className="pt-2">
+        <summary className="cursor-pointer text-sm font-medium">
+          Technical provenance
+        </summary>
+        <div className="mt-3">
+          <DetailRow label="Source revision">
+            <CodeValue>{detail.source_revision ?? "Not recorded"}</CodeValue>
+          </DetailRow>
+          <DetailRow label="Mapping revision">
+            <CodeValue>
+              {detail.mapping_revision_id} · v
+              {detail.mapping_projection_version}
+            </CodeValue>
+          </DetailRow>
+          <div className="space-y-2 pt-3">
+            <p className="text-xs font-medium text-muted-foreground">
+              Selected source fields
+            </p>
+            <pre className="max-w-full whitespace-pre-wrap break-all bg-muted/30 p-3 text-xs leading-5">
+              {JSON.stringify(technicalPayload, null, 2)}
+            </pre>
+          </div>
+        </div>
+      </details>
     </DetailsSection>
-  );
-}
-
-function AgentViewAudit({
-  agentId,
-  agentsLoading,
-  errorMessage,
-  isLoading,
-  onAgentChange,
-  publishedAgents,
-  view,
-}: {
-  agentId: string | null;
-  agentsLoading: boolean;
-  errorMessage: string | null;
-  isLoading: boolean;
-  onAgentChange: (agentId: string | null) => void;
-  publishedAgents: readonly {
-    id: string;
-    name: string;
-    publishedRevision?: number | null;
-  }[];
-  view: SorAgentView | null;
-}) {
-  const selectedAgent = publishedAgents.find((agent) => agent.id === agentId);
-  return (
-    <DetailsSection title="Agent view">
-      <div className="space-y-2">
-        <label
-          className="text-xs font-medium text-muted-foreground"
-          htmlFor="sor-agent-view"
-        >
-          Published Agent
-        </label>
-        <Select
-          value={agentId}
-          onValueChange={(value) =>
-            onAgentChange(typeof value === "string" ? value : null)
-          }
-        >
-          <SelectTrigger className="w-full" id="sor-agent-view">
-            <SelectValue>
-              {selectedAgent === undefined
-                ? agentsLoading
-                  ? "Loading Agents…"
-                  : "Choose an Agent"
-                : `${selectedAgent.name} · revision ${selectedAgent.publishedRevision}`}
-            </SelectValue>
-          </SelectTrigger>
-          <SelectContent alignItemWithTrigger={false}>
-            {publishedAgents.map((agent) => (
-              <SelectItem key={agent.id} value={agent.id}>
-                {agent.name} · revision {agent.publishedRevision}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        {!agentsLoading && publishedAgents.length === 0 ? (
-          <p className="text-xs text-muted-foreground">
-            Publish an Agent to audit its runtime view.
-          </p>
-        ) : null}
-      </div>
-
-      {isLoading ? (
-        <div className="space-y-2 pt-2">
-          <Skeleton className="h-4 w-48" />
-          <Skeleton className="h-20 w-full" />
-        </div>
-      ) : errorMessage !== null ? (
-        <div
-          className="border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive"
-          role="alert"
-        >
-          {errorMessage}
-        </div>
-      ) : view !== null ? (
-        <AgentViewResult view={view} />
-      ) : null}
-    </DetailsSection>
-  );
-}
-
-function AgentViewResult({ view }: { view: SorAgentView }) {
-  const record = view.items[0];
-  return (
-    <div className="space-y-4 border-t pt-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <Bot className="size-4" aria-hidden="true" />
-        <span className="text-sm font-medium">
-          Revision {view.agent_revision}
-        </span>
-        <Badge variant="outline">
-          {record === undefined ? "Record hidden" : "Record visible"}
-        </Badge>
-      </div>
-      <div>
-        <p className="text-xs font-medium text-muted-foreground">
-          Authorized tools
-        </p>
-        <div className="mt-1 flex flex-wrap gap-1">
-          {view.authorized_tools.length === 0 ? (
-            <span className="text-sm text-muted-foreground">None</span>
-          ) : (
-            view.authorized_tools.map((tool) => (
-              <Badge key={tool} variant="outline">
-                {tool}
-              </Badge>
-            ))
-          )}
-        </div>
-      </div>
-      <div>
-        <p className="text-xs font-medium text-muted-foreground">
-          Visible fields
-        </p>
-        <div className="mt-1 flex flex-wrap gap-1">
-          {view.fields.length === 0 ? (
-            <span className="text-sm text-muted-foreground">None</span>
-          ) : (
-            view.fields.map((field) => (
-              <Badge key={`${field.source_id}-${field.key}`} variant="outline">
-                {field.label}
-              </Badge>
-            ))
-          )}
-        </div>
-      </div>
-      {record === undefined ? null : (
-        <pre className="max-w-full whitespace-pre-wrap break-all border bg-muted/30 p-3 text-xs leading-5">
-          {JSON.stringify(record.values, null, 2)}
-        </pre>
-      )}
-    </div>
   );
 }
 
@@ -1467,9 +1397,11 @@ function DetailRow({
 
 function FieldValue({
   kind,
+  rawValue,
   value,
 }: {
   kind: SorGridColumn["kind"];
+  rawValue: unknown;
   value: unknown;
 }) {
   if (value === null || value === undefined || value === "") {
@@ -1482,7 +1414,16 @@ function FieldValue({
   if (kind === "NUMBER") {
     return <span title={String(value)}>{formatSorNumber(value)}</span>;
   }
-  if (kind === "ENUM" || kind === "BOOLEAN") {
+  if (kind === "ENUM") {
+    return (
+      <Badge variant="outline">
+        {typeof value === "string" && value === rawValue
+          ? formatSorIdentifier(value)
+          : formatSorValue(value)}
+      </Badge>
+    );
+  }
+  if (kind === "BOOLEAN") {
     return <Badge variant="outline">{formatSorValue(value)}</Badge>;
   }
   if (Array.isArray(value)) {
@@ -1528,10 +1469,35 @@ function recordTitle(detail: SorRecordDetail | null): string {
 function knowledgeDocumentMetadataColumns(
   columns: readonly SorGridColumn[],
 ): readonly SorGridColumn[] {
-  return columns.filter(
-    (column) =>
-      column.key !== "normalized_text" && column.key !== "unsupported_blocks",
+  const secondaryOrTechnicalKeys = new Set([
+    "content_hash",
+    "normalized_text",
+    "parent_external_id",
+    "projected_at",
+    "source",
+    "source_updated_at",
+    "unsupported_blocks",
+  ]);
+  return columns.filter((column) => !secondaryOrTechnicalKeys.has(column.key));
+}
+
+function vendorDiffersFromSource(
+  sourceName: string,
+  vendorKey: string,
+): boolean {
+  return (
+    sourceName.trim().toLocaleLowerCase() !==
+    formatSorIdentifier(vendorKey).toLocaleLowerCase()
   );
+}
+
+function relationRecordLabel(
+  relation: SorRecordDetail["relations"][number],
+): string {
+  const key = relation.record_key?.trim();
+  return key === undefined || key === ""
+    ? `Unnamed ${formatSorIdentifier(relation.record_entity).toLocaleLowerCase()}`
+    : key;
 }
 
 function textValue(value: unknown): string | null {
@@ -1543,6 +1509,39 @@ function stringArrayValue(value: unknown): string[] {
   return value.filter(
     (item): item is string => typeof item === "string" && item.length > 0,
   );
+}
+
+function summarizeSourcePayload(
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(payload).map(([key, value]) => {
+      if (key === "normalized_text" && typeof value === "string") {
+        return [
+          key,
+          `[Rendered document text · ${value.length.toLocaleString()} characters]`,
+        ];
+      }
+      if (key === "source_body") {
+        const retainedCharacters = sourceBodyCharacterCount(value);
+        return [
+          key,
+          retainedCharacters === null
+            ? "[Retained source structure]"
+            : `[Rendered source structure · ${retainedCharacters.toLocaleString()} characters]`,
+        ];
+      }
+      return [key, value];
+    }),
+  );
+}
+
+function sourceBodyCharacterCount(value: unknown): number | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return typeof value === "string" ? value.length : null;
+  }
+  const body = value as Record<string, unknown>;
+  return typeof body.value === "string" ? body.value.length : null;
 }
 
 function safeExternalUrl(value: string | null): string | null {

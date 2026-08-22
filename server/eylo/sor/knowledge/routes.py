@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import Response
 
 from eylo.common.database import start_transaction
 from eylo.modules.auth.schemas import CurrentUserSchema
@@ -20,8 +22,19 @@ from eylo.sor.knowledge.schemas import (
     KnowledgeDocumentSpaceResponse,
     KnowledgeDocumentVersionResponse,
 )
+from eylo.sor.runtime.adapters import SorAdapterUnavailableError
 from eylo.sor.runtime.catalog import get_sor_registry
+from eylo.sor.runtime.knowledge_media import (
+    KnowledgeImageUnavailableError,
+    read_knowledge_document_image,
+)
+from eylo.sor.shared.contracts import (
+    SorExternalRecordNotFound,
+    SorVendorOperationError,
+)
 from eylo.sor.shared.reads import SorReadNotFoundError
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/{organization_id}/sor/knowledge",
@@ -119,6 +132,68 @@ async def get_knowledge_document_audit(
             )
     except (KeyError, SorReadNotFoundError):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
+
+
+@router.get(
+    "/documents/{record_id}/attachments/{attachment_record_id}/content",
+    response_class=Response,
+    responses={
+        status.HTTP_200_OK: {
+            "content": {
+                "image/avif": {},
+                "image/gif": {},
+                "image/jpeg": {},
+                "image/png": {},
+                "image/webp": {},
+            },
+            "description": "Current source image content.",
+        },
+        status.HTTP_404_NOT_FOUND: {"description": "Image not available."},
+        status.HTTP_503_SERVICE_UNAVAILABLE: {
+            "description": "Source temporarily unavailable."
+        },
+    },
+)
+async def get_knowledge_document_attachment_content(
+    organization_id: UUID,
+    record_id: UUID,
+    attachment_record_id: UUID,
+    current_user: CurrentUserSchema = Depends(get_current_user),
+) -> Response:
+    """Proxy one current, tenant-owned raster attachment without leaking auth."""
+    if current_user.organization_id != organization_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    try:
+        image = await read_knowledge_document_image(
+            organization_id=organization_id,
+            document_record_id=record_id,
+            attachment_record_id=attachment_record_id,
+        )
+    except (
+        KeyError,
+        KnowledgeImageUnavailableError,
+        SorExternalRecordNotFound,
+        SorReadNotFoundError,
+    ):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
+    except (SorAdapterUnavailableError, SorVendorOperationError) as error:
+        logger.warning(
+            "SOR document image source unavailable organization_id=%s "
+            "document_record_id=%s attachment_record_id=%s error_type=%s",
+            organization_id,
+            record_id,
+            attachment_record_id,
+            type(error).__name__,
+        )
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE) from None
+    return Response(
+        content=image.content,
+        media_type=image.media_type,
+        headers={
+            "Cache-Control": "private, max-age=300",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 __all__ = ["router"]

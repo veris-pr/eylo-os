@@ -20,6 +20,7 @@ class TicketingAuditAvailability(str, Enum):
 class TicketingIssueCommentResponse(SorApiModel):
     record_id: UUID
     author_external_id: str | None
+    author_name: str | None
     text: str
     created_at: datetime
     updated_at: datetime | None

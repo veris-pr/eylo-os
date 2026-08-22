@@ -28,10 +28,10 @@ list:
 - **Classic Jira Cloud platform scopes:** `read:jira-work` and
   `read:jira-user`; add `write:jira-work` for read/write sources. Atlassian
   recommends classic scopes where they cover the operation.
-- **Granular Jira Software scopes:** selecting Sprints additionally requires
-  `read:board-scope:jira-software`, `read:project:jira`, and
-  `read:sprint:jira-software`. Adding classic scopes does not add these Jira
-  Software scopes.
+- **Jira Software Sprint scope:** selecting Sprints requires classic
+  `read:jira-work` for the issue Sprint field plus granular
+  `read:sprint:jira-software` for an authoritative direct-read fallback.
+  These are different scope families; adding one does not add the other.
 
 The console requests only the groups required by the selected objects and
 access level. See Atlassian's
@@ -47,6 +47,7 @@ with the scopes shown for the selected objects:
 - **OAuth lifecycle scope:** `offline_access` requests a rotating refresh token.
 - **Spaces:** `read:space:confluence`.
 - **Pages, page bodies, versions, and properties:** `read:page:confluence`.
+- **Page and version authors:** `read:user:confluence`.
 - **Attachments:** `read:attachment:confluence`.
 - **Page mutations:** `write:page:confluence` for read/write sources.
 
@@ -55,7 +56,7 @@ The classic scopes `read:confluence-space.summary`,
 `write:confluence-content` do not authorize the REST v2 endpoints used by this
 adapter. Do not mix the classic and granular lists. See Atlassian's REST v2
 [space][confluence-spaces], [page][confluence-pages], and
-[attachment][confluence-attachments] contracts.
+[user][confluence-users], and [attachment][confluence-attachments] contracts.
 
 ## Configure the source
 
@@ -111,7 +112,9 @@ adapter. Do not mix the classic and granular lists. See Atlassian's REST v2
    immutable schema discovery.
 9. In **Objects**, select the standard or discovered custom objects to sync.
    Each card repeats the provider scope required by that object; custom objects
-   with no additional scope say so explicitly.
+   with no additional scope say so explicitly. Selecting an object also selects
+   its transitive dependencies. The card lists those required objects so the
+   sync graph cannot be activated with a missing relationship target.
 10. In **Field mapping**, map each selected field to one canonical field,
     one typed custom field, or ignore it.
 11. In **Sync**, choose the freshness target and reconciliation interval.
@@ -144,7 +147,9 @@ public API and never bypasses source lifecycle or tenant checks.
 OAuth client fields and API keys are held only in the open form and clear after
 successful connection or **Start new**. Non-secret onboarding progress is
 resumable; secret fields are never stored in the browser draft. **Start new**
-discards the saved draft.
+discards the saved draft and creates a new onboarding-attempt ID. Retrying the
+same saved flow reuses its source; it does not create another source for a
+duplicate submit or repeated OAuth return.
 
 For Intercom, select only the permissions listed by the chosen streams and
 tools in Developer Hub. Intercom permissions are app configuration, not an
@@ -181,7 +186,12 @@ be projected. Related streams used for lookups do not replace this requirement.
 
 ## Audit the result
 
-1. Open **Systems of Record → Sources** to check source state and sync health.
+1. Open **Systems of Record → Sources** and open a source drawer. Check:
+   - relationship integrity totals: pending, resolved, and tombstoned;
+   - recent source-level sync generations and their stream-run states;
+   - each stream's declared dependencies and relationship targets.
+   A dependent stream should start only after its selected parents succeed.
+   `DEPENDENCY_FAILED` means it never ran because a parent failed.
 2. Open the profile collection, such as **CRM contacts**.
 3. Search, filter, group, order, and choose visible columns.
 4. Open a row to inspect canonical values, custom fields, source identity,
@@ -189,10 +199,13 @@ be projected. Related streams used for lookups do not replace this requirement.
 5. For a Ticketing issue, inspect chronological comments in the detail drawer.
    **Not selected** means the source can provide the data but the stream is not
    enabled. **Unsupported** means the adapter does not provide that capability.
-6. For a Document, inspect normalized text, hierarchy, unsupported source
-   blocks, properties, versions, attachments, space, author, and original
-   source links. An unsupported block was retained for audit, not understood
-   as normalized document content.
+6. For a Document, inspect current normalized text, page hierarchy, current
+   source raster images, unsupported source blocks, properties, attachments,
+   space, author, and original source links. A version badge indicates when
+   source history is available; use the source document to inspect old
+   revisions. An unsupported block was retained for audit, not understood as
+   normalized document content. Confluence folder hierarchy remains in the
+   source until the folder object and its granular read scope are supported.
 7. Copy the URL to share the same audit view with another organization member.
 
 Custom datasets are audit-only in v1. They show selected vendor-defined objects
@@ -203,7 +216,10 @@ that do not have canonical Agent semantics.
 - Reauthorize when the source enters `REAUTH_REQUIRED`.
 - Rediscover when the vendor schema changes.
 - Publish a new mapping revision before expecting new fields in the projection.
-- Run synchronization after the new mapping is active.
+  Publication persists a source-wide bootstrap generation automatically; no
+  separate manual sync is required.
+- Wait for the source to return from `BOOTSTRAPPING` to `ACTIVE` before treating
+  the new mapping as fully projected.
 
 The last known projection remains visible while a source is degraded or a new
 schema awaits mapping. Check its freshness before relying on it.
@@ -249,6 +265,7 @@ sync, webhook, or Agent command may use it.
 [atlassian-refresh-tokens]: https://developer.atlassian.com/cloud/oauth/getting-started/refresh-tokens/
 [confluence-spaces]: https://developer.atlassian.com/cloud/confluence/rest/v2/api-group-space/
 [confluence-pages]: https://developer.atlassian.com/cloud/confluence/rest/v2/api-group-page/
+[confluence-users]: https://developer.atlassian.com/cloud/confluence/rest/v2/api-group-user/
 [confluence-attachments]: https://developer.atlassian.com/cloud/confluence/rest/v2/api-group-attachment/
 [jira-platform-scopes]: https://developer.atlassian.com/cloud/jira/platform/scopes-for-oauth-2-3LO-and-forge-apps/
 [jira-software-scopes]: https://developer.atlassian.com/cloud/jira/software/scopes-for-oauth-2-3LO-and-forge-apps/

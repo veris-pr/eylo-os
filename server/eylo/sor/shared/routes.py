@@ -31,6 +31,7 @@ from eylo.sor.runtime.discovery import (
 from eylo.sor.runtime.oauth import (
     SorOAuthError,
     begin_sor_authorization,
+    begin_sor_source_reauthorization,
     default_sor_callback_url,
 )
 from eylo.sor.runtime.read_registry import get_sor_read_spec
@@ -45,6 +46,7 @@ from eylo.sor.shared.contracts import (
     SorProfile,
     SorStreamDraft,
     SorVendorOperationError,
+    SorWorkState,
 )
 from eylo.sor.shared.custom_dataset_reads import custom_dataset_read_spec
 from eylo.sor.shared.custom_datasets import (
@@ -54,6 +56,7 @@ from eylo.sor.shared.custom_datasets import (
 from eylo.sor.shared.grant_services import SorSourceGrantService
 from eylo.sor.shared.models import SorMappingRevisionModel
 from eylo.sor.shared.onboarding import SorOnboardingService
+from eylo.sor.shared.operational_reads import SorOperationalReadService
 from eylo.sor.shared.query import SorCollectionQuery, SorGridContract
 from eylo.sor.shared.reads import (
     SorCollectionReadService,
@@ -91,11 +94,13 @@ from eylo.sor.shared.schemas import (
     SorSourceGrantRequest,
     SorSourceGrantResponse,
     SorSourceListResponse,
+    SorSourceOperationsResponse,
     SorSourceReconnectRequest,
     SorSourceResponse,
     SorSourceSelectionUpdateRequest,
     SorStreamCreateRequest,
     SorStreamResponse,
+    SorSyncGenerationResponse,
     SorSyncRunCreateRequest,
     SorSyncRunResponse,
     SorWebhookEndpointResponse,
@@ -433,6 +438,7 @@ async def create_sor_source(
         async with start_transaction() as session:
             row = await SorSourceService(session).create(
                 organization_id=organization_id,
+                onboarding_attempt_id=request.onboarding_attempt_id,
                 name=request.name,
                 profile=request.profile,
                 vendor_key=request.vendor_key,
@@ -443,16 +449,8 @@ async def create_sor_source(
                 required_sync_interval_seconds=(request.required_sync_interval_seconds),
             )
             return SorSourceResponse.model_validate(row)
-    except SorNotFoundError as error:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(error),
-        ) from None
-    except SorConfigurationError as error:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=str(error),
-        ) from None
+    except (SorNotFoundError, SorConfigurationError, SorConflictError) as error:
+        raise _configuration_error(error) from None
 
 
 @router.post(
@@ -481,6 +479,7 @@ async def create_api_key_sor_source(
             source = await create_api_key_source(
                 session,
                 candidate=candidate,
+                onboarding_attempt_id=request.onboarding_attempt_id,
                 name=request.name,
                 freshness_target_seconds=request.freshness_target_seconds,
                 required_sync_interval_seconds=(
@@ -490,6 +489,7 @@ async def create_api_key_sor_source(
             return SorSourceResponse.model_validate(source)
     except (
         SorConfigurationError,
+        SorConflictError,
         SorVendorOperationError,
         TimeoutError,
     ) as error:
@@ -512,6 +512,64 @@ async def get_sor_source(
             )
     except SorReadNotFoundError as error:
         raise _read_error(error) from None
+
+
+@router.post(
+    "/sources/{source_id}/reauthorize",
+    response_model=SorAuthorizationRedirectResponse,
+)
+async def reauthorize_sor_source(
+    organization_id: UUID,
+    source_id: UUID,
+    current_user: CurrentUserSchema = Depends(get_current_user),
+) -> SorAuthorizationRedirectResponse:
+    """Restart OAuth for an activated source while preserving its projection."""
+    _authorize(organization_id, current_user)
+    try:
+        redirect = await begin_sor_source_reauthorization(
+            organization_id=organization_id,
+            source_id=source_id,
+        )
+    except SorNotFoundError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(error),
+        ) from None
+    except (KeyError, SorOAuthError) as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(error),
+        ) from None
+    callback = urlsplit(redirect.callback_url)
+    return SorAuthorizationRedirectResponse(
+        authorization_url=redirect.authorization_url,
+        callback_url=redirect.callback_url,
+        callback_origin=f"{callback.scheme}://{callback.netloc}",
+    )
+
+
+@router.get(
+    "/sources/{source_id}/operations",
+    response_model=SorSourceOperationsResponse,
+)
+async def get_sor_source_operations(
+    organization_id: UUID,
+    source_id: UUID,
+    current_user: CurrentUserSchema = Depends(get_current_user),
+) -> SorSourceOperationsResponse:
+    """Show recent sync DAGs and canonical relationship resolution health."""
+    _authorize(organization_id, current_user)
+    try:
+        async with start_transaction(ro=True) as session:
+            return await SorOperationalReadService(session).source_operations(
+                organization_id=organization_id,
+                source_id=source_id,
+            )
+    except SorNotFoundError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(error),
+        ) from None
 
 
 @router.delete(
@@ -763,22 +821,39 @@ async def publish_sor_mapping(
     mapping_revision_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
 ) -> SorMappingRevisionResponse:
-    """Publish one mapping and move its source into bootstrap state."""
+    """Atomically publish one mapping and persist its bootstrap work."""
     _authorize(organization_id, current_user)
     try:
         async with start_transaction() as session:
-            mapping = await SorMappingService(session).publish(
+            result = await SorOnboardingService(session).publish_mapping(
                 organization_id=organization_id,
                 source_id=source_id,
                 mapping_revision_id=mapping_revision_id,
                 actor_id=current_user.member_id,
             )
-            return await _mapping_response(
+            response = await _mapping_response(
                 SorRepository(session),
                 organization_id=organization_id,
                 source_id=source_id,
-                mapping=mapping,
+                mapping=result.mapping,
             )
+            run_ids = tuple(
+                run.id for run in result.runs if run.state is SorWorkState.PENDING
+            )
+        for run_id in run_ids:
+            try:
+                await spawn_sor_sync_run(
+                    organization_id=organization_id,
+                    run_id=run_id,
+                )
+            except Exception as error:  # noqa: BLE001 - recovery scans committed rows
+                logger.error(
+                    "SOR mapping bootstrap committed; spawn recovery remains pending "
+                    "run_id=%s error_type=%s",
+                    run_id,
+                    type(error).__name__,
+                )
+        return response
     except (SorConfigurationError, SorConflictError, SorNotFoundError) as error:
         raise _configuration_error(error) from None
 
@@ -822,7 +897,9 @@ async def activate_sor_source(
                     SorSyncRunResponse.model_validate(run) for run in result.runs
                 ),
             )
-            run_ids = tuple(run.id for run in result.runs)
+            run_ids = tuple(
+                run.id for run in result.runs if run.state is SorWorkState.PENDING
+            )
         for run_id in run_ids:
             try:
                 await spawn_sor_sync_run(
@@ -1143,6 +1220,69 @@ async def create_sor_source_stream(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=str(error),
         ) from None
+
+
+@router.post(
+    "/sources/{source_id}/runs",
+    response_model=SorSyncGenerationResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def start_sor_source_run(
+    organization_id: UUID,
+    source_id: UUID,
+    request: SorSyncRunCreateRequest,
+    current_user: CurrentUserSchema = Depends(get_current_user),
+) -> SorSyncGenerationResponse:
+    """Commit one source-wide dependency DAG before spawning its root work."""
+    _authorize(organization_id, current_user)
+    try:
+        async with start_transaction() as session:
+            repository = SorRepository(session)
+            streams = await repository.list_streams(
+                organization_id=organization_id,
+                source_id=source_id,
+            )
+            plan = await SorSyncRunService(session).create_generation(
+                organization_id=organization_id,
+                source_id=source_id,
+                stream_ids=tuple(stream.id for stream in streams),
+                kind=request.kind,
+                max_attempts=request.max_attempts,
+            )
+            generation = plan.generation
+            response = SorSyncGenerationResponse(
+                id=generation.id,
+                organization_id=generation.organization_id,
+                source_id=generation.source_id,
+                kind=generation.kind,
+                state=generation.state,
+                started_at=generation.started_at,
+                finished_at=generation.finished_at,
+                safe_error_code=generation.safe_error_code,
+                safe_error_summary=generation.safe_error_summary,
+                created_at=generation.created_at,
+                updated_at=generation.updated_at,
+                runs=tuple(
+                    SorSyncRunResponse.model_validate(run) for run in plan.runs
+                ),
+            )
+            ready_run_ids = plan.ready_run_ids
+        for run_id in ready_run_ids:
+            try:
+                await spawn_sor_sync_run(
+                    organization_id=organization_id,
+                    run_id=run_id,
+                )
+            except Exception as error:  # noqa: BLE001 - recovery scans committed rows
+                logger.error(
+                    "SOR source generation committed; spawn recovery remains pending "
+                    "run_id=%s error_type=%s",
+                    run_id,
+                    type(error).__name__,
+                )
+        return response
+    except (SorConfigurationError, SorConflictError, SorNotFoundError) as error:
+        raise _configuration_error(error) from None
 
 
 @router.post(

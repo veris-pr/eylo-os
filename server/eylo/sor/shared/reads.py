@@ -14,7 +14,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import and_, asc, desc, func, not_, or_, select
+from sqlalchemy import and_, asc, desc, func, not_, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, load_only
 from sqlalchemy.sql import Select
@@ -274,6 +274,21 @@ class SorReadFieldSpec:
     sortable: bool = True
     groupable: bool = False
     wraps: bool = False
+    reference_entity: str | None = None
+
+    def __post_init__(self) -> None:
+        """Keep human-reference metadata attached only to reference-shaped fields."""
+        if self.reference_entity is None:
+            return
+        if self.kind not in {
+            SorGridColumnKind.REFERENCE,
+            SorGridColumnKind.STRING_ARRAY,
+        }:
+            raise ValueError(
+                f"SOR field '{self.key}' cannot resolve a non-reference value."
+            )
+        if not self.reference_entity.strip():
+            raise ValueError(f"SOR field '{self.key}' reference entity is empty.")
 
     def grid_column(self) -> SorGridColumn:
         return SorGridColumn(
@@ -349,6 +364,95 @@ class _ReadRow:
     extension: SorProfileRecordModel | None
     source: SorSourceModel
     sort_values: tuple[object, ...]
+
+
+async def resolve_reference_labels(
+    session: AsyncSession,
+    *,
+    organization_id: UUID,
+    reference_keys: Sequence[tuple[UUID, str, str]],
+) -> dict[tuple[UUID, str, str], str]:
+    """Resolve unambiguous same-source canonical identities to human labels."""
+    selected_keys = tuple(
+        sorted(set(reference_keys), key=lambda item: tuple(map(str, item)))
+    )
+    if not selected_keys:
+        return {}
+    rows = (
+        await session.scalars(
+            select(SorRecordModel)
+            .where(
+                SorRecordModel.organization_id == organization_id,
+                tuple_(
+                    SorRecordModel.source_id,
+                    SorRecordModel.canonical_entity_kind,
+                    SorRecordModel.vendor_external_id,
+                ).in_(selected_keys),
+                SorRecordModel.tombstoned_at.is_(None),
+                SorRecordModel.deleted.is_(False),
+            )
+            .options(
+                load_only(
+                    SorRecordModel.source_id,
+                    SorRecordModel.canonical_entity_kind,
+                    SorRecordModel.vendor_external_id,
+                    SorRecordModel.human_external_key,
+                )
+            )
+        )
+    ).all()
+    labels: dict[tuple[UUID, str, str], str] = {}
+    ambiguous: set[tuple[UUID, str, str]] = set()
+    for row in rows:
+        key = (
+            row.source_id,
+            row.canonical_entity_kind,
+            row.vendor_external_id,
+        )
+        label = row.human_external_key.strip() if row.human_external_key else ""
+        if not label:
+            continue
+        if key in labels:
+            ambiguous.add(key)
+        else:
+            labels[key] = label
+    for key in ambiguous:
+        labels.pop(key, None)
+    return labels
+
+
+def _reference_external_ids(value: object) -> tuple[str, ...]:
+    """Return stable scalar or list identities from one reference-shaped value."""
+    if isinstance(value, str):
+        return (value,) if value else ()
+    if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+        return tuple(item for item in value if isinstance(item, str) and item)
+    return ()
+
+
+def _reference_display_value(
+    value: object,
+    *,
+    source_id: UUID,
+    entity: str,
+    labels: Mapping[tuple[UUID, str, str], str],
+) -> object | None:
+    """Return a readable mirror only when at least one identity resolves."""
+    if isinstance(value, str):
+        return labels.get((source_id, entity, value))
+    if not isinstance(value, Sequence) or isinstance(value, (bytes, bytearray)):
+        return None
+    changed = False
+    display: list[object] = []
+    for item in value:
+        if isinstance(item, str):
+            label = labels.get((source_id, entity, item))
+            if label is not None:
+                display.append(label)
+                changed = True
+                continue
+        display.append(item)
+    return display if changed else None
 
 
 class SorSourceReadService:
@@ -529,6 +633,12 @@ class SorCollectionReadService:
             record_ids=record_ids,
             field_definition_ids=selected_custom_definition_ids,
         )
+        display_values = await self._display_values(
+            organization_id=organization_id,
+            spec=spec,
+            rows=page_rows,
+            selected_columns=selected_columns,
+        )
         items = tuple(
             self._row_response(
                 spec=spec,
@@ -536,6 +646,7 @@ class SorCollectionReadService:
                 extension=row.extension,
                 source=row.source,
                 custom_values=custom_values.get(row.record.id, ()),
+                display_values=display_values.get(row.record.id, {}),
                 selected_columns=selected_columns,
             )
             for row in page_rows
@@ -603,6 +714,11 @@ class SorCollectionReadService:
             organization_id=organization_id,
             record_ids=[record.id],
         )
+        display_values = await self._display_values(
+            organization_id=organization_id,
+            spec=spec,
+            rows=(row,),
+        )
         relations = await self._relations(
             organization_id=organization_id,
             record=record,
@@ -614,6 +730,7 @@ class SorCollectionReadService:
                 extension=extension,
                 source=source,
                 custom_values=custom_values.get(record.id, ()),
+                display_values=display_values.get(record.id, {}),
             ),
             selected_source_payload=_json_mapping(record.selected_raw_payload),
             source_revision=record.source_revision,
@@ -934,6 +1051,59 @@ class SorCollectionReadService:
         )
         return grouped.get(record.id, ())
 
+    async def _display_values(
+        self,
+        *,
+        organization_id: UUID,
+        spec: SorEntityReadSpec,
+        rows: Sequence[_ReadRow],
+        selected_columns: frozenset[str] | None = None,
+    ) -> dict[UUID, dict[str, object]]:
+        """Resolve page references in one query while preserving raw identities."""
+        fields = tuple(
+            field
+            for field in spec.fields
+            if field.reference_entity is not None
+            and (selected_columns is None or field.key in selected_columns)
+        )
+        if not rows or not fields:
+            return {}
+
+        raw_by_record: dict[UUID, dict[str, object]] = {}
+        reference_keys: set[tuple[UUID, str, str]] = set()
+        for row in rows:
+            values: dict[str, object] = {}
+            for field in fields:
+                raw = field.read_value(row.record, row.extension, row.source)
+                values[field.key] = raw
+                for external_id in _reference_external_ids(raw):
+                    reference_keys.add(
+                        (row.record.source_id, field.reference_entity or "", external_id)
+                    )
+            raw_by_record[row.record.id] = values
+
+        labels = await resolve_reference_labels(
+            self.session,
+            organization_id=organization_id,
+            reference_keys=tuple(reference_keys),
+        )
+        result: dict[UUID, dict[str, object]] = {}
+        for row in rows:
+            projected: dict[str, object] = {}
+            for field in fields:
+                raw = raw_by_record[row.record.id][field.key]
+                display = _reference_display_value(
+                    raw,
+                    source_id=row.record.source_id,
+                    entity=field.reference_entity or "",
+                    labels=labels,
+                )
+                if display is not None:
+                    projected[field.key] = display
+            if projected:
+                result[row.record.id] = projected
+        return result
+
     def _field_contract(
         self,
         spec: SorEntityReadSpec,
@@ -975,7 +1145,7 @@ class SorCollectionReadService:
                         label="Synced",
                         kind=SorGridColumnKind.DATETIME,
                         importance=SorGridColumnImportance.METADATA,
-                        default_visible=True,
+                        default_visible=False,
                         groupable=False,
                     ),
                 ),
@@ -1041,6 +1211,7 @@ class SorCollectionReadService:
         extension: SorProfileRecordModel | None,
         source: SorSourceModel,
         custom_values: Sequence[SorCustomFieldValueResponse],
+        display_values: Mapping[str, object] | None = None,
         selected_columns: frozenset[str] | None = None,
     ) -> SorCollectionRowResponse:
         values = {
@@ -1075,6 +1246,10 @@ class SorCollectionReadService:
             entity=spec.entity,
             human_external_key=record.human_external_key,
             values=values,
+            display_values={
+                key: _json_value(value)
+                for key, value in (display_values or {}).items()
+            },
             custom_fields=tuple(custom_values),
             source_url=record.source_url,
             source_created_at=record.source_created_at,

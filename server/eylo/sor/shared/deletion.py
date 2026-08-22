@@ -26,9 +26,11 @@ from .models import (
     SorMappingRevisionModel,
     SorRecordModel,
     SorRecordRelationModel,
+    SorRelationIntentModel,
     SorSchemaRevisionModel,
     SorSourceGrantModel,
     SorSourceStreamModel,
+    SorSyncGenerationModel,
     SorSyncRunModel,
     SorWebhookReceiptModel,
 )
@@ -156,12 +158,22 @@ class SorSourceDeletionService:
             source_id=source_id,
         )
         await self._delete_source_rows(
+            SorRelationIntentModel,
+            organization_id=organization_id,
+            source_id=source_id,
+        )
+        await self._delete_source_rows(
             SorRecordModel,
             organization_id=organization_id,
             source_id=source_id,
         )
         await self._delete_source_rows(
             SorSyncRunModel,
+            organization_id=organization_id,
+            source_id=source_id,
+        )
+        await self._delete_source_rows(
+            SorSyncGenerationModel,
             organization_id=organization_id,
             source_id=source_id,
         )

@@ -2,7 +2,6 @@ import type { ApiClient } from "@/api/client";
 import type { components } from "@/api/generated/schema";
 import type {
   SorAdapterCapabilities,
-  SorAgentView,
   SorApiKeySourceCreateInput,
   SorAuthorizationRedirect,
   SorCatalog,
@@ -22,6 +21,7 @@ import type {
   SorRecordDetail,
   SorSchemaRevision,
   SorSource,
+  SorSourceOperations,
   SorSourceActivation,
   SorSourceActivationInput,
   SorSourceCreateInput,
@@ -29,6 +29,7 @@ import type {
   SorSourceGrant,
   SorStream,
   SorStreamCreateInput,
+  SorSyncGeneration,
   SorSyncRun,
   SorSyncRunKind,
   SorSupportTicketAudit,
@@ -191,10 +192,46 @@ class SorService {
     );
   }
 
-  async deleteSource(
+  async reauthorizeSource(
     organizationId: string,
     sourceId: string,
-  ): Promise<void> {
+  ): Promise<SorAuthorizationRedirect> {
+    const result = await this.api.POST(
+      "/api/{organization_id}/sor/sources/{source_id}/reauthorize",
+      {
+        params: {
+          path: {
+            organization_id: organizationId,
+            source_id: sourceId,
+          },
+        },
+      },
+    );
+    return requireData(result, "Source reauthorization could not be started.");
+  }
+
+  async loadSourceOperations(
+    organizationId: string,
+    sourceId: string,
+  ): Promise<SorSourceOperations> {
+    const result = await this.api.GET(
+      "/api/{organization_id}/sor/sources/{source_id}/operations",
+      {
+        params: {
+          path: {
+            organization_id: organizationId,
+            source_id: sourceId,
+          },
+        },
+      },
+    );
+    return requireData(
+      result,
+      "Source operational health could not be loaded.",
+    );
+  }
+
+  async deleteSource(organizationId: string, sourceId: string): Promise<void> {
     const result = await this.api.DELETE(
       "/api/{organization_id}/sor/sources/{source_id}",
       {
@@ -492,6 +529,29 @@ class SorService {
     );
   }
 
+  async startSourceSync(
+    organizationId: string,
+    sourceId: string,
+    kind: Extract<SorSyncRunKind, "INCREMENTAL" | "RECONCILIATION">,
+  ): Promise<SorSyncGeneration> {
+    const result = await this.api.POST(
+      "/api/{organization_id}/sor/sources/{source_id}/runs",
+      {
+        params: {
+          path: {
+            organization_id: organizationId,
+            source_id: sourceId,
+          },
+        },
+        body: { kind, max_attempts: 3 },
+      },
+    );
+    return requireData(
+      result,
+      "The source synchronization could not be started.",
+    );
+  }
+
   async queryCollection(
     organizationId: string,
     profile: SorProfileKey,
@@ -605,9 +665,33 @@ class SorService {
         },
       },
     );
-    return requireData(
-      result,
-      "Document content context could not be loaded.",
+    return requireData(result, "Document content context could not be loaded.");
+  }
+
+  async downloadKnowledgeDocumentImage(
+    organizationId: string,
+    documentRecordId: string,
+    attachmentRecordId: string,
+    signal?: AbortSignal,
+  ): Promise<Blob> {
+    const result = await this.api.GET(
+      "/api/{organization_id}/sor/knowledge/documents/{record_id}/attachments/{attachment_record_id}/content",
+      {
+        params: {
+          path: {
+            attachment_record_id: attachmentRecordId,
+            organization_id: organizationId,
+            record_id: documentRecordId,
+          },
+        },
+        parseAs: "blob",
+        signal,
+      },
+    );
+    if (result.data instanceof Blob) return result.data;
+    throw new SorServiceError(
+      "This source image could not be loaded.",
+      result.response.status,
     );
   }
 
@@ -703,30 +787,6 @@ class SorService {
       result,
       "This custom dataset record could not be loaded.",
     );
-  }
-
-  async loadAgentView(
-    organizationId: string,
-    agentId: string,
-    profile: SorProfileKey,
-    entity: string,
-    recordId: string,
-  ): Promise<SorAgentView> {
-    const result = await this.api.GET(
-      "/api/{organization_id}/sor/agents/{agent_id}/view/{profile}/{entity}",
-      {
-        params: {
-          path: {
-            organization_id: organizationId,
-            agent_id: agentId,
-            profile,
-            entity,
-          },
-          query: { record_id: recordId, limit: 1 },
-        },
-      },
-    );
-    return requireData(result, "The selected Agent view could not be loaded.");
   }
 
   async loadSourceGrants(
@@ -889,6 +949,8 @@ function mapCapabilities(response: CapabilityResponse): SorAdapterCapabilities {
       canonicalEntity: stream.canonical_entity,
       changeStrategies: [...stream.change_strategies],
       scopeCategory: stream.scope_category ?? null,
+      dependsOn: [...stream.depends_on],
+      relationshipTargets: { ...stream.relationship_targets },
     })),
     readableEntities: [...response.readable_entities],
     writableEntities: [...response.writable_entities],

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.sor.runtime.catalog import get_sor_registry
@@ -23,13 +24,16 @@ from .contracts import (
     SorWorkState,
 )
 from .custom_datasets import CUSTOM_DATASET_ENTITY
+from .dependencies import selected_stream_dependencies, topological_stream_layers
 from .events import register_records_tombstoned, register_sync_completed
 from .models import (
     SorRecordModel,
     SorSourceModel,
     SorSourceStreamModel,
+    SorSyncGenerationModel,
     SorSyncRunModel,
 )
+from .relationships import SorRelationshipService
 from .repositories import SorRepository
 from .services import (
     SorConfigurationError,
@@ -92,6 +96,18 @@ class SorStreamRunContext:
     source: SorSourceModel
     stream: SorSourceStreamModel
     run: SorSyncRunModel
+
+
+@dataclass(frozen=True, slots=True)
+class SorSyncGenerationPlan:
+    """One committed source generation plus every ordered stream intent."""
+
+    generation: SorSyncGenerationModel
+    runs: tuple[SorSyncRunModel, ...]
+
+    @property
+    def ready_run_ids(self) -> tuple[UUID, ...]:
+        return tuple(run.id for run in self.runs if run.state is SorWorkState.PENDING)
 
 
 class SorStreamService:
@@ -161,6 +177,8 @@ class SorStreamService:
                 entity=entity,
                 strategy=strategy,
             )
+            depends_on: list[str] = []
+            relationship_targets: dict[str, str] = {}
         elif entity != stream_spec.canonical_entity:
             raise SorConfigurationError(
                 "Stream canonical entity does not match the adapter contract."
@@ -169,6 +187,9 @@ class SorStreamService:
             raise SorConfigurationError(
                 "Adapter does not implement that strategy for this stream."
             )
+        else:
+            depends_on = sorted(stream_spec.depends_on)
+            relationship_targets = dict(stream_spec.relationship_targets)
 
         existing = await self.repository.get_stream_by_object(
             organization_id=organization_id,
@@ -182,6 +203,8 @@ class SorStreamService:
                 or existing.strategy is not strategy
                 or existing.lookback_seconds != lookback_seconds
                 or existing.schedule != (schedule.strip() if schedule else None)
+                or existing.depends_on != depends_on
+                or existing.relationship_targets != relationship_targets
             ):
                 raise SorConflictError(
                     "The source object already has a different stream contract."
@@ -193,6 +216,8 @@ class SorStreamService:
             source_id=source_id,
             vendor_object_key=object_key,
             canonical_entity_kind=entity,
+            depends_on=depends_on,
+            relationship_targets=relationship_targets,
             strategy=strategy,
             lookback_seconds=lookback_seconds,
             schedule=schedule.strip() if schedule else None,
@@ -201,6 +226,32 @@ class SorStreamService:
         self.session.add(stream)
         await self.session.flush()
         return stream
+
+    async def refresh_manifest_contracts(
+        self,
+        *,
+        source: SorSourceModel,
+        streams: Sequence[SorSourceStreamModel],
+    ) -> None:
+        """Converge pre-DAG stream rows to the current code-owned manifest."""
+        manifest = self.registry.get_manifest(
+            profile=source.profile,
+            vendor_key=source.vendor_key,
+        )
+        specs = {stream.key: stream for stream in manifest.streams}
+        changed = False
+        for stream in streams:
+            spec = specs.get(stream.vendor_object_key)
+            depends_on = sorted(spec.depends_on) if spec is not None else []
+            targets = dict(spec.relationship_targets) if spec is not None else {}
+            if stream.depends_on != depends_on:
+                stream.depends_on = depends_on
+                changed = True
+            if stream.relationship_targets != targets:
+                stream.relationship_targets = targets
+                changed = True
+        if changed:
+            await self.session.flush()
 
     async def _require_custom_stream(
         self,
@@ -245,6 +296,103 @@ class SorSyncRunService:
         self.session = session
         self.repository = SorRepository(session)
         self.sources = SorSourceService(session)
+        self.streams = SorStreamService(session)
+
+    async def create_generation(
+        self,
+        *,
+        organization_id: UUID,
+        source_id: UUID,
+        stream_ids: Sequence[UUID],
+        kind: SorSyncRunKind,
+        max_attempts: int = 3,
+    ) -> SorSyncGenerationPlan:
+        """Persist one source-level DAG before any root run can be spawned."""
+        self._validate_run_request(kind=kind, max_attempts=max_attempts)
+        unique_stream_ids = tuple(dict.fromkeys(stream_ids))
+        if not unique_stream_ids:
+            raise SorConfigurationError("A sync generation requires a source stream.")
+        if len(unique_stream_ids) != len(stream_ids):
+            raise SorConfigurationError("A sync generation cannot repeat a stream.")
+
+        source = await self.sources.get(
+            organization_id=organization_id,
+            source_id=source_id,
+            for_update=True,
+        )
+        streams: list[SorSourceStreamModel] = []
+        for stream_id in unique_stream_ids:
+            stream = await self.repository.get_stream(
+                organization_id=organization_id,
+                source_id=source_id,
+                stream_id=stream_id,
+                for_update=True,
+            )
+            if stream is None:
+                raise SorNotFoundError("SOR source stream not found.")
+            self._require_runnable(source=source, stream=stream, kind=kind)
+            active = await self.repository.get_active_sync_run(
+                organization_id=organization_id,
+                stream_id=stream.id,
+                for_update=True,
+            )
+            if active is not None:
+                raise SorConflictError(
+                    f"Source stream {stream.vendor_object_key} already has active work."
+                )
+            streams.append(stream)
+
+        mapping_revision_id = source.active_mapping_revision_id
+        if mapping_revision_id is None:
+            raise SorConfigurationError(
+                "SOR source has no published mapping for synchronization."
+            )
+        await self.streams.refresh_manifest_contracts(source=source, streams=streams)
+        selected_keys = frozenset(stream.vendor_object_key for stream in streams)
+        dependency_graph = selected_stream_dependencies(
+            {
+                stream.vendor_object_key: frozenset(stream.depends_on)
+                for stream in streams
+            },
+            selected_keys,
+        )
+        topological_stream_layers(dependency_graph)
+
+        generation = SorSyncGenerationModel(
+            organization_id=organization_id,
+            source_id=source_id,
+            kind=kind,
+            state=SorWorkState.PENDING,
+        )
+        self.session.add(generation)
+        await self.session.flush()
+
+        runs: list[SorSyncRunModel] = []
+        for stream in streams:
+            run = SorSyncRunModel(
+                organization_id=organization_id,
+                source_id=source_id,
+                generation_id=generation.id,
+                stream_id=stream.id,
+                mapping_revision_id=mapping_revision_id,
+                kind=kind,
+                state=(
+                    SorWorkState.WAITING
+                    if dependency_graph[stream.vendor_object_key]
+                    else SorWorkState.PENDING
+                ),
+                max_attempts=max_attempts,
+                checkpoint_before=(
+                    None
+                    if kind
+                    in {SorSyncRunKind.BOOTSTRAP, SorSyncRunKind.RECONCILIATION}
+                    else stream.checkpoint
+                ),
+            )
+            self.session.add(run)
+            runs.append(run)
+        await self.session.flush()
+        return SorSyncGenerationPlan(generation=generation, runs=tuple(runs))
 
     async def create_stream_run(
         self,
@@ -256,14 +404,7 @@ class SorSyncRunService:
         max_attempts: int = 3,
     ) -> tuple[SorSyncRunModel, bool]:
         """Create one serialized stream run or return the already-active run."""
-        if kind not in {
-            SorSyncRunKind.BOOTSTRAP,
-            SorSyncRunKind.INCREMENTAL,
-            SorSyncRunKind.RECONCILIATION,
-        }:
-            raise SorConfigurationError("This sync run kind is not stream-based.")
-        if not 1 <= max_attempts <= 10:
-            raise SorConfigurationError("Sync max attempts must be between 1 and 10.")
+        self._validate_run_request(kind=kind, max_attempts=max_attempts)
         source = await self.sources.get(
             organization_id=organization_id,
             source_id=source_id,
@@ -278,11 +419,6 @@ class SorSyncRunService:
         if stream is None:
             raise SorNotFoundError("SOR source stream not found.")
         self._require_runnable(source=source, stream=stream, kind=kind)
-        mapping_revision_id = source.active_mapping_revision_id
-        if mapping_revision_id is None:
-            raise SorConfigurationError(
-                "SOR source has no published mapping for synchronization."
-            )
         active = await self.repository.get_active_sync_run(
             organization_id=organization_id,
             stream_id=stream_id,
@@ -290,22 +426,177 @@ class SorSyncRunService:
         )
         if active is not None:
             return active, False
-
-        run = SorSyncRunModel(
+        plan = await self.create_generation(
             organization_id=organization_id,
             source_id=source_id,
-            stream_id=stream_id,
-            mapping_revision_id=mapping_revision_id,
+            stream_ids=(stream_id,),
             kind=kind,
-            state=SorWorkState.PENDING,
             max_attempts=max_attempts,
-            checkpoint_before=(
-                None if kind is SorSyncRunKind.RECONCILIATION else stream.checkpoint
-            ),
         )
-        self.session.add(run)
+        return plan.runs[0], True
+
+    @staticmethod
+    def _validate_run_request(*, kind: SorSyncRunKind, max_attempts: int) -> None:
+        if kind not in {
+            SorSyncRunKind.BOOTSTRAP,
+            SorSyncRunKind.INCREMENTAL,
+            SorSyncRunKind.RECONCILIATION,
+        }:
+            raise SorConfigurationError("This sync run kind is not stream-based.")
+        if not 1 <= max_attempts <= 10:
+            raise SorConfigurationError("Sync max attempts must be between 1 and 10.")
+
+    async def mark_generation_started(
+        self,
+        *,
+        organization_id: UUID,
+        generation_id: UUID,
+    ) -> None:
+        """Mark source-level orchestration active when its first root begins."""
+        generation = await self.repository.get_sync_generation(
+            organization_id=organization_id,
+            generation_id=generation_id,
+            for_update=True,
+        )
+        if generation is None or generation.state in {
+            SorWorkState.SUCCEEDED,
+            SorWorkState.FAILED,
+            SorWorkState.CANCELLED,
+        }:
+            return
+        generation.state = SorWorkState.RUNNING
+        generation.started_at = generation.started_at or datetime.now(timezone.utc)
         await self.session.flush()
-        return run, True
+
+    async def advance_generation(
+        self,
+        *,
+        organization_id: UUID,
+        generation_id: UUID,
+    ) -> tuple[UUID, ...]:
+        """Release ready descendants and terminalize dependency-blocked work."""
+        generation = await self.repository.get_sync_generation(
+            organization_id=organization_id,
+            generation_id=generation_id,
+            for_update=True,
+        )
+        if generation is None:
+            return ()
+        runs = await self.repository.list_generation_runs(
+            organization_id=organization_id,
+            generation_id=generation_id,
+            for_update=True,
+        )
+        if not runs:
+            raise SorConflictError("SOR sync generation has no stream runs.")
+        streams = {
+            stream.id: stream
+            for stream in await self.repository.list_streams(
+                organization_id=organization_id,
+                source_id=generation.source_id,
+            )
+        }
+        runs_by_key: dict[str, SorSyncRunModel] = {}
+        for run in runs:
+            if run.stream_id is None or run.stream_id not in streams:
+                raise SorConflictError("SOR sync generation references a missing stream.")
+            key = streams[run.stream_id].vendor_object_key
+            if key in runs_by_key:
+                raise SorConflictError("SOR sync generation repeats a source stream.")
+            runs_by_key[key] = run
+
+        now = datetime.now(timezone.utc)
+        released: list[UUID] = []
+        changed = True
+        while changed:
+            changed = False
+            for key, run in runs_by_key.items():
+                if run.state is not SorWorkState.WAITING:
+                    continue
+                stream = streams[run.stream_id]
+                dependencies = [
+                    runs_by_key[dependency]
+                    for dependency in stream.depends_on
+                    if dependency in runs_by_key
+                ]
+                if any(
+                    dependency.state
+                    in {SorWorkState.FAILED, SorWorkState.CANCELLED}
+                    for dependency in dependencies
+                ):
+                    run.state = SorWorkState.FAILED
+                    run.safe_error_code = "DEPENDENCY_FAILED"
+                    run.safe_error_summary = (
+                        f"A required stream failed before {key} could run."
+                    )
+                    run.finished_at = now
+                    stream.state = SorStreamState.DEGRADED
+                    stream.last_failure_at = now
+                    stream.last_error_code = "DEPENDENCY_FAILED"
+                    changed = True
+                elif all(
+                    dependency.state is SorWorkState.SUCCEEDED
+                    for dependency in dependencies
+                ):
+                    run.state = SorWorkState.PENDING
+                    released.append(run.id)
+                    changed = True
+
+        terminal = {
+            SorWorkState.SUCCEEDED,
+            SorWorkState.FAILED,
+            SorWorkState.CANCELLED,
+        }
+        if all(run.state in terminal for run in runs):
+            failed = any(
+                run.state in {SorWorkState.FAILED, SorWorkState.CANCELLED}
+                for run in runs
+            )
+            generation.state = (
+                SorWorkState.FAILED if failed else SorWorkState.SUCCEEDED
+            )
+            generation.finished_at = now
+            if failed:
+                generation.safe_error_code = "GENERATION_INCOMPLETE"
+                generation.safe_error_summary = (
+                    "One or more source streams did not synchronize successfully."
+                )
+            else:
+                generation.safe_error_code = None
+                generation.safe_error_summary = None
+            if generation.kind is SorSyncRunKind.BOOTSTRAP:
+                source = await self.sources.get(
+                    organization_id=organization_id,
+                    source_id=generation.source_id,
+                    for_update=True,
+                )
+                if source.state in {
+                    SorSourceState.BOOTSTRAPPING,
+                    SorSourceState.DEGRADED,
+                }:
+                    await self.sources.transition(
+                        organization_id=organization_id,
+                        source_id=generation.source_id,
+                        transition=(
+                            SorSourceTransition.BOOTSTRAP_FAILED
+                            if failed
+                            else SorSourceTransition.BOOTSTRAP_SUCCEEDED
+                        ),
+                        error_code=("GENERATION_INCOMPLETE" if failed else None),
+                        error_summary=(
+                            "One or more source streams did not synchronize "
+                            "successfully."
+                            if failed
+                            else None
+                        ),
+                    )
+        else:
+            generation.state = SorWorkState.RUNNING
+            generation.started_at = generation.started_at or now
+            generation.finished_at = None
+        generation.updated_at = now
+        await self.session.flush()
+        return tuple(released)
 
     async def lock_page_context(
         self,
@@ -348,13 +639,28 @@ class SorSyncRunService:
         run_id: UUID,
         expected_checkpoint: str | None,
     ) -> SorStreamRunContext:
-        """Lock and validate the shared authority for a stream run write."""
+        """Lock source authority before the run and stream write set."""
+        identity = await self.repository.get_sync_run(
+            organization_id=organization_id,
+            run_id=run_id,
+        )
+        if identity is None or identity.stream_id is None:
+            raise SorNotFoundError("SOR stream sync run not found.")
+        source = await self.sources.get(
+            organization_id=organization_id,
+            source_id=identity.source_id,
+            for_update=True,
+        )
         run = await self.repository.get_sync_run(
             organization_id=organization_id,
             run_id=run_id,
             for_update=True,
         )
-        if run is None or run.stream_id is None:
+        if (
+            run is None
+            or run.stream_id is None
+            or run.source_id != source.id
+        ):
             raise SorNotFoundError("SOR stream sync run not found.")
         if run.state is not SorWorkState.RUNNING:
             raise SorConflictError("SOR sync run is no longer running.")
@@ -366,11 +672,6 @@ class SorSyncRunService:
         )
         if stream is None:
             raise SorNotFoundError("SOR source stream not found.")
-        source = await self.sources.get(
-            organization_id=organization_id,
-            source_id=run.source_id,
-            for_update=True,
-        )
         self._require_runnable(source=source, stream=stream, kind=run.kind)
         if run.mapping_revision_id != source.active_mapping_revision_id:
             raise SorConflictError(
@@ -378,7 +679,8 @@ class SorSyncRunService:
             )
         current_checkpoint = (
             run.checkpoint_after
-            if run.kind is SorSyncRunKind.RECONCILIATION
+            if run.kind
+            in {SorSyncRunKind.BOOTSTRAP, SorSyncRunKind.RECONCILIATION}
             else stream.checkpoint
         )
         if current_checkpoint != expected_checkpoint:
@@ -410,61 +712,11 @@ class SorSyncRunService:
         *,
         context: SorStreamRunContext,
         counts: SorSyncCounts,
-    ) -> int:
-        """Finalize source freshness; infer deletions only after a complete scan."""
+    ) -> None:
+        """Finalize source freshness after all bounded projection work commits."""
         now = datetime.now(timezone.utc)
-        tombstoned = 0
-        tombstoned_record_ids: tuple[UUID, ...] = ()
-        if context.run.kind is SorSyncRunKind.RECONCILIATION:
-            scan_started_at = context.run.started_at
-            if scan_started_at is None:
-                raise SorConfigurationError(
-                    "A reconciliation cannot finish before its run has started."
-                )
-            result = await self.session.execute(
-                update(SorRecordModel)
-                .where(
-                    SorRecordModel.organization_id == context.source.organization_id,
-                    SorRecordModel.source_id == context.source.id,
-                    SorRecordModel.vendor_object_key == context.stream.vendor_object_key,
-                    SorRecordModel.tombstoned_at.is_(None),
-                    SorRecordModel.deleted.is_(False),
-                    SorRecordModel.projected_at <= scan_started_at,
-                    SorRecordModel.last_successful_sync_run_id.is_distinct_from(
-                        context.run.id
-                    ),
-                )
-                .values(
-                    tombstoned_at=now,
-                    deletion_reason="Missing from complete reconciliation",
-                    projected_at=now,
-                )
-                .returning(
-                    SorRecordModel.id,
-                    SorRecordModel.canonical_entity_kind,
-                    SorRecordModel.vendor_external_id,
-                )
-            )
-            deleted_records = result.all()
-            tombstoned = len(deleted_records)
-            tombstoned_record_ids = tuple(row.id for row in deleted_records)
-            if deleted_records:
-                await SorProjectionService(
-                    self.session
-                ).tombstone_relations_for_records(
-                    organization_id=context.source.organization_id,
-                    source_id=context.source.id,
-                    record_ids=tuple(row.id for row in deleted_records),
-                    relation_external_ids=tuple(
-                        row.vendor_external_id
-                        for row in deleted_records
-                        if row.canonical_entity_kind == "relation"
-                    ),
-                    tombstoned_at=now,
-                )
-        final = counts.add(SorSyncCounts(tombstoned=tombstoned))
-        _set_counts(context.run, final)
-        _set_counts(context.stream, final)
+        _set_counts(context.run, counts)
+        _set_counts(context.stream, counts)
         context.stream.last_success_at = now
         context.stream.last_failure_at = None
         context.stream.last_error_code = None
@@ -474,23 +726,7 @@ class SorSyncRunService:
         context.stream.state = SorStreamState.ACTIVE
         if context.run.kind is SorSyncRunKind.RECONCILIATION:
             context.source.last_reconciliation_at = now
-        if context.run.kind is SorSyncRunKind.BOOTSTRAP:
-            streams = await self.repository.list_streams(
-                organization_id=context.source.organization_id,
-                source_id=context.source.id,
-            )
-            bootstrap_complete = all(
-                stream.state is SorStreamState.PAUSED
-                or stream.last_success_at is not None
-                for stream in streams
-            )
-            if bootstrap_complete:
-                await self.sources.transition(
-                    organization_id=context.source.organization_id,
-                    source_id=context.source.id,
-                    transition=SorSourceTransition.BOOTSTRAP_SUCCEEDED,
-                )
-        else:
+        if context.run.kind is not SorSyncRunKind.BOOTSTRAP:
             streams = await self.repository.list_streams(
                 organization_id=context.source.organization_id,
                 source_id=context.source.id,
@@ -517,26 +753,110 @@ class SorSyncRunService:
                     error_code=degraded.last_error_code or "STREAM_DEGRADED",
                     error_summary="One or more SOR source streams are degraded.",
                 )
-        register_records_tombstoned(
-            organization_id=context.source.organization_id,
-            source_id=context.source.id,
-            stream_id=context.stream.id,
-            sync_run_id=context.run.id,
-            record_ids=tombstoned_record_ids,
-        )
         register_sync_completed(
             organization_id=context.source.organization_id,
             source_id=context.source.id,
             stream_id=context.stream.id,
             sync_run_id=context.run.id,
             kind=context.run.kind,
-            records_added=final.added,
-            records_updated=final.updated,
-            records_tombstoned=final.tombstoned,
-            records_unchanged=final.unchanged,
-            records_rejected=final.rejected,
+            records_added=counts.added,
+            records_updated=counts.updated,
+            records_tombstoned=counts.tombstoned,
+            records_unchanged=counts.unchanged,
+            records_rejected=counts.rejected,
         )
-        return tombstoned
+
+    async def tombstone_missing_batch(
+        self,
+        *,
+        context: SorStreamRunContext,
+        limit: int,
+    ) -> int:
+        """Tombstone one restart-safe full-scan batch under current locks."""
+        if context.run.kind not in {
+            SorSyncRunKind.BOOTSTRAP,
+            SorSyncRunKind.RECONCILIATION,
+        }:
+            return 0
+        if isinstance(limit, bool) or not 1 <= limit <= 1_000:
+            raise ValueError("SOR tombstone batch limit must be between 1 and 1000.")
+        scan_started_at = context.run.started_at
+        if scan_started_at is None:
+            raise SorConfigurationError(
+                "A complete source scan cannot tombstone before its run has started."
+            )
+
+        result = await self.session.execute(
+            select(
+                SorRecordModel.id,
+                SorRecordModel.canonical_entity_kind,
+                SorRecordModel.vendor_object_key,
+                SorRecordModel.vendor_external_id,
+            )
+            .where(
+                SorRecordModel.organization_id == context.source.organization_id,
+                SorRecordModel.source_id == context.source.id,
+                SorRecordModel.vendor_object_key == context.stream.vendor_object_key,
+                SorRecordModel.tombstoned_at.is_(None),
+                SorRecordModel.deleted.is_(False),
+                SorRecordModel.projected_at <= scan_started_at,
+                SorRecordModel.last_successful_sync_run_id.is_distinct_from(
+                    context.run.id
+                ),
+            )
+            .order_by(SorRecordModel.id.asc())
+            .limit(limit)
+            .with_for_update()
+        )
+        deleted_records = result.all()
+        if not deleted_records:
+            return 0
+
+        now = datetime.now(timezone.utc)
+        record_ids = tuple(row.id for row in deleted_records)
+        await self.session.execute(
+            update(SorRecordModel)
+            .where(SorRecordModel.id.in_(record_ids))
+            .values(
+                tombstoned_at=now,
+                deletion_reason="Missing from complete source scan",
+                projected_at=now,
+            )
+        )
+        await SorProjectionService(self.session).tombstone_relations_for_records(
+            organization_id=context.source.organization_id,
+            source_id=context.source.id,
+            record_ids=record_ids,
+            relation_external_ids=tuple(
+                row.vendor_external_id
+                for row in deleted_records
+                if row.canonical_entity_kind == "relation"
+            ),
+            tombstoned_at=now,
+        )
+        relationships = SorRelationshipService(self.session)
+        await relationships.tombstone_origin_records(
+            organization_id=context.source.organization_id,
+            source_id=context.source.id,
+            record_ids=record_ids,
+        )
+        for deleted_record in deleted_records:
+            await relationships.resolve_for_endpoint(
+                organization_id=context.source.organization_id,
+                source_id=context.source.id,
+                vendor_object_key=deleted_record.vendor_object_key,
+                vendor_external_id=deleted_record.vendor_external_id,
+            )
+        _add_counts(context.run, SorSyncCounts(tombstoned=len(record_ids)))
+        register_records_tombstoned(
+            organization_id=context.source.organization_id,
+            source_id=context.source.id,
+            stream_id=context.stream.id,
+            sync_run_id=context.run.id,
+            record_ids=record_ids,
+        )
+        await self.session.flush()
+        return len(record_ids)
 
     async def mark_failure(
         self,
@@ -547,12 +867,27 @@ class SorSyncRunService:
         requires_reauthorization: bool,
     ) -> None:
         """Project terminal operational failure without mutating the checkpoint."""
+        identity = await self.repository.get_sync_run(
+            organization_id=organization_id,
+            run_id=run_id,
+        )
+        if identity is None or identity.stream_id is None:
+            return
+        await self.sources.get(
+            organization_id=organization_id,
+            source_id=identity.source_id,
+            for_update=True,
+        )
         run = await self.repository.get_sync_run(
             organization_id=organization_id,
             run_id=run_id,
             for_update=True,
         )
-        if run is None or run.stream_id is None:
+        if (
+            run is None
+            or run.stream_id is None
+            or run.source_id != identity.source_id
+        ):
             return
         stream = await self.repository.get_stream(
             organization_id=organization_id,

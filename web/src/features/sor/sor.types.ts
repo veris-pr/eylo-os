@@ -7,10 +7,6 @@ type SorToolEffect = components["schemas"]["SorToolEffect"];
 type SorAuthKind = components["schemas"]["ConnectionAuthKind"];
 type SorOnboardingAuthKind = Extract<SorAuthKind, "api_key" | "oauth2">;
 type SorChangeStrategy = components["schemas"]["SorChangeStrategy"];
-type SorAgentRecord = components["schemas"]["SorAgentRecordResponse"];
-type SorAgentView = components["schemas"]["SorAgentViewResponse"];
-type SorAgentVisibleField =
-  components["schemas"]["SorAgentVisibleFieldResponse"];
 type SorCollectionPage = components["schemas"]["SorCollectionPageResponse"];
 type SorCollectionRow = components["schemas"]["SorCollectionRowResponse"];
 type SorCollectionQueryInput =
@@ -46,6 +42,8 @@ type SorOAuthConfiguration =
   components["schemas"]["SorOAuthConfigurationResponse"];
 type SorSchemaRevision = components["schemas"]["SorSchemaRevisionResponse"];
 type SorSource = components["schemas"]["SorSourceResponse"];
+type SorSourceOperations = components["schemas"]["SorSourceOperationsResponse"];
+type SorSyncGeneration = components["schemas"]["SorSyncGenerationResponse"];
 type SorSourceCreateInput = components["schemas"]["SorSourceCreateRequest"];
 type SorApiKeySourceCreateInput =
   components["schemas"]["SorApiKeySourceCreateRequest"];
@@ -89,6 +87,7 @@ interface SorOnboardingDraft {
   fieldMappings: SorFieldMappingDraftInput[];
   freshnessTargetSeconds: number;
   instanceOrigin: string;
+  onboardingAttemptId: string;
   profile: SorProfileKey | null;
   requiredSyncIntervalSeconds: number;
   selectedObjects: string[];
@@ -105,7 +104,7 @@ interface SorOnboardingDraftContext {
 interface StoredSorOnboardingDraft {
   savedAt: string;
   values: SorOnboardingDraft;
-  version: 1;
+  version: 2;
 }
 
 interface SorEntityDefinition {
@@ -131,6 +130,8 @@ interface SorVendorStreamDefinition {
   canonicalEntity: string;
   changeStrategies: SorChangeStrategy[];
   scopeCategory: string | null;
+  dependsOn: string[];
+  relationshipTargets: Record<string, string>;
 }
 
 interface SorToolDefinition {
@@ -208,9 +209,6 @@ interface SorCatalog {
 }
 
 export type {
-  SorAgentRecord,
-  SorAgentView,
-  SorAgentVisibleField,
   SorAdapterCapabilities,
   SorAdapterConfigurationFieldDefinition,
   SorAuthKind,
@@ -252,6 +250,7 @@ export type {
   SorRecordDetail,
   SorSchemaRevision,
   SorSource,
+  SorSourceOperations,
   SorApiKeySourceCreateInput,
   SorSourceAccess,
   SorSourceActivation,
@@ -261,6 +260,7 @@ export type {
   SorSourceState,
   SorStream,
   SorStreamCreateInput,
+  SorSyncGeneration,
   SorSyncRun,
   SorSyncRunKind,
   SorSupportTicketAudit,

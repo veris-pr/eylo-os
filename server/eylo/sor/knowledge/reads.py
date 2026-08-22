@@ -45,6 +45,7 @@ def _field(
     sortable: bool = True,
     groupable: bool = False,
     wraps: bool = False,
+    reference_entity: str | None = None,
 ) -> SorReadFieldSpec:
     return SorReadFieldSpec(
         key=key,
@@ -58,6 +59,7 @@ def _field(
         sortable=sortable,
         groupable=groupable,
         wraps=wraps,
+        reference_entity=reference_entity,
     )
 
 
@@ -117,6 +119,7 @@ KNOWLEDGE_DOCUMENT_READ_SPEC = SorEntityReadSpec(
             expression=KnowledgeDocumentModel.space_external_id,
             attribute="space_external_id",
             groupable=True,
+            reference_entity="space",
         ),
         _field(
             key="parent_external_id",
@@ -127,6 +130,7 @@ KNOWLEDGE_DOCUMENT_READ_SPEC = SorEntityReadSpec(
             attribute="parent_external_id",
             default_visible=False,
             groupable=True,
+            reference_entity="document",
         ),
         _field(
             key="source_format",
@@ -155,6 +159,7 @@ KNOWLEDGE_DOCUMENT_READ_SPEC = SorEntityReadSpec(
             attribute="author_external_id",
             default_visible=False,
             groupable=True,
+            reference_entity="author",
         ),
         _field(
             key="label_external_ids",
@@ -222,6 +227,7 @@ KNOWLEDGE_BLOCK_READ_SPEC = SorEntityReadSpec(
             expression=KnowledgeBlockModel.document_external_id,
             attribute="document_external_id",
             groupable=True,
+            reference_entity="document",
         ),
         _field(
             key="kind",
@@ -258,6 +264,7 @@ KNOWLEDGE_BLOCK_READ_SPEC = SorEntityReadSpec(
             attribute="parent_external_id",
             default_visible=False,
             groupable=True,
+            reference_entity="block",
         ),
         _field(
             key="supported",
@@ -284,6 +291,7 @@ KNOWLEDGE_VERSION_READ_SPEC = SorEntityReadSpec(
             expression=KnowledgeVersionModel.document_external_id,
             attribute="document_external_id",
             groupable=True,
+            reference_entity="document",
         ),
         _field(
             key="number",
@@ -301,6 +309,7 @@ KNOWLEDGE_VERSION_READ_SPEC = SorEntityReadSpec(
             expression=KnowledgeVersionModel.author_external_id,
             attribute="author_external_id",
             groupable=True,
+            reference_entity="author",
         ),
         _field(
             key="message",
@@ -354,6 +363,7 @@ KNOWLEDGE_PROPERTY_READ_SPEC = SorEntityReadSpec(
             expression=KnowledgePropertyModel.document_external_id,
             attribute="document_external_id",
             groupable=True,
+            reference_entity="document",
         ),
         _field(
             key="key",
@@ -397,6 +407,7 @@ KNOWLEDGE_ATTACHMENT_READ_SPEC = SorEntityReadSpec(
             expression=KnowledgeAttachmentModel.document_external_id,
             attribute="document_external_id",
             groupable=True,
+            reference_entity="document",
         ),
         _field(
             key="media_type",

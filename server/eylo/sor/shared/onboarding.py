@@ -13,6 +13,7 @@ from eylo.sor.runtime.registry import SorRegistry
 from eylo.sor.shared.contracts import (
     SorFieldMappingDirection,
     SorFieldMappingDraft,
+    SorMappingState,
     SorSourceState,
     SorStreamDraft,
     SorSyncRunKind,
@@ -25,6 +26,7 @@ from eylo.sor.shared.models import (
     SorMappingRevisionModel,
     SorSourceModel,
     SorSourceStreamModel,
+    SorSyncGenerationModel,
     SorSyncRunModel,
 )
 from eylo.sor.shared.repositories import SorRepository
@@ -32,6 +34,7 @@ from eylo.sor.shared.services import (
     SorConfigurationError,
     SorConflictError,
     SorMappingService,
+    SorNotFoundError,
     SorSourceService,
     snapshot_objects,
 )
@@ -45,11 +48,21 @@ class SorActivationResult:
     source: SorSourceModel
     mapping: SorMappingRevisionModel
     streams: tuple[SorSourceStreamModel, ...]
+    generation: SorSyncGenerationModel
+    runs: tuple[SorSyncRunModel, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SorMappingPublicationResult:
+    """Published mapping plus the durable bootstrap work it authorized."""
+
+    mapping: SorMappingRevisionModel
+    generation: SorSyncGenerationModel | None
     runs: tuple[SorSyncRunModel, ...]
 
 
 class SorOnboardingService:
-    """Activate one verified source without browser-coordinated partial state."""
+    """Persist complete source activation and remapping authority."""
 
     def __init__(
         self,
@@ -120,7 +133,6 @@ class SorOnboardingService:
         )
 
         stream_rows: list[SorSourceStreamModel] = []
-        run_rows: list[SorSyncRunModel] = []
         for draft in stream_drafts:
             label, custom = discovered_objects[draft.vendor_object_key]
             if custom:
@@ -139,24 +151,108 @@ class SorOnboardingService:
                 lookback_seconds=draft.lookback_seconds,
                 schedule=draft.schedule,
             )
-            run, created = await self.runs.create_stream_run(
-                organization_id=organization_id,
-                source_id=source_id,
-                stream_id=stream.id,
-                kind=SorSyncRunKind.BOOTSTRAP,
-            )
-            if not created:
-                raise SorConflictError(
-                    "A source stream already has active bootstrap work."
-                )
             stream_rows.append(stream)
-            run_rows.append(run)
+
+        generation = await self.runs.create_generation(
+            organization_id=organization_id,
+            source_id=source_id,
+            stream_ids=tuple(stream.id for stream in stream_rows),
+            kind=SorSyncRunKind.BOOTSTRAP,
+        )
 
         return SorActivationResult(
             source=source,
             mapping=mapping,
             streams=tuple(stream_rows),
-            runs=tuple(run_rows),
+            generation=generation.generation,
+            runs=generation.runs,
+        )
+
+    async def publish_mapping(
+        self,
+        *,
+        organization_id: UUID,
+        source_id: UUID,
+        mapping_revision_id: UUID,
+        actor_id: UUID | None,
+    ) -> SorMappingPublicationResult:
+        """Publish a replacement and persist its source-wide bootstrap DAG."""
+        source = await self.sources.get(
+            organization_id=organization_id,
+            source_id=source_id,
+            for_update=True,
+        )
+        streams = await self.repository.list_streams(
+            organization_id=organization_id,
+            source_id=source_id,
+        )
+        if not streams:
+            raise SorConflictError(
+                "Activate the source before publishing a replacement mapping."
+            )
+        mapping = await self.repository.get_mapping_revision(
+            organization_id=organization_id,
+            source_id=source_id,
+            mapping_revision_id=mapping_revision_id,
+            for_update=True,
+        )
+        if mapping is None:
+            raise SorNotFoundError("Mapping revision not found.")
+
+        if mapping.state is SorMappingState.DRAFT:
+            mapping = await self.mappings.publish(
+                organization_id=organization_id,
+                source_id=source_id,
+                mapping_revision_id=mapping_revision_id,
+                actor_id=actor_id,
+            )
+        elif (
+            mapping.state is not SorMappingState.ACTIVE
+            or source.active_mapping_revision_id != mapping.id
+        ):
+            raise SorConflictError("Only a draft mapping can be published.")
+
+        active_run = await self.repository.get_active_source_sync_run(
+            organization_id=organization_id,
+            source_id=source_id,
+            for_update=True,
+        )
+        if active_run is not None:
+            generation = await self.repository.get_sync_generation(
+                organization_id=organization_id,
+                generation_id=active_run.generation_id,
+                for_update=True,
+            )
+            if generation is None:
+                raise SorConflictError("Active source work has no generation.")
+            runs = await self.repository.list_generation_runs(
+                organization_id=organization_id,
+                generation_id=generation.id,
+                for_update=True,
+            )
+            return SorMappingPublicationResult(
+                mapping=mapping,
+                generation=generation,
+                runs=tuple(runs),
+            )
+
+        if source.state is SorSourceState.ACTIVE:
+            return SorMappingPublicationResult(
+                mapping=mapping,
+                generation=None,
+                runs=(),
+            )
+
+        generation = await self.runs.create_generation(
+            organization_id=organization_id,
+            source_id=source_id,
+            stream_ids=tuple(stream.id for stream in streams),
+            kind=SorSyncRunKind.BOOTSTRAP,
+        )
+        return SorMappingPublicationResult(
+            mapping=mapping,
+            generation=generation.generation,
+            runs=generation.runs,
         )
 
     def _validate_selection(
@@ -181,6 +277,7 @@ class SorOnboardingService:
             vendor_key=source.vendor_key,
         )
         manifest_streams = {stream.key: stream for stream in manifest.streams}
+        selected_streams = set(selected)
         profile_entities = {
             entity.key: entity for entity in self.registry.get_profile(source.profile).entities
         }
@@ -225,6 +322,14 @@ class SorOnboardingService:
                         "Custom-object mappings must be read-only typed audit fields."
                     )
                 continue
+            missing_dependencies = sorted(
+                manifest_stream.depends_on - selected_streams
+            )
+            if missing_dependencies:
+                raise SorConfigurationError(
+                    f"{manifest_stream.label} requires source objects: "
+                    f"{', '.join(missing_dependencies)}."
+                )
             if stream.canonical_entity_kind != manifest_stream.canonical_entity:
                 raise SorConfigurationError(
                     "Activation stream entity does not match the adapter contract."
@@ -248,4 +353,8 @@ class SorOnboardingService:
                 )
 
 
-__all__ = ["SorActivationResult", "SorOnboardingService"]
+__all__ = [
+    "SorActivationResult",
+    "SorMappingPublicationResult",
+    "SorOnboardingService",
+]

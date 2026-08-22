@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 from datetime import datetime
@@ -33,6 +32,7 @@ from eylo.sor.runtime.work import (
 )
 from eylo.sor.shared.contracts import (
     SorExternalRecord,
+    SorLifecycleAdapter,
     SorProjectionDisposition,
     SorRecordPage,
     SorSourceState,
@@ -40,7 +40,7 @@ from eylo.sor.shared.contracts import (
     SorVendorOperationError,
     SorWorkState,
 )
-from eylo.sor.shared.models import SorSyncRunModel
+from eylo.sor.shared.models import SorSyncGenerationModel, SorSyncRunModel
 from eylo.sor.shared.repositories import SorRepository
 from eylo.sor.shared.secrets import (
     SorSecretEnvelopeError,
@@ -58,6 +58,7 @@ logger = logging.getLogger(__name__)
 
 SOR_SYNC_WORKFLOW = "eylo.sor.sync-stream.v1"
 SOR_SYNC_PAGE_LIMIT = 200
+SOR_RECONCILIATION_TOMBSTONE_LIMIT = 200
 SOR_SYNC_RECORD_MAX_BYTES = 1_048_576
 SOR_SYNC_PAGE_MAX_BYTES = 8_388_608
 SOR_SYNC_SOURCE_STATES = frozenset(
@@ -140,11 +141,23 @@ async def spawn_unbound_sor_sync_runs(*, limit: int = 100) -> int:
 
 async def cancel_sor_sync_run(*, organization_id: UUID, run_id: UUID) -> bool:
     """Cancel product state first, then notify the bound Absurd task."""
-    return await cancel_sor_bound_work(
+    async with start_transaction(ro=True) as session:
+        run = await SorRepository(session).get_sync_run(
+            organization_id=organization_id,
+            run_id=run_id,
+        )
+        generation_id = run.generation_id if run is not None else None
+    cancelled = await cancel_sor_bound_work(
         contract=SOR_SYNC_WORK,
         organization_id=organization_id,
         work_id=run_id,
     )
+    if cancelled and generation_id is not None:
+        await _advance_and_spawn(
+            organization_id=organization_id,
+            generation_id=generation_id,
+        )
+    return cancelled
 
 
 async def reconcile_terminal_sor_sync_runs(*, limit: int = 100) -> dict[str, int]:
@@ -224,10 +237,15 @@ async def reconcile_terminal_sor_sync_runs(*, limit: int = 100) -> dict[str, int
                             error_code=code,
                             error_summary=summary,
                         )
+                    generation_id = row.generation_id
                 if not changed:
                     counts["raced"] += 1
                     continue
                 if engine_state == "cancelled":
+                    await _advance_and_spawn(
+                        organization_id=candidate.organization_id,
+                        generation_id=generation_id,
+                    )
                     counts["cancelled"] += 1
                     continue
                 await _project_sync_failure(
@@ -236,12 +254,84 @@ async def reconcile_terminal_sor_sync_runs(*, limit: int = 100) -> dict[str, int
                     error_code=code,
                     requires_reauthorization=False,
                 )
+                await _advance_and_spawn(
+                    organization_id=candidate.organization_id,
+                    generation_id=generation_id,
+                )
                 counts["failed"] += 1
             except (SorWorkConflict, SorWorkNotFound):
                 counts["raced"] += 1
     finally:
         await runtime.close()
     return counts
+
+
+async def reconcile_unadvanced_sor_sync_generations(
+    *, limit: int = 100
+) -> dict[str, int]:
+    """Repair the commit-to-generation-advance seam without vendor I/O."""
+    if isinstance(limit, bool) or not 1 <= limit <= 1_000:
+        raise ValueError("SOR generation reconciliation limit must be between 1 and 1000.")
+    terminal_run_changed = (
+        select(SorSyncRunModel.id)
+        .where(
+            SorSyncRunModel.organization_id
+            == SorSyncGenerationModel.organization_id,
+            SorSyncRunModel.generation_id == SorSyncGenerationModel.id,
+            SorSyncRunModel.state.in_(
+                (
+                    SorWorkState.SUCCEEDED,
+                    SorWorkState.FAILED,
+                    SorWorkState.CANCELLED,
+                )
+            ),
+            SorSyncRunModel.updated_at > SorSyncGenerationModel.updated_at,
+            SorSyncRunModel.deleted.is_(False),
+        )
+        .exists()
+    )
+    async with start_transaction(ro=True) as session:
+        candidates = list(
+            (
+                await session.execute(
+                    select(
+                        SorSyncGenerationModel.id,
+                        SorSyncGenerationModel.organization_id,
+                    )
+                    .where(
+                        SorSyncGenerationModel.state.in_(
+                            (SorWorkState.PENDING, SorWorkState.RUNNING)
+                        ),
+                        SorSyncGenerationModel.deleted.is_(False),
+                        terminal_run_changed,
+                    )
+                    .order_by(SorSyncGenerationModel.updated_at.asc())
+                    .limit(limit)
+                )
+            ).all()
+        )
+
+    reconciled = 0
+    errors = 0
+    for candidate in candidates:
+        try:
+            await _advance_and_spawn(
+                organization_id=candidate.organization_id,
+                generation_id=candidate.id,
+            )
+            reconciled += 1
+        except Exception as error:  # noqa: BLE001 - later nudges retry the seam
+            errors += 1
+            logger.error(
+                "Could not reconcile SOR sync generation id=%s error_type=%s",
+                candidate.id,
+                type(error).__name__,
+            )
+    return {
+        "checked": len(candidates),
+        "reconciled": reconciled,
+        "errors": errors,
+    }
 
 
 class SorSyncWorkflow:
@@ -264,10 +354,21 @@ class SorSyncWorkflow:
             )
         except CancelledTask:
             async with start_transaction() as session:
-                await SorBoundWorkService(SOR_SYNC_WORK, session).cancel(
+                work = SorBoundWorkService(SOR_SYNC_WORK, session)
+                row = await work.get(
+                    work_id=run_id,
+                    organization_id=organization_id,
+                    for_update=True,
+                )
+                await work.cancel(
                     work_id=run_id,
                     organization_id=organization_id,
                 )
+                generation_id = row.generation_id
+            await _advance_and_spawn(
+                organization_id=organization_id,
+                generation_id=generation_id,
+            )
             raise
 
     async def _execute(
@@ -320,17 +421,16 @@ class SorSyncWorkflow:
             rejected=int(attempt["records_rejected"]),
         )
         scan_complete = bool(attempt["scan_complete"])
-        try:
-            async with acquire_source_adapter(
-                organization_id=organization_id,
-                source_id=source_id,
-                registry=self.registry,
-                invocation_budget_seconds=120.0,
-            ) as adapter:
-                while not scan_complete:
-                    page_data = await task_context.step(
-                        _page_step(run_id, expected_checkpoint),
-                        lambda: run_with_durable_heartbeat(
+        if not scan_complete:
+            try:
+                async with acquire_source_adapter(
+                    organization_id=organization_id,
+                    source_id=source_id,
+                    registry=self.registry,
+                    invocation_budget_seconds=120.0,
+                ) as adapter:
+                    while not scan_complete:
+                        page_data = await run_with_durable_heartbeat(
                             task_context,
                             lambda: _fetch_page(
                                 adapter=adapter,
@@ -338,44 +438,56 @@ class SorSyncWorkflow:
                                 stream_key=attempt["stream_key"],
                                 cursor=cursor,
                             ),
-                        ),
-                    )
-                    page = _decode_page(page_data)
-                    _validate_cursor_progress(page=page, current=cursor)
-                    next_cursor = (
-                        page.next_cursor
-                        if page.next_cursor is not None
-                        else cursor
-                    )
-                    checkpoint_after = (
-                        encrypt_cursor(
-                            next_cursor,
-                            organization_id=organization_id,
-                            stream_id=stream_id,
-                            cursor_version=cursor_version,
                         )
-                        if next_cursor is not None
-                        else None
-                    )
-                    page_counts = await _commit_page(
-                        organization_id=organization_id,
-                        run_id=run_id,
-                        expected_checkpoint=expected_checkpoint,
-                        checkpoint_after=checkpoint_after,
-                        scan_complete=not page.has_more,
-                        page=page,
-                        adapter=adapter,
-                    )
-                    total = total.add(page_counts)
-                    expected_checkpoint = checkpoint_after
-                    cursor = next_cursor
-                    scan_complete = not page.has_more
-        except Exception as error:  # noqa: BLE001 - failure controls retry state
-            return await _handle_failure(
-                organization_id=organization_id,
-                run_id=run_id,
-                error=error,
-            )
+                        page = _decode_page(page_data)
+                        _validate_cursor_progress(page=page, current=cursor)
+                        next_cursor = (
+                            page.next_cursor
+                            if page.next_cursor is not None
+                            else cursor
+                        )
+                        checkpoint_after = (
+                            encrypt_cursor(
+                                next_cursor,
+                                organization_id=organization_id,
+                                stream_id=stream_id,
+                                cursor_version=cursor_version,
+                            )
+                            if next_cursor is not None
+                            else None
+                        )
+                        page_counts = await _commit_page(
+                            organization_id=organization_id,
+                            run_id=run_id,
+                            expected_checkpoint=expected_checkpoint,
+                            checkpoint_after=checkpoint_after,
+                            scan_complete=not page.has_more,
+                            page=page,
+                            adapter=adapter,
+                        )
+                        total = total.add(page_counts)
+                        expected_checkpoint = checkpoint_after
+                        cursor = next_cursor
+                        scan_complete = not page.has_more
+            except CancelledTask:
+                raise
+            except Exception as error:  # noqa: BLE001 - failure controls retry state
+                return await _handle_failure(
+                    organization_id=organization_id,
+                    run_id=run_id,
+                    error=error,
+                )
+
+        if kind in {SorSyncRunKind.BOOTSTRAP, SorSyncRunKind.RECONCILIATION}:
+            while True:
+                tombstoned = await _tombstone_full_scan_batch(
+                    organization_id=organization_id,
+                    run_id=run_id,
+                    expected_checkpoint=expected_checkpoint,
+                )
+                if tombstoned == 0:
+                    break
+                total = total.add(SorSyncCounts(tombstoned=tombstoned))
 
         async with start_transaction() as session:
             sync = SorSyncRunService(session)
@@ -384,14 +496,19 @@ class SorSyncWorkflow:
                 run_id=run_id,
                 expected_checkpoint=expected_checkpoint,
             )
-            tombstoned = await sync.finish_success(context=context, counts=total)
-            total = total.add(SorSyncCounts(tombstoned=tombstoned))
+            await sync.finish_success(context=context, counts=total)
             row = await SorBoundWorkService(SOR_SYNC_WORK, session).succeed(
                 work_id=run_id,
                 organization_id=organization_id,
                 values=_count_values(total),
             )
-        return _receipt(row)
+            generation_id = row.generation_id
+            receipt = _receipt(row)
+        await _advance_and_spawn(
+            organization_id=organization_id,
+            generation_id=generation_id,
+        )
+        return receipt
 
 
 async def _begin_attempt(*, organization_id: UUID, run_id: UUID) -> dict[str, Any]:
@@ -400,9 +517,18 @@ async def _begin_attempt(*, organization_id: UUID, run_id: UUID) -> dict[str, An
             work_id=run_id,
             organization_id=organization_id,
         )
-        if row.state in SOR_SYNC_WORK.terminal:
-            return _receipt(row, terminal=True)
-        receipt = _receipt(row, terminal=False)
+        terminal = row.state in SOR_SYNC_WORK.terminal
+        generation_id = row.generation_id
+        receipt = _receipt(row, terminal=terminal)
+
+    if terminal:
+        return receipt
+
+    async with start_transaction() as session:
+        await SorSyncRunService(session).mark_generation_started(
+            organization_id=organization_id,
+            generation_id=generation_id,
+        )
 
     async with start_transaction(ro=True) as session:
         repository = SorRepository(session)
@@ -421,7 +547,8 @@ async def _begin_attempt(*, organization_id: UUID, run_id: UUID) -> dict[str, An
             raise SorConfigurationError("SOR sync stream no longer exists.")
         checkpoint = (
             current.checkpoint_after
-            if current.kind is SorSyncRunKind.RECONCILIATION
+            if current.kind
+            in {SorSyncRunKind.BOOTSTRAP, SorSyncRunKind.RECONCILIATION}
             else stream.checkpoint
         )
         receipt.update(
@@ -438,7 +565,7 @@ async def _begin_attempt(*, organization_id: UUID, run_id: UUID) -> dict[str, An
 
 async def _fetch_page(
     *,
-    adapter,
+    adapter: SorLifecycleAdapter,
     kind: SorSyncRunKind,
     stream_key: str,
     cursor: str | None,
@@ -466,7 +593,7 @@ async def _commit_page(
     checkpoint_after: str | None,
     scan_complete: bool,
     page: SorRecordPage,
-    adapter,
+    adapter: SorLifecycleAdapter,
 ) -> SorSyncCounts:
     identities = [
         (record.vendor_object_key, record.external_id) for record in page.records
@@ -502,6 +629,26 @@ async def _commit_page(
     return counts
 
 
+async def _tombstone_full_scan_batch(
+    *,
+    organization_id: UUID,
+    run_id: UUID,
+    expected_checkpoint: str | None,
+) -> int:
+    """Tombstone one bounded page missing from a completed full source scan."""
+    async with start_transaction() as session:
+        sync = SorSyncRunService(session)
+        context = await sync.lock_finalization_context(
+            organization_id=organization_id,
+            run_id=run_id,
+            expected_checkpoint=expected_checkpoint,
+        )
+        return await sync.tombstone_missing_batch(
+            context=context,
+            limit=SOR_RECONCILIATION_TOMBSTONE_LIMIT,
+        )
+
+
 async def _handle_failure(
     *,
     organization_id: UUID,
@@ -525,6 +672,7 @@ async def _handle_failure(
             error_summary=summary,
             permanent=permanent,
         )
+        generation_id = row.generation_id
         receipt = _receipt(row)
     if state is SorWorkState.PENDING:
         raise error
@@ -534,6 +682,10 @@ async def _handle_failure(
             run_id=run_id,
             error_code=code,
             requires_reauthorization=reauthorization,
+        )
+        await _advance_and_spawn(
+            organization_id=organization_id,
+            generation_id=generation_id,
         )
     logger.warning("SOR sync failed id=%s code=%s", run_id, code)
     return receipt
@@ -718,10 +870,37 @@ def _validate_cursor_progress(*, page: SorRecordPage, current: str | None) -> No
         raise SorProjectionError("SOR adapter cursor did not advance.")
 
 
-def _page_step(run_id: UUID, checkpoint: str | None) -> str:
-    identity = checkpoint or "root"
-    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
-    return f"sor-sync:{run_id}:page:{digest}:v1"
+async def _advance_and_spawn(
+    *,
+    organization_id: UUID,
+    generation_id: UUID,
+) -> None:
+    async with start_transaction() as session:
+        ready = await SorSyncRunService(session).advance_generation(
+            organization_id=organization_id,
+            generation_id=generation_id,
+        )
+    await _spawn_ready_runs(organization_id=organization_id, run_ids=ready)
+
+
+async def _spawn_ready_runs(
+    *,
+    organization_id: UUID,
+    run_ids: tuple[UUID, ...],
+) -> None:
+    for ready_run_id in run_ids:
+        try:
+            await spawn_sor_sync_run(
+                organization_id=organization_id,
+                run_id=ready_run_id,
+            )
+        except Exception as error:  # noqa: BLE001 - outbox recovery owns retries
+            logger.error(
+                "SOR dependency released; spawn recovery remains pending "
+                "run_id=%s error_type=%s",
+                ready_run_id,
+                type(error).__name__,
+            )
 
 
 def _parse_params(params: dict[str, Any]) -> tuple[UUID, UUID]:
@@ -798,6 +977,7 @@ __all__ = [
     "SOR_SYNC_WORKFLOW",
     "SorSyncWorkflow",
     "cancel_sor_sync_run",
+    "reconcile_unadvanced_sor_sync_generations",
     "reconcile_terminal_sor_sync_runs",
     "register_sor_sync_workflow",
     "spawn_sor_sync_run",

@@ -23,6 +23,7 @@ from eylo.sor.shared.contracts import (
     SorVendorStreamSpec,
     require_unique_names,
 )
+from eylo.sor.shared.dependencies import validate_stream_dependencies
 from eylo.sor.support.contracts import SupportAdapter
 from eylo.sor.ticketing.contracts import TicketingAdapter
 
@@ -281,6 +282,10 @@ class SorRegistry:
             )
         stream_keys = [stream.key for stream in manifest.streams]
         require_unique_names(stream_keys, kind="vendor stream")
+        stream_key_set = frozenset(stream_keys)
+        validate_stream_dependencies(
+            {stream.key: stream.depends_on for stream in manifest.streams}
+        )
         stream_entities = {stream.canonical_entity for stream in manifest.streams}
         if stream_entities != manifest.readable_entities:
             raise ValueError(
@@ -308,6 +313,31 @@ class SorRegistry:
             if stream.scope_category is not None and not stream.scope_category.strip():
                 raise ValueError(
                     f"SOR vendor stream {stream.key} scope category cannot be blank."
+                )
+            blank_relationships = {
+                name
+                for name, target in stream.relationship_targets.items()
+                if not name.strip() or not target.strip()
+            }
+            if blank_relationships:
+                raise ValueError(
+                    f"SOR vendor stream {stream.key} has blank relationship keys."
+                )
+            unknown_relationship_targets = (
+                set(stream.relationship_targets.values()) - stream_key_set
+            )
+            if unknown_relationship_targets:
+                raise ValueError(
+                    f"SOR vendor stream {stream.key} relationships target unknown "
+                    f"streams: {sorted(unknown_relationship_targets)}."
+                )
+            missing_relationship_dependencies = (
+                set(stream.relationship_targets.values()) - {stream.key}
+            ) - stream.depends_on
+            if missing_relationship_dependencies:
+                raise ValueError(
+                    f"SOR vendor stream {stream.key} must depend on relationship "
+                    f"targets: {sorted(missing_relationship_dependencies)}."
                 )
         if not manifest.writable_entities.issubset(manifest.readable_entities):
             raise ValueError("Writable SOR entities must also be readable.")

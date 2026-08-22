@@ -137,7 +137,7 @@ class TicketingIssueRelation:
 
 @runtime_checkable
 class TicketingAdapter(SorLifecycleAdapter, Protocol):
-    """Ticketing-specific normalization port layered on shared lifecycle."""
+    """Ticketing port with pure, I/O-free synchronous normalization methods."""
 
     def normalize_issue(self, record: SorExternalRecord) -> TicketingIssue: ...
 

@@ -49,6 +49,9 @@ _STREAM_ENTITY = {
     "Opportunity": "deal",
     "Task": "activity",
 }
+_RELATIONSHIP_TARGETS = {
+    "Opportunity": {"contact": "Contact", "company": "Account"},
+}
 _TOOL_STREAM = {
     "crm_create_contact": ("Contact", True),
     "crm_update_contact": ("Contact", False),
@@ -112,6 +115,8 @@ SALESFORCE_MANIFEST = SorAdapterCapabilityManifest(
             description="Salesforce opportunities and pipeline stages.",
             canonical_entity="deal",
             change_strategies=frozenset({SorChangeStrategy.UPDATED_AT}),
+            depends_on=frozenset({"Contact", "Account"}),
+            relationship_targets=_RELATIONSHIP_TARGETS["Opportunity"],
         ),
         SorVendorStreamSpec(
             key="Task",

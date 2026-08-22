@@ -82,6 +82,19 @@ _STREAM_ENTITY = {
     "tags": "tag",
     "attachments": "attachment",
 }
+_RELATIONSHIP_TARGETS = {
+    "conversations": {
+        "requester": "contacts",
+        "assignee": "admins",
+        "queue": "teams",
+        "tag": "tags",
+    },
+    "conversation_parts": {"ticket": "conversations"},
+    "attachments": {
+        "ticket": "conversations",
+        "message": "conversation_parts",
+    },
+}
 _READ_TOOLS = frozenset(
     {
         "support_find_customer",
@@ -184,6 +197,11 @@ INTERCOM_MANIFEST = SorAdapterCapabilityManifest(
                 in {"conversations", "contacts", "conversation_parts", "attachments"}
                 else frozenset({SorChangeStrategy.FULL_RECONCILE})
             ),
+            depends_on=frozenset(
+                set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values())
+                - {stream_key}
+            ),
+            relationship_targets=_RELATIONSHIP_TARGETS.get(stream_key, {}),
         )
         for stream_key, entity in _STREAM_ENTITY.items()
     ),

@@ -70,6 +70,21 @@ _STREAM_ENTITY = {
     "comments": "comment",
     "issue_relations": "relation",
 }
+_RELATIONSHIP_TARGETS = {
+    "issues": {
+        "project": "projects",
+        "team": "teams",
+        "assignee": "users",
+        "reporter": "users",
+        "label": "issue_labels",
+        "parent": "issues",
+        "cycle": "cycles",
+    },
+    "issue_labels": {"project": "teams", "parent": "issue_labels"},
+    "cycles": {"project": "teams"},
+    "comments": {"issue": "issues", "author": "users"},
+    "issue_relations": {"from_issue": "issues", "to_issue": "issues"},
+}
 _READ_TOOLS = frozenset(
     {
         "issue_search",
@@ -144,6 +159,11 @@ LINEAR_MANIFEST = SorAdapterCapabilityManifest(
             }[stream_key],
             canonical_entity=entity,
             change_strategies=frozenset({SorChangeStrategy.UPDATED_AT}),
+            depends_on=frozenset(
+                set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values())
+                - {stream_key}
+            ),
+            relationship_targets=_RELATIONSHIP_TARGETS.get(stream_key, {}),
         )
         for stream_key, entity in _STREAM_ENTITY.items()
     ),

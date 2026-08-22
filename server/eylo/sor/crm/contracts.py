@@ -72,7 +72,7 @@ class CrmActivity:
 
 @runtime_checkable
 class CrmAdapter(SorLifecycleAdapter, Protocol):
-    """CRM-specific normalization port layered on the shared lifecycle."""
+    """CRM port whose synchronous normalization methods are pure and I/O-free."""
 
     def normalize_contact(self, record: SorExternalRecord) -> CrmContact: ...
 

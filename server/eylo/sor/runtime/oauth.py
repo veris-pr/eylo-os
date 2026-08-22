@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import secrets
 import uuid
 from dataclasses import dataclass
@@ -50,17 +51,22 @@ from eylo.sor.runtime.registry import SorRegistry
 from eylo.sor.shared.connector_services import SorConnectorService
 from eylo.sor.shared.contracts import (
     SorAdapterCapabilityManifest,
+    SorChangeStrategy,
     SorOAuthSpec,
     SorSourceAccess,
+    SorSourceState,
+    SorSyncRunKind,
 )
 from eylo.sor.shared.repositories import SorRepository
 from eylo.sor.shared.secrets import (
     SorSecretEnvelopeError,
     decrypt_connector_client_secret,
 )
+from eylo.sor.shared.services import SorSourceService
 
 SOR_OAUTH_CALLBACK_PATH = "/sor/oauth/callback"
 STATE_TTL_MINUTES = 10
+logger = logging.getLogger(__name__)
 
 
 class SorOAuthError(Exception):
@@ -204,6 +210,187 @@ async def begin_sor_authorization(
         )
         client_id = connector.oauth_client_id
 
+    return _authorization_redirect(
+        callback_url=callback_url,
+        challenge=challenge,
+        client_id=client_id,
+        fixed_origin=manifest.fixed_origin,
+        oauth=oauth,
+        requested_instance_origin=requested_instance_origin,
+        requested_scopes=requested_scopes,
+        state_token=state_token,
+    )
+
+
+async def begin_sor_source_reauthorization(
+    *,
+    organization_id: UUID,
+    source_id: UUID,
+    registry: SorRegistry | None = None,
+) -> SorAuthorizationRedirect:
+    """Restart OAuth for an activated source without changing its identity."""
+    active_registry = registry or get_sor_registry()
+    callback_url = default_sor_callback_url()
+    state_token = secrets.token_urlsafe(32)
+
+    async with start_transaction() as session:
+        repository = SorRepository(session)
+        source = await SorSourceService(
+            session,
+            registry=active_registry,
+        ).get(
+            organization_id=organization_id,
+            source_id=source_id,
+            for_update=True,
+        )
+        if source.state is not SorSourceState.REAUTH_REQUIRED:
+            raise SorOAuthError(
+                "source_reauthorization_not_required",
+                "This source is not awaiting reauthorization.",
+            )
+        if (
+            source.active_schema_revision_id is None
+            or source.active_mapping_revision_id is None
+        ):
+            raise SorOAuthError(
+                "source_not_activated",
+                "This source has not been activated. Continue source setup instead.",
+            )
+
+        connector = await repository.get_connector_for_connection(
+            organization_id=organization_id,
+            connection_id=source.external_connection_id,
+            for_update=True,
+        )
+        connection = await repository.get_connection(
+            organization_id=organization_id,
+            connection_id=source.external_connection_id,
+            vendor_key=source.vendor_key,
+            for_update=True,
+            include_deleted=True,
+        )
+        if (
+            connector is None
+            or connection is None
+            or connector.profile is not source.profile
+            or connector.vendor_key != source.vendor_key
+        ):
+            raise SorOAuthError(
+                "source_connector_unavailable",
+                "The source OAuth connector is unavailable.",
+            )
+        if connection.owner_kind is not ConnectionOwnerKind.ORGANIZATION:
+            raise SorOAuthError(
+                "source_connection_owner_invalid",
+                "The source connection is not organization-owned.",
+            )
+
+        manifest = active_registry.get_manifest(
+            profile=source.profile,
+            vendor_key=source.vendor_key,
+        )
+        oauth = _require_oauth(manifest)
+        previous_instance_origin = connection.instance_origin
+        previous_granted_scopes = tuple(connection.granted_scopes or ())
+        if connection.deleted or connection.status is ExternalConnectionStatus.REVOKED:
+            replacement = await ExternalConnectionService(session).create(
+                ExternalConnectionCreateSchema(
+                    id=uuid.UUID(str(uuid_utils.uuid7())),
+                    organization_id=organization_id,
+                    owner_kind=ConnectionOwnerKind.ORGANIZATION,
+                    vendor_key=source.vendor_key,
+                    auth_kind=connector.auth_kind,
+                    instance_origin=previous_instance_origin,
+                    status=ExternalConnectionStatus.INITIATED,
+                )
+            )
+            connector.external_connection_id = replacement.id
+            source.external_connection_id = replacement.id
+            source.config_revision += 1
+            connection = replacement
+            await session.flush()
+        elif connection.status not in {
+            ExternalConnectionStatus.INITIATED,
+            ExternalConnectionStatus.ACTIVE,
+            ExternalConnectionStatus.DEGRADED,
+            ExternalConnectionStatus.REAUTH_REQUIRED,
+        }:
+            raise SorOAuthError(
+                "source_connection_unavailable",
+                "The source connection cannot be reauthorized.",
+            )
+
+        requested_instance_origin = _authorization_instance_origin(
+            oauth=oauth,
+            value=(
+                previous_instance_origin if oauth.operator_instance_origin else None
+            ),
+        )
+        objects = _selected_objects(
+            manifest,
+            tuple(str(value) for value in source.selected_objects),
+        )
+        grants = await repository.list_live_source_grants(
+            organization_id=organization_id,
+            source_id=source.id,
+        )
+        access = (
+            SorSourceAccess.READ_WRITE
+            if any(grant.access is SorSourceAccess.READ_WRITE for grant in grants)
+            else SorSourceAccess.READ
+        )
+        requested_scopes = tuple(
+            dict.fromkeys(
+                [
+                    *previous_granted_scopes,
+                    *_requested_scopes(
+                        manifest=manifest,
+                        selected_objects=objects,
+                        access=access,
+                    ),
+                ]
+            )
+        )
+        verifier, challenge = _pkce_pair() if oauth.pkce else (None, None)
+        await OAuthStateRepository(session).create_state(
+            OAuthStateCreateSchema(
+                state=state_token,
+                organization_id=organization_id,
+                external_connection_id=connection.id,
+                redirect_uri=callback_url,
+                code_verifier=verifier,
+                requested_scopes=list(requested_scopes),
+                expected_connection_revision=connection.revision,
+                expires_at=datetime.now(timezone.utc)
+                + timedelta(minutes=STATE_TTL_MINUTES),
+            )
+        )
+        client_id = connector.oauth_client_id
+
+    return _authorization_redirect(
+        callback_url=callback_url,
+        challenge=challenge,
+        client_id=client_id,
+        fixed_origin=manifest.fixed_origin,
+        oauth=oauth,
+        requested_instance_origin=requested_instance_origin,
+        requested_scopes=requested_scopes,
+        state_token=state_token,
+    )
+
+
+def _authorization_redirect(
+    *,
+    callback_url: str,
+    challenge: str | None,
+    client_id: str,
+    fixed_origin: str | None,
+    oauth: SorOAuthSpec,
+    requested_instance_origin: str | None,
+    requested_scopes: tuple[str, ...],
+    state_token: str,
+) -> SorAuthorizationRedirect:
+    """Build one consent URL from already persisted OAuth state."""
     params: dict[str, str] = {
         "client_id": client_id,
         "redirect_uri": callback_url,
@@ -220,7 +407,7 @@ async def begin_sor_authorization(
     try:
         authorization_url = resolve_oauth_authorization_url(
             oauth,
-            instance_origin=requested_instance_origin or manifest.fixed_origin,
+            instance_origin=requested_instance_origin or fixed_origin,
         )
     except SorOAuthEndpointError as error:
         raise SorOAuthError(
@@ -257,7 +444,7 @@ async def complete_sor_authorization_from_state(
             tokens=tokens,
             context=context,
         )
-        await _activate_connection(
+        connection_revision = await _activate_connection(
             context=context,
             credentials=credentials,
             expires_at=expires_at,
@@ -267,6 +454,17 @@ async def complete_sor_authorization_from_state(
     except Exception:
         await _revoke_initiated_connection(context)
         raise
+    restored_source_ids = await _restore_reauthorized_sources(
+        organization_id=context.organization_id,
+        connection_id=context.connection_id,
+        connection_revision=connection_revision,
+        registry=active_registry,
+    )
+    for source_id in restored_source_ids:
+        await _schedule_reauthorization_catch_up(
+            organization_id=context.organization_id,
+            source_id=source_id,
+        )
     return SorAuthorizationResult(
         connection_id=context.connection_id,
         vendor_key=context.vendor_key,
@@ -512,7 +710,7 @@ async def _activate_connection(
     expires_at: datetime | None,
     granted_scopes: list[str],
     instance_origin: str | None,
-) -> None:
+) -> int:
     async with start_transaction() as session:
         repository = SorRepository(session)
         connector = await repository.get_connector(
@@ -588,6 +786,112 @@ async def _activate_connection(
             vendor_key=context.vendor_key,
             connector_id=connector.id,
         )
+        await OAuthStateRepository(session).invalidate_for_connection_revision(
+            organization_id=context.organization_id,
+            external_connection_id=context.connection_id,
+            expected_connection_revision=context.expected_connection_revision,
+        )
+        return activated_connection.revision
+
+
+async def _restore_reauthorized_sources(
+    *,
+    organization_id: UUID,
+    connection_id: UUID,
+    connection_revision: int,
+    registry: SorRegistry,
+) -> tuple[UUID, ...]:
+    """Resume every source waiting on the renewed connection, independently."""
+    async with start_transaction(ro=True) as session:
+        source_ids = tuple(
+            source.id
+            for source in await SorRepository(session).list_sources_for_connection(
+                organization_id=organization_id,
+                connection_id=connection_id,
+            )
+            if source.state is SorSourceState.REAUTH_REQUIRED
+        )
+
+    restored: list[UUID] = []
+    for source_id in source_ids:
+        try:
+            async with start_transaction() as session:
+                await SorSourceService(
+                    session,
+                    registry=registry,
+                ).complete_reauthorization(
+                    organization_id=organization_id,
+                    source_id=source_id,
+                    expected_connection_revision=connection_revision,
+                )
+            restored.append(source_id)
+        except Exception as error:  # noqa: BLE001 - one source cannot block others
+            logger.error(
+                "SOR connection renewed but source resume failed "
+                "organization_id=%s connection_id=%s source_id=%s error_type=%s",
+                organization_id,
+                connection_id,
+                source_id,
+                type(error).__name__,
+            )
+    return tuple(restored)
+
+
+async def _schedule_reauthorization_catch_up(
+    *,
+    organization_id: UUID,
+    source_id: UUID,
+) -> None:
+    """Best-effort file one full-source catch-up after authority is restored."""
+    from eylo.sor.runtime.sync import spawn_sor_sync_run
+    from eylo.sor.shared.sync_services import SorSyncRunService
+
+    try:
+        async with start_transaction() as session:
+            streams = await SorRepository(session).list_streams(
+                organization_id=organization_id,
+                source_id=source_id,
+            )
+            if not streams:
+                return
+            kind = (
+                SorSyncRunKind.RECONCILIATION
+                if any(
+                    stream.strategy is SorChangeStrategy.FULL_RECONCILE
+                    for stream in streams
+                )
+                else SorSyncRunKind.INCREMENTAL
+            )
+            plan = await SorSyncRunService(session).create_generation(
+                organization_id=organization_id,
+                source_id=source_id,
+                stream_ids=tuple(stream.id for stream in streams),
+                kind=kind,
+            )
+            ready_run_ids = plan.ready_run_ids
+    except Exception as error:  # noqa: BLE001 - scheduler recovery can retry later
+        logger.error(
+            "SOR source resumed but catch-up filing failed "
+            "organization_id=%s source_id=%s error_type=%s",
+            organization_id,
+            source_id,
+            type(error).__name__,
+        )
+        return
+
+    for run_id in ready_run_ids:
+        try:
+            await spawn_sor_sync_run(
+                organization_id=organization_id,
+                run_id=run_id,
+            )
+        except Exception as error:  # noqa: BLE001 - recovery scans committed rows
+            logger.error(
+                "SOR reauthorization catch-up committed; spawn remains pending "
+                "run_id=%s error_type=%s",
+                run_id,
+                type(error).__name__,
+            )
 
 
 async def _revoke_initiated_connection(context: _AuthorizationContext) -> None:
@@ -772,6 +1076,7 @@ __all__ = [
     "SorAuthorizationResult",
     "SorOAuthError",
     "begin_sor_authorization",
+    "begin_sor_source_reauthorization",
     "complete_sor_authorization_from_state",
     "decline_sor_authorization",
     "default_sor_callback_url",

@@ -159,10 +159,14 @@ flowchart LR
     connection[(Encrypted External Connection)]
     discovery[(Immutable Schema Revision)]
     mapping[(Published Field Mapping)]
-    run[(Persisted Sync Run)]
+    generation[(Persisted Sync Generation)]
+    roots[Runnable Root Streams]
+    waiting[Waiting Dependent Streams]
     worker[Absurd SOR Worker]
     vendor[External System]
     projection[(Canonical Records and Custom Fields)]
+    intents[(Relationship Intents)]
+    resolver[Exact Endpoint Resolver]
     grid[Eylo Audit Grid]
     grant[(Published Agent Source Grant)]
     read[Profile-native Read Tool]
@@ -173,8 +177,12 @@ flowchart LR
     recovery[Periodic Fenced-work Recovery]
 
     operator --> onboarding --> connection
-    connection --> discovery --> mapping --> run --> worker
-    worker --> vendor --> projection --> grid
+    connection --> discovery --> mapping --> generation
+    generation --> roots --> worker
+    generation --> waiting
+    worker -->|parent succeeds| waiting --> worker
+    worker --> vendor --> projection --> intents --> resolver --> grid
+    projection --> resolver
     grant --> read --> projection
     grant --> command --> worker
     worker --> vendor
@@ -184,12 +192,15 @@ flowchart LR
 ```
 
 Source verification discovers the account schema before an operator publishes
-a mapping. Activation commits every stream and bootstrap work row before queue
-binding. Reads use the synchronized projection. Mutations use one idempotent
-command receipt, execute the vendor write once, then read the authoritative
-record back into the same projection. Revocation commits the authority fence
-before task cancellation; periodic recovery prevents a stranded task or
-unbound work row from crossing that fence.
+a mapping. Activation commits the generation, every stream run, and dependency
+state before queue binding. Successful roots release waiting children.
+Projection persists relationship intent even when an endpoint has not arrived;
+endpoint arrival and post-sync repair materialize the canonical edge. Reads use
+that synchronized projection. Mutations use one idempotent command receipt,
+execute the vendor write once, then read the authoritative record back into the
+same projection. Revocation commits the authority fence before task
+cancellation; periodic recovery prevents a stranded task or unbound work row
+from crossing that fence.
 
 ## Campaign attempt
 

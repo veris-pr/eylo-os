@@ -53,17 +53,18 @@ JIRA_ISSUE_CURSOR_VERSION = 2
 JIRA_NESTED_CURSOR_VERSION = 3
 JIRA_RELATION_CURSOR_VERSION = 4
 JIRA_COMMENT_CURSOR_VERSION = 5
+JIRA_SPRINT_CURSOR_VERSION = 6
 JIRA_RECONCILIATION_OVERLAP = timedelta(minutes=5)
 JIRA_EMBEDDED_COMMENT_LIMIT = 20
 JIRA_COMMENT_ISSUE_BATCH_SIZE = 10
 JIRA_RELATION_ISSUE_BATCH_SIZE = 20
+JIRA_SPRINT_ISSUE_BATCH_SIZE = 100
+JIRA_SPRINT_FIELD_TYPE = "com.pyxis.greenhopper.jira:gh-sprint"
 
 READ_WORK_SCOPE = "read:jira-work"
 READ_USER_SCOPE = "read:jira-user"
 WRITE_SCOPE = "write:jira-work"
 OFFLINE_SCOPE = "offline_access"
-READ_BOARD_SCOPE = "read:board-scope:jira-software"
-READ_PROJECT_SCOPE = "read:project:jira"
 READ_SPRINT_SCOPE = "read:sprint:jira-software"
 
 _STREAM_ENTITY = {
@@ -75,6 +76,19 @@ _STREAM_ENTITY = {
     "sprints": "cycle",
     "comments": "comment",
     "issue_relations": "relation",
+}
+_RELATIONSHIP_TARGETS = {
+    "issues": {
+        "project": "projects",
+        "assignee": "users",
+        "reporter": "users",
+        "label": "labels",
+        "parent": "issues",
+        "cycle": "sprints",
+    },
+    "labels": {"project": "projects", "parent": "labels"},
+    "comments": {"issue": "issues", "author": "users"},
+    "issue_relations": {"from_issue": "issues", "to_issue": "issues"},
 }
 _READ_TOOLS = frozenset(
     {
@@ -142,7 +156,9 @@ JIRA_MANIFEST = SorAdapterCapabilityManifest(
                 "workflow_states": "Jira statuses and normalized status categories.",
                 "users": "Visible active and inactive Jira users.",
                 "labels": "Values used by Jira's global label field.",
-                "sprints": "Jira Software sprints discovered through visible boards.",
+                "sprints": (
+                    "Jira Software sprints referenced by the issue Sprint field."
+                ),
                 "comments": "Chronological issue comments with Atlassian Document Format retained.",
                 "issue_relations": "Typed Jira issue links normalized into canonical directions.",
             }[stream_key],
@@ -153,10 +169,15 @@ JIRA_MANIFEST = SorAdapterCapabilityManifest(
                 else frozenset({SorChangeStrategy.FULL_RECONCILE})
             ),
             scope_category=(
-                "Granular Jira Software scopes"
+                "Classic Jira + granular Jira Software scopes"
                 if stream_key == "sprints"
                 else "Classic Jira Cloud platform scopes"
             ),
+            depends_on=frozenset(
+                set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values())
+                - {stream_key}
+            ),
+            relationship_targets=_RELATIONSHIP_TARGETS.get(stream_key, {}),
         )
         for stream_key, entity in _STREAM_ENTITY.items()
     ),
@@ -173,7 +194,7 @@ JIRA_MANIFEST = SorAdapterCapabilityManifest(
         "workflow_states": (READ_WORK_SCOPE,),
         "users": (READ_USER_SCOPE,),
         "labels": (READ_WORK_SCOPE,),
-        "sprints": (READ_BOARD_SCOPE, READ_PROJECT_SCOPE, READ_SPRINT_SCOPE),
+        "sprints": (READ_WORK_SCOPE, READ_SPRINT_SCOPE),
         "comments": (READ_WORK_SCOPE,),
         "issue_relations": (READ_WORK_SCOPE,),
     },
@@ -205,6 +226,7 @@ def _field(
     writable: bool = False,
     description: str | None = None,
     group: str = "Jira",
+    vendor_type: str | None = None,
 ) -> SorDiscoveredField:
     return SorDiscoveredField(
         key=key,
@@ -214,6 +236,7 @@ def _field(
         writable=writable,
         description=description,
         group=group,
+        vendor_type=vendor_type,
     )
 
 
@@ -233,17 +256,13 @@ _SCHEMA_FIELDS = {
         _field("normalized_status", "Normalized status", "enum"),
         _field("priority", "Priority", "text", writable=True),
         _field("project_external_id", "Project ID", "reference", writable=True),
-        _field("team_external_id", "Team ID", "reference"),
         _field("assignee_external_id", "Assignee ID", "reference", writable=True),
         _field("reporter_external_id", "Reporter ID", "reference"),
         _field("estimate", "Estimate", "decimal", writable=True),
         _field("label_external_ids", "Labels", "string_array", writable=True),
         _field("parent_external_id", "Parent issue ID", "reference", writable=True),
-        _field("cycle_external_id", "Sprint ID", "reference"),
         _field("due_date", "Due date", "date", writable=True),
-        _field("started_at", "Started at", "timestamp"),
         _field("completed_at", "Completed at", "timestamp"),
-        _field("cancelled_at", "Cancelled at", "timestamp"),
     ),
     "projects": (
         _field("key", "Key", "text", nullable=False),
@@ -275,7 +294,6 @@ _SCHEMA_FIELDS = {
     "sprints": (
         _field("name", "Name", "text", nullable=False),
         _field("number", "Number", "integer"),
-        _field("project_external_id", "Project ID", "reference"),
         _field("description", "Goal", "text"),
         _field("starts_at", "Starts at", "timestamp"),
         _field("ends_at", "Ends at", "timestamp"),
@@ -368,13 +386,15 @@ class _RelationCursor:
 
 @dataclass(frozen=True, slots=True)
 class _SprintCursor:
-    """Resume sprint pagination inside one Jira Software board."""
+    """Resume Sprint extraction within stable issue-search pages."""
 
-    board_offset: int
-    board_id: str | None
-    board_is_last: bool
-    project_external_id: str | None
-    sprint_offset: int
+    floor: datetime | None
+    project_offset: int
+    next_issue_token: str | None
+    item_offset: int
+    high: datetime | None
+    started_at: datetime
+    completed: bool
 
 
 class JiraTicketingAdapter:
@@ -392,11 +412,16 @@ class JiraTicketingAdapter:
             raise ValueError("Jira Cloud SOR requires OAuth 2.0.")
         token = _credential(context.credentials, "access_token")
         self._context = context
+        self._issue_agent_keys = {
+            field.vendor_field_key: field.agent_key
+            for field in context.fields
+            if field.vendor_object_key == "issues"
+        }
         self._site_origin = _jira_site_origin(context.instance_origin)
         self._cloud_id: str | None = None
         self._site_name: str | None = None
         self._project_pages: dict[int, tuple[str, bool] | None] = {}
-        self._board_projects: dict[str, str | None] = {}
+        self._sprint_details: dict[str, SorExternalRecord] = {}
         self._client = SorJsonHttpClient(
             origin=JIRA_API_ORIGIN,
             authorization=f"Bearer {token}",
@@ -495,9 +520,7 @@ class JiraTicketingAdapter:
                 query={"accountId": record_id},
             )
         elif stream_key == "sprints":
-            response = await self._agile_request(
-                f"/sprint/{_path_segment(record_id)}"
-            )
+            return await self._fetch_sprint(record_id)
         elif stream_key == "comments":
             issue_id, comment_id = _split_comment_external_id(record_id)
             response = await self._jira_request(
@@ -513,15 +536,7 @@ class JiraTicketingAdapter:
                 external_id=record_id,
             )
         row = _object(_expect(response, operation="read Jira record"), field="Jira record")
-        if stream_key == "sprints":
-            board_id = _optional_id(row.get("originBoardId"))
-            row["_board_id"] = board_id
-            row["_project_external_id"] = (
-                await self._board_project_external_id(board_id)
-                if board_id is not None
-                else None
-            )
-        elif stream_key == "comments":
+        if stream_key == "comments":
             issue_id, _comment_id = _split_comment_external_id(record_id)
             row["_issue_external_id"] = issue_id
         return self._external_record(stream_key, row)
@@ -1323,122 +1338,113 @@ class JiraTicketingAdapter:
             row["_issue_external_id"] = issue_id
         return rows, has_more
 
-    async def _board_project_external_id(self, board_id: str) -> str | None:
-        """Resolve one board's owning project once per adapter invocation."""
-        if board_id in self._board_projects:
-            return self._board_projects[board_id]
-        response = await self._agile_request(f"/board/{_path_segment(board_id)}")
-        board = _object(
-            _expect(response, operation="read Jira Software board"),
-            field="Jira board",
-        )
-        location = _optional_object(board.get("location"))
-        project_external_id = _optional_id(location.get("projectId"))
-        self._board_projects[board_id] = project_external_id
-        return project_external_id
-
     async def _read_sprints(self, *, cursor: str | None, limit: int) -> SorRecordPage:
         checkpoint = _decode_sprint_cursor(cursor)
         scans = 0
         while scans < 25:
-            if checkpoint.board_id is None:
-                response = await self._agile_request(
-                    "/board",
-                    query={
-                        "startAt": checkpoint.board_offset,
-                        "maxResults": 1,
-                        "type": "scrum",
-                    },
-                )
-                data = _object(
-                    _expect(response, operation="list Jira Software boards"),
-                    field="Jira boards",
-                )
-                boards = _object_list(data.get("values"), field="Jira boards")
-                if len(boards) > 1:
-                    raise _invalid_response("Jira returned too many boards.")
-                board_is_last = _required_boolean(
-                    data.get("isLast"),
-                    field="Jira boards isLast",
-                )
-                if not boards:
-                    if not board_is_last:
-                        raise _invalid_response("Jira returned an empty partial board page.")
-                    return SorRecordPage(records=(), next_cursor=None, has_more=False)
-                board = boards[0]
-                location = _optional_object(board.get("location"))
-                board_id = _required_id(board.get("id"), field="Jira board ID")
-                project_external_id = _optional_id(location.get("projectId"))
-                self._board_projects[board_id] = project_external_id
-                checkpoint = _SprintCursor(
-                    board_offset=checkpoint.board_offset,
-                    board_id=board_id,
-                    board_is_last=board_is_last,
-                    project_external_id=project_external_id,
-                    sprint_offset=0,
-                )
-
-            assert checkpoint.board_id is not None
-            response = await self._agile_request(
-                f"/board/{_path_segment(checkpoint.board_id)}/sprint",
-                query={"startAt": checkpoint.sprint_offset, "maxResults": limit},
-            )
-            data = _object(
-                _expect(response, operation="list Jira sprints"),
-                field="Jira sprints",
-            )
-            rows = _object_list(data.get("values"), field="Jira sprints")
-            if len(rows) > limit:
-                raise _invalid_response("Jira returned too many sprints.")
-            sprint_is_last = _required_boolean(
-                data.get("isLast"),
-                field="Jira sprints isLast",
-            )
-            for row in rows:
-                origin_board_id = (
-                    _optional_id(row.get("originBoardId")) or checkpoint.board_id
-                )
-                row["_project_external_id"] = (
-                    checkpoint.project_external_id
-                    if origin_board_id == checkpoint.board_id
-                    else await self._board_project_external_id(origin_board_id)
-                )
-                row["_board_id"] = origin_board_id
-            records = tuple(self._external_record("sprints", row) for row in rows)
-            if not sprint_is_last:
-                if not rows:
-                    raise _invalid_response("Jira returned an empty partial sprint page.")
-                next_checkpoint = _SprintCursor(
-                    board_offset=checkpoint.board_offset,
-                    board_id=checkpoint.board_id,
-                    board_is_last=checkpoint.board_is_last,
-                    project_external_id=checkpoint.project_external_id,
-                    sprint_offset=checkpoint.sprint_offset + len(rows),
+            project = await self._project_at(checkpoint.project_offset)
+            if project is None:
+                completed = _completed_sprint_cursor(
+                    floor=checkpoint.floor,
+                    high=checkpoint.high,
+                    started_at=checkpoint.started_at,
                 )
                 return SorRecordPage(
-                    records=records,
-                    next_cursor=_encode_sprint_cursor(next_checkpoint),
-                    has_more=True,
-                )
-            if checkpoint.board_is_last:
-                return SorRecordPage(
-                    records=records,
-                    next_cursor=None,
+                    records=(),
+                    next_cursor=_encode_sprint_cursor(completed),
                     has_more=False,
                 )
-            checkpoint = _SprintCursor(
-                board_offset=checkpoint.board_offset + 1,
-                board_id=None,
-                board_is_last=False,
-                project_external_id=None,
-                sprint_offset=0,
+            project_id, project_is_last = project
+            sprint_field = self._sprint_field_key()
+            payload: dict[str, object] = {
+                "fields": [sprint_field, "updated"],
+                "fieldsByKeys": True,
+                "jql": _sprint_issue_jql(project_id, floor=checkpoint.floor),
+                "maxResults": JIRA_SPRINT_ISSUE_BATCH_SIZE,
+            }
+            if checkpoint.next_issue_token is not None:
+                payload["nextPageToken"] = checkpoint.next_issue_token
+            response = await self._jira_request(
+                "/search/jql",
+                method="POST",
+                payload=payload,
+                retry_transport_failures=True,
             )
-            if records:
-                return SorRecordPage(
-                    records=records,
-                    next_cursor=_encode_sprint_cursor(checkpoint),
-                    has_more=True,
+            data = _object(
+                _expect(response, operation="scan Jira Sprint fields"),
+                field="Jira Sprint-field scan",
+            )
+            issues = _object_list(
+                data.get("issues"),
+                field="Jira Sprint-field scan",
+            )
+            if len(issues) > JIRA_SPRINT_ISSUE_BATCH_SIZE:
+                raise _invalid_response("Jira returned too many Sprint-bearing issues.")
+            issue_page_is_last = _required_boolean(
+                data.get("isLast"),
+                field="Jira Sprint-field scan isLast",
+            )
+            following = _optional_string(data.get("nextPageToken"))
+            if not issue_page_is_last and following is None:
+                raise _invalid_response("Jira omitted the next Sprint scan page token.")
+            high = _maximum_issue_updated_at(issues, current=checkpoint.high)
+            records = await self._sprint_records(
+                issues=issues,
+                sprint_field=sprint_field,
+            )
+            if checkpoint.item_offset > len(records):
+                raise _invalid_response("Jira Sprint scan changed during pagination.")
+            page_records = records[
+                checkpoint.item_offset : checkpoint.item_offset + limit
+            ]
+            next_item_offset = checkpoint.item_offset + len(page_records)
+            if next_item_offset < len(records):
+                next_checkpoint = _SprintCursor(
+                    floor=checkpoint.floor,
+                    project_offset=checkpoint.project_offset,
+                    next_issue_token=checkpoint.next_issue_token,
+                    item_offset=next_item_offset,
+                    high=high,
+                    started_at=checkpoint.started_at,
+                    completed=False,
                 )
+                scan_complete = False
+            elif not issue_page_is_last:
+                next_checkpoint = _SprintCursor(
+                    floor=checkpoint.floor,
+                    project_offset=checkpoint.project_offset,
+                    next_issue_token=following,
+                    item_offset=0,
+                    high=high,
+                    started_at=checkpoint.started_at,
+                    completed=False,
+                )
+                scan_complete = False
+            elif not project_is_last:
+                next_checkpoint = _SprintCursor(
+                    floor=checkpoint.floor,
+                    project_offset=checkpoint.project_offset + 1,
+                    next_issue_token=None,
+                    item_offset=0,
+                    high=high,
+                    started_at=checkpoint.started_at,
+                    completed=False,
+                )
+                scan_complete = False
+            else:
+                next_checkpoint = _completed_sprint_cursor(
+                    floor=checkpoint.floor,
+                    high=high,
+                    started_at=checkpoint.started_at,
+                )
+                scan_complete = True
+            if page_records or scan_complete:
+                return SorRecordPage(
+                    records=tuple(page_records),
+                    next_cursor=_encode_sprint_cursor(next_checkpoint),
+                    has_more=not scan_complete,
+                )
+            checkpoint = next_checkpoint
             scans += 1
 
         return SorRecordPage(
@@ -1446,6 +1452,67 @@ class JiraTicketingAdapter:
             next_cursor=_encode_sprint_cursor(checkpoint),
             has_more=True,
         )
+
+    async def _sprint_records(
+        self,
+        *,
+        issues: Sequence[Mapping[str, object]],
+        sprint_field: str,
+    ) -> list[SorExternalRecord]:
+        """Canonicalize unique Sprint values without trusting mutable field names."""
+        candidates: dict[str, list[Mapping[str, object]]] = {}
+        for issue in issues:
+            fields = _object(issue.get("fields"), field="Jira issue fields")
+            for row in _jira_sprint_rows(fields.get(sprint_field)):
+                sprint_id = _required_id(row.get("id"), field="Jira sprint ID")
+                candidates.setdefault(sprint_id, []).append(row)
+
+        records: list[SorExternalRecord] = []
+        for sprint_id in sorted(candidates, key=_numeric_string_key):
+            projected: list[SorExternalRecord] = []
+            for row in candidates[sprint_id]:
+                if _optional_string(row.get("name")) is not None:
+                    projected.append(self._external_sprint(row))
+            if not projected or any(row != projected[0] for row in projected[1:]):
+                records.append(await self._fetch_sprint(sprint_id))
+            else:
+                records.append(projected[0])
+        return records
+
+    async def _fetch_sprint(self, sprint_id: str) -> SorExternalRecord:
+        """Read one authoritative Sprint when its issue-field value is incomplete."""
+        cached = self._sprint_details.get(sprint_id)
+        if cached is not None:
+            return cached
+        response = await self._agile_request(f"/sprint/{_path_segment(sprint_id)}")
+        if response.status_code in {404, 410}:
+            raise SorExternalRecordNotFound(
+                vendor_object_key="sprints",
+                external_id=sprint_id,
+            )
+        row = _object(
+            _expect(response, operation="read Jira Sprint"),
+            field="Jira sprint",
+        )
+        record = self._external_sprint(row)
+        if record.external_id != sprint_id:
+            raise _invalid_response("Jira returned the wrong Sprint record.")
+        self._sprint_details[sprint_id] = record
+        return record
+
+    def _sprint_field_key(self) -> str:
+        fields = sorted(
+            key
+            for key, target in self._issue_agent_keys.items()
+            if target == "cycle_external_id"
+        )
+        if len(fields) != 1:
+            raise SorVendorOperationError(
+                "mapping_invalid",
+                "The active Jira mapping must select exactly one Sprint field.",
+                retryable=False,
+            )
+        return fields[0]
 
     def _issue_fields(self) -> tuple[str, ...]:
         custom = {
@@ -1562,7 +1629,10 @@ class JiraTicketingAdapter:
         }
         for field_key in self._issue_fields():
             if field_key.startswith("customfield_"):
-                payload[field_key] = fields.get(field_key)
+                value = fields.get(field_key)
+                if self._issue_agent_keys.get(field_key) == "cycle_external_id":
+                    value = _jira_current_sprint_id(value)
+                payload[field_key] = value
         return SorExternalRecord(
             vendor_object_key="issues",
             external_id=record_id,
@@ -1576,8 +1646,8 @@ class JiraTicketingAdapter:
     def _external_sprint(self, row: Mapping[str, object]) -> SorExternalRecord:
         record_id = _required_id(row.get("id"), field="Jira sprint ID")
         state = _optional_string(row.get("state"))
-        board_id = _optional_id(row.get("_board_id")) or _optional_id(
-            row.get("originBoardId")
+        board_id = _optional_id(row.get("originBoardId")) or _optional_id(
+            row.get("boardId")
         )
         return SorExternalRecord(
             vendor_object_key="sprints",
@@ -1585,9 +1655,6 @@ class JiraTicketingAdapter:
             payload={
                 "name": _required_string(row.get("name"), field="Jira sprint name"),
                 "number": None,
-                "project_external_id": _optional_id(
-                    row.get("_project_external_id")
-                ),
                 "description": _optional_string(row.get("goal")),
                 "starts_at": row.get("startDate"),
                 "ends_at": row.get("endDate"),
@@ -2040,15 +2107,20 @@ def _jira_custom_field(row: Mapping[str, object]) -> SorDiscoveredField:
     if not key.startswith("customfield_"):
         raise _invalid_response("Jira returned an invalid custom field ID.")
     schema = _optional_object(row.get("schema"))
-    data_type = {
-        "array": "string_array",
-        "date": "date",
-        "datetime": "timestamp",
-        "number": "decimal",
-        "option": "text",
-        "string": "text",
-        "user": "reference",
-    }.get(_optional_string(schema.get("type")) or "", "bounded_json")
+    vendor_type = _optional_string(schema.get("custom"))
+    data_type = (
+        "reference"
+        if vendor_type == JIRA_SPRINT_FIELD_TYPE
+        else {
+            "array": "string_array",
+            "date": "date",
+            "datetime": "timestamp",
+            "number": "decimal",
+            "option": "text",
+            "string": "text",
+            "user": "reference",
+        }.get(_optional_string(schema.get("type")) or "", "bounded_json")
+    )
     return _field(
         key,
         _required_string(row.get("name"), field="Jira custom field name"),
@@ -2056,7 +2128,96 @@ def _jira_custom_field(row: Mapping[str, object]) -> SorDiscoveredField:
         writable=True,
         description=_optional_string(row.get("description")),
         group="Jira custom fields",
+        vendor_type=vendor_type,
     )
+
+
+def _jira_current_sprint_id(value: object) -> str | None:
+    """Select the issue's current sprint from Jira's historical Sprint field."""
+    if value is None or value == []:
+        return None
+    values = value if isinstance(value, (list, tuple)) else (value,)
+    candidates: list[tuple[str, str | None]] = []
+    for item in values:
+        sprint_id: str | None
+        state: str | None
+        if isinstance(item, Mapping):
+            sprint_id = _optional_id(item.get("id"))
+            state = _optional_string(item.get("state"))
+        elif isinstance(item, str):
+            stripped = item.strip()
+            sprint_id = stripped if stripped.isdigit() else None
+            if sprint_id is None:
+                match = re.search(r"(?:^|[,\[])\s*id=(\d+)(?:,|\])", stripped)
+                sprint_id = match.group(1) if match is not None else None
+            state_match = re.search(r"(?:^|[,\[])\s*state=([^,\]]+)", stripped)
+            state = state_match.group(1).strip() if state_match is not None else None
+        elif isinstance(item, int) and not isinstance(item, bool):
+            sprint_id = str(item)
+            state = None
+        else:
+            raise _invalid_response("Jira returned a malformed Sprint custom field.")
+        if sprint_id is None:
+            raise _invalid_response("Jira returned a Sprint without an ID.")
+        candidates.append((sprint_id, state.casefold() if state is not None else None))
+
+    for preferred_state in ("active", "future"):
+        for sprint_id, state in reversed(candidates):
+            if state == preferred_state:
+                return sprint_id
+    return candidates[-1][0]
+
+
+def _jira_sprint_rows(value: object) -> tuple[Mapping[str, object], ...]:
+    """Normalize Jira's current and legacy Sprint-field representations."""
+    if value is None or value == []:
+        return ()
+    values = value if isinstance(value, (list, tuple)) else (value,)
+    rows: list[Mapping[str, object]] = []
+    for item in values:
+        if isinstance(item, Mapping):
+            _required_id(item.get("id"), field="Jira sprint ID")
+            rows.append(dict(item))
+            continue
+        if isinstance(item, int) and not isinstance(item, bool):
+            rows.append({"id": str(item)})
+            continue
+        if not isinstance(item, str):
+            raise _invalid_response("Jira returned a malformed Sprint custom field.")
+        stripped = item.strip()
+        if stripped.isdigit():
+            rows.append({"id": stripped})
+            continue
+        sprint_id = _legacy_sprint_field(stripped, "id")
+        if sprint_id is None or not sprint_id.isdigit():
+            raise _invalid_response("Jira returned a Sprint without an ID.")
+        legacy = {
+            "id": sprint_id,
+            "name": _legacy_sprint_field(stripped, "name"),
+            "state": _legacy_sprint_field(stripped, "state"),
+            "goal": _legacy_sprint_field(stripped, "goal"),
+            "startDate": _legacy_sprint_field(stripped, "startDate"),
+            "endDate": _legacy_sprint_field(stripped, "endDate"),
+            "completeDate": _legacy_sprint_field(stripped, "completeDate"),
+            "boardId": _legacy_sprint_field(stripped, "rapidViewId"),
+        }
+        rows.append({key: field for key, field in legacy.items() if field is not None})
+    return tuple(rows)
+
+
+def _legacy_sprint_field(value: str, key: str) -> str | None:
+    match = re.search(
+        rf"(?:^|[,\[]){re.escape(key)}=(.*?)(?=,[A-Za-z][A-Za-z0-9]*=|\]$)",
+        value,
+    )
+    if match is None:
+        return None
+    field = match.group(1).strip()
+    return None if field in {"", "<null>"} else field
+
+
+def _numeric_string_key(value: str) -> tuple[int, int | str]:
+    return (0, int(value)) if value.isdigit() else (1, value)
 
 
 def _expect(response: SorJsonResponse, *, operation: str) -> object:
@@ -2446,6 +2607,14 @@ def _issue_sync_jql(project_id: str, *, floor: datetime | None) -> str:
     return f"{clause} ORDER BY updated ASC, id ASC"
 
 
+def _sprint_issue_jql(project_id: str, *, floor: datetime | None) -> str:
+    clause = f"project = {project_id} AND sprint is not EMPTY"
+    if floor is not None:
+        value = floor.strftime("%Y-%m-%d %H:%M")
+        clause = f'{clause} AND updated >= "{value}"'
+    return f"{clause} ORDER BY updated ASC, id ASC"
+
+
 def _issue_scan_jql(project_id: str) -> str:
     return f"project = {project_id} ORDER BY id ASC"
 
@@ -2469,22 +2638,27 @@ def _deduplicate_child_records(
 
 
 def _decode_sprint_cursor(value: str | None) -> _SprintCursor:
+    now = datetime.now(timezone.utc)
     if value is None:
         return _SprintCursor(
-            board_offset=0,
-            board_id=None,
-            board_is_last=False,
-            project_external_id=None,
-            sprint_offset=0,
+            floor=None,
+            project_offset=0,
+            next_issue_token=None,
+            item_offset=0,
+            high=None,
+            started_at=now,
+            completed=False,
         )
     try:
         payload = json.loads(value)
     except (TypeError, ValueError, json.JSONDecodeError) as error:
         raise _invalid_cursor("sprints") from error
     if (
-        not isinstance(payload, dict)
-        or set(payload)
-        != {
+        isinstance(payload, dict)
+        and payload.get("stream") == "sprints"
+        and payload.get("v") == JIRA_CURSOR_VERSION
+        and set(payload)
+        == {
             "board_id",
             "board_is_last",
             "board_offset",
@@ -2493,51 +2667,120 @@ def _decode_sprint_cursor(value: str | None) -> _SprintCursor:
             "stream",
             "v",
         }
-        or payload.get("stream") != "sprints"
-        or payload.get("v") != JIRA_CURSOR_VERSION
     ):
-        raise _invalid_cursor("sprints")
-    board_offset = payload.get("board_offset")
-    sprint_offset = payload.get("sprint_offset")
-    board_is_last = payload.get("board_is_last")
+        # V1 enumerated boards. Restarting is safe because projection is idempotent.
+        return _SprintCursor(
+            floor=None,
+            project_offset=0,
+            next_issue_token=None,
+            item_offset=0,
+            high=None,
+            started_at=now,
+            completed=False,
+        )
     if (
-        isinstance(board_offset, bool)
-        or not isinstance(board_offset, int)
-        or board_offset < 0
-        or isinstance(sprint_offset, bool)
-        or not isinstance(sprint_offset, int)
-        or sprint_offset < 0
-        or not isinstance(board_is_last, bool)
+        not isinstance(payload, dict)
+        or set(payload)
+        != {
+            "completed",
+            "floor",
+            "high",
+            "item_offset",
+            "next_issue_token",
+            "project_offset",
+            "started_at",
+            "stream",
+            "v",
+        }
+        or payload.get("stream") != "sprints"
+        or payload.get("v") != JIRA_SPRINT_CURSOR_VERSION
     ):
         raise _invalid_cursor("sprints")
-    board_id = _optional_id(payload.get("board_id"))
-    project_external_id = _optional_id(payload.get("project_external_id"))
-    if board_id is None and (
-        board_is_last or project_external_id is not None or sprint_offset != 0
+    floor = _optional_datetime(payload.get("floor"))
+    high = _optional_datetime(payload.get("high"))
+    started_at = _optional_datetime(payload.get("started_at"))
+    next_issue_token = _optional_string(payload.get("next_issue_token"))
+    project_offset = payload.get("project_offset")
+    item_offset = payload.get("item_offset")
+    completed = payload.get("completed")
+    if (
+        started_at is None
+        or not isinstance(completed, bool)
+        or isinstance(project_offset, bool)
+        or not isinstance(project_offset, int)
+        or project_offset < 0
+        or isinstance(item_offset, bool)
+        or not isinstance(item_offset, int)
+        or item_offset < 0
+        or next_issue_token is not None
+        and len(next_issue_token) > 4_096
     ):
+        raise _invalid_cursor("sprints")
+    if completed:
+        if (
+            project_offset != 0
+            or next_issue_token is not None
+            or item_offset != 0
+            or high is not None
+        ):
+            raise _invalid_cursor("sprints")
+        return _SprintCursor(
+            floor=floor,
+            project_offset=0,
+            next_issue_token=None,
+            item_offset=0,
+            high=None,
+            started_at=now,
+            completed=False,
+        )
+    if next_issue_token is not None and high is None:
         raise _invalid_cursor("sprints")
     return _SprintCursor(
-        board_offset=board_offset,
-        board_id=board_id,
-        board_is_last=board_is_last,
-        project_external_id=project_external_id,
-        sprint_offset=sprint_offset,
+        floor=floor,
+        project_offset=project_offset,
+        next_issue_token=next_issue_token,
+        item_offset=item_offset,
+        high=high,
+        started_at=started_at,
+        completed=False,
     )
 
 
 def _encode_sprint_cursor(cursor: _SprintCursor) -> str:
     return json.dumps(
         {
-            "board_id": cursor.board_id,
-            "board_is_last": cursor.board_is_last,
-            "board_offset": cursor.board_offset,
-            "project_external_id": cursor.project_external_id,
-            "sprint_offset": cursor.sprint_offset,
+            "completed": cursor.completed,
+            "floor": _datetime_value(cursor.floor),
+            "high": _datetime_value(cursor.high),
+            "item_offset": cursor.item_offset,
+            "next_issue_token": cursor.next_issue_token,
+            "project_offset": cursor.project_offset,
+            "started_at": _datetime_value(cursor.started_at),
             "stream": "sprints",
-            "v": JIRA_CURSOR_VERSION,
+            "v": JIRA_SPRINT_CURSOR_VERSION,
         },
         separators=(",", ":"),
         sort_keys=True,
+    )
+
+
+def _completed_sprint_cursor(
+    *,
+    floor: datetime | None,
+    high: datetime | None,
+    started_at: datetime,
+) -> _SprintCursor:
+    candidate = (high or started_at) - JIRA_RECONCILIATION_OVERLAP
+    if floor is not None and floor > candidate:
+        candidate = floor
+    return _SprintCursor(
+        floor=candidate,
+        project_offset=0,
+        next_issue_token=None,
+        item_offset=0,
+        high=None,
+        started_at=started_at,
+        completed=True,
     )
 
 

@@ -86,6 +86,18 @@ _STREAM_ENTITY = {
     "sla_metrics": "sla_metric",
     "attachments": "attachment",
 }
+_RELATIONSHIP_TARGETS = {
+    "tickets": {
+        "requester": "contacts",
+        "assignee": "agents",
+        "queue": "groups",
+        "inbox": "email_configs",
+        "tag": "tags",
+    },
+    "conversations": {"ticket": "tickets"},
+    "sla_metrics": {"ticket": "tickets"},
+    "attachments": {"ticket": "tickets", "message": "conversations"},
+}
 _UPDATED_STREAMS = frozenset(
     {"tickets", "contacts", "conversations", "tags", "sla_metrics", "attachments"}
 )
@@ -171,6 +183,11 @@ FRESHDESK_MANIFEST = SorAdapterCapabilityManifest(
                 if stream_key in _UPDATED_STREAMS
                 else frozenset({SorChangeStrategy.FULL_RECONCILE})
             ),
+            depends_on=frozenset(
+                set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values())
+                - {stream_key}
+            ),
+            relationship_targets=_RELATIONSHIP_TARGETS.get(stream_key, {}),
         )
         for stream_key, entity in _STREAM_ENTITY.items()
     ),

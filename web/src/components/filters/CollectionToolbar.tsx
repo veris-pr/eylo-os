@@ -23,7 +23,7 @@ function CollectionToolbar({
         role="group"
       >
         <div className="w-full min-w-0 flex-1">{search}</div>
-        <div className="flex w-full shrink-0 items-center justify-end gap-2 sm:w-auto">
+        <div className="flex min-w-0 w-full shrink-0 flex-wrap items-center justify-end gap-2 sm:w-auto">
           {filter}
           {sort}
         </div>

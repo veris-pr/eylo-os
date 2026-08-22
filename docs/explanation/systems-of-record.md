@@ -35,7 +35,8 @@ An organization configures a source in this order:
 3. Verify the account and persist one immutable schema discovery.
 4. Map discovered fields to canonical fields or typed custom fields.
 5. Publish the mapping and streams.
-6. Commit bootstrap sync runs, then bind them to Absurd.
+6. Commit one bootstrap generation and all dependency-ordered stream runs,
+   then bind only its roots to Absurd.
 7. Grant the active source and individual SOR tools to an Agent draft.
 8. Publish the Agent so the exact tool and source authority is snapshotted.
 
@@ -48,6 +49,12 @@ bounded real vendor request. Only that verified candidate may create the
 encrypted external connection and source draft, together in one transaction.
 The plaintext key is not persisted in an onboarding draft and is never returned
 to the console.
+
+Every new-source flow also carries an organization-scoped onboarding-attempt
+ID. Browser retry, popup retry, or a duplicated submit reuses the same source
+when the non-secret definition still matches. Reusing that ID for different
+input fails closed. **Start new** is the explicit boundary that creates another
+source attempt.
 
 ## Projection, custom data, and source authority
 
@@ -63,6 +70,71 @@ has canonical semantics.
 The external system remains authoritative. Pulls and read-after-write project
 source state into Eylo. Projection never emits a vendor mutation, so an inbound
 sync cannot create a source-to-Eylo-to-source loop.
+
+## Dependency-ordered sync and relationship repair
+
+Each executable vendor manifest declares two separate facts per stream:
+
+- `depends_on`: streams that should complete first when both are in one sync
+  generation;
+- relationship targets: the exact stream that owns each referenced vendor ID.
+
+A relationship target is also a sync dependency. The console expands a user's
+selection to its transitive dependency closure, while the domain service
+rejects an incomplete selection from any client. This keeps the ordering rule
+and the relationship rule in one executable vendor contract instead of relying
+on UI convention.
+
+Eylo validates the complete graph when the adapter registry starts. Activation
+then persists one generation, one run per selected stream, and every initial
+`PENDING` or `WAITING` state before starting durable work. Independent roots
+may run together. A dependent run is released only after every selected parent
+succeeds; a failed parent marks blocked descendants failed without pretending
+they ran.
+
+Vendor refresh and page download run without an open DB transaction. After a
+page is available, one bounded transaction locks current source authority,
+projects the page, and commits its checkpoint. Run finalization commits before
+a separate generation-coordination transaction inspects sibling states and
+releases children. The periodic worker repairs a terminal run newer than its
+nonterminal generation if the process stops between those commits. Vendor
+latency therefore cannot extend a row-lock lifetime, and sibling finalization
+does not hold one stream's locks while waiting for another stream.
+
+Only incremental work inherits a stream's committed cursor. Bootstrap and
+reconciliation are complete scans with an empty, run-local cursor. They update
+or replace the stream checkpoint only after bounded page commits, then
+tombstone records the complete scan did not observe. This matters when a new
+mapping revision is published: reusing the old incremental cursor would
+reproject only recently changed records and leave a mixed-revision source.
+
+Scheduling chooses one run kind per source generation. If any due stream needs
+full reconciliation, that generation reconciles all of its selected due
+streams, preserving their DAG instead of splitting parents and children across
+different run kinds.
+
+The DAG improves first-pass linking but is not the relationship authority.
+Projection always persists a normalized relation intent identified by source,
+vendor object, and external ID. It resolves immediately when both canonical
+endpoints exist, stays pending otherwise, and retries when either endpoint
+arrives. A bounded background sweep covers process interruption without
+rewriting every unresolved intent each second or extending sync finalization.
+Reconciliation tombstones intents and materialized edges when their origin or
+endpoint disappears.
+
+Grid reads keep vendor identifiers for stable audit and Agent semantics, then
+resolve human labels in one bounded batch per page. Resolution is constrained
+to the same organization, source, target entity, and external ID. Missing or
+ambiguous targets remain visibly unresolved instead of being guessed. This is
+why a Jira issue can retain an account ID internally while the console presents
+the assignee's name, project key, sprint name, and comment author.
+
+Vendor discovery must follow the entity's real authority. Jira issues expose
+Sprint membership even when the same user cannot enumerate or inspect the
+owning boards. Eylo therefore materializes Jira cycles from the
+schema-identified Sprint field and uses direct Sprint reads only to complete
+partial values. It does not guess that a Sprint belongs to the project of an
+arbitrary issue.
 
 ## Reads and mutations
 
@@ -165,13 +237,19 @@ relationships, provenance, and freshness. Missing related streams are reported
 as not selected or unsupported rather than being confused with an empty
 history.
 
-Documents use the same pattern. The primary column renders canonical text and
-parent-first structured blocks; unsupported source blocks stay visible as
+The source drawer shows the same operational authority used by workers: current
+resolved/pending/tombstoned relation totals, recent generations, each stream
+run's state, and the stream dependency/relationship-target contracts. It does
+not expose checkpoints, vendor payloads, or credentials.
+
+Documents use the same pattern. The primary column renders current canonical
+text, parent-first structured blocks, and lazily loaded current raster
+attachments; unsupported source blocks stay visible as
 retained-but-not-interpreted content. The secondary column resolves space,
-author, source properties, version metadata, attachments, relationships,
-provenance, freshness, and the selected Agent view. Every related surface says
-whether its stream is available, not selected, or unsupported, so absence is
-never misreported as an empty document history.
+author, source properties, attachments, relationships, provenance, and
+freshness. A version badge signals when earlier versions exist in the source,
+but Eylo does not copy or present the historical bodies. Humans can open the
+source document for history or unsupported media.
 
 ## Failure and freshness
 

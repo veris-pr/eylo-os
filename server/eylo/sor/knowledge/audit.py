@@ -26,7 +26,7 @@ from .models import (
 )
 
 DOCUMENT_BLOCK_LIMIT = 500
-DOCUMENT_VERSION_LIMIT = 100
+DOCUMENT_VERSION_LIMIT = 1
 DOCUMENT_PROPERTY_LIMIT = 250
 DOCUMENT_ATTACHMENT_LIMIT = 250
 BLOCK_TEXT_PREVIEW_CHARS = 4_000
@@ -194,6 +194,7 @@ class KnowledgeDocumentAuditService:
             organization_id=organization_id,
             source_id=source.id,
             document_external_id=document_record.vendor_external_id,
+            current_version=document.version,
             selected="version" in selected_entities,
         )
         properties_truncated, properties = await self._properties(
@@ -303,9 +304,10 @@ class KnowledgeDocumentAuditService:
         organization_id: UUID,
         source_id: UUID,
         document_external_id: str,
+        current_version: str | None,
         selected: bool,
     ) -> tuple[bool, tuple[KnowledgeDocumentVersionAudit, ...]]:
-        if not selected:
+        if not selected or current_version is None:
             return False, ()
         rows = (
             await self.session.execute(
@@ -323,6 +325,7 @@ class KnowledgeDocumentAuditService:
                     KnowledgeVersionModel.organization_id == organization_id,
                     KnowledgeVersionModel.source_id == source_id,
                     KnowledgeVersionModel.document_external_id == document_external_id,
+                    KnowledgeVersionModel.number == current_version,
                     KnowledgeVersionModel.deleted.is_(False),
                     SorRecordModel.profile == SorProfile.KNOWLEDGE,
                     SorRecordModel.canonical_entity_kind == "version",

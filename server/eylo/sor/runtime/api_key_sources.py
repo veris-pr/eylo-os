@@ -128,12 +128,13 @@ async def create_api_key_source(
     session: AsyncSession,
     *,
     candidate: _VerifiedApiKeySourceCandidate,
+    onboarding_attempt_id: UUID,
     name: str,
     freshness_target_seconds: int,
     required_sync_interval_seconds: int,
     registry: SorRegistry | None = None,
 ) -> SorSourceModel:
-    """Atomically persist one encrypted org connection and unusable source draft."""
+    """Create or return one API-key source for an onboarding attempt."""
     active_registry = registry or get_sor_registry()
     try:
         manifest = active_registry.get_manifest(
@@ -149,6 +150,23 @@ async def create_api_key_source(
             "This SOR adapter does not support API-key authentication."
         )
 
+    sources = SorSourceService(session, registry=active_registry)
+    instance_origin = candidate.instance_origin or manifest.fixed_origin
+    existing = await sources.reuse_onboarding_attempt(
+        organization_id=candidate.organization_id,
+        onboarding_attempt_id=onboarding_attempt_id,
+        name=name,
+        profile=candidate.profile,
+        vendor_key=candidate.vendor_key,
+        configuration=candidate.configuration,
+        selected_objects=candidate.selected_objects,
+        freshness_target_seconds=freshness_target_seconds,
+        required_sync_interval_seconds=required_sync_interval_seconds,
+        expected_instance_origin=instance_origin,
+    )
+    if existing is not None:
+        return existing
+
     connection_id = uuid.UUID(str(uuid_utils.uuid7()))
     encrypted = encrypt_connection_credentials(
         {"api_key": candidate.api_key},
@@ -163,14 +181,15 @@ async def create_api_key_source(
             owner_kind=ConnectionOwnerKind.ORGANIZATION,
             vendor_key=candidate.vendor_key,
             auth_kind=ConnectionAuthKind.API_KEY,
-            instance_origin=candidate.instance_origin or manifest.fixed_origin,
+            instance_origin=instance_origin,
             granted_scopes=[],
             credentials=encrypted,
             status=ExternalConnectionStatus.ACTIVE,
         )
     )
-    source = await SorSourceService(session, registry=active_registry).create(
+    source = await sources.create(
         organization_id=candidate.organization_id,
+        onboarding_attempt_id=onboarding_attempt_id,
         name=name,
         profile=candidate.profile,
         vendor_key=candidate.vendor_key,

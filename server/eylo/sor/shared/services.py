@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from uuid import UUID
@@ -88,6 +89,20 @@ class SorProjectionError(SorError):
     """A source payload cannot satisfy its published mapping."""
 
 
+@dataclass(frozen=True, slots=True)
+class _SourceDraft:
+    """Normalized source identity used for create-request idempotency."""
+
+    configuration: dict[str, object]
+    freshness_target_seconds: int
+    manifest: SorAdapterCapabilityManifest
+    name: str
+    profile: SorProfile
+    required_sync_interval_seconds: int
+    selected_objects: tuple[str, ...]
+    vendor_key: str
+
+
 class SorSourceService:
     """Create and move source headers without performing vendor I/O."""
 
@@ -105,6 +120,7 @@ class SorSourceService:
         self,
         *,
         organization_id: UUID,
+        onboarding_attempt_id: UUID,
         name: str,
         profile: SorProfile,
         vendor_key: str,
@@ -114,7 +130,104 @@ class SorSourceService:
         freshness_target_seconds: int = 900,
         required_sync_interval_seconds: int = 900,
     ) -> SorSourceModel:
-        """Persist an unusable draft only after all static authority is valid."""
+        """Create or return the one draft owned by an onboarding attempt."""
+        draft = self._prepare_draft(
+            name=name,
+            profile=profile,
+            vendor_key=vendor_key,
+            configuration=configuration,
+            selected_objects=selected_objects,
+            freshness_target_seconds=freshness_target_seconds,
+            required_sync_interval_seconds=required_sync_interval_seconds,
+        )
+        existing = await self._reuse_attempt(
+            organization_id=organization_id,
+            onboarding_attempt_id=onboarding_attempt_id,
+            draft=draft,
+            expected_external_connection_id=external_connection_id,
+        )
+        if existing is not None:
+            return existing
+
+        required_scopes = {
+            scope
+            for object_key in draft.selected_objects
+            for scope in draft.manifest.required_scopes.get(object_key, ())
+        }
+        connection = await self.repository.get_connection(
+            organization_id=organization_id,
+            connection_id=external_connection_id,
+            vendor_key=draft.vendor_key,
+            for_update=True,
+        )
+        if connection is None:
+            raise SorNotFoundError("External connection not found.")
+        _validate_source_connection(
+            connection=connection,
+            manifest=draft.manifest,
+            required_scopes=required_scopes,
+        )
+
+        source = SorSourceModel(
+            organization_id=organization_id,
+            onboarding_attempt_id=onboarding_attempt_id,
+            name=draft.name,
+            profile=draft.profile,
+            vendor_key=draft.vendor_key,
+            external_connection_id=external_connection_id,
+            configuration=draft.configuration,
+            selected_objects=list(draft.selected_objects),
+            freshness_target_seconds=draft.freshness_target_seconds,
+            required_sync_interval_seconds=draft.required_sync_interval_seconds,
+            state=SorSourceState.DRAFT,
+        )
+        self.session.add(source)
+        await self.session.flush()
+        return source
+
+    async def reuse_onboarding_attempt(
+        self,
+        *,
+        organization_id: UUID,
+        onboarding_attempt_id: UUID,
+        name: str,
+        profile: SorProfile,
+        vendor_key: str,
+        configuration: Mapping[str, object] | None = None,
+        selected_objects: Sequence[str] = (),
+        freshness_target_seconds: int = 900,
+        required_sync_interval_seconds: int = 900,
+        expected_instance_origin: str | None = None,
+    ) -> SorSourceModel | None:
+        """Return a matching prior source while holding the attempt lock."""
+        draft = self._prepare_draft(
+            name=name,
+            profile=profile,
+            vendor_key=vendor_key,
+            configuration=configuration,
+            selected_objects=selected_objects,
+            freshness_target_seconds=freshness_target_seconds,
+            required_sync_interval_seconds=required_sync_interval_seconds,
+        )
+        return await self._reuse_attempt(
+            organization_id=organization_id,
+            onboarding_attempt_id=onboarding_attempt_id,
+            draft=draft,
+            expected_instance_origin=expected_instance_origin,
+        )
+
+    def _prepare_draft(
+        self,
+        *,
+        name: str,
+        profile: SorProfile,
+        vendor_key: str,
+        configuration: Mapping[str, object] | None,
+        selected_objects: Sequence[str],
+        freshness_target_seconds: int,
+        required_sync_interval_seconds: int,
+    ) -> _SourceDraft:
+        """Normalize and validate the stable, non-secret creation payload."""
         normalized_name = name.strip()
         normalized_vendor = vendor_key.strip().lower()
         if not 1 <= len(normalized_name) <= 160:
@@ -137,14 +250,6 @@ class SorSourceService:
                 "create a source yet."
             ) from error
 
-        connection = await self.repository.get_connection(
-            organization_id=organization_id,
-            connection_id=external_connection_id,
-            vendor_key=normalized_vendor,
-            for_update=True,
-        )
-        if connection is None:
-            raise SorNotFoundError("External connection not found.")
         objects = _unique_keys(selected_objects, field_name="selected object")
         if not objects:
             raise SorConfigurationError(
@@ -158,36 +263,63 @@ class SorSourceService:
                 + ", ".join(sorted(unknown_objects))
                 + "."
             )
-        required_scopes = {
-            scope
-            for object_key in objects
-            for scope in manifest.required_scopes.get(object_key, ())
-        }
-        _validate_source_connection(
-            connection=connection,
-            manifest=manifest,
-            required_scopes=required_scopes,
-        )
-
         normalized_configuration = _normalize_source_configuration(
             configuration,
             manifest=manifest,
         )
-        source = SorSourceModel(
-            organization_id=organization_id,
+        return _SourceDraft(
+            configuration=normalized_configuration,
+            freshness_target_seconds=freshness_target_seconds,
+            manifest=manifest,
             name=normalized_name,
             profile=profile,
-            vendor_key=normalized_vendor,
-            external_connection_id=external_connection_id,
-            configuration=normalized_configuration,
-            selected_objects=list(objects),
-            freshness_target_seconds=freshness_target_seconds,
             required_sync_interval_seconds=required_sync_interval_seconds,
-            state=SorSourceState.DRAFT,
+            selected_objects=objects,
+            vendor_key=normalized_vendor,
         )
-        self.session.add(source)
-        await self.session.flush()
-        return source
+
+    async def _reuse_attempt(
+        self,
+        *,
+        organization_id: UUID,
+        onboarding_attempt_id: UUID,
+        draft: _SourceDraft,
+        expected_external_connection_id: UUID | None = None,
+        expected_instance_origin: str | None = None,
+    ) -> SorSourceModel | None:
+        await self.repository.acquire_source_onboarding_lock(
+            organization_id=organization_id,
+            onboarding_attempt_id=onboarding_attempt_id,
+        )
+        existing = await self.repository.get_source_by_onboarding_attempt(
+            organization_id=organization_id,
+            onboarding_attempt_id=onboarding_attempt_id,
+        )
+        if existing is None:
+            return None
+        if existing.deleted:
+            raise SorConflictError(
+                "This onboarding attempt belongs to a deleted source. Start new."
+            )
+        _require_matching_source_attempt(existing=existing, draft=draft)
+        if (
+            expected_external_connection_id is not None
+            and existing.external_connection_id != expected_external_connection_id
+        ):
+            raise SorConflictError(
+                "This onboarding attempt is already bound to another connection."
+            )
+        if expected_instance_origin is not None:
+            connection = await self.repository.get_connection(
+                organization_id=organization_id,
+                connection_id=existing.external_connection_id,
+                vendor_key=draft.vendor_key,
+            )
+            if connection is None or connection.instance_origin != expected_instance_origin:
+                raise SorConflictError(
+                    "This onboarding attempt is already bound to another instance."
+                )
+        return existing
 
     async def reconnect_before_activation(
         self,
@@ -415,6 +547,66 @@ class SorSourceService:
             error_code=source.last_error_code,
         )
         return source
+
+    async def complete_reauthorization(
+        self,
+        *,
+        organization_id: UUID,
+        source_id: UUID,
+        expected_connection_revision: int,
+    ) -> SorSourceModel:
+        """Restore one activated source after its exact connection is renewed."""
+        source = await self.get(
+            organization_id=organization_id,
+            source_id=source_id,
+            for_update=True,
+        )
+        if source.state is not SorSourceState.REAUTH_REQUIRED:
+            raise SorConflictError(
+                "Only a source awaiting reauthorization can resume."
+            )
+        if (
+            source.active_schema_revision_id is None
+            or source.active_mapping_revision_id is None
+        ):
+            raise SorConflictError(
+                "This source has not been activated. Continue source setup instead."
+            )
+
+        connection = await self.repository.get_connection(
+            organization_id=organization_id,
+            connection_id=source.external_connection_id,
+            vendor_key=source.vendor_key,
+            for_update=True,
+        )
+        if connection is None:
+            raise SorNotFoundError("External connection not found.")
+        if connection.revision != expected_connection_revision:
+            raise SorConflictError(
+                "The source connection changed while reauthorization completed."
+            )
+        manifest = self.registry.get_manifest(
+            profile=source.profile,
+            vendor_key=source.vendor_key,
+        )
+        required_scopes = {
+            scope
+            for object_key in source.selected_objects
+            for scope in manifest.required_scopes.get(str(object_key), ())
+        }
+        _validate_source_connection(
+            connection=connection,
+            manifest=manifest,
+            required_scopes=required_scopes,
+            unavailable_message=(
+                "The source connection is not active after reauthorization."
+            ),
+        )
+        return await self.transition(
+            organization_id=organization_id,
+            source_id=source_id,
+            transition=SorSourceTransition.REAUTHORIZATION_SUCCEEDED,
+        )
 
     async def prepare_schema_refresh(
         self,
@@ -1569,6 +1761,7 @@ def _schema_snapshot(schema: SorDiscoveredSchema) -> dict[str, object]:
                     "choices": list(field.choices),
                     "description": field.description,
                     "group": field.group,
+                    "vendor_type": field.vendor_type,
                 }
             )
         objects.append(
@@ -1654,6 +1847,11 @@ def _snapshot_fields(
                 group=(
                     str(raw_field["group"])
                     if raw_field.get("group") is not None
+                    else None
+                ),
+                vendor_type=(
+                    str(raw_field["vendor_type"])
+                    if raw_field.get("vendor_type") is not None
                     else None
                 ),
             )
@@ -1963,6 +2161,28 @@ def _bounded_json(
         raise SorConfigurationError(f"{field_name.capitalize()} has an invalid shape.")
     if len(_canonical_json(value)) > maximum:
         raise SorConfigurationError(f"{field_name.capitalize()} is too large.")
+
+
+def _require_matching_source_attempt(
+    *,
+    existing: SorSourceModel,
+    draft: _SourceDraft,
+) -> None:
+    """Reject an idempotency key reused for a different source definition."""
+    matches = (
+        existing.name == draft.name
+        and existing.profile is draft.profile
+        and existing.vendor_key == draft.vendor_key
+        and existing.configuration == draft.configuration
+        and tuple(existing.selected_objects or ()) == draft.selected_objects
+        and existing.freshness_target_seconds == draft.freshness_target_seconds
+        and existing.required_sync_interval_seconds
+        == draft.required_sync_interval_seconds
+    )
+    if not matches:
+        raise SorConflictError(
+            "This onboarding attempt was already used for another source definition."
+        )
 
 
 def _normalize_source_configuration(

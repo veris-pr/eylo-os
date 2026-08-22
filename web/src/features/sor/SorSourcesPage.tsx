@@ -23,9 +23,9 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
-  SorSourceDetailsDrawer,
+  SorSourceDetailsPage,
   SourceStateBadge,
-} from "@/features/sor/SorSourceDetailsDrawer";
+} from "@/features/sor/SorSourceDetailsPage";
 import { SorSourceDeleteDialog } from "@/features/sor/SorSourceDeleteDialog";
 import {
   SOR_SOURCE_FILTER_SCHEMA,
@@ -109,6 +109,36 @@ const SorSourcesPage = observer(function SorSourcesPage() {
     return deleted;
   }
 
+  const deleteDialog = (
+    <SorSourceDeleteDialog
+      errorMessage={sor.sources.deleteErrorMessage}
+      isDeleting={sor.sources.isDeleting}
+      open={sourceToDelete !== null}
+      source={sourceToDelete}
+      onConfirm={confirmDelete}
+      onOpenChange={(open) => {
+        if (!open) {
+          sor.sources.clearDeleteError();
+          setSourceToDelete(null);
+        }
+      }}
+    />
+  );
+
+  if (sourceId !== undefined) {
+    return (
+      <>
+        <SorSourceDetailsPage
+          organizationId={activeOrganizationId}
+          sourceId={sourceId}
+          onClose={closeSource}
+          onDelete={requestDelete}
+        />
+        {deleteDialog}
+      </>
+    );
+  }
+
   return (
     <section
       aria-labelledby="sor-sources-title"
@@ -123,8 +153,8 @@ const SorSourcesPage = observer(function SorSourcesPage() {
             Sources
           </h1>
           <p className="max-w-3xl text-sm leading-6 text-muted-foreground">
-            Review configured systems, selected objects, sync health, and the
-            canonical profiles they feed.
+            Review connected systems, imported data, and synchronization
+            health.
           </p>
         </div>
         <Button
@@ -219,25 +249,7 @@ const SorSourcesPage = observer(function SorSourcesPage() {
         />
       )}
 
-      <SorSourceDetailsDrawer
-        organizationId={activeOrganizationId}
-        sourceId={sourceId}
-        onClose={closeSource}
-        onDelete={requestDelete}
-      />
-      <SorSourceDeleteDialog
-        errorMessage={sor.sources.deleteErrorMessage}
-        isDeleting={sor.sources.isDeleting}
-        open={sourceToDelete !== null}
-        source={sourceToDelete}
-        onConfirm={confirmDelete}
-        onOpenChange={(open) => {
-          if (!open) {
-            sor.sources.clearDeleteError();
-            setSourceToDelete(null);
-          }
-        }}
-      />
+      {deleteDialog}
     </section>
   );
 });

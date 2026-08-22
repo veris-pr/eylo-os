@@ -65,6 +65,16 @@ _STREAM_ENTITY = {
     "attachments": "attachment",
     "authors": "author",
 }
+_RELATIONSHIP_TARGETS = {
+    "pages": {
+        "space": "data_sources",
+        "parent": "pages",
+        "author": "authors",
+    },
+    "blocks": {"document": "pages", "parent": "blocks"},
+    "properties": {"document": "pages"},
+    "attachments": {"document": "pages"},
+}
 _READ_TOOLS = frozenset(
     {
         "docs_search",
@@ -155,6 +165,11 @@ NOTION_MANIFEST = SorAdapterCapabilityManifest(
             }[stream_key],
             canonical_entity=entity,
             change_strategies=frozenset({SorChangeStrategy.FULL_RECONCILE}),
+            depends_on=frozenset(
+                set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values())
+                - {stream_key}
+            ),
+            relationship_targets=_RELATIONSHIP_TARGETS.get(stream_key, {}),
         )
         for stream_key, entity in _STREAM_ENTITY.items()
     ),

@@ -65,8 +65,7 @@ function visibleGridColumnKeys(
   const anchors = defaults.filter(
     (column) =>
       column.importance === "PRIMARY" ||
-      column.key === "source" ||
-      column.key === "projected_at",
+      column.key === "source",
   );
   const canonical = defaults.filter(
     (column) =>

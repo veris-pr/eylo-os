@@ -53,6 +53,9 @@ _STREAM_ENTITY = {
     "companies": "company",
     "deals": "deal",
 }
+_RELATIONSHIP_TARGETS = {
+    "deals": {"contact": "contacts", "company": "companies"},
+}
 _TOOL_STREAM = {
     "crm_create_contact": ("contacts", True),
     "crm_update_contact": ("contacts", False),
@@ -119,6 +122,8 @@ HUBSPOT_MANIFEST = SorAdapterCapabilityManifest(
             description="Deals and their selected standard or custom properties.",
             canonical_entity="deal",
             change_strategies=frozenset({SorChangeStrategy.FULL_RECONCILE}),
+            depends_on=frozenset({"contacts", "companies"}),
+            relationship_targets=_RELATIONSHIP_TARGETS["deals"],
         ),
     ),
     readable_entities=frozenset(_STREAM_ENTITY.values()),

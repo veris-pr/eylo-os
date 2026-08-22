@@ -49,6 +49,7 @@ def _field(
     sortable: bool = True,
     groupable: bool = False,
     wraps: bool = False,
+    reference_entity: str | None = None,
 ) -> SorReadFieldSpec:
     return SorReadFieldSpec(
         key=key,
@@ -62,6 +63,7 @@ def _field(
         sortable=sortable,
         groupable=groupable,
         wraps=wraps,
+        reference_entity=reference_entity,
     )
 
 
@@ -133,6 +135,7 @@ TICKETING_ISSUE_READ_SPEC = SorEntityReadSpec(
             expression=TicketingIssueModel.project_external_id,
             attribute="project_external_id",
             groupable=True,
+            reference_entity="project",
         ),
         _field(
             key="team",
@@ -143,6 +146,7 @@ TICKETING_ISSUE_READ_SPEC = SorEntityReadSpec(
             attribute="team_external_id",
             default_visible=False,
             groupable=True,
+            reference_entity="project",
         ),
         _field(
             key="assignee",
@@ -152,6 +156,7 @@ TICKETING_ISSUE_READ_SPEC = SorEntityReadSpec(
             expression=TicketingIssueModel.assignee_external_id,
             attribute="assignee_external_id",
             groupable=True,
+            reference_entity="user",
         ),
         _field(
             key="reporter",
@@ -162,6 +167,7 @@ TICKETING_ISSUE_READ_SPEC = SorEntityReadSpec(
             attribute="reporter_external_id",
             default_visible=False,
             groupable=True,
+            reference_entity="user",
         ),
         _field(
             key="estimate",
@@ -181,6 +187,18 @@ TICKETING_ISSUE_READ_SPEC = SorEntityReadSpec(
             attribute="label_external_ids",
             sortable=False,
             wraps=True,
+            reference_entity="label",
+        ),
+        _field(
+            key="parent",
+            label="Parent issue",
+            kind=SorGridColumnKind.REFERENCE,
+            importance=SorGridColumnImportance.METADATA,
+            expression=TicketingIssueModel.parent_external_id,
+            attribute="parent_external_id",
+            default_visible=False,
+            groupable=True,
+            reference_entity="issue",
         ),
         _field(
             key="cycle",
@@ -191,6 +209,7 @@ TICKETING_ISSUE_READ_SPEC = SorEntityReadSpec(
             attribute="cycle_external_id",
             default_visible=False,
             groupable=True,
+            reference_entity="cycle",
         ),
         _field(
             key="due_date",
@@ -207,6 +226,15 @@ TICKETING_ISSUE_READ_SPEC = SorEntityReadSpec(
             importance=SorGridColumnImportance.METADATA,
             expression=TicketingIssueModel.completed_at,
             attribute="completed_at",
+            default_visible=False,
+        ),
+        _field(
+            key="started_at",
+            label="Started",
+            kind=SorGridColumnKind.DATETIME,
+            importance=SorGridColumnImportance.METADATA,
+            expression=TicketingIssueModel.started_at,
+            attribute="started_at",
             default_visible=False,
         ),
         _field(
@@ -381,6 +409,7 @@ TICKETING_LABEL_READ_SPEC = SorEntityReadSpec(
             expression=TicketingLabelModel.project_external_id,
             attribute="project_external_id",
             groupable=True,
+            reference_entity="project",
         ),
         _field(
             key="parent",
@@ -390,6 +419,7 @@ TICKETING_LABEL_READ_SPEC = SorEntityReadSpec(
             expression=TicketingLabelModel.parent_external_id,
             attribute="parent_external_id",
             default_visible=False,
+            reference_entity="label",
         ),
         _field(
             key="is_group",
@@ -433,6 +463,7 @@ TICKETING_CYCLE_READ_SPEC = SorEntityReadSpec(
             expression=TicketingCycleModel.project_external_id,
             attribute="project_external_id",
             groupable=True,
+            reference_entity="project",
         ),
         _field(
             key="starts_at",
@@ -494,6 +525,7 @@ TICKETING_RELATION_READ_SPEC = SorEntityReadSpec(
             expression=TicketingIssueRelationModel.from_issue_external_id,
             attribute="from_issue_external_id",
             groupable=True,
+            reference_entity="issue",
         ),
         _field(
             key="relation",
@@ -512,6 +544,7 @@ TICKETING_RELATION_READ_SPEC = SorEntityReadSpec(
             expression=TicketingIssueRelationModel.to_issue_external_id,
             attribute="to_issue_external_id",
             groupable=True,
+            reference_entity="issue",
         ),
         _field(
             key="source_relation",
@@ -539,6 +572,7 @@ TICKETING_COMMENT_READ_SPEC = SorEntityReadSpec(
             expression=TicketingCommentModel.issue_external_id,
             attribute="issue_external_id",
             groupable=True,
+            reference_entity="issue",
         ),
         _field(
             key="text",
@@ -557,6 +591,7 @@ TICKETING_COMMENT_READ_SPEC = SorEntityReadSpec(
             expression=TicketingCommentModel.author_external_id,
             attribute="author_external_id",
             groupable=True,
+            reference_entity="user",
         ),
         _field(
             key="created_at",

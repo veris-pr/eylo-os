@@ -11,7 +11,7 @@ authoritative.
 | `crm` | CRM | contacts, companies, deals, activities, owners, pipelines, stages | `crm_*` |
 | `ticketing` | Issues | issues, projects, workflow states, users, labels, cycles, comments, attachments, relations | `issue_*` |
 | `support` | Support | tickets, customers, source agents, queues, inboxes, messages, tags, SLA metrics, attachments | `support_*` |
-| `knowledge` | Documents | spaces, documents, blocks, versions, properties, attachments, authors | `docs_*` |
+| `knowledge` | Documents | spaces, documents, blocks, current revisions, properties, attachments, authors | `docs_*` |
 
 The catalog defines all four domain contracts. A profile becomes executable
 only through a registered adapter and an active source.
@@ -23,13 +23,13 @@ only through a registered adapter and an active source.
 | CRM | HubSpot | Implemented; live acceptance pending | OAuth 2.0 | contacts, companies, deals | full reconciliation; custom fields; reads and mapped writes |
 | CRM | Salesforce | Implemented; live acceptance pending | OAuth 2.0 with PKCE | Contact, Account, Opportunity, Task | updated-at cursor; custom fields and objects; conditional writes |
 | CRM | Microsoft Dataverse | Planned | — | — | no registered adapter |
-| Issues | Jira Cloud | Implemented; live acceptance pending | OAuth 2.0 | issues, projects, workflow states, users, labels, sprints, comments, relations | updated-at issue sync plus full reconciliation; custom fields; mapped writes |
+| Issues | Jira Cloud | Implemented; live acceptance pending | OAuth 2.0 | issues, projects, workflow states, users, labels, sprints, comments, relations | enhanced-JQL issue sync; Sprint-field cycle discovery; full reconciliation; custom fields; mapped writes |
 | Issues | Linear | Implemented; live acceptance pending | OAuth 2.0 with PKCE | issues, teams, projects, workflow states, users, labels, cycles, comments, relations | updated-at sync; signed webhooks; mapped writes |
 | Issues | GitHub Issues | Implemented; live acceptance pending | OAuth 2.0 | repositories, issues, workflow states, users, labels, milestones, comments | REST updated-at sync with bounded GraphQL PR classification; full reconciliation; signed operator-managed webhooks; mapped writes; pull requests and issue relations excluded |
 | Support | Zendesk | Implemented; live acceptance pending | OAuth 2.0 | tickets, customers, agents, groups, brands, comments, tags, ticket metrics, attachments | cursor incremental export; signed webhook refetch; custom ticket fields; public replies/private notes; safe mapped writes |
 | Support | Intercom | Implemented; live acceptance pending | OAuth 2.0 | conversations, contacts, admins, teams, conversation parts, tags, attachments | updated-at search plus full reconciliation; regional API pinning; signed operator-managed webhooks; conversation attributes; public replies/private notes; mapped writes |
 | Support | Freshdesk | Implemented; live acceptance pending | API key | tickets, contacts, agents, groups, email inboxes, conversations, tags, SLA targets, attachments; companies and Freshdesk custom objects as custom datasets | updated-at polling plus full reconciliation; custom fields and objects; public replies/private notes; mapped writes; no API-key webhook support |
-| Documents | Confluence Cloud | Implemented; live acceptance pending | OAuth 2.0 with REST v2 granular scopes | spaces, pages, page bodies, versions, properties, attachments | full reconciliation; loss-aware HTML normalization; version reads; mapped create/update/append |
+| Documents | Confluence Cloud | Implemented; live acceptance pending | OAuth 2.0 with REST v2 granular scopes | spaces, pages, page bodies, current revisions, properties, attachments, authors | full reconciliation; loss-aware HTML normalization; current revision and author reads; authenticated current-image previews; mapped create/update/append |
 | Documents | Notion | Implemented; live acceptance pending | OAuth 2.0 or API key | data sources, pages, recursive blocks, properties, attachments, authors | full reconciliation; completed paginated relation/rollup properties; unsupported-block disclosure; mapped create/update/append/comment |
 | Documents | SharePoint | Planned | — | — | no registered adapter |
 
@@ -110,12 +110,12 @@ Confluence Cloud and Notion implement these reads:
 - `docs_list_children`
 - `docs_describe_fields`
 
-Confluence additionally implements `docs_get_version`. Both implement
-`docs_create`, `docs_update`, and `docs_append`; Notion also implements
-`docs_comment`. Tool visibility still requires the published Agent tool, a
-compatible source grant, selected streams, active mappings, and required OAuth
-scopes. Documents are external SOR projections, not internal Eylo
-Knowledgebases and not `kb_*` retrieval tools.
+Both implement `docs_create`, `docs_update`, and `docs_append`; Notion also
+implements `docs_comment`. `docs_get` returns the current document projection.
+Eylo does not expose a separate historical-version tool. Tool visibility still
+requires the published Agent tool, a compatible source grant, selected streams,
+active mappings, and required OAuth scopes. Documents are external SOR
+projections, not internal Eylo Knowledgebases and not `kb_*` retrieval tools.
 
 ## Executable Support tools
 
@@ -200,6 +200,60 @@ reports `POST_WRITE_CANCELLED`. The periodic `nudge-sor-work` action recovers
 stranded cancellations, and durable outbox recovery only spawns work whose
 source state permits that work kind.
 
+## Sync graph and relationship states
+
+Adapter stream contracts expose:
+
+- `depends_on`: zero or more stream keys from the same vendor manifest;
+- `relationship_targets`: semantic reference key to exact target stream key.
+
+Registry startup rejects unknown nodes, self-dependencies, cycles, blank
+relationship keys, unknown relationship targets, and a relationship target not
+declared as a stream dependency. Object selection includes the complete
+transitive dependency closure; the server rejects an incomplete selection even
+if a client omits that UI behavior. A source sync generation has one kind and
+contains one run per selected stream. Run states use
+`PENDING`, `WAITING`, `RUNNING`, `SUCCEEDED`, `FAILED`, or `CANCELLED`.
+Generation state uses the same terminal vocabulary. A selected parent failure
+sets waiting descendants to `FAILED` with `DEPENDENCY_FAILED`.
+
+Relationship intents use `PENDING`, `RESOLVED`, or `TOMBSTONED`. Resolution is
+same-source and exact on organization, source, vendor object key, and vendor
+external ID. Endpoint projection resolves affected intents immediately. The
+trusted worker retries older pending intents in bounded batches, at most once
+per five-minute window; stream finalization does not absorb that backlog.
+
+Reference columns retain the raw vendor identifier as canonical data and add a
+batched `display_values` projection for the operator grid. The display value is
+resolved only within the same organization and source. Ambiguous or absent
+targets fail closed to the raw identifier; one unresolved target can never
+borrow a label from another source. Jira assignee and reporter IDs resolve to
+users, project IDs to projects, sprint IDs to cycles, and comment parents and
+authors to their canonical issue and user labels. Confluence page and current
+revision authors resolve through the selected author stream. Confluence emits
+a canonical parent relation only when the REST v2 page declares
+`parentType: page`; folder parents remain source-only because v1 does not
+import Confluence folders or request the folder-read scope.
+
+Vendor refresh, fetch, and download operations execute without an open DB
+transaction. Page projection, run finalization, and generation advancement use
+separate bounded transactions. The worker reconciles a terminal run whose
+generation was not advanced after commit.
+
+Jira Sprint discovery reads the stable Sprint custom-field schema and scans
+Sprint-bearing issues through enhanced JQL. It does not infer available cycles
+from board enumeration: an authorized user may see issue Sprint values while
+the board list is empty. The adapter retains `read:sprint:jira-software` only
+for incomplete or conflicting field values. Jira cycles do not claim a project
+relationship because a Sprint belongs to a board whose filter may span projects.
+
+Incremental runs inherit the committed stream checkpoint. Bootstrap and
+reconciliation runs are complete source scans: each starts from an empty,
+run-owned cursor, advances independently of an older stream checkpoint, and
+tombstones records not observed after the scan completes. A replacement
+mapping therefore cannot become active with records stranded on its previous
+mapping revision.
+
 ## Grid contract
 
 Every canonical or custom audit collection returns `sor-grid-v1` metadata.
@@ -247,6 +301,8 @@ All organization routes are under `/api/{organization_id}/sor`:
 - `/connectors` and `/connectors/{connector_id}/authorize`;
 - `/sources` and `/sources/api-key`, source verification, discovery, selection,
   mapping, activation, streams, sync runs, and webhook endpoint management;
+- `/sources/{source_id}/operations` for bounded recent generations, stream-run
+  receipts, and relationship health;
 - `/agents/{agent_id}/source-grants` and the published Agent view;
 - `/{profile}/{entity}` grid, query, list, and detail reads;
 - `/ticketing/issues/{record_id}/audit` for bounded live comments and explicit
@@ -254,8 +310,11 @@ All organization routes are under `/api/{organization_id}/sor`:
 - `/support/tickets/{record_id}/audit` for bounded message chronology, SLA
   metrics, attachments, and explicit related-stream availability;
 - `/knowledge/documents/{record_id}/audit` for bounded structured blocks,
-  source properties, versions, attachments, space, author, and explicit
-  related-stream availability;
+  source properties, current revision metadata, attachments, space, author,
+  and explicit related-stream availability;
+- `/knowledge/documents/{record_id}/attachments/{attachment_record_id}/content`
+  for a tenant-authorized, bounded current raster image. Vendor OAuth remains
+  server-side and is never forwarded to a redirected content host;
 - `/custom-datasets` grid, query, list, and detail reads.
 
 The shared OAuth callback is `/api/sor/oauth/callback`. Exact request and

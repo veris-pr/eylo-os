@@ -48,6 +48,7 @@ class SorSourceTransition(str, Enum):
     SYNC_SUCCEEDED = "sync_succeeded"
     SYNC_FAILED = "sync_failed"
     REAUTHORIZATION_REQUIRED = "reauthorization_required"
+    REAUTHORIZATION_SUCCEEDED = "reauthorization_succeeded"
     DISABLE = "disable"
     REENABLE = "reenable"
 
@@ -111,6 +112,10 @@ _SOURCE_TRANSITIONS: dict[
     (SorSourceState.DEGRADED, SorSourceTransition.SYNC_FAILED): (
         SorSourceState.DEGRADED
     ),
+    (
+        SorSourceState.REAUTH_REQUIRED,
+        SorSourceTransition.REAUTHORIZATION_SUCCEEDED,
+    ): SorSourceState.ACTIVE,
     (SorSourceState.DISABLED, SorSourceTransition.REENABLE): (SorSourceState.VERIFYING),
 }
 
@@ -246,6 +251,14 @@ class SorWorkState(str, Enum):
     CANCELLED = "CANCELLED"
 
 
+class SorRelationIntentState(str, Enum):
+    """Resolution lifecycle for one vendor-normalized canonical relationship."""
+
+    PENDING = "PENDING"
+    RESOLVED = "RESOLVED"
+    TOMBSTONED = "TOMBSTONED"
+
+
 class SorWebhookReceiptState(str, Enum):
     """Processing lifecycle of one verified webhook delivery."""
 
@@ -370,6 +383,22 @@ class SorVendorStreamSpec:
     canonical_entity: str
     change_strategies: frozenset[SorChangeStrategy]
     scope_category: str | None = None
+    depends_on: frozenset[str] = frozenset()
+    relationship_targets: Mapping[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class SorRelationIntentDraft:
+    """Exact same-source endpoint identities emitted by profile projection."""
+
+    from_vendor_object_key: str
+    from_vendor_external_id: str
+    to_vendor_object_key: str
+    to_vendor_external_id: str
+    canonical_relation_kind: str
+    native_relation_kind: str
+    external_relation_id: str
+    source_revision: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -505,6 +534,7 @@ class SorDiscoveredField:
     choices: tuple[str, ...] = ()
     description: str | None = None
     group: str | None = None
+    vendor_type: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -652,7 +682,7 @@ class SorProjectionOutcome:
 
 @runtime_checkable
 class SorLifecycleAdapter(Protocol):
-    """Shared lifecycle every profile adapter implements explicitly."""
+    """Vendor I/O port; async methods must run outside DB transactions."""
 
     async def verify_connection(self) -> SorConnectionVerification: ...
 
@@ -811,6 +841,8 @@ __all__ = [
     "SorProjectionDisposition",
     "SorProjectionOutcome",
     "SorRecordPage",
+    "SorRelationIntentDraft",
+    "SorRelationIntentState",
     "SorSchemaDifference",
     "SorSensitivity",
     "SorSourceAccess",

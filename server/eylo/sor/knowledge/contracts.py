@@ -91,6 +91,14 @@ class KnowledgeAttachment:
 
 
 @dataclass(frozen=True, slots=True)
+class KnowledgeAttachmentContent:
+    """Bounded source bytes returned only at an authenticated read boundary."""
+
+    content: bytes
+    media_type: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class KnowledgeAuthor:
     external_id: str
     name: str
@@ -101,7 +109,7 @@ class KnowledgeAuthor:
 
 @runtime_checkable
 class KnowledgeAdapter(SorLifecycleAdapter, Protocol):
-    """External-knowledge normalization port; never an internal KB adapter."""
+    """External-knowledge port with pure, I/O-free record normalization."""
 
     def normalize_space(self, record: SorExternalRecord) -> KnowledgeSpace: ...
 
@@ -121,9 +129,24 @@ class KnowledgeAdapter(SorLifecycleAdapter, Protocol):
     def normalize_author(self, record: SorExternalRecord) -> KnowledgeAuthor: ...
 
 
+@runtime_checkable
+class KnowledgeAttachmentReader(Protocol):
+    """Optional vendor port for current attachment content."""
+
+    async def read_attachment_content(
+        self,
+        *,
+        document_external_id: str,
+        attachment_external_id: str,
+        maximum_bytes: int,
+    ) -> KnowledgeAttachmentContent: ...
+
+
 __all__ = [
     "KnowledgeAdapter",
     "KnowledgeAttachment",
+    "KnowledgeAttachmentContent",
+    "KnowledgeAttachmentReader",
     "KnowledgeAuthor",
     "KnowledgeBlock",
     "KnowledgeDocument",

@@ -37,6 +37,7 @@ from .contracts import (
     SorFieldMappingState,
     SorMappingState,
     SorProfile,
+    SorRelationIntentState,
     SorSensitivity,
     SorSourceAccess,
     SorSourceState,
@@ -156,6 +157,11 @@ class SorSourceModel(EyloOrganizationModel):
             "profile",
             name="uq_sor_sources_id_organization_profile",
         ),
+        UniqueConstraint(
+            "organization_id",
+            "onboarding_attempt_id",
+            name="uq_sor_sources_organization_onboarding_attempt",
+        ),
         ForeignKeyConstraint(
             ["external_connection_id", "organization_id", "vendor_key"],
             [
@@ -237,6 +243,9 @@ class SorSourceModel(EyloOrganizationModel):
     )
 
     name: Mapped[str] = mapped_column(String(160), nullable=False)
+    onboarding_attempt_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False
+    )
     profile: Mapped[SorProfile] = mapped_column(
         _enum(SorProfile, "sor_profile_enum"), nullable=False, index=True
     )
@@ -969,6 +978,105 @@ class SorRecordRelationModel(EyloOrganizationModel):
     )
 
 
+class SorRelationIntentModel(EyloOrganizationModel):
+    """Persisted relationship identity awaiting two canonical endpoints."""
+
+    __tablename__ = "sor_relation_intents"
+
+    __table_args__ = (
+        *EyloOrganizationModel.get_organization_constraints(__tablename__),
+        UniqueConstraint(
+            "id",
+            "source_id",
+            "organization_id",
+            name="uq_sor_relation_intents_id_source_organization",
+        ),
+        UniqueConstraint(
+            "source_id",
+            "external_relation_id",
+            name="uq_sor_relation_intents_source_external_id",
+        ),
+        ForeignKeyConstraint(
+            ["source_id", "organization_id"],
+            ["sor_sources.id", "sor_sources.organization_id"],
+            name="fk_sor_relation_intents_source_organization",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["origin_record_id", "source_id", "organization_id"],
+            ["sor_records.id", "sor_records.source_id", "sor_records.organization_id"],
+            name="fk_sor_relation_intents_origin_record",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "length(btrim(from_vendor_object_key)) > 0 "
+            "AND length(btrim(from_vendor_external_id)) > 0 "
+            "AND length(btrim(to_vendor_object_key)) > 0 "
+            "AND length(btrim(to_vendor_external_id)) > 0",
+            name="ck_sor_relation_intents_endpoint_identity",
+        ),
+        CheckConstraint(
+            "from_vendor_object_key <> to_vendor_object_key "
+            "OR from_vendor_external_id <> to_vendor_external_id",
+            name="ck_sor_relation_intents_distinct_endpoints",
+        ),
+        CheckConstraint(
+            "resolution_attempts >= 0",
+            name="ck_sor_relation_intents_attempts_nonnegative",
+        ),
+        Index(
+            "ix_sor_relation_intents_source_state",
+            "source_id",
+            "state",
+            "updated_at",
+        ),
+        Index(
+            "ix_sor_relation_intents_from_endpoint",
+            "source_id",
+            "from_vendor_object_key",
+            "from_vendor_external_id",
+        ),
+        Index(
+            "ix_sor_relation_intents_to_endpoint",
+            "source_id",
+            "to_vendor_object_key",
+            "to_vendor_external_id",
+        ),
+    )
+
+    source_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+    origin_record_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+    from_vendor_object_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    from_vendor_external_id: Mapped[str] = mapped_column(String(512), nullable=False)
+    to_vendor_object_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    to_vendor_external_id: Mapped[str] = mapped_column(String(512), nullable=False)
+    canonical_relation_kind: Mapped[str] = mapped_column(String(96), nullable=False)
+    native_relation_kind: Mapped[str] = mapped_column(String(160), nullable=False)
+    external_relation_id: Mapped[str] = mapped_column(String(512), nullable=False)
+    source_revision: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    state: Mapped[SorRelationIntentState] = mapped_column(
+        _enum(SorRelationIntentState, "sor_relation_intent_state_enum"),
+        nullable=False,
+        default=SorRelationIntentState.PENDING,
+        server_default=SorRelationIntentState.PENDING.value,
+        index=True,
+    )
+    resolution_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    last_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    tombstoned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 class SorCustomFieldValueModel(EyloOrganizationModel):
     """Exactly one typed value for one record and custom field definition."""
 
@@ -1156,6 +1264,16 @@ class SorSourceStreamModel(EyloOrganizationModel):
             "checkpoint IS NULL OR octet_length(checkpoint) <= 1048576",
             name="ck_sor_source_streams_checkpoint_size",
         ),
+        CheckConstraint(
+            "jsonb_typeof(depends_on) = 'array' "
+            "AND octet_length(depends_on::text) <= 65536",
+            name="ck_sor_source_streams_dependencies",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(relationship_targets) = 'object' "
+            "AND octet_length(relationship_targets::text) <= 65536",
+            name="ck_sor_source_streams_relationship_targets",
+        ),
         Index("ix_sor_source_streams_due", "state", "next_due_at"),
     )
 
@@ -1164,6 +1282,18 @@ class SorSourceStreamModel(EyloOrganizationModel):
     )
     vendor_object_key: Mapped[str] = mapped_column(String(160), nullable=False)
     canonical_entity_kind: Mapped[str] = mapped_column(String(96), nullable=False)
+    depends_on: Mapped[list[str]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=list,
+        server_default=text("'[]'::jsonb"),
+    )
+    relationship_targets: Mapped[dict[str, str]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )
     strategy: Mapped[SorChangeStrategy] = mapped_column(
         _enum(SorChangeStrategy, "sor_change_strategy_enum"), nullable=False
     )
@@ -1215,6 +1345,66 @@ class SorSourceStreamModel(EyloOrganizationModel):
     )
 
 
+class SorSyncGenerationModel(EyloOrganizationModel):
+    """One source-level set of stream runs ordered by their declared DAG."""
+
+    __tablename__ = "sor_sync_generations"
+
+    __table_args__ = (
+        *EyloOrganizationModel.get_organization_constraints(__tablename__),
+        UniqueConstraint(
+            "id",
+            "source_id",
+            "organization_id",
+            name="uq_sor_sync_generations_id_source_organization",
+        ),
+        ForeignKeyConstraint(
+            ["source_id", "organization_id"],
+            ["sor_sources.id", "sor_sources.organization_id"],
+            name="fk_sor_sync_generations_source_organization",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "(state IN ('PENDING', 'RUNNING', 'WAITING') AND finished_at IS NULL) OR "
+            "(state IN ('SUCCEEDED', 'FAILED', 'CANCELLED') "
+            "AND finished_at IS NOT NULL)",
+            name="ck_sor_sync_generations_terminal_time",
+        ),
+        Index(
+            "ix_sor_sync_generations_source_created",
+            "source_id",
+            "created_at",
+        ),
+        Index(
+            "ix_sor_sync_generations_org_state",
+            "organization_id",
+            "state",
+        ),
+    )
+
+    source_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+    kind: Mapped[SorSyncRunKind] = mapped_column(
+        _enum(SorSyncRunKind, "sor_sync_run_kind_enum"), nullable=False
+    )
+    state: Mapped[SorWorkState] = mapped_column(
+        _enum(SorWorkState, "sor_work_state_enum"),
+        nullable=False,
+        default=SorWorkState.PENDING,
+        server_default=SorWorkState.PENDING.value,
+        index=True,
+    )
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    safe_error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    safe_error_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class SorSyncRunModel(EyloOrganizationModel):
     """Product-visible state for one Absurd-owned source projection run."""
 
@@ -1246,6 +1436,16 @@ class SorSyncRunModel(EyloOrganizationModel):
                 "sor_source_streams.organization_id",
             ],
             name="fk_sor_sync_runs_stream_source_organization",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["generation_id", "source_id", "organization_id"],
+            [
+                "sor_sync_generations.id",
+                "sor_sync_generations.source_id",
+                "sor_sync_generations.organization_id",
+            ],
+            name="fk_sor_sync_runs_generation_source_organization",
             ondelete="RESTRICT",
         ),
         ForeignKeyConstraint(
@@ -1291,6 +1491,9 @@ class SorSyncRunModel(EyloOrganizationModel):
     )
 
     source_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+    generation_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), nullable=False, index=True
     )
     stream_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -1763,10 +1966,12 @@ __all__ = [
     "SorMappingRevisionModel",
     "SorRecordModel",
     "SorRecordRelationModel",
+    "SorRelationIntentModel",
     "SorSchemaRevisionModel",
     "SorSourceGrantModel",
     "SorSourceModel",
     "SorSourceStreamModel",
+    "SorSyncGenerationModel",
     "SorSyncRunModel",
     "SorWebhookReceiptModel",
 ]

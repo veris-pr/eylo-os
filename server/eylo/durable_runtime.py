@@ -34,7 +34,6 @@ DURABLE_CANCELLATION_POLICY = cast(
 )
 DURABLE_CLAIM_TIMEOUT_SECONDS = 120
 DURABLE_WORKER_CONCURRENCY = 4
-DURABLE_WORKER_BATCH_SIZE = 4
 DURABLE_POLL_INTERVAL_SECONDS = 0.25
 
 DurableTaskHandler = Callable[
@@ -50,14 +49,13 @@ class DurableRuntimeConfigurationError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class AbsurdRuntimeConfig:
-    """Every engine and worker option; no SDK default participates."""
+    """Every engine and worker option; concurrency means independent pollers."""
 
     database_url: str = field(repr=False)
     queue_name: str = DURABLE_QUEUE
     max_attempts: int = DURABLE_MAX_ATTEMPTS
     claim_timeout_seconds: int = DURABLE_CLAIM_TIMEOUT_SECONDS
     worker_concurrency: int = DURABLE_WORKER_CONCURRENCY
-    worker_batch_size: int = DURABLE_WORKER_BATCH_SIZE
     poll_interval_seconds: float = DURABLE_POLL_INTERVAL_SECONDS
 
     def __post_init__(self) -> None:
@@ -79,16 +77,11 @@ class AbsurdRuntimeConfig:
             self.max_attempts,
             self.claim_timeout_seconds,
             self.worker_concurrency,
-            self.worker_batch_size,
             self.poll_interval_seconds,
         )
         if any(value <= 0 for value in numeric_options):
             raise DurableRuntimeConfigurationError(
                 "Durable worker options must be positive."
-            )
-        if self.worker_batch_size < self.worker_concurrency:
-            raise DurableRuntimeConfigurationError(
-                "Durable worker batch size cannot be below concurrency."
             )
 
     @classmethod
@@ -113,16 +106,21 @@ class AbsurdRuntimeConfig:
 
 
 class PlatformDurableRuntime:
-    """Own one DB client, task registry and worker for all durable work kinds."""
+    """Own one producer client plus isolated polling lanes for durable work."""
 
     def __init__(self, config: AbsurdRuntimeConfig | None = None) -> None:
         self.config = config or AbsurdRuntimeConfig.from_platform_settings()
-        self._app = AsyncAbsurd(
+        self._app = self._new_app()
+        self._worker_apps: tuple[AsyncAbsurd, ...] = ()
+        self._registrations: dict[str, DurableTaskRegistration] = {}
+        self._registered_names: set[str] = set()
+
+    def _new_app(self) -> AsyncAbsurd:
+        return AsyncAbsurd(
             self.config.database_url,
             queue_name=self.config.queue_name,
             default_max_attempts=self.config.max_attempts,
         )
-        self._registered_names: set[str] = set()
 
     def register_task(
         self,
@@ -147,14 +145,30 @@ class PlatformDurableRuntime:
             raise DurableRuntimeConfigurationError(
                 "Durable workflow attempts must be positive."
             )
-        decorator = self._app.register_task(
-            name,
-            queue=self.config.queue_name,
-            default_max_attempts=attempts,
-            default_cancellation=cancellation or self.config.cancellation_policy(),
+        registration = DurableTaskRegistration(
+            name=name,
+            handler=handler,
+            max_attempts=attempts,
+            cancellation=dict(
+                cancellation or self.config.cancellation_policy()
+            ),
         )
-        decorator(handler)
+        self._register_on(self._app, registration)
+        self._registrations[name] = registration
         self._registered_names.add(name)
+
+    def _register_on(
+        self,
+        app: AsyncAbsurd,
+        registration: DurableTaskRegistration,
+    ) -> None:
+        decorator = app.register_task(
+            registration.name,
+            queue=self.config.queue_name,
+            default_max_attempts=registration.max_attempts,
+            default_cancellation=dict(registration.cancellation),
+        )
+        decorator(registration.handler)
 
     def is_registered(self, name: str) -> bool:
         return name in self._registered_names
@@ -218,19 +232,56 @@ class PlatformDurableRuntime:
             raise DurableRuntimeConfigurationError(
                 "At least one durable workflow must be registered before worker start."
             )
-        await self._app.start_worker(
-            worker_id=worker_id,
-            claim_timeout=self.config.claim_timeout_seconds,
-            concurrency=self.config.worker_concurrency,
-            batch_size=self.config.worker_batch_size,
-            poll_interval=self.config.poll_interval_seconds,
-        )
+        if self._worker_apps:
+            raise DurableRuntimeConfigurationError("Durable worker is already running.")
+
+        # The Python SDK waits for its entire claimed batch before polling again,
+        # so one late-arriving task cannot fill an advertised free slot. Give each
+        # configured lane its own public client and connection until upstream
+        # refills capacity continuously.
+        # Source: https://github.com/earendil-works/absurd/blob/0.5.0/sdks/python/src/absurd_sdk/__init__.py
+        lanes = tuple(self._new_app() for _ in range(self.config.worker_concurrency))
+        self._worker_apps = lanes
+        try:
+            for app in lanes:
+                for registration in self._registrations.values():
+                    self._register_on(app, registration)
+            async with asyncio.TaskGroup() as tasks:
+                for index, app in enumerate(lanes, start=1):
+                    tasks.create_task(
+                        app.start_worker(
+                            worker_id=f"{worker_id}:lane-{index}",
+                            claim_timeout=self.config.claim_timeout_seconds,
+                            concurrency=1,
+                            batch_size=1,
+                            poll_interval=self.config.poll_interval_seconds,
+                        )
+                    )
+        finally:
+            for app in lanes:
+                await app.close()
+            self._worker_apps = ()
 
     def stop_worker(self) -> None:
+        for app in self._worker_apps:
+            app.stop_worker()
         self._app.stop_worker()
 
     async def close(self) -> None:
+        for app in self._worker_apps:
+            await app.close()
+        self._worker_apps = ()
         await self._app.close()
+
+
+@dataclass(frozen=True, slots=True)
+class DurableTaskRegistration:
+    """Replayable public-SDK task registration for each worker lane."""
+
+    name: str
+    handler: DurableTaskHandler
+    max_attempts: int
+    cancellation: CancellationPolicy
 
 
 async def run_with_durable_heartbeat(

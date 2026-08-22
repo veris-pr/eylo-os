@@ -11,6 +11,10 @@ import {
 } from "lucide-react";
 
 import type { FilterUiSchema } from "@/components/filters";
+import {
+  formatSorIdentifier,
+  formatSorValue,
+} from "@/features/sor/sor-formatters";
 import type { SorCollectionRow, SorGridColumn } from "@/features/sor/sor.types";
 import type {
   FilterAccessorValue,
@@ -20,6 +24,10 @@ import type {
 
 function sorCellValue(row: SorCollectionRow, columnKey: string): unknown {
   return row.values[columnKey];
+}
+
+function sorDisplayValue(row: SorCollectionRow, columnKey: string): unknown {
+  return row.display_values[columnKey] ?? sorCellValue(row, columnKey);
 }
 
 function buildSorFilterSchema(
@@ -71,34 +79,74 @@ function optionsFor(
   if (
     column.kind !== "ENUM" &&
     column.kind !== "BOOLEAN" &&
-    column.kind !== "STRING_ARRAY"
+    column.kind !== "STRING_ARRAY" &&
+    column.kind !== "REFERENCE"
   ) {
     return undefined;
   }
-  const values = new Set<string>();
+  const values = new Map<string, string>();
   for (const row of rows) {
     const value = sorCellValue(row, column.key);
+    const displayValue = sorDisplayValue(row, column.key);
     if (Array.isArray(value)) {
-      for (const item of value) {
-        if (typeof item === "string" && item !== "") values.add(item);
+      for (const [index, item] of value.entries()) {
+        if (typeof item !== "string" || item === "") continue;
+        const display = Array.isArray(displayValue)
+          ? displayValue[index]
+          : undefined;
+        values.set(
+          item,
+          optionLabel(
+            column,
+            item,
+            typeof display === "string" ? display : item,
+          ),
+        );
       }
     } else if (
       typeof value === "string" ||
       typeof value === "number" ||
       typeof value === "boolean"
     ) {
-      values.add(String(value));
+      const normalized = String(value);
+      values.set(
+        normalized,
+        optionLabel(
+          column,
+          normalized,
+          typeof displayValue === "string" ? displayValue : normalized,
+        ),
+      );
     }
   }
   return [...values]
-    .sort((left, right) => left.localeCompare(right))
-    .map((value) => ({ label: value, value }));
+    .sort((left, right) => left[1].localeCompare(right[1]))
+    .map(([value, label]) => ({
+      keywords: label === value ? undefined : [value],
+      label,
+      value,
+    }));
+}
+
+function optionLabel(
+  column: SorGridColumn,
+  rawValue: string,
+  displayValue: string,
+): string {
+  if (column.kind === "ENUM" && displayValue === rawValue) {
+    return formatSorIdentifier(rawValue);
+  }
+  if (column.kind === "BOOLEAN" && displayValue === rawValue) {
+    return formatSorValue(rawValue === "true");
+  }
+  return displayValue;
 }
 
 function valueTypeFor(kind: SorGridColumn["kind"]): FilterValueType {
   switch (kind) {
     case "ENUM":
     case "BOOLEAN":
+    case "REFERENCE":
       return "multi-select";
     case "STRING_ARRAY":
       return "labels";
@@ -110,7 +158,6 @@ function valueTypeFor(kind: SorGridColumn["kind"]): FilterValueType {
     case "LINK":
       return "links";
     case "LONG_TEXT":
-    case "REFERENCE":
     case "TEXT":
       return "text";
   }
@@ -137,10 +184,10 @@ function operatorsFor(
       return ["includes_any", "includes_all", "includes_none"];
     case "ENUM":
     case "BOOLEAN":
+    case "REFERENCE":
       return ["is", "is_not", "is_any_of"];
     case "LONG_TEXT":
     case "NUMBER":
-    case "REFERENCE":
     case "TEXT":
       return ["is", "is_not"];
   }
@@ -171,4 +218,4 @@ function iconFor(kind: SorGridColumn["kind"]) {
   }
 }
 
-export { buildSorFilterSchema, sorCellValue };
+export { buildSorFilterSchema, sorCellValue, sorDisplayValue };

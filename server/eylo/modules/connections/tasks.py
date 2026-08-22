@@ -33,17 +33,20 @@ async def cleanup_expired_oauth_states() -> dict:
     """Delete expired OAuth state records."""
     logger.info("[CleanupOAuthStatesTask] Starting cleanup")
     try:
-        async with start_transaction():
-            expired_states = await OAuthStateRepository().delete_expired_states(
+        async with start_transaction() as db:
+            expired_states = await OAuthStateRepository(db).delete_expired_states(
                 datetime.now(timezone.utc)
             )
-            service = ExternalConnectionService()
-            for state in expired_states:
-                await service.revoke(
+        for state in expired_states:
+            async with start_transaction() as db:
+                await ExternalConnectionService(
+                    db
+                ).revoke_expired_authorization_attempt(
                     organization_id=state.organization_id,
                     connection_id=state.external_connection_id,
+                    expected_revision=state.expected_connection_revision,
                 )
-            deleted_count = len(expired_states)
+        deleted_count = len(expired_states)
         logger.info(f"[CleanupOAuthStatesTask] Deleted {deleted_count} states")
         return {"status": "success", "deleted_count": deleted_count}
     except Exception as error:

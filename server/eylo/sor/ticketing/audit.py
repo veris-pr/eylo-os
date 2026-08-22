@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.sor.shared.contracts import SorProfile
 from eylo.sor.shared.models import SorRecordModel, SorSourceModel
-from eylo.sor.shared.reads import SorReadNotFoundError
+from eylo.sor.shared.reads import SorReadNotFoundError, resolve_reference_labels
 from eylo.sor.shared.repositories import SorRepository
 from eylo.sor.ticketing.models import TicketingCommentModel, TicketingIssueModel
 
@@ -24,6 +24,7 @@ class TicketingIssueCommentAudit:
 
     record_id: UUID
     author_external_id: str | None
+    author_name: str | None
     text: str
     created_at: datetime
     updated_at: datetime | None
@@ -129,10 +130,26 @@ class TicketingIssueAuditService:
         ).all()
         truncated = len(rows) > TICKETING_ISSUE_COMMENT_LIMIT
         selected_rows = rows[:TICKETING_ISSUE_COMMENT_LIMIT]
+        author_labels = await resolve_reference_labels(
+            self.session,
+            organization_id=organization_id,
+            reference_keys=tuple(
+                (issue_record.source_id, "user", comment.author_external_id)
+                for comment, _record in selected_rows
+                if comment.author_external_id is not None
+            ),
+        )
         comments = tuple(
             TicketingIssueCommentAudit(
                 record_id=record.id,
                 author_external_id=comment.author_external_id,
+                author_name=(
+                    author_labels.get(
+                        (issue_record.source_id, "user", comment.author_external_id)
+                    )
+                    if comment.author_external_id is not None
+                    else None
+                ),
                 text=comment.normalized_text,
                 created_at=comment.source_created_at,
                 updated_at=comment.source_updated_at,

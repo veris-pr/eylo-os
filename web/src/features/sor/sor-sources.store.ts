@@ -1,15 +1,29 @@
 import { makeAutoObservable, runInAction } from "mobx";
 
 import { SorService } from "@/features/sor/sor.service";
-import type { SorSource, SorStream } from "@/features/sor/sor.types";
+import type {
+  SorAuthorizationRedirect,
+  SorConnector,
+  SorSource,
+  SorSourceOperations,
+  SorStream,
+} from "@/features/sor/sor.types";
 
 class SorSourcesStore {
   deleteErrorMessage: string | null = null;
   errorMessage: string | null = null;
   isDeleting = false;
   isLoading = false;
+  isReauthorizing = false;
+  isStartingSync = false;
+  startingStreamId: string | null = null;
   isSelectedLoading = false;
+  reauthorizationErrorMessage: string | null = null;
+  syncActionErrorMessage: string | null = null;
+  syncActionMessage: string | null = null;
+  selectedConnectionName: string | null = null;
   selectedErrorMessage: string | null = null;
+  selectedOperations: SorSourceOperations | null = null;
   selectedSource: SorSource | null = null;
   selectedStreams: SorStream[] = [];
   sourcesById = new Map<string, SorSource>();
@@ -83,21 +97,36 @@ class SorSourcesStore {
 
   async loadSelected(organizationId: string, sourceId: string): Promise<void> {
     const requestId = ++this.selectedRequestId;
+    const isRefreshingSelectedSource = this.selectedSource?.id === sourceId;
     this.selectedSource = this.sourcesById.get(sourceId) ?? null;
-    this.selectedStreams = [];
+    if (!isRefreshingSelectedSource) {
+      this.selectedOperations = null;
+      this.selectedStreams = [];
+      this.selectedConnectionName = null;
+    }
     this.selectedErrorMessage = null;
     this.isSelectedLoading = true;
 
     try {
-      const [source, streams] = await Promise.all([
+      const [source, streams, operations, connectors] = await Promise.all([
         this.service.loadSource(organizationId, sourceId),
         this.service.loadSourceStreams(organizationId, sourceId),
+        this.service.loadSourceOperations(organizationId, sourceId),
+        this.service
+          .loadConnectors(organizationId)
+          .catch((): SorConnector[] => []),
       ]);
       if (this.selectedRequestId !== requestId) return;
       runInAction(() => {
         this.sourcesById.set(source.id, source);
         this.selectedSource = source;
         this.selectedStreams = streams;
+        this.selectedOperations = operations;
+        this.selectedConnectionName =
+          connectors.find(
+            (connector) =>
+              connector.connection?.id === source.external_connection_id,
+          )?.name ?? null;
       });
     } catch (error) {
       if (this.selectedRequestId !== requestId) return;
@@ -119,6 +148,8 @@ class SorSourcesStore {
   clearSelected(): void {
     ++this.selectedRequestId;
     this.selectedSource = null;
+    this.selectedOperations = null;
+    this.selectedConnectionName = null;
     this.selectedStreams = [];
     this.selectedErrorMessage = null;
     this.isSelectedLoading = false;
@@ -126,6 +157,142 @@ class SorSourcesStore {
 
   clearDeleteError(): void {
     this.deleteErrorMessage = null;
+  }
+
+  async beginReauthorization(
+    organizationId: string,
+    sourceId: string,
+  ): Promise<SorAuthorizationRedirect | null> {
+    if (this.isReauthorizing) return null;
+    this.isReauthorizing = true;
+    this.reauthorizationErrorMessage = null;
+    try {
+      return await this.service.reauthorizeSource(organizationId, sourceId);
+    } catch (error) {
+      runInAction(() => {
+        this.reauthorizationErrorMessage = messageFrom(
+          error,
+          "Source reauthorization could not be started.",
+        );
+        this.isReauthorizing = false;
+      });
+      return null;
+    }
+  }
+
+  async finishReauthorization(
+    organizationId: string,
+    sourceId: string,
+  ): Promise<boolean> {
+    try {
+      await Promise.all([
+        this.load(organizationId, true),
+        this.loadSelected(organizationId, sourceId),
+      ]);
+      const source = this.sourcesById.get(sourceId);
+      if (source?.state === "REAUTH_REQUIRED") {
+        runInAction(() => {
+          this.reauthorizationErrorMessage =
+            "The provider connected, but this source could not resume. Try again.";
+        });
+        return false;
+      }
+      return source !== undefined;
+    } finally {
+      runInAction(() => {
+        this.isReauthorizing = false;
+      });
+    }
+  }
+
+  failReauthorization(error: unknown): void {
+    this.reauthorizationErrorMessage = messageFrom(
+      error,
+      "Source reauthorization failed.",
+    );
+    this.isReauthorizing = false;
+  }
+
+  async startSync(organizationId: string, sourceId: string): Promise<boolean> {
+    if (this.isStartingSync) return false;
+    this.isStartingSync = true;
+    this.startingStreamId = null;
+    this.syncActionErrorMessage = null;
+    this.syncActionMessage = null;
+    try {
+      await this.service.startSourceSync(
+        organizationId,
+        sourceId,
+        "RECONCILIATION",
+      );
+      await Promise.all([
+        this.load(organizationId, true),
+        this.loadSelected(organizationId, sourceId),
+      ]);
+      runInAction(() => {
+        this.syncActionMessage = "Synchronization started.";
+      });
+      return true;
+    } catch (error) {
+      runInAction(() => {
+        this.syncActionErrorMessage = messageFrom(
+          error,
+          "Synchronization could not be started.",
+        );
+      });
+      return false;
+    } finally {
+      runInAction(() => {
+        this.isStartingSync = false;
+        this.startingStreamId = null;
+      });
+    }
+  }
+
+  async startStreamSync(
+    organizationId: string,
+    sourceId: string,
+    streamId: string,
+  ): Promise<boolean> {
+    if (this.isStartingSync) return false;
+    this.isStartingSync = true;
+    this.startingStreamId = streamId;
+    this.syncActionErrorMessage = null;
+    this.syncActionMessage = null;
+    try {
+      await this.service.startSourceRun(
+        organizationId,
+        sourceId,
+        streamId,
+        "RECONCILIATION",
+      );
+      await Promise.all([
+        this.load(organizationId, true),
+        this.loadSelected(organizationId, sourceId),
+      ]);
+      runInAction(() => {
+        this.syncActionMessage = "Object synchronization started.";
+      });
+      return true;
+    } catch (error) {
+      runInAction(() => {
+        this.syncActionErrorMessage = messageFrom(
+          error,
+          "Object synchronization could not be started.",
+        );
+      });
+      return false;
+    } finally {
+      runInAction(() => {
+        this.isStartingSync = false;
+        this.startingStreamId = null;
+      });
+    }
+  }
+
+  clearSyncAction(): void {
+    this.syncActionErrorMessage = null;
+    this.syncActionMessage = null;
   }
 
   async deleteSource(

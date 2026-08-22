@@ -3660,6 +3660,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/{organization_id}/sor/knowledge/documents/{record_id}/attachments/{attachment_record_id}/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Knowledge Document Attachment Content
+         * @description Proxy one current, tenant-owned raster attachment without leaking auth.
+         */
+        get: operations["get_knowledge_document_attachment_content_api__organization_id__sor_knowledge_documents__record_id__attachments__attachment_record_id__content_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/{organization_id}/sor/ticketing/issues/{record_id}/audit": {
         parameters: {
             query?: never;
@@ -3872,6 +3892,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/{organization_id}/sor/sources/{source_id}/reauthorize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reauthorize Sor Source
+         * @description Restart OAuth for an activated source while preserving its projection.
+         */
+        post: operations["reauthorize_sor_source_api__organization_id__sor_sources__source_id__reauthorize_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/sources/{source_id}/operations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Sor Source Operations
+         * @description Show recent sync DAGs and canonical relationship resolution health.
+         */
+        get: operations["get_sor_source_operations_api__organization_id__sor_sources__source_id__operations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/{organization_id}/sor/sources/{source_id}/connection": {
         parameters: {
             query?: never;
@@ -4023,7 +4083,7 @@ export interface paths {
         put?: never;
         /**
          * Publish Sor Mapping
-         * @description Publish one mapping and move its source into bootstrap state.
+         * @description Atomically publish one mapping and persist its bootstrap work.
          */
         post: operations["publish_sor_mapping_api__organization_id__sor_sources__source_id__mappings__mapping_revision_id__publish_post"];
         delete?: never;
@@ -4174,6 +4234,26 @@ export interface paths {
          * @description Create one explicit vendor-object to canonical-entity stream.
          */
         post: operations["create_sor_source_stream_api__organization_id__sor_sources__source_id__streams_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/sources/{source_id}/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start Sor Source Run
+         * @description Commit one source-wide dependency DAG before spawning its root work.
+         */
+        post: operations["start_sor_source_run_api__organization_id__sor_sources__source_id__runs_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -10927,6 +11007,11 @@ export interface components {
         SorApiKeySourceCreateRequest: {
             /** Name */
             name: string;
+            /**
+             * Onboarding Attempt Id
+             * Format: uuid
+             */
+            onboarding_attempt_id: string;
             profile: components["schemas"]["SorProfile"];
             /** Vendor Key */
             vendor_key: string;
@@ -11098,6 +11183,10 @@ export interface components {
             human_external_key: string | null;
             /** Values */
             values: {
+                [key: string]: components["schemas"]["JsonValue"];
+            };
+            /** Display Values */
+            display_values: {
                 [key: string]: components["schemas"]["JsonValue"];
             };
             /** Custom Fields */
@@ -11304,6 +11393,8 @@ export interface components {
             description?: string | null;
             /** Group */
             group?: string | null;
+            /** Vendor Type */
+            vendor_type?: string | null;
         };
         /** SorDiscoveredObjectResponse */
         SorDiscoveredObjectResponse: {
@@ -11726,6 +11817,18 @@ export interface components {
             /** Source Url */
             source_url: string | null;
         };
+        /**
+         * SorRelationshipHealthResponse
+         * @description Current relationship-intent totals for one source.
+         */
+        SorRelationshipHealthResponse: {
+            /** Pending */
+            pending: number;
+            /** Resolved */
+            resolved: number;
+            /** Tombstoned */
+            tombstoned: number;
+        };
         /** SorSchemaDifferenceResponse */
         SorSchemaDifferenceResponse: {
             /**
@@ -11820,6 +11923,11 @@ export interface components {
         SorSourceCreateRequest: {
             /** Name */
             name: string;
+            /**
+             * Onboarding Attempt Id
+             * Format: uuid
+             */
+            onboarding_attempt_id: string;
             profile: components["schemas"]["SorProfile"];
             /** Vendor Key */
             vendor_key: string;
@@ -11909,6 +12017,20 @@ export interface components {
         SorSourceListResponse: {
             /** Items */
             items: components["schemas"]["SorSourceResponse"][];
+        };
+        /**
+         * SorSourceOperationsResponse
+         * @description Operator-facing source synchronization and relationship health.
+         */
+        SorSourceOperationsResponse: {
+            /**
+             * Source Id
+             * Format: uuid
+             */
+            source_id: string;
+            relationships: components["schemas"]["SorRelationshipHealthResponse"];
+            /** Generations */
+            generations: components["schemas"]["SorSyncGenerationResponse"][];
         };
         /**
          * SorSourceReconnectRequest
@@ -12041,6 +12163,12 @@ export interface components {
             vendor_object_key: string;
             /** Canonical Entity Kind */
             canonical_entity_kind: string;
+            /** Depends On */
+            depends_on: string[];
+            /** Relationship Targets */
+            relationship_targets: {
+                [key: string]: string;
+            };
             strategy: components["schemas"]["SorChangeStrategy"];
             /** Lookback Seconds */
             lookback_seconds: number;
@@ -12084,6 +12212,49 @@ export interface components {
          * @enum {string}
          */
         SorStreamState: "ACTIVE" | "PAUSED" | "DEGRADED";
+        /**
+         * SorSyncGenerationResponse
+         * @description One source-level DAG execution and its ordered stream receipts.
+         */
+        SorSyncGenerationResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Organization Id
+             * Format: uuid
+             */
+            organization_id: string;
+            /**
+             * Source Id
+             * Format: uuid
+             */
+            source_id: string;
+            kind: components["schemas"]["SorSyncRunKind"];
+            state: components["schemas"]["SorWorkState"];
+            /** Started At */
+            started_at: string | null;
+            /** Finished At */
+            finished_at: string | null;
+            /** Safe Error Code */
+            safe_error_code: string | null;
+            /** Safe Error Summary */
+            safe_error_summary: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Runs */
+            runs: components["schemas"]["SorSyncRunResponse"][];
+        };
         /** SorSyncRunCreateRequest */
         SorSyncRunCreateRequest: {
             kind: components["schemas"]["SorSyncRunKind"];
@@ -12116,6 +12287,11 @@ export interface components {
              * Format: uuid
              */
             source_id: string;
+            /**
+             * Generation Id
+             * Format: uuid
+             */
+            generation_id: string;
             /** Stream Id */
             stream_id: string | null;
             /**
@@ -12223,6 +12399,15 @@ export interface components {
             change_strategies: components["schemas"]["SorChangeStrategy"][];
             /** Scope Category */
             scope_category?: string | null;
+            /**
+             * Depends On
+             * @default []
+             */
+            depends_on: string[];
+            /** Relationship Targets */
+            relationship_targets?: {
+                [key: string]: string;
+            };
         };
         /**
          * SorWebhookAcceptedResponse
@@ -12889,6 +13074,8 @@ export interface components {
             record_id: string;
             /** Author External Id */
             author_external_id: string | null;
+            /** Author Name */
+            author_name: string | null;
             /** Text */
             text: string;
             /**
@@ -23791,6 +23978,60 @@ export interface operations {
             };
         };
     };
+    get_knowledge_document_attachment_content_api__organization_id__sor_knowledge_documents__record_id__attachments__attachment_record_id__content_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                record_id: string;
+                attachment_record_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current source image content. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/avif": unknown;
+                    "image/gif": unknown;
+                    "image/jpeg": unknown;
+                    "image/png": unknown;
+                    "image/webp": unknown;
+                };
+            };
+            /** @description Image not available. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Source temporarily unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     get_ticketing_issue_audit_api__organization_id__sor_ticketing_issues__record_id__audit_get: {
         parameters: {
             query?: never;
@@ -24241,6 +24482,76 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reauthorize_sor_source_api__organization_id__sor_sources__source_id__reauthorize_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorAuthorizationRedirectResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_sor_source_operations_api__organization_id__sor_sources__source_id__operations_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorSourceOperationsResponse"];
+                };
             };
             /** @description Validation Error */
             422: {
@@ -24875,6 +25186,45 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SorStreamResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_sor_source_run_api__organization_id__sor_sources__source_id__runs_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SorSyncRunCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorSyncGenerationResponse"];
                 };
             };
             /** @description Validation Error */

@@ -409,12 +409,20 @@ Sources: [`sync.py`](../../server/eylo/sor/runtime/sync.py),
 ```mermaid
 flowchart LR
     source["Verified Source and Published Mapping"]
-    sync_intent[(Sync Run)]
+    generation[(Sync Generation and Stream Runs)]
     commit[Commit]
+    roots[Runnable Root Streams]
+    waiting[Waiting Dependent Streams]
     worker[Absurd SOR Worker]
     adapter[Profile Vendor Adapter]
     vendor[External System]
+    fetched[Normalized Vendor Page]
+    page_tx["Bounded Page Write Transaction"]
+    coordinate_tx["Generation Coordination Transaction"]
+    generation_repair["Post-commit Generation Repair"]
     projection[(Canonical Projection)]
+    intents[(Relationship Intents)]
+    resolver[Exact Endpoint Resolver]
     local_event["Post-commit SOR lifecycle event"]
     action_event[(Organization-visible action event)]
     grid["SOR Grid and Detail API"]
@@ -429,8 +437,14 @@ flowchart LR
     cancel["Exact Absurd Task Cancellation"]
     recovery["Periodic Fenced-work Recovery"]
 
-    source --> sync_intent --> commit --> worker --> recheck --> adapter --> vendor
-    vendor --> adapter --> projection --> grid
+    source --> generation --> commit
+    commit --> roots --> worker --> recheck --> adapter --> vendor
+    commit --> waiting
+    vendor -->|"No DB transaction"| adapter --> fetched --> page_tx --> projection
+    projection --> coordinate_tx -->|"parent succeeds"| waiting --> worker
+    generation_repair -.-> coordinate_tx
+    projection --> intents --> resolver --> grid
+    projection --> resolver
     projection -. "after commit" .-> local_event
     model_call --> authority --> effect
     effect -->|read| projection

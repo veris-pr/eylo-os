@@ -143,6 +143,11 @@ class SorOnboardingStore {
 
   setAuthKind(authKind: SorOnboardingAuthKind): void {
     if (authKind === this.draft.authKind) return;
+    if (this.draft.sourceId !== null) {
+      this.errorMessage =
+        "Start new before changing authentication for an existing source draft.";
+      return;
+    }
     ++this.operationId;
     this.activation = null;
     this.discovery = null;
@@ -179,14 +184,13 @@ class SorOnboardingStore {
   }
 
   selectConnector(connectorId: string | null): void {
+    if (connectorId === this.draft.connectorId) return;
     this.activation = null;
     this.discovery = null;
-    this.source = null;
     this.updateDraft({
       authKind: connectorId === null ? this.draft.authKind : "oauth2",
       connectorId,
       fieldMappings: [],
-      sourceId: null,
     });
   }
 
@@ -195,7 +199,23 @@ class SorOnboardingStore {
     profile: SorProfileDefinition | null,
     vendor: SorVendorDefinition | null,
   ): void {
-    const unique = [...new Set(selectedObjects)].slice(0, 100);
+    const selected = new Set(selectedObjects);
+    if (vendor?.capabilities !== null && vendor?.capabilities !== undefined) {
+      const streams = new Map(
+        vendor.capabilities.streams.map((stream) => [stream.key, stream]),
+      );
+      const pending = [...selected];
+      for (let index = 0; index < pending.length; index += 1) {
+        const dependencies =
+          streams.get(pending[index] ?? "")?.dependsOn ?? [];
+        for (const dependency of dependencies) {
+          if (selected.has(dependency)) continue;
+          selected.add(dependency);
+          pending.push(dependency);
+        }
+      }
+    }
+    const unique = [...selected].slice(0, 100);
     let fieldMappings = this.draft.fieldMappings.filter((mapping) =>
       unique.includes(mapping.vendor_object_key),
     );
@@ -430,22 +450,27 @@ class SorOnboardingStore {
       }
       let source = this.source;
       if (source === null) {
-        source = await this.service.createSource(organizationId, {
+        const createdSource = await this.service.createSource(organizationId, {
           configuration: this.draft.configuration,
           external_connection_id: connector.connection.id,
           freshness_target_seconds: this.draft.freshnessTargetSeconds,
           name:
             this.draft.sourceName.trim() ||
             `${vendor.displayName} ${profile.label}`,
+          onboarding_attempt_id: this.draft.onboardingAttemptId,
           profile: profile.profile,
           required_sync_interval_seconds:
             this.draft.requiredSyncIntervalSeconds,
           selected_objects: this.draft.selectedObjects,
           vendor_key: vendor.vendorKey,
         });
-      } else if (
-        source.external_connection_id !== connector.connection.id
-      ) {
+        if (this.operationId !== operationId) return false;
+        source = createdSource;
+        runInAction(() => {
+          this.source = createdSource;
+          this.updateDraft({ sourceId: createdSource.id });
+        });
+      } else if (source.external_connection_id !== connector.connection.id) {
         const standardObjects = new Set(
           vendor.capabilities?.streams.map((stream) => stream.key) ?? [],
         );
@@ -538,6 +563,7 @@ class SorOnboardingStore {
             name:
               this.draft.sourceName.trim() ||
               `${vendor.displayName} ${profile.label}`,
+            onboarding_attempt_id: this.draft.onboardingAttemptId,
             profile: profile.profile,
             required_sync_interval_seconds:
               this.draft.requiredSyncIntervalSeconds,
@@ -653,6 +679,7 @@ class SorOnboardingStore {
       configuration: {},
       fieldMappings: [],
       instanceOrigin: "",
+      onboardingAttemptId: crypto.randomUUID(),
       selectedObjects: [],
       sourceId: null,
     });

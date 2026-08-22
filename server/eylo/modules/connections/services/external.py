@@ -212,6 +212,34 @@ class ExternalConnectionService:
         await self._db.flush()
         return ExternalConnectionInDb.model_validate(row)
 
+    async def revoke_expired_authorization_attempt(
+        self,
+        *,
+        organization_id: UUID,
+        connection_id: UUID,
+        expected_revision: int | None,
+    ) -> bool:
+        """Discard only the still-initiated connection owned by an expired state."""
+        if expected_revision is None:
+            return False
+        row = await self._connections.get(
+            organization_id=organization_id,
+            connection_id=connection_id,
+            for_update=True,
+        )
+        if (
+            row is None
+            or row.status is not ExternalConnectionStatus.INITIATED
+            or row.revision != expected_revision
+        ):
+            return False
+        row.status = ExternalConnectionStatus.REVOKED
+        row.credentials = None
+        row.credentials_expires_at = None
+        row.deleted = True
+        await self._db.flush()
+        return True
+
     async def cleanup_old_revoked_contact_connections(
         self,
         *,

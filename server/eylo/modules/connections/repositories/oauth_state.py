@@ -20,6 +20,7 @@ class ExpiredOAuthState:
     id: UUID
     organization_id: UUID
     external_connection_id: UUID
+    expected_connection_revision: int | None
 
 
 class OAuthStateRepository(EyloBaseRepository[OAuthStateModel]):
@@ -106,6 +107,7 @@ class OAuthStateRepository(EyloBaseRepository[OAuthStateModel]):
                 OAuthStateModel.id,
                 OAuthStateModel.organization_id,
                 OAuthStateModel.external_connection_id,
+                OAuthStateModel.expected_connection_revision,
             ).where(
                 OAuthStateModel.expires_at < current_time,
                 OAuthStateModel.deleted.is_(False),
@@ -118,6 +120,33 @@ class OAuthStateRepository(EyloBaseRepository[OAuthStateModel]):
         )
         await self.db_session.flush()
         return active_states
+
+    async def invalidate_for_connection_revision(
+        self,
+        *,
+        organization_id: UUID,
+        external_connection_id: UUID,
+        expected_connection_revision: int,
+    ) -> int:
+        """Spend sibling attempts after one callback advances the connection."""
+        rows = list(
+            (
+                await self.db_session.scalars(
+                    select(OAuthStateModel).where(
+                        OAuthStateModel.organization_id == organization_id,
+                        OAuthStateModel.external_connection_id
+                        == external_connection_id,
+                        OAuthStateModel.expected_connection_revision
+                        == expected_connection_revision,
+                        OAuthStateModel.deleted.is_(False),
+                    )
+                )
+            ).all()
+        )
+        for row in rows:
+            await self.delete_(row)
+        await self.db_session.flush()
+        return len(rows)
 
 
 __all__ = ["ExpiredOAuthState", "OAuthStateRepository"]

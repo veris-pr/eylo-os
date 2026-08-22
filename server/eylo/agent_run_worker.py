@@ -95,11 +95,12 @@ async def run_worker() -> None:
     worker_id = f"eylo-durable:{socket.gethostname()}:{os.getpid()}"
     logger.info(
         "Durable worker registered AgentRun workflow=%s queue=%s "
-        "attempts=%s timeout=%s",
+        "attempts=%s timeout=%s lanes=%s",
         health.workflow_name,
         health.queue_name,
         health.max_attempts,
         health.has_automatic_timeout,
+        adapter.runtime.config.worker_concurrency,
     )
     try:
         await adapter.start_worker(worker_id=worker_id)

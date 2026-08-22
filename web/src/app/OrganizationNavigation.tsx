@@ -143,6 +143,7 @@ const SOR_NAVIGATION_CATEGORIES: readonly NavigationCategoryDefinition[] = [
     definitions: [
       { icon: ListChecks, label: "Issues", path: "sor/ticketing/issue" },
       { icon: FolderKanban, label: "Projects", path: "sor/ticketing/project" },
+      { icon: UsersRound, label: "Members", path: "sor/ticketing/user" },
       {
         icon: CalendarRange,
         label: "Cycles and milestones",
@@ -173,6 +174,7 @@ const SOR_NAVIGATION_CATEGORIES: readonly NavigationCategoryDefinition[] = [
         label: "Spaces and data sources",
         path: "sor/knowledge/space",
       },
+      { icon: UsersRound, label: "Members", path: "sor/knowledge/author" },
       { icon: Shapes, label: "Custom datasets", path: "sor/custom-datasets" },
     ],
     label: "Documents",
@@ -189,6 +191,7 @@ const SOR_NAVIGATION_CATEGORIES: readonly NavigationCategoryDefinition[] = [
         label: "Customers",
         path: "sor/support/customer",
       },
+      { icon: UsersRound, label: "Members", path: "sor/support/agent" },
       { icon: ListOrdered, label: "Queues", path: "sor/support/queue" },
     ],
     label: "Customer support",
