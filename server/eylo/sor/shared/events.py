@@ -138,7 +138,7 @@ def register_records_tombstoned(
     organization_id: UUID,
     source_id: UUID,
     stream_id: UUID,
-    sync_run_id: UUID,
+    sync_run_id: UUID | None,
     record_ids: Sequence[UUID],
 ) -> int:
     """Register bounded batches so large reconciliation cannot exceed event limits."""

@@ -20,6 +20,7 @@ from eylo.sor.shared.contracts import (
     SorAdapterConfigurationFieldSpec,
     SorAdapterContext,
     SorCapabilityUnavailable,
+    SorChangeMode,
     SorChangeStrategy,
     SorCommandRequest,
     SorCommandResult,
@@ -193,7 +194,7 @@ GITHUB_MANIFEST = SorAdapterCapabilityManifest(
         scope_response_delimiter=",",
     ),
     fixed_origin=GITHUB_ORIGIN,
-    supports_webhooks=True,
+    change_mode=SorChangeMode.OPERATOR_WEBHOOK,
     supports_comments=True,
 )
 

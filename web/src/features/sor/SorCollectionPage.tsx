@@ -1,6 +1,6 @@
 import { RefreshCw, Search, TableProperties } from "lucide-react";
 import { observer } from "mobx-react-lite";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router";
 
 import { useRootStore } from "@/app/use-root-store";
@@ -133,13 +133,65 @@ const SorCollectionPage = observer(function SorCollectionPage() {
     const value = toSorCollectionQuery(state, columns);
     return isCustomDataset ? { ...value, source_ids: [] } : value;
   }, [columns, isCustomDataset, state]);
+  const loadFilterOptions = useCallback(
+    (field: string, search: string) => {
+      if (organizationId === undefined || profileKey === null) {
+        return Promise.resolve([]);
+      }
+      if (datasetId !== undefined) {
+        return collection.loadCustomFilterOptions(
+          organizationId,
+          datasetId,
+          field,
+          search,
+        );
+      }
+      return collection.loadFilterOptions(
+        organizationId,
+        profileKey,
+        activeEntity,
+        state.sourceIds,
+        field,
+        search,
+      );
+    },
+    [
+      activeEntity,
+      collection,
+      datasetId,
+      organizationId,
+      profileKey,
+      state.sourceIds,
+    ],
+  );
+  const filterOptionsRevision = collection.filterOptionsRevision;
   const filterSchema = useMemo(
-    () => buildSorFilterSchema(columns, collection.items),
-    [collection.items, columns],
+    () => {
+      void filterOptionsRevision;
+      return buildSorFilterSchema(
+        columns,
+        (field) => collection.filterOptionsFor(field),
+        loadFilterOptions,
+      );
+    },
+    [
+      collection,
+      columns,
+      filterOptionsRevision,
+      loadFilterOptions,
+    ],
   );
 
   useEffect(() => setSearchDraft(state.search), [state.search]);
   useEffect(() => setAdvancedFilters(state.filters), [state.filters]);
+  useEffect(() => {
+    const activeProperties = filterProperties(state.filters);
+    for (const definition of filterSchema) {
+      if (activeProperties.has(definition.property)) {
+        void definition.loadOptions?.("");
+      }
+    }
+  }, [filterSchema, state.filters]);
 
   useEffect(() => {
     if (organizationId === undefined) return;
@@ -487,6 +539,18 @@ const SorCollectionPage = observer(function SorCollectionPage() {
     </section>
   );
 });
+
+function filterProperties(group: FilterGroup<string>): ReadonlySet<string> {
+  const properties = new Set<string>();
+  function visit(current: FilterGroup<string>): void {
+    for (const child of current.children) {
+      if (child.type === "group") visit(child);
+      else if (child.values.length > 0) properties.add(child.property);
+    }
+  }
+  visit(group);
+  return properties;
+}
 
 function CollectionEmpty({
   entityLabel,

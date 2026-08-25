@@ -134,7 +134,7 @@ def _vendor_response(vendor: SorVendorRegistration) -> SorVendorCatalogResponse:
                     manifest.oauth.instance_origin_options if manifest.oauth else ()
                 )
             ),
-            supports_webhooks=manifest.supports_webhooks,
+            change_mode=manifest.change_mode,
             supports_deletions=manifest.supports_deletions,
             supports_custom_fields=manifest.supports_custom_fields,
             supports_custom_objects=manifest.supports_custom_objects,

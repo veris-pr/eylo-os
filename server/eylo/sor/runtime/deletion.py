@@ -9,6 +9,7 @@ from uuid import UUID
 from eylo.common.database import start_transaction
 from eylo.sor.runtime.commands import cancel_sor_command
 from eylo.sor.runtime.sync import cancel_sor_sync_run
+from eylo.sor.runtime.webhook_subscriptions import remove_sor_webhook_subscription
 from eylo.sor.runtime.webhooks import cancel_sor_webhook_receipt
 from eylo.sor.shared.deletion import (
     SorSourceDeletionPlan,
@@ -23,7 +24,7 @@ async def delete_sor_source(
     organization_id: UUID,
     source_id: UUID,
 ) -> None:
-    """Fence, stop, then purge one source without touching its vendor account."""
+    """Fence, stop delivery/work, then purge one source-owned local aggregate."""
     async with start_transaction() as session:
         plan = await SorSourceDeletionService(session).fence(
             organization_id=organization_id,
@@ -31,6 +32,7 @@ async def delete_sor_source(
         )
 
     await _stop_source_work(plan)
+    await _remove_vendor_webhook(plan)
 
     async with start_transaction() as session:
         await SorSourceDeletionService(session).purge(
@@ -67,6 +69,22 @@ async def _stop_source_work(plan: SorSourceDeletionPlan) -> None:
             run_id=run_id,
         ),
     )
+
+
+async def _remove_vendor_webhook(plan: SorSourceDeletionPlan) -> None:
+    """Best-effort stop vendor delivery; local deletion never depends on it."""
+    try:
+        await remove_sor_webhook_subscription(
+            organization_id=plan.organization_id,
+            source_id=plan.source_id,
+        )
+    except Exception as error:  # noqa: BLE001 - the committed fence is authority
+        logger.error(
+            "Could not remove vendor webhook before SOR source purge "
+            "source_id=%s error_type=%s",
+            plan.source_id,
+            type(error).__name__,
+        )
 
 
 async def _stop_each(

@@ -53,7 +53,6 @@ class SorFilterCondition(BaseModel):
     def validate_value_count(self) -> "SorFilterCondition":
         single_value = {
             SorFilterOperator.IS,
-            SorFilterOperator.IS_NOT,
             SorFilterOperator.BEFORE,
             SorFilterOperator.AFTER,
         }

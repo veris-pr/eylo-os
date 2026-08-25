@@ -9,7 +9,7 @@ x-eylo-development-environment: &eylo-development-environment
   AUTH_ALGORITHM: HS256
   AUTH_ACCESS_TOKEN_EXPIRE_MINUTES: "60"
   REDIS_PASSWORD: ""
-  API_BASE_URL: http://127.0.0.1:8000/api
+  API_BASE_URL: ${API_BASE_URL:-http://127.0.0.1:8000/api}
   OAUTH_CALLBACK_URL: http://localhost:8000/api/oauth/callback
   FRONTEND_URL: http://127.0.0.1:5173
   WIDGET_URL: http://127.0.0.1:5174

@@ -12,6 +12,7 @@ from eylo.modules.connections.domain import (
     ExternalConnectionStatus,
 )
 from eylo.sor.shared.contracts import (
+    SorChangeMode,
     SorChangeStrategy,
     SorConfigurationFieldKind,
     SorConnectionVerification,
@@ -29,6 +30,7 @@ from eylo.sor.shared.contracts import (
     SorSyncRunKind,
     SorToolEffect,
     SorTransformKind,
+    SorWebhookSubscriptionState,
     SorWorkState,
 )
 from eylo.sor.shared.query import SorCollectionQuery, SorGridContract
@@ -166,6 +168,9 @@ class SorSourceResponse(SorApiModel):
     active_mapping_revision_id: UUID | None
     has_webhook_signing_secret: bool
     webhook_signing_secret_revision: int
+    webhook_subscription_id: str | None
+    webhook_subscription_status: SorWebhookSubscriptionState | None
+    webhook_subscription_expires_at: datetime | None
     freshness_target_seconds: int
     required_sync_interval_seconds: int
     last_verified_at: datetime | None
@@ -385,6 +390,20 @@ class SorCollectionPageResponse(SorApiModel):
     items: tuple[SorCollectionRowResponse, ...]
     next_cursor: str | None
     has_more: bool
+
+
+class SorFilterOptionResponse(SorApiModel):
+    """One stable raw filter value plus its human-readable projection."""
+
+    value: str
+    label: str
+
+
+class SorFilterOptionsResponse(SorApiModel):
+    """Data-derived values for one tenant-scoped collection field."""
+
+    field: str
+    items: tuple[SorFilterOptionResponse, ...]
 
 
 class SorRecordRelationResponse(SorApiModel):
@@ -712,7 +731,7 @@ class SorAdapterCapabilityResponse(BaseModel):
     requires_instance_origin: bool = False
     requires_instance_origin_input: bool = False
     instance_origin_options: tuple[SorInstanceOriginOptionResponse, ...] = ()
-    supports_webhooks: bool = False
+    change_mode: SorChangeMode = SorChangeMode.POLL_ONLY
     supports_deletions: bool = False
     supports_custom_fields: bool = False
     supports_custom_objects: bool = False
@@ -798,6 +817,8 @@ __all__ = [
     "SorEntityCatalogResponse",
     "SorFieldMappingDraftRequest",
     "SorFieldMappingResponse",
+    "SorFilterOptionResponse",
+    "SorFilterOptionsResponse",
     "SorFreshnessResponse",
     "SorMappingDraftRequest",
     "SorMappingRevisionResponse",

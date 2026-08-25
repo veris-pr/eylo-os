@@ -10,12 +10,16 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 
+import jwt
+from jwt.exceptions import PyJWTError
+
 from eylo.modules.connections.domain import ConnectionAuthKind
 from eylo.sor.runtime.http import SorHttpTransport, SorJsonHttpClient, SorJsonResponse
 from eylo.sor.shared.contracts import (
     SorAdapterCapabilityManifest,
     SorAdapterContext,
     SorCapabilityUnavailable,
+    SorChangeMode,
     SorChangeStrategy,
     SorCommandRequest,
     SorCommandResult,
@@ -31,8 +35,10 @@ from eylo.sor.shared.contracts import (
     SorRecordPage,
     SorVendorOperationError,
     SorVendorStreamSpec,
+    SorWebhookPayloadError,
     SorWebhookSignal,
     SorWebhookSubscription,
+    SorWebhookVerificationError,
 )
 from eylo.sor.ticketing.contracts import (
     TicketingComment,
@@ -66,6 +72,9 @@ READ_USER_SCOPE = "read:jira-user"
 WRITE_SCOPE = "write:jira-work"
 OFFLINE_SCOPE = "offline_access"
 READ_SPRINT_SCOPE = "read:sprint:jira-software"
+MANAGE_WEBHOOK_SCOPE = "manage:jira-webhook"
+JIRA_WEBHOOK_LIFETIME = timedelta(days=30)
+JIRA_ALL_PROJECTS_WEBHOOK_JQL = "project != EMPTY"
 
 _STREAM_ENTITY = {
     "issues": "issue",
@@ -204,7 +213,7 @@ JIRA_MANIFEST = SorAdapterCapabilityManifest(
     oauth=SorOAuthSpec(
         authorization_url="https://auth.atlassian.com/authorize",
         token_url="https://auth.atlassian.com/oauth/token",
-        base_scopes=(OFFLINE_SCOPE,),
+        base_scopes=(OFFLINE_SCOPE, MANAGE_WEBHOOK_SCOPE),
         authorization_params=(("audience", "api.atlassian.com"), ("prompt", "consent")),
         token_request_format="json",
         instance_host_suffixes=("atlassian.net",),
@@ -212,6 +221,7 @@ JIRA_MANIFEST = SorAdapterCapabilityManifest(
     ),
     fixed_origin=JIRA_API_ORIGIN,
     requires_instance_origin=True,
+    change_mode=SorChangeMode.MANAGED_WEBHOOK,
     supports_custom_fields=True,
     supports_comments=True,
 )
@@ -553,22 +563,155 @@ class JiraTicketingAdapter:
         )
 
     async def subscribe_webhook(self, callback_url: str) -> SorWebhookSubscription:
-        raise SorCapabilityUnavailable(
-            "Jira dynamic webhooks require app-secret JWT verification support."
+        events = _webhook_events(self._context.selected_objects)
+        if not events:
+            raise SorCapabilityUnavailable(
+                "The selected Jira objects have no dynamic webhook events."
+            )
+        existing = await self._recover_webhook(
+            callback_url=callback_url,
+            events=events,
         )
+        if existing is not None:
+            return existing
+        response = await self._jira_request(
+            "/webhook",
+            method="POST",
+            payload={
+                "url": callback_url,
+                "webhooks": [
+                    {
+                        "events": list(events),
+                        "jqlFilter": JIRA_ALL_PROJECTS_WEBHOOK_JQL,
+                    }
+                ],
+            },
+        )
+        payload = _object(
+            _expect(response, operation="register Jira webhooks"),
+            field="Jira webhook registration",
+        )
+        results = _object_list(
+            payload.get("webhookRegistrationResult"),
+            field="Jira webhook registration results",
+        )
+        if len(results) != 1:
+            raise _invalid_response("Jira returned an ambiguous webhook registration.")
+        result = results[0]
+        errors = result.get("errors")
+        if errors is not None:
+            parsed_errors = _string_list(
+                errors,
+                field="Jira webhook registration errors",
+            )
+            if parsed_errors:
+                raise SorVendorOperationError(
+                    "vendor_webhook_rejected",
+                    "Jira rejected the webhook event selection.",
+                    retryable=False,
+                )
+        external_id = _required_id(
+            result.get("createdWebhookId"),
+            field="Jira webhook ID",
+        )
+        return SorWebhookSubscription(
+            external_id=external_id,
+            expires_at=datetime.now(timezone.utc) + JIRA_WEBHOOK_LIFETIME,
+        )
+
+    async def _recover_webhook(
+        self,
+        *,
+        callback_url: str,
+        events: tuple[str, ...],
+    ) -> SorWebhookSubscription | None:
+        """Recover an exact prior registration after a post-vendor crash."""
+        response = await self._jira_request(
+            "/webhook",
+            query={"startAt": 0, "maxResults": 100},
+        )
+        payload = _object(
+            _expect(response, operation="list Jira webhooks"),
+            field="Jira webhook list",
+        )
+        if payload.get("isLast") is not True:
+            raise _invalid_response("Jira webhook recovery exceeded one bounded page.")
+        rows = _object_list(payload.get("values"), field="Jira webhooks")
+        exact: list[SorWebhookSubscription] = []
+        stale_ids: list[int] = []
+        expected_events = frozenset(events)
+        for row in rows:
+            if _optional_string(row.get("url")) != callback_url:
+                continue
+            webhook_id = _webhook_id(
+                _required_id(row.get("id"), field="Jira webhook ID")
+            )
+            row_events = frozenset(
+                _string_list(row.get("events"), field="Jira webhook events")
+            )
+            if (
+                row.get("jqlFilter") == JIRA_ALL_PROJECTS_WEBHOOK_JQL
+                and row_events == expected_events
+            ):
+                exact.append(
+                    SorWebhookSubscription(
+                        external_id=str(webhook_id),
+                        expires_at=_required_datetime(
+                            row.get("expirationDate"),
+                            field="Jira webhook expiration date",
+                        ),
+                    )
+                )
+            else:
+                stale_ids.append(webhook_id)
+        if exact:
+            exact.sort(
+                key=lambda subscription: subscription.expires_at
+                or datetime.min.replace(tzinfo=timezone.utc),
+                reverse=True,
+            )
+            stale_ids.extend(
+                _webhook_id(subscription.external_id)
+                for subscription in exact[1:]
+            )
+        if stale_ids:
+            await self._remove_webhook_ids(stale_ids)
+        return exact[0] if exact else None
 
     async def renew_webhook(
         self,
         subscription: SorWebhookSubscription,
     ) -> SorWebhookSubscription:
-        raise SorCapabilityUnavailable(
-            "Jira dynamic webhooks require app-secret JWT verification support."
+        response = await self._jira_request(
+            "/webhook/refresh",
+            method="PUT",
+            payload={"webhookIds": [_webhook_id(subscription.external_id)]},
+        )
+        payload = _object(
+            _expect(response, operation="renew Jira webhooks"),
+            field="Jira webhook renewal",
+        )
+        return SorWebhookSubscription(
+            external_id=subscription.external_id,
+            expires_at=_required_datetime(
+                payload.get("expirationDate"),
+                field="Jira webhook expiration date",
+            ),
         )
 
     async def remove_webhook(self, subscription: SorWebhookSubscription) -> None:
-        raise SorCapabilityUnavailable(
-            "Jira dynamic webhooks require app-secret JWT verification support."
+        await self._remove_webhook_ids([_webhook_id(subscription.external_id)])
+
+    async def _remove_webhook_ids(self, webhook_ids: Sequence[int]) -> None:
+        """Delete source-owned Jira webhooks by their validated IDs."""
+        response = await self._jira_request(
+            "/webhook",
+            method="DELETE",
+            payload={"webhookIds": list(webhook_ids)},
         )
+        if response.status_code != 202:
+            _expect(response, operation="remove Jira webhooks")
+            raise _invalid_response("Jira returned an unexpected webhook deletion status.")
 
     async def verify_webhook(
         self,
@@ -576,9 +719,34 @@ class JiraTicketingAdapter:
         headers: Mapping[str, str],
         body: bytes,
     ) -> None:
-        raise SorCapabilityUnavailable(
-            "Jira dynamic webhooks require app-secret JWT verification support."
-        )
+        client_secret = self._context.webhook_auth_secret
+        if client_secret is None:
+            raise SorWebhookVerificationError(
+                "Jira webhook application credentials are unavailable."
+            )
+        authorization = _header(headers, "authorization")
+        if authorization is None or not authorization.startswith("Bearer "):
+            raise SorWebhookVerificationError(
+                "Jira webhook bearer authentication is missing."
+            )
+        token = authorization.removeprefix("Bearer ").strip()
+        if not token or len(token) > 8192:
+            raise SorWebhookVerificationError(
+                "Jira webhook bearer authentication is invalid."
+            )
+        try:
+            jwt.decode(
+                token,
+                client_secret,
+                algorithms=["HS256"],
+                options={"verify_aud": False},
+            )
+        except PyJWTError as error:
+            raise SorWebhookVerificationError(
+                "Jira webhook bearer authentication is invalid."
+            ) from error
+        _jira_webhook_body(body, verification=True)
+        _jira_delivery_id(headers)
 
     async def parse_webhook_signal(
         self,
@@ -586,8 +754,33 @@ class JiraTicketingAdapter:
         headers: Mapping[str, str],
         body: bytes,
     ) -> tuple[SorWebhookSignal, ...]:
-        raise SorCapabilityUnavailable(
-            "Jira dynamic webhooks require app-secret JWT verification support."
+        payload = _jira_webhook_body(body, verification=False)
+        delivery_id = _jira_delivery_id(headers)
+        event_type = _webhook_required_string(
+            payload.get("webhookEvent"),
+            field="event type",
+        )
+        subscription_id = self._context.webhook_subscription_id
+        matched = _webhook_matched_ids(payload.get("matchedWebhookIds"))
+        if subscription_id is not None and subscription_id not in matched:
+            raise SorWebhookPayloadError(
+                "Jira webhook does not match this source subscription."
+            )
+        stream_key, external_id = _jira_webhook_record_identity(
+            event_type,
+            payload,
+        )
+        if stream_key not in self._context.selected_objects:
+            stream_key = None
+            external_id = None
+        return (
+            SorWebhookSignal(
+                delivery_id=delivery_id,
+                event_type=event_type,
+                vendor_object_key=stream_key,
+                external_id=external_id,
+                occurred_at=_jira_webhook_occurred_at(payload),
+            ),
         )
 
     async def execute_command(self, command: SorCommandRequest) -> SorCommandResult:
@@ -3234,6 +3427,157 @@ def _json_value(value: object) -> object | None:
 
 def _datetime_value(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
+
+
+def _webhook_events(selected_objects: tuple[str, ...]) -> tuple[str, ...]:
+    """Return the one bounded dynamic-webhook event set Jira supports."""
+    events: list[str] = []
+    if "issues" in selected_objects or "issue_relations" in selected_objects:
+        events.extend(
+            (
+                "jira:issue_created",
+                "jira:issue_updated",
+                "jira:issue_deleted",
+            )
+        )
+    if "comments" in selected_objects:
+        events.extend(("comment_created", "comment_updated", "comment_deleted"))
+    if "sprints" in selected_objects:
+        events.extend(
+            (
+                "sprint_created",
+                "sprint_updated",
+                "sprint_closed",
+                "sprint_deleted",
+                "sprint_started",
+            )
+        )
+    return tuple(events)
+
+
+def _webhook_id(value: str) -> int:
+    try:
+        result = int(value)
+    except (TypeError, ValueError) as error:
+        raise SorVendorOperationError(
+            "vendor_webhook_invalid",
+            "The Jira webhook subscription identity is invalid.",
+            retryable=False,
+        ) from error
+    if result <= 0:
+        raise SorVendorOperationError(
+            "vendor_webhook_invalid",
+            "The Jira webhook subscription identity is invalid.",
+            retryable=False,
+        )
+    return result
+
+
+def _header(headers: Mapping[str, str], name: str) -> str | None:
+    expected = name.casefold()
+    for key, value in headers.items():
+        if key.casefold() == expected:
+            normalized = value.strip()
+            return normalized or None
+    return None
+
+
+def _jira_delivery_id(headers: Mapping[str, str]) -> str:
+    delivery_id = _header(headers, "x-atlassian-webhook-identifier")
+    if delivery_id is None or not 1 <= len(delivery_id) <= 512:
+        raise SorWebhookPayloadError("Jira webhook delivery ID is invalid.")
+    return delivery_id
+
+
+def _jira_webhook_body(
+    body: bytes,
+    *,
+    verification: bool,
+) -> Mapping[str, object]:
+    error_type = SorWebhookVerificationError if verification else SorWebhookPayloadError
+    try:
+        payload = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        raise error_type("Jira webhook body is invalid JSON.") from error
+    if not isinstance(payload, dict) or not all(
+        isinstance(key, str) for key in payload
+    ):
+        raise error_type("Jira webhook body is invalid.")
+    return payload
+
+
+def _webhook_required_string(value: object, *, field: str) -> str:
+    if not isinstance(value, str) or not 1 <= len(value.strip()) <= 256:
+        raise SorWebhookPayloadError(f"Jira webhook {field} is invalid.")
+    return value.strip()
+
+
+def _webhook_matched_ids(value: object) -> frozenset[str]:
+    if not isinstance(value, list) or not value:
+        raise SorWebhookPayloadError("Jira webhook subscription matches are invalid.")
+    identifiers: set[str] = set()
+    for item in value:
+        if isinstance(item, bool) or not isinstance(item, (int, str)):
+            raise SorWebhookPayloadError(
+                "Jira webhook subscription matches are invalid."
+            )
+        identifier = str(item).strip()
+        if not identifier or len(identifier) > 512:
+            raise SorWebhookPayloadError(
+                "Jira webhook subscription matches are invalid."
+            )
+        identifiers.add(identifier)
+    return frozenset(identifiers)
+
+
+def _jira_webhook_record_identity(
+    event_type: str,
+    payload: Mapping[str, object],
+) -> tuple[str | None, str | None]:
+    if event_type.startswith("jira:issue_"):
+        issue = _webhook_object(payload.get("issue"), field="issue")
+        return "issues", _webhook_record_id(issue.get("id"), field="issue ID")
+    if event_type.startswith("comment_"):
+        issue = _webhook_object(payload.get("issue"), field="issue")
+        comment = _webhook_object(payload.get("comment"), field="comment")
+        issue_id = _webhook_record_id(issue.get("id"), field="issue ID")
+        comment_id = _webhook_record_id(comment.get("id"), field="comment ID")
+        return "comments", f"{issue_id}:{comment_id}"
+    if event_type.startswith("sprint_"):
+        sprint = _webhook_object(payload.get("sprint"), field="sprint")
+        return "sprints", _webhook_record_id(sprint.get("id"), field="sprint ID")
+    return None, None
+
+
+def _webhook_object(value: object, *, field: str) -> Mapping[str, object]:
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+        raise SorWebhookPayloadError(f"Jira webhook {field} is invalid.")
+    return value
+
+
+def _webhook_record_id(value: object, *, field: str) -> str:
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise SorWebhookPayloadError(f"Jira webhook {field} is invalid.")
+    identifier = str(value).strip()
+    if not 1 <= len(identifier) <= 512:
+        raise SorWebhookPayloadError(f"Jira webhook {field} is invalid.")
+    return identifier
+
+
+def _jira_webhook_occurred_at(payload: Mapping[str, object]) -> datetime | None:
+    value = payload.get("timestamp")
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise SorWebhookPayloadError("Jira webhook timestamp is invalid.")
+    try:
+        result = datetime.fromtimestamp(float(value) / 1000, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError) as error:
+        raise SorWebhookPayloadError("Jira webhook timestamp is invalid.") from error
+    now = datetime.now(timezone.utc)
+    if result > now + timedelta(minutes=5):
+        raise SorWebhookPayloadError("Jira webhook timestamp is in the future.")
+    return result
 
 
 def _invalid_command(message: str) -> SorVendorOperationError:

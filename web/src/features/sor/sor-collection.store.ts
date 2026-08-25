@@ -1,6 +1,7 @@
 import { makeAutoObservable, runInAction } from "mobx";
 
 import { SorService } from "@/features/sor/sor.service";
+import type { FilterOption } from "@/lib/filters";
 import type {
   SorCollectionQueryInput,
   SorCollectionRow,
@@ -31,6 +32,7 @@ class SorCollectionStore {
   errorMessage: string | null = null;
   grid: SorGridContract | null = null;
   gridErrorMessage: string | null = null;
+  filterOptionsRevision = 0;
   hasMore = false;
   isDetailLoading = false;
   isLoading = false;
@@ -50,6 +52,18 @@ class SorCollectionStore {
   ticketingIssueAuditErrorMessage: string | null = null;
 
   private detailRequestId = 0;
+  private readonly filterOptionsByField = new Map<
+    string,
+    Map<string, FilterOption>
+  >();
+  private readonly filterOptionRequests = new Map<
+    string,
+    Promise<readonly FilterOption[]>
+  >();
+  private readonly filterOptionResults = new Map<
+    string,
+    readonly FilterOption[]
+  >();
   private gridContextKey: string | null = null;
   private gridRequestId = 0;
   private knowledgeDocumentAuditRequestId = 0;
@@ -65,6 +79,9 @@ class SorCollectionStore {
     makeAutoObservable<
       this,
       | "detailRequestId"
+      | "filterOptionsByField"
+      | "filterOptionRequests"
+      | "filterOptionResults"
       | "gridContextKey"
       | "gridRequestId"
       | "knowledgeDocumentAuditRequestId"
@@ -78,6 +95,9 @@ class SorCollectionStore {
       this,
       {
         detailRequestId: false,
+        filterOptionsByField: false,
+        filterOptionRequests: false,
+        filterOptionResults: false,
         gridContextKey: false,
         gridRequestId: false,
         knowledgeDocumentAuditRequestId: false,
@@ -97,6 +117,12 @@ class SorCollectionStore {
       const item = this.recordsById.get(id);
       return item === undefined ? [] : [item];
     });
+  }
+
+  filterOptionsFor(field: string): readonly FilterOption[] {
+    return [...(this.filterOptionsByField.get(field)?.values() ?? [])].sort(
+      (left, right) => left.label.localeCompare(right.label),
+    );
   }
 
   hasGridFor(
@@ -149,6 +175,9 @@ class SorCollectionStore {
     if (this.gridContextKey !== contextKey) {
       this.grid = null;
       this.gridContextKey = null;
+      this.filterOptionsByField.clear();
+      this.filterOptionResults.clear();
+      this.filterOptionsRevision += 1;
       this.pageIds = [];
       this.currentCursor = null;
       this.nextCursor = null;
@@ -189,6 +218,76 @@ class SorCollectionStore {
     await this.loadPageFrom(() =>
       this.service.queryCollection(organizationId, profile, entity, query),
     );
+  }
+
+  async loadFilterOptions(
+    organizationId: string,
+    profile: SorProfileKey,
+    entity: string,
+    sourceIds: readonly string[],
+    field: string,
+    search: string,
+  ): Promise<readonly FilterOption[]> {
+    const contextKey = gridKey(organizationId, profile, entity, sourceIds);
+    return this.loadFilterOptionsFrom(contextKey, field, search, () =>
+      this.service.loadFilterOptions(
+        organizationId,
+        profile,
+        entity,
+        sourceIds,
+        field,
+        search,
+      ),
+    );
+  }
+
+  async loadCustomFilterOptions(
+    organizationId: string,
+    datasetId: string,
+    field: string,
+    search: string,
+  ): Promise<readonly FilterOption[]> {
+    const contextKey = customGridKey(organizationId, datasetId);
+    return this.loadFilterOptionsFrom(contextKey, field, search, () =>
+      this.service.loadCustomDatasetFilterOptions(
+        organizationId,
+        datasetId,
+        field,
+        search,
+      ),
+    );
+  }
+
+  private loadFilterOptionsFrom(
+    contextKey: string,
+    field: string,
+    search: string,
+    load: () => Promise<readonly FilterOption[]>,
+  ): Promise<readonly FilterOption[]> {
+    const requestKey = `${contextKey}:${field}:${search}`;
+    const cachedResult = this.filterOptionResults.get(requestKey);
+    if (cachedResult !== undefined) return Promise.resolve(cachedResult);
+    const existing = this.filterOptionRequests.get(requestKey);
+    if (existing !== undefined) return existing;
+
+    const request = load()
+      .then((options) => {
+        if (this.gridContextKey === contextKey) {
+          runInAction(() => {
+            const cached =
+              this.filterOptionsByField.get(field) ??
+              new Map<string, FilterOption>();
+            for (const option of options) cached.set(option.value, option);
+            this.filterOptionsByField.set(field, cached);
+            this.filterOptionResults.set(requestKey, options);
+            this.filterOptionsRevision += 1;
+          });
+        }
+        return options;
+      })
+      .finally(() => this.filterOptionRequests.delete(requestKey));
+    this.filterOptionRequests.set(requestKey, request);
+    return request;
   }
 
   async loadCustomPage(

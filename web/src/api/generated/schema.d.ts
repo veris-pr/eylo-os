@@ -4176,6 +4176,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/{organization_id}/sor/sources/{source_id}/webhook-subscription": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ensure Sor Source Webhook Subscription
+         * @description Register or renew one vendor-managed source webhook.
+         */
+        post: operations["ensure_sor_source_webhook_subscription_api__organization_id__sor_sources__source_id__webhook_subscription_post"];
+        /**
+         * Delete Sor Source Webhook Subscription
+         * @description Stop vendor delivery and revoke the source's webhook ingress.
+         */
+        delete: operations["delete_sor_source_webhook_subscription_api__organization_id__sor_sources__source_id__webhook_subscription_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/{organization_id}/sor/sources/{source_id}/webhook-endpoint": {
         parameters: {
             query?: never;
@@ -4360,6 +4384,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/{organization_id}/sor/custom-datasets/{dataset_id}/filter-options": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Sor Custom Dataset Filter Options
+         * @description Return data-derived selectable values for one custom dataset field.
+         */
+        get: operations["get_sor_custom_dataset_filter_options_api__organization_id__sor_custom_datasets__dataset_id__filter_options_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/{organization_id}/sor/custom-datasets/{dataset_id}/records/{record_id}": {
         parameters: {
             query?: never;
@@ -4432,6 +4476,26 @@ export interface paths {
          * @description Return Eylo field semantics for any replaceable grid renderer.
          */
         get: operations["get_sor_grid_contract_api__organization_id__sor__profile___entity__grid_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/{organization_id}/sor/{profile}/{entity}/filter-options": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Sor Filter Options
+         * @description Return selectable values from the full tenant/source collection scope.
+         */
+        get: operations["get_sor_filter_options_api__organization_id__sor__profile___entity__filter_options_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -10806,11 +10870,8 @@ export interface components {
              * @default []
              */
             instance_origin_options: components["schemas"]["SorInstanceOriginOptionResponse"][];
-            /**
-             * Supports Webhooks
-             * @default false
-             */
-            supports_webhooks: boolean;
+            /** @default POLL_ONLY */
+            change_mode: components["schemas"]["SorChangeMode"];
             /**
              * Supports Deletions
              * @default false
@@ -11065,6 +11126,12 @@ export interface components {
             /** Profiles */
             profiles: components["schemas"]["SorProfileCatalogResponse"][];
         };
+        /**
+         * SorChangeMode
+         * @description How a source adapter receives change notifications between reconciliations.
+         * @enum {string}
+         */
+        SorChangeMode: "MANAGED_WEBHOOK" | "OPERATOR_WEBHOOK" | "APP_WEBHOOK" | "CHANGE_STREAM" | "POLL_ONLY";
         /**
          * SorChangeStrategy
          * @description How an adapter advances one selected stream.
@@ -11577,6 +11644,26 @@ export interface components {
          * @enum {string}
          */
         SorFilterOperator: "is" | "is_not" | "is_any_of" | "includes_any" | "includes_all" | "includes_none" | "before" | "after";
+        /**
+         * SorFilterOptionResponse
+         * @description One stable raw filter value plus its human-readable projection.
+         */
+        SorFilterOptionResponse: {
+            /** Value */
+            value: string;
+            /** Label */
+            label: string;
+        };
+        /**
+         * SorFilterOptionsResponse
+         * @description Data-derived values for one tenant-scoped collection field.
+         */
+        SorFilterOptionsResponse: {
+            /** Field */
+            field: string;
+            /** Items */
+            items: components["schemas"]["SorFilterOptionResponse"][];
+        };
         /** SorFreshnessResponse */
         SorFreshnessResponse: {
             /**
@@ -12086,6 +12173,11 @@ export interface components {
             has_webhook_signing_secret: boolean;
             /** Webhook Signing Secret Revision */
             webhook_signing_secret_revision: number;
+            /** Webhook Subscription Id */
+            webhook_subscription_id: string | null;
+            webhook_subscription_status: components["schemas"]["SorWebhookSubscriptionState"] | null;
+            /** Webhook Subscription Expires At */
+            webhook_subscription_expires_at: string | null;
             /** Freshness Target Seconds */
             freshness_target_seconds: number;
             /** Required Sync Interval Seconds */
@@ -12439,6 +12531,12 @@ export interface components {
             /** Expected Config Revision */
             expected_config_revision: number;
         };
+        /**
+         * SorWebhookSubscriptionState
+         * @description Lifecycle of one vendor-managed webhook subscription.
+         * @enum {string}
+         */
+        SorWebhookSubscriptionState: "REGISTERING" | "ACTIVE" | "RENEWING" | "NOT_APPLICABLE" | "REGISTRATION_FAILED" | "RENEWAL_FAILED" | "REMOVING" | "REMOVAL_FAILED";
         /**
          * SorWorkState
          * @description Product projection of Absurd-owned durable work.
@@ -25051,6 +25149,76 @@ export interface operations {
             };
         };
     };
+    ensure_sor_source_webhook_subscription_api__organization_id__sor_sources__source_id__webhook_subscription_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorSourceResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_sor_source_webhook_subscription_api__organization_id__sor_sources__source_id__webhook_subscription_delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorSourceResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     rotate_sor_webhook_endpoint_api__organization_id__sor_sources__source_id__webhook_endpoint_post: {
         parameters: {
             query?: never;
@@ -25425,6 +25593,45 @@ export interface operations {
             };
         };
     };
+    get_sor_custom_dataset_filter_options_api__organization_id__sor_custom_datasets__dataset_id__filter_options_get: {
+        parameters: {
+            query: {
+                field: string;
+                search?: string;
+                limit?: number;
+            };
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                dataset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorFilterOptionsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_sor_custom_dataset_record_api__organization_id__sor_custom_datasets__dataset_id__records__record_id__get: {
         parameters: {
             query?: never;
@@ -25567,6 +25774,47 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SorGridContract"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_sor_filter_options_api__organization_id__sor__profile___entity__filter_options_get: {
+        parameters: {
+            query: {
+                field: string;
+                source_id?: string[] | null;
+                search?: string;
+                limit?: number;
+            };
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                profile: components["schemas"]["SorProfile"];
+                entity: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorFilterOptionsResponse"];
                 };
             };
             /** @description Validation Error */

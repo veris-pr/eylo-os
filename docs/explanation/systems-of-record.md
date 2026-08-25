@@ -178,6 +178,32 @@ record projection/tombstones, and sync completion emit only after their DB
 transaction commits. Losing one does not change canonical state or cause a
 vendor action; reconciliation remains the correctness path.
 
+Webhook work follows the same ownership split as the rest of the SOR runtime.
+[`webhook_definition.py`](../../server/eylo/sor/runtime/webhook_definition.py)
+owns the durable receipt contract,
+[`webhook_ingestion.py`](../../server/eylo/sor/runtime/webhook_ingestion.py)
+authenticates and deduplicates untrusted deliveries, and
+[`webhook_processing.py`](../../server/eylo/sor/runtime/webhook_processing.py)
+refetches authoritative records under Absurd. Vendor network work remains
+outside DB transactions. The stable
+[`webhooks.py`](../../server/eylo/sor/runtime/webhooks.py) module exposes the
+small public surface used by routes, workers, jobs, and revocation. A broad
+signal files one source-wide dependency generation; an already-active source
+generation coalesces the hint until periodic reconciliation runs again.
+
+Vendor subscription lifecycle is a separate boundary in
+[`webhook_subscriptions.py`](../../server/eylo/sor/runtime/webhook_subscriptions.py).
+It claims registration, renewal, or removal in one short transaction, performs
+the vendor request after commit, then records the result in another short
+transaction. Managed callback authority is stable and HMAC-derived per source;
+Jira lists and recovers an exact prior callback before registering. A process
+crash after vendor acceptance therefore does not blindly consume another
+dynamic-webhook slot. Renewal rechecks the exact callback first, so a
+vendor-deleted subscription is recreated rather than silently treated as
+extended. Jira uses this path because OAuth apps can manage dynamic webhooks.
+Confluence 3LO cannot; its adapter truthfully remains polling plus reconciliation
+until an installed Atlassian app delivery contract exists.
+
 ## Revocation and durable recovery
 
 Connection revocation is a DB authority fence, not only a request to a worker.
@@ -223,6 +249,13 @@ reads return the complete record. Typed custom-field filters execute as
 set-based record selection, and the canonical live-record order is indexed.
 Those server guarantees keep renderer work and response size proportional to
 the visible page rather than the total custom-field catalog.
+
+Filter values use a separate scoped read because the visible page is an output,
+not option authority. If choices were derived from that page, filtering would
+remove its own selected label and grouping would expose only the first ordered
+group. The filter-options read respects organization, profile, entity, and
+selected sources while remaining independent of search, filters, grouping,
+ordering, and cursors.
 
 Ticketing issue detail follows the same rule. The drawer asks a bounded audit
 projection for chronological live comments. It reports comments or source

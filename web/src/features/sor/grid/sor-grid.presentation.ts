@@ -32,20 +32,37 @@ function sorDisplayValue(row: SorCollectionRow, columnKey: string): unknown {
 
 function buildSorFilterSchema(
   columns: readonly SorGridColumn[],
-  rows: readonly SorCollectionRow[],
+  optionsForField: (field: string) => readonly FilterOption[],
+  loadOptions: (
+    field: string,
+    search: string,
+  ) => Promise<readonly FilterOption[]>,
 ): FilterUiSchema<SorCollectionRow, string> {
   return columns
     .filter((column) => column.filterable)
-    .map((column) => ({
-      accessor: (row: SorCollectionRow) =>
-        toFilterAccessorValue(sorCellValue(row, column.key)),
-      icon: iconFor(column.kind),
-      label: column.label,
-      operators: operatorsFor(column.kind),
-      options: optionsFor(column, rows),
-      property: column.key,
-      valueType: valueTypeFor(column.kind),
-    }));
+    .map((column) => {
+      const selectable = hasSelectableValues(column.kind);
+      return {
+        accessor: (row: SorCollectionRow) =>
+          toFilterAccessorValue(sorCellValue(row, column.key)),
+        icon: iconFor(column.kind),
+        label: column.label,
+        loadOptions: selectable
+          ? async (search: string) =>
+              (
+                await loadOptions(column.key, search)
+              ).map((option) => formatOption(column, option))
+          : undefined,
+        operators: operatorsFor(column.kind),
+        options: selectable
+          ? optionsForField(column.key).map((option) =>
+              formatOption(column, option),
+            )
+          : undefined,
+        property: column.key,
+        valueType: valueTypeFor(column.kind),
+      };
+    });
 }
 
 function toFilterAccessorValue(value: unknown): FilterAccessorValue {
@@ -72,60 +89,30 @@ function toFilterAccessorValue(value: unknown): FilterAccessorValue {
   }
 }
 
-function optionsFor(
+function hasSelectableValues(
+  kind: SorGridColumn["kind"],
+): kind is "ENUM" | "BOOLEAN" | "STRING_ARRAY" | "REFERENCE" {
+  return (
+    kind === "ENUM" ||
+    kind === "BOOLEAN" ||
+    kind === "STRING_ARRAY" ||
+    kind === "REFERENCE"
+  );
+}
+
+function formatOption(
   column: SorGridColumn,
-  rows: readonly SorCollectionRow[],
-): readonly FilterOption[] | undefined {
-  if (
-    column.kind !== "ENUM" &&
-    column.kind !== "BOOLEAN" &&
-    column.kind !== "STRING_ARRAY" &&
-    column.kind !== "REFERENCE"
-  ) {
-    return undefined;
-  }
-  const values = new Map<string, string>();
-  for (const row of rows) {
-    const value = sorCellValue(row, column.key);
-    const displayValue = sorDisplayValue(row, column.key);
-    if (Array.isArray(value)) {
-      for (const [index, item] of value.entries()) {
-        if (typeof item !== "string" || item === "") continue;
-        const display = Array.isArray(displayValue)
-          ? displayValue[index]
-          : undefined;
-        values.set(
-          item,
-          optionLabel(
-            column,
-            item,
-            typeof display === "string" ? display : item,
-          ),
-        );
-      }
-    } else if (
-      typeof value === "string" ||
-      typeof value === "number" ||
-      typeof value === "boolean"
-    ) {
-      const normalized = String(value);
-      values.set(
-        normalized,
-        optionLabel(
-          column,
-          normalized,
-          typeof displayValue === "string" ? displayValue : normalized,
-        ),
-      );
-    }
-  }
-  return [...values]
-    .sort((left, right) => left[1].localeCompare(right[1]))
-    .map(([value, label]) => ({
-      keywords: label === value ? undefined : [value],
-      label,
-      value,
-    }));
+  option: FilterOption,
+): FilterOption {
+  const label = optionLabel(column, option.value, option.label);
+  return {
+    keywords:
+      label === option.value
+        ? option.keywords
+        : [option.value, ...(option.keywords ?? [])],
+    label,
+    value: option.value,
+  };
 }
 
 function optionLabel(
@@ -156,7 +143,7 @@ function valueTypeFor(kind: SorGridColumn["kind"]): FilterValueType {
     case "NUMBER":
       return "number";
     case "LINK":
-      return "links";
+      return "text";
     case "LONG_TEXT":
     case "TEXT":
       return "text";
@@ -180,8 +167,9 @@ function operatorsFor(
     case "DATETIME":
       return ["before", "after"];
     case "STRING_ARRAY":
-    case "LINK":
       return ["includes_any", "includes_all", "includes_none"];
+    case "LINK":
+      return ["is", "is_not"];
     case "ENUM":
     case "BOOLEAN":
     case "REFERENCE":

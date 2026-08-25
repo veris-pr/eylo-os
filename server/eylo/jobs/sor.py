@@ -17,6 +17,7 @@ from eylo.sor.runtime.sync import (
     spawn_sor_sync_run,
     spawn_unbound_sor_sync_runs,
 )
+from eylo.sor.runtime.webhook_subscriptions import maintain_sor_webhook_subscriptions
 from eylo.sor.runtime.webhooks import spawn_unbound_sor_webhook_receipts
 from eylo.sor.shared.contracts import (
     SorChangeStrategy,
@@ -187,6 +188,7 @@ async def dispatch_due_sor_syncs() -> dict[str, int]:
 
 async def nudge_sor_work() -> dict[str, int]:
     """Recover every currently implemented SOR durable outbox."""
+    subscriptions = await maintain_sor_webhook_subscriptions()
     stopped = await recover_fenced_sor_work(limit=100)
     terminal_syncs = await reconcile_terminal_sor_sync_runs(limit=100)
     generations = await reconcile_unadvanced_sor_sync_generations(limit=100)
@@ -200,6 +202,12 @@ async def nudge_sor_work() -> dict[str, int]:
     async with start_transaction() as session:
         pruned = await SorWebhookService(session).prune_expired_raw_bodies()
     return {
+        "webhook_subscriptions_eligible": subscriptions.eligible,
+        "webhook_subscriptions_activated": subscriptions.activated,
+        "webhook_subscriptions_failed": subscriptions.failed,
+        "webhook_configuration_unavailable": (
+            subscriptions.configuration_unavailable
+        ),
         "cancelled_syncs": stopped.sync_runs,
         "cancelled_webhooks": stopped.webhook_receipts,
         "cancelled_commands": stopped.commands,

@@ -36,6 +36,10 @@ from eylo.sor.runtime.oauth import (
 )
 from eylo.sor.runtime.read_registry import get_sor_read_spec
 from eylo.sor.runtime.sync import spawn_sor_sync_run
+from eylo.sor.runtime.webhook_subscriptions import (
+    ensure_sor_webhook_subscription,
+    remove_sor_webhook_subscription,
+)
 from eylo.sor.shared.catalog_service import SorCatalogService
 from eylo.sor.shared.connector_services import (
     SorConnectorService,
@@ -81,6 +85,7 @@ from eylo.sor.shared.schemas import (
     SorCustomDatasetResponse,
     SorDiscoveryResponse,
     SorFieldMappingResponse,
+    SorFilterOptionsResponse,
     SorMappingDraftRequest,
     SorMappingRevisionResponse,
     SorOAuthConfigurationResponse,
@@ -1087,6 +1092,70 @@ async def get_agent_sor_view(
 
 
 @router.post(
+    "/sources/{source_id}/webhook-subscription",
+    response_model=SorSourceResponse,
+)
+async def ensure_sor_source_webhook_subscription(
+    organization_id: UUID,
+    source_id: UUID,
+    current_user: CurrentUserSchema = Depends(get_current_user),
+) -> SorSourceResponse:
+    """Register or renew one vendor-managed source webhook."""
+    _authorize(organization_id, current_user)
+    try:
+        await ensure_sor_webhook_subscription(
+            organization_id=organization_id,
+            source_id=source_id,
+        )
+        async with start_transaction(ro=True) as session:
+            return await SorSourceReadService(session).get(
+                organization_id=organization_id,
+                source_id=source_id,
+            )
+    except (
+        SorAdapterUnavailableError,
+        SorConfigurationError,
+        SorConflictError,
+        SorNotFoundError,
+        SorVendorOperationError,
+        TimeoutError,
+    ) as error:
+        raise _configuration_error(error) from None
+
+
+@router.delete(
+    "/sources/{source_id}/webhook-subscription",
+    response_model=SorSourceResponse,
+)
+async def delete_sor_source_webhook_subscription(
+    organization_id: UUID,
+    source_id: UUID,
+    current_user: CurrentUserSchema = Depends(get_current_user),
+) -> SorSourceResponse:
+    """Stop vendor delivery and revoke the source's webhook ingress."""
+    _authorize(organization_id, current_user)
+    try:
+        await remove_sor_webhook_subscription(
+            organization_id=organization_id,
+            source_id=source_id,
+        )
+        async with start_transaction(ro=True) as session:
+            return await SorSourceReadService(session).get(
+                organization_id=organization_id,
+                source_id=source_id,
+            )
+    except (
+        SorAdapterUnavailableError,
+        SorConfigurationError,
+        SorConflictError,
+        SorNotFoundError,
+        SorVendorOperationError,
+        TimeoutError,
+    ) as error:
+        raise _configuration_error(error) from None
+
+
+@router.post(
     "/sources/{source_id}/webhook-endpoint",
     response_model=SorWebhookEndpointResponse,
 )
@@ -1455,6 +1524,43 @@ async def get_sor_custom_dataset_grid(
 
 
 @router.get(
+    "/custom-datasets/{dataset_id}/filter-options",
+    response_model=SorFilterOptionsResponse,
+)
+async def get_sor_custom_dataset_filter_options(
+    organization_id: UUID,
+    dataset_id: UUID,
+    field: Annotated[
+        str,
+        Query(min_length=1, max_length=128, pattern=r"^[a-z][a-z0-9_.-]*$"),
+    ],
+    search: Annotated[str, Query(max_length=120)] = "",
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    current_user: CurrentUserSchema = Depends(get_current_user),
+) -> SorFilterOptionsResponse:
+    """Return data-derived selectable values for one custom dataset field."""
+    _authorize(organization_id, current_user)
+    try:
+        async with start_transaction(ro=True) as session:
+            view = await SorCustomDatasetService(session).get(
+                organization_id=organization_id,
+                dataset_id=dataset_id,
+            )
+            return await SorCollectionReadService(session).filter_options(
+                organization_id=organization_id,
+                spec=custom_dataset_read_spec(view),
+                source_ids=(view.source.id,),
+                field=field,
+                search=search.strip(),
+                limit=limit,
+            )
+    except SorNotFoundError as error:
+        raise _configuration_error(error) from None
+    except (SorReadNotFoundError, SorReadQueryError) as error:
+        raise _read_error(error) from None
+
+
+@router.get(
     "/custom-datasets/{dataset_id}/records/{record_id}",
     response_model=SorRecordDetailResponse,
 )
@@ -1566,6 +1672,42 @@ async def get_sor_grid_contract(
                 organization_id=organization_id,
                 spec=_read_spec(profile, entity),
                 source_ids=tuple(source_id or ()),
+            )
+    except (SorReadNotFoundError, SorReadQueryError) as error:
+        raise _read_error(error) from None
+
+
+@router.get(
+    "/{profile}/{entity}/filter-options",
+    response_model=SorFilterOptionsResponse,
+)
+async def get_sor_filter_options(
+    organization_id: UUID,
+    profile: SorProfile,
+    entity: Annotated[
+        str,
+        Path(min_length=1, max_length=128, pattern=r"^[a-z][a-z0-9_]*$"),
+    ],
+    field: Annotated[
+        str,
+        Query(min_length=1, max_length=128, pattern=r"^[a-z][a-z0-9_.-]*$"),
+    ],
+    source_id: Annotated[list[UUID] | None, Query(max_length=50)] = None,
+    search: Annotated[str, Query(max_length=120)] = "",
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    current_user: CurrentUserSchema = Depends(get_current_user),
+) -> SorFilterOptionsResponse:
+    """Return selectable values from the full tenant/source collection scope."""
+    _authorize(organization_id, current_user)
+    try:
+        async with start_transaction(ro=True) as session:
+            return await SorCollectionReadService(session).filter_options(
+                organization_id=organization_id,
+                spec=_read_spec(profile, entity),
+                source_ids=tuple(source_id or ()),
+                field=field,
+                search=search.strip(),
+                limit=limit,
             )
     except (SorReadNotFoundError, SorReadQueryError) as error:
         raise _read_error(error) from None

@@ -14,7 +14,18 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import and_, asc, desc, func, not_, or_, select, tuple_
+from sqlalchemy import (
+    String,
+    and_,
+    asc,
+    desc,
+    func,
+    not_,
+    or_,
+    select,
+    tuple_,
+)
+from sqlalchemy import cast as sql_cast
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, load_only
 from sqlalchemy.sql import Select
@@ -52,6 +63,8 @@ from eylo.sor.shared.schemas import (
     SorCollectionPageResponse,
     SorCollectionRowResponse,
     SorCustomFieldValueResponse,
+    SorFilterOptionResponse,
+    SorFilterOptionsResponse,
     SorFreshnessResponse,
     SorRecordDetailResponse,
     SorRecordRelationResponse,
@@ -62,6 +75,14 @@ from eylo.sor.shared.schemas import (
 _CURSOR_VERSION = 1
 _COMMON_GRID_COLUMN_KEYS = frozenset(
     {"source", "source_updated_at", "projected_at"}
+)
+_FILTER_OPTION_KINDS = frozenset(
+    {
+        SorGridColumnKind.ENUM,
+        SorGridColumnKind.BOOLEAN,
+        SorGridColumnKind.REFERENCE,
+        SorGridColumnKind.STRING_ARRAY,
+    }
 )
 
 
@@ -343,6 +364,7 @@ class _FieldContract:
     expression: ColumnElement[Any]
     grid_column: SorGridColumn
     custom_definition: SorCustomFieldDefinitionModel | None = None
+    reference_entity: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -787,6 +809,141 @@ class SorCollectionReadService:
             ),
         )
 
+    async def filter_options(
+        self,
+        *,
+        organization_id: UUID,
+        spec: SorEntityReadSpec,
+        source_ids: Sequence[UUID],
+        field: str,
+        search: str,
+        limit: int,
+    ) -> SorFilterOptionsResponse:
+        """Read stable values from the collection scope, never its current page."""
+        resolved_source_ids = await self._resolve_source_ids(
+            organization_id=organization_id,
+            profile=spec.profile,
+            requested=source_ids,
+        )
+        custom_columns = await self._custom_columns(
+            organization_id=organization_id,
+            spec=spec,
+            source_ids=resolved_source_ids,
+        )
+        contract = self._field_contract(spec, custom_columns).get(field)
+        if contract is None or not contract.grid_column.filterable:
+            raise SorReadQueryError(f"SOR field '{field}' is not filterable.")
+        if contract.grid_column.kind not in _FILTER_OPTION_KINDS:
+            raise SorReadQueryError(
+                f"SOR field '{field}' does not provide selectable values."
+            )
+
+        value_expression: ColumnElement[Any] = contract.expression
+        if contract.grid_column.kind is SorGridColumnKind.STRING_ARRAY:
+            value_expression = func.unnest(value_expression)
+
+        predicates: list[ColumnElement[bool]] = [
+            SorRecordModel.organization_id == organization_id,
+            SorRecordModel.profile == spec.profile,
+            SorRecordModel.canonical_entity_kind == spec.entity,
+            SorRecordModel.tombstoned_at.is_(None),
+            SorRecordModel.deleted.is_(False),
+            SorSourceModel.deleted.is_(False),
+        ]
+        if spec.model is not None:
+            predicates.append(spec.model.deleted.is_(False))
+        if spec.vendor_object_key is not None:
+            predicates.append(
+                SorRecordModel.vendor_object_key == spec.vendor_object_key
+            )
+        if source_ids:
+            predicates.append(SorRecordModel.source_id.in_(resolved_source_ids))
+
+        raw_values = select(
+            SorRecordModel.source_id.label("source_id"),
+            value_expression.label("value"),
+        )
+        if spec.model is not None:
+            raw_values = raw_values.join(
+                spec.model,
+                spec.model.record_id == SorRecordModel.id,
+            )
+        raw_values = (
+            raw_values.join(
+                SorSourceModel,
+                SorSourceModel.id == SorRecordModel.source_id,
+            )
+            .where(*predicates)
+            .subquery()
+        )
+
+        label_expression: ColumnElement[str] = sql_cast(raw_values.c.value, String)
+        target_record = aliased(SorRecordModel)
+        target_condition: ColumnElement[bool] | None = None
+        if contract.reference_entity is not None:
+            target_condition = and_(
+                target_record.organization_id == organization_id,
+                target_record.source_id == raw_values.c.source_id,
+                target_record.canonical_entity_kind == contract.reference_entity,
+                target_record.vendor_external_id
+                == sql_cast(raw_values.c.value, String),
+                target_record.tombstoned_at.is_(None),
+                target_record.deleted.is_(False),
+            )
+            label_expression = func.coalesce(
+                func.nullif(func.btrim(target_record.human_external_key), ""),
+                sql_cast(raw_values.c.value, String),
+            )
+        elif (
+            contract.custom_definition is not None
+            and contract.custom_definition.data_type is SorCustomFieldType.REFERENCE
+        ):
+            target_condition = and_(
+                target_record.organization_id == organization_id,
+                target_record.id == raw_values.c.value,
+                target_record.tombstoned_at.is_(None),
+                target_record.deleted.is_(False),
+            )
+            label_expression = func.coalesce(
+                func.nullif(func.btrim(target_record.human_external_key), ""),
+                sql_cast(raw_values.c.value, String),
+            )
+
+        statement = select(
+            raw_values.c.value,
+            label_expression.label("label"),
+        ).select_from(raw_values)
+        if target_condition is not None:
+            statement = statement.outerjoin(target_record, target_condition)
+        statement = statement.where(raw_values.c.value.is_not(None))
+        if search:
+            statement = statement.where(
+                label_expression.ilike(_contains_pattern(search), escape="\\")
+            )
+        rows = (
+            await self.session.execute(
+                statement.distinct()
+                .order_by(label_expression.asc())
+                .limit((limit * 4) + 1)
+            )
+        ).all()
+        options: list[SorFilterOptionResponse] = []
+        seen: set[str] = set()
+        for raw_value, raw_label in rows:
+            value = _filter_option_string(raw_value)
+            if value in seen:
+                continue
+            seen.add(value)
+            options.append(
+                SorFilterOptionResponse(
+                    value=value,
+                    label=str(raw_label).strip() or value,
+                )
+            )
+            if len(options) == limit:
+                break
+        return SorFilterOptionsResponse(field=field, items=tuple(options))
+
     async def _resolve_source_ids(
         self,
         *,
@@ -1110,7 +1267,11 @@ class SorCollectionReadService:
         custom_columns: Sequence[_CustomColumn],
     ) -> dict[str, _FieldContract]:
         contract: dict[str, _FieldContract] = {
-            field.key: _FieldContract(field.expression, field.grid_column())
+            field.key: _FieldContract(
+                field.expression,
+                field.grid_column(),
+                reference_entity=field.reference_entity,
+            )
             for field in spec.fields
         }
         contract.update(
@@ -1314,10 +1475,13 @@ def _compile_condition(
             expression.is_(values[0]) if values[0] is None else expression == values[0]
         )
     if operator is SorFilterOperator.IS_NOT:
-        return (
-            expression.is_not(None)
-            if values[0] is None
-            else expression.is_distinct_from(values[0])
+        return and_(
+            *(
+                expression.is_not(None)
+                if value is None
+                else expression.is_distinct_from(value)
+                for value in values
+            )
         )
     if operator is SorFilterOperator.IS_ANY_OF:
         non_null = tuple(value for value in values if value is not None)
@@ -1361,11 +1525,20 @@ def _compile_custom_condition(
             _custom_value_record_ids(definition, value_column == values[0])
         )
     if operator is SorFilterOperator.IS_NOT:
-        if values[0] is None:
-            return SorRecordModel.id.in_(presence)
-        return SorRecordModel.id.not_in(
-            _custom_value_record_ids(definition, value_column == values[0])
-        )
+        conditions: list[ColumnElement[bool]] = []
+        non_null = tuple(value for value in values if value is not None)
+        if non_null:
+            conditions.append(
+                SorRecordModel.id.not_in(
+                    _custom_value_record_ids(
+                        definition,
+                        value_column.in_(non_null),
+                    )
+                )
+            )
+        if None in values:
+            conditions.append(SorRecordModel.id.in_(presence))
+        return and_(*conditions)
     if operator is SorFilterOperator.IS_ANY_OF:
         non_null = tuple(value for value in values if value is not None)
         alternatives: list[ColumnElement[bool]] = []
@@ -1522,6 +1695,17 @@ def _reject_null_filter_values(
         raise SorReadQueryError(
             f"SOR operator '{operator.value}' does not accept null values."
         )
+
+
+def _contains_pattern(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def _filter_option_string(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
 
 
 def _allowed_operators(kind: SorGridColumnKind) -> frozenset[SorFilterOperator]:

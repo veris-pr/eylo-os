@@ -211,125 +211,137 @@ function SourceDetails({
 
   return (
     <div className="min-w-0 space-y-8">
-      <RecoveryPanel
-        activeGeneration={activeGeneration ?? null}
-        failedStreams={failedStreams}
-        isReauthorizing={isReauthorizing}
-        isStartingSync={isStartingSync}
-        latestFailure={latestRunFailure?.safe_error_summary ?? null}
-        reauthorizationErrorMessage={reauthorizationErrorMessage}
-        source={source}
-        syncActionErrorMessage={syncActionErrorMessage}
-        syncActionMessage={syncActionMessage}
-        onReauthorize={onReauthorize}
-        onStartSync={onStartSync}
-      />
-
-      <div className="grid min-w-0 items-start gap-6 xl:grid-cols-[minmax(0,1fr)_22rem]">
-        <div className="min-w-0 space-y-8">
-          <DetailsSection
-            description="Each object is synchronized independently. One failed object does not hide the health of the others."
-            title="Object sync health"
-          >
-            {streams.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                No source objects are configured.
-              </p>
-            ) : (
-              <div className="divide-y border-y">
-                {streams.map((stream) => (
-                  <StreamRow
-                    isActive={activeStreamIds.has(stream.id)}
-                    isDisabled={
-                      isStartingSync || activeStreamIds.has(stream.id)
-                    }
-                    isStarting={startingStreamId === stream.id}
-                    key={stream.id}
-                    stream={stream}
-                    onRetry={onStartStreamSync}
-                  />
-                ))}
-              </div>
-            )}
-          </DetailsSection>
-
-          <DetailsSection
-            description="Recent source-wide runs, with per-object outcomes available on demand."
-            title="Sync history"
-          >
-            {operations === null || operations.generations.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                No synchronization has been scheduled yet.
-              </p>
-            ) : (
-              <div className="divide-y border-y">
-                {operations.generations.map((generation) => (
-                  <GenerationRow
-                    generation={generation}
-                    key={generation.id}
-                    streams={streams}
-                  />
-                ))}
-              </div>
-            )}
-          </DetailsSection>
-        </div>
-
-        <aside className="min-w-0 space-y-8">
-          <DetailsSection title="Source overview">
-            <DetailRow label="Connection">
-              {connectionName ??
-                `${formatSorIdentifier(source.vendor_key)} account`}
-            </DetailRow>
-            <DetailRow label="Profile">
-              <Badge variant="outline">
-                {formatSorIdentifier(source.profile)}
+      <DetailsSection title="Source overview">
+        <div>
+          <DetailRow label="Connection">
+            {connectionName ??
+              `${formatSorIdentifier(source.vendor_key)} account`}
+          </DetailRow>
+          <DetailRow label="Profile">
+            <Badge variant="outline">
+              {formatSorIdentifier(source.profile)}
+            </Badge>
+          </DetailRow>
+          <DetailRow label="Objects">
+            <span className="flex flex-wrap gap-1">
+              {source.selected_objects.map((item) => (
+                <Badge key={item} variant="outline">
+                  {formatSorIdentifier(item)}
+                </Badge>
+              ))}
+            </span>
+          </DetailRow>
+          <DateRow
+            label="Last successful sync"
+            value={source.last_successful_sync_at}
+          />
+          <DateRow
+            label="Last sync attempt"
+            value={source.last_reconciliation_at}
+          />
+          <DateRow label="Next scheduled sync" value={nextScheduledSync} />
+          <DetailRow label="Sync interval">
+            {formatDuration(source.required_sync_interval_seconds)}
+          </DetailRow>
+          {source.webhook_subscription_status === null ? null : (
+            <DetailRow label="Webhook">
+              <Badge
+                variant={
+                  source.webhook_subscription_status.endsWith("_FAILED")
+                    ? "destructive"
+                    : "outline"
+                }
+              >
+                {formatSorIdentifier(source.webhook_subscription_status)}
               </Badge>
             </DetailRow>
-            <DetailRow label="Objects">
-              <span className="flex flex-wrap gap-1">
-                {source.selected_objects.map((item) => (
-                  <Badge key={item} variant="outline">
-                    {formatSorIdentifier(item)}
-                  </Badge>
-                ))}
-              </span>
-            </DetailRow>
-            <DateRow
-              label="Last successful sync"
-              value={source.last_successful_sync_at}
-            />
-            <DateRow
-              label="Last sync attempt"
-              value={source.last_reconciliation_at}
-            />
-            <DateRow label="Next scheduled sync" value={nextScheduledSync} />
-            <DetailRow label="Sync interval">
-              {formatDuration(source.required_sync_interval_seconds)}
-            </DetailRow>
-          </DetailsSection>
-
-          {operations === null ? null : (
-            <DetailsSection
-              description="Links are retried after sync when their related records become available."
-              title="Relationship health"
-            >
-              <DetailRow label="Resolved">
-                {formatCount(operations.relationships.resolved)}
-              </DetailRow>
-              <DetailRow label="Pending">
-                {formatCount(operations.relationships.pending)}
-              </DetailRow>
-              <DetailRow label="Retired">
-                {formatCount(operations.relationships.tombstoned)}
-              </DetailRow>
-            </DetailsSection>
           )}
-        </aside>
-      </div>
+          {source.webhook_subscription_expires_at === null ? null : (
+            <DateRow
+              label="Webhook renewal due"
+              value={source.webhook_subscription_expires_at}
+            />
+          )}
+        </div>
+        <RecoveryPanel
+          activeGeneration={activeGeneration ?? null}
+          failedStreams={failedStreams}
+          isReauthorizing={isReauthorizing}
+          isStartingSync={isStartingSync}
+          latestFailure={latestRunFailure?.safe_error_summary ?? null}
+          reauthorizationErrorMessage={reauthorizationErrorMessage}
+          source={source}
+          syncActionErrorMessage={syncActionErrorMessage}
+          syncActionMessage={syncActionMessage}
+          onReauthorize={onReauthorize}
+          onStartSync={onStartSync}
+        />
+      </DetailsSection>
+
+      <DetailsSection
+        description="Each object is synchronized independently. One failed object does not hide the health of the others."
+        title="Object sync health"
+      >
+        {streams.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No source objects are configured.
+          </p>
+        ) : (
+          <div className="divide-y border-y">
+            {streams.map((stream) => (
+              <StreamRow
+                isActive={activeStreamIds.has(stream.id)}
+                isDisabled={isStartingSync || activeStreamIds.has(stream.id)}
+                isStarting={startingStreamId === stream.id}
+                key={stream.id}
+                stream={stream}
+                onRetry={onStartStreamSync}
+              />
+            ))}
+          </div>
+        )}
+      </DetailsSection>
+
+      {operations === null ? null : (
+        <DetailsSection
+          description="Links are retried after sync when their related records become available."
+          title="Relationship health"
+        >
+          <DetailRow label="Resolved">
+            {formatCount(operations.relationships.resolved)}
+          </DetailRow>
+          <DetailRow label="Pending">
+            {formatCount(operations.relationships.pending)}
+          </DetailRow>
+          <DetailRow label="Retired">
+            {formatCount(operations.relationships.tombstoned)}
+          </DetailRow>
+        </DetailsSection>
+      )}
+
+      <DetailsSection
+        description="Recent source-wide runs, with per-object outcomes available on demand."
+        title="Sync history"
+      >
+        {operations === null || operations.generations.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No synchronization has been scheduled yet.
+          </p>
+        ) : (
+          <div className="divide-y border-y">
+            {operations.generations.map((generation) => (
+              <GenerationRow
+                generation={generation}
+                key={generation.id}
+                streams={streams}
+              />
+            ))}
+          </div>
+        )}
+      </DetailsSection>
 
       <details className="border p-4">
-        <summary className="cursor-pointer text-sm font-medium">
+        <summary className="cursor-pointer text-lg font-semibold tracking-tight">
           Technical details
         </summary>
         <div className="mt-4 space-y-5">
@@ -371,18 +383,17 @@ function SourceDetails({
         </div>
       </details>
 
-      <section className="space-y-3 border-t pt-6">
-        <div className="space-y-1">
-          <h2 className="text-sm font-semibold">Delete source</h2>
-          <p className="text-sm leading-6 text-muted-foreground">
-            Permanently remove this source and all synchronized Eylo data.
-          </p>
-        </div>
-        <Button variant="destructive" onClick={() => onDelete(source)}>
-          <Trash2 aria-hidden="true" />
-          Delete source and data
-        </Button>
-      </section>
+      <div className="border-t pt-8">
+        <DetailsSection
+          description="Permanently remove this source and all synchronized Eylo data."
+          title="Delete source"
+        >
+          <Button variant="destructive" onClick={() => onDelete(source)}>
+            <Trash2 aria-hidden="true" />
+            Delete source and data
+          </Button>
+        </DetailsSection>
+      </div>
     </div>
   );
 }
@@ -422,18 +433,38 @@ function RecoveryPanel({
               Run an on-demand reconciliation without changing the schedule.
             </p>
           </div>
-          <Button
-            disabled={isStartingSync || activeGeneration !== null}
-            variant="outline"
-            onClick={() => onStartSync(source)}
-          >
-            <RefreshCw
-              aria-hidden="true"
-              className={isStartingSync ? "animate-spin" : undefined}
-            />
-            {activeGeneration === null ? "Sync now" : "Sync in progress"}
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              disabled={isReauthorizing}
+              variant="outline"
+              onClick={() => onReauthorize(source)}
+            >
+              <RefreshCw
+                aria-hidden="true"
+                className={isReauthorizing ? "animate-spin" : undefined}
+              />
+              {isReauthorizing
+                ? "Waiting for provider"
+                : `Reconnect ${formatSorIdentifier(source.vendor_key)}`}
+            </Button>
+            <Button
+              disabled={isStartingSync || activeGeneration !== null}
+              variant="outline"
+              onClick={() => onStartSync(source)}
+            >
+              <RefreshCw
+                aria-hidden="true"
+                className={isStartingSync ? "animate-spin" : undefined}
+              />
+              {activeGeneration === null ? "Sync now" : "Sync in progress"}
+            </Button>
+          </div>
         </div>
+        {reauthorizationErrorMessage === null ? null : (
+          <p className="text-sm text-destructive" role="alert">
+            {reauthorizationErrorMessage}
+          </p>
+        )}
         {syncActionErrorMessage === null ? null : (
           <p className="text-sm text-destructive" role="alert">
             {syncActionErrorMessage}
@@ -746,7 +777,7 @@ function DetailsSection({
   return (
     <section className="min-w-0 space-y-3">
       <div className="space-y-1">
-        <h2 className="text-sm font-semibold">{title}</h2>
+        <h2 className="text-lg font-semibold tracking-tight">{title}</h2>
         {description === undefined ? null : (
           <p className="text-sm leading-6 text-muted-foreground">
             {description}

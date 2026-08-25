@@ -115,6 +115,11 @@ These rules are hard boundaries:
 
 ### Domain contracts
 
+- When choosing a new domain, API, configuration, or persistence contract,
+  always prefer a named enum over a boolean. Booleans are reserved for
+  intrinsic predicates whose only meaningful states are true and false; never
+  use one or more booleans to encode a mode, policy, capability, lifecycle, or
+  state machine.
 - Organizations have members. There is no RBAC, role, admin, or permission
   hierarchy.
 - `AgentKind` is either conversational or background and is immutable.

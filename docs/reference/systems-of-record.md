@@ -23,11 +23,11 @@ only through a registered adapter and an active source.
 | CRM | HubSpot | Implemented; live acceptance pending | OAuth 2.0 | contacts, companies, deals | full reconciliation; custom fields; reads and mapped writes |
 | CRM | Salesforce | Implemented; live acceptance pending | OAuth 2.0 with PKCE | Contact, Account, Opportunity, Task | updated-at cursor; custom fields and objects; conditional writes |
 | CRM | Microsoft Dataverse | Planned | — | — | no registered adapter |
-| Issues | Jira Cloud | Implemented; live acceptance pending | OAuth 2.0 | issues, projects, workflow states, users, labels, sprints, comments, relations | enhanced-JQL issue sync; Sprint-field cycle discovery; full reconciliation; custom fields; mapped writes |
-| Issues | Linear | Implemented; live acceptance pending | OAuth 2.0 with PKCE | issues, teams, projects, workflow states, users, labels, cycles, comments, relations | updated-at sync; signed webhooks; mapped writes |
+| Issues | Jira Cloud | Implemented; webhook live acceptance pending | OAuth 2.0 | issues, projects, workflow states, users, labels, sprints, comments, relations | enhanced-JQL issue sync; managed dynamic webhooks; 30-day renewal; Sprint-field cycle discovery; full reconciliation; custom fields; mapped writes |
+| Issues | Linear | Implemented; live acceptance pending | OAuth 2.0 with PKCE | issues, teams, projects, workflow states, users, labels, cycles, comments, relations | updated-at sync; signed app-managed webhooks; mapped writes |
 | Issues | GitHub Issues | Implemented; live acceptance pending | OAuth 2.0 | repositories, issues, workflow states, users, labels, milestones, comments | REST updated-at sync with bounded GraphQL PR classification; full reconciliation; signed operator-managed webhooks; mapped writes; pull requests and issue relations excluded |
 | Support | Zendesk | Implemented; live acceptance pending | OAuth 2.0 | tickets, customers, agents, groups, brands, comments, tags, ticket metrics, attachments | cursor incremental export; signed webhook refetch; custom ticket fields; public replies/private notes; safe mapped writes |
-| Support | Intercom | Implemented; live acceptance pending | OAuth 2.0 | conversations, contacts, admins, teams, conversation parts, tags, attachments | updated-at search plus full reconciliation; regional API pinning; signed operator-managed webhooks; conversation attributes; public replies/private notes; mapped writes |
+| Support | Intercom | Implemented; live acceptance pending | OAuth 2.0 | conversations, contacts, admins, teams, conversation parts, tags, attachments | updated-at search plus full reconciliation; regional API pinning; signed app-managed webhooks; conversation attributes; public replies/private notes; mapped writes |
 | Support | Freshdesk | Implemented; live acceptance pending | API key | tickets, contacts, agents, groups, email inboxes, conversations, tags, SLA targets, attachments; companies and Freshdesk custom objects as custom datasets | updated-at polling plus full reconciliation; custom fields and objects; public replies/private notes; mapped writes; no API-key webhook support |
 | Documents | Confluence Cloud | Implemented; live acceptance pending | OAuth 2.0 with REST v2 granular scopes | spaces, pages, page bodies, current revisions, properties, attachments, authors | full reconciliation; loss-aware HTML normalization; current revision and author reads; authenticated current-image previews; mapped create/update/append |
 | Documents | Notion | Implemented; live acceptance pending | OAuth 2.0 or API key | data sources, pages, recursive blocks, properties, attachments, authors | full reconciliation; completed paginated relation/rollup properties; unsupported-block disclosure; mapped create/update/append/comment |
@@ -44,6 +44,49 @@ acceptance matrix is exercised against an operator-owned account.
 Salesforce's validated instance origin comes from the OAuth token response and
 is pinned to the resulting connection. Operators do not type a mutable request
 origin into each source.
+
+## Change notification modes
+
+Every executable adapter declares one `change_mode`; the catalog does not
+encode delivery behavior through booleans:
+
+| Mode | Meaning |
+| --- | --- |
+| `MANAGED_WEBHOOK` | Eylo creates, renews, and removes the vendor subscription. |
+| `OPERATOR_WEBHOOK` | An operator configures a source-specific webhook in the vendor. |
+| `APP_WEBHOOK` | A vendor app or developer-console subscription forwards events to Eylo. |
+| `CHANGE_STREAM` | The adapter consumes a vendor-native change stream rather than HTTP deliveries. |
+| `POLL_ONLY` | Scheduled incremental sync and reconciliation are the only change paths. |
+
+Jira uses `MANAGED_WEBHOOK`; GitHub and Zendesk use `OPERATOR_WEBHOOK`; Linear
+and Intercom use `APP_WEBHOOK`. Every other current adapter declares
+`POLL_ONLY`. A delivery is only a hint to refetch authoritative vendor data.
+Periodic reconciliation remains the correctness path, so no separate freshness
+state is persisted.
+
+Jira managed webhooks use the official OAuth dynamic-webhook REST resources.
+The source owns one opaque callback endpoint and one vendor subscription ID.
+Eylo registers the selected issue, comment, and Sprint events, renews the
+30-day subscription seven days before expiry, and removes it when the source is
+deleted. Registration first recovers an existing exact callback, making retry
+safe across a crash between the vendor response and Eylo's completion write.
+Renewal also recreates a callback that was deleted on the vendor side before
+extending it.
+Registration requires the **classic** `read:jira-work` and
+`manage:jira-webhook` scopes. Sprint reads additionally use the explicitly
+labelled **granular Jira Software** scopes shown by the catalog. These scope
+families are not presented as interchangeable.
+
+Managed callbacks require a public HTTPS `API_BASE_URL`; localhost cannot
+receive Atlassian delivery. Confluence's current OAuth 2.0 (3LO) API does not
+provide Jira-style dynamic webhook registration. Confluence therefore remains
+`POLL_ONLY`; adding event delivery requires a separately installed Atlassian
+app/Forge remote contract, not another 3LO consent scope.
+
+Vendor authorities: Atlassian's [Jira dynamic webhook REST
+API](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-webhooks/),
+[Jira webhook delivery guide](https://developer.atlassian.com/cloud/jira/software/webhooks/),
+and [Confluence webhook guide](https://developer.atlassian.com/cloud/confluence/using-webhooks/).
 
 ## Executable CRM tools
 
@@ -287,7 +330,16 @@ renderer.
 
 Allowed filter operators are `is`, `is_not`, `is_any_of`, `includes_any`,
 `includes_all`, `includes_none`, `before`, and `after`. The server rejects a
-field or operation not declared by the grid contract.
+field or operation not declared by the grid contract. `is` remains scalar;
+`is_not` accepts one or more values and excludes every selected value;
+`is_any_of` accepts multiple alternatives.
+
+Selectable values for enum, boolean, reference, and string-array fields come
+from the full organization/profile/entity/source collection scope through the
+collection's `filter-options` read. They do not come from the current page and
+do not inherit active search, filter, group, sort, or cursor state. Reference
+options use the same tenant-scoped canonical label resolution as grid cells.
+This keeps labels and available choices stable while the result query changes.
 
 The console serializes the main view into `q`, repeated `source`, `filters`,
 `sort`, `group`, repeated `column`, `cursor`, and `record` query parameters.
@@ -300,11 +352,12 @@ All organization routes are under `/api/{organization_id}/sor`:
 - `/catalog` and `/oauth/configuration`;
 - `/connectors` and `/connectors/{connector_id}/authorize`;
 - `/sources` and `/sources/api-key`, source verification, discovery, selection,
-  mapping, activation, streams, sync runs, and webhook endpoint management;
+  mapping, activation, streams, sync runs, webhook endpoint management, and
+  managed webhook subscription registration/removal;
 - `/sources/{source_id}/operations` for bounded recent generations, stream-run
   receipts, and relationship health;
 - `/agents/{agent_id}/source-grants` and the published Agent view;
-- `/{profile}/{entity}` grid, query, list, and detail reads;
+- `/{profile}/{entity}` grid, filter-options, query, list, and detail reads;
 - `/ticketing/issues/{record_id}/audit` for bounded live comments and explicit
   source-history availability;
 - `/support/tickets/{record_id}/audit` for bounded message chronology, SLA
@@ -315,7 +368,7 @@ All organization routes are under `/api/{organization_id}/sor`:
 - `/knowledge/documents/{record_id}/attachments/{attachment_record_id}/content`
   for a tenant-authorized, bounded current raster image. Vendor OAuth remains
   server-side and is never forwarded to a redirected content host;
-- `/custom-datasets` grid, query, list, and detail reads.
+- `/custom-datasets` grid, filter-options, query, list, and detail reads.
 
 The shared OAuth callback is `/api/sor/oauth/callback`. Exact request and
 response schemas belong to the running OpenAPI document at `/docs`.

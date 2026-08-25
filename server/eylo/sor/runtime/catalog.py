@@ -1524,10 +1524,14 @@ VENDOR_CANDIDATES = (
             "OAuth lifecycle scope (not a Jira API scope): offline_access lets "
             "Eylo refresh the connection without asking the user to reconnect.",
             "Classic Jira Cloud platform scopes: read:jira-work and "
-            "read:jira-user. Read/write sources also require write:jira-work.",
+            "read:jira-user. Managed webhook registration also requires the "
+            "classic manage:jira-webhook scope. Read/write sources additionally "
+            "require write:jira-work.",
             "Granular Jira Software scopes (only when Sprints is selected): "
             "read:board-scope:jira-software, read:project:jira, and "
             "read:sprint:jira-software. These are separate from classic scopes.",
+            "Managed webhooks require API_BASE_URL to be a public HTTPS address. "
+            "Localhost remains supported by scheduled reconciliation only.",
         ),
     ),
     SorVendorCandidate(
@@ -1589,6 +1593,9 @@ VENDOR_CANDIDATES = (
             "Create an Atlassian OAuth 2.0 (3LO) app and register the exact Eylo callback URL shown below.",
             "Enter the exact Confluence Cloud site origin, such as https://company.atlassian.net. The authorizing account must be able to open that site.",
             "Page properties require the Confluence property read scope; document create, update, and append tools require content write access.",
+            "Confluence OAuth 2.0 (3LO) does not expose Jira-style dynamic "
+            "webhook management. This connector stays current through scheduled "
+            "reconciliation; reauthorization does not add webhook delivery.",
         ),
     ),
     SorVendorCandidate(

@@ -16,6 +16,7 @@ from eylo.sor.shared.contracts import (
     SorAdapterCapabilityManifest,
     SorAdapterContext,
     SorCapabilityUnavailable,
+    SorChangeMode,
     SorChangeStrategy,
     SorCommandRequest,
     SorCommandResult,
@@ -193,7 +194,7 @@ LINEAR_MANIFEST = SorAdapterCapabilityManifest(
         pkce=True,
     ),
     fixed_origin=LINEAR_ORIGIN,
-    supports_webhooks=True,
+    change_mode=SorChangeMode.APP_WEBHOOK,
     supports_comments=True,
 )
 

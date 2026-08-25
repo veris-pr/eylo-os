@@ -2,7 +2,6 @@ import {
   ArrowLeft,
   ExternalLink,
   Gauge,
-  History,
   Library,
   ListTree,
   Paperclip,
@@ -57,6 +56,18 @@ interface SorRecordDetailsDrawerProps {
   presentation?: "drawer" | "page";
   recordId: string | null;
 }
+
+type SorRecordRelation = SorRecordDetail["relations"][number];
+
+const ISSUE_OVERVIEW_RELATION_KINDS = new Set([
+  "assignee",
+  "cycle",
+  "label",
+  "parent",
+  "project",
+  "reporter",
+  "team",
+]);
 
 const SorRecordDetailsDrawer = observer(function SorRecordDetailsDrawer({
   columns,
@@ -208,7 +219,7 @@ const SorRecordDetailsDrawer = observer(function SorRecordDetailsDrawer({
                   isLoading={collection.isSupportTicketAuditLoading}
                 />
               )}
-              <RecordRelationships detail={collection.detail} />
+              <RecordRelationships relations={collection.detail.relations} />
               <RecordProvenance detail={collection.detail} />
             </aside>
           </div>
@@ -283,7 +294,7 @@ const SorRecordDetailsDrawer = observer(function SorRecordDetailsDrawer({
                     errorMessage={collection.knowledgeDocumentAuditErrorMessage}
                     isLoading={collection.isKnowledgeDocumentAuditLoading}
                   />
-                  <RecordRelationships detail={collection.detail} />
+                  <RecordRelationships relations={collection.detail.relations} />
                   <RecordProvenance detail={collection.detail} />
                 </div>
               </div>
@@ -304,21 +315,25 @@ const SorRecordDetailsDrawer = observer(function SorRecordDetailsDrawer({
                     errorMessage={collection.supportTicketAuditErrorMessage}
                     isLoading={collection.isSupportTicketAuditLoading}
                   />
-                  <RecordRelationships detail={collection.detail} />
+                  <RecordRelationships relations={collection.detail.relations} />
                   <RecordProvenance detail={collection.detail} />
                 </div>
               </div>
             ) : (
               <div className="space-y-8">
                 <RecordOverview columns={columns} detail={collection.detail} />
-                <RecordRelationships detail={collection.detail} />
                 {profile === "ticketing" && entity === "issue" ? (
-                  <TicketingIssueAuditSection
-                    audit={collection.ticketingIssueAudit}
-                    errorMessage={collection.ticketingIssueAuditErrorMessage}
-                    isLoading={collection.isTicketingIssueAuditLoading}
-                  />
-                ) : null}
+                  <>
+                    <IssueRelationships relations={collection.detail.relations} />
+                    <TicketingIssueAuditSection
+                      audit={collection.ticketingIssueAudit}
+                      errorMessage={collection.ticketingIssueAuditErrorMessage}
+                      isLoading={collection.isTicketingIssueAuditLoading}
+                    />
+                  </>
+                ) : (
+                  <RecordRelationships relations={collection.detail.relations} />
+                )}
                 <RecordProvenance detail={collection.detail} />
               </div>
             )
@@ -368,16 +383,20 @@ function RecordOverview({
   );
 }
 
-function RecordRelationships({ detail }: { detail: SorRecordDetail }) {
+function RecordRelationships({
+  relations,
+}: {
+  relations: readonly SorRecordRelation[];
+}) {
   return (
     <DetailsSection title="Relationships">
-      {detail.relations.length === 0 ? (
+      {relations.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           No record relationships are available.
         </p>
       ) : (
         <div className="divide-y border-y">
-          {detail.relations.map((relation, index) => {
+          {relations.map((relation, index) => {
             const sourceUrl = safeExternalUrl(relation.source_url);
             const recordLabel = relationRecordLabel(relation);
             return (
@@ -415,6 +434,31 @@ function RecordRelationships({ detail }: { detail: SorRecordDetail }) {
       )}
     </DetailsSection>
   );
+}
+
+function IssueRelationships({
+  relations,
+}: {
+  relations: readonly SorRecordRelation[];
+}) {
+  const issueSpecificRelationships = relations.filter(
+    isIssueSpecificRelationship,
+  );
+  if (issueSpecificRelationships.length === 0) return null;
+
+  return <RecordRelationships relations={issueSpecificRelationships} />;
+}
+
+function isIssueSpecificRelationship(relation: SorRecordRelation): boolean {
+  const repeatsOverview =
+    relation.direction === "outgoing" &&
+    ISSUE_OVERVIEW_RELATION_KINDS.has(relation.native_kind);
+  const repeatsDiscussion =
+    relation.direction === "incoming" &&
+    relation.record_entity === "comment" &&
+    relation.native_kind === "issue";
+
+  return !repeatsOverview && !repeatsDiscussion;
 }
 
 function KnowledgeDocumentContent({
@@ -1291,18 +1335,21 @@ function TicketingIssueAuditSection({
         ) : null}
       </div>
 
-      <div className="mt-5 flex min-w-0 flex-wrap items-center gap-2 border-t pt-4">
-        <History className="size-4" aria-hidden="true" />
-        <span className="text-sm font-medium">Source history</span>
-        <Badge variant="outline">
-          {formatSorIdentifier(audit.history_status)}
-        </Badge>
-        <p className="basis-full text-sm text-muted-foreground">
-          {audit.history_status === "UNSUPPORTED"
-            ? "Source history is unavailable through this provider adapter."
-            : "Source history has not been selected for synchronization."}
-        </p>
-      </div>
+      <details className="mt-5 border-t pt-4">
+        <summary className="cursor-pointer text-sm font-medium">
+          Source history
+        </summary>
+        <div className="mt-3 space-y-2">
+          <Badge variant="outline">
+            {formatSorIdentifier(audit.history_status)}
+          </Badge>
+          <p className="text-sm text-muted-foreground">
+            {audit.history_status === "UNSUPPORTED"
+              ? "Source history is unavailable through this provider adapter."
+              : "Source history has not been selected for synchronization."}
+          </p>
+        </div>
+      </details>
     </DetailsSection>
   );
 }

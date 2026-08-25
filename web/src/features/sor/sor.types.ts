@@ -22,6 +22,7 @@ type SorDiscoveredField = components["schemas"]["SorDiscoveredFieldResponse"];
 type SorDiscoveredObject = components["schemas"]["SorDiscoveredObjectResponse"];
 type SorCustomField = components["schemas"]["SorCustomFieldValueResponse"];
 type SorFilterGroupInput = components["schemas"]["SorFilterGroup-Input"];
+type SorFilterOption = components["schemas"]["SorFilterOptionResponse"];
 type SorGridContract = components["schemas"]["SorGridContract"];
 type SorGridColumn = components["schemas"]["SorGridColumn"];
 type SorGridColumnKind = components["schemas"]["SorGridColumnKind"];
@@ -157,7 +158,12 @@ interface SorAdapterCapabilities {
   requiresInstanceOrigin: boolean;
   requiresInstanceOriginInput: boolean;
   instanceOriginOptions: SorInstanceOriginOptionDefinition[];
-  supportsWebhooks: boolean;
+  changeMode:
+    | "MANAGED_WEBHOOK"
+    | "OPERATOR_WEBHOOK"
+    | "APP_WEBHOOK"
+    | "CHANGE_STREAM"
+    | "POLL_ONLY";
   supportsDeletions: boolean;
   supportsCustomFields: boolean;
   supportsCustomObjects: boolean;
@@ -229,6 +235,7 @@ export type {
   SorDiscoveredObject,
   SorEntityDefinition,
   SorFilterGroupInput,
+  SorFilterOption,
   SorFieldMappingDraftInput,
   SorGridColumn,
   SorGridColumnKind,

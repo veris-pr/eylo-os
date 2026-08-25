@@ -79,7 +79,7 @@ class SorRecordsTombstonedEvent(_SorEvent):
     event_type: Literal["sor.record.tombstoned"] = "sor.record.tombstoned"
     source_id: UUID
     stream_id: UUID
-    sync_run_id: UUID
+    sync_run_id: UUID | None = None
     record_ids: tuple[UUID, ...] = Field(min_length=1, max_length=200)
 
 

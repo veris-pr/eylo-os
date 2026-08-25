@@ -161,6 +161,25 @@ class SorChangeStrategy(str, Enum):
     FULL_RECONCILE = "FULL_RECONCILE"
 
 
+class SorChangeMode(str, Enum):
+    """How a source adapter receives change notifications between reconciliations."""
+
+    MANAGED_WEBHOOK = "MANAGED_WEBHOOK"
+    OPERATOR_WEBHOOK = "OPERATOR_WEBHOOK"
+    APP_WEBHOOK = "APP_WEBHOOK"
+    CHANGE_STREAM = "CHANGE_STREAM"
+    POLL_ONLY = "POLL_ONLY"
+
+    @property
+    def accepts_webhooks(self) -> bool:
+        """Return whether the mode accepts signed HTTP webhook deliveries."""
+        return self in {
+            SorChangeMode.MANAGED_WEBHOOK,
+            SorChangeMode.OPERATOR_WEBHOOK,
+            SorChangeMode.APP_WEBHOOK,
+        }
+
+
 class SorMappingState(str, Enum):
     """Lifecycle of one immutable mapping revision."""
 
@@ -267,6 +286,19 @@ class SorWebhookReceiptState(str, Enum):
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
     EXPIRED = "EXPIRED"
+
+
+class SorWebhookSubscriptionState(str, Enum):
+    """Lifecycle of one vendor-managed webhook subscription."""
+
+    REGISTERING = "REGISTERING"
+    ACTIVE = "ACTIVE"
+    RENEWING = "RENEWING"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+    REGISTRATION_FAILED = "REGISTRATION_FAILED"
+    RENEWAL_FAILED = "RENEWAL_FAILED"
+    REMOVING = "REMOVING"
+    REMOVAL_FAILED = "REMOVAL_FAILED"
 
 
 class SorCommandState(str, Enum):
@@ -472,7 +504,7 @@ class SorAdapterCapabilityManifest:
     oauth: SorOAuthSpec | None = None
     fixed_origin: str | None = None
     requires_instance_origin: bool = False
-    supports_webhooks: bool = False
+    change_mode: SorChangeMode = SorChangeMode.POLL_ONLY
     supports_deletions: bool = False
     supports_custom_fields: bool = False
     supports_custom_objects: bool = False
@@ -509,6 +541,8 @@ class SorAdapterContext:
     fields: tuple[SorAdapterFieldSelection, ...]
     credentials: Mapping[str, object] = field(repr=False)
     webhook_signing_secret: str | None = field(default=None, repr=False)
+    webhook_auth_secret: str | None = field(default=None, repr=False)
+    webhook_subscription_id: str | None = None
     configuration: Mapping[str, object] = field(default_factory=dict)
 
 
@@ -813,6 +847,7 @@ __all__ = [
     "SorAdapterFieldSelection",
     "SorCanonicalFieldSpec",
     "SorCapabilityUnavailable",
+    "SorChangeMode",
     "SorChangeStrategy",
     "SorCommandRevisionConflict",
     "SorCommandState",
@@ -862,6 +897,7 @@ __all__ = [
     "SorWebhookPayloadError",
     "SorWebhookSignal",
     "SorWebhookSubscription",
+    "SorWebhookSubscriptionState",
     "SorWebhookVerificationError",
     "SorWorkState",
     "require_unique_names",

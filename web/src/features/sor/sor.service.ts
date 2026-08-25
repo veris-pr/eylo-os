@@ -11,6 +11,7 @@ import type {
   SorConnectorCreateInput,
   SorCustomDataset,
   SorDiscovery,
+  SorFilterOption,
   SorGridContract,
   SorKnowledgeDocumentAudit,
   SorMappingDraftInput,
@@ -604,6 +605,31 @@ class SorService {
     );
   }
 
+  async loadFilterOptions(
+    organizationId: string,
+    profile: SorProfileKey,
+    entity: string,
+    sourceIds: readonly string[],
+    field: string,
+    search: string,
+  ): Promise<SorFilterOption[]> {
+    const result = await this.api.GET(
+      "/api/{organization_id}/sor/{profile}/{entity}/filter-options",
+      {
+        params: {
+          path: { organization_id: organizationId, profile, entity },
+          query: {
+            field,
+            limit: 100,
+            search,
+            source_id: sourceIds.length === 0 ? undefined : [...sourceIds],
+          },
+        },
+      },
+    );
+    return requireData(result, "Filter values could not be loaded.").items;
+  }
+
   async loadRecord(
     organizationId: string,
     profile: SorProfileKey,
@@ -764,6 +790,27 @@ class SorService {
       },
     );
     return requireData(result, "The custom dataset grid could not be loaded.");
+  }
+
+  async loadCustomDatasetFilterOptions(
+    organizationId: string,
+    datasetId: string,
+    field: string,
+    search: string,
+  ): Promise<SorFilterOption[]> {
+    const result = await this.api.GET(
+      "/api/{organization_id}/sor/custom-datasets/{dataset_id}/filter-options",
+      {
+        params: {
+          path: {
+            organization_id: organizationId,
+            dataset_id: datasetId,
+          },
+          query: { field, limit: 100, search },
+        },
+      },
+    );
+    return requireData(result, "Filter values could not be loaded.").items;
   }
 
   async loadCustomDatasetRecord(
@@ -977,7 +1024,7 @@ function mapCapabilities(response: CapabilityResponse): SorAdapterCapabilities {
       value: option.value,
       label: option.label,
     })),
-    supportsWebhooks: response.supports_webhooks,
+    changeMode: response.change_mode,
     supportsDeletions: response.supports_deletions,
     supportsCustomFields: response.supports_custom_fields,
     supportsCustomObjects: response.supports_custom_objects,

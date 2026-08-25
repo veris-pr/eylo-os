@@ -1170,7 +1170,11 @@ function WebhookSection({
   sourceName: string;
   vendor: SorVendorDefinition | null;
 }) {
-  const supported = vendor?.capabilities?.supportsWebhooks === true;
+  const changeMode = vendor?.capabilities?.changeMode ?? "POLL_ONLY";
+  const supported =
+    changeMode === "MANAGED_WEBHOOK" ||
+    changeMode === "OPERATOR_WEBHOOK" ||
+    changeMode === "APP_WEBHOOK";
   return (
     <FormSection
       description="Webhooks are hints to refetch authoritative source data, never trusted record payloads."
@@ -1186,7 +1190,9 @@ function WebhookSection({
           </p>
         </div>
         <Badge variant="outline">
-          {supported ? "Supported" : "Not available"}
+          {supported
+            ? formatSorIdentifier(changeMode)
+            : "Scheduled reconciliation"}
         </Badge>
       </div>
     </FormSection>

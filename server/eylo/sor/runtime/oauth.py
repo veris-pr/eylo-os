@@ -243,10 +243,14 @@ async def begin_sor_source_reauthorization(
             source_id=source_id,
             for_update=True,
         )
-        if source.state is not SorSourceState.REAUTH_REQUIRED:
+        if source.state not in {
+            SorSourceState.ACTIVE,
+            SorSourceState.DEGRADED,
+            SorSourceState.REAUTH_REQUIRED,
+        }:
             raise SorOAuthError(
-                "source_reauthorization_not_required",
-                "This source is not awaiting reauthorization.",
+                "source_reauthorization_unavailable",
+                "Only an activated source can restart provider authorization.",
             )
         if (
             source.active_schema_revision_id is None

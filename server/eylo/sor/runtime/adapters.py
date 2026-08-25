@@ -28,8 +28,10 @@ from eylo.sor.runtime.refresh import (
 )
 from eylo.sor.runtime.registry import SorRegistry
 from eylo.sor.shared.contracts import (
+    SorAdapterCapabilityManifest,
     SorAdapterContext,
     SorAdapterFieldSelection,
+    SorChangeMode,
     SorFieldMappingDirection,
     SorFieldMappingState,
     SorLifecycleAdapter,
@@ -39,6 +41,7 @@ from eylo.sor.shared.models import SorSourceModel
 from eylo.sor.shared.repositories import SorRepository
 from eylo.sor.shared.secrets import (
     SorSecretEnvelopeError,
+    decrypt_connector_client_secret,
     decrypt_source_webhook_signing_secret,
 )
 
@@ -285,6 +288,11 @@ async def _resolve_source_adapter(
         source_id=source.id,
         mapping_revision_id=source.active_mapping_revision_id,
     )
+    webhook_auth_secret = await _webhook_app_secret(
+        repository,
+        source=source,
+        manifest=manifest,
+    )
     context = SorAdapterContext(
         organization_id=organization_id,
         source_id=source.id,
@@ -298,6 +306,8 @@ async def _resolve_source_adapter(
         fields=field_selections,
         credentials=MappingProxyType(credentials),
         webhook_signing_secret=_webhook_signing_secret(source),
+        webhook_auth_secret=webhook_auth_secret,
+        webhook_subscription_id=source.webhook_subscription_id,
         configuration=MappingProxyType(dict(source.configuration or {})),
     )
     return registry.create_adapter(
@@ -329,6 +339,41 @@ def _webhook_signing_secret(source: SorSourceModel) -> str | None:
             "WEBHOOK_SECRET_INVALID",
             "The source webhook signing secret could not be authenticated.",
         ) from error
+
+
+async def _webhook_app_secret(
+    repository: SorRepository,
+    *,
+    source: SorSourceModel,
+    manifest: SorAdapterCapabilityManifest,
+) -> str | None:
+    """Open the OAuth app signing secret only for a managed webhook adapter."""
+    if manifest.change_mode is not SorChangeMode.MANAGED_WEBHOOK:
+        return None
+    connector = await repository.get_connector_for_connection(
+        organization_id=source.organization_id,
+        connection_id=source.external_connection_id,
+    )
+    if connector is None:
+        raise SorAdapterUnavailableError(
+            "WEBHOOK_APP_UNAVAILABLE",
+            "The source webhook application is unavailable.",
+            requires_reauthorization=True,
+        )
+    try:
+        secret = decrypt_connector_client_secret(
+            connector.oauth_client_secret,
+            organization_id=connector.organization_id,
+            connector_id=connector.id,
+            config_revision=connector.config_revision,
+        )
+    except SorSecretEnvelopeError as error:
+        raise SorAdapterUnavailableError(
+            "WEBHOOK_APP_UNAVAILABLE",
+            "The source webhook application credentials could not be authenticated.",
+            requires_reauthorization=True,
+        ) from error
+    return secret
 
 
 async def _field_selections(
