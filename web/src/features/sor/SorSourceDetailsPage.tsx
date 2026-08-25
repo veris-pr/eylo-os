@@ -78,6 +78,15 @@ const SorSourceDetailsPage = observer(function SorSourceDetailsPage({
     ]);
   }
 
+  function startSync(source: SorSource): void {
+    void sources.startSync(organizationId, source.id);
+  }
+
+  const activeGeneration =
+    sources.selectedOperations?.generations.find((generation) =>
+      ACTIVE_WORK_STATES.has(generation.state),
+    ) ?? null;
+
   return (
     <section
       aria-labelledby="sor-source-title"
@@ -89,7 +98,7 @@ const SorSourceDetailsPage = observer(function SorSourceDetailsPage({
           Back to sources
         </Button>
         <div className="flex min-w-0 flex-wrap items-start justify-between gap-4">
-          <div className="min-w-0 space-y-2">
+          <div className="min-w-0 flex-1 space-y-2">
             <h1
               className="break-words text-2xl font-semibold tracking-tight"
               id="sor-source-title"
@@ -108,17 +117,31 @@ const SorSourceDetailsPage = observer(function SorSourceDetailsPage({
               </div>
             )}
           </div>
-          <Button
-            disabled={sources.isSelectedLoading}
-            variant="outline"
-            onClick={refresh}
-          >
-            <RefreshCw
-              aria-hidden="true"
-              className={sources.isSelectedLoading ? "animate-spin" : undefined}
-            />
-            Refresh status
-          </Button>
+          <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
+            {sources.selectedSource === null ? null : (
+              <SourceHeaderActions
+                activeGeneration={activeGeneration}
+                isReauthorizing={sources.isReauthorizing}
+                isStartingSync={sources.isStartingSync}
+                source={sources.selectedSource}
+                onReauthorize={reauthorize}
+                onStartSync={startSync}
+              />
+            )}
+            <Button
+              disabled={sources.isSelectedLoading}
+              variant="outline"
+              onClick={refresh}
+            >
+              <RefreshCw
+                aria-hidden="true"
+                className={
+                  sources.isSelectedLoading ? "animate-spin" : undefined
+                }
+              />
+              Refresh status
+            </Button>
+          </div>
         </div>
       </header>
 
@@ -137,7 +160,6 @@ const SorSourceDetailsPage = observer(function SorSourceDetailsPage({
       ) : (
         <SourceDetails
           connectionName={sources.selectedConnectionName}
-          isReauthorizing={sources.isReauthorizing}
           isStartingSync={sources.isStartingSync}
           operations={sources.selectedOperations}
           reauthorizationErrorMessage={sources.reauthorizationErrorMessage}
@@ -147,10 +169,6 @@ const SorSourceDetailsPage = observer(function SorSourceDetailsPage({
           syncActionErrorMessage={sources.syncActionErrorMessage}
           syncActionMessage={sources.syncActionMessage}
           onDelete={onDelete}
-          onReauthorize={reauthorize}
-          onStartSync={(source) =>
-            void sources.startSync(organizationId, source.id)
-          }
           onStartStreamSync={(stream) =>
             void sources.startStreamSync(organizationId, sourceId, stream.id)
           }
@@ -160,13 +178,89 @@ const SorSourceDetailsPage = observer(function SorSourceDetailsPage({
   );
 });
 
-function SourceDetails({
-  connectionName,
+function SourceHeaderActions({
+  activeGeneration,
   isReauthorizing,
   isStartingSync,
-  onDelete,
   onReauthorize,
   onStartSync,
+  source,
+}: {
+  activeGeneration: SorSourceOperations["generations"][number] | null;
+  isReauthorizing: boolean;
+  isStartingSync: boolean;
+  onReauthorize: (source: SorSource) => void;
+  onStartSync: (source: SorSource) => void;
+  source: SorSource;
+}) {
+  if (source.state === "REAUTH_REQUIRED") {
+    return (
+      <Button
+        disabled={isReauthorizing}
+        onClick={() => onReauthorize(source)}
+      >
+        <RefreshCw
+          aria-hidden="true"
+          className={isReauthorizing ? "animate-spin" : undefined}
+        />
+        {isReauthorizing
+          ? "Waiting for provider"
+          : `Reconnect ${formatSorIdentifier(source.vendor_key)}`}
+      </Button>
+    );
+  }
+
+  if (source.state === "DEGRADED") {
+    return (
+      <Button
+        disabled={isStartingSync || activeGeneration !== null}
+        onClick={() => onStartSync(source)}
+      >
+        <RefreshCw
+          aria-hidden="true"
+          className={isStartingSync ? "animate-spin" : undefined}
+        />
+        {activeGeneration === null ? "Retry sync" : "Sync in progress"}
+      </Button>
+    );
+  }
+
+  if (source.state !== "ACTIVE") return null;
+
+  return (
+    <>
+      <Button
+        disabled={isReauthorizing}
+        variant="outline"
+        onClick={() => onReauthorize(source)}
+      >
+        <RefreshCw
+          aria-hidden="true"
+          className={isReauthorizing ? "animate-spin" : undefined}
+        />
+        {isReauthorizing
+          ? "Waiting for provider"
+          : `Reconnect ${formatSorIdentifier(source.vendor_key)}`}
+      </Button>
+      <Button
+        disabled={isStartingSync || activeGeneration !== null}
+        variant="outline"
+        onClick={() => onStartSync(source)}
+      >
+        <RefreshCw
+          aria-hidden="true"
+          className={isStartingSync ? "animate-spin" : undefined}
+        />
+        {activeGeneration === null ? "Sync now" : "Sync in progress"}
+      </Button>
+    </>
+  );
+}
+
+function SourceDetails({
+  connectionName,
+  isStartingSync,
+  onDelete,
   onStartStreamSync,
   operations,
   reauthorizationErrorMessage,
@@ -177,11 +271,8 @@ function SourceDetails({
   syncActionMessage,
 }: {
   connectionName: string | null;
-  isReauthorizing: boolean;
   isStartingSync: boolean;
   onDelete: (source: SorSource) => void;
-  onReauthorize: (source: SorSource) => void;
-  onStartSync: (source: SorSource) => void;
   onStartStreamSync: (stream: SorStream) => void;
   operations: SorSourceOperations | null;
   reauthorizationErrorMessage: string | null;
@@ -191,9 +282,6 @@ function SourceDetails({
   syncActionErrorMessage: string | null;
   syncActionMessage: string | null;
 }) {
-  const activeGeneration = operations?.generations.find((generation) =>
-    ACTIVE_WORK_STATES.has(generation.state),
-  );
   const latestRunFailure = operations?.generations
     .flatMap((generation) => generation.runs)
     .find((run) => run.state === "FAILED" && run.safe_error_summary !== null);
@@ -264,18 +352,58 @@ function SourceDetails({
           )}
         </div>
         <RecoveryPanel
-          activeGeneration={activeGeneration ?? null}
           failedStreams={failedStreams}
-          isReauthorizing={isReauthorizing}
-          isStartingSync={isStartingSync}
           latestFailure={latestRunFailure?.safe_error_summary ?? null}
           reauthorizationErrorMessage={reauthorizationErrorMessage}
           source={source}
           syncActionErrorMessage={syncActionErrorMessage}
           syncActionMessage={syncActionMessage}
-          onReauthorize={onReauthorize}
-          onStartSync={onStartSync}
         />
+        <details>
+          <summary className="cursor-pointer text-sm font-medium">
+            Technical details
+          </summary>
+          <div className="mt-3 space-y-5">
+            <div>
+              <DetailRow label="Source ID">
+                <CodeValue>{source.id}</CodeValue>
+              </DetailRow>
+              <DetailRow label="Connection ID">
+                <CodeValue>{source.external_connection_id}</CodeValue>
+              </DetailRow>
+              <DetailRow label="Config revision">
+                {source.config_revision}
+              </DetailRow>
+              <DateRow label="Last verified" value={source.last_verified_at} />
+              <DetailRow label="Freshness target">
+                {formatDuration(source.freshness_target_seconds)}
+              </DetailRow>
+            </div>
+            {source.last_error_code !== null ||
+            source.last_error_summary !== null ? (
+              <div className="space-y-2">
+                <p className="text-sm font-medium">Last recorded error</p>
+                <p className="break-words text-sm">
+                  {source.last_error_summary ??
+                    "No error summary was recorded."}
+                </p>
+                {source.last_error_code === null ? null : (
+                  <CodeValue>{source.last_error_code}</CodeValue>
+                )}
+              </div>
+            ) : null}
+            {Object.keys(source.configuration).length === 0 ? null : (
+              <div className="space-y-2">
+                <p className="text-sm font-medium">
+                  Non-secret configuration
+                </p>
+                <pre className="max-w-full whitespace-pre-wrap break-all bg-muted/30 p-3 text-xs leading-5">
+                  {JSON.stringify(source.configuration, null, 2)}
+                </pre>
+              </div>
+            )}
+          </div>
+        </details>
       </DetailsSection>
 
       <DetailsSection
@@ -340,126 +468,45 @@ function SourceDetails({
         )}
       </DetailsSection>
 
-      <details className="border p-4">
-        <summary className="cursor-pointer text-lg font-semibold tracking-tight">
-          Technical details
-        </summary>
-        <div className="mt-4 space-y-5">
-          <div>
-            <DetailRow label="Source ID">
-              <CodeValue>{source.id}</CodeValue>
-            </DetailRow>
-            <DetailRow label="Connection ID">
-              <CodeValue>{source.external_connection_id}</CodeValue>
-            </DetailRow>
-            <DetailRow label="Config revision">
-              {source.config_revision}
-            </DetailRow>
-            <DateRow label="Last verified" value={source.last_verified_at} />
-            <DetailRow label="Freshness target">
-              {formatDuration(source.freshness_target_seconds)}
-            </DetailRow>
-          </div>
-          {source.last_error_code !== null ||
-          source.last_error_summary !== null ? (
-            <div className="space-y-2 border-t pt-4">
-              <p className="text-sm font-medium">Last recorded error</p>
-              <p className="break-words text-sm">
-                {source.last_error_summary ?? "No error summary was recorded."}
-              </p>
-              {source.last_error_code === null ? null : (
-                <CodeValue>{source.last_error_code}</CodeValue>
-              )}
-            </div>
-          ) : null}
-          {Object.keys(source.configuration).length === 0 ? null : (
-            <div className="space-y-2 border-t pt-4">
-              <p className="text-sm font-medium">Non-secret configuration</p>
-              <pre className="max-w-full whitespace-pre-wrap break-all bg-muted/30 p-3 text-xs leading-5">
-                {JSON.stringify(source.configuration, null, 2)}
-              </pre>
-            </div>
-          )}
-        </div>
-      </details>
-
-      <div className="border-t pt-8">
-        <DetailsSection
-          description="Permanently remove this source and all synchronized Eylo data."
-          title="Delete source"
-        >
-          <Button variant="destructive" onClick={() => onDelete(source)}>
-            <Trash2 aria-hidden="true" />
-            Delete source and data
-          </Button>
-        </DetailsSection>
-      </div>
+      <DetailsSection
+        description="Permanently remove this source and all synchronized Eylo data."
+        title="Delete source"
+      >
+        <Button variant="destructive" onClick={() => onDelete(source)}>
+          <Trash2 aria-hidden="true" />
+          Delete source and data
+        </Button>
+      </DetailsSection>
     </div>
   );
 }
 
 function RecoveryPanel({
-  activeGeneration,
   failedStreams,
-  isReauthorizing,
-  isStartingSync,
   latestFailure,
-  onReauthorize,
-  onStartSync,
   reauthorizationErrorMessage,
   source,
   syncActionErrorMessage,
   syncActionMessage,
 }: {
-  activeGeneration: SorSourceOperations["generations"][number] | null;
   failedStreams: readonly SorStream[];
-  isReauthorizing: boolean;
-  isStartingSync: boolean;
   latestFailure: string | null;
-  onReauthorize: (source: SorSource) => void;
-  onStartSync: (source: SorSource) => void;
   reauthorizationErrorMessage: string | null;
   source: SorSource;
   syncActionErrorMessage: string | null;
   syncActionMessage: string | null;
 }) {
   if (source.state === "ACTIVE") {
+    if (
+      reauthorizationErrorMessage === null &&
+      syncActionErrorMessage === null &&
+      syncActionMessage === null
+    ) {
+      return null;
+    }
+
     return (
-      <div className="min-w-0 space-y-4 border p-4">
-        <div className="flex min-w-0 flex-wrap items-center justify-between gap-4">
-          <div className="min-w-0 space-y-1">
-            <p className="text-sm font-medium">Source is operational</p>
-            <p className="text-sm text-muted-foreground">
-              Run an on-demand reconciliation without changing the schedule.
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              disabled={isReauthorizing}
-              variant="outline"
-              onClick={() => onReauthorize(source)}
-            >
-              <RefreshCw
-                aria-hidden="true"
-                className={isReauthorizing ? "animate-spin" : undefined}
-              />
-              {isReauthorizing
-                ? "Waiting for provider"
-                : `Reconnect ${formatSorIdentifier(source.vendor_key)}`}
-            </Button>
-            <Button
-              disabled={isStartingSync || activeGeneration !== null}
-              variant="outline"
-              onClick={() => onStartSync(source)}
-            >
-              <RefreshCw
-                aria-hidden="true"
-                className={isStartingSync ? "animate-spin" : undefined}
-              />
-              {activeGeneration === null ? "Sync now" : "Sync in progress"}
-            </Button>
-          </div>
-        </div>
+      <div className="min-w-0 space-y-2">
         {reauthorizationErrorMessage === null ? null : (
           <p className="text-sm text-destructive" role="alert">
             {reauthorizationErrorMessage}
@@ -500,18 +547,6 @@ function RecoveryPanel({
             {reauthorizationErrorMessage}
           </p>
         )}
-        <Button
-          disabled={isReauthorizing}
-          onClick={() => onReauthorize(source)}
-        >
-          <RefreshCw
-            aria-hidden="true"
-            className={isReauthorizing ? "animate-spin" : undefined}
-          />
-          {isReauthorizing
-            ? "Waiting for provider"
-            : `Reconnect ${formatSorIdentifier(source.vendor_key)}`}
-        </Button>
       </section>
     );
   }
@@ -551,16 +586,6 @@ function RecoveryPanel({
             {syncActionMessage}
           </p>
         )}
-        <Button
-          disabled={isStartingSync || activeGeneration !== null}
-          onClick={() => onStartSync(source)}
-        >
-          <RefreshCw
-            aria-hidden="true"
-            className={isStartingSync ? "animate-spin" : undefined}
-          />
-          {activeGeneration === null ? "Retry sync" : "Sync in progress"}
-        </Button>
       </section>
     );
   }

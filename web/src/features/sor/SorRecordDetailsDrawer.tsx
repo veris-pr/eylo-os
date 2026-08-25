@@ -334,7 +334,14 @@ const SorRecordDetailsDrawer = observer(function SorRecordDetailsDrawer({
                 ) : (
                   <RecordRelationships relations={collection.detail.relations} />
                 )}
-                <RecordProvenance detail={collection.detail} />
+                <RecordProvenance
+                  detail={collection.detail}
+                  historyStatus={
+                    profile === "ticketing" && entity === "issue"
+                      ? collection.ticketingIssueAudit?.history_status
+                      : undefined
+                  }
+                />
               </div>
             )
           ) : null}
@@ -1334,27 +1341,17 @@ function TicketingIssueAuditSection({
           </p>
         ) : null}
       </div>
-
-      <details className="mt-5 border-t pt-4">
-        <summary className="cursor-pointer text-sm font-medium">
-          Source history
-        </summary>
-        <div className="mt-3 space-y-2">
-          <Badge variant="outline">
-            {formatSorIdentifier(audit.history_status)}
-          </Badge>
-          <p className="text-sm text-muted-foreground">
-            {audit.history_status === "UNSUPPORTED"
-              ? "Source history is unavailable through this provider adapter."
-              : "Source history has not been selected for synchronization."}
-          </p>
-        </div>
-      </details>
     </DetailsSection>
   );
 }
 
-function RecordProvenance({ detail }: { detail: SorRecordDetail }) {
+function RecordProvenance({
+  detail,
+  historyStatus,
+}: {
+  detail: SorRecordDetail;
+  historyStatus?: SorTicketingIssueAudit["history_status"];
+}) {
   const record = detail.record;
   const projected = formatSorDate(record.projected_at);
   const sourceUpdated = formatSorDate(record.source_updated_at);
@@ -1362,53 +1359,72 @@ function RecordProvenance({ detail }: { detail: SorRecordDetail }) {
     detail.selected_source_payload,
   );
   return (
-    <DetailsSection title="Source and freshness">
-      <DetailRow label="Source">
-        <span className="flex flex-wrap items-center gap-2">
-          {record.source_name}
-          {vendorDiffersFromSource(record.source_name, record.vendor_key) ? (
-            <Badge variant="outline">
-              {formatSorIdentifier(record.vendor_key)}
-            </Badge>
-          ) : null}
-        </span>
-      </DetailRow>
-      <DetailRow label="Freshness">
-        <Badge variant={record.freshness.stale ? "destructive" : "outline"}>
-          {record.freshness.stale ? "Stale" : "Current"}
-        </Badge>
-      </DetailRow>
-      <DetailRow label="Source updated">
-        <span title={sourceUpdated.title}>{sourceUpdated.label}</span>
-      </DetailRow>
-      <DetailRow label="Imported to Eylo">
-        <span title={projected.title}>{projected.label}</span>
-      </DetailRow>
-      <details className="pt-2">
-        <summary className="cursor-pointer text-sm font-medium">
-          Technical provenance
-        </summary>
-        <div className="mt-3">
-          <DetailRow label="Source revision">
-            <CodeValue>{detail.source_revision ?? "Not recorded"}</CodeValue>
+    <details className="min-w-0">
+      <summary className="cursor-pointer text-sm font-semibold">
+        Source history
+      </summary>
+      <div className="mt-3 space-y-3">
+        <DetailRow label="Source">
+          <span className="flex flex-wrap items-center gap-2">
+            {record.source_name}
+            {vendorDiffersFromSource(record.source_name, record.vendor_key) ? (
+              <Badge variant="outline">
+                {formatSorIdentifier(record.vendor_key)}
+              </Badge>
+            ) : null}
+          </span>
+        </DetailRow>
+        <DetailRow label="Freshness">
+          <Badge variant={record.freshness.stale ? "destructive" : "outline"}>
+            {record.freshness.stale ? "Stale" : "Current"}
+          </Badge>
+        </DetailRow>
+        <DetailRow label="Source updated">
+          <span title={sourceUpdated.title}>{sourceUpdated.label}</span>
+        </DetailRow>
+        <DetailRow label="Imported to Eylo">
+          <span title={projected.title}>{projected.label}</span>
+        </DetailRow>
+        {historyStatus === undefined ? null : (
+          <DetailRow label="Version history">
+            <div className="space-y-1.5">
+              <Badge variant="outline">
+                {formatSorIdentifier(historyStatus)}
+              </Badge>
+              <p className="text-sm text-muted-foreground">
+                {historyStatus === "UNSUPPORTED"
+                  ? "Version history is unavailable through this provider adapter."
+                  : "Version history has not been selected for synchronization."}
+              </p>
+            </div>
           </DetailRow>
-          <DetailRow label="Mapping revision">
-            <CodeValue>
-              {detail.mapping_revision_id} · v
-              {detail.mapping_projection_version}
-            </CodeValue>
-          </DetailRow>
-          <div className="space-y-2 pt-3">
-            <p className="text-xs font-medium text-muted-foreground">
-              Selected source fields
-            </p>
-            <pre className="max-w-full whitespace-pre-wrap break-all bg-muted/30 p-3 text-xs leading-5">
-              {JSON.stringify(technicalPayload, null, 2)}
-            </pre>
+        )}
+        <details className="pt-2">
+          <summary className="cursor-pointer text-sm font-medium">
+            Technical provenance
+          </summary>
+          <div className="mt-3">
+            <DetailRow label="Source revision">
+              <CodeValue>{detail.source_revision ?? "Not recorded"}</CodeValue>
+            </DetailRow>
+            <DetailRow label="Mapping revision">
+              <CodeValue>
+                {detail.mapping_revision_id} · v
+                {detail.mapping_projection_version}
+              </CodeValue>
+            </DetailRow>
+            <div className="space-y-2 pt-3">
+              <p className="text-xs font-medium text-muted-foreground">
+                Selected source fields
+              </p>
+              <pre className="max-w-full whitespace-pre-wrap break-all bg-muted/30 p-3 text-xs leading-5">
+                {JSON.stringify(technicalPayload, null, 2)}
+              </pre>
+            </div>
           </div>
-        </div>
-      </details>
-    </DetailsSection>
+        </details>
+      </div>
+    </details>
   );
 }
 
