@@ -36,6 +36,7 @@ import type {
   SorSupportTicketAudit,
   SorTicketingIssueAudit,
   SorVendorDefinition,
+  SorWebhookEndpoint,
 } from "@/features/sor/sor.types";
 
 type CatalogResponse = components["schemas"]["SorCatalogResponse"];
@@ -209,6 +210,58 @@ class SorService {
       },
     );
     return requireData(result, "Source reauthorization could not be started.");
+  }
+
+  async issueWebhookEndpoint(
+    organizationId: string,
+    sourceId: string,
+  ): Promise<{ source: SorSource; url: string }> {
+    const oauthConfiguration =
+      await this.loadOAuthConfiguration(organizationId);
+    const result = await this.api.POST(
+      "/api/{organization_id}/sor/sources/{source_id}/webhook-endpoint",
+      {
+        params: {
+          path: { organization_id: organizationId, source_id: sourceId },
+        },
+      },
+    );
+    const endpoint: SorWebhookEndpoint = requireData(
+      result,
+      "The webhook URL could not be generated.",
+    );
+    const source = await this.loadSource(organizationId, sourceId);
+    return {
+      source,
+      url: new URL(
+        endpoint.endpoint_path,
+        oauthConfiguration.callback_url,
+      ).toString(),
+    };
+  }
+
+  async updateWebhookSigningSecret(
+    organizationId: string,
+    sourceId: string,
+    signingSecret: string,
+    expectedConfigRevision: number,
+  ): Promise<SorSource> {
+    const result = await this.api.PUT(
+      "/api/{organization_id}/sor/sources/{source_id}/webhook-signing-secret",
+      {
+        params: {
+          path: { organization_id: organizationId, source_id: sourceId },
+        },
+        body: {
+          signing_secret: signingSecret,
+          expected_config_revision: expectedConfigRevision,
+        },
+      },
+    );
+    return requireData(
+      result,
+      "The webhook signing secret could not be saved.",
+    );
   }
 
   async loadSourceOperations(

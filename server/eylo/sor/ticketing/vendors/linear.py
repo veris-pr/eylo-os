@@ -127,6 +127,7 @@ _MUTATION_RESULT_STREAMS = {
     "issue_comment": "comments",
     "issue_link": "issue_relations",
 }
+_FULL_RECONCILE_STREAMS = frozenset({"issue_relations"})
 
 
 LINEAR_MANIFEST = SorAdapterCapabilityManifest(
@@ -159,7 +160,11 @@ LINEAR_MANIFEST = SorAdapterCapabilityManifest(
                 "issue_relations": "Typed relationships between issues.",
             }[stream_key],
             canonical_entity=entity,
-            change_strategies=frozenset({SorChangeStrategy.UPDATED_AT}),
+            change_strategies=(
+                frozenset({SorChangeStrategy.FULL_RECONCILE})
+                if stream_key in _FULL_RECONCILE_STREAMS
+                else frozenset({SorChangeStrategy.UPDATED_AT})
+            ),
             depends_on=frozenset(
                 set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values())
                 - {stream_key}
@@ -172,7 +177,9 @@ LINEAR_MANIFEST = SorAdapterCapabilityManifest(
     writable_entities=frozenset({"issue", "comment", "relation"}),
     readable_tools=_READ_TOOLS,
     writable_tools=_WRITE_TOOLS,
-    change_strategies=frozenset({SorChangeStrategy.UPDATED_AT}),
+    change_strategies=frozenset(
+        {SorChangeStrategy.UPDATED_AT, SorChangeStrategy.FULL_RECONCILE}
+    ),
     required_scopes={stream_key: (READ_SCOPE,) for stream_key in _STREAM_ENTITY},
     tool_required_scopes={
         "issue_create": (ISSUES_CREATE_SCOPE,),
@@ -420,12 +427,8 @@ _PAGE_QUERIES = {
       }
     """,
     "issue_relations": """
-      query EyloIssueRelations(
-        $first: Int!, $after: String, $filter: IssueRelationFilter
-      ) {
-        issueRelations(
-          first: $first, after: $after, filter: $filter, orderBy: updatedAt
-        ) {
+      query EyloIssueRelations($first: Int!, $after: String) {
+        issueRelations(first: $first, after: $after, orderBy: updatedAt) {
           nodes {
             id type createdAt updatedAt archivedAt
             issue { id }
@@ -987,12 +990,13 @@ class LinearTicketingAdapter:
         variables: dict[str, object] = {
             "first": limit,
             "after": checkpoint.after,
-            "filter": (
+        }
+        if stream_key not in _FULL_RECONCILE_STREAMS:
+            variables["filter"] = (
                 {"updatedAt": {"gte": _linear_datetime(checkpoint.floor)}}
                 if checkpoint.floor is not None
                 else None
-            ),
-        }
+            )
         data, _response = await self._graphql(
             _PAGE_QUERIES[stream_key],
             variables,

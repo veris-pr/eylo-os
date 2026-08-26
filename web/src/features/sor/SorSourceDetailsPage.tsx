@@ -11,6 +11,7 @@ import {
   formatSorIdentifier,
 } from "@/features/sor/sor-formatters";
 import { openSorAuthorizationPopup } from "@/features/sor/sor-oauth-popup";
+import { SorWebhookConfiguration } from "@/features/sor/SorWebhookConfiguration";
 import type {
   SorSource,
   SorSourceOperations,
@@ -38,6 +39,10 @@ const SorSourceDetailsPage = observer(function SorSourceDetailsPage({
     void sources.loadSelected(organizationId, sourceId);
     return () => sources.clearSelected();
   }, [organizationId, sourceId, sources]);
+
+  useEffect(() => {
+    if (sor.catalog === null) void sor.loadCatalog(organizationId);
+  }, [organizationId, sor]);
 
   const hasActiveWork =
     sources.selectedOperations?.generations.some((generation) =>
@@ -86,6 +91,15 @@ const SorSourceDetailsPage = observer(function SorSourceDetailsPage({
     sources.selectedOperations?.generations.find((generation) =>
       ACTIVE_WORK_STATES.has(generation.state),
     ) ?? null;
+  const selectedVendor = sor.catalog?.profiles
+    .find((profile) => profile.profile === sources.selectedSource?.profile)
+    ?.vendors.find(
+      (vendor) => vendor.vendorKey === sources.selectedSource?.vendor_key,
+    );
+  const webhookChangeMode = selectedVendor?.capabilities?.changeMode ?? null;
+  const hasOperatorConfiguredWebhook =
+    webhookChangeMode === "APP_WEBHOOK" ||
+    webhookChangeMode === "OPERATOR_WEBHOOK";
 
   return (
     <section
@@ -160,6 +174,9 @@ const SorSourceDetailsPage = observer(function SorSourceDetailsPage({
       ) : (
         <SourceDetails
           connectionName={sources.selectedConnectionName}
+          hasOperatorConfiguredWebhook={hasOperatorConfiguredWebhook}
+          isIssuingWebhookEndpoint={sources.isIssuingWebhookEndpoint}
+          isSavingWebhookSigningSecret={sources.isSavingWebhookSigningSecret}
           isStartingSync={sources.isStartingSync}
           operations={sources.selectedOperations}
           reauthorizationErrorMessage={sources.reauthorizationErrorMessage}
@@ -168,7 +185,22 @@ const SorSourceDetailsPage = observer(function SorSourceDetailsPage({
           streams={sources.selectedStreams}
           syncActionErrorMessage={sources.syncActionErrorMessage}
           syncActionMessage={sources.syncActionMessage}
+          webhookActionErrorMessage={sources.webhookActionErrorMessage}
+          webhookActionMessage={sources.webhookActionMessage}
+          webhookEndpointUrl={sources.webhookEndpointUrl}
           onDelete={onDelete}
+          onIssueWebhookEndpoint={() =>
+            sources.issueWebhookEndpoint(organizationId, sourceId)
+          }
+          onSaveWebhookSigningSecret={(secret) =>
+            sources.selectedSource === null
+              ? Promise.resolve(false)
+              : sources.saveWebhookSigningSecret(
+                  organizationId,
+                  sources.selectedSource,
+                  secret,
+                )
+          }
           onStartStreamSync={(stream) =>
             void sources.startStreamSync(organizationId, sourceId, stream.id)
           }
@@ -195,10 +227,7 @@ function SourceHeaderActions({
 }) {
   if (source.state === "REAUTH_REQUIRED") {
     return (
-      <Button
-        disabled={isReauthorizing}
-        onClick={() => onReauthorize(source)}
-      >
+      <Button disabled={isReauthorizing} onClick={() => onReauthorize(source)}>
         <RefreshCw
           aria-hidden="true"
           className={isReauthorizing ? "animate-spin" : undefined}
@@ -259,8 +288,13 @@ function SourceHeaderActions({
 
 function SourceDetails({
   connectionName,
+  hasOperatorConfiguredWebhook,
+  isIssuingWebhookEndpoint,
+  isSavingWebhookSigningSecret,
   isStartingSync,
   onDelete,
+  onIssueWebhookEndpoint,
+  onSaveWebhookSigningSecret,
   onStartStreamSync,
   operations,
   reauthorizationErrorMessage,
@@ -269,10 +303,18 @@ function SourceDetails({
   streams,
   syncActionErrorMessage,
   syncActionMessage,
+  webhookActionErrorMessage,
+  webhookActionMessage,
+  webhookEndpointUrl,
 }: {
   connectionName: string | null;
+  hasOperatorConfiguredWebhook: boolean;
+  isIssuingWebhookEndpoint: boolean;
+  isSavingWebhookSigningSecret: boolean;
   isStartingSync: boolean;
   onDelete: (source: SorSource) => void;
+  onIssueWebhookEndpoint: () => Promise<boolean>;
+  onSaveWebhookSigningSecret: (secret: string) => Promise<boolean>;
   onStartStreamSync: (stream: SorStream) => void;
   operations: SorSourceOperations | null;
   reauthorizationErrorMessage: string | null;
@@ -281,6 +323,9 @@ function SourceDetails({
   streams: readonly SorStream[];
   syncActionErrorMessage: string | null;
   syncActionMessage: string | null;
+  webhookActionErrorMessage: string | null;
+  webhookActionMessage: string | null;
+  webhookEndpointUrl: string | null;
 }) {
   const latestRunFailure = operations?.generations
     .flatMap((generation) => generation.runs)
@@ -394,9 +439,7 @@ function SourceDetails({
             ) : null}
             {Object.keys(source.configuration).length === 0 ? null : (
               <div className="space-y-2">
-                <p className="text-sm font-medium">
-                  Non-secret configuration
-                </p>
+                <p className="text-sm font-medium">Non-secret configuration</p>
                 <pre className="max-w-full whitespace-pre-wrap break-all bg-muted/30 p-3 text-xs leading-5">
                   {JSON.stringify(source.configuration, null, 2)}
                 </pre>
@@ -404,6 +447,18 @@ function SourceDetails({
             )}
           </div>
         </details>
+        {hasOperatorConfiguredWebhook ? (
+          <SorWebhookConfiguration
+            errorMessage={webhookActionErrorMessage}
+            isIssuingEndpoint={isIssuingWebhookEndpoint}
+            isSavingSecret={isSavingWebhookSigningSecret}
+            message={webhookActionMessage}
+            source={source}
+            webhookEndpointUrl={webhookEndpointUrl}
+            onIssueEndpoint={onIssueWebhookEndpoint}
+            onSaveSecret={onSaveWebhookSigningSecret}
+          />
+        ) : null}
       </DetailsSection>
 
       <DetailsSection

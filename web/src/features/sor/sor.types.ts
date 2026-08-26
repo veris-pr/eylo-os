@@ -43,6 +43,7 @@ type SorOAuthConfiguration =
   components["schemas"]["SorOAuthConfigurationResponse"];
 type SorSchemaRevision = components["schemas"]["SorSchemaRevisionResponse"];
 type SorSource = components["schemas"]["SorSourceResponse"];
+type SorWebhookEndpoint = components["schemas"]["SorWebhookEndpointResponse"];
 type SorSourceOperations = components["schemas"]["SorSourceOperationsResponse"];
 type SorSyncGeneration = components["schemas"]["SorSyncGenerationResponse"];
 type SorSourceCreateInput = components["schemas"]["SorSourceCreateRequest"];
@@ -265,6 +266,7 @@ export type {
   SorSourceGrant,
   SorSourceCreateInput,
   SorSourceState,
+  SorWebhookEndpoint,
   SorStream,
   SorStreamCreateInput,
   SorSyncGeneration,

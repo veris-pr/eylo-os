@@ -244,6 +244,13 @@ class SorStreamService:
             spec = specs.get(stream.vendor_object_key)
             depends_on = sorted(spec.depends_on) if spec is not None else []
             targets = dict(spec.relationship_targets) if spec is not None else {}
+            if spec is not None and stream.strategy not in spec.change_strategies:
+                if len(spec.change_strategies) != 1:
+                    raise SorConfigurationError(
+                        "SOR stream strategy no longer matches the adapter contract."
+                    )
+                stream.strategy = next(iter(spec.change_strategies))
+                changed = True
             if stream.depends_on != depends_on:
                 stream.depends_on = depends_on
                 changed = True
@@ -330,7 +337,6 @@ class SorSyncRunService:
             )
             if stream is None:
                 raise SorNotFoundError("SOR source stream not found.")
-            self._require_runnable(source=source, stream=stream, kind=kind)
             active = await self.repository.get_active_sync_run(
                 organization_id=organization_id,
                 stream_id=stream.id,
@@ -348,6 +354,8 @@ class SorSyncRunService:
                 "SOR source has no published mapping for synchronization."
             )
         await self.streams.refresh_manifest_contracts(source=source, streams=streams)
+        for stream in streams:
+            self._require_runnable(source=source, stream=stream, kind=kind)
         selected_keys = frozenset(stream.vendor_object_key for stream in streams)
         dependency_graph = selected_stream_dependencies(
             {

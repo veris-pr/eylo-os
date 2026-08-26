@@ -55,13 +55,20 @@ const FIELD_ALIASES: Record<string, Record<string, readonly string[]>> = {
     stage_external_id: ["dealstage", "stageid"],
     title: ["dealname", "name", "title"],
   },
+  issue: {
+    key: ["identifier", "issuekey"],
+    native_status: ["statename"],
+    reporter_external_id: ["creatorid", "reporterid"],
+  },
   relation: {
     canonical_relation_kind: [
       "canonicalkind",
       "canonicaltype",
       "normalizedrelation",
     ],
+    from_issue_external_id: ["fromissueid", "issueid"],
     native_relation_kind: ["nativekind", "nativetype", "sourcerelation"],
+    to_issue_external_id: ["relatedissueid", "toissueid"],
   },
 };
 
@@ -533,13 +540,20 @@ function suggestedTarget(
 
   const sourceKeys = [normalize(field.key), normalize(field.label)];
   const aliases = FIELD_ALIASES[entityKey] ?? {};
+  const available = canonicalFields.filter(
+    (candidate) => !usedTargets.has(candidate.key),
+  );
+  const exactKey = available.find((candidate) =>
+    sourceKeys.includes(normalize(candidate.key)),
+  );
+  if (exactKey !== undefined) return exactKey;
+  const domainAlias = available.find((candidate) =>
+    (aliases[candidate.key] ?? []).some((alias) => sourceKeys.includes(alias)),
+  );
+  if (domainAlias !== undefined) return domainAlias;
   return (
-    canonicalFields.find(
-      (candidate) =>
-        !usedTargets.has(candidate.key) &&
-        [normalize(candidate.key), ...(aliases[candidate.key] ?? [])].some(
-          (alias) => sourceKeys.includes(alias),
-        ),
+    available.find((candidate) =>
+      sourceKeys.includes(normalize(candidate.label)),
     ) ?? null
   );
 }

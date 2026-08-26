@@ -18,9 +18,14 @@ class SorSourcesStore {
   isStartingSync = false;
   startingStreamId: string | null = null;
   isSelectedLoading = false;
+  isIssuingWebhookEndpoint = false;
+  isSavingWebhookSigningSecret = false;
   reauthorizationErrorMessage: string | null = null;
   syncActionErrorMessage: string | null = null;
   syncActionMessage: string | null = null;
+  webhookActionErrorMessage: string | null = null;
+  webhookActionMessage: string | null = null;
+  webhookEndpointUrl: string | null = null;
   selectedConnectionName: string | null = null;
   selectedErrorMessage: string | null = null;
   selectedOperations: SorSourceOperations | null = null;
@@ -153,6 +158,11 @@ class SorSourcesStore {
     this.selectedStreams = [];
     this.selectedErrorMessage = null;
     this.isSelectedLoading = false;
+    this.isIssuingWebhookEndpoint = false;
+    this.isSavingWebhookSigningSecret = false;
+    this.webhookActionErrorMessage = null;
+    this.webhookActionMessage = null;
+    this.webhookEndpointUrl = null;
   }
 
   clearDeleteError(): void {
@@ -293,6 +303,80 @@ class SorSourcesStore {
   clearSyncAction(): void {
     this.syncActionErrorMessage = null;
     this.syncActionMessage = null;
+  }
+
+  async issueWebhookEndpoint(
+    organizationId: string,
+    sourceId: string,
+  ): Promise<boolean> {
+    if (this.isIssuingWebhookEndpoint) return false;
+    this.isIssuingWebhookEndpoint = true;
+    this.webhookActionErrorMessage = null;
+    this.webhookActionMessage = null;
+    try {
+      const endpoint = await this.service.issueWebhookEndpoint(
+        organizationId,
+        sourceId,
+      );
+      runInAction(() => {
+        this.sourcesById.set(endpoint.source.id, endpoint.source);
+        this.selectedSource = endpoint.source;
+        this.webhookEndpointUrl = endpoint.url;
+        this.webhookActionMessage =
+          "Webhook URL generated. Add it to the provider before leaving this page.";
+      });
+      return true;
+    } catch (error) {
+      runInAction(() => {
+        this.webhookActionErrorMessage = messageFrom(
+          error,
+          "The webhook URL could not be generated.",
+        );
+      });
+      return false;
+    } finally {
+      runInAction(() => {
+        this.isIssuingWebhookEndpoint = false;
+      });
+    }
+  }
+
+  async saveWebhookSigningSecret(
+    organizationId: string,
+    source: SorSource,
+    signingSecret: string,
+  ): Promise<boolean> {
+    if (this.isSavingWebhookSigningSecret) return false;
+    this.isSavingWebhookSigningSecret = true;
+    this.webhookActionErrorMessage = null;
+    this.webhookActionMessage = null;
+    try {
+      const updated = await this.service.updateWebhookSigningSecret(
+        organizationId,
+        source.id,
+        signingSecret,
+        source.config_revision,
+      );
+      runInAction(() => {
+        this.sourcesById.set(updated.id, updated);
+        this.selectedSource = updated;
+        this.webhookActionMessage =
+          "Signing secret saved. Eylo can now verify provider deliveries.";
+      });
+      return true;
+    } catch (error) {
+      runInAction(() => {
+        this.webhookActionErrorMessage = messageFrom(
+          error,
+          "The webhook signing secret could not be saved.",
+        );
+      });
+      return false;
+    } finally {
+      runInAction(() => {
+        this.isSavingWebhookSigningSecret = false;
+      });
+    }
   }
 
   async deleteSource(
