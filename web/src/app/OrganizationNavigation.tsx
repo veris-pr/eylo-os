@@ -66,6 +66,7 @@ interface NavigationLinkProps {
 
 interface ModuleNavigationDefinition {
   children?: readonly ModuleNavigationChildDefinition[];
+  end?: boolean;
   icon: LucideIcon;
   label: string;
   path?: string;
@@ -125,7 +126,7 @@ const PLATFORM_NAVIGATION: readonly ModuleNavigationDefinition[] = [
 ];
 
 const SOR_PRIMARY_NAVIGATION: readonly ModuleNavigationDefinition[] = [
-  { icon: TableProperties, label: "Overview", path: "sor" },
+  { end: true, icon: TableProperties, label: "Overview", path: "sor" },
   { icon: Database, label: "Sources", path: "sor/sources" },
 ];
 
@@ -357,7 +358,7 @@ function ModuleNavigation({
     }
     const link = (
       <NavigationLink
-        end={definition.children !== undefined}
+        end={definition.end ?? definition.children !== undefined}
         icon={definition.icon}
         label={definition.label}
         nested={nested}

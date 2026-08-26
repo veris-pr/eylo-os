@@ -6,10 +6,18 @@ import nh3 as bleach
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 
+_SIGNED_WEBHOOK_PATH_PREFIX = "/api/sor/webhooks/"
+
 
 class BleachSanitizeBodyMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        if request.method in ("POST", "PUT", "PATCH"):
+        preserves_signed_body = request.url.path.startswith(
+            _SIGNED_WEBHOOK_PATH_PREFIX
+        )
+        if (
+            request.method in ("POST", "PUT", "PATCH")
+            and not preserves_signed_body
+        ):
             try:
                 body = await request.json()
                 sanitized = self._sanitize_dict(body)

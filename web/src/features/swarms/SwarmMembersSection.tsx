@@ -128,7 +128,7 @@ function SwarmMembersSection({
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <p className="break-words text-sm font-medium">
-                        {agent?.name ?? mapping.agentId}
+                        {agent?.name ?? "Unavailable Agent"}
                       </p>
                       {agent !== null ? (
                         <Badge variant="outline">
@@ -145,7 +145,7 @@ function SwarmMembersSection({
                         {agent.lifecycle !== "published" ||
                         agent.publishedRevision == null
                           ? "Agent is not available for new work"
-                          : `Agent revision ${agent.publishedRevision} available`}
+                          : "Available for new work"}
                       </p>
                     ) : null}
                   </div>
@@ -155,7 +155,7 @@ function SwarmMembersSection({
                     size="icon-sm"
                     className="shrink-0"
                     disabled={activeAction !== null}
-                    aria-label={`Remove ${agent?.name ?? mapping.agentId} from Swarm`}
+                    aria-label={`Remove ${agent?.name ?? "unavailable Agent"} from Swarm`}
                     title="Remove from draft"
                     onClick={() => void onRemove(mapping.agentId)}
                   >

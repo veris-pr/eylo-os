@@ -4,6 +4,11 @@ import { useState, type ReactNode } from "react";
 import { Link } from "react-router";
 
 import { useRootStore } from "@/app/use-root-store";
+import {
+  DetailRow,
+  DetailSection,
+  TechnicalDetails,
+} from "@/components/details";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -80,12 +85,11 @@ const AgentRunDetailsDrawer = observer(function AgentRunDetailsDrawer({
       >
         <DrawerContent className="[--drawer-content-width:min(100%,52rem)]">
           <DrawerHeader className="border-b p-5 pr-14 pb-5 text-left">
-            <DrawerTitle>
-              {run === null ? "Agent run" : `Run …${run.id.slice(-12)}`}
+            <DrawerTitle className="[overflow-wrap:anywhere]">
+              {run?.goal ?? "Agent run"}
             </DrawerTitle>
             <DrawerDescription>
-              Goal, exact Agent revision, workflow evidence, input requests, and
-              budget reservation.
+              Current state, progress, input requests, and execution result.
             </DrawerDescription>
           </DrawerHeader>
           <Button
@@ -243,13 +247,13 @@ function RunDetails({
           <ErrorBox>{run.failure_summary}</ErrorBox>
         )}
       </section>
-      <DetailsSection title="Authority">
+      <DetailSection title="Run context">
         <DetailRow label="Agent">
           <Link
             className="underline underline-offset-4"
             to={`/org/${organizationId}/agents/${run.agent_id}`}
           >
-            {agentName} · revision {run.agent_revision}
+            {agentName}
           </Link>
         </DetailRow>
         <DetailRow label="Origin">
@@ -258,14 +262,10 @@ function RunDetails({
           </Badge>
         </DetailRow>
         <DetailRow label="Initiated by">
-          {formatOperationEnum(run.initiating_principal_kind)} ·{" "}
-          <code className="break-all text-xs">
-            {run.initiating_principal_id}
-          </code>
+          {formatOperationEnum(run.initiating_principal_kind)}
         </DetailRow>
-        <DetailRow label="State revision">{run.state_revision}</DetailRow>
-      </DetailsSection>
-      <DetailsSection title="Timing">
+      </DetailSection>
+      <DetailSection title="Timing">
         <DetailRow label="Created">
           <time dateTime={run.created_at} title={created.title}>
             {created.label}
@@ -289,9 +289,9 @@ function RunDetails({
             </time>
           )}
         </DetailRow>
-      </DetailsSection>
+      </DetailSection>
       {run.reservation === null ? null : (
-        <DetailsSection title="Execution budget">
+        <DetailSection title="Execution budget">
           <DetailRow label="Tokens">
             {run.reservation.used_tokens.toLocaleString()} /{" "}
             {run.reservation.token_limit.toLocaleString()}
@@ -307,11 +307,11 @@ function RunDetails({
           <DetailRow label="Capacity">
             {run.reservation.active ? "Reserved" : "Released"}
           </DetailRow>
-        </DetailsSection>
+        </DetailSection>
       )}
       <section className="space-y-3">
         <div>
-          <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+          <h2 className="text-sm font-semibold">
             Input requests
           </h2>
           <p className="mt-1 text-sm text-muted-foreground">
@@ -354,7 +354,7 @@ function RunDetails({
       </section>
       <section className="space-y-3">
         <div>
-          <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+          <h2 className="text-sm font-semibold">
             Workflow steps
           </h2>
           <p className="mt-1 text-sm text-muted-foreground">
@@ -377,26 +377,45 @@ function RunDetails({
                     {formatOperationEnum(step.status)}
                   </Badge>
                 </div>
-                <p className="break-all text-xs text-muted-foreground">
-                  {step.step_key}
-                </p>
-                {step.evidence === null ? null : (
-                  <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words bg-muted p-2 text-xs">
-                    {JSON.stringify(step.evidence, null, 2)}
-                  </pre>
-                )}
+                <TechnicalDetails summary="Step details">
+                  <p className="break-all font-mono text-xs text-muted-foreground">
+                    {step.step_key}
+                  </p>
+                  {step.evidence === null ? null : (
+                    <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words bg-muted p-2 text-xs">
+                      {JSON.stringify(step.evidence, null, 2)}
+                    </pre>
+                  )}
+                </TechnicalDetails>
               </article>
             ))}
           </div>
         )}
       </section>
       {run.result === null ? null : (
-        <DetailsSection title="Result">
+        <DetailSection title="Result">
           <pre className="overflow-auto whitespace-pre-wrap break-words py-3 text-xs">
             {JSON.stringify(run.result, null, 2)}
           </pre>
-        </DetailsSection>
+        </DetailSection>
       )}
+      <TechnicalDetails>
+        <DetailRow label="Agent run ID">
+          <code className="break-all text-xs">{run.id}</code>
+        </DetailRow>
+        <DetailRow label="Agent authority">
+          <code className="block break-all text-xs">{run.agent_id}</code>
+          <span className="mt-1 block text-xs text-muted-foreground">
+            Revision {run.agent_revision}
+          </span>
+        </DetailRow>
+        <DetailRow label="Initiating principal ID">
+          <code className="break-all text-xs">
+            {run.initiating_principal_id}
+          </code>
+        </DetailRow>
+        <DetailRow label="State revision">{run.state_revision}</DetailRow>
+      </TechnicalDetails>
     </div>
   );
 }
@@ -407,36 +426,6 @@ function parseResponse(value: string): unknown {
   } catch {
     return value;
   }
-}
-function DetailsSection({
-  children,
-  title,
-}: {
-  children: ReactNode;
-  title: string;
-}) {
-  return (
-    <section className="space-y-3">
-      <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-        {title}
-      </h2>
-      <dl className="divide-y border-y">{children}</dl>
-    </section>
-  );
-}
-function DetailRow({
-  children,
-  label,
-}: {
-  children: ReactNode;
-  label: string;
-}) {
-  return (
-    <div className="grid gap-1 py-3 sm:grid-cols-[10rem_minmax(0,1fr)] sm:gap-4">
-      <dt className="text-sm text-muted-foreground">{label}</dt>
-      <dd className="min-w-0 break-words text-sm">{children}</dd>
-    </div>
-  );
 }
 function ErrorBox({ children }: { children: ReactNode }) {
   return (

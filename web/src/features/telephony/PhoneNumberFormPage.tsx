@@ -263,8 +263,7 @@ const PhoneNumberFormPage = observer(function PhoneNumberFormPage({
                       .filter((config) => config.ready)
                       .map((config) => (
                         <SelectItem key={config.id} value={config.id}>
-                          {config.name} · {config.provider} · revision{" "}
-                          {config.revision}
+                          {config.name} · {config.provider}
                         </SelectItem>
                       ))}
                   </SelectContent>
@@ -285,7 +284,6 @@ const PhoneNumberFormPage = observer(function PhoneNumberFormPage({
             ) : (
               <ReadOnlyValue label="Configuration">
                 {telephony.configName(numbers.selectedNumber!.providerConfigId)}{" "}
-                · revision {numbers.selectedNumber!.providerConfigRevision}
               </ReadOnlyValue>
             )}
             <FormField

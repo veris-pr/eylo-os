@@ -14,6 +14,7 @@ from eylo.sor.runtime.adapters import (
     acquire_source_adapter,
 )
 from eylo.sor.runtime.registry import SorRegistry
+from eylo.sor.shared.connector_services import SorConnectorService
 from eylo.sor.shared.contracts import (
     SorConnectionVerification,
     SorDiscoveredSchema,
@@ -286,6 +287,17 @@ async def _commit_schema(
             expected_config_revision=authority.config_revision,
             expected_mapping_revision_id=authority.mapping_revision_id,
             verified_at=verified_at,
+        )
+        await SorConnectorService(session).record_verified_account(
+            organization_id=organization_id,
+            connection_id=(
+                await SorSourceService(session).get(
+                    organization_id=organization_id,
+                    source_id=source_id,
+                )
+            ).external_connection_id,
+            account_external_id=verification.account_external_id,
+            account_display_name=verification.account_display_name,
         )
         result = SorDiscoveryResult(
             verification=verification,

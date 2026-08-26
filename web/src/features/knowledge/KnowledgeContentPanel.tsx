@@ -3,6 +3,10 @@ import { observer } from "mobx-react-lite";
 import { useEffect, useState, type ReactNode } from "react";
 
 import { useRootStore } from "@/app/use-root-store";
+import {
+  DetailDisclosure,
+  TechnicalDetails,
+} from "@/components/details";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -78,8 +82,8 @@ const KnowledgeContentPanel = observer(function KnowledgeContentPanel({
         <div>
           <h2 className="text-base font-semibold">Content and ingestion</h2>
           <p className="mt-1 text-sm leading-5 text-muted-foreground">
-            File work durably, then wait for a terminal state before relying on
-            the document in Agent retrieval.
+            Add text or import supported files from configured storage. Active
+            work remains visible until it completes or fails.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -338,14 +342,13 @@ const CorpusImportDialog = observer(function CorpusImportDialog({
                 <SelectValue>
                   {selectedConfig === undefined
                     ? "Choose a ready configuration"
-                    : `${selectedConfig.name} · ${selectedConfig.provider} · revision ${selectedConfig.revision}`}
+                    : `${selectedConfig.name} · ${selectedConfig.provider}`}
                 </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {content.readyStorageConfigs.map((config) => (
                   <SelectItem key={config.id} value={config.id}>
-                    {config.name} · {config.provider} · revision{" "}
-                    {config.revision}
+                    {config.name} · {config.provider}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -430,22 +433,28 @@ function IngestionJobCard({
         </div>
         <StateBadge state={job.state} />
       </div>
-      <dl className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-3">
-        <CompactValue
-          label="Attempts"
-          value={`${job.attempts} / ${job.max_attempts}`}
-        />
-        <CompactValue label="Filed" value={createdAt.label} />
-        <CompactValue label="Started" value={startedAt.label} />
-        <CompactValue label="Finished" value={finishedAt.label} />
-        <CompactValue label="Document ID" value={job.document_id} code />
-        <CompactValue label="Job ID" value={job.id} code />
-      </dl>
       {job.last_error !== null ? (
         <p className="border border-destructive/30 bg-destructive/5 p-3 text-xs leading-5 text-destructive">
           {job.last_error}
         </p>
       ) : null}
+      <DetailDisclosure summary="Activity">
+        <dl className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
+          <CompactValue
+            label="Attempts"
+            value={`${job.attempts} / ${job.max_attempts}`}
+          />
+          <CompactValue label="Filed" value={createdAt.label} />
+          <CompactValue label="Started" value={startedAt.label} />
+          <CompactValue label="Finished" value={finishedAt.label} />
+        </dl>
+      </DetailDisclosure>
+      <TechnicalDetails>
+        <dl className="grid grid-cols-1 gap-3 text-xs sm:grid-cols-2">
+          <CompactValue label="Document ID" value={job.document_id} code />
+          <CompactValue label="Job ID" value={job.id} code />
+        </dl>
+      </TechnicalDetails>
       {!TERMINAL_STATES.has(job.state) ? (
         <div className="flex justify-end">
           <Button
@@ -484,14 +493,12 @@ function CorpusImportCard({
             {corpusImport.prefix === "" ? "Storage root" : corpusImport.prefix}
           </h4>
           <p className="mt-1 text-xs text-muted-foreground">
-            {corpusImport.storage_provider} · revision{" "}
-            {corpusImport.storage_provider_config_revision}
+            {corpusImport.storage_provider} storage
           </p>
         </div>
         <StateBadge state={corpusImport.state} />
       </div>
-      <dl className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
-        <CompactValue label="Attempts" value={String(corpusImport.attempts)} />
+      <dl className="grid grid-cols-3 gap-3 text-xs">
         <CompactValue
           label="Discovered"
           value={String(corpusImport.discovered_count)}
@@ -501,16 +508,12 @@ function CorpusImportCard({
           value={String(corpusImport.queued_count)}
         />
         <CompactValue label="Skipped" value={String(skippedReport.total)} />
-        <CompactValue label="Filed" value={createdAt.label} />
-        <CompactValue label="Started" value={startedAt.label} />
-        <CompactValue label="Finished" value={finishedAt.label} />
-        <CompactValue label="Import ID" value={corpusImport.id} code />
       </dl>
       {skippedReport.entries.length > 0 ? (
-        <details className="border p-3 text-xs">
-          <summary className="cursor-pointer font-medium">
-            Skipped objects ({skippedReport.total})
-          </summary>
+        <DetailDisclosure
+          className="border p-3 text-xs"
+          summary={`Skipped objects (${skippedReport.total})`}
+        >
           <ul className="mt-3 max-h-40 space-y-2 overflow-y-auto text-muted-foreground">
             {skippedReport.entries.map((entry, index) => (
               <li key={`${entry.key}:${index}`} className="break-words">
@@ -525,13 +528,33 @@ function CorpusImportCard({
               Showing the first {skippedReport.entries.length} reported objects.
             </p>
           ) : null}
-        </details>
+        </DetailDisclosure>
       ) : null}
       {corpusImport.last_error !== null ? (
         <p className="border border-destructive/30 bg-destructive/5 p-3 text-xs leading-5 text-destructive">
           {corpusImport.last_error}
         </p>
       ) : null}
+      <DetailDisclosure summary="Activity">
+        <dl className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
+          <CompactValue
+            label="Attempts"
+            value={String(corpusImport.attempts)}
+          />
+          <CompactValue label="Filed" value={createdAt.label} />
+          <CompactValue label="Started" value={startedAt.label} />
+          <CompactValue label="Finished" value={finishedAt.label} />
+        </dl>
+      </DetailDisclosure>
+      <TechnicalDetails>
+        <dl className="grid grid-cols-1 gap-3 text-xs sm:grid-cols-2">
+          <CompactValue label="Import ID" value={corpusImport.id} code />
+          <CompactValue
+            label="Storage config revision"
+            value={String(corpusImport.storage_provider_config_revision)}
+          />
+        </dl>
+      </TechnicalDetails>
       {!TERMINAL_STATES.has(corpusImport.state) ? (
         <div className="flex justify-end">
           <Button
@@ -561,7 +584,7 @@ function WorkSection({
   return (
     <section className="space-y-3">
       <div className="flex items-center justify-between gap-3">
-        <h3 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+        <h3 className="text-sm font-semibold">
           {title}
         </h3>
         <span className="text-xs text-muted-foreground">{children.length}</span>

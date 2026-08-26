@@ -1,6 +1,7 @@
 import { Check, Copy, ExternalLink, RefreshCw } from "lucide-react";
 import { useState, type FormEvent } from "react";
 
+import { DetailDisclosure } from "@/components/details";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -50,12 +51,8 @@ function SorWebhookConfiguration({
   }
 
   return (
-    <details>
-      <summary className="cursor-pointer text-sm font-medium">
-        Webhook
-      </summary>
-
-      <div className="mt-3 space-y-4">
+    <DetailDisclosure summary="Webhook">
+      <div className="space-y-4">
         <p className="text-sm text-muted-foreground">
           Configure signed change notifications so Eylo can refetch changed
           records without waiting for the next scheduled sync.
@@ -77,11 +74,8 @@ function SorWebhookConfiguration({
             </div>
             {webhookEndpointUrl === null ? (
               hasSigningSecret ? (
-                <details>
-                  <summary className="cursor-pointer text-sm font-medium">
-                    Replace webhook URL
-                  </summary>
-                  <div className="mt-3 space-y-3">
+                <DetailDisclosure summary="Replace webhook URL">
+                  <div className="space-y-3">
                     <p className="text-sm text-muted-foreground">
                       Generating a replacement immediately invalidates the
                       current provider URL. Update the provider before expecting
@@ -104,7 +98,7 @@ function SorWebhookConfiguration({
                         : "Generate replacement URL"}
                     </Button>
                   </div>
-                </details>
+                </DetailDisclosure>
               ) : (
                 <Button
                   disabled={isIssuingEndpoint}
@@ -236,7 +230,7 @@ function SorWebhookConfiguration({
           </p>
         )}
       </div>
-    </details>
+    </DetailDisclosure>
   );
 }
 

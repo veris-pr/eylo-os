@@ -223,7 +223,7 @@ const AgentRunsPage = observer(function AgentRunsPage() {
               className="pr-20 pl-9"
               aria-label="Search Agent runs"
               maxLength={100}
-              placeholder="Search goals or IDs"
+              placeholder="Search goals or runs"
               value={searchDraft}
               onChange={(event) => setSearchDraft(event.target.value)}
             />
@@ -411,9 +411,6 @@ function RunRow({
         >
           {run.goal}
         </button>
-        <p className="mt-0.5 text-xs text-muted-foreground">
-          …{run.id.slice(-12)}
-        </p>
       </TableCell>
       <TableCell>
         <Badge variant="outline">{formatOperationEnum(run.lifecycle)}</Badge>

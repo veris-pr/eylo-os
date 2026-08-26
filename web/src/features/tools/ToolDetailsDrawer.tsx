@@ -1,8 +1,14 @@
 import { Ban, CircleStop, Rocket, Trash2, X } from "lucide-react";
 import { observer } from "mobx-react-lite";
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 
 import { useRootStore } from "@/app/use-root-store";
+import {
+  DetailDisclosure,
+  DetailRow,
+  DetailSection,
+  TechnicalDetails,
+} from "@/components/details";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -79,8 +85,7 @@ const ToolDetailsDrawer = observer(function ToolDetailsDrawer({
           <DrawerHeader className="border-b p-5 pr-14 pb-5 text-left">
             <DrawerTitle>{tool?.displayName ?? "Tool details"}</DrawerTitle>
             <DrawerDescription>
-              Agent-facing contract, execution boundary, and lifecycle
-              authority.
+              What the Tool does, what it accepts, and when Agents can use it.
             </DrawerDescription>
           </DrawerHeader>
           <Button
@@ -249,7 +254,7 @@ function ToolDetails({
   const inputSchema = tool.llmConfig?.inputSchema;
   return (
     <div className="space-y-8">
-      <DetailsSection title="Overview">
+      <DetailSection title="Overview">
         <DetailRow label="Source">{formatToolEnum(source)}</DetailRow>
         <DetailRow label="Kind">
           <Badge variant="outline">{formatToolEnum(tool.kind)}</Badge>
@@ -264,22 +269,8 @@ function ToolDetails({
         <DetailRow label="Execution">
           <Badge variant="outline">{formatToolEnum(tool.executionMode)}</Badge>
         </DetailRow>
-        <DetailRow label="Updated">
-          {source !== "managed" ? (
-            "Code-owned catalog"
-          ) : tool.updatedAt === undefined ? (
-            updated.label
-          ) : (
-            <time dateTime={tool.updatedAt} title={updated.title}>
-              {updated.label}
-            </time>
-          )}
-        </DetailRow>
-        <DetailRow label="Tool ID">
-          <code className="break-all text-xs">{tool.id}</code>
-        </DetailRow>
-      </DetailsSection>
-      <DetailsSection title="Agent contract">
+      </DetailSection>
+      <DetailSection title="Agent contract">
         <DetailRow label="Callable name">
           <code className="break-all text-xs">{tool.name}</code>
         </DetailRow>
@@ -297,9 +288,26 @@ function ToolDetails({
         <DetailRow label="Required inputs">
           {inputSchema?.required?.join(", ") || "None"}
         </DetailRow>
-      </DetailsSection>
-      {source === "managed" ? (
-        <DetailsSection title="Revision">
+      </DetailSection>
+      <DetailDisclosure summary="Activity">
+        <DetailRow label="Updated">
+          {source !== "managed" ? (
+            "Code-owned catalog"
+          ) : tool.updatedAt === undefined ? (
+            updated.label
+          ) : (
+            <time dateTime={tool.updatedAt} title={updated.title}>
+              {updated.label}
+            </time>
+          )}
+        </DetailRow>
+      </DetailDisclosure>
+      <TechnicalDetails>
+        <DetailRow label="Tool ID">
+          <code className="break-all text-xs">{tool.id}</code>
+        </DetailRow>
+        {source === "managed" ? (
+          <>
           <DetailRow label="Draft version">{tool.draftVersion}</DetailRow>
           <DetailRow label="Draft changed">
             {tool.draftDirty ? "Yes" : "No"}
@@ -307,40 +315,9 @@ function ToolDetails({
           <DetailRow label="Published revision">
             {tool.publishedRevision ?? "Not published"}
           </DetailRow>
-        </DetailsSection>
-      ) : null}
-    </div>
-  );
-}
-
-function DetailsSection({
-  children,
-  title,
-}: {
-  children: ReactNode;
-  title: string;
-}) {
-  return (
-    <section className="space-y-3">
-      <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-        {title}
-      </h2>
-      <dl className="divide-y border-y">{children}</dl>
-    </section>
-  );
-}
-
-function DetailRow({
-  children,
-  label,
-}: {
-  children: ReactNode;
-  label: string;
-}) {
-  return (
-    <div className="grid gap-1 py-3 sm:grid-cols-[10rem_minmax(0,1fr)] sm:gap-4">
-      <dt className="text-sm text-muted-foreground">{label}</dt>
-      <dd className="min-w-0 text-sm">{children}</dd>
+          </>
+        ) : null}
+      </TechnicalDetails>
     </div>
   );
 }

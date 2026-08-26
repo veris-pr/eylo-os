@@ -291,10 +291,9 @@ function VoiceSessionsTable({
       >
         <TableHeader>
           <TableRow className="hover:bg-transparent">
-            <TableHead className="w-[24%]">Session</TableHead>
+            <TableHead className="w-[28%]">Agent</TableHead>
             <TableHead className="w-28">Status</TableHead>
-            <TableHead className="hidden w-44 md:table-cell">Agent</TableHead>
-            <TableHead className="hidden w-40 lg:table-cell">Runtime</TableHead>
+            <TableHead className="hidden w-40 md:table-cell">Runtime</TableHead>
             <TableHead className="hidden w-28 xl:table-cell">
               Duration
             </TableHead>
@@ -346,7 +345,7 @@ function VoiceRow({
           type="button"
           onClick={() => onView(session.id)}
         >
-          …{session.id.slice(-12)}
+          {agentName}
         </button>
         <p className="mt-0.5 text-xs text-muted-foreground">
           {session.segmentCount} segments
@@ -355,10 +354,7 @@ function VoiceRow({
       <TableCell>
         <Badge variant="outline">{formatOperationEnum(session.status)}</Badge>
       </TableCell>
-      <TableCell className="hidden whitespace-normal md:table-cell">
-        {agentName}
-      </TableCell>
-      <TableCell className="hidden lg:table-cell">
+      <TableCell className="hidden md:table-cell">
         <Badge variant="outline">
           {formatOperationEnum(session.runtimeMode)}
         </Badge>
@@ -395,7 +391,7 @@ function VoiceCard({
           type="button"
           onClick={() => onView(session.id)}
         >
-          Session …{session.id.slice(-12)}
+          {agentName} voice session
         </button>
         <VoiceMenu id={session.id} onView={onView} />
       </div>
@@ -451,9 +447,6 @@ function LoadingRow() {
       </TableCell>
       <TableCell className="hidden md:table-cell">
         <Skeleton className="h-4 w-28" />
-      </TableCell>
-      <TableCell className="hidden lg:table-cell">
-        <Skeleton className="h-5 w-28" />
       </TableCell>
       <TableCell className="hidden xl:table-cell">
         <Skeleton className="h-4 w-20" />

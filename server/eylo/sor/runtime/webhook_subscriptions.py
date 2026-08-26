@@ -6,11 +6,9 @@ import asyncio
 import base64
 import hashlib
 import hmac
-import ipaddress
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlsplit
 from uuid import UUID
 
 from sqlalchemy import or_, select
@@ -45,6 +43,7 @@ from eylo.sor.shared.webhook_services import (
     SorWebhookService,
     SorWebhookSubscriptionPlan,
 )
+from eylo.sor.shared.webhook_urls import public_webhook_api_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -61,43 +60,6 @@ class SorWebhookMaintenanceResult:
     activated: int
     failed: int
     configuration_unavailable: int = 0
-
-
-def public_webhook_api_base_url() -> str:
-    """Return a public HTTPS API base accepted by Atlassian callbacks."""
-    value = settings.API_BASE_URL
-    if not isinstance(value, str) or not value.strip():
-        raise SorConfigurationError(
-            "API_BASE_URL must be configured before managed webhooks are enabled."
-        )
-    normalized = value.strip().rstrip("/")
-    parsed = urlsplit(normalized)
-    if (
-        parsed.scheme != "https"
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.query
-        or parsed.fragment
-        or parsed.hostname is None
-    ):
-        raise SorConfigurationError(
-            "API_BASE_URL must be a public HTTPS API base for managed webhooks."
-        )
-    hostname = parsed.hostname.casefold()
-    if hostname == "localhost" or hostname.endswith(".localhost"):
-        raise SorConfigurationError(
-            "API_BASE_URL must be publicly reachable for managed webhooks."
-        )
-    try:
-        address = ipaddress.ip_address(hostname)
-    except ValueError:
-        pass
-    else:
-        if not address.is_global:
-            raise SorConfigurationError(
-                "API_BASE_URL must be publicly reachable for managed webhooks."
-            )
-    return normalized
 
 
 async def ensure_sor_webhook_subscription(

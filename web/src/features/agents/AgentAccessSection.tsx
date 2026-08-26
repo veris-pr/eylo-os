@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
 
 import { useRootStore } from "@/app/use-root-store";
+import { DetailRow, TechnicalDetails } from "@/components/details";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -53,6 +54,12 @@ const AgentAccessSection = observer(function AgentAccessSection({
     access.knowledgebases.length > 0 || access.knowledgebaseGrants.length > 0;
   const hasSandboxState =
     access.sandboxConfigs.length > 0 || access.sandboxGrant !== null;
+  const sandboxConfig =
+    access.sandboxGrant === null
+      ? null
+      : access.sandboxConfigFor(
+          access.sandboxGrant.sandbox_provider_config_id,
+        );
 
   function openKnowledgeDialog(grant: AgentKnowledgebaseGrant | null): void {
     access.clearActionError();
@@ -214,19 +221,30 @@ const AgentAccessSection = observer(function AgentAccessSection({
                 <div className="flex flex-wrap items-center gap-2">
                   <Box className="size-4" aria-hidden="true" />
                   <p className="truncate text-sm font-medium">
-                    {access.sandboxConfigFor(
-                      access.sandboxGrant.sandbox_provider_config_id,
-                    )?.name ?? access.sandboxGrant.sandbox_provider_config_id}
+                    {sandboxConfig?.name ?? "Unavailable sandbox configuration"}
                   </p>
                   <Badge variant="outline">Run</Badge>
                 </div>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Config revision{" "}
-                  {access.sandboxGrant.sandbox_provider_config_revision}
                   {access.sandboxGrant.max_sessions === null
-                    ? " · organization session limit"
-                    : ` · max ${access.sandboxGrant.max_sessions} sessions`}
+                    ? "Uses the organization session limit"
+                    : `Up to ${access.sandboxGrant.max_sessions} concurrent sessions`}
                 </p>
+                <TechnicalDetails
+                  className="mt-2"
+                  summary="Technical sandbox details"
+                >
+                  <div className="border-y">
+                    <DetailRow label="Configuration ID">
+                      <code className="break-all text-xs">
+                        {access.sandboxGrant.sandbox_provider_config_id}
+                      </code>
+                    </DetailRow>
+                    <DetailRow label="Configuration revision">
+                      {access.sandboxGrant.sandbox_provider_config_revision}
+                    </DetailRow>
+                  </div>
+                </TechnicalDetails>
               </div>
               <Button
                 type="button"

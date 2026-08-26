@@ -129,14 +129,7 @@ const VoiceConfigTable = observer(function VoiceConfigTable({
               onSort={onSort}
             />
             <TableHead>Runtime</TableHead>
-            <SortableHead
-              className="hidden md:table-cell"
-              field="revision"
-              label="Revision"
-              query={query}
-              onSort={onSort}
-            />
-            <TableHead className="hidden lg:table-cell">Recording</TableHead>
+            <TableHead className="hidden md:table-cell">Recording</TableHead>
             <SortableHead
               className="hidden md:table-cell"
               field="updated_at"
@@ -207,10 +200,7 @@ function VoiceConfigRow({
       <TableCell>
         <Badge variant="outline">{runtimeLabel(voiceConfig)}</Badge>
       </TableCell>
-      <TableCell className="hidden text-muted-foreground md:table-cell">
-        {voiceConfig.revision}
-      </TableCell>
-      <TableCell className="hidden lg:table-cell">
+      <TableCell className="hidden md:table-cell">
         <Badge variant="outline">
           {voiceConfig.config.artifacts?.audio_storage_enabled
             ? "Stored"
@@ -263,7 +253,11 @@ function VoiceConfigCard({
       </div>
       <div className="mt-3 flex flex-wrap gap-2">
         <Badge variant="outline">{runtimeLabel(voiceConfig)}</Badge>
-        <Badge variant="outline">Revision {voiceConfig.revision}</Badge>
+        <Badge variant="outline">
+          {voiceConfig.config.artifacts?.audio_storage_enabled
+            ? "Recording stored"
+            : "Recording not stored"}
+        </Badge>
       </div>
       <p className="mt-3 text-xs text-muted-foreground">
         Updated <DateValue value={updatedAt} />
@@ -380,9 +374,6 @@ function VoiceLoadingRow() {
         <Skeleton className="h-5 w-24" />
       </TableCell>
       <TableCell className="hidden md:table-cell">
-        <Skeleton className="h-4 w-10" />
-      </TableCell>
-      <TableCell className="hidden lg:table-cell">
         <Skeleton className="h-5 w-20" />
       </TableCell>
       <TableCell className="hidden md:table-cell">

@@ -2,6 +2,12 @@ import { X } from "lucide-react";
 import { observer } from "mobx-react-lite";
 
 import { useRootStore } from "@/app/use-root-store";
+import {
+  DetailDisclosure,
+  DetailRow,
+  DetailSection,
+  TechnicalDetails,
+} from "@/components/details";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -68,8 +74,7 @@ const MemberDetailsDrawer = observer(function MemberDetailsDrawer({
             </div>
           ) : member !== null ? (
             <div className="space-y-8">
-              <section className="space-y-3">
-                <h3 className="text-sm font-medium">Identity</h3>
+              <DetailSection title="Identity">
                 <DetailRow label="Name">{member.name}</DetailRow>
                 <DetailRow label="Email">
                   <span className="break-all">{member.email}</span>
@@ -79,18 +84,16 @@ const MemberDetailsDrawer = observer(function MemberDetailsDrawer({
                     {formatMemberStatus(member.status)}
                   </Badge>
                 </DetailRow>
-              </section>
-              <section className="space-y-3">
-                <h3 className="text-sm font-medium">Activity</h3>
+              </DetailSection>
+              <DetailDisclosure summary="Activity">
                 <DetailRow label="Last login">
                   <DateValue value={member.lastLogin} />
                 </DetailRow>
                 <DetailRow label="Joined">
                   <DateValue value={member.createdAt} />
                 </DetailRow>
-              </section>
-              <section className="space-y-3">
-                <h3 className="text-sm font-medium">References</h3>
+              </DetailDisclosure>
+              <TechnicalDetails>
                 <DetailRow label="Member ID">
                   <code className="break-all text-xs">{member.id}</code>
                 </DetailRow>
@@ -99,7 +102,7 @@ const MemberDetailsDrawer = observer(function MemberDetailsDrawer({
                     {member.organizationId}
                   </code>
                 </DetailRow>
-              </section>
+              </TechnicalDetails>
             </div>
           ) : null}
         </div>
@@ -107,21 +110,6 @@ const MemberDetailsDrawer = observer(function MemberDetailsDrawer({
     </Drawer>
   );
 });
-
-function DetailRow({
-  children,
-  label,
-}: {
-  children: React.ReactNode;
-  label: string;
-}) {
-  return (
-    <div className="grid gap-1 border-b pb-3 last:border-0 sm:grid-cols-[8rem_minmax(0,1fr)]">
-      <dt className="text-xs text-muted-foreground">{label}</dt>
-      <dd className="min-w-0 text-sm break-words">{children}</dd>
-    </div>
-  );
-}
 
 function DateValue({ value }: { value: string | null | undefined }) {
   const formatted = formatMemberDate(value);

@@ -126,7 +126,7 @@ const SessionsPage = observer(function SessionsPage() {
               className="pr-20 pl-9"
               aria-label="Search sessions"
               maxLength={100}
-              placeholder="Search contact or session ID"
+              placeholder="Search contacts or sessions"
               value={searchDraft}
               onChange={(event) => setSearchDraft(event.target.value)}
             />

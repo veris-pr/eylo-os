@@ -3,6 +3,7 @@ import { observer } from "mobx-react-lite";
 import type { ReactNode } from "react";
 
 import { useRootStore } from "@/app/use-root-store";
+import { TechnicalDetails } from "@/components/details";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -152,10 +153,7 @@ const ConversationDetails = observer(function ConversationDetails({
         )}
       </DetailsSection>
 
-      <details className="min-w-0 border p-4">
-        <summary className="cursor-pointer text-sm font-medium">
-          Technical details
-        </summary>
+      <TechnicalDetails className="border p-4">
         <div className="mt-4 min-w-0 space-y-5">
           <dl>
             <DetailRow label="Conversation ID">
@@ -183,7 +181,7 @@ const ConversationDetails = observer(function ConversationDetails({
             </div>
           )}
         </div>
-      </details>
+      </TechnicalDetails>
     </aside>
   );
 });
@@ -320,10 +318,7 @@ function ParticipantItem({
           )}
         </DetailRow>
       </dl>
-      <details className="text-xs text-muted-foreground">
-        <summary className="cursor-pointer select-none underline-offset-4 hover:underline">
-          Technical participant details
-        </summary>
+      <TechnicalDetails summary="Technical participant details">
         <dl className="mt-3 grid min-w-0 gap-2 border-l pl-3 sm:grid-cols-[8rem_minmax(0,1fr)]">
           <TechnicalValue label="Participant ID" value={participant.id} />
           <TechnicalValue label="Entity ID" value={participant.entityId} />
@@ -333,7 +328,7 @@ function ParticipantItem({
             value={participant.removedById}
           />
         </dl>
-      </details>
+      </TechnicalDetails>
     </li>
   );
 }

@@ -139,6 +139,7 @@ const ProvidersPage = observer(function ProvidersPage() {
                         </p>
                       ) : (
                         <ProviderStatusBadge
+                          compact
                           configured={status.configured}
                           ready={status.ready}
                           verified={status.verified}
@@ -199,6 +200,7 @@ const ProvidersPage = observer(function ProvidersPage() {
                             </span>
                           ) : (
                             <ProviderStatusBadge
+                              compact
                               configured={status.configured}
                               ready={status.ready}
                               verified={status.verified}

@@ -17,6 +17,7 @@ import { Link } from "react-router";
 import { useRootStore } from "@/app/use-root-store";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { DetailRow, TechnicalDetails } from "@/components/details";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -40,6 +41,28 @@ interface SessionTimelineProps {
 const visibleCategoryOptions = SESSION_TIMELINE_CATEGORIES.filter(
   (category) => category !== "technical",
 );
+
+const TECHNICAL_DETAIL_KEYS = new Set([
+  "agent_revision",
+  "connection_sequence",
+  "mapping_revision",
+  "provider_reference",
+  "source_revision",
+]);
+
+const ENUM_DETAIL_KEYS = new Set([
+  "channel",
+  "content_kind",
+  "current_status",
+  "entry_channel",
+  "kind",
+  "outcome",
+  "previous_status",
+  "request_status",
+  "speech_outcome",
+  "state",
+  "status",
+]);
 
 const categoryIcons: Record<SessionTimelineCategory, LucideIcon> = {
   session: Activity,
@@ -77,27 +100,9 @@ const SessionTimeline = observer(function SessionTimeline({
       aria-labelledby="session-timeline-title"
     >
       <header className="space-y-4 border-b p-4 sm:p-5">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h2 id="session-timeline-title" className="font-semibold">
-              Interaction timeline
-            </h2>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Stable display order uses event time, then event ID. It does not
-              imply cross-system execution order.
-            </p>
-          </div>
-          <label className="flex items-center gap-2 text-sm">
-            <Switch
-              checked={query.includeTechnical}
-              aria-label="Show technical events"
-              onCheckedChange={(includeTechnical) =>
-                onChange({ ...query, includeTechnical })
-              }
-            />
-            Show technical events
-          </label>
-        </div>
+        <h2 id="session-timeline-title" className="font-semibold">
+          Interaction timeline
+        </h2>
 
         <div
           className="flex flex-wrap gap-2"
@@ -128,6 +133,25 @@ const SessionTimeline = observer(function SessionTimeline({
             );
           })}
         </div>
+
+        <TechnicalDetails summary="Technical timeline options">
+          <div className="space-y-3 text-sm">
+            <p className="text-muted-foreground">
+              Events are displayed by event time, then event ID. This does not
+              imply cross-system execution order.
+            </p>
+            <label className="flex items-center gap-2">
+              <Switch
+                checked={query.includeTechnical}
+                aria-label="Show technical events"
+                onCheckedChange={(includeTechnical) =>
+                  onChange({ ...query, includeTechnical })
+                }
+              />
+              Show technical events
+            </label>
+          </div>
+        </TechnicalDetails>
       </header>
 
       {sessions.timelineErrorMessage !== null ? (
@@ -187,6 +211,9 @@ function TimelineEventItem({
 }) {
   const occurred = formatSessionDate(event.occurredAt);
   const details = Object.entries(event.details ?? {});
+  const primaryDetails = details.filter(([key]) => !isTechnicalDetail(key));
+  const technicalDetails = details.filter(([key]) => isTechnicalDetail(key));
+  const conversationId = event.details?.conversation_id;
   return (
     <li className="relative min-w-0 p-4 pl-10 sm:p-5 sm:pl-12">
       <span
@@ -207,9 +234,6 @@ function TimelineEventItem({
                 {formatSessionEnum(event.category)}
               </Badge>
             </div>
-            <p className="mt-1 break-all font-mono text-xs text-muted-foreground">
-              {event.eventType}
-            </p>
           </div>
           <time
             className="shrink-0 text-xs text-muted-foreground"
@@ -220,9 +244,9 @@ function TimelineEventItem({
           </time>
         </div>
 
-        {details.length > 0 ? (
+        {primaryDetails.length > 0 || typeof conversationId === "string" ? (
           <dl className="grid min-w-0 gap-x-4 gap-y-2 text-sm sm:grid-cols-[max-content_minmax(0,1fr)]">
-            {details.map(([key, value]) => (
+            {primaryDetails.map(([key, value]) => (
               <TimelineDetail
                 detailKey={key}
                 key={key}
@@ -230,12 +254,46 @@ function TimelineEventItem({
                 value={value}
               />
             ))}
+            {typeof conversationId === "string" ? (
+              <>
+                <dt className="font-medium text-muted-foreground">
+                  Conversation
+                </dt>
+                <dd className="min-w-0">
+                  <Link
+                    className="underline underline-offset-4"
+                    to={`/org/${organizationId}/conversations/${conversationId}`}
+                  >
+                    Open conversation
+                  </Link>
+                </dd>
+              </>
+            ) : null}
           </dl>
         ) : null}
 
-        <p className="break-all text-xs text-muted-foreground">
-          Subject: {formatSessionEnum(event.subjectType)} · {event.subjectId}
-        </p>
+        <TechnicalDetails>
+          <div className="divide-y">
+            <DetailRow label="Event type">
+              <span className="font-mono text-xs">{event.eventType}</span>
+            </DetailRow>
+            <DetailRow label="Subject kind">
+              {formatSessionEnum(event.subjectType)}
+            </DetailRow>
+            <DetailRow label="Subject ID">
+              <span className="break-all font-mono text-xs">
+                {event.subjectId}
+              </span>
+            </DetailRow>
+            {technicalDetails.map(([key, value]) => (
+              <DetailRow key={key} label={formatSessionEnum(key)}>
+                <span className="break-all font-mono text-xs">
+                  {formatTimelineValue(value)}
+                </span>
+              </DetailRow>
+            ))}
+          </div>
+        </TechnicalDetails>
       </div>
     </li>
   );
@@ -260,7 +318,7 @@ function TimelineDetail({
   value: unknown;
 }) {
   const label = formatSessionEnum(detailKey);
-  const rendered = formatTimelineValue(value);
+  const rendered = formatTimelineDetailValue(detailKey, value);
   return (
     <>
       <dt className="font-medium text-muted-foreground">{label}</dt>
@@ -278,6 +336,28 @@ function TimelineDetail({
       </dd>
     </>
   );
+}
+
+function isTechnicalDetail(key: string): boolean {
+  return (
+    TECHNICAL_DETAIL_KEYS.has(key) ||
+    key.endsWith("_id") ||
+    key.endsWith("_ids") ||
+    key.endsWith("_revision") ||
+    key.endsWith("_sequence")
+  );
+}
+
+function formatToolName(value: string): string {
+  return formatSessionEnum(value.replace(/__[a-z0-9]{8}$/iu, ""));
+}
+
+function formatTimelineDetailValue(detailKey: string, value: unknown): string {
+  if (typeof value === "string") {
+    if (detailKey === "tool_name") return formatToolName(value);
+    if (ENUM_DETAIL_KEYS.has(detailKey)) return formatSessionEnum(value);
+  }
+  return formatTimelineValue(value);
 }
 
 function formatTimelineValue(value: unknown): string {

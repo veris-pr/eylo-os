@@ -50,7 +50,7 @@ const MemoryReindexPanel = observer(function MemoryReindexPanel({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2
           id="memory-index-title"
-          className="text-xs font-semibold tracking-wide text-muted-foreground uppercase"
+          className="text-sm font-semibold"
         >
           Memory vector index
         </h2>

@@ -263,7 +263,7 @@ const AutomationFormPage = observer(function AutomationFormPage({
                   <SelectContent>
                     {automations.agents.map((agent) => (
                       <SelectItem key={agent.id} value={agent.id}>
-                        {agent.name} · revision {agent.publishedRevision}
+                        {agent.name}
                       </SelectItem>
                     ))}
                   </SelectContent>

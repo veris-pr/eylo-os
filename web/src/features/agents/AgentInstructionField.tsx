@@ -102,8 +102,8 @@ const AgentInstructionField = observer(function AgentInstructionField({
           {value === null
             ? "Not configured"
             : selected === null
-              ? `Selected: ${value}`
-              : `${selected.name} · published revision ${selected.published_revision}`}
+              ? "Selected template is unavailable"
+              : selected.name}
         </p>
       </div>
       <div className="flex shrink-0 items-center gap-2">

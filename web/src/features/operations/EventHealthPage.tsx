@@ -3,6 +3,7 @@ import { observer } from "mobx-react-lite";
 import { useEffect, type ReactNode } from "react";
 
 import { useRootStore } from "@/app/use-root-store";
+import { TechnicalDetails } from "@/components/details";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -127,7 +128,8 @@ function EventHealthDetails({ health }: { health: EventHealth }) {
         </dl>
       </section>
 
-      <section className="space-y-3" aria-labelledby="listener-health-title">
+      <TechnicalDetails summary="Local listener details">
+        <section className="space-y-3" aria-labelledby="listener-health-title">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 id="listener-health-title" className="font-medium">
@@ -163,18 +165,10 @@ function EventHealthDetails({ health }: { health: EventHealth }) {
           empty="No local handlers registered"
           items={health.local.handler_ids}
         />
-      </section>
+        </section>
+      </TechnicalDetails>
 
-      <section className="grid gap-6 xl:grid-cols-2">
-        <ConsumerList
-          description="Code-owned consumers available for durable delivery."
-          empty="No durable consumers registered"
-          items={health.durable.registered_consumers.map((consumer) => ({
-            detail: `${consumer.event_type} · v${consumer.event_version}`,
-            name: consumer.consumer_name,
-          }))}
-          title="Registered consumers"
-        />
+      {health.durable.unsupported_consumers.length === 0 ? null : (
         <ConsumerList
           danger
           description="Deliveries whose consumer contract is not registered in this process."
@@ -185,7 +179,19 @@ function EventHealthDetails({ health }: { health: EventHealth }) {
           }))}
           title="Unsupported consumers"
         />
-      </section>
+      )}
+
+      <TechnicalDetails summary="Registered consumer details">
+        <ConsumerList
+          description="Code-owned consumers available for durable delivery."
+          empty="No durable consumers registered"
+          items={health.durable.registered_consumers.map((consumer) => ({
+            detail: `${consumer.event_type} · v${consumer.event_version}`,
+            name: consumer.consumer_name,
+          }))}
+          title="Registered consumers"
+        />
+      </TechnicalDetails>
     </div>
   );
 }

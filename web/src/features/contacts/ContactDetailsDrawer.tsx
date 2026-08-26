@@ -2,6 +2,12 @@ import { Pencil, X } from "lucide-react";
 import { observer } from "mobx-react-lite";
 
 import { useRootStore } from "@/app/use-root-store";
+import {
+  DetailDisclosure,
+  DetailRow,
+  DetailSection,
+  TechnicalDetails,
+} from "@/components/details";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -77,11 +83,6 @@ const ContactDetailsDrawer = observer(function ContactDetailsDrawer({
                 <DetailRow label="Name">
                   {contact.name ?? "Not provided"}
                 </DetailRow>
-                <DetailRow label="External ID">
-                  <span className="break-all">
-                    {contact.externalId ?? "Not provided"}
-                  </span>
-                </DetailRow>
                 <DetailRow label="Lifecycle">
                   <Badge variant="outline">
                     {formatContactLifecycle(contact.lifecycle)}
@@ -115,7 +116,7 @@ const ContactDetailsDrawer = observer(function ContactDetailsDrawer({
                   )
                 )}
               </DetailSection>
-              <DetailSection title="Lifecycle dates">
+              <DetailDisclosure summary="Activity">
                 <DetailRow label="Created">
                   <DateValue value={contact.createdAt} />
                 </DetailRow>
@@ -127,12 +128,17 @@ const ContactDetailsDrawer = observer(function ContactDetailsDrawer({
                     <DateValue value={contact.deletionRequestedAt} />
                   </DetailRow>
                 ) : null}
-              </DetailSection>
-              <DetailSection title="References">
+              </DetailDisclosure>
+              <TechnicalDetails>
                 <DetailRow label="Contact ID">
                   <code className="break-all text-xs">{contact.id}</code>
                 </DetailRow>
-              </DetailSection>
+                <DetailRow label="External ID">
+                  <code className="break-all text-xs">
+                    {contact.externalId ?? "Not provided"}
+                  </code>
+                </DetailRow>
+              </TechnicalDetails>
             </div>
           ) : null}
         </div>
@@ -149,34 +155,6 @@ const ContactDetailsDrawer = observer(function ContactDetailsDrawer({
   );
 });
 
-function DetailSection({
-  children,
-  title,
-}: {
-  children: React.ReactNode;
-  title: string;
-}) {
-  return (
-    <section className="space-y-3">
-      <h3 className="text-sm font-medium">{title}</h3>
-      {children}
-    </section>
-  );
-}
-function DetailRow({
-  children,
-  label,
-}: {
-  children: React.ReactNode;
-  label: string;
-}) {
-  return (
-    <div className="grid gap-1 border-b pb-3 last:border-0 sm:grid-cols-[8rem_minmax(0,1fr)]">
-      <dt className="text-xs break-words text-muted-foreground">{label}</dt>
-      <dd className="min-w-0 text-sm break-words">{children}</dd>
-    </div>
-  );
-}
 function DateValue({ value }: { value: string | null | undefined }) {
   const formatted = formatContactDate(value);
   return formatted.exact === null ? (

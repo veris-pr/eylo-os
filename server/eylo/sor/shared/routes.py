@@ -13,6 +13,7 @@ from eylo.common.revisions import DefinitionRevisionError
 from eylo.modules.agents.models import AgentsModel
 from eylo.modules.auth.schemas import CurrentUserSchema
 from eylo.modules.auth.services.auth_service import get_current_user
+from eylo.modules.connections.domain import ExternalConnectionStatus
 from eylo.sor.runtime.adapters import SorAdapterUnavailableError
 from eylo.sor.runtime.agent_reads import SorAgentReadError, read_agent_view
 from eylo.sor.runtime.api_key_sources import (
@@ -46,6 +47,8 @@ from eylo.sor.shared.connector_services import (
     SorConnectorView,
 )
 from eylo.sor.shared.contracts import (
+    SorAppWebhookState,
+    SorChangeMode,
     SorFieldMappingDraft,
     SorProfile,
     SorStreamDraft,
@@ -60,7 +63,10 @@ from eylo.sor.shared.custom_datasets import (
 from eylo.sor.shared.grant_services import SorSourceGrantService
 from eylo.sor.shared.models import SorMappingRevisionModel
 from eylo.sor.shared.onboarding import SorOnboardingService
-from eylo.sor.shared.operational_reads import SorOperationalReadService
+from eylo.sor.shared.operational_reads import (
+    SorOperationalReadQueryError,
+    SorOperationalReadService,
+)
 from eylo.sor.shared.query import SorCollectionQuery, SorGridContract
 from eylo.sor.shared.reads import (
     SorCollectionReadService,
@@ -81,6 +87,7 @@ from eylo.sor.shared.schemas import (
     SorConnectorCreateRequest,
     SorConnectorListResponse,
     SorConnectorResponse,
+    SorConnectorWebhookSigningSecretUpdateRequest,
     SorCustomDatasetListResponse,
     SorCustomDatasetResponse,
     SorDiscoveryResponse,
@@ -120,6 +127,7 @@ from eylo.sor.shared.services import (
 )
 from eylo.sor.shared.sync_services import SorStreamService, SorSyncRunService
 from eylo.sor.shared.webhook_services import SorWebhookService
+from eylo.sor.shared.webhook_urls import public_webhook_api_base_url
 
 router = APIRouter(prefix="/{organization_id}/sor", tags=["systems-of-record"])
 logger = logging.getLogger(__name__)
@@ -196,6 +204,31 @@ async def get_sor_connector(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(error),
         ) from None
+
+
+@router.put(
+    "/connectors/{connector_id}/app-webhook-signing-secret",
+    response_model=SorConnectorResponse,
+)
+async def update_sor_connector_app_webhook_signing_secret(
+    organization_id: UUID,
+    connector_id: UUID,
+    request: SorConnectorWebhookSigningSecretUpdateRequest,
+    current_user: CurrentUserSchema = Depends(get_current_user),
+) -> SorConnectorResponse:
+    """Rotate one connector-owned app webhook secret without exposing it."""
+    _authorize(organization_id, current_user)
+    try:
+        async with start_transaction() as session:
+            view = await SorConnectorService(session).set_app_webhook_signing_secret(
+                organization_id=organization_id,
+                connector_id=connector_id,
+                signing_secret=request.signing_secret,
+                expected_secret_revision=request.expected_secret_revision,
+            )
+            return _connector_response(view)
+    except (SorConfigurationError, SorConflictError, SorNotFoundError) as error:
+        raise _configuration_error(error) from None
 
 
 @router.post(
@@ -281,6 +314,14 @@ def _connector_response(view: SorConnectorView) -> SorConnectorResponse:
         oauth_client_id=connector.oauth_client_id,
         oauth_callback_url=default_sor_callback_url(),
         has_oauth_client_secret=bool(connector.oauth_client_secret),
+        app_webhook_state=_app_webhook_state(view),
+        app_webhook_url=_app_webhook_url(view),
+        has_app_webhook_signing_secret=connector.webhook_signing_secret is not None,
+        app_webhook_signing_secret_revision=(
+            connector.webhook_signing_secret_revision
+        ),
+        vendor_account_external_id=connector.vendor_account_external_id,
+        vendor_account_display_name=connector.vendor_account_display_name,
         config_revision=connector.config_revision,
         configured_by=connector.configured_by,
         connection=(
@@ -297,6 +338,43 @@ def _connector_response(view: SorConnectorView) -> SorConnectorResponse:
         ),
         created_at=connector.created_at,
         updated_at=connector.updated_at,
+    )
+
+
+def _app_webhook_state(view: SorConnectorView) -> SorAppWebhookState:
+    connector = view.connector
+    manifest = get_sor_registry().get_manifest(
+        profile=connector.profile,
+        vendor_key=connector.vendor_key,
+    )
+    if (
+        manifest.change_mode is not SorChangeMode.APP_WEBHOOK
+        or connector.vendor_key != "linear"
+    ):
+        return SorAppWebhookState.NOT_APPLICABLE
+    if _app_webhook_url(view) is None:
+        return SorAppWebhookState.PUBLIC_ENDPOINT_REQUIRED
+    if connector.webhook_signing_secret is None:
+        return SorAppWebhookState.SIGNING_SECRET_REQUIRED
+    connection = view.connection
+    if connection is None or connection.status is ExternalConnectionStatus.INITIATED:
+        return SorAppWebhookState.AUTHORIZATION_REQUIRED
+    if connector.webhook_authorized_connection_revision != connection.revision:
+        return SorAppWebhookState.REINSTALLATION_REQUIRED
+    return SorAppWebhookState.ACTIVE
+
+
+def _app_webhook_url(view: SorConnectorView) -> str | None:
+    connector = view.connector
+    if connector.webhook_endpoint_key is None:
+        return None
+    try:
+        base_url = public_webhook_api_base_url()
+    except SorConfigurationError:
+        return None
+    return (
+        f"{base_url}/sor/webhooks/{connector.vendor_key}/apps/"
+        f"{connector.webhook_endpoint_key}"
     )
 
 
@@ -451,7 +529,9 @@ async def create_sor_source(
                 configuration=request.configuration,
                 selected_objects=request.selected_objects,
                 freshness_target_seconds=request.freshness_target_seconds,
-                required_sync_interval_seconds=(request.required_sync_interval_seconds),
+                required_sync_interval_seconds=(
+                    request.required_sync_interval_seconds
+                ),
             )
             return SorSourceResponse.model_validate(row)
     except (SorNotFoundError, SorConfigurationError, SorConflictError) as error:
@@ -487,9 +567,7 @@ async def create_api_key_sor_source(
                 onboarding_attempt_id=request.onboarding_attempt_id,
                 name=request.name,
                 freshness_target_seconds=request.freshness_target_seconds,
-                required_sync_interval_seconds=(
-                    request.required_sync_interval_seconds
-                ),
+                required_sync_interval_seconds=(request.required_sync_interval_seconds),
             )
             return SorSourceResponse.model_validate(source)
     except (
@@ -560,6 +638,8 @@ async def reauthorize_sor_source(
 async def get_sor_source_operations(
     organization_id: UUID,
     source_id: UUID,
+    cursor: Annotated[str | None, Query(min_length=1, max_length=2048)] = None,
+    limit: Annotated[int, Query(ge=1, le=50)] = 1,
     current_user: CurrentUserSchema = Depends(get_current_user),
 ) -> SorSourceOperationsResponse:
     """Show recent sync DAGs and canonical relationship resolution health."""
@@ -569,10 +649,17 @@ async def get_sor_source_operations(
             return await SorOperationalReadService(session).source_operations(
                 organization_id=organization_id,
                 source_id=source_id,
+                generation_cursor=cursor,
+                generation_limit=limit,
             )
     except SorNotFoundError as error:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(error),
+        ) from None
+    except SorOperationalReadQueryError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=str(error),
         ) from None
 

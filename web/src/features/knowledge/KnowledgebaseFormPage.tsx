@@ -9,6 +9,7 @@ import {
 } from "react-router";
 
 import { useRootStore } from "@/app/use-root-store";
+import { TechnicalDetails } from "@/components/details";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -437,13 +438,13 @@ function RetrievalSection({
                   ? form.isReferencesLoading
                     ? "Loading configurations…"
                     : "Choose a ready configuration"
-                  : `${selectedEmbedding.name} · ${selectedEmbedding.provider} · revision ${selectedEmbedding.revision}`}
+                  : `${selectedEmbedding.name} · ${selectedEmbedding.provider}`}
               </SelectValue>
             </SelectTrigger>
             <SelectContent>
               {form.readyEmbeddingConfigs.map((config) => (
                 <SelectItem key={config.id} value={config.id}>
-                  {config.name} · {config.provider} · revision {config.revision}
+                  {config.name} · {config.provider}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -481,18 +482,29 @@ function RetrievalSection({
                 form.serverKnowledgebase.embedding_dimensions ?? "Unavailable",
               )}
             />
-            <ReadOnlyValue
-              label="Revision"
-              value={String(
-                form.serverKnowledgebase.embedding_provider_config_revision ??
-                  "Unavailable",
-              )}
-            />
           </dl>
           <p className="text-xs leading-5 text-muted-foreground">
             Retrieval space is immutable after creation so stored vectors cannot
             silently change meaning.
           </p>
+          <TechnicalDetails>
+            <dl className="grid gap-3 text-sm sm:grid-cols-2">
+              <ReadOnlyValue
+                label="Configuration ID"
+                value={
+                  form.serverKnowledgebase.embedding_provider_config_id ??
+                  "Unavailable"
+                }
+              />
+              <ReadOnlyValue
+                label="Revision"
+                value={String(
+                  form.serverKnowledgebase
+                    .embedding_provider_config_revision ?? "Unavailable",
+                )}
+              />
+            </dl>
+          </TechnicalDetails>
         </div>
       ) : null}
 
@@ -585,11 +597,13 @@ function ScopeSection({
           <ImmutableField label="Scope">
             {formatScope(form.serverKnowledgebase?.scope ?? form.values.scope)}
           </ImmutableField>
-          <ImmutableField label="Scope ID">
-            <code className="break-all rounded-sm bg-muted px-1 py-0.5 text-xs">
-              {form.serverKnowledgebase?.scope_id ?? form.values.scopeId}
-            </code>
-          </ImmutableField>
+          <TechnicalDetails>
+            <ImmutableField label="Scope ID">
+              <code className="break-all rounded-sm bg-muted px-1 py-0.5 text-xs">
+                {form.serverKnowledgebase?.scope_id ?? form.values.scopeId}
+              </code>
+            </ImmutableField>
+          </TechnicalDetails>
         </div>
       ) : (
         <>

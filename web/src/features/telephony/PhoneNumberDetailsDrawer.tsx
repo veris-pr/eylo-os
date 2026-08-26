@@ -4,6 +4,12 @@ import { useState, type ReactNode } from "react";
 import { Link } from "react-router";
 
 import { useRootStore } from "@/app/use-root-store";
+import {
+  DetailDisclosure,
+  DetailRow,
+  DetailSection,
+  TechnicalDetails,
+} from "@/components/details";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -68,8 +74,7 @@ const PhoneNumberDetailsDrawer = observer(function PhoneNumberDetailsDrawer({
               {number?.label || number?.number || "Phone number"}
             </DrawerTitle>
             <DrawerDescription>
-              Carrier authority, provisioning state, and exact inbound or
-              outbound Agent routing.
+              Provisioning state and inbound or outbound Agent routing.
             </DrawerDescription>
           </DrawerHeader>
           <Button
@@ -174,7 +179,7 @@ function NumberDetails({
   const danger = number.status === "PROVISIONING_FAILED";
   return (
     <div className="space-y-8">
-      <DetailsSection title="Overview">
+      <DetailSection title="Overview">
         <DetailRow label="Number">
           <span className="font-medium">{number.number}</span>
         </DetailRow>
@@ -189,28 +194,25 @@ function NumberDetails({
             {formatTelephonyEnum(number.provider)}
           </Badge>
         </DetailRow>
-      </DetailsSection>
-      <DetailsSection title="Carrier authority">
+      </DetailSection>
+      <DetailSection title="Carrier configuration">
         <DetailRow label="Configuration">
           <Link
             className="inline-flex items-center gap-1 underline underline-offset-4"
             to={`/org/${organizationId}/providers/telephony/${number.providerConfigId}`}
           >
-            {configName(number.providerConfigId)} · revision{" "}
-            {number.providerConfigRevision}
+            {configName(number.providerConfigId)}
             <ExternalLink className="size-3.5" aria-hidden="true" />
           </Link>
         </DetailRow>
-        <DetailRow label="Provider reference">
-          <code className="break-all text-xs">
-            {number.providerReference ?? "Not recorded"}
-          </code>
-        </DetailRow>
-        <DetailRow label="Provisioning failure">
-          {number.provisioningFailureCode ?? "None"}
-        </DetailRow>
-      </DetailsSection>
-      <DetailsSection title="Agent routing">
+        {number.provisioningFailureCode === null ||
+        number.provisioningFailureCode === undefined ? null : (
+          <DetailRow label="Provisioning failure">
+            {number.provisioningFailureCode}
+          </DetailRow>
+        )}
+      </DetailSection>
+      <DetailSection title="Agent routing">
         <DetailRow label="Inbound Agent">
           {number.inboundAgentId === null ||
           number.inboundAgentId === undefined ? (
@@ -237,8 +239,8 @@ function NumberDetails({
             </Link>
           )}
         </DetailRow>
-      </DetailsSection>
-      <DetailsSection title="Record">
+      </DetailSection>
+      <DetailDisclosure summary="Activity">
         <DetailRow label="Created">
           {number.createdAt === undefined ? (
             created.label
@@ -257,42 +259,23 @@ function NumberDetails({
             </time>
           )}
         </DetailRow>
-        <DetailRow label="ID">
+      </DetailDisclosure>
+      <TechnicalDetails>
+        <DetailRow label="Phone number ID">
           <code className="break-all text-xs">{number.id}</code>
         </DetailRow>
-      </DetailsSection>
-    </div>
-  );
-}
-
-function DetailsSection({
-  children,
-  title,
-}: {
-  children: ReactNode;
-  title: string;
-}) {
-  return (
-    <section className="space-y-3">
-      <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-        {title}
-      </h2>
-      <dl className="divide-y border-y">{children}</dl>
-    </section>
-  );
-}
-
-function DetailRow({
-  children,
-  label,
-}: {
-  children: ReactNode;
-  label: string;
-}) {
-  return (
-    <div className="grid gap-1 py-3 sm:grid-cols-[11rem_minmax(0,1fr)] sm:gap-4">
-      <dt className="text-sm text-muted-foreground">{label}</dt>
-      <dd className="min-w-0 break-words text-sm">{children}</dd>
+        <DetailRow label="Provider config ID">
+          <code className="break-all text-xs">{number.providerConfigId}</code>
+        </DetailRow>
+        <DetailRow label="Provider config revision">
+          {number.providerConfigRevision}
+        </DetailRow>
+        <DetailRow label="Provider reference">
+          <code className="break-all text-xs">
+            {number.providerReference ?? "Not recorded"}
+          </code>
+        </DetailRow>
+      </TechnicalDetails>
     </div>
   );
 }

@@ -3764,6 +3764,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/{organization_id}/sor/connectors/{connector_id}/app-webhook-signing-secret": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Update Sor Connector App Webhook Signing Secret
+         * @description Rotate one connector-owned app webhook secret without exposing it.
+         */
+        put: operations["update_sor_connector_app_webhook_signing_secret_api__organization_id__sor_connectors__connector_id__app_webhook_signing_secret_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/{organization_id}/sor/connectors/{connector_id}/authorize": {
         parameters: {
             query?: never;
@@ -4818,6 +4838,26 @@ export interface paths {
          * @description Verify raw bytes before recording a deduplicated durable receipt.
          */
         post: operations["receive_sor_webhook_api_sor_webhooks__vendor_key___endpoint_token__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sor/webhooks/{vendor_key}/apps/{endpoint_key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Receive Sor App Webhook
+         * @description Verify one connector app delivery, then persist source-specific receipts.
+         */
+        post: operations["receive_sor_app_webhook_api_sor_webhooks__vendor_key__apps__endpoint_key__post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -11097,6 +11137,22 @@ export interface components {
              */
             required_sync_interval_seconds: number;
         };
+        /**
+         * SorAppWebhookAcceptedResponse
+         * @description Safe fan-out summary returned after verified persistence.
+         */
+        SorAppWebhookAcceptedResponse: {
+            /** Receipt Ids */
+            receipt_ids: string[];
+            /** Duplicate Count */
+            duplicate_count: number;
+        };
+        /**
+         * SorAppWebhookState
+         * @description Operator-visible lifecycle for one connector-owned app webhook.
+         * @enum {string}
+         */
+        SorAppWebhookState: "NOT_APPLICABLE" | "PUBLIC_ENDPOINT_REQUIRED" | "SIGNING_SECRET_REQUIRED" | "AUTHORIZATION_REQUIRED" | "REINSTALLATION_REQUIRED" | "ACTIVE";
         /** SorAuthorizationRedirectResponse */
         SorAuthorizationRedirectResponse: {
             /** Authorization Url */
@@ -11358,6 +11414,17 @@ export interface components {
             oauth_callback_url: string;
             /** Has Oauth Client Secret */
             has_oauth_client_secret: boolean;
+            app_webhook_state: components["schemas"]["SorAppWebhookState"];
+            /** App Webhook Url */
+            app_webhook_url: string | null;
+            /** Has App Webhook Signing Secret */
+            has_app_webhook_signing_secret: boolean;
+            /** App Webhook Signing Secret Revision */
+            app_webhook_signing_secret_revision: number;
+            /** Vendor Account External Id */
+            vendor_account_external_id: string | null;
+            /** Vendor Account Display Name */
+            vendor_account_display_name: string | null;
             /** Config Revision */
             config_revision: number;
             /**
@@ -11376,6 +11443,16 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+        };
+        /**
+         * SorConnectorWebhookSigningSecretUpdateRequest
+         * @description Rotate one connector-owned app webhook secret without returning it.
+         */
+        SorConnectorWebhookSigningSecretUpdateRequest: {
+            /** Signing Secret */
+            signing_secret: string;
+            /** Expected Secret Revision */
+            expected_secret_revision: number;
         };
         /** SorCustomDatasetListResponse */
         SorCustomDatasetListResponse: {
@@ -12118,6 +12195,10 @@ export interface components {
             relationships: components["schemas"]["SorRelationshipHealthResponse"];
             /** Generations */
             generations: components["schemas"]["SorSyncGenerationResponse"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+            /** Has More */
+            has_more: boolean;
         };
         /**
          * SorSourceReconnectRequest
@@ -24307,6 +24388,45 @@ export interface operations {
             };
         };
     };
+    update_sor_connector_app_webhook_signing_secret_api__organization_id__sor_connectors__connector_id__app_webhook_signing_secret_put: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                connector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SorConnectorWebhookSigningSecretUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorConnectorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     authorize_sor_connector_api__organization_id__sor_connectors__connector_id__authorize_post: {
         parameters: {
             query?: never;
@@ -24629,7 +24749,10 @@ export interface operations {
     };
     get_sor_source_operations_api__organization_id__sor_sources__source_id__operations_get: {
         parameters: {
-            query?: never;
+            query?: {
+                cursor?: string | null;
+                limit?: number;
+            };
             header?: {
                 "X-API-Key"?: string | null;
                 "X-Session-ID"?: string | null;
@@ -26325,6 +26448,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SorWebhookAcceptedResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    receive_sor_app_webhook_api_sor_webhooks__vendor_key__apps__endpoint_key__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                vendor_key: string;
+                endpoint_key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorAppWebhookAcceptedResponse"];
                 };
             };
             /** @description Validation Error */

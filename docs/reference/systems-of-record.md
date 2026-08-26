@@ -64,6 +64,14 @@ and Intercom use `APP_WEBHOOK`. Every other current adapter declares
 Periodic reconciliation remains the correctness path, so no separate freshness
 state is persisted.
 
+Linear's webhook belongs to the saved OAuth app connector, not to an individual
+source. Eylo generates one stable connector callback, stores the Linear signing
+secret encrypted, and fans each verified workspace event out only to sources
+whose selected objects include that event type. The Linear app webhook must be
+enabled before workspace authorization. Intercom retains its current Developer
+Hub, source-configured callback flow until its connector-owned ingress is
+implemented.
+
 Jira managed webhooks use the official OAuth dynamic-webhook REST resources.
 The source owns one opaque callback endpoint and one vendor subscription ID.
 Eylo registers the selected issue, comment, and Sprint events, renews the

@@ -65,6 +65,58 @@ def decrypt_connector_client_secret(
     return secret
 
 
+def encrypt_connector_webhook_signing_secret(
+    secret: str,
+    *,
+    organization_id: UUID,
+    connector_id: UUID,
+    secret_revision: int,
+) -> str:
+    """Encrypt one app webhook secret under its connector-owned revision."""
+    if not secret or len(secret.encode("utf-8")) > 4096:
+        raise SorSecretEnvelopeError(
+            "Webhook signing secret must contain 1 to 4096 bytes."
+        )
+    if secret_revision <= 0:
+        raise SorSecretEnvelopeError("Webhook signing secret revision is invalid.")
+    return get_secret_cipher().encrypt_field(
+        secret,
+        _context(
+            "connector-webhook-signing-secret",
+            organization_id=organization_id,
+            resource_id=connector_id,
+            revision=secret_revision,
+        ),
+    )
+
+
+def decrypt_connector_webhook_signing_secret(
+    envelope: str,
+    *,
+    organization_id: UUID,
+    connector_id: UUID,
+    secret_revision: int,
+) -> str:
+    """Authenticate the current connector-owned app webhook secret."""
+    try:
+        secret = get_secret_cipher().decrypt_field(
+            envelope,
+            _context(
+                "connector-webhook-signing-secret",
+                organization_id=organization_id,
+                resource_id=connector_id,
+                revision=secret_revision,
+            ),
+        )
+    except Exception as error:
+        raise SorSecretEnvelopeError(
+            "SOR connector webhook signing secret could not be authenticated."
+        ) from error
+    if not secret:
+        raise SorSecretEnvelopeError("SOR connector webhook signing secret is empty.")
+    return secret
+
+
 def encrypt_source_webhook_signing_secret(
     secret: str,
     *,

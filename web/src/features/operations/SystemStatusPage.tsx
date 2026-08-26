@@ -13,7 +13,6 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   formatOperationDate,
-  formatOperationEnum,
 } from "@/features/operations/operation-formatters";
 import type {
   EventHealth,
@@ -120,7 +119,7 @@ function SystemSnapshot({
           label="API"
         />
         <StatusCard
-          detail={`${events.local.handler_count} handlers · ${formatOperationEnum(events.local.process_role)}`}
+          detail={`${events.local.handler_count} handlers`}
           healthy={events.local.healthy}
           label="Local listeners"
         />
@@ -179,12 +178,6 @@ function SystemSnapshot({
           </DetailRow>
         </dl>
       </section>
-
-      <p className="border-l-2 pl-3 text-sm leading-6 text-muted-foreground">
-        This surface does not invent an aggregate platform status. Each row
-        reports a concrete health endpoint or queue fact; socket/provider
-        readiness remains separately verifiable.
-      </p>
     </div>
   );
 }

@@ -19,6 +19,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { SorFieldMappingSection } from "@/features/sor/SorFieldMappingSection";
+import { SorAppWebhookSetup } from "@/features/sor/SorAppWebhookSetup";
 import { formatSorIdentifier } from "@/features/sor/sor-formatters";
 import { openSorAuthorizationPopup } from "@/features/sor/sor-oauth-popup";
 import {
@@ -54,7 +55,6 @@ const SECTIONS: readonly {
     label: "Field mapping",
   },
   { description: "Freshness and cadence", id: "sync", label: "Sync" },
-  { description: "Inbound change signals", id: "webhooks", label: "Webhooks" },
   { description: "Agents allowed to use this source", id: "agents", label: "Agents" },
   { description: "Validate and activate", id: "review", label: "Review" },
 ];
@@ -383,6 +383,9 @@ const SorSourceFormPage = observer(function SorSourceFormPage() {
               copied={copied}
               isAuthorizing={isAuthorizing}
               isSaving={sor.connectors.isSaving}
+              isSavingAppWebhookSecret={
+                sor.connectors.isSavingAppWebhookSecret
+              }
               onboarding={onboarding}
               profile={profile}
               vendor={vendor}
@@ -400,6 +403,12 @@ const SorSourceFormPage = observer(function SorSourceFormPage() {
               }}
               onConnectApiKey={() => void connectApiKey()}
               onCreate={() => void createConnector()}
+              onSaveAppWebhookSecret={(secret) =>
+                onboarding.saveAppWebhookSigningSecret(
+                  activeOrganizationId,
+                  secret,
+                )
+              }
             />
           ) : section === "objects" ? (
             <ObjectsSection
@@ -424,11 +433,6 @@ const SorSourceFormPage = observer(function SorSourceFormPage() {
             </FormSection>
           ) : section === "sync" ? (
             <SyncSection onboarding={onboarding} />
-          ) : section === "webhooks" ? (
-            <WebhookSection
-              sourceName={onboarding.draft.sourceName}
-              vendor={vendor}
-            />
           ) : section === "agents" ? (
             <AgentAccessSection organizationId={activeOrganizationId} />
           ) : (
@@ -516,6 +520,7 @@ function ConnectionSection({
   copied,
   isAuthorizing,
   isSaving,
+  isSavingAppWebhookSecret,
   onboarding,
   onAuthorize,
   onApiKeyChange,
@@ -526,6 +531,7 @@ function ConnectionSection({
   onCopy,
   onConnectApiKey,
   onCreate,
+  onSaveAppWebhookSecret,
   profile,
   vendor,
 }: {
@@ -538,6 +544,7 @@ function ConnectionSection({
   copied: boolean;
   isAuthorizing: boolean;
   isSaving: boolean;
+  isSavingAppWebhookSecret: boolean;
   onboarding: ReturnType<typeof useRootStore>["sor"]["onboarding"];
   onAuthorize: () => void;
   onApiKeyChange: (value: string) => void;
@@ -548,6 +555,7 @@ function ConnectionSection({
   onCopy: () => void;
   onConnectApiKey: () => void;
   onCreate: () => void;
+  onSaveAppWebhookSecret: (secret: string) => Promise<boolean>;
   profile: SorProfileDefinition | null;
   vendor: SorVendorDefinition | null;
 }) {
@@ -813,9 +821,26 @@ function ConnectionSection({
               {onboarding.connector?.connection?.status ?? "Not connected"}
             </Badge>
           </div>
+          {vendor.vendorKey === "linear" &&
+          vendor.capabilities.changeMode === "APP_WEBHOOK" &&
+          onboarding.connector !== null ? (
+            <SorAppWebhookSetup
+              connector={onboarding.connector}
+              isSaving={isSavingAppWebhookSecret}
+              vendorName={vendor.displayName}
+              onSaveSecret={onSaveAppWebhookSecret}
+            />
+          ) : null}
           <Button
             disabled={
               isAuthorizing ||
+              (vendor.vendorKey === "linear" &&
+                vendor.capabilities.changeMode === "APP_WEBHOOK" &&
+                onboarding.connector?.app_webhook_state !==
+                  "AUTHORIZATION_REQUIRED" &&
+                onboarding.connector?.app_webhook_state !==
+                  "REINSTALLATION_REQUIRED" &&
+                onboarding.connector?.app_webhook_state !== "ACTIVE") ||
               onboarding.draft.selectedObjects.length === 0 ||
               !configurationValid ||
               (vendor.capabilities.requiresInstanceOriginInput &&
@@ -827,7 +852,10 @@ function ConnectionSection({
             <ExternalLink aria-hidden="true" />
             {isAuthorizing
               ? "Waiting for authorization…"
-              : "Authorize and verify"}
+              : onboarding.connector?.app_webhook_state ===
+                  "REINSTALLATION_REQUIRED"
+                ? `Reconnect ${vendor.displayName}`
+                : "Authorize and verify"}
           </Button>
         </div>
       ) : null}
@@ -1159,42 +1187,6 @@ function SyncSection({
         Incremental scheduling uses the selected vendor&apos;s executable
         strategy; the UI does not invent a renderer-side sync policy.
       </p>
-    </FormSection>
-  );
-}
-
-function WebhookSection({
-  sourceName,
-  vendor,
-}: {
-  sourceName: string;
-  vendor: SorVendorDefinition | null;
-}) {
-  const changeMode = vendor?.capabilities?.changeMode ?? "POLL_ONLY";
-  const supported =
-    changeMode === "MANAGED_WEBHOOK" ||
-    changeMode === "OPERATOR_WEBHOOK" ||
-    changeMode === "APP_WEBHOOK";
-  return (
-    <FormSection
-      description="Webhooks are hints to refetch authoritative source data, never trusted record payloads."
-      title="Webhooks"
-    >
-      <div className="flex flex-wrap items-center justify-between gap-3 border p-4">
-        <div>
-          <p className="font-medium">{sourceName.trim() || "This source"}</p>
-          <p className="text-sm text-muted-foreground">
-            {supported
-              ? "The adapter can verify webhook deliveries after activation."
-              : "This adapter currently uses scheduled reconciliation."}
-          </p>
-        </div>
-        <Badge variant="outline">
-          {supported
-            ? formatSorIdentifier(changeMode)
-            : "Scheduled reconciliation"}
-        </Badge>
-      </div>
     </FormSection>
   );
 }

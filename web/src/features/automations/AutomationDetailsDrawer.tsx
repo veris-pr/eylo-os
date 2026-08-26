@@ -1,9 +1,15 @@
 import { Ban, Pencil, Trash2, X } from "lucide-react";
 import { observer } from "mobx-react-lite";
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 import { Link } from "react-router";
 
 import { useRootStore } from "@/app/use-root-store";
+import {
+  DetailDisclosure,
+  DetailRow,
+  DetailSection,
+  TechnicalDetails,
+} from "@/components/details";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -222,11 +228,13 @@ function AutomationDetails({
   runs: readonly ScheduleRun[];
   schedule: ScheduleRecord;
 }) {
+  const { automations } = useRootStore();
   const next = formatAutomationDate(schedule.next_at);
   const last = formatAutomationDate(schedule.last_fired_at);
+  const agent = automations.agents.find((item) => item.id === schedule.agent_id);
   return (
     <div className="space-y-8">
-      <DetailsSection title="Status">
+      <DetailSection title="Status">
         <DetailRow label="Lifecycle">
           <Badge variant="outline">
             {formatAutomationEnum(schedule.lifecycle)}
@@ -253,8 +261,8 @@ function AutomationDetails({
         <DetailRow label="Last error">
           {schedule.last_error ?? "None"}
         </DetailRow>
-      </DetailsSection>
-      <DetailsSection title="Definition">
+      </DetailSection>
+      <DetailSection title="Definition">
         <DetailRow label="Action">
           <code className="break-all text-xs">{schedule.action}</code>
         </DetailRow>
@@ -265,24 +273,23 @@ function AutomationDetails({
         <DetailRow label="Missed runs">
           {formatAutomationEnum(schedule.misfire_policy)}
         </DetailRow>
-        <DetailRow label="Revision">{schedule.published_revision}</DetailRow>
         <DetailRow label="Agent">
           <Link
-            className="break-all underline underline-offset-4"
+            className="break-words underline underline-offset-4"
             to={`/org/${organizationId}/agents/${schedule.agent_id}`}
           >
-            {schedule.agent_id} · revision {schedule.agent_revision}
+            {agent?.name ?? schedule.agent_id}
           </Link>
         </DetailRow>
-      </DetailsSection>
-      <DetailsSection title="Payload">
+      </DetailSection>
+      <DetailDisclosure summary="Input payload">
         <pre className="overflow-x-auto whitespace-pre-wrap break-words py-3 text-xs">
           {JSON.stringify(schedule.payload, null, 2)}
         </pre>
-      </DetailsSection>
+      </DetailDisclosure>
       <section className="space-y-3">
         <div>
-          <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+          <h2 className="text-sm font-semibold">
             Run history
           </h2>
           <p className="mt-1 text-sm text-muted-foreground">
@@ -302,6 +309,22 @@ function AutomationDetails({
           </div>
         )}
       </section>
+      <TechnicalDetails>
+        <DetailRow label="Automation ID">
+          <code className="break-all text-xs">{schedule.id}</code>
+        </DetailRow>
+        <DetailRow label="Published revision">
+          {schedule.published_revision}
+        </DetailRow>
+        <DetailRow label="Agent authority">
+          <span className="block break-all font-mono text-xs">
+            {schedule.agent_id}
+          </span>
+          <span className="mt-1 block text-xs text-muted-foreground">
+            Revision {schedule.agent_revision}
+          </span>
+        </DetailRow>
+      </TechnicalDetails>
     </div>
   );
 }
@@ -321,7 +344,7 @@ function RunRow({
           className="text-sm font-medium underline underline-offset-4"
           to={`/org/${organizationId}/agent-runs/${run.agent_run_id}`}
         >
-          Agent run …{run.agent_run_id.slice(-12)}
+          Run scheduled {scheduled.label}
         </Link>
         <div className="flex gap-2">
           <Badge variant="outline">{formatAutomationEnum(run.lifecycle)}</Badge>
@@ -345,36 +368,6 @@ function RunRow({
   );
 }
 
-function DetailsSection({
-  children,
-  title,
-}: {
-  children: ReactNode;
-  title: string;
-}) {
-  return (
-    <section className="space-y-3">
-      <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-        {title}
-      </h2>
-      <dl className="divide-y border-y">{children}</dl>
-    </section>
-  );
-}
-function DetailRow({
-  children,
-  label,
-}: {
-  children: ReactNode;
-  label: string;
-}) {
-  return (
-    <div className="grid gap-1 py-3 sm:grid-cols-[10rem_minmax(0,1fr)] sm:gap-4">
-      <dt className="text-sm text-muted-foreground">{label}</dt>
-      <dd className="min-w-0 break-words text-sm">{children}</dd>
-    </div>
-  );
-}
 function DetailsSkeleton() {
   return (
     <div className="space-y-5">

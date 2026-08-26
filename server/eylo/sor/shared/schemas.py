@@ -12,6 +12,7 @@ from eylo.modules.connections.domain import (
     ExternalConnectionStatus,
 )
 from eylo.sor.shared.contracts import (
+    SorAppWebhookState,
     SorChangeMode,
     SorChangeStrategy,
     SorConfigurationFieldKind,
@@ -105,6 +106,13 @@ class SorConnectorCreateRequest(SorApiModel):
     oauth_client_secret: str = Field(min_length=1, max_length=4096)
 
 
+class SorConnectorWebhookSigningSecretUpdateRequest(SorApiModel):
+    """Rotate one connector-owned app webhook secret without returning it."""
+
+    signing_secret: str = Field(min_length=1, max_length=4096)
+    expected_secret_revision: int = Field(ge=0)
+
+
 class SorConnectorConnectionResponse(SorApiModel):
     id: UUID
     status: ExternalConnectionStatus
@@ -124,6 +132,12 @@ class SorConnectorResponse(SorApiModel):
     oauth_client_id: str
     oauth_callback_url: str
     has_oauth_client_secret: bool
+    app_webhook_state: SorAppWebhookState
+    app_webhook_url: str | None
+    has_app_webhook_signing_secret: bool
+    app_webhook_signing_secret_revision: int
+    vendor_account_external_id: str | None
+    vendor_account_display_name: str | None
     config_revision: int
     configured_by: UUID
     connection: SorConnectorConnectionResponse | None
@@ -348,6 +362,8 @@ class SorSourceOperationsResponse(SorApiModel):
     source_id: UUID
     relationships: SorRelationshipHealthResponse
     generations: tuple[SorSyncGenerationResponse, ...]
+    next_cursor: str | None
+    has_more: bool
 
 
 class SorFreshnessResponse(SorApiModel):
@@ -805,6 +821,7 @@ __all__ = [
     "SorConnectorCreateRequest",
     "SorConnectorListResponse",
     "SorConnectorResponse",
+    "SorConnectorWebhookSigningSecretUpdateRequest",
     "SorCollectionPageResponse",
     "SorCollectionRowResponse",
     "SorConnectionVerificationResponse",

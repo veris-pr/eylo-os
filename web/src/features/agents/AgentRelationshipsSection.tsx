@@ -434,7 +434,7 @@ function ToolPickerDialog({
             </span>
             <span className="text-xs text-muted-foreground">
               {isPublished
-                ? `Revision ${tool.publishedRevision}`
+                ? "Published"
                 : isSystemCatalogTool
                   ? "System tool"
                   : "Not published"}

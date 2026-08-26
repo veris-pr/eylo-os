@@ -403,6 +403,19 @@ class SorOnboardingStore {
     return connector;
   }
 
+  async saveAppWebhookSigningSecret(
+    organizationId: string,
+    signingSecret: string,
+  ): Promise<boolean> {
+    const connector = this.connector;
+    if (connector === null) return false;
+    return this.connectors.saveAppWebhookSigningSecret(
+      organizationId,
+      connector,
+      signingSecret,
+    );
+  }
+
   async beginAuthorization(
     organizationId: string,
     selectedObjects: readonly string[] = this.draft.selectedObjects,

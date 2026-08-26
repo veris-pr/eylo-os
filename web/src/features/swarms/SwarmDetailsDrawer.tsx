@@ -2,6 +2,12 @@ import { Pencil, X } from "lucide-react";
 import { observer } from "mobx-react-lite";
 
 import { useRootStore } from "@/app/use-root-store";
+import {
+  DetailDisclosure,
+  DetailRow,
+  DetailSection,
+  TechnicalDetails,
+} from "@/components/details";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -13,7 +19,10 @@ import {
   DrawerTitle,
 } from "@/components/ui/drawer";
 import { Skeleton } from "@/components/ui/skeleton";
-import { formatSwarmDate } from "@/features/swarms/swarm-formatters";
+import {
+  formatSwarmDate,
+  formatSwarmEnum,
+} from "@/features/swarms/swarm-formatters";
 import { SwarmLifecycleBadge } from "@/features/swarms/SwarmLifecycleBadge";
 
 interface SwarmDetailsDrawerProps {
@@ -41,7 +50,7 @@ const SwarmDetailsDrawer = observer(function SwarmDetailsDrawer({
         <DrawerHeader className="border-b p-5 pr-14 pb-5 text-left">
           <DrawerTitle>{swarm?.name ?? "Swarm details"}</DrawerTitle>
           <DrawerDescription>
-            Current draft topology and published lifecycle state.
+            Lifecycle, purpose, and the Agents in this Swarm.
           </DrawerDescription>
         </DrawerHeader>
         <Button
@@ -66,44 +75,20 @@ const SwarmDetailsDrawer = observer(function SwarmDetailsDrawer({
             </div>
           ) : swarm !== null ? (
             <div className="space-y-8">
-              <DetailsSection title="Overview">
-                <dl className="divide-y border-y">
-                  <DetailRow label="Lifecycle">
-                    <SwarmLifecycleBadge lifecycle={swarm.lifecycle} />
-                  </DetailRow>
-                  <DetailRow label="Description">
-                    {swarm.description?.trim() || "No description"}
-                  </DetailRow>
-                  <DetailRow label="Slug">
-                    <CodeValue>{swarm.slug}</CodeValue>
-                  </DetailRow>
-                  <DetailRow label="Swarm ID">
-                    <CodeValue>{swarm.id}</CodeValue>
-                  </DetailRow>
-                </dl>
-              </DetailsSection>
-              <DetailsSection title="Definition">
-                <dl className="divide-y border-y">
-                  <DetailRow label="Draft version">
-                    {swarm.draftVersion}
-                  </DetailRow>
-                  <DetailRow label="Draft state">
-                    <Badge variant="outline">
-                      {swarm.draftDirty ? "Changes pending" : "Current"}
-                    </Badge>
-                  </DetailRow>
-                  <DetailRow label="Published revision">
-                    {swarm.publishedRevision ?? "Not published"}
-                  </DetailRow>
-                  <DetailRow label="Created">
-                    <DateValue value={swarm.createdAt} />
-                  </DetailRow>
-                  <DetailRow label="Updated">
-                    <DateValue value={swarm.updatedAt} />
-                  </DetailRow>
-                </dl>
-              </DetailsSection>
-              <DetailsSection title="Agents">
+              <DetailSection title="Overview">
+                <DetailRow label="Lifecycle">
+                  <SwarmLifecycleBadge lifecycle={swarm.lifecycle} />
+                </DetailRow>
+                <DetailRow label="Description">
+                  {swarm.description?.trim() || "No description"}
+                </DetailRow>
+                <DetailRow label="Draft state">
+                  <Badge variant="outline">
+                    {swarm.draftDirty ? "Changes pending" : "Current"}
+                  </Badge>
+                </DetailRow>
+              </DetailSection>
+              <DetailSection title="Agents">
                 {swarms.isSelectedLoading ? (
                   <div
                     className="space-y-2 border-y py-3"
@@ -121,7 +106,7 @@ const SwarmDetailsDrawer = observer(function SwarmDetailsDrawer({
                     {swarms.selectedMemberViews.map(({ agent, mapping }) => (
                       <div className="py-3" key={mapping.id}>
                         <p className="break-words text-sm font-medium">
-                          {agent?.name ?? mapping.agentId}
+                          {agent?.name ?? "Unavailable Agent"}
                         </p>
                         {mapping.agentDescription?.trim() ? (
                           <p className="mt-1 text-sm leading-5 text-muted-foreground">
@@ -130,19 +115,43 @@ const SwarmDetailsDrawer = observer(function SwarmDetailsDrawer({
                         ) : null}
                         {agent !== null ? (
                           <div className="mt-2 flex flex-wrap gap-2">
-                            <Badge variant="outline">{agent.status}</Badge>
-                            <span className="text-xs text-muted-foreground">
+                            <Badge variant="outline">
+                              {formatSwarmEnum(agent.status)}
+                            </Badge>
+                            <Badge variant="outline">
                               {agent.publishedRevision == null
                                 ? "Not published"
-                                : `Revision ${agent.publishedRevision}`}
-                            </span>
+                                : "Published"}
+                            </Badge>
                           </div>
                         ) : null}
                       </div>
                     ))}
                   </div>
                 )}
-              </DetailsSection>
+              </DetailSection>
+              <DetailDisclosure summary="Activity">
+                <DetailRow label="Created">
+                  <DateValue value={swarm.createdAt} />
+                </DetailRow>
+                <DetailRow label="Updated">
+                  <DateValue value={swarm.updatedAt} />
+                </DetailRow>
+              </DetailDisclosure>
+              <TechnicalDetails>
+                <DetailRow label="Swarm ID">
+                  <CodeValue>{swarm.id}</CodeValue>
+                </DetailRow>
+                <DetailRow label="Slug">
+                  <CodeValue>{swarm.slug}</CodeValue>
+                </DetailRow>
+                <DetailRow label="Draft version">
+                  {swarm.draftVersion}
+                </DetailRow>
+                <DetailRow label="Published revision">
+                  {swarm.publishedRevision ?? "Not published"}
+                </DetailRow>
+              </TechnicalDetails>
             </div>
           ) : null}
         </div>
@@ -158,38 +167,6 @@ const SwarmDetailsDrawer = observer(function SwarmDetailsDrawer({
     </Drawer>
   );
 });
-
-function DetailsSection({
-  children,
-  title,
-}: {
-  children: React.ReactNode;
-  title: string;
-}) {
-  return (
-    <section className="space-y-3">
-      <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-        {title}
-      </h2>
-      {children}
-    </section>
-  );
-}
-
-function DetailRow({
-  children,
-  label,
-}: {
-  children: React.ReactNode;
-  label: string;
-}) {
-  return (
-    <div className="grid gap-1 py-3 sm:grid-cols-[9rem_minmax(0,1fr)] sm:gap-4">
-      <dt className="text-sm text-muted-foreground">{label}</dt>
-      <dd className="min-w-0 text-sm leading-5 break-words">{children}</dd>
-    </div>
-  );
-}
 
 function DateValue({ value }: { value: string | null | undefined }) {
   const formatted = formatSwarmDate(value);

@@ -24,6 +24,14 @@ import {
 import type { SorCollectionRow, SorGridColumn } from "@/features/sor/sor.types";
 import { cn } from "@/lib/utils";
 
+const PERSON_COLUMN_KEYS = new Set([
+  "assignee",
+  "author",
+  "created_by",
+  "owner",
+  "reporter",
+]);
+
 function SorTableGridRenderer({
   ariaLabel,
   intents,
@@ -69,6 +77,7 @@ function SorTableGridRenderer({
                 className={cn(
                   "whitespace-normal",
                   column.key === wideColumnKey && "w-1/4",
+                  isPersonColumn(column) && "w-40",
                 )}
                 key={column.key}
               >
@@ -312,6 +321,10 @@ function preferredIdentityColumn(
     columns.find((column) => column.importance === "PRIMARY") ??
     columns[0]
   );
+}
+
+function isPersonColumn(column: SorGridColumn): boolean {
+  return PERSON_COLUMN_KEYS.has(column.key);
 }
 
 function recordLabel(

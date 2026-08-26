@@ -3,6 +3,12 @@ import { observer } from "mobx-react-lite";
 import { useEffect } from "react";
 
 import { useRootStore } from "@/app/use-root-store";
+import {
+  DetailDisclosure,
+  DetailRow,
+  DetailSection,
+  TechnicalDetails,
+} from "@/components/details";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -66,7 +72,7 @@ const AgentDetailsDrawer = observer(function AgentDetailsDrawer({
             {agents.selectedAgent?.name ?? "Agent details"}
           </DrawerTitle>
           <DrawerDescription>
-            Current saved configuration and exact published runtime authority.
+            Lifecycle, runtime behavior, providers, and data access.
           </DrawerDescription>
         </DrawerHeader>
         <Button
@@ -128,7 +134,7 @@ const AgentDetails = observer(function AgentDetails({
 
   return (
     <div className="space-y-8">
-      <DetailsSection title="Overview">
+      <DetailSection title="Overview">
         <DetailRow label="Status">
           <AgentStatusBadge status={agent.status} />
         </DetailRow>
@@ -138,34 +144,18 @@ const AgentDetails = observer(function AgentDetails({
         <DetailRow label="Description">
           {agent.description?.trim() || "No description"}
         </DetailRow>
-        <DetailRow label="Slug">
-          <CodeValue>{agent.slug}</CodeValue>
-        </DetailRow>
-        <DetailRow label="Agent ID">
-          <CodeValue>{agent.id}</CodeValue>
-        </DetailRow>
-      </DetailsSection>
+      </DetailSection>
 
-      <DetailsSection title="Lifecycle">
+      <DetailSection title="Lifecycle">
         <DetailRow label="Definition state">
           <Badge variant="outline">{formatAgentEnum(agent.lifecycle)}</Badge>
         </DetailRow>
-        <DetailRow label="Draft version">{agent.draftVersion}</DetailRow>
         <DetailRow label="Unpublished changes">
           {agent.draftDirty ? "Yes" : "No"}
         </DetailRow>
-        <DetailRow label="Published revision">
-          {agent.publishedRevision ?? "Not published"}
-        </DetailRow>
-        <DetailRow label="Created">
-          <AgentDateTime value={agent.createdAt} />
-        </DetailRow>
-        <DetailRow label="Updated">
-          <AgentDateTime value={agent.updatedAt} />
-        </DetailRow>
-      </DetailsSection>
+      </DetailSection>
 
-      <DetailsSection title="Runtime">
+      <DetailSection title="Runtime">
         <DetailRow label="Implementation">
           {agent.implementation ?? "Prompt driven"}
         </DetailRow>
@@ -177,12 +167,7 @@ const AgentDetails = observer(function AgentDetails({
             <NamedReference
               id={agent.instructionTemplateId}
               name={instruction?.name ?? null}
-              metadata={
-                instruction?.published_revision === null ||
-                instruction?.published_revision === undefined
-                  ? null
-                  : `Published revision ${instruction.published_revision}`
-              }
+              metadata={null}
             />
           )}
         </DetailRow>
@@ -199,20 +184,15 @@ const AgentDetails = observer(function AgentDetails({
             <NamedReference
               id={agent.voiceConfigId}
               name={voiceConfig?.name ?? null}
-              metadata={
-                agent.voiceConfigRevision === null ||
-                agent.voiceConfigRevision === undefined
-                  ? "Current Agent draft binding"
-                  : `Voice Config revision ${agent.voiceConfigRevision}`
-              }
+              metadata={null}
             />
           )}
         </DetailRow>
-      </DetailsSection>
+      </DetailSection>
 
       <EffectivePublishedVoiceStack />
 
-      <DetailsSection title="Provider configuration">
+      <DetailSection title="Provider configuration">
         {providerReferences(agent).map((reference) => {
           const option = agents.references.getOption(
             reference.field,
@@ -226,19 +206,15 @@ const AgentDetails = observer(function AgentDetails({
                 <NamedReference
                   id={reference.id}
                   name={option?.label ?? null}
-                  metadata={
-                    reference.revision === null
-                      ? (option?.provider ?? null)
-                      : `${option?.provider ?? "Provider"} · revision ${reference.revision}`
-                  }
+                  metadata={option?.provider ?? null}
                 />
               )}
             </DetailRow>
           );
         })}
-      </DetailsSection>
+      </DetailSection>
 
-      <DetailsSection title="Model behavior">
+      <DetailSection title="Model behavior">
         <DetailRow label="Model">
           {llmOverrides?.model ?? "Use provider config"}
         </DetailRow>
@@ -261,9 +237,9 @@ const AgentDetails = observer(function AgentDetails({
             ? "Use provider config"
             : llmOverrides.stopSequences.join(" · ")}
         </DetailRow>
-      </DetailsSection>
+      </DetailSection>
 
-      <DetailsSection title="Runtime access">
+      <DetailSection title="Runtime access">
         <DetailRow label="Knowledgebases">
           {agents.access.isKnowledgeLoading &&
           agents.access.knowledgebaseGrants.length === 0
@@ -317,7 +293,43 @@ const AgentDetails = observer(function AgentDetails({
             />
           )}
         </DetailRow>
-      </DetailsSection>
+      </DetailSection>
+
+      <DetailDisclosure summary="Activity">
+        <DetailRow label="Created">
+          <AgentDateTime value={agent.createdAt} />
+        </DetailRow>
+        <DetailRow label="Updated">
+          <AgentDateTime value={agent.updatedAt} />
+        </DetailRow>
+      </DetailDisclosure>
+
+      <TechnicalDetails>
+        <DetailRow label="Agent ID">
+          <CodeValue>{agent.id}</CodeValue>
+        </DetailRow>
+        <DetailRow label="Slug">
+          <CodeValue>{agent.slug}</CodeValue>
+        </DetailRow>
+        <DetailRow label="Draft version">{agent.draftVersion}</DetailRow>
+        <DetailRow label="Published revision">
+          {agent.publishedRevision ?? "Not published"}
+        </DetailRow>
+        <DetailRow label="Instruction template ID">
+          <CodeValue>{agent.instructionTemplateId ?? "Not configured"}</CodeValue>
+        </DetailRow>
+        <DetailRow label="Voice Config authority">
+          <AuthorityValue
+            id={agent.voiceConfigId ?? null}
+            revision={agent.voiceConfigRevision ?? null}
+          />
+        </DetailRow>
+        {providerReferences(agent).map((reference) => (
+          <DetailRow key={reference.label} label={`${reference.label} authority`}>
+            <AuthorityValue id={reference.id} revision={reference.revision} />
+          </DetailRow>
+        ))}
+      </TechnicalDetails>
     </div>
   );
 });
@@ -330,18 +342,18 @@ const EffectivePublishedVoiceStack = observer(
 
     if (effectiveVoice.isLoading && stack === null) {
       return (
-        <DetailsSection title="Effective published voice stack">
+        <DetailSection title="Effective published voice stack">
           <DetailRow label="State">Loading published stack…</DetailRow>
           <DetailRow label="Authority">Loading exact revisions…</DetailRow>
-        </DetailsSection>
+        </DetailSection>
       );
     }
     if (effectiveVoice.errorMessage !== null && stack === null) {
       return (
-        <DetailsSection title="Effective published voice stack">
+        <DetailSection title="Effective published voice stack">
           <DetailRow label="State">Unavailable</DetailRow>
           <DetailRow label="Reason">{effectiveVoice.errorMessage}</DetailRow>
-        </DetailsSection>
+        </DetailSection>
       );
     }
     if (stack === null) {
@@ -355,7 +367,7 @@ const EffectivePublishedVoiceStack = observer(
           null);
 
     return (
-      <DetailsSection title="Effective published voice stack">
+      <DetailSection title="Effective published voice stack">
         <DetailRow label="State">
           <Badge variant="outline">{formatAgentEnum(stack.state)}</Badge>
         </DetailRow>
@@ -365,9 +377,6 @@ const EffectivePublishedVoiceStack = observer(
           </DetailRow>
         ) : (
           <>
-            <DetailRow label="Agent revision">
-              {stack.agentRevision ?? "Unavailable"}
-            </DetailRow>
             {stack.state === "text_only" ? (
               <DetailRow label="Voice">Not configured</DetailRow>
             ) : (
@@ -380,7 +389,7 @@ const EffectivePublishedVoiceStack = observer(
                     <NamedReference
                       id={stack.voiceConfig.id}
                       name={voiceConfig?.name ?? null}
-                      metadata={`Revision ${stack.voiceConfig.revision}`}
+                      metadata={null}
                     />
                   )}
                 </DetailRow>
@@ -418,7 +427,7 @@ const EffectivePublishedVoiceStack = observer(
             )}
           </>
         )}
-      </DetailsSection>
+      </DetailSection>
     );
   },
 );
@@ -442,7 +451,7 @@ const EffectiveProviderRow = observer(function EffectiveProviderRow({
         <NamedReference
           id={reference.id}
           name={option?.label ?? null}
-          metadata={`${option?.provider ?? "Provider"} · revision ${reference.revision}`}
+          metadata={option?.provider ?? "Provider"}
         />
       )}
     </DetailRow>
@@ -466,11 +475,26 @@ function NamedReference({
           {metadata}
         </span>
       ) : null}
-      {name !== null ? (
-        <code className="mt-1 block break-all text-[0.6875rem] text-muted-foreground">
-          {id}
-        </code>
-      ) : null}
+    </span>
+  );
+}
+
+function AuthorityValue({
+  id,
+  revision,
+}: {
+  id: string | null;
+  revision: number | null;
+}) {
+  if (id === null) {
+    return "Not configured";
+  }
+  return (
+    <span className="space-y-1">
+      <CodeValue>{id}</CodeValue>
+      <span className="block text-xs text-muted-foreground">
+        {revision === null ? "Current draft binding" : `Revision ${revision}`}
+      </span>
     </span>
   );
 }
@@ -521,38 +545,6 @@ function providerReferences(agent: Agent): ProviderReference[] {
       revision: agent.memoryProviderConfigRevision ?? null,
     },
   ];
-}
-
-function DetailsSection({
-  children,
-  title,
-}: {
-  children: React.ReactNode;
-  title: string;
-}) {
-  return (
-    <section className="space-y-3">
-      <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-        {title}
-      </h2>
-      <dl className="divide-y border-y">{children}</dl>
-    </section>
-  );
-}
-
-function DetailRow({
-  children,
-  label,
-}: {
-  children: React.ReactNode;
-  label: string;
-}) {
-  return (
-    <div className="grid gap-1 py-3 sm:grid-cols-[9rem_minmax(0,1fr)] sm:gap-4">
-      <dt className="text-sm text-muted-foreground">{label}</dt>
-      <dd className="min-w-0 text-sm leading-5">{children}</dd>
-    </div>
-  );
 }
 
 function CodeValue({ children }: { children: React.ReactNode }) {

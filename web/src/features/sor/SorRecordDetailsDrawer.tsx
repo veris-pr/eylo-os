@@ -19,6 +19,12 @@ import {
   type ConversationTimelineEntry,
   type ConversationTimelineLabel,
 } from "@/components/audit/ConversationTimeline";
+import {
+  DetailDisclosure,
+  DetailRow,
+  DetailSection,
+  TechnicalDetails,
+} from "@/components/details";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -69,6 +75,13 @@ const ISSUE_OVERVIEW_RELATION_KINDS = new Set([
   "team",
 ]);
 
+const RECORD_IDENTITY_KEYS = new Set(["key", "name", "subject", "title"]);
+const RECORD_SOURCE_CONTEXT_KEYS = new Set([
+  "projected_at",
+  "source",
+  "source_updated_at",
+]);
+
 const SorRecordDetailsDrawer = observer(function SorRecordDetailsDrawer({
   columns,
   datasetId,
@@ -112,7 +125,7 @@ const SorRecordDetailsDrawer = observer(function SorRecordDetailsDrawer({
     }
   }, [collection, datasetId, entity, organizationId, profile, recordId]);
 
-  const title = recordTitle(collection.detail);
+  const heading = recordHeading(collection.detail);
   const isSupportTicket = profile === "support" && entity === "ticket";
   const isKnowledgeDocument = profile === "knowledge" && entity === "document";
 
@@ -131,11 +144,16 @@ const SorRecordDetailsDrawer = observer(function SorRecordDetailsDrawer({
           </Button>
           <div className="flex min-w-0 flex-wrap items-start justify-between gap-4">
             <div className="min-w-0 space-y-2">
+              {heading.identifier === null ? null : (
+                <p className="text-sm font-medium text-muted-foreground">
+                  {heading.identifier}
+                </p>
+              )}
               <h1
                 className="break-words text-2xl font-semibold tracking-tight"
                 id="sor-specialized-record-title"
               >
-                {title}
+                {heading.title}
               </h1>
               {collection.detail === null ? null : (
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -211,6 +229,7 @@ const SorRecordDetailsDrawer = observer(function SorRecordDetailsDrawer({
                   audit={collection.knowledgeDocumentAudit}
                   errorMessage={collection.knowledgeDocumentAuditErrorMessage}
                   isLoading={collection.isKnowledgeDocumentAuditLoading}
+                  relations={collection.detail.relations}
                 />
               ) : (
                 <SupportTicketContext
@@ -219,7 +238,9 @@ const SorRecordDetailsDrawer = observer(function SorRecordDetailsDrawer({
                   isLoading={collection.isSupportTicketAuditLoading}
                 />
               )}
-              <RecordRelationships relations={collection.detail.relations} />
+              {isKnowledgeDocument ? null : (
+                <RecordRelationships relations={collection.detail.relations} />
+              )}
               <RecordProvenance detail={collection.detail} />
             </aside>
           </div>
@@ -244,7 +265,12 @@ const SorRecordDetailsDrawer = observer(function SorRecordDetailsDrawer({
         }
       >
         <DrawerHeader className="border-b p-5 pr-14 pb-5 text-left">
-          <DrawerTitle>{title}</DrawerTitle>
+          {heading.identifier === null ? null : (
+            <p className="text-sm font-medium text-muted-foreground">
+              {heading.identifier}
+            </p>
+          )}
+          <DrawerTitle>{heading.title}</DrawerTitle>
           <DrawerDescription>
             {datasetId === undefined
               ? "Record details, relationships, source context, and freshness."
@@ -293,8 +319,8 @@ const SorRecordDetailsDrawer = observer(function SorRecordDetailsDrawer({
                     audit={collection.knowledgeDocumentAudit}
                     errorMessage={collection.knowledgeDocumentAuditErrorMessage}
                     isLoading={collection.isKnowledgeDocumentAuditLoading}
+                    relations={collection.detail.relations}
                   />
-                  <RecordRelationships relations={collection.detail.relations} />
                   <RecordProvenance detail={collection.detail} />
                 </div>
               </div>
@@ -358,35 +384,55 @@ function RecordOverview({
   columns: readonly SorGridColumn[];
   detail: SorRecordDetail;
 }) {
-  const { record } = detail;
-  const sourceUrl = safeExternalUrl(record.source_url);
+  const recordColumns = columns.filter(
+    (column) =>
+      !RECORD_IDENTITY_KEYS.has(column.key) &&
+      !RECORD_SOURCE_CONTEXT_KEYS.has(column.key),
+  );
+  const supportingColumns = recordColumns.filter(
+    (column) => column.importance === "METADATA" && !column.custom,
+  );
+  const primaryColumns = recordColumns.filter(
+    (column) => !supportingColumns.includes(column),
+  );
   return (
-    <DetailsSection title="Record details">
-      {columns.map((column) => (
-        <DetailRow key={column.key} label={column.label}>
-          <FieldValue
-            kind={column.kind}
-            rawValue={record.values[column.key]}
-            value={
-              record.display_values[column.key] ?? record.values[column.key]
-            }
-          />
-        </DetailRow>
-      ))}
-      {sourceUrl ? (
-        <DetailRow label="Source record">
-          <a
-            className="inline-flex items-center gap-1 break-all underline underline-offset-4"
-            href={sourceUrl}
-            rel="noreferrer"
-            target="_blank"
-          >
-            Open in {record.source_name}
-            <ExternalLink className="size-3.5 shrink-0" aria-hidden="true" />
-          </a>
-        </DetailRow>
-      ) : null}
-    </DetailsSection>
+    <>
+      {primaryColumns.length === 0 ? null : (
+        <DetailSection title="Details">
+          {primaryColumns.map((column) => (
+            <RecordField column={column} detail={detail} key={column.key} />
+          ))}
+        </DetailSection>
+      )}
+      {supportingColumns.length === 0 ? null : (
+        <DetailDisclosure summary="Activity and dates">
+          {supportingColumns.map((column) => (
+            <RecordField column={column} detail={detail} key={column.key} />
+          ))}
+        </DetailDisclosure>
+      )}
+    </>
+  );
+}
+
+function RecordField({
+  column,
+  detail,
+}: {
+  column: SorGridColumn;
+  detail: SorRecordDetail;
+}) {
+  return (
+    <DetailRow label={column.label}>
+      <FieldValue
+        kind={column.kind}
+        rawValue={detail.record.values[column.key]}
+        value={
+          detail.record.display_values[column.key] ??
+          detail.record.values[column.key]
+        }
+      />
+    </DetailRow>
   );
 }
 
@@ -396,7 +442,7 @@ function RecordRelationships({
   relations: readonly SorRecordRelation[];
 }) {
   return (
-    <DetailsSection title="Relationships">
+    <DetailSection title="Relationships">
       {relations.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           No record relationships are available.
@@ -439,7 +485,7 @@ function RecordRelationships({
           })}
         </div>
       )}
-    </DetailsSection>
+    </DetailSection>
   );
 }
 
@@ -540,14 +586,11 @@ function KnowledgeDocumentContent({
           Related document context could not be loaded. {errorMessage}
         </div>
       ) : showProjectionStructure && audit !== null ? (
-        <details className="mt-8 border p-4">
-          <summary className="cursor-pointer text-sm font-medium">
-            Document structure
-          </summary>
+        <DetailDisclosure className="mt-8 border p-4" summary="Document structure">
           <div className="mt-4">
             <KnowledgeBlockAudit audit={audit} />
           </div>
-        </details>
+        </DetailDisclosure>
       ) : null}
     </div>
   );
@@ -627,77 +670,86 @@ function KnowledgeDocumentContext({
   audit,
   errorMessage,
   isLoading,
+  relations,
 }: {
   audit: SorKnowledgeDocumentAudit | null;
   errorMessage: string | null;
   isLoading: boolean;
+  relations: readonly SorRecordRelation[];
 }) {
   if (errorMessage !== null) return null;
   if (isLoading && audit === null) {
     return (
-      <DetailsSection title="Document context">
+      <DetailSection title="Document context">
         <Skeleton className="h-28 w-full" />
-      </DetailsSection>
+      </DetailSection>
     );
   }
   if (audit === null) return null;
 
   return (
     <>
-      <DetailsSection title="Document context">
-        <KnowledgeResolvedContext
-          icon={Library}
-          label="Space or data source"
-          noun="spaces"
-          status={audit.space_status}
-        >
-          {audit.space === null ? (
-            <p className="text-sm text-muted-foreground">
-              No matching space or data source is available.
-            </p>
-          ) : (
-            <div className="min-w-0 space-y-1 text-sm">
-              <p className="break-words font-medium">{audit.space.name}</p>
-              <p className="text-muted-foreground">
-                {formatSorIdentifier(audit.space.kind)}
-              </p>
-              {audit.space.source_url ? (
-                <SourceLink href={audit.space.source_url} label="Open source" />
-              ) : null}
-            </div>
-          )}
-        </KnowledgeResolvedContext>
-
-        <KnowledgeResolvedContext
-          icon={UserRound}
-          label="Author"
-          noun="authors"
-          status={audit.author_status}
-        >
-          {audit.author === null ? (
-            <p className="text-sm text-muted-foreground">
-              No matching author is available.
-            </p>
-          ) : (
-            <div className="min-w-0 space-y-1 text-sm">
-              <p className="break-words font-medium">{audit.author.name}</p>
-              {audit.author.primary_email ? (
-                <p className="break-all text-muted-foreground">
-                  {audit.author.primary_email}
-                </p>
-              ) : null}
-              {audit.author.kind ? (
-                <Badge variant="outline">
-                  {formatSorIdentifier(audit.author.kind)}
-                </Badge>
-              ) : null}
-            </div>
-          )}
-        </KnowledgeResolvedContext>
-      </DetailsSection>
-
-      <KnowledgeProperties audit={audit} />
       <KnowledgeAttachments audit={audit} />
+      <TechnicalDetails summary="Technical document data">
+        <div className="space-y-8">
+          <DetailSection title="Resolved source context">
+            <KnowledgeResolvedContext
+              icon={Library}
+              label="Space or data source"
+              noun="spaces"
+              status={audit.space_status}
+            >
+              {audit.space === null ? (
+                <p className="text-sm text-muted-foreground">
+                  No matching space or data source is available.
+                </p>
+              ) : (
+                <div className="min-w-0 space-y-1 text-sm">
+                  <p className="break-words font-medium">{audit.space.name}</p>
+                  <p className="text-muted-foreground">
+                    {formatSorIdentifier(audit.space.kind)}
+                  </p>
+                  {audit.space.source_url ? (
+                    <SourceLink
+                      href={audit.space.source_url}
+                      label="Open source"
+                    />
+                  ) : null}
+                </div>
+              )}
+            </KnowledgeResolvedContext>
+
+            <KnowledgeResolvedContext
+              icon={UserRound}
+              label="Author"
+              noun="authors"
+              status={audit.author_status}
+            >
+              {audit.author === null ? (
+                <p className="text-sm text-muted-foreground">
+                  No matching author is available.
+                </p>
+              ) : (
+                <div className="min-w-0 space-y-1 text-sm">
+                  <p className="break-words font-medium">{audit.author.name}</p>
+                  {audit.author.primary_email ? (
+                    <p className="break-all text-muted-foreground">
+                      {audit.author.primary_email}
+                    </p>
+                  ) : null}
+                  {audit.author.kind ? (
+                    <Badge variant="outline">
+                      {formatSorIdentifier(audit.author.kind)}
+                    </Badge>
+                  ) : null}
+                </div>
+              )}
+            </KnowledgeResolvedContext>
+          </DetailSection>
+          <KnowledgeProperties audit={audit} />
+          <RecordRelationships relations={relations} />
+        </div>
+      </TechnicalDetails>
     </>
   );
 }
@@ -735,7 +787,7 @@ function KnowledgeResolvedContext({
 
 function KnowledgeProperties({ audit }: { audit: SorKnowledgeDocumentAudit }) {
   return (
-    <DetailsSection title="Source properties">
+    <DetailSection title="Source properties">
       <AuditStatus status={audit.properties_status} />
       {audit.properties_status !== "AVAILABLE" ? (
         <p className="text-sm text-muted-foreground">
@@ -777,13 +829,13 @@ function KnowledgeProperties({ audit }: { audit: SorKnowledgeDocumentAudit }) {
           Showing the first 250 imported properties.
         </p>
       ) : null}
-    </DetailsSection>
+    </DetailSection>
   );
 }
 
 function KnowledgeAttachments({ audit }: { audit: SorKnowledgeDocumentAudit }) {
   return (
-    <DetailsSection title="Attachments">
+    <DetailSection title="Attachments">
       <AuditStatus icon={Paperclip} status={audit.attachments_status} />
       {audit.attachments_status !== "AVAILABLE" ? (
         <p className="text-sm text-muted-foreground">
@@ -808,7 +860,7 @@ function KnowledgeAttachments({ audit }: { audit: SorKnowledgeDocumentAudit }) {
           Showing the first 250 imported attachments.
         </p>
       ) : null}
-    </DetailsSection>
+    </DetailSection>
   );
 }
 
@@ -908,24 +960,24 @@ function SupportTicketChronology({
 }) {
   if (isLoading && audit === null) {
     return (
-      <DetailsSection title="Conversation">
+      <DetailSection title="Conversation">
         <div className="space-y-3">
           <Skeleton className="h-24 w-full" />
           <Skeleton className="h-24 w-full" />
         </div>
-      </DetailsSection>
+      </DetailSection>
     );
   }
   if (errorMessage !== null) {
     return (
-      <DetailsSection title="Conversation">
+      <DetailSection title="Conversation">
         <div
           className="border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive"
           role="alert"
         >
           {errorMessage}
         </div>
-      </DetailsSection>
+      </DetailSection>
     );
   }
   if (audit === null) return null;
@@ -934,7 +986,7 @@ function SupportTicketChronology({
   );
 
   return (
-    <DetailsSection title="Conversation">
+    <DetailSection title="Conversation">
       <div className="flex min-w-0 flex-wrap items-center gap-2 border-b pb-3">
         <span className="text-sm font-medium">Messages</span>
         <Badge variant="outline">
@@ -965,7 +1017,7 @@ function SupportTicketChronology({
           Showing the latest 500 imported messages in exact chronology.
         </p>
       ) : null}
-    </DetailsSection>
+    </DetailSection>
   );
 }
 
@@ -1061,10 +1113,7 @@ function SourceMessageMetadata({
   externalId: string | null;
 }) {
   return (
-    <details className="min-w-0 text-xs text-muted-foreground">
-      <summary className="cursor-pointer select-none underline-offset-4 hover:underline">
-        Message metadata
-      </summary>
+    <TechnicalDetails summary="Technical message details">
       <dl className="mt-3 grid min-w-0 gap-2 border-l pl-3 sm:grid-cols-[8rem_minmax(0,1fr)]">
         {externalId === null ? null : (
           <>
@@ -1083,7 +1132,7 @@ function SourceMessageMetadata({
             : formatSorIdentifier(bodyFormat)}
         </dd>
       </dl>
-    </details>
+    </TechnicalDetails>
   );
 }
 
@@ -1099,14 +1148,14 @@ function SupportTicketContext({
   if (errorMessage !== null) return null;
   if (isLoading && audit === null) {
     return (
-      <DetailsSection title="Support context">
+      <DetailSection title="Support context">
         <Skeleton className="h-24 w-full" />
-      </DetailsSection>
+      </DetailSection>
     );
   }
   if (audit === null) return null;
   return (
-    <DetailsSection title="Support context">
+    <DetailSection title="Support context">
       <div className="space-y-3">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           <Gauge className="size-4" aria-hidden="true" />
@@ -1188,7 +1237,7 @@ function SupportTicketContext({
           </p>
         ) : null}
       </div>
-    </DetailsSection>
+    </DetailSection>
   );
 }
 
@@ -1255,21 +1304,21 @@ function TicketingIssueAuditSection({
 }) {
   if (isLoading && audit === null) {
     return (
-      <DetailsSection title="Issue discussion">
+      <DetailSection title="Issue discussion">
         <Skeleton className="h-20 w-full" />
-      </DetailsSection>
+      </DetailSection>
     );
   }
   if (errorMessage !== null) {
     return (
-      <DetailsSection title="Issue discussion">
+      <DetailSection title="Issue discussion">
         <div
           className="border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive"
           role="alert"
         >
           {errorMessage}
         </div>
-      </DetailsSection>
+      </DetailSection>
     );
   }
   if (audit === null) return null;
@@ -1304,7 +1353,7 @@ function TicketingIssueAuditSection({
   );
 
   return (
-    <DetailsSection title="Issue discussion">
+    <DetailSection title="Issue discussion">
       <div className="space-y-3">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           <span className="text-sm font-medium">Comments</span>
@@ -1341,7 +1390,7 @@ function TicketingIssueAuditSection({
           </p>
         ) : null}
       </div>
-    </DetailsSection>
+    </DetailSection>
   );
 }
 
@@ -1359,10 +1408,7 @@ function RecordProvenance({
     detail.selected_source_payload,
   );
   return (
-    <details className="min-w-0">
-      <summary className="cursor-pointer text-sm font-semibold">
-        Source history
-      </summary>
+    <DetailDisclosure summary="Source history">
       <div className="mt-3 space-y-3">
         <DetailRow label="Source">
           <span className="flex flex-wrap items-center gap-2">
@@ -1372,6 +1418,9 @@ function RecordProvenance({
                 {formatSorIdentifier(record.vendor_key)}
               </Badge>
             ) : null}
+            {record.source_url === null ? null : (
+              <SourceLink href={record.source_url} label="Open source record" />
+            )}
           </span>
         </DetailRow>
         <DetailRow label="Freshness">
@@ -1399,11 +1448,8 @@ function RecordProvenance({
             </div>
           </DetailRow>
         )}
-        <details className="pt-2">
-          <summary className="cursor-pointer text-sm font-medium">
-            Technical provenance
-          </summary>
-          <div className="mt-3">
+        <TechnicalDetails className="pt-2" summary="Technical provenance">
+          <div>
             <DetailRow label="Source revision">
               <CodeValue>{detail.source_revision ?? "Not recorded"}</CodeValue>
             </DetailRow>
@@ -1422,39 +1468,9 @@ function RecordProvenance({
               </pre>
             </div>
           </div>
-        </details>
+        </TechnicalDetails>
       </div>
-    </details>
-  );
-}
-
-function DetailsSection({
-  children,
-  title,
-}: {
-  children: ReactNode;
-  title: string;
-}) {
-  return (
-    <section className="min-w-0 space-y-3">
-      <h3 className="text-sm font-semibold">{title}</h3>
-      {children}
-    </section>
-  );
-}
-
-function DetailRow({
-  children,
-  label,
-}: {
-  children: ReactNode;
-  label: string;
-}) {
-  return (
-    <div className="grid min-w-0 gap-1 border-b py-2.5 last:border-b-0 sm:grid-cols-[10rem_minmax(0,1fr)] sm:gap-4">
-      <span className="text-xs font-medium text-muted-foreground">{label}</span>
-      <div className="min-w-0 break-words text-sm">{children}</div>
-    </div>
+    </DetailDisclosure>
   );
 }
 
@@ -1518,15 +1534,34 @@ function DetailsSkeleton() {
   );
 }
 
-function recordTitle(detail: SorRecordDetail | null): string {
-  if (detail === null) return "Record details";
+function recordHeading(detail: SorRecordDetail | null): {
+  identifier: string | null;
+  title: string;
+} {
+  if (detail === null) {
+    return { identifier: null, title: "Record details" };
+  }
   const record = detail.record;
-  return (
-    record.human_external_key ??
-    (typeof record.values.title === "string" ? record.values.title : null) ??
-    (typeof record.values.name === "string" ? record.values.name : null) ??
-    "Record details"
+  const title = firstTextValue(
+    record.values.title,
+    record.values.subject,
+    record.values.name,
+    record.human_external_key,
   );
+  const identifier = record.human_external_key?.trim() || null;
+  return {
+    identifier: identifier === title ? null : identifier,
+    title,
+  };
+}
+
+function firstTextValue(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim() !== "") {
+      return value.trim();
+    }
+  }
+  return "Record details";
 }
 
 function knowledgeDocumentMetadataColumns(

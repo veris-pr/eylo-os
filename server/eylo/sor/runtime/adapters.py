@@ -42,6 +42,7 @@ from eylo.sor.shared.repositories import SorRepository
 from eylo.sor.shared.secrets import (
     SorSecretEnvelopeError,
     decrypt_connector_client_secret,
+    decrypt_connector_webhook_signing_secret,
     decrypt_source_webhook_signing_secret,
 )
 
@@ -305,7 +306,12 @@ async def _resolve_source_adapter(
         mapping_revision_id=source.active_mapping_revision_id,
         fields=field_selections,
         credentials=MappingProxyType(credentials),
-        webhook_signing_secret=_webhook_signing_secret(source),
+        webhook_signing_secret=await _webhook_signing_secret(
+            repository,
+            source=source,
+            manifest=manifest,
+            connection_revision=connection.revision,
+        ),
         webhook_auth_secret=webhook_auth_secret,
         webhook_subscription_id=source.webhook_subscription_id,
         configuration=MappingProxyType(dict(source.configuration or {})),
@@ -317,8 +323,47 @@ async def _resolve_source_adapter(
     )
 
 
-def _webhook_signing_secret(source: SorSourceModel) -> str | None:
+async def _webhook_signing_secret(
+    repository: SorRepository,
+    *,
+    source: SorSourceModel,
+    manifest: SorAdapterCapabilityManifest,
+    connection_revision: int,
+) -> str | None:
     """Decrypt a configured webhook secret only at the adapter composition edge."""
+    if (
+        manifest.change_mode is SorChangeMode.APP_WEBHOOK
+        and source.vendor_key == "linear"
+    ):
+        connector = await repository.get_connector_for_connection(
+            organization_id=source.organization_id,
+            connection_id=source.external_connection_id,
+        )
+        if connector is None or connector.webhook_signing_secret is None:
+            raise SorAdapterUnavailableError(
+                "WEBHOOK_APP_UNAVAILABLE",
+                "The connector-owned webhook secret is unavailable.",
+                requires_reauthorization=True,
+            )
+        if connector.webhook_authorized_connection_revision != connection_revision:
+            raise SorAdapterUnavailableError(
+                "WEBHOOK_APP_REINSTALL_REQUIRED",
+                "The provider application must be reinstalled after webhook setup.",
+                requires_reauthorization=True,
+            )
+        try:
+            return decrypt_connector_webhook_signing_secret(
+                connector.webhook_signing_secret,
+                organization_id=connector.organization_id,
+                connector_id=connector.id,
+                secret_revision=connector.webhook_signing_secret_revision,
+            )
+        except SorSecretEnvelopeError as error:
+            raise SorAdapterUnavailableError(
+                "WEBHOOK_SECRET_INVALID",
+                "The connector webhook signing secret could not be authenticated.",
+            ) from error
+
     envelope = source.webhook_signing_secret
     if envelope is None:
         if source.webhook_signing_secret_revision != 0:

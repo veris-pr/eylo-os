@@ -104,7 +104,6 @@ const AgentVoiceSection = observer(function AgentVoiceSection({
                   ? "Realtime"
                   : "Decomposed"}
               </Badge>
-              <Badge variant="outline">Revision {selected.revision}</Badge>
             </div>
           )}
         </div>
@@ -212,7 +211,6 @@ const AgentVoiceSection = observer(function AgentVoiceSection({
                           {voiceRuntimeMode(option) === "realtime"
                             ? "Realtime"
                             : "Decomposed"}
-                          {` · revision ${option.revision}`}
                         </span>
                       </span>
                       {isSelected ? (

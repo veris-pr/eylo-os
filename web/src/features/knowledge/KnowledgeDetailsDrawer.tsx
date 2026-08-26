@@ -3,6 +3,12 @@ import { observer } from "mobx-react-lite";
 import { useEffect, useState, type ReactNode } from "react";
 
 import { useRootStore } from "@/app/use-root-store";
+import {
+  DetailDisclosure,
+  DetailRow,
+  DetailSection,
+  TechnicalDetails,
+} from "@/components/details";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -185,7 +191,7 @@ function KnowledgeDetails({
 
   return (
     <div className="space-y-8">
-      <DetailsSection title="Overview">
+      <DetailSection title="Overview">
         <DetailRow label="Search method">
           <Badge variant="outline">
             {formatKnowledgeVendor(knowledgebase.vendor)}
@@ -196,9 +202,6 @@ function KnowledgeDetails({
             {formatKnowledgeScope(knowledgebase.scope)}
           </Badge>
         </DetailRow>
-        <DetailRow label="Scope ID">
-          <CodeValue>{knowledgebase.scope_id}</CodeValue>
-        </DetailRow>
         <DetailRow label="Agent writes">
           <Badge variant="outline">
             {knowledgebase.writable
@@ -206,9 +209,9 @@ function KnowledgeDetails({
               : "Read-only"}
           </Badge>
         </DetailRow>
-      </DetailsSection>
+      </DetailSection>
 
-      <DetailsSection title="Chunking">
+      <DetailSection title="Chunking">
         <DetailRow label="Strategy">
           {metadata === null ? (
             "Not recorded"
@@ -228,11 +231,11 @@ function KnowledgeDetails({
             ? "Not recorded"
             : `${metadata.chunk_overlap} characters`}
         </DetailRow>
-      </DetailsSection>
+      </DetailSection>
 
       {knowledgebase.vendor === "pgvector" ? (
         <>
-          <DetailsSection title="Embedding authority">
+          <DetailSection title="Embedding">
             <DetailRow label="Provider">
               {knowledgebase.embedding_provider ?? "Not recorded"}
             </DetailRow>
@@ -242,16 +245,7 @@ function KnowledgeDetails({
             <DetailRow label="Dimensions">
               {knowledgebase.embedding_dimensions ?? "Not recorded"}
             </DetailRow>
-            <DetailRow label="Config revision">
-              {knowledgebase.embedding_provider_config_revision ??
-                "Not recorded"}
-            </DetailRow>
-            <DetailRow label="Config ID">
-              <CodeValue>
-                {knowledgebase.embedding_provider_config_id ?? "Not recorded"}
-              </CodeValue>
-            </DetailRow>
-          </DetailsSection>
+          </DetailSection>
           <KnowledgeReindexPanel
             key={knowledgebase.id}
             knowledgebase={knowledgebase}
@@ -260,49 +254,36 @@ function KnowledgeDetails({
         </>
       ) : null}
 
-      <DetailsSection title="Record">
+      <DetailDisclosure summary="Activity">
         <DetailRow label="Created">
           <DateValue value={createdAt} />
         </DetailRow>
         <DetailRow label="Updated">
           <DateValue value={updatedAt} />
         </DetailRow>
+      </DetailDisclosure>
+
+      <TechnicalDetails>
+        <DetailRow label="Scope ID">
+          <CodeValue>{knowledgebase.scope_id}</CodeValue>
+        </DetailRow>
+        {knowledgebase.vendor === "pgvector" ? (
+          <>
+            <DetailRow label="Embedding config revision">
+              {knowledgebase.embedding_provider_config_revision ??
+                "Not recorded"}
+            </DetailRow>
+            <DetailRow label="Embedding config ID">
+              <CodeValue>
+                {knowledgebase.embedding_provider_config_id ?? "Not recorded"}
+              </CodeValue>
+            </DetailRow>
+          </>
+        ) : null}
         <DetailRow label="Knowledgebase ID">
           <CodeValue>{knowledgebase.id}</CodeValue>
         </DetailRow>
-      </DetailsSection>
-    </div>
-  );
-}
-
-function DetailsSection({
-  children,
-  title,
-}: {
-  children: ReactNode;
-  title: string;
-}) {
-  return (
-    <section className="space-y-3">
-      <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-        {title}
-      </h2>
-      <dl className="divide-y border-y">{children}</dl>
-    </section>
-  );
-}
-
-function DetailRow({
-  children,
-  label,
-}: {
-  children: ReactNode;
-  label: string;
-}) {
-  return (
-    <div className="grid gap-1 py-3 sm:grid-cols-[11rem_minmax(0,1fr)] sm:gap-4">
-      <dt className="text-sm text-muted-foreground">{label}</dt>
-      <dd className="min-w-0 text-sm leading-5">{children}</dd>
+      </TechnicalDetails>
     </div>
   );
 }

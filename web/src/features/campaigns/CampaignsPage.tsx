@@ -351,9 +351,6 @@ function CampaignRow({
         >
           {campaign.name}
         </button>
-        <p className="mt-0.5 text-xs text-muted-foreground">
-          revision {campaign.publishedRevision}
-        </p>
       </TableCell>
       <TableCell>
         <Badge

@@ -382,9 +382,6 @@ function ConnectionRow({
         >
           {connectionName(connection)}
         </button>
-        <code className="mt-0.5 block break-all text-xs text-muted-foreground">
-          {connection.vendor}
-        </code>
       </TableCell>
       <TableCell className="min-w-0 whitespace-normal">
         <ConnectionOwner connection={connection} />
@@ -435,9 +432,6 @@ function ConnectionCard({
         <span className="block break-words text-sm font-medium">
           {connectionName(connection)}
         </span>
-        <code className="mt-0.5 block break-all text-xs text-muted-foreground">
-          {connection.vendor}
-        </code>
         <span className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           <ConnectionStatusBadge status={connection.status} />
           <ConnectionKindBadge kind={connection.connectionKind} />

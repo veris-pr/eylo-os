@@ -290,7 +290,7 @@ const CampaignFormPage = observer(function CampaignFormPage({
                 <SelectContent>
                   {campaigns.agents.map((agent) => (
                     <SelectItem value={agent.id} key={agent.id}>
-                      {agent.name} · revision {agent.publishedRevision}
+                      {agent.name}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -346,7 +346,7 @@ const CampaignFormPage = observer(function CampaignFormPage({
                     </SelectItem>
                     {campaigns.templates.map((template) => (
                       <SelectItem value={template.id} key={template.id}>
-                        {template.name} · revision {template.published_revision}
+                        {template.name}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -482,7 +482,7 @@ function EmailFields({
           <SelectContent>
             {campaigns.emailConfigs.map((config) => (
               <SelectItem value={config.id} key={config.id}>
-                {config.name} · {config.provider} · revision {config.revision}
+                {config.name} · {config.provider}
               </SelectItem>
             ))}
           </SelectContent>

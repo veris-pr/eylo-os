@@ -68,6 +68,21 @@ class SorRepository:
             query = query.with_for_update()
         return await self.session.scalar(query)
 
+    async def get_connector_by_webhook_endpoint_key(
+        self,
+        *,
+        endpoint_key: UUID,
+        for_update: bool = False,
+    ) -> SorConnectorModel | None:
+        """Resolve one opaque public webhook route without trusting its payload."""
+        query = select(SorConnectorModel).where(
+            SorConnectorModel.webhook_endpoint_key == endpoint_key,
+            SorConnectorModel.deleted.is_(False),
+        )
+        if for_update:
+            query = query.with_for_update()
+        return await self.session.scalar(query)
+
     async def list_connectors(
         self,
         *,

@@ -326,9 +326,6 @@ function ConfiguredIntegrationRow({
         >
           {installation.displayName}
         </button>
-        <code className="mt-0.5 block break-all text-xs text-muted-foreground">
-          {installation.vendor}
-        </code>
       </TableCell>
       <TableCell className="whitespace-normal">
         <Badge variant="outline">
@@ -383,9 +380,6 @@ function ConfiguredIntegrationCard({
         <span className="block break-words text-sm font-medium">
           {installation.displayName}
         </span>
-        <code className="mt-0.5 block break-all text-xs text-muted-foreground">
-          {installation.vendor}
-        </code>
         <span className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           <ConnectionState item={item} />
           <Badge variant="outline">

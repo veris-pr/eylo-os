@@ -3,6 +3,7 @@ import { observer } from "mobx-react-lite";
 import { useEffect, type ReactNode } from "react";
 
 import { useRootStore } from "@/app/use-root-store";
+import { DetailDisclosure, TechnicalDetails } from "@/components/details";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -12,7 +13,9 @@ import {
 } from "@/features/sor/sor-formatters";
 import { openSorAuthorizationPopup } from "@/features/sor/sor-oauth-popup";
 import { SorWebhookConfiguration } from "@/features/sor/SorWebhookConfiguration";
+import { SorAppWebhookSetup } from "@/features/sor/SorAppWebhookSetup";
 import type {
+  SorConnector,
   SorSource,
   SorSourceOperations,
   SorStream,
@@ -98,8 +101,9 @@ const SorSourceDetailsPage = observer(function SorSourceDetailsPage({
     );
   const webhookChangeMode = selectedVendor?.capabilities?.changeMode ?? null;
   const hasOperatorConfiguredWebhook =
-    webhookChangeMode === "APP_WEBHOOK" ||
-    webhookChangeMode === "OPERATOR_WEBHOOK";
+    webhookChangeMode === "OPERATOR_WEBHOOK" ||
+    (webhookChangeMode === "APP_WEBHOOK" &&
+      sources.selectedSource?.vendor_key !== "linear");
 
   return (
     <section
@@ -135,6 +139,7 @@ const SorSourceDetailsPage = observer(function SorSourceDetailsPage({
             {sources.selectedSource === null ? null : (
               <SourceHeaderActions
                 activeGeneration={activeGeneration}
+                connector={sources.selectedConnector}
                 isReauthorizing={sources.isReauthorizing}
                 isStartingSync={sources.isStartingSync}
                 source={sources.selectedSource}
@@ -174,9 +179,15 @@ const SorSourceDetailsPage = observer(function SorSourceDetailsPage({
       ) : (
         <SourceDetails
           connectionName={sources.selectedConnectionName}
+          connector={sources.selectedConnector}
           hasOperatorConfiguredWebhook={hasOperatorConfiguredWebhook}
+          historyErrorMessage={sources.historyErrorMessage}
           isIssuingWebhookEndpoint={sources.isIssuingWebhookEndpoint}
+          isLoadingEarlierSyncRuns={sources.isLoadingEarlierSyncRuns}
           isSavingWebhookSigningSecret={sources.isSavingWebhookSigningSecret}
+          isSavingAppWebhookSigningSecret={
+            sources.isSavingAppWebhookSigningSecret
+          }
           isStartingSync={sources.isStartingSync}
           operations={sources.selectedOperations}
           reauthorizationErrorMessage={sources.reauthorizationErrorMessage}
@@ -189,6 +200,9 @@ const SorSourceDetailsPage = observer(function SorSourceDetailsPage({
           webhookActionMessage={sources.webhookActionMessage}
           webhookEndpointUrl={sources.webhookEndpointUrl}
           onDelete={onDelete}
+          onLoadEarlierSyncRuns={() =>
+            void sources.loadEarlierSyncRuns(organizationId, sourceId)
+          }
           onIssueWebhookEndpoint={() =>
             sources.issueWebhookEndpoint(organizationId, sourceId)
           }
@@ -201,6 +215,9 @@ const SorSourceDetailsPage = observer(function SorSourceDetailsPage({
                   secret,
                 )
           }
+          onSaveAppWebhookSigningSecret={(secret) =>
+            sources.saveAppWebhookSigningSecret(organizationId, secret)
+          }
           onStartStreamSync={(stream) =>
             void sources.startStreamSync(organizationId, sourceId, stream.id)
           }
@@ -212,6 +229,7 @@ const SorSourceDetailsPage = observer(function SorSourceDetailsPage({
 
 function SourceHeaderActions({
   activeGeneration,
+  connector,
   isReauthorizing,
   isStartingSync,
   onReauthorize,
@@ -219,12 +237,24 @@ function SourceHeaderActions({
   source,
 }: {
   activeGeneration: SorSourceOperations["generations"][number] | null;
+  connector: SorConnector | null;
   isReauthorizing: boolean;
   isStartingSync: boolean;
   onReauthorize: (source: SorSource) => void;
   onStartSync: (source: SorSource) => void;
   source: SorSource;
 }) {
+  if (connector?.app_webhook_state === "REINSTALLATION_REQUIRED") {
+    return (
+      <Button disabled={isReauthorizing} onClick={() => onReauthorize(source)}>
+        <RefreshCw
+          aria-hidden="true"
+          className={isReauthorizing ? "animate-spin" : undefined}
+        />
+        {isReauthorizing ? "Waiting for provider" : "Reconnect Linear"}
+      </Button>
+    );
+  }
   if (source.state === "REAUTH_REQUIRED") {
     return (
       <Button disabled={isReauthorizing} onClick={() => onReauthorize(source)}>
@@ -288,13 +318,19 @@ function SourceHeaderActions({
 
 function SourceDetails({
   connectionName,
+  connector,
   hasOperatorConfiguredWebhook,
+  historyErrorMessage,
   isIssuingWebhookEndpoint,
+  isLoadingEarlierSyncRuns,
   isSavingWebhookSigningSecret,
+  isSavingAppWebhookSigningSecret,
   isStartingSync,
   onDelete,
   onIssueWebhookEndpoint,
+  onLoadEarlierSyncRuns,
   onSaveWebhookSigningSecret,
+  onSaveAppWebhookSigningSecret,
   onStartStreamSync,
   operations,
   reauthorizationErrorMessage,
@@ -308,13 +344,19 @@ function SourceDetails({
   webhookEndpointUrl,
 }: {
   connectionName: string | null;
+  connector: SorConnector | null;
   hasOperatorConfiguredWebhook: boolean;
+  historyErrorMessage: string | null;
   isIssuingWebhookEndpoint: boolean;
+  isLoadingEarlierSyncRuns: boolean;
   isSavingWebhookSigningSecret: boolean;
+  isSavingAppWebhookSigningSecret: boolean;
   isStartingSync: boolean;
   onDelete: (source: SorSource) => void;
   onIssueWebhookEndpoint: () => Promise<boolean>;
+  onLoadEarlierSyncRuns: () => void;
   onSaveWebhookSigningSecret: (secret: string) => Promise<boolean>;
+  onSaveAppWebhookSigningSecret: (secret: string) => Promise<boolean>;
   onStartStreamSync: (stream: SorStream) => void;
   operations: SorSourceOperations | null;
   reauthorizationErrorMessage: string | null;
@@ -404,61 +446,6 @@ function SourceDetails({
           syncActionErrorMessage={syncActionErrorMessage}
           syncActionMessage={syncActionMessage}
         />
-        <details>
-          <summary className="cursor-pointer text-sm font-medium">
-            Technical details
-          </summary>
-          <div className="mt-3 space-y-5">
-            <div>
-              <DetailRow label="Source ID">
-                <CodeValue>{source.id}</CodeValue>
-              </DetailRow>
-              <DetailRow label="Connection ID">
-                <CodeValue>{source.external_connection_id}</CodeValue>
-              </DetailRow>
-              <DetailRow label="Config revision">
-                {source.config_revision}
-              </DetailRow>
-              <DateRow label="Last verified" value={source.last_verified_at} />
-              <DetailRow label="Freshness target">
-                {formatDuration(source.freshness_target_seconds)}
-              </DetailRow>
-            </div>
-            {source.last_error_code !== null ||
-            source.last_error_summary !== null ? (
-              <div className="space-y-2">
-                <p className="text-sm font-medium">Last recorded error</p>
-                <p className="break-words text-sm">
-                  {source.last_error_summary ??
-                    "No error summary was recorded."}
-                </p>
-                {source.last_error_code === null ? null : (
-                  <CodeValue>{source.last_error_code}</CodeValue>
-                )}
-              </div>
-            ) : null}
-            {Object.keys(source.configuration).length === 0 ? null : (
-              <div className="space-y-2">
-                <p className="text-sm font-medium">Non-secret configuration</p>
-                <pre className="max-w-full whitespace-pre-wrap break-all bg-muted/30 p-3 text-xs leading-5">
-                  {JSON.stringify(source.configuration, null, 2)}
-                </pre>
-              </div>
-            )}
-          </div>
-        </details>
-        {hasOperatorConfiguredWebhook ? (
-          <SorWebhookConfiguration
-            errorMessage={webhookActionErrorMessage}
-            isIssuingEndpoint={isIssuingWebhookEndpoint}
-            isSavingSecret={isSavingWebhookSigningSecret}
-            message={webhookActionMessage}
-            source={source}
-            webhookEndpointUrl={webhookEndpointUrl}
-            onIssueEndpoint={onIssueWebhookEndpoint}
-            onSaveSecret={onSaveWebhookSigningSecret}
-          />
-        ) : null}
       </DetailsSection>
 
       <DetailsSection
@@ -502,10 +489,7 @@ function SourceDetails({
         </DetailsSection>
       )}
 
-      <DetailsSection
-        description="Recent source-wide runs, with per-object outcomes available on demand."
-        title="Sync history"
-      >
+      <DetailsSection title="Sync history">
         {operations === null || operations.generations.length === 0 ? (
           <p className="text-sm text-muted-foreground">
             No synchronization has been scheduled yet.
@@ -521,7 +505,85 @@ function SourceDetails({
             ))}
           </div>
         )}
+        {historyErrorMessage === null ? null : (
+          <p className="text-sm text-destructive" role="alert">
+            {historyErrorMessage}
+          </p>
+        )}
+        {operations?.has_more ? (
+          <Button
+            disabled={isLoadingEarlierSyncRuns}
+            variant="outline"
+            onClick={onLoadEarlierSyncRuns}
+          >
+            {isLoadingEarlierSyncRuns ? "Loading…" : "Load more"}
+          </Button>
+        ) : null}
       </DetailsSection>
+
+      <div className="space-y-4">
+        <TechnicalDetails>
+          <div className="mt-3 space-y-5">
+            <div>
+              <DetailRow label="Source ID">
+                <CodeValue>{source.id}</CodeValue>
+              </DetailRow>
+              <DetailRow label="Connection ID">
+                <CodeValue>{source.external_connection_id}</CodeValue>
+              </DetailRow>
+              <DetailRow label="Config revision">
+                {source.config_revision}
+              </DetailRow>
+              <DateRow label="Last verified" value={source.last_verified_at} />
+              <DetailRow label="Freshness target">
+                {formatDuration(source.freshness_target_seconds)}
+              </DetailRow>
+            </div>
+            {source.last_error_code !== null ||
+            source.last_error_summary !== null ? (
+              <div className="space-y-2">
+                <p className="text-sm font-medium">Last recorded error</p>
+                <p className="break-words text-sm">
+                  {source.last_error_summary ??
+                    "No error summary was recorded."}
+                </p>
+                {source.last_error_code === null ? null : (
+                  <CodeValue>{source.last_error_code}</CodeValue>
+                )}
+              </div>
+            ) : null}
+            {Object.keys(source.configuration).length === 0 ? null : (
+              <div className="space-y-2">
+                <p className="text-sm font-medium">Non-secret configuration</p>
+                <pre className="max-w-full whitespace-pre-wrap break-all bg-muted/30 p-3 text-xs leading-5">
+                  {JSON.stringify(source.configuration, null, 2)}
+                </pre>
+              </div>
+            )}
+          </div>
+        </TechnicalDetails>
+        {connector?.app_webhook_state === "NOT_APPLICABLE" ||
+        connector === null ? null : (
+          <SorAppWebhookSetup
+            connector={connector}
+            isSaving={isSavingAppWebhookSigningSecret}
+            vendorName={formatSorIdentifier(source.vendor_key)}
+            onSaveSecret={onSaveAppWebhookSigningSecret}
+          />
+        )}
+        {hasOperatorConfiguredWebhook ? (
+          <SorWebhookConfiguration
+            errorMessage={webhookActionErrorMessage}
+            isIssuingEndpoint={isIssuingWebhookEndpoint}
+            isSavingSecret={isSavingWebhookSigningSecret}
+            message={webhookActionMessage}
+            source={source}
+            webhookEndpointUrl={webhookEndpointUrl}
+            onIssueEndpoint={onIssueWebhookEndpoint}
+            onSaveSecret={onSaveWebhookSigningSecret}
+          />
+        ) : null}
+      </div>
 
       <DetailsSection
         description="Permanently remove this source and all synchronized Eylo data."
@@ -720,12 +782,9 @@ function StreamRow({
         </Metric>
       </dl>
       {stream.last_error_code === null ? null : (
-        <details>
-          <summary className="cursor-pointer text-xs text-muted-foreground">
-            Error details
-          </summary>
+        <DetailDisclosure summary="Error details">
           <CodeValue>{stream.last_error_code}</CodeValue>
-        </details>
+        </DetailDisclosure>
       )}
     </article>
   );
@@ -768,10 +827,7 @@ function GenerationRow({
           {generation.safe_error_summary}
         </p>
       )}
-      <details>
-        <summary className="cursor-pointer text-sm font-medium">
-          View object results
-        </summary>
+      <DetailDisclosure summary="View object results">
         <div className="mt-3 divide-y border-y">
           {generation.runs.map((run) => {
             const stream =
@@ -802,7 +858,7 @@ function GenerationRow({
             );
           })}
         </div>
-      </details>
+      </DetailDisclosure>
     </article>
   );
 }

@@ -83,8 +83,11 @@ adapter. Do not mix the classic and granular lists. See Atlassian's REST v2
      configure the lifecycle and granular scope groups described above.
    - For Linear, create an OAuth 2.0 app and register the exact callback. Eylo
      uses a Linear app actor; grant that app access only to the intended public
-     or selected teams. Scheduled reconciliation works in local development
-     without a public webhook endpoint.
+     or selected teams. Save the OAuth app in Eylo, copy the connector webhook
+     URL back into the Linear app, enable Comments, Cycles, Issue Labels,
+     Issues, Projects, and Users, then save the Linear signing secret in Eylo
+     before authorizing the workspace. The webhook requires a public HTTPS
+     `API_BASE_URL`.
    - For GitHub, create an OAuth App and register the exact callback. Enter each
      repository explicitly as `owner/repository`. After activation, an optional
      repository webhook can use the source-provided URL and secret for real-time
@@ -118,15 +121,7 @@ adapter. Do not mix the classic and granular lists. See Atlassian's REST v2
 10. In **Field mapping**, map each selected field to one canonical field,
     one typed custom field, or ignore it.
 11. In **Sync**, choose the freshness target and reconciliation interval.
-12. Review **Webhooks**. Jira currently reconciles on a schedule; Linear
-    supports verified webhook refetch. GitHub verifies repository webhook
-    signatures, but the operator currently creates and removes the webhook in
-    GitHub. Zendesk verifies signed ticket events; the operator currently
-    creates and removes that webhook in Zendesk. Intercom verifies signed
-    contact and conversation events; configure its callback and topics in
-    Intercom Developer Hub. Confluence and Notion currently use scheduled full
-    reconciliation and do not advertise webhook support.
-13. In **Review**, resolve every blocker and activate the source.
+12. In **Review**, resolve every blocker and activate the source.
 
 Activation persists the published mapping, streams, and bootstrap work before
 the durable worker starts. Closing the page after activation does not erase the

@@ -77,7 +77,6 @@ type SorOnboardingSection =
   | "objects"
   | "mapping"
   | "sync"
-  | "webhooks"
   | "agents"
   | "review";
 

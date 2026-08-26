@@ -144,7 +144,7 @@ const CallsPage = observer(function CallsPage() {
               className="pr-20 pl-9"
               aria-label="Search calls"
               maxLength={100}
-              placeholder="Search numbers, provider, or call ID"
+              placeholder="Search numbers, providers, or calls"
               value={searchDraft}
               onChange={(event) => setSearchDraft(event.target.value)}
             />
@@ -331,7 +331,7 @@ function CallRow({
           {call.fromNumber ?? "Unknown"} → {call.toNumber ?? "Unknown"}
         </button>
         <p className="mt-0.5 text-xs text-muted-foreground">
-          {formatTelephonyEnum(call.provider)} · …{call.id.slice(-8)}
+          {formatTelephonyEnum(call.provider)}
         </p>
       </TableCell>
       <TableCell>

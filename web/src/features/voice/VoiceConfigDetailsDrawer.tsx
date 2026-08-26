@@ -3,6 +3,12 @@ import { observer } from "mobx-react-lite";
 import type { ReactNode } from "react";
 
 import { useRootStore } from "@/app/use-root-store";
+import {
+  DetailDisclosure,
+  DetailRow,
+  DetailSection,
+  TechnicalDetails,
+} from "@/components/details";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -48,7 +54,7 @@ const VoiceConfigDetailsDrawer = observer(function VoiceConfigDetailsDrawer({
             {voiceConfig?.name ?? "Voice Config details"}
           </DrawerTitle>
           <DrawerDescription>
-            Runtime authority, Eylo-owned behavior, and provider-native support.
+            Runtime behavior, selected providers, and supported voice features.
           </DrawerDescription>
         </DrawerHeader>
         <Button
@@ -111,7 +117,7 @@ function VoiceConfigDetails({
   const config = voiceConfig.config;
   return (
     <div className="space-y-8">
-      <DetailsSection title="Overview">
+      <DetailSection title="Overview">
         <DetailRow label="Runtime">
           <Badge variant="outline">
             {voiceRuntimeMode(voiceConfig) === "realtime"
@@ -119,33 +125,43 @@ function VoiceConfigDetails({
               : "Decomposed"}
           </Badge>
         </DetailRow>
-        <DetailRow label="Revision">{voiceConfig.revision}</DetailRow>
         <DetailRow label="Description">
           <LongValue>{voiceConfig.description ?? "No description"}</LongValue>
         </DetailRow>
-        <DetailRow label="STT config">
-          <CodeValue>
-            {config.stt_provider_config_id ?? "Not selected"}
-          </CodeValue>
-        </DetailRow>
-        <DetailRow label="TTS config">
-          <CodeValue>
-            {config.tts_provider_config_id ?? "Not selected"}
-          </CodeValue>
-        </DetailRow>
-        <DetailRow label="Realtime config">
-          <CodeValue>
-            {config.realtime_provider_config_id ?? "Not selected"}
-          </CodeValue>
-        </DetailRow>
         <DetailRow label="Recording storage">
-          <CodeValue>
-            {config.storage_provider_config_id ?? "Not selected"}
-          </CodeValue>
+          {config.artifacts?.audio_storage_enabled ? "Enabled" : "Not enabled"}
         </DetailRow>
-      </DetailsSection>
+      </DetailSection>
 
-      <DetailsSection title="Eylo platform features">
+      <DetailSection title="Providers">
+        {compatibilityLoading && compatibility === null ? (
+          <CapabilitySkeleton />
+        ) : compatibilityError !== null ? (
+          <div className="py-3 text-sm text-destructive" role="alert">
+            {compatibilityError}
+          </div>
+        ) : compatibility?.selected_providers.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No voice providers are selected yet.
+          </p>
+        ) : (
+          compatibility?.selected_providers.map((provider) => (
+            <DetailRow
+              key={`${provider.kind}:${provider.provider_config_id}`}
+              label={provider.kind.toUpperCase()}
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <span>{formatIdentifier(provider.provider)}</span>
+                <Badge variant="outline">
+                  {provider.ready ? "Ready" : "Not ready"}
+                </Badge>
+              </div>
+            </DetailRow>
+          ))
+        )}
+      </DetailSection>
+
+      <DetailSection title="Eylo platform features">
         {compatibilityLoading && compatibility === null ? (
           <CapabilitySkeleton />
         ) : compatibilityError !== null ? (
@@ -166,11 +182,11 @@ function VoiceConfigDetails({
             </DetailRow>
           ))
         )}
-      </DetailsSection>
+      </DetailSection>
 
       <section className="space-y-4">
         <div>
-          <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+          <h2 className="text-sm font-semibold">
             Provider-native capabilities
           </h2>
           <p className="mt-1 text-sm leading-5 text-muted-foreground">
@@ -207,7 +223,7 @@ function VoiceConfigDetails({
                   {provider.ready ? "Ready" : "Not ready"}
                 </Badge>
               </header>
-              <dl className="divide-y px-3">
+              <div className="divide-y px-3">
                 {Object.entries(provider.native_capabilities).map(
                   ([key, value]) => (
                     <DetailRow key={key} label={formatIdentifier(key)}>
@@ -221,7 +237,7 @@ function VoiceConfigDetails({
                     </DetailRow>
                   ),
                 )}
-              </dl>
+              </div>
             </section>
           ))
         )}
@@ -232,49 +248,37 @@ function VoiceConfigDetails({
         )}
       </section>
 
-      <DetailsSection title="Record">
+      <DetailDisclosure summary="Activity">
         <DetailRow label="Created">
           <DateValue value={createdAt} />
         </DetailRow>
         <DetailRow label="Updated">
           <DateValue value={updatedAt} />
         </DetailRow>
+      </DetailDisclosure>
+
+      <TechnicalDetails>
         <DetailRow label="Voice Config ID">
           <CodeValue>{voiceConfig.id}</CodeValue>
         </DetailRow>
-      </DetailsSection>
-    </div>
-  );
-}
-
-function DetailsSection({
-  children,
-  title,
-}: {
-  children: ReactNode;
-  title: string;
-}) {
-  return (
-    <section className="space-y-3">
-      <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-        {title}
-      </h2>
-      <dl className="divide-y border-y">{children}</dl>
-    </section>
-  );
-}
-
-function DetailRow({
-  children,
-  label,
-}: {
-  children: ReactNode;
-  label: string;
-}) {
-  return (
-    <div className="grid gap-1 py-3 sm:grid-cols-[12rem_minmax(0,1fr)] sm:gap-4">
-      <dt className="text-sm text-muted-foreground">{label}</dt>
-      <dd className="min-w-0 text-sm leading-5">{children}</dd>
+        <DetailRow label="Revision">{voiceConfig.revision}</DetailRow>
+        <DetailRow label="STT config ID">
+          <CodeValue>{config.stt_provider_config_id ?? "Not selected"}</CodeValue>
+        </DetailRow>
+        <DetailRow label="TTS config ID">
+          <CodeValue>{config.tts_provider_config_id ?? "Not selected"}</CodeValue>
+        </DetailRow>
+        <DetailRow label="Realtime config ID">
+          <CodeValue>
+            {config.realtime_provider_config_id ?? "Not selected"}
+          </CodeValue>
+        </DetailRow>
+        <DetailRow label="Storage config ID">
+          <CodeValue>
+            {config.storage_provider_config_id ?? "Not selected"}
+          </CodeValue>
+        </DetailRow>
+      </TechnicalDetails>
     </div>
   );
 }

@@ -51,18 +51,21 @@ from eylo.sor.runtime.registry import SorRegistry
 from eylo.sor.shared.connector_services import SorConnectorService
 from eylo.sor.shared.contracts import (
     SorAdapterCapabilityManifest,
+    SorChangeMode,
     SorChangeStrategy,
     SorOAuthSpec,
     SorSourceAccess,
     SorSourceState,
     SorSyncRunKind,
 )
+from eylo.sor.shared.models import SorConnectorModel
 from eylo.sor.shared.repositories import SorRepository
 from eylo.sor.shared.secrets import (
     SorSecretEnvelopeError,
     decrypt_connector_client_secret,
 )
-from eylo.sor.shared.services import SorSourceService
+from eylo.sor.shared.services import SorConfigurationError, SorSourceService
+from eylo.sor.shared.webhook_urls import public_webhook_api_base_url
 
 SOR_OAUTH_CALLBACK_PATH = "/sor/oauth/callback"
 STATE_TTL_MINUTES = 10
@@ -110,6 +113,7 @@ class _AuthorizationContext:
     code_verifier: str | None
     requested_scopes: tuple[str, ...]
     oauth: SorOAuthSpec
+    change_mode: SorChangeMode
     fixed_origin: str | None
     preset_instance_origin: str | None
 
@@ -156,6 +160,10 @@ async def begin_sor_authorization(
             vendor_key=connector.vendor_key,
         )
         oauth = _require_oauth(manifest)
+        _require_app_webhook_authorization_ready(
+            connector=connector,
+            manifest=manifest,
+        )
         requested_instance_origin = _authorization_instance_origin(
             oauth=oauth,
             value=instance_origin,
@@ -294,6 +302,10 @@ async def begin_sor_source_reauthorization(
             vendor_key=source.vendor_key,
         )
         oauth = _require_oauth(manifest)
+        _require_app_webhook_authorization_ready(
+            connector=connector,
+            manifest=manifest,
+        )
         previous_instance_origin = connection.instance_origin
         previous_granted_scopes = tuple(connection.granted_scopes or ())
         if connection.deleted or connection.status is ExternalConnectionStatus.REVOKED:
@@ -562,6 +574,7 @@ async def _consume_authorization_context(
             code_verifier=stored.code_verifier,
             requested_scopes=tuple(stored.requested_scopes or ()),
             oauth=oauth,
+            change_mode=manifest.change_mode,
             fixed_origin=manifest.fixed_origin,
             preset_instance_origin=connection.instance_origin,
         )
@@ -795,7 +808,48 @@ async def _activate_connection(
             external_connection_id=context.connection_id,
             expected_connection_revision=context.expected_connection_revision,
         )
+        if (
+            context.change_mode is SorChangeMode.APP_WEBHOOK
+            and context.vendor_key == "linear"
+        ):
+            if connector.webhook_signing_secret is None:
+                raise SorOAuthError(
+                    "app_webhook_not_configured",
+                    "Configure the OAuth app webhook before authorizing it.",
+                )
+            connector.webhook_authorized_connection_revision = (
+                activated_connection.revision
+            )
+            await session.flush()
         return activated_connection.revision
+
+
+def _require_app_webhook_authorization_ready(
+    *,
+    connector: SorConnectorModel,
+    manifest: SorAdapterCapabilityManifest,
+) -> None:
+    """Refuse Linear consent until its app-owned webhook can be installed."""
+    if (
+        manifest.change_mode is not SorChangeMode.APP_WEBHOOK
+        or connector.vendor_key != "linear"
+    ):
+        return
+    if (
+        connector.webhook_signing_secret is None
+        or connector.webhook_endpoint_key is None
+    ):
+        raise SorOAuthError(
+            "app_webhook_not_configured",
+            "Configure the OAuth app webhook URL and signing secret before authorization.",
+        )
+    try:
+        public_webhook_api_base_url()
+    except SorConfigurationError as error:
+        raise SorOAuthError(
+            "app_webhook_endpoint_unavailable",
+            "Configure a public HTTPS API_BASE_URL before authorization.",
+        ) from error
 
 
 async def _restore_reauthorized_sources(

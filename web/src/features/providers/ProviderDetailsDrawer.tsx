@@ -3,6 +3,11 @@ import { observer } from "mobx-react-lite";
 import type { ReactNode } from "react";
 
 import { useRootStore } from "@/app/use-root-store";
+import {
+  DetailRow,
+  DetailSection,
+  TechnicalDetails,
+} from "@/components/details";
 import { Button } from "@/components/ui/button";
 import {
   Drawer,
@@ -62,7 +67,7 @@ const ProviderDetailsDrawer = observer(function ProviderDetailsDrawer({
         <DrawerHeader className="border-b p-5 pr-14 pb-5 text-left">
           <DrawerTitle>{config?.name ?? "Provider details"}</DrawerTitle>
           <DrawerDescription>
-            Saved settings, credential presence, and readiness returned by Eylo.
+            Readiness, settings, credentials, and supported operations.
           </DrawerDescription>
         </DrawerHeader>
         <Button
@@ -126,7 +131,7 @@ function ProviderDetails({
 
   return (
     <div className="space-y-8">
-      <DetailsSection title="Overview">
+      <DetailSection title="Overview">
         <DetailRow label="Status">
           <ProviderStatusBadge
             configured={config.configured}
@@ -138,7 +143,6 @@ function ProviderDetails({
         <DetailRow label="Provider">
           {definition?.label ?? formatProviderIdentifier(config.provider)}
         </DetailRow>
-        <DetailRow label="Revision">{config.revision}</DetailRow>
         <DetailRow label="Verified">
           {verifiedAt.exact === null ? (
             verifiedAt.label
@@ -151,12 +155,9 @@ function ProviderDetails({
             </time>
           )}
         </DetailRow>
-        <DetailRow label="Configuration ID">
-          <CodeValue>{config.id}</CodeValue>
-        </DetailRow>
-      </DetailsSection>
+      </DetailSection>
 
-      <DetailsSection title="Settings">
+      <DetailSection title="Settings">
         {(settingFields ?? []).length === 0 ? (
           <DetailRow label="Settings">No non-secret settings</DetailRow>
         ) : (
@@ -170,9 +171,9 @@ function ProviderDetails({
             </DetailRow>
           ))
         )}
-      </DetailsSection>
+      </DetailSection>
 
-      <DetailsSection title="Credentials">
+      <DetailSection title="Credentials">
         {(secretFields ?? []).length === 0 ? (
           <DetailRow label="Credentials">
             This provider takes no credentials
@@ -186,9 +187,16 @@ function ProviderDetails({
             </DetailRow>
           ))
         )}
-      </DetailsSection>
+      </DetailSection>
 
       <CapabilityDetails config={config} />
+
+      <TechnicalDetails>
+        <DetailRow label="Configuration ID">
+          <CodeValue>{config.id}</CodeValue>
+        </DetailRow>
+        <DetailRow label="Revision">{config.revision}</DetailRow>
+      </TechnicalDetails>
     </div>
   );
 }
@@ -215,9 +223,9 @@ function CapabilityDetails({ config }: { config: ProviderConfigRecord }) {
   }
   if ("dimensions" in config.raw && config.raw.dimensions !== null) {
     return (
-      <DetailsSection title="Embedding verification">
+      <DetailSection title="Embedding verification">
         <DetailRow label="Dimensions">{config.raw.dimensions}</DetailRow>
-      </DetailsSection>
+      </DetailSection>
     );
   }
   return null;
@@ -231,45 +239,13 @@ function BooleanProjection({
   values: Record<string, boolean>;
 }) {
   return (
-    <DetailsSection title={title}>
+    <DetailSection title={title}>
       {Object.entries(values).map(([key, value]) => (
         <DetailRow key={key} label={formatProviderIdentifier(key)}>
           {value ? "Supported" : "Not supported"}
         </DetailRow>
       ))}
-    </DetailsSection>
-  );
-}
-
-function DetailsSection({
-  children,
-  title,
-}: {
-  children: ReactNode;
-  title: string;
-}) {
-  return (
-    <section className="space-y-3">
-      <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-        {title}
-      </h2>
-      <dl className="divide-y border-y">{children}</dl>
-    </section>
-  );
-}
-
-function DetailRow({
-  children,
-  label,
-}: {
-  children: ReactNode;
-  label: string;
-}) {
-  return (
-    <div className="grid gap-1 py-3 sm:grid-cols-[11rem_minmax(0,1fr)] sm:gap-4">
-      <dt className="text-sm text-muted-foreground">{label}</dt>
-      <dd className="min-w-0 text-sm leading-5">{children}</dd>
-    </div>
+    </DetailSection>
   );
 }
 

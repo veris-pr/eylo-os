@@ -15,6 +15,12 @@ import { useState, type ReactNode } from "react";
 import { Link } from "react-router";
 
 import { useRootStore } from "@/app/use-root-store";
+import {
+  DetailDisclosure,
+  DetailRow,
+  DetailSection,
+  TechnicalDetails,
+} from "@/components/details";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -312,7 +318,7 @@ function CampaignDetails({
       </section>
       {analytics === null ? null : (
         <section className="space-y-3">
-          <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+          <h2 className="text-sm font-semibold">
             Outcome summary
           </h2>
           <div className="grid gap-px border bg-border sm:grid-cols-3">
@@ -324,7 +330,7 @@ function CampaignDetails({
               value={analytics.failed}
             />
           </div>
-          <dl className="divide-y border-y">
+          <div className="divide-y border-y">
             <DetailRow label="Connect rate">
               {formatPercent(analytics.connectRate)}
             </DetailRow>
@@ -337,7 +343,7 @@ function CampaignDetails({
             <DetailRow label="Retry / skipped">
               {analytics.retry} / {analytics.skipped}
             </DetailRow>
-          </dl>
+          </div>
           {Object.keys(analytics.outcomeDistribution).length === 0 ? null : (
             <div className="flex flex-wrap gap-2">
               {Object.entries(analytics.outcomeDistribution)
@@ -356,35 +362,25 @@ function CampaignDetails({
           )}
         </section>
       )}
-      <DetailsSection title="Definition">
+      <DetailSection title="Definition">
         <DetailRow label="Agent">
           <Link
             className="underline underline-offset-4"
             to={`/org/${organizationId}/agents/${campaign.agentId}`}
           >
-            {agentName} · revision {campaign.agentRevision}
+            {agentName}
           </Link>
-        </DetailRow>
-        <DetailRow label="Campaign revision">
-          Published {campaign.publishedRevision}
-          {campaign.activeRevision === null ||
-          campaign.activeRevision === undefined
-            ? " · inactive"
-            : ` · active ${campaign.activeRevision}`}
         </DetailRow>
         <DetailRow label="Initial message">
           {campaign.initialMessageTemplateId === null ||
           campaign.initialMessageTemplateId === undefined ? (
             templateName
           ) : (
-            <span>
-              {templateName} · revision{" "}
-              {campaign.initialMessageTemplateRevision}
-            </span>
+            <span>{templateName}</span>
           )}
         </DetailRow>
         <DetailRow label="Concurrency">{campaign.concurrencyLimit}</DetailRow>
-      </DetailsSection>
+      </DetailSection>
       <ChannelSection
         campaign={campaign}
         emailConfigName={emailConfigName}
@@ -393,7 +389,7 @@ function CampaignDetails({
       <PreparationSection preparation={preparation} />
       <section className="space-y-3">
         <div>
-          <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+          <h2 className="text-sm font-semibold">
             Recipients
           </h2>
           <p className="mt-1 text-sm text-muted-foreground">
@@ -418,7 +414,7 @@ function CampaignDetails({
                   </p>
                   <p className="mt-1 text-xs text-muted-foreground">
                     {contact.lastOutcomeReason ??
-                      `Recipient …${contact.id.slice(-8)}`}
+                      "No outcome recorded"}
                   </p>
                 </div>
                 <Badge
@@ -436,17 +432,7 @@ function CampaignDetails({
           </div>
         )}
       </section>
-      <DetailsSection title="Timing">
-        <DetailRow label="Created">
-          <time dateTime={campaign.createdAt} title={created.title}>
-            {created.label}
-          </time>
-        </DetailRow>
-        <DetailRow label="Updated">
-          <time dateTime={campaign.updatedAt} title={updated.title}>
-            {updated.label}
-          </time>
-        </DetailRow>
+      <DetailSection title="Timing">
         <DetailRow label="Started">
           {campaign.startedAt === null || campaign.startedAt === undefined ? (
             started.label
@@ -466,10 +452,58 @@ function CampaignDetails({
             </time>
           )}
         </DetailRow>
-        <DetailRow label="ID">
+      </DetailSection>
+      <DetailDisclosure summary="Record activity">
+        <DetailRow label="Created">
+          <time dateTime={campaign.createdAt} title={created.title}>
+            {created.label}
+          </time>
+        </DetailRow>
+        <DetailRow label="Updated">
+          <time dateTime={campaign.updatedAt} title={updated.title}>
+            {updated.label}
+          </time>
+        </DetailRow>
+      </DetailDisclosure>
+      <TechnicalDetails>
+        <DetailRow label="Campaign ID">
           <code className="break-all text-xs">{campaign.id}</code>
         </DetailRow>
-      </DetailsSection>
+        <DetailRow label="Campaign revision">
+          Published {campaign.publishedRevision}
+          {campaign.activeRevision === null ||
+          campaign.activeRevision === undefined
+            ? " · inactive"
+            : ` · active ${campaign.activeRevision}`}
+        </DetailRow>
+        <DetailRow label="Agent authority">
+          <code className="block break-all text-xs">{campaign.agentId}</code>
+          <span className="mt-1 block text-xs text-muted-foreground">
+            Revision {campaign.agentRevision}
+          </span>
+        </DetailRow>
+        <DetailRow label="Message template authority">
+          <code className="block break-all text-xs">
+            {campaign.initialMessageTemplateId ?? "Not configured"}
+          </code>
+          <span className="mt-1 block text-xs text-muted-foreground">
+            Revision {campaign.initialMessageTemplateRevision ?? "not configured"}
+          </span>
+        </DetailRow>
+        {campaign.channel === "email" ? (
+          <DetailRow label="Email config authority">
+            <code className="block break-all text-xs">
+              {readString(campaign.channelConfig.provider_config_id) ||
+                "Not configured"}
+            </code>
+            <span className="mt-1 block text-xs text-muted-foreground">
+              Revision{" "}
+              {readString(campaign.channelConfig.provider_config_revision) ||
+                "not configured"}
+            </span>
+          </DetailRow>
+        ) : null}
+      </TechnicalDetails>
     </div>
   );
 }
@@ -485,7 +519,7 @@ function ChannelSection({
 }) {
   const config = campaign.channelConfig;
   return (
-    <DetailsSection title="Channel and retry">
+    <DetailSection title="Channel and retry">
       <DetailRow label="Channel">
         <Badge variant="outline">{formatCampaignEnum(campaign.channel)}</Badge>
       </DetailRow>
@@ -496,8 +530,7 @@ function ChannelSection({
               className="inline-flex items-center gap-1 underline underline-offset-4"
               to={`/org/${organizationId}/providers/email/${readString(config.provider_config_id)}`}
             >
-              {emailConfigName} · revision{" "}
-              {readString(config.provider_config_revision)}
+              {emailConfigName}
               <ExternalLink className="size-3.5" aria-hidden="true" />
             </Link>
           </DetailRow>
@@ -527,7 +560,7 @@ function ChannelSection({
               .join(", ") || "None"
           : "None"}
       </DetailRow>
-    </DetailsSection>
+    </DetailSection>
   );
 }
 
@@ -541,7 +574,7 @@ function PreparationSection({
     <section className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+          <h2 className="text-sm font-semibold">
             Preparation
           </h2>
           <p className="mt-1 text-sm text-muted-foreground">
@@ -798,36 +831,6 @@ function ConfirmationDialog({
   );
 }
 
-function DetailsSection({
-  children,
-  title,
-}: {
-  children: ReactNode;
-  title: string;
-}) {
-  return (
-    <section className="space-y-3">
-      <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-        {title}
-      </h2>
-      <dl className="divide-y border-y">{children}</dl>
-    </section>
-  );
-}
-function DetailRow({
-  children,
-  label,
-}: {
-  children: ReactNode;
-  label: string;
-}) {
-  return (
-    <div className="grid gap-1 py-3 sm:grid-cols-[11rem_minmax(0,1fr)] sm:gap-4">
-      <dt className="text-sm text-muted-foreground">{label}</dt>
-      <dd className="min-w-0 break-words text-sm">{children}</dd>
-    </div>
-  );
-}
 function Metric({
   danger = false,
   label,

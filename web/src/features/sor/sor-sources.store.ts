@@ -19,7 +19,10 @@ class SorSourcesStore {
   startingStreamId: string | null = null;
   isSelectedLoading = false;
   isIssuingWebhookEndpoint = false;
+  isLoadingEarlierSyncRuns = false;
   isSavingWebhookSigningSecret = false;
+  isSavingAppWebhookSigningSecret = false;
+  historyErrorMessage: string | null = null;
   reauthorizationErrorMessage: string | null = null;
   syncActionErrorMessage: string | null = null;
   syncActionMessage: string | null = null;
@@ -27,6 +30,7 @@ class SorSourcesStore {
   webhookActionMessage: string | null = null;
   webhookEndpointUrl: string | null = null;
   selectedConnectionName: string | null = null;
+  selectedConnector: SorConnector | null = null;
   selectedErrorMessage: string | null = null;
   selectedOperations: SorSourceOperations | null = null;
   selectedSource: SorSource | null = null;
@@ -108,8 +112,11 @@ class SorSourcesStore {
       this.selectedOperations = null;
       this.selectedStreams = [];
       this.selectedConnectionName = null;
+      this.selectedConnector = null;
     }
     this.selectedErrorMessage = null;
+    this.historyErrorMessage = null;
+    this.isLoadingEarlierSyncRuns = false;
     this.isSelectedLoading = true;
 
     try {
@@ -127,11 +134,13 @@ class SorSourcesStore {
         this.selectedSource = source;
         this.selectedStreams = streams;
         this.selectedOperations = operations;
-        this.selectedConnectionName =
+        const connector =
           connectors.find(
-            (connector) =>
-              connector.connection?.id === source.external_connection_id,
-          )?.name ?? null;
+            (candidate) =>
+              candidate.connection?.id === source.external_connection_id,
+          ) ?? null;
+        this.selectedConnector = connector;
+        this.selectedConnectionName = connector?.name ?? null;
       });
     } catch (error) {
       if (this.selectedRequestId !== requestId) return;
@@ -155,14 +164,76 @@ class SorSourcesStore {
     this.selectedSource = null;
     this.selectedOperations = null;
     this.selectedConnectionName = null;
+    this.selectedConnector = null;
     this.selectedStreams = [];
     this.selectedErrorMessage = null;
     this.isSelectedLoading = false;
     this.isIssuingWebhookEndpoint = false;
+    this.isLoadingEarlierSyncRuns = false;
     this.isSavingWebhookSigningSecret = false;
+    this.isSavingAppWebhookSigningSecret = false;
+    this.historyErrorMessage = null;
     this.webhookActionErrorMessage = null;
     this.webhookActionMessage = null;
     this.webhookEndpointUrl = null;
+  }
+
+  async loadEarlierSyncRuns(
+    organizationId: string,
+    sourceId: string,
+  ): Promise<void> {
+    const operations = this.selectedOperations;
+    if (
+      operations === null ||
+      !operations.has_more ||
+      operations.next_cursor === null ||
+      this.isLoadingEarlierSyncRuns
+    ) {
+      return;
+    }
+
+    const requestId = this.selectedRequestId;
+    this.historyErrorMessage = null;
+    this.isLoadingEarlierSyncRuns = true;
+    try {
+      const page = await this.service.loadSourceOperations(
+        organizationId,
+        sourceId,
+        { cursor: operations.next_cursor, limit: 10 },
+      );
+      if (this.selectedRequestId !== requestId) return;
+
+      runInAction(() => {
+        const current = this.selectedOperations;
+        if (current === null) return;
+        const loadedIds = new Set(
+          current.generations.map((generation) => generation.id),
+        );
+        this.selectedOperations = {
+          ...page,
+          generations: [
+            ...current.generations,
+            ...page.generations.filter(
+              (generation) => !loadedIds.has(generation.id),
+            ),
+          ],
+        };
+      });
+    } catch (error) {
+      if (this.selectedRequestId !== requestId) return;
+      runInAction(() => {
+        this.historyErrorMessage = messageFrom(
+          error,
+          "Earlier synchronization runs could not be loaded.",
+        );
+      });
+    } finally {
+      if (this.selectedRequestId === requestId) {
+        runInAction(() => {
+          this.isLoadingEarlierSyncRuns = false;
+        });
+      }
+    }
   }
 
   clearDeleteError(): void {
@@ -221,6 +292,43 @@ class SorSourcesStore {
       "Source reauthorization failed.",
     );
     this.isReauthorizing = false;
+  }
+
+  async saveAppWebhookSigningSecret(
+    organizationId: string,
+    signingSecret: string,
+  ): Promise<boolean> {
+    const connector = this.selectedConnector;
+    if (connector === null || this.isSavingAppWebhookSigningSecret) return false;
+    this.isSavingAppWebhookSigningSecret = true;
+    this.webhookActionErrorMessage = null;
+    this.webhookActionMessage = null;
+    try {
+      const updated =
+        await this.service.updateConnectorAppWebhookSigningSecret(
+          organizationId,
+          connector.id,
+          signingSecret,
+          connector.app_webhook_signing_secret_revision,
+        );
+      runInAction(() => {
+        this.selectedConnector = updated;
+        this.webhookActionMessage = "Signing secret saved.";
+      });
+      return true;
+    } catch (error) {
+      runInAction(() => {
+        this.webhookActionErrorMessage = messageFrom(
+          error,
+          "The app webhook signing secret could not be saved.",
+        );
+      });
+      return false;
+    } finally {
+      runInAction(() => {
+        this.isSavingAppWebhookSigningSecret = false;
+      });
+    }
   }
 
   async startSync(organizationId: string, sourceId: string): Promise<boolean> {

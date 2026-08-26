@@ -16,6 +16,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from eylo.modules.connections.domain import ExternalConnectionStatus
 from eylo.sor.runtime.catalog import get_sor_registry
 from eylo.sor.runtime.registry import SorRegistry
 
@@ -29,7 +30,12 @@ from .contracts import (
 )
 from .models import SorSourceModel, SorWebhookReceiptModel
 from .repositories import SorRepository
-from .secrets import encrypt_bytes, encrypt_source_webhook_signing_secret
+from .secrets import (
+    SorSecretEnvelopeError,
+    decrypt_connector_webhook_signing_secret,
+    encrypt_bytes,
+    encrypt_source_webhook_signing_secret,
+)
 from .services import SorConfigurationError, SorConflictError, SorNotFoundError
 
 SOR_WEBHOOK_MAX_BODY_BYTES = 1_048_576
@@ -47,6 +53,19 @@ class SorWebhookSubscriptionPlan:
     expected_config_revision: int
     current: SorWebhookSubscription | None = None
     endpoint_token: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SorAppWebhookAuthority:
+    """Current connector authority for one signed app-level delivery."""
+
+    organization_id: UUID
+    connector_id: UUID
+    vendor_key: str
+    vendor_account_external_id: str | None
+    signing_secret: str
+    signing_secret_revision: int
+    sources: tuple[SorSourceModel, ...]
 
 
 class SorWebhookService:
@@ -84,6 +103,13 @@ class SorWebhookService:
             raise SorConfigurationError(
                 "Managed webhook endpoints are owned by the subscription lifecycle."
             )
+        if (
+            manifest.change_mode is SorChangeMode.APP_WEBHOOK
+            and source.vendor_key == "linear"
+        ):
+            raise SorConfigurationError(
+                "App webhook endpoints are owned by the OAuth connector."
+            )
         if not manifest.change_mode.accepts_webhooks:
             raise SorConfigurationError("Source adapter does not support webhooks.")
         token = secrets.token_urlsafe(32)
@@ -91,6 +117,110 @@ class SorWebhookService:
         source.config_revision += 1
         await self.session.flush()
         return token
+
+    async def resolve_app_endpoint(
+        self,
+        *,
+        vendor_key: str,
+        endpoint_key: UUID,
+        expected_secret_revision: int | None = None,
+    ) -> SorAppWebhookAuthority:
+        """Resolve connector authority from an opaque route before payload parsing."""
+        connector = await self.repository.get_connector_by_webhook_endpoint_key(
+            endpoint_key=endpoint_key,
+        )
+        if connector is None or connector.vendor_key != vendor_key:
+            raise SorNotFoundError("SOR webhook endpoint not found.")
+        manifest = self.registry.get_manifest(
+            profile=connector.profile,
+            vendor_key=connector.vendor_key,
+        )
+        if (
+            manifest.change_mode is not SorChangeMode.APP_WEBHOOK
+            or connector.vendor_key != "linear"
+        ):
+            raise SorNotFoundError("SOR webhook endpoint not found.")
+        if (
+            connector.external_connection_id is None
+            or connector.webhook_signing_secret is None
+        ):
+            raise SorNotFoundError("SOR webhook endpoint not found.")
+        if (
+            expected_secret_revision is not None
+            and connector.webhook_signing_secret_revision
+            != expected_secret_revision
+        ):
+            raise SorConflictError("Webhook authority changed during delivery.")
+        connection = await self.repository.get_connection(
+            organization_id=connector.organization_id,
+            connection_id=connector.external_connection_id,
+            vendor_key=connector.vendor_key,
+        )
+        if (
+            connection is None
+            or connection.status is not ExternalConnectionStatus.ACTIVE
+            or connector.webhook_authorized_connection_revision
+            != connection.revision
+        ):
+            raise SorNotFoundError("SOR webhook endpoint not found.")
+        try:
+            signing_secret = decrypt_connector_webhook_signing_secret(
+                connector.webhook_signing_secret,
+                organization_id=connector.organization_id,
+                connector_id=connector.id,
+                secret_revision=connector.webhook_signing_secret_revision,
+            )
+        except SorSecretEnvelopeError as error:
+            raise SorConfigurationError(
+                "SOR webhook authority could not be authenticated."
+            ) from error
+        sources = tuple(
+            source
+            for source in await self.repository.list_sources_for_connection(
+                organization_id=connector.organization_id,
+                connection_id=connection.id,
+            )
+            if source.state
+            in {
+                SorSourceState.BOOTSTRAPPING,
+                SorSourceState.ACTIVE,
+                SorSourceState.DEGRADED,
+            }
+        )
+        return SorAppWebhookAuthority(
+            organization_id=connector.organization_id,
+            connector_id=connector.id,
+            vendor_key=connector.vendor_key,
+            vendor_account_external_id=connector.vendor_account_external_id,
+            signing_secret=signing_secret,
+            signing_secret_revision=connector.webhook_signing_secret_revision,
+            sources=sources,
+        )
+
+    async def bind_app_webhook_account(
+        self,
+        *,
+        endpoint_key: UUID,
+        organization_external_id: str,
+    ) -> None:
+        """Pin an unbound connector to the workspace proven by its HMAC event."""
+        normalized = organization_external_id.strip()
+        if not 1 <= len(normalized) <= 512:
+            raise SorConfigurationError("Webhook workspace identity is invalid.")
+        connector = await self.repository.get_connector_by_webhook_endpoint_key(
+            endpoint_key=endpoint_key,
+            for_update=True,
+        )
+        if connector is None:
+            raise SorNotFoundError("SOR webhook endpoint not found.")
+        if connector.vendor_account_external_id is None:
+            connector.vendor_account_external_id = normalized
+            await self.session.flush()
+            return
+        if connector.vendor_account_external_id != normalized:
+            raise SorConfigurationError(
+                "Webhook workspace does not match the authorized connector."
+            )
 
     async def prepare_subscription(
         self,

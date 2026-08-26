@@ -110,6 +110,26 @@ class SorConnectorModel(EyloOrganizationModel):
             "profile",
             "vendor_key",
         ),
+        Index(
+            "uq_sor_connectors_webhook_endpoint_key_active",
+            "webhook_endpoint_key",
+            unique=True,
+            postgresql_where=text(
+                "webhook_endpoint_key IS NOT NULL AND deleted = false"
+            ),
+        ),
+        CheckConstraint(
+            "(webhook_signing_secret IS NULL AND "
+            "webhook_signing_secret_revision = 0) OR "
+            "(webhook_signing_secret IS NOT NULL AND "
+            "webhook_signing_secret_revision > 0)",
+            name="ck_sor_connectors_webhook_signing_secret_revision",
+        ),
+        CheckConstraint(
+            "webhook_authorized_connection_revision IS NULL OR "
+            "webhook_authorized_connection_revision > 0",
+            name="ck_sor_connectors_webhook_authorized_revision_positive",
+        ),
     )
 
     name: Mapped[str] = mapped_column(String(160), nullable=False)
@@ -132,6 +152,27 @@ class SorConnectorModel(EyloOrganizationModel):
     )
     external_connection_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), nullable=True, index=True
+    )
+    webhook_endpoint_key: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    webhook_signing_secret: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        comment="Encrypted app webhook signing secret; never returned by an API read.",
+        doc="Encrypted app webhook signing secret; never returned by an API read.",
+    )
+    webhook_signing_secret_revision: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    webhook_authorized_connection_revision: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    vendor_account_external_id: Mapped[str | None] = mapped_column(
+        String(512), nullable=True
+    )
+    vendor_account_display_name: Mapped[str | None] = mapped_column(
+        String(512), nullable=True
     )
     config_revision: Mapped[int] = mapped_column(
         Integer, nullable=False, default=1, server_default="1"

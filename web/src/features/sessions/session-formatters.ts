@@ -13,7 +13,7 @@ function formatSessionContact(contact: UserSession["contact"]): string {
     contact.name?.trim() ||
     contact.primaryEmail?.trim() ||
     contact.primaryPhone?.trim() ||
-    `Unnamed contact · …${contact.id.slice(-8)}`
+    "Unnamed contact"
   );
 }
 

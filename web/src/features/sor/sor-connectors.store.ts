@@ -12,6 +12,7 @@ class SorConnectorsStore {
   errorMessage: string | null = null;
   isLoading = false;
   isSaving = false;
+  isSavingAppWebhookSecret = false;
   saveErrorMessage: string | null = null;
 
   private collectionOrganizationId: string | null = null;
@@ -135,6 +136,41 @@ class SorConnectorsStore {
     } finally {
       runInAction(() => {
         this.isSaving = false;
+      });
+    }
+  }
+
+  async saveAppWebhookSigningSecret(
+    organizationId: string,
+    connector: SorConnector,
+    signingSecret: string,
+  ): Promise<boolean> {
+    if (this.isSavingAppWebhookSecret) return false;
+    this.isSavingAppWebhookSecret = true;
+    this.saveErrorMessage = null;
+    try {
+      const updated =
+        await this.service.updateConnectorAppWebhookSigningSecret(
+          organizationId,
+          connector.id,
+          signingSecret,
+          connector.app_webhook_signing_secret_revision,
+        );
+      runInAction(() => {
+        this.connectorsById.set(updated.id, updated);
+      });
+      return true;
+    } catch (error) {
+      runInAction(() => {
+        this.saveErrorMessage = messageFrom(
+          error,
+          "The app webhook signing secret could not be saved.",
+        );
+      });
+      return false;
+    } finally {
+      runInAction(() => {
+        this.isSavingAppWebhookSecret = false;
       });
     }
   }

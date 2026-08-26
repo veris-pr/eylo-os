@@ -180,6 +180,17 @@ class SorChangeMode(str, Enum):
         }
 
 
+class SorAppWebhookState(str, Enum):
+    """Operator-visible lifecycle for one connector-owned app webhook."""
+
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+    PUBLIC_ENDPOINT_REQUIRED = "PUBLIC_ENDPOINT_REQUIRED"
+    SIGNING_SECRET_REQUIRED = "SIGNING_SECRET_REQUIRED"
+    AUTHORIZATION_REQUIRED = "AUTHORIZATION_REQUIRED"
+    REINSTALLATION_REQUIRED = "REINSTALLATION_REQUIRED"
+    ACTIVE = "ACTIVE"
+
+
 class SorMappingState(str, Enum):
     """Lifecycle of one immutable mapping revision."""
 
@@ -845,6 +856,7 @@ __all__ = [
     "SorAdapterConfigurationFieldSpec",
     "SorAdapterContext",
     "SorAdapterFieldSelection",
+    "SorAppWebhookState",
     "SorCanonicalFieldSpec",
     "SorCapabilityUnavailable",
     "SorChangeMode",

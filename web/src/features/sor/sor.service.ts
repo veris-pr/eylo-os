@@ -147,6 +147,33 @@ class SorService {
     );
   }
 
+  async updateConnectorAppWebhookSigningSecret(
+    organizationId: string,
+    connectorId: string,
+    signingSecret: string,
+    expectedSecretRevision: number,
+  ): Promise<SorConnector> {
+    const result = await this.api.PUT(
+      "/api/{organization_id}/sor/connectors/{connector_id}/app-webhook-signing-secret",
+      {
+        params: {
+          path: {
+            organization_id: organizationId,
+            connector_id: connectorId,
+          },
+        },
+        body: {
+          signing_secret: signingSecret,
+          expected_secret_revision: expectedSecretRevision,
+        },
+      },
+    );
+    return requireData(
+      result,
+      "The app webhook signing secret could not be saved.",
+    );
+  }
+
   async authorizeConnector(
     organizationId: string,
     connectorId: string,
@@ -267,6 +294,10 @@ class SorService {
   async loadSourceOperations(
     organizationId: string,
     sourceId: string,
+    options?: {
+      cursor?: string;
+      limit?: number;
+    },
   ): Promise<SorSourceOperations> {
     const result = await this.api.GET(
       "/api/{organization_id}/sor/sources/{source_id}/operations",
@@ -276,6 +307,7 @@ class SorService {
             organization_id: organizationId,
             source_id: sourceId,
           },
+          query: options,
         },
       },
     );

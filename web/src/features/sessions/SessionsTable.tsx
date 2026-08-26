@@ -199,9 +199,6 @@ function SessionRow({
         >
           {formatSessionContact(userSession.contact)}
         </button>
-        <p className="mt-0.5 break-all text-xs text-muted-foreground">
-          …{userSession.id.slice(-12)}
-        </p>
       </TableCell>
       <TableCell>
         <SessionStateBadge state={userSession.state} />
@@ -250,9 +247,6 @@ function SessionCard({
           >
             {formatSessionContact(userSession.contact)}
           </button>
-          <p className="mt-1 break-all text-xs text-muted-foreground">
-            {userSession.id}
-          </p>
         </div>
         <SessionActions userSessionId={userSession.id} onView={onView} />
       </div>

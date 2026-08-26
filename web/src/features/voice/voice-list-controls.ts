@@ -1,4 +1,4 @@
-import { CalendarClock, Database, ListOrdered, Radio } from "lucide-react";
+import { CalendarClock, Database, Radio } from "lucide-react";
 
 import type { FilterUiSchema, SortOption } from "@/components/filters";
 import { voiceRuntimeMode } from "@/features/voice/voice.query";
@@ -10,7 +10,6 @@ import type {
 
 const VOICE_SORT_OPTIONS = [
   { icon: Database, label: "Name", value: "name" },
-  { icon: ListOrdered, label: "Revision", value: "revision" },
   { icon: CalendarClock, label: "Updated date", value: "updated_at" },
 ] as const satisfies readonly SortOption<VoiceSortField>[];
 

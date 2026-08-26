@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 
+import { TechnicalDetails } from "@/components/details";
 import { Badge } from "@/components/ui/badge";
 import {
   formatSessionContact,
@@ -20,7 +21,6 @@ function SessionDetails({ userSession }: { userSession: UserSession }) {
         <p className="mt-1 break-words text-sm text-muted-foreground">
           {formatSessionContactDetail(userSession.contact)}
         </p>
-        <DetailRow label="Contact ID" value={userSession.contact.id} mono />
       </DetailSection>
 
       <DetailSection title="Session">
@@ -36,7 +36,6 @@ function SessionDetails({ userSession }: { userSession: UserSession }) {
             {formatSessionEnum(userSession.entryChannel)}
           </Badge>
         </div>
-        <DetailRow label="Session ID" value={userSession.id} mono />
         <DetailRow
           label="Connections"
           value={String(userSession.connectionSequence)}
@@ -62,6 +61,11 @@ function SessionDetails({ userSession }: { userSession: UserSession }) {
       <DetailSection title="Activity">
         <CountGrid userSession={userSession} />
       </DetailSection>
+
+      <TechnicalDetails className="border p-4 sm:p-5">
+        <DetailRow label="Session ID" value={userSession.id} mono />
+        <DetailRow label="Contact ID" value={userSession.contact.id} mono />
+      </TechnicalDetails>
     </aside>
   );
 }

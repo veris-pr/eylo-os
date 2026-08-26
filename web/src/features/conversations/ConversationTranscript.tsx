@@ -8,6 +8,7 @@ import {
   type ConversationTimelineEntry,
   type ConversationTimelineLabel,
 } from "@/components/audit/ConversationTimeline";
+import { TechnicalDetails } from "@/components/details";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -116,10 +117,7 @@ const ConversationTranscript = observer(function ConversationTranscript({
 
 function MessageMetadata({ message }: { message: ConversationMessage }) {
   return (
-    <details className="min-w-0 text-xs text-muted-foreground">
-      <summary className="cursor-pointer select-none underline-offset-4 hover:underline">
-        Message metadata
-      </summary>
+    <TechnicalDetails summary="Technical message details">
       <dl className="mt-3 grid min-w-0 gap-2 border-l pl-3 sm:grid-cols-[9rem_minmax(0,1fr)]">
         <Metadata label="Message ID" value={message.id} />
         <Metadata
@@ -133,7 +131,7 @@ function MessageMetadata({ message }: { message: ConversationMessage }) {
       {message.meta == null || Object.keys(message.meta).length === 0 ? null : (
         <JsonValue className="mt-3" value={message.meta} />
       )}
-    </details>
+    </TechnicalDetails>
   );
 }
 

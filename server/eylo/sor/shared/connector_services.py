@@ -13,11 +13,18 @@ from eylo.modules.connections.domain import ConnectionAuthKind
 from eylo.modules.connections.models import ExternalConnectionModel
 from eylo.sor.runtime.catalog import get_sor_registry
 from eylo.sor.runtime.registry import SorRegistry
-from eylo.sor.shared.contracts import SorProfile
+from eylo.sor.shared.contracts import SorChangeMode, SorProfile
 from eylo.sor.shared.models import SorConnectorModel
 from eylo.sor.shared.repositories import SorRepository
-from eylo.sor.shared.secrets import encrypt_connector_client_secret
-from eylo.sor.shared.services import SorConfigurationError, SorNotFoundError
+from eylo.sor.shared.secrets import (
+    encrypt_connector_client_secret,
+    encrypt_connector_webhook_signing_secret,
+)
+from eylo.sor.shared.services import (
+    SorConfigurationError,
+    SorConflictError,
+    SorNotFoundError,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,12 +107,109 @@ class SorConnectorService:
             auth_kind=auth_kind,
             oauth_client_id=normalized_client_id,
             oauth_client_secret=encrypted_secret,
+            webhook_endpoint_key=(
+                uuid.UUID(str(uuid_utils.uuid7()))
+                if (
+                    manifest.change_mode is SorChangeMode.APP_WEBHOOK
+                    and normalized_vendor == "linear"
+                )
+                else None
+            ),
             config_revision=config_revision,
             configured_by=configured_by,
         )
         self.session.add(connector)
         await self.session.flush()
         return SorConnectorView(connector=connector, connection=None)
+
+    async def set_app_webhook_signing_secret(
+        self,
+        *,
+        organization_id: UUID,
+        connector_id: UUID,
+        signing_secret: str,
+        expected_secret_revision: int,
+    ) -> SorConnectorView:
+        """Rotate one connector-owned app webhook secret and require reinstall."""
+        view = await self.get(
+            organization_id=organization_id,
+            connector_id=connector_id,
+            for_update=True,
+        )
+        connector = view.connector
+        manifest = self.registry.get_manifest(
+            profile=connector.profile,
+            vendor_key=connector.vendor_key,
+        )
+        if (
+            manifest.change_mode is not SorChangeMode.APP_WEBHOOK
+            or connector.vendor_key != "linear"
+        ):
+            raise SorConfigurationError(
+                "This SOR connector does not use an app-owned webhook."
+            )
+        if connector.webhook_signing_secret_revision != expected_secret_revision:
+            raise SorConflictError("SOR connector webhook configuration changed.")
+        secret_revision = connector.webhook_signing_secret_revision + 1
+        connector.webhook_signing_secret = encrypt_connector_webhook_signing_secret(
+            signing_secret,
+            organization_id=organization_id,
+            connector_id=connector.id,
+            secret_revision=secret_revision,
+        )
+        connector.webhook_signing_secret_revision = secret_revision
+        connector.webhook_authorized_connection_revision = None
+        if connector.webhook_endpoint_key is None:
+            connector.webhook_endpoint_key = uuid.UUID(str(uuid_utils.uuid7()))
+        await self.session.flush()
+        return await self._view(connector)
+
+    async def record_verified_account(
+        self,
+        *,
+        organization_id: UUID,
+        connection_id: UUID,
+        account_external_id: str | None,
+        account_display_name: str | None,
+    ) -> None:
+        """Pin one connector to the vendor account proven during discovery."""
+        connector = await self.repository.get_connector_for_connection(
+            organization_id=organization_id,
+            connection_id=connection_id,
+            for_update=True,
+        )
+        if connector is None:
+            raise SorNotFoundError("SOR connector not found.")
+        manifest = self.registry.get_manifest(
+            profile=connector.profile,
+            vendor_key=connector.vendor_key,
+        )
+        normalized_external_id = _optional_account_value(
+            account_external_id,
+            field="vendor account ID",
+        )
+        if (
+            manifest.change_mode is SorChangeMode.APP_WEBHOOK
+            and connector.vendor_key == "linear"
+            and normalized_external_id is None
+        ):
+            raise SorConfigurationError(
+                "The provider did not return the workspace identity required for app webhooks."
+            )
+        if (
+            connector.vendor_account_external_id is not None
+            and normalized_external_id is not None
+            and connector.vendor_account_external_id != normalized_external_id
+        ):
+            raise SorConfigurationError(
+                "This OAuth app is already bound to another provider workspace."
+            )
+        connector.vendor_account_external_id = normalized_external_id
+        connector.vendor_account_display_name = _optional_account_value(
+            account_display_name,
+            field="vendor account name",
+        )
+        await self.session.flush()
 
     async def get(
         self,
@@ -141,3 +245,12 @@ class SorConnectorService:
 
 
 __all__ = ["SorConnectorService", "SorConnectorView"]
+
+
+def _optional_account_value(value: str | None, *, field: str) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not 1 <= len(normalized) <= 512:
+        raise SorConfigurationError(f"Verified {field} is invalid.")
+    return normalized

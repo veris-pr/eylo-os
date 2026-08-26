@@ -1542,8 +1542,8 @@ VENDOR_CANDIDATES = (
         (ConnectionAuthKind.OAUTH2, ConnectionAuthKind.API_KEY),
         setup_notes=(
             "Create a Linear OAuth 2.0 application and register the exact Eylo callback URL shown below.",
+            "Before authorizing a workspace, enable webhooks on that OAuth application, use the connector webhook URL shown by Eylo, and save the Linear signing secret.",
             "Eylo authorizes as a Linear app actor. In Linear, grant the app access only to the public or selected teams it should synchronize.",
-            "A public HTTPS webhook endpoint is optional for local setup; scheduled reconciliation still observes external changes.",
         ),
     ),
     SorVendorCandidate(

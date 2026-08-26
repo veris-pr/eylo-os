@@ -4,6 +4,12 @@ import { useState, type ReactNode } from "react";
 import { Link } from "react-router";
 
 import { useRootStore } from "@/app/use-root-store";
+import {
+  DetailDisclosure,
+  DetailRow,
+  DetailSection,
+  TechnicalDetails,
+} from "@/components/details";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -68,8 +74,7 @@ const CallDetailsDrawer = observer(function CallDetailsDrawer({
                 : `${call.fromNumber ?? "Unknown"} → ${call.toNumber ?? "Unknown"}`}
             </DrawerTitle>
             <DrawerDescription>
-              Canonical call state, exact provider and Agent revision, linked
-              conversation, timing, and transfer outcome.
+              Call outcome, timing, participants, and linked product activity.
             </DrawerDescription>
           </DrawerHeader>
           <Button
@@ -187,7 +192,7 @@ function CallDetails({
   const transferred = formatTelephonyDate(call.transferredAt);
   return (
     <div className="space-y-8">
-      <DetailsSection title="Overview">
+      <DetailSection title="Overview">
         <DetailRow label="Status">
           <Badge variant={call.status === "failed" ? "destructive" : "outline"}>
             {formatTelephonyEnum(call.status)}
@@ -201,8 +206,8 @@ function CallDetails({
         <DetailRow label="End reason">
           {call.endedReason ?? "Not recorded"}
         </DetailRow>
-      </DetailsSection>
-      <DetailsSection title="Authority">
+      </DetailSection>
+      <DetailSection title="Runtime">
         <DetailRow label="Provider">
           <Badge variant="outline">{formatTelephonyEnum(call.provider)}</Badge>
         </DetailRow>
@@ -211,7 +216,7 @@ function CallDetails({
             className="inline-flex items-center gap-1 underline underline-offset-4"
             to={`/org/${organizationId}/providers/telephony/${call.providerConfigId}`}
           >
-            {configName} · revision {call.providerConfigRevision}
+            {configName}
             <ExternalLink className="size-3.5" aria-hidden="true" />
           </Link>
         </DetailRow>
@@ -223,20 +228,12 @@ function CallDetails({
               className="underline underline-offset-4"
               to={`/org/${organizationId}/agents/${call.agentId}`}
             >
-              {agentName} · revision {call.agentRevision}
+              {agentName}
             </Link>
           )}
         </DetailRow>
-        <DetailRow label="Provider call ID">
-          <code className="break-all text-xs">
-            {call.callSid ?? "Not recorded"}
-          </code>
-        </DetailRow>
-        <DetailRow label="Provider status">
-          {call.providerStatus ?? "Not recorded"}
-        </DetailRow>
-      </DetailsSection>
-      <DetailsSection title="Timing">
+      </DetailSection>
+      <DetailSection title="Timing">
         <DetailRow label="Started">
           {call.startedAt === null || call.startedAt === undefined ? (
             started.label
@@ -267,8 +264,8 @@ function CallDetails({
         <DetailRow label="Duration">
           {formatCallDuration(call.durationSeconds)}
         </DetailRow>
-      </DetailsSection>
-      <DetailsSection title="Conversation and product">
+      </DetailSection>
+      <DetailSection title="Conversation and product">
         <DetailRow label="Conversation">
           {call.conversationId === null || call.conversationId === undefined ? (
             "Not linked"
@@ -317,8 +314,8 @@ function CallDetails({
             </Link>
           )}
         </DetailRow>
-      </DetailsSection>
-      <DetailsSection title="Opener and transfer">
+      </DetailSection>
+      <DetailSection title="Opener and transfer">
         <DetailRow label="Opener">
           <Badge variant="outline">
             {formatTelephonyEnum(call.openerDeliveryStatus)}
@@ -354,8 +351,8 @@ function CallDetails({
             </time>
           )}
         </DetailRow>
-      </DetailsSection>
-      <DetailsSection title="Record">
+      </DetailSection>
+      <DetailDisclosure summary="Record activity">
         <DetailRow label="Created">
           <time dateTime={call.createdAt} title={created.title}>
             {created.label}
@@ -366,44 +363,40 @@ function CallDetails({
             {updated.label}
           </time>
         </DetailRow>
-        <DetailRow label="ID">
+      </DetailDisclosure>
+      <TechnicalDetails>
+        <DetailRow label="Call ID">
           <code className="break-all text-xs">{call.id}</code>
         </DetailRow>
-      </DetailsSection>
+        <DetailRow label="Provider call ID">
+          <code className="break-all text-xs">
+            {call.callSid ?? "Not recorded"}
+          </code>
+        </DetailRow>
+        <DetailRow label="Provider status">
+          {call.providerStatus ?? "Not recorded"}
+        </DetailRow>
+        <DetailRow label="Provider config authority">
+          <code className="block break-all text-xs">
+            {call.providerConfigId}
+          </code>
+          <span className="mt-1 block text-xs text-muted-foreground">
+            Revision {call.providerConfigRevision}
+          </span>
+        </DetailRow>
+        <DetailRow label="Agent authority">
+          <code className="block break-all text-xs">
+            {call.agentId ?? "Not recorded"}
+          </code>
+          <span className="mt-1 block text-xs text-muted-foreground">
+            Revision {call.agentRevision ?? "not recorded"}
+          </span>
+        </DetailRow>
+      </TechnicalDetails>
     </div>
   );
 }
 
-function DetailsSection({
-  children,
-  title,
-}: {
-  children: ReactNode;
-  title: string;
-}) {
-  return (
-    <section className="space-y-3">
-      <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-        {title}
-      </h2>
-      <dl className="divide-y border-y">{children}</dl>
-    </section>
-  );
-}
-function DetailRow({
-  children,
-  label,
-}: {
-  children: ReactNode;
-  label: string;
-}) {
-  return (
-    <div className="grid gap-1 py-3 sm:grid-cols-[11rem_minmax(0,1fr)] sm:gap-4">
-      <dt className="text-sm text-muted-foreground">{label}</dt>
-      <dd className="min-w-0 break-words text-sm">{children}</dd>
-    </div>
-  );
-}
 function ErrorBox({ children }: { children: ReactNode }) {
   return (
     <div

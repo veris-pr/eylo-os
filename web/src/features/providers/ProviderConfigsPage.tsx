@@ -460,9 +460,8 @@ const ProviderConfigsPage = observer(function ProviderConfigsPage() {
                   query={query}
                   onSort={sortBy}
                 />
-                <TableHead className="hidden md:table-cell">Revision</TableHead>
                 <SortableHead
-                  className="hidden lg:table-cell"
+                  className="hidden md:table-cell"
                   field="verified_at"
                   label="Verified"
                   query={query}
@@ -530,13 +529,11 @@ function ConfigRow({
         >
           {config.name}
         </button>
-        <p className="mt-0.5 truncate text-xs text-muted-foreground">
-          {config.id}
-        </p>
       </TableCell>
       <TableCell>{providerLabel}</TableCell>
       <TableCell>
         <ProviderStatusBadge
+          compact
           configured={config.configured}
           enabled={config.enabled}
           ready={config.ready}
@@ -544,9 +541,6 @@ function ConfigRow({
         />
       </TableCell>
       <TableCell className="hidden text-muted-foreground md:table-cell">
-        {config.revision}
-      </TableCell>
-      <TableCell className="hidden text-muted-foreground lg:table-cell">
         {verifiedAt.exact === null ? (
           verifiedAt.label
         ) : (
@@ -604,9 +598,6 @@ function ConfigCard({
           onClick={() => onView(config.id)}
         >
           <span className="block font-medium">{config.name}</span>
-          <span className="mt-0.5 block truncate text-xs text-muted-foreground">
-            {config.id}
-          </span>
         </button>
         <div className="flex shrink-0">
           <Button
@@ -627,14 +618,13 @@ function ConfigCard({
       </div>
       <p className="text-sm text-muted-foreground">{providerLabel}</p>
       <ProviderStatusBadge
+        compact
         configured={config.configured}
         enabled={config.enabled}
         ready={config.ready}
         verified={config.verified}
       />
-      <p className="text-xs text-muted-foreground">
-        Revision {config.revision} · {verificationLabel}
-      </p>
+      <p className="text-xs text-muted-foreground">{verificationLabel}</p>
     </div>
   );
 }
@@ -688,7 +678,6 @@ function ConfigLoadingRow() {
     <TableRow>
       <TableCell>
         <Skeleton className="h-5 w-36" />
-        <Skeleton className="mt-2 h-3 w-52" />
       </TableCell>
       <TableCell>
         <Skeleton className="h-4 w-24" />
@@ -697,9 +686,6 @@ function ConfigLoadingRow() {
         <Skeleton className="h-6 w-64 max-w-full" />
       </TableCell>
       <TableCell className="hidden md:table-cell">
-        <Skeleton className="h-4 w-8" />
-      </TableCell>
-      <TableCell className="hidden lg:table-cell">
         <Skeleton className="h-4 w-32" />
       </TableCell>
       <TableCell>
@@ -715,7 +701,6 @@ function ConfigLoadingCard() {
       <div className="flex items-start gap-2">
         <div className="min-w-0 flex-1">
           <Skeleton className="h-5 w-36 max-w-full" />
-          <Skeleton className="mt-2 h-3 w-52 max-w-full" />
         </div>
         <Skeleton className="size-8 shrink-0" />
       </div>

@@ -3,6 +3,12 @@ import { observer } from "mobx-react-lite";
 import type { ReactNode } from "react";
 
 import { useRootStore } from "@/app/use-root-store";
+import {
+  DetailDisclosure,
+  DetailRow,
+  DetailSection,
+  TechnicalDetails,
+} from "@/components/details";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -87,14 +93,14 @@ function MemoryDetails({ memory }: { memory: MemoryDetail }) {
   const provenance = memory.provenance;
   return (
     <div className="min-w-0 space-y-8">
-      <DetailsSection title="Remembered fact">
+      <DetailSection title="Remembered fact">
         <p className="break-words text-sm leading-6 whitespace-pre-wrap">
           {memory.content}
         </p>
-      </DetailsSection>
+      </DetailSection>
 
-      <DetailsSection title="Lifecycle">
-        <dl>
+      <DetailSection title="Current state">
+        <div>
           <DetailRow label="Integrity">
             <MemoryIntegrityBadge integrity={memory.integrity} />
           </DetailRow>
@@ -105,23 +111,27 @@ function MemoryDetails({ memory }: { memory: MemoryDetail }) {
               {formatMemoryStatus(memory.status)}
             </Badge>
           </DetailRow>
+          <DetailRow label="Level">
+            <Badge variant="outline">{formatMemoryLevel(memory.level)}</Badge>
+          </DetailRow>
+          <DetailRow label="Subject">{memory.subject_label}</DetailRow>
+          <DetailRow label="Recall count">{memory.recall_count}</DetailRow>
+          <DetailRow label="Last recalled">
+            <DateValue value={formatMemoryDate(memory.last_recalled_at)} />
+          </DetailRow>
           <DetailRow label="Saved">
             <DateValue value={formatMemoryDate(memory.created_at)} />
           </DetailRow>
           <DetailRow label="Updated">
             <DateValue value={formatMemoryDate(memory.updated_at)} />
           </DetailRow>
-          <DetailRow label="Recall count">{memory.recall_count}</DetailRow>
-          <DetailRow label="Last recalled">
-            <DateValue value={formatMemoryDate(memory.last_recalled_at)} />
-          </DetailRow>
-          <DetailRow label="Expired">
+          <DetailRow label="Expires">
             <DateValue value={formatMemoryDate(memory.expires_at)} />
           </DetailRow>
-        </dl>
-      </DetailsSection>
+        </div>
+      </DetailSection>
 
-      <DetailsSection title="Related facts">
+      <DetailSection title="Related facts">
         {memory.relationships.length === 0 ? (
           <p className="text-sm text-muted-foreground">
             No reconciliation relationships recorded.
@@ -143,7 +153,7 @@ function MemoryDetails({ memory }: { memory: MemoryDetail }) {
                 <p className="break-words text-sm leading-6 whitespace-pre-wrap">
                   {relationship.related_memory.content}
                 </p>
-                <dl>
+                <div>
                   <DetailRow label="Related integrity">
                     <MemoryIntegrityBadge
                       integrity={relationship.related_memory.integrity}
@@ -154,94 +164,27 @@ function MemoryDetails({ memory }: { memory: MemoryDetail }) {
                       {formatMemoryLevel(relationship.related_memory.level)}
                     </Badge>
                   </DetailRow>
-                  <DetailRow label="Related memory ID">
-                    <CodeValue>{relationship.related_memory.id}</CodeValue>
-                  </DetailRow>
                   <DetailRow label="Detected">
                     <DateValue
                       value={formatMemoryDate(relationship.created_at)}
                     />
                   </DetailRow>
-                  <DetailRow label="Reconciliation job">
-                    <CodeValue>{relationship.reconciliation_job_id}</CodeValue>
-                  </DetailRow>
-                </dl>
+                  <TechnicalDetails>
+                    <DetailRow label="Related memory ID">
+                      <CodeValue>{relationship.related_memory.id}</CodeValue>
+                    </DetailRow>
+                    <DetailRow label="Reconciliation job">
+                      <CodeValue>{relationship.reconciliation_job_id}</CodeValue>
+                    </DetailRow>
+                  </TechnicalDetails>
+                </div>
               </li>
             ))}
           </ol>
         )}
-      </DetailsSection>
+      </DetailSection>
 
-      {memory.latest_reconciliation === null ? null : (
-        <DetailsSection title="Latest reconciliation">
-          <ReconciliationDetails job={memory.latest_reconciliation} />
-        </DetailsSection>
-      )}
-
-      <DetailsSection title="Ownership">
-        <dl>
-          <DetailRow label="Level">
-            <Badge variant="outline">{formatMemoryLevel(memory.level)}</Badge>
-          </DetailRow>
-          <DetailRow label="Subject">{memory.subject_label}</DetailRow>
-          <DetailRow label="Subject ID">
-            <CodeValue>{memory.subject_id}</CodeValue>
-          </DetailRow>
-          <DetailRow label="Memory ID">
-            <CodeValue>{memory.id}</CodeValue>
-          </DetailRow>
-        </dl>
-      </DetailsSection>
-
-      <DetailsSection title="Provenance">
-        <dl>
-          <DetailRow label="Origin">
-            <Badge variant="outline">
-              {formatIdentifier(provenance.origin)}
-            </Badge>
-          </DetailRow>
-          <DetailRow label="Source conversation">
-            <CodeValue>{memory.source_conversation_id}</CodeValue>
-          </DetailRow>
-          <DetailRow label="Actor">
-            {provenance.actor === null ? (
-              "Automatic formation"
-            ) : (
-              <Badge variant="outline">
-                {formatIdentifier(provenance.actor.kind)}
-              </Badge>
-            )}
-          </DetailRow>
-          {provenance.actor === null ? null : (
-            <>
-              <DetailRow label="Actor ID">
-                <CodeValue>{provenance.actor.actor_id}</CodeValue>
-              </DetailRow>
-              <DetailRow label="Agent revision">
-                {provenance.actor.agent_revision ?? "Not applicable"}
-              </DetailRow>
-            </>
-          )}
-          <DetailRow label="Extraction model">
-            {provenance.extraction?.model ?? "Direct Agent action"}
-          </DetailRow>
-          <DetailRow label="Source messages">
-            {provenance.source_messages.length === 0 ? (
-              "Not recorded"
-            ) : (
-              <ul className="space-y-1">
-                {provenance.source_messages.map((source) => (
-                  <li key={source.message_id}>
-                    <CodeValue>{source.message_id}</CodeValue>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </DetailRow>
-        </dl>
-      </DetailsSection>
-
-      <DetailsSection title="History">
+      <DetailDisclosure summary={`History (${memory.history.length})`}>
         {memory.history.length === 0 ? (
           <p className="text-sm text-muted-foreground">
             No lifecycle events recorded.
@@ -269,15 +212,76 @@ function MemoryDetails({ memory }: { memory: MemoryDetail }) {
             ))}
           </ol>
         )}
-      </DetailsSection>
+      </DetailDisclosure>
 
-      {Object.keys(memory.metadata).length === 0 ? null : (
-        <DetailsSection title="Metadata">
-          <pre className="break-all border bg-muted/40 p-3 text-xs whitespace-pre-wrap">
-            {JSON.stringify(memory.metadata, null, 2)}
-          </pre>
-        </DetailsSection>
-      )}
+      <TechnicalDetails>
+        <div className="space-y-6">
+          <DetailSection title="Ownership identifiers">
+            <DetailRow label="Subject ID">
+              <CodeValue>{memory.subject_id}</CodeValue>
+            </DetailRow>
+            <DetailRow label="Memory ID">
+              <CodeValue>{memory.id}</CodeValue>
+            </DetailRow>
+          </DetailSection>
+
+          <DetailSection title="Provenance">
+            <DetailRow label="Origin">
+              <Badge variant="outline">
+                {formatIdentifier(provenance.origin)}
+              </Badge>
+            </DetailRow>
+            <DetailRow label="Source conversation">
+              <CodeValue>{memory.source_conversation_id}</CodeValue>
+            </DetailRow>
+            <DetailRow label="Actor">
+              {provenance.actor === null
+                ? "Automatic formation"
+                : formatIdentifier(provenance.actor.kind)}
+            </DetailRow>
+            {provenance.actor === null ? null : (
+              <>
+                <DetailRow label="Actor ID">
+                  <CodeValue>{provenance.actor.actor_id}</CodeValue>
+                </DetailRow>
+                <DetailRow label="Agent revision">
+                  {provenance.actor.agent_revision ?? "Not applicable"}
+                </DetailRow>
+              </>
+            )}
+            <DetailRow label="Extraction model">
+              {provenance.extraction?.model ?? "Direct Agent action"}
+            </DetailRow>
+            <DetailRow label="Source messages">
+              {provenance.source_messages.length === 0 ? (
+                "Not recorded"
+              ) : (
+                <ul className="space-y-1">
+                  {provenance.source_messages.map((source) => (
+                    <li key={source.message_id}>
+                      <CodeValue>{source.message_id}</CodeValue>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </DetailRow>
+          </DetailSection>
+
+          {memory.latest_reconciliation === null ? null : (
+            <DetailSection title="Latest reconciliation">
+              <ReconciliationDetails job={memory.latest_reconciliation} />
+            </DetailSection>
+          )}
+
+          {Object.keys(memory.metadata).length === 0 ? null : (
+            <DetailSection title="Metadata">
+              <pre className="break-all bg-muted/40 p-3 text-xs whitespace-pre-wrap">
+                {JSON.stringify(memory.metadata, null, 2)}
+              </pre>
+            </DetailSection>
+          )}
+        </div>
+      </TechnicalDetails>
     </div>
   );
 }
@@ -288,7 +292,7 @@ function ReconciliationDetails({
   job: NonNullable<MemoryDetail["latest_reconciliation"]>;
 }) {
   return (
-    <dl>
+    <div>
       <DetailRow label="State">
         <Badge variant={job.state === "failed" ? "destructive" : "outline"}>
           {formatReconciliationState(job.state)}
@@ -318,38 +322,6 @@ function ReconciliationDetails({
           {formatIdentifier(job.last_error)}
         </DetailRow>
       )}
-    </dl>
-  );
-}
-
-function DetailsSection({
-  children,
-  title,
-}: {
-  children: ReactNode;
-  title: string;
-}) {
-  return (
-    <section className="min-w-0 space-y-3">
-      <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-        {title}
-      </h2>
-      {children}
-    </section>
-  );
-}
-
-function DetailRow({
-  children,
-  label,
-}: {
-  children: ReactNode;
-  label: string;
-}) {
-  return (
-    <div className="grid min-w-0 gap-1 border-t py-3 first:border-t-0 sm:grid-cols-[11rem_minmax(0,1fr)] sm:gap-4">
-      <dt className="text-sm text-muted-foreground">{label}</dt>
-      <dd className="min-w-0 break-words text-sm leading-5">{children}</dd>
     </div>
   );
 }
@@ -378,7 +350,8 @@ function HistoryProvenance({
 }) {
   const actor = change.provenance.actor;
   return (
-    <dl className="grid min-w-0 gap-x-3 gap-y-1 border-t pt-2 text-xs sm:grid-cols-[7rem_minmax(0,1fr)]">
+    <TechnicalDetails summary="Event provenance">
+      <dl className="grid min-w-0 gap-x-3 gap-y-1 text-xs sm:grid-cols-[7rem_minmax(0,1fr)]">
       <dt className="text-muted-foreground">Origin</dt>
       <dd>{formatIdentifier(change.provenance.origin)}</dd>
       <dt className="text-muted-foreground">Source</dt>
@@ -418,7 +391,8 @@ function HistoryProvenance({
       <dd className="break-words">
         {change.provenance.extraction?.model ?? "Direct action"}
       </dd>
-    </dl>
+      </dl>
+    </TechnicalDetails>
   );
 }
 

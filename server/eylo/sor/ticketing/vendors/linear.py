@@ -6,7 +6,7 @@ import hashlib
 import hmac
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 
@@ -128,6 +128,23 @@ _MUTATION_RESULT_STREAMS = {
     "issue_link": "issue_relations",
 }
 _FULL_RECONCILE_STREAMS = frozenset({"issue_relations"})
+_WEBHOOK_STREAMS = {
+    "Issue": "issues",
+    "Comment": "comments",
+    "Project": "projects",
+    "IssueRelation": "issue_relations",
+    "IssueLabel": "issue_labels",
+    "Cycle": "cycles",
+    "User": "users",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class LinearAppWebhookDelivery:
+    """One verified Linear workspace event before source selection filtering."""
+
+    organization_external_id: str
+    signal: SorWebhookSignal
 
 
 LINEAR_MANIFEST = SorAdapterCapabilityManifest(
@@ -646,42 +663,15 @@ class LinearTicketingAdapter:
         headers: Mapping[str, str],
         body: bytes,
     ) -> None:
-        secret = self._context.webhook_signing_secret
-        if secret is None:
+        if self._context.webhook_signing_secret is None:
             raise SorWebhookVerificationError(
                 "Linear webhook signing secret is not configured."
             )
-        signature = _header(headers, "linear-signature")
-        if signature is None or len(signature) != 64:
-            raise SorWebhookVerificationError("Linear webhook signature is invalid.")
-        try:
-            bytes.fromhex(signature)
-        except ValueError as error:
-            raise SorWebhookVerificationError(
-                "Linear webhook signature is invalid."
-            ) from error
-        expected = hmac.new(
-            secret.encode("utf-8"),
-            body,
-            hashlib.sha256,
-        ).hexdigest()
-        if not hmac.compare_digest(signature.lower(), expected):
-            raise SorWebhookVerificationError("Linear webhook signature is invalid.")
-
-        payload = _linear_webhook_body(body, verification=True)
-        timestamp = payload.get("webhookTimestamp")
-        if isinstance(timestamp, bool) or not isinstance(timestamp, int):
-            raise SorWebhookVerificationError(
-                "Linear webhook timestamp is invalid."
-            )
-        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-        if abs(now_ms - timestamp) > 60_000:
-            raise SorWebhookVerificationError("Linear webhook timestamp is stale.")
-        header_timestamp = _header(headers, "linear-timestamp")
-        if header_timestamp is not None and header_timestamp != str(timestamp):
-            raise SorWebhookVerificationError(
-                "Linear webhook timestamps disagree."
-            )
+        verify_linear_app_webhook(
+            headers=headers,
+            body=body,
+            signing_secret=self._context.webhook_signing_secret,
+        )
 
     async def parse_webhook_signal(
         self,
@@ -689,50 +679,17 @@ class LinearTicketingAdapter:
         headers: Mapping[str, str],
         body: bytes,
     ) -> tuple[SorWebhookSignal, ...]:
-        payload = _linear_webhook_body(body, verification=False)
-        delivery_id = _header(headers, "linear-delivery")
-        if delivery_id is None or not 1 <= len(delivery_id) <= 512:
-            raise SorWebhookPayloadError("Linear webhook delivery ID is invalid.")
-        action = _webhook_string(payload.get("action"), field="action")
-        event_name = _webhook_string(payload.get("type"), field="type")
-        data = payload.get("data")
-        if data is None:
-            record: Mapping[str, object] = {}
-        elif isinstance(data, Mapping) and all(
-            isinstance(key, str) for key in data
-        ):
-            record = data
-        else:
-            raise SorWebhookPayloadError("Linear webhook data is invalid.")
-
-        stream_key = {
-            "Issue": "issues",
-            "Comment": "comments",
-            "Project": "projects",
-            "IssueRelation": "issue_relations",
-            "IssueLabel": "issue_labels",
-            "Cycle": "cycles",
-            "User": "users",
-        }.get(event_name)
-        external_id = _webhook_optional_id(record.get("id"))
+        delivery = parse_linear_app_webhook(headers=headers, body=body)
+        signal = delivery.signal
+        stream_key = signal.vendor_object_key
+        external_id = signal.external_id
         if stream_key not in self._context.selected_objects:
-            stream_key = None
-            external_id = None
+            signal = replace(signal, vendor_object_key=None, external_id=None)
         elif external_id is None:
             raise SorWebhookPayloadError(
                 "Linear webhook record identity is missing."
             )
-
-        occurred_at = _webhook_datetime(payload)
-        return (
-            SorWebhookSignal(
-                delivery_id=delivery_id,
-                event_type=f"{event_name}.{action}",
-                vendor_object_key=stream_key,
-                external_id=external_id,
-                occurred_at=occurred_at,
-            ),
-        )
+        return (signal,)
 
     async def execute_command(self, command: SorCommandRequest) -> SorCommandResult:
         if command.tool_name not in _WRITE_TOOLS:
@@ -1812,6 +1769,82 @@ def _header(headers: Mapping[str, str], name: str) -> str | None:
     return None
 
 
+def verify_linear_app_webhook(
+    *,
+    headers: Mapping[str, str],
+    body: bytes,
+    signing_secret: str,
+) -> None:
+    """Authenticate one raw Linear delivery before parsing or persistence."""
+    signature = _header(headers, "linear-signature")
+    if signature is None or len(signature) != 64:
+        raise SorWebhookVerificationError("Linear webhook signature is invalid.")
+    try:
+        bytes.fromhex(signature)
+    except ValueError as error:
+        raise SorWebhookVerificationError(
+            "Linear webhook signature is invalid."
+        ) from error
+    expected = hmac.new(
+        signing_secret.encode("utf-8"),
+        body,
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(signature.lower(), expected):
+        raise SorWebhookVerificationError("Linear webhook signature is invalid.")
+
+    payload = _linear_webhook_body(body, verification=True)
+    timestamp = payload.get("webhookTimestamp")
+    if isinstance(timestamp, bool) or not isinstance(timestamp, int):
+        raise SorWebhookVerificationError("Linear webhook timestamp is invalid.")
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    if abs(now_ms - timestamp) > 60_000:
+        raise SorWebhookVerificationError("Linear webhook timestamp is stale.")
+    header_timestamp = _header(headers, "linear-timestamp")
+    if header_timestamp is not None and header_timestamp != str(timestamp):
+        raise SorWebhookVerificationError("Linear webhook timestamps disagree.")
+
+
+def parse_linear_app_webhook(
+    *,
+    headers: Mapping[str, str],
+    body: bytes,
+) -> LinearAppWebhookDelivery:
+    """Normalize one Linear app event without assigning it to a source."""
+    payload = _linear_webhook_body(body, verification=False)
+    delivery_id = _header(headers, "linear-delivery")
+    if delivery_id is None or not 1 <= len(delivery_id) <= 512:
+        raise SorWebhookPayloadError("Linear webhook delivery ID is invalid.")
+    organization_id = _webhook_string(
+        payload.get("organizationId"),
+        field="organizationId",
+    )
+    action = _webhook_string(payload.get("action"), field="action")
+    event_name = _webhook_string(payload.get("type"), field="type")
+    data = payload.get("data")
+    if data is None:
+        record: Mapping[str, object] = {}
+    elif isinstance(data, Mapping) and all(isinstance(key, str) for key in data):
+        record = data
+    else:
+        raise SorWebhookPayloadError("Linear webhook data is invalid.")
+
+    stream_key = _WEBHOOK_STREAMS.get(event_name)
+    external_id = _webhook_optional_id(record.get("id"))
+    if stream_key is not None and external_id is None:
+        raise SorWebhookPayloadError("Linear webhook record identity is missing.")
+    return LinearAppWebhookDelivery(
+        organization_external_id=organization_id,
+        signal=SorWebhookSignal(
+            delivery_id=delivery_id,
+            event_type=f"{event_name}.{action}",
+            vendor_object_key=stream_key,
+            external_id=external_id,
+            occurred_at=_webhook_datetime(payload),
+        ),
+    )
+
+
 def _linear_webhook_body(
     body: bytes,
     *,
@@ -2210,4 +2243,6 @@ __all__ = [
     "LINEAR_ORIGIN",
     "LinearTicketingAdapter",
     "create_linear_adapter",
+    "parse_linear_app_webhook",
+    "verify_linear_app_webhook",
 ]

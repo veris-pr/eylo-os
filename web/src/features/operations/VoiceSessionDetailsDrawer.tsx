@@ -1,9 +1,13 @@
 import { ExternalLink, X } from "lucide-react";
 import { observer } from "mobx-react-lite";
-import type { ReactNode } from "react";
 import { Link } from "react-router";
 
 import { useRootStore } from "@/app/use-root-store";
+import {
+  DetailRow,
+  DetailSection,
+  TechnicalDetails,
+} from "@/components/details";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -44,12 +48,8 @@ const VoiceSessionDetailsDrawer = observer(function VoiceSessionDetailsDrawer({
       swipeDirection="right"
     >
       <DrawerContent className="[--drawer-content-width:min(100%,52rem)]">
-        <DrawerHeader className="border-b p-5 pr-14 pb-5 text-left">
-          <DrawerTitle>
-            {session === null
-              ? "Voice session"
-              : `Session …${session.id.slice(-12)}`}
-          </DrawerTitle>
+          <DrawerHeader className="border-b p-5 pr-14 pb-5 text-left">
+          <DrawerTitle>Voice session</DrawerTitle>
           <DrawerDescription>
             Canonical transcript, provider stack, call timing, and
             conversation-owned recording access.
@@ -107,7 +107,7 @@ function SessionDetails({
       : `STT ${[session.sttVendor, session.sttModel].filter(Boolean).join(" · ") || "not recorded"} / TTS ${[session.ttsVendor, session.ttsModel, session.ttsVoice].filter(Boolean).join(" · ") || "not recorded"}`;
   return (
     <div className="space-y-8">
-      <DetailsSection title="Overview">
+      <DetailSection title="Overview">
         <DetailRow label="Status">
           <Badge variant="outline">{formatOperationEnum(session.status)}</Badge>
         </DetailRow>
@@ -127,7 +127,7 @@ function SessionDetails({
               className="underline underline-offset-4"
               to={`/org/${organizationId}/agents/${session.agentId}`}
             >
-              {agentName} · revision {session.agentRevision}
+              {agentName}
             </Link>
           )}
         </DetailRow>
@@ -140,8 +140,8 @@ function SessionDetails({
             <ExternalLink className="size-3.5" aria-hidden="true" />
           </Link>
         </DetailRow>
-      </DetailsSection>
-      <DetailsSection title="Timing">
+      </DetailSection>
+      <DetailSection title="Timing">
         <DetailRow label="Started">
           <time dateTime={session.startedAt} title={started.title}>
             {started.label}
@@ -168,8 +168,8 @@ function SessionDetails({
         <DetailRow label="Assistant talk time">
           {formatDuration(session.assistantTalkTimeMs)}
         </DetailRow>
-      </DetailsSection>
-      <DetailsSection title="Provider path">
+      </DetailSection>
+      <DetailSection title="Provider path">
         <DetailRow label="Providers">
           <span className="break-words">{provider || "Not recorded"}</span>
         </DetailRow>
@@ -185,8 +185,8 @@ function SessionDetails({
             </DetailRow>
           </>
         )}
-      </DetailsSection>
-      <DetailsSection title="Canonical transcript">
+      </DetailSection>
+      <DetailSection title="Canonical transcript">
         <DetailRow label="State">
           <Badge variant="outline">
             {formatOperationEnum(session.canonicalState)}
@@ -204,10 +204,10 @@ function SessionDetails({
         <DetailRow label="Failure code">
           {session.canonicalFailureCode ?? "None"}
         </DetailRow>
-      </DetailsSection>
+      </DetailSection>
       <section className="space-y-3">
         <div>
-          <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+          <h2 className="text-sm font-semibold">
             Transcript segments
           </h2>
           <p className="mt-1 text-sm text-muted-foreground">
@@ -284,40 +284,26 @@ function SessionDetails({
           Open conversation recordings
         </Button>
       </section>
+      <TechnicalDetails>
+        <DetailRow label="Voice session ID">
+          <code className="break-all text-xs">{session.id}</code>
+        </DetailRow>
+        <DetailRow label="Conversation ID">
+          <code className="break-all text-xs">{session.conversationId}</code>
+        </DetailRow>
+        <DetailRow label="Agent authority">
+          <code className="block break-all text-xs">
+            {session.agentId ?? "Not recorded"}
+          </code>
+          <span className="mt-1 block text-xs text-muted-foreground">
+            Revision {session.agentRevision ?? "not recorded"}
+          </span>
+        </DetailRow>
+      </TechnicalDetails>
     </div>
   );
 }
 
-function DetailsSection({
-  children,
-  title,
-}: {
-  children: ReactNode;
-  title: string;
-}) {
-  return (
-    <section className="space-y-3">
-      <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-        {title}
-      </h2>
-      <dl className="divide-y border-y">{children}</dl>
-    </section>
-  );
-}
-function DetailRow({
-  children,
-  label,
-}: {
-  children: ReactNode;
-  label: string;
-}) {
-  return (
-    <div className="grid gap-1 py-3 sm:grid-cols-[10rem_minmax(0,1fr)] sm:gap-4">
-      <dt className="text-sm text-muted-foreground">{label}</dt>
-      <dd className="min-w-0 break-words text-sm">{children}</dd>
-    </div>
-  );
-}
 function DetailsSkeleton() {
   return (
     <div className="space-y-5">
