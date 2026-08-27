@@ -541,6 +541,7 @@ function KnowledgeDocumentContent({
     mediaType: attachment.media_type,
     name: attachment.name,
     recordId: attachment.record_id,
+    sourceUrl: attachment.source_url,
   }));
   const attachmentImages = new Map(
     attachments.map((attachment) => [

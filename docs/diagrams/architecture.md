@@ -10,7 +10,9 @@ flowchart LR
     console[Operator Console]
     cli[CLI]
     api[Eylo API]
-    worker[Durable Worker]
+    durable_worker[Absurd Durable Worker]
+    task_scheduler[Taskiq Scheduler]
+    task_worker[Taskiq Ordinary Worker]
     postgres[(PostgreSQL and pgvector)]
     redis[(Redis)]
     vendors[Provider and Integration APIs]
@@ -23,15 +25,20 @@ flowchart LR
     cli --> api
     api --> postgres
     api --> redis
-    worker --> postgres
-    worker --> redis
+    durable_worker --> postgres
+    durable_worker --> redis
+    task_scheduler --> redis
+    task_worker --> redis
+    task_worker --> postgres
     api --> vendors
-    worker --> vendors
+    durable_worker --> vendors
+    task_worker --> vendors
 ```
 
-The API owns authenticated entrypoints and live transport managers. The worker
-owns durable attempts. Both resolve organization authority from PostgreSQL
-before contacting a provider.
+The API owns authenticated entrypoints and live transport managers. The Absurd
+worker owns durable attempts. The Taskiq scheduler only sends cron messages;
+ordinary workers run DB-backed scans and cleanup. Execution processes resolve
+organization authority from PostgreSQL before contacting a provider.
 
 ## Backend dependency direction
 
@@ -69,7 +76,9 @@ flowchart TB
 
     subgraph application[Application]
         api[FastAPI and Gunicorn]
-        worker[Absurd Durable Worker]
+        durable_worker[Absurd Durable Worker]
+        task_scheduler[Taskiq Scheduler]
+        task_worker[Taskiq Ordinary Worker]
     end
 
     subgraph data[Data Services]
@@ -83,10 +92,14 @@ flowchart TB
     widget --> api
     api --> postgres
     api --> redis
-    worker --> postgres
-    worker --> redis
+    durable_worker --> postgres
+    durable_worker --> redis
+    task_scheduler --> redis
+    task_worker --> redis
+    task_worker --> postgres
     api --> provider
-    worker --> provider
+    durable_worker --> provider
+    task_worker --> provider
 ```
 
 ## Data ownership

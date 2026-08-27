@@ -1,7 +1,8 @@
 # Operate durable work
 
-PostgreSQL is the durable source of truth. Absurd owns queue claims, retries,
-waits, cancellation, and worker execution.
+PostgreSQL is the durable source of truth. Absurd owns durable workflow claims,
+retries, waits, and cancellation. Taskiq separately executes ordinary periodic
+work from an acknowledged Redis Stream.
 
 ## Confirm the worker is running
 
@@ -13,18 +14,43 @@ docker compose \
 docker compose \
   -f infra/docker/eylo/docker-compose.yml \
   -f infra/docker/eylo/docker-compose.dev.yml \
-  logs --since=10m worker
+  logs --since=10m worker task-worker task-scheduler
 ```
 
 Startup logs should show the Agent-run workflow and queue registration. A
 missing Absurd queue relation is a migration/runtime mismatch, not a transient
-Agent failure.
+Agent failure. Taskiq startup should report the catalogued ordinary-action
+count on `eylo-ordinary-tasks-v1`.
 
 The process starts four independently polling worker lanes. Each lane owns its
 own Absurd client and DB connection and claims one task at a time. A slow
 provider operation therefore occupies one configured lane while the remaining
 lanes continue claiming work; adding worker processes increases total bounded
 capacity.
+
+Eylo's Absurd 0.5.0 runtime wraps every handler in claim renewal. The
+120-second claim is renewed at most every 30 seconds, including time between
+explicit workflow steps. An `already failed` error followed by a stale
+`complete_run` or `extend_claim` means claim renewal stopped long enough for
+Absurd to mark that attempt `$ClaimTimeout`; inspect DB connectivity and
+event-loop stalls before increasing the timeout.
+
+## Confirm ordinary work is running
+
+`task-scheduler` is a singleton. It sends one message per due action and never
+executes the action. `task-worker` runs at most four async actions in its one
+child process. Scale `task-worker` replicas for throughput; do not scale
+`task-scheduler`, because each scheduler would enqueue the same cron work.
+
+If a Taskiq worker is unavailable, the Redis Stream retains scheduled messages
+and a worker consumes them after recovery. If the scheduler itself is down, no
+new cron message exists for that interval. Minute-level recovery scans catch up
+from PostgreSQL on the next tick; hourly/daily cleanup waits for its next cron
+unless an operator invokes the underlying action deliberately.
+
+During the first deployment, the Absurd worker completes any already-filed
+`eylo.periodic.tick.v1` task as retired and does not spawn a successor. This
+drains the old chain without leaving an unknown task in the durable queue.
 
 ## Inspect work from the console
 

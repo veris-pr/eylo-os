@@ -284,7 +284,6 @@ async def begin_sor_source_reauthorization(
         if (
             connector is None
             or connection is None
-            or connector.profile is not source.profile
             or connector.vendor_key != source.vendor_key
         ):
             raise SorOAuthError(

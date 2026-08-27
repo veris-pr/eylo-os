@@ -13,8 +13,19 @@ a second handwritten endpoint catalog.
 
 `python -m eylo.agent_run_worker` registers model metadata, pipeline tools,
 listeners, Agent-run executors, every durable workflow, required event
-consumers, and periodic work before polling. The API process does not perform
-durable jobs in the background as an alternative execution owner.
+consumers, and one transition handler for already-persisted legacy periodic
+ticks before polling. The API process does not perform durable jobs in the
+background as an alternative execution owner.
+
+## Ordinary task worker and scheduler
+
+`taskiq worker eylo.taskiq_runtime:broker` consumes acknowledged messages from
+the `eylo-ordinary-tasks-v1` Redis Stream. Each cron action is an independent
+message, so one failure does not suppress other due actions.
+
+`taskiq scheduler eylo.taskiq_runtime:scheduler --skip-first-run` is the one
+allowed scheduler process. It sends due messages but does not execute tasks.
+Task workers may scale horizontally; scheduler replicas must remain one.
 
 ## Operator console
 

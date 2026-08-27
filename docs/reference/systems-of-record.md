@@ -31,6 +31,7 @@ only through a registered adapter and an active source.
 | Support | Freshdesk | Implemented; live acceptance pending | API key | tickets, contacts, agents, groups, email inboxes, conversations, tags, SLA targets, attachments; companies and Freshdesk custom objects as custom datasets | updated-at polling plus full reconciliation; custom fields and objects; public replies/private notes; mapped writes; no API-key webhook support |
 | Documents | Confluence Cloud | Implemented; live acceptance pending | OAuth 2.0 with REST v2 granular scopes | spaces, pages, page bodies, current revisions, properties, attachments, authors | full reconciliation; loss-aware HTML normalization; current revision and author reads; authenticated current-image previews; mapped create/update/append |
 | Documents | Notion | Implemented; live acceptance pending | OAuth 2.0 or API key | data sources, pages, recursive blocks, properties, attachments, authors | full reconciliation; completed paginated relation/rollup properties; unsupported-block disclosure; mapped create/update/append/comment |
+| Documents | Linear Documents | Implemented; live read acceptance complete; live image acceptance pending | OAuth 2.0 with PKCE; may reuse the active Linear connector | documents, authors, document images | updated-at sync; signed connector webhook; latest Markdown content; authenticated current-image previews; read-only |
 | Documents | SharePoint | Planned | — | — | no registered adapter |
 
 “Planned” means catalog visibility only. It does not mean credentials can be
@@ -40,6 +41,11 @@ configured or any vendor request can execute.
 vendor transport, real PostgreSQL projection, command, audit, and tenant paths
 have passed locally. It does not count as live vendor support until the complete
 acceptance matrix is exercised against an operator-owned account.
+
+Linear Documents has additionally verified the saved OAuth connection and read
+current documents and authors from an operator-owned workspace. Its current
+sample contained no document images, so image delivery remains recorded-
+transport proven rather than live accepted.
 
 Salesforce's validated instance origin comes from the OAuth token response and
 is pinned to the resulting connection. Operators do not type a mutable request
@@ -65,12 +71,12 @@ Periodic reconciliation remains the correctness path, so no separate freshness
 state is persisted.
 
 Linear's webhook belongs to the saved OAuth app connector, not to an individual
-source. Eylo generates one stable connector callback, stores the Linear signing
-secret encrypted, and fans each verified workspace event out only to sources
-whose selected objects include that event type. The Linear app webhook must be
-enabled before workspace authorization. Intercom retains its current Developer
-Hub, source-configured callback flow until its connector-owned ingress is
-implemented.
+source or profile. Eylo generates one stable connector callback, stores the
+Linear signing secret encrypted, and fans each verified workspace event out
+only to Issues and Documents sources whose selected objects include that event
+type. The Linear app webhook must be enabled before workspace authorization.
+Intercom retains its current Developer Hub, source-configured callback flow
+until its connector-owned ingress is implemented.
 
 Jira managed webhooks use the official OAuth dynamic-webhook REST resources.
 The source owns one opaque callback endpoint and one vendor subscription ID.
@@ -167,6 +173,13 @@ Eylo does not expose a separate historical-version tool. Tool visibility still
 requires the published Agent tool, a compatible source grant, selected streams,
 active mappings, and required OAuth scopes. Documents are external SOR
 projections, not internal Eylo Knowledgebases and not `kb_*` retrieval tools.
+
+Linear Documents implements `docs_search` and `docs_get`. It reuses the same
+canonical tools and may reuse the same active Linear OAuth connection as an
+Issues source; it does not expose a second vendor-specific Agent namespace.
+V1 imports only the latest Markdown content, author identity, parent provenance,
+and current `uploads.linear.app` images. Linear remains authoritative for older
+revisions and document mutations.
 
 ## Executable Support tools
 
@@ -285,6 +298,10 @@ revision authors resolve through the selected author stream. Confluence emits
 a canonical parent relation only when the REST v2 page declares
 `parentType: page`; folder parents remain source-only because v1 does not
 import Confluence folders or request the folder-read scope.
+Linear document authors resolve through the selected author stream. A Linear
+document may belong to an issue, project, initiative, or release owned by a
+separate profile source. V1 retains that typed parent ID and human label as
+source context; it does not fabricate a same-source canonical relationship.
 
 Vendor refresh, fetch, and download operations execute without an open DB
 transaction. Page projection, run finalization, and generation advancement use

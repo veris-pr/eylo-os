@@ -84,8 +84,8 @@ adapter. Do not mix the classic and granular lists. See Atlassian's REST v2
    - For Linear, create an OAuth 2.0 app and register the exact callback. Eylo
      uses a Linear app actor; grant that app access only to the intended public
      or selected teams. Save the OAuth app in Eylo, copy the connector webhook
-     URL back into the Linear app, enable Comments, Cycles, Issue Labels,
-     Issues, Projects, and Users, then save the Linear signing secret in Eylo
+     URL back into the Linear app, enable Comments, Cycles, Documents, Issue
+     Labels, Issues, Projects, and Users, then save the Linear signing secret in Eylo
      before authorizing the workspace. The webhook requires a public HTTPS
      `API_BASE_URL`.
    - For GitHub, create an OAuth App and register the exact callback. Enter each
@@ -110,6 +110,11 @@ adapter. Do not mix the classic and granular lists. See Atlassian's REST v2
    source still references an older connection, the console rebinds it to the
    newly authorized connection before verification. An active source never
    changes accounts implicitly.
+   When adding **Linear Documents**, choose the existing active Linear OAuth
+   app in the connection list and select **Use connection and verify**. Eylo
+   creates a separate Documents source over the same organization-owned
+   connection without another consent flow. Start a new source only when the
+   operator intentionally wants a separate source configuration.
 8. Verify the OAuth source. API-key sources perform this step as part of
    **Connect and verify**. Eylo persists the returned account identity and one
    immutable schema discovery.

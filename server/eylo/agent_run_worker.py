@@ -15,7 +15,7 @@ from eylo.logging import init_logging
 from eylo.modules.agent_runs.absurd import AgentRunAbsurdAdapter
 from eylo.modules.agent_runs.domain import AgentRunOriginKind
 from eylo.modules.agent_runs.workflow import AgentRunExecutorRouter
-from eylo.periodic_work import register_periodic_workflow, seed_periodic_work
+from eylo.periodic_work import register_legacy_periodic_workflow
 from eylo.pipelines.campaigns import (
     register_campaign_attempt_workflow,
 )
@@ -90,8 +90,7 @@ async def run_worker() -> None:
     register_sor_webhook_workflow(adapter.runtime)
     event_registry = build_event_consumer_registry()
     register_event_delivery_workflow(adapter.runtime, event_registry)
-    register_periodic_workflow(adapter.runtime)
-    await seed_periodic_work(adapter.runtime)
+    register_legacy_periodic_workflow(adapter.runtime)
     worker_id = f"eylo-durable:{socket.gethostname()}:{os.getpid()}"
     logger.info(
         "Durable worker registered AgentRun workflow=%s queue=%s "

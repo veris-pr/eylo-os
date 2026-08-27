@@ -136,6 +136,7 @@ _WEBHOOK_STREAMS = {
     "IssueLabel": "issue_labels",
     "Cycle": "cycles",
     "User": "users",
+    "Document": "documents",
 }
 
 

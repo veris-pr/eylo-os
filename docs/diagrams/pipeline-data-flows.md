@@ -925,7 +925,9 @@ and [`periodic_work.py`](../../server/eylo/periodic_work.py).
 flowchart LR
     definition["Member or Agent creates a validated schedule"]
     schedule[("Published schedule revision and next_at")]
-    tick["Durable periodic tick"]
+    taskiq_scheduler["Singleton Taskiq scheduler"]
+    tick["Acknowledged Redis Stream action"]
+    task_worker["Taskiq ordinary worker"]
     claim["Claim due schedules with SKIP LOCKED"]
     occurrence[("Unique schedule occurrence and queued Agent run")]
     commit["Commit"]
@@ -939,7 +941,7 @@ flowchart LR
     recovery["Recover stranded claims and unbound runs"]
 
     definition --> schedule
-    tick --> claim
+    taskiq_scheduler --> tick --> task_worker --> claim
     schedule --> claim --> occurrence --> commit --> absurd --> executor
     executor --> replay --> framework
     framework --> wait --> executor

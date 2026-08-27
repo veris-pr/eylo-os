@@ -50,6 +50,11 @@ This provides durable Agent waits without occupying compute and lets ingestion,
 memory, deletion, campaigns, event delivery, and recording uploads share one
 DB-backed execution model.
 
+Ordinary periodic scans and cleanup run separately through Taskiq and an
+acknowledged Redis Stream. Taskiq can scale execution workers without changing
+Absurd claim capacity. A singleton Taskiq scheduler only sends messages; the
+tasks reload PostgreSQL-owned state and do not make Redis canonical.
+
 ## Live and durable event paths
 
 Ephemeral Pyventus events update live transports and record lightweight

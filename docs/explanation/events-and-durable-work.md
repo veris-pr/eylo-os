@@ -40,3 +40,14 @@ updates product state through the owning service.
 
 This makes DB rows explainable even if a queue delivery is duplicated or a
 worker restarts.
+
+## Ordinary tasks
+
+Periodic scans, recovery nudges, and cleanup calls do not own product
+lifecycle. Taskiq schedules each action independently, stores delivery in an
+acknowledged Redis Stream, and runs it in the separate `task-worker` service.
+Each action returns to PostgreSQL for canonical state and idempotency.
+
+The split is intentional: Absurd remains the durable workflow authority for
+Agent runs and product jobs; Taskiq supplies scalable execution for ordinary
+maintenance. Taskiq failure never makes its Redis message the product status.

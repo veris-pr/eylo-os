@@ -15,6 +15,10 @@ from eylo.sor.knowledge.vendors.confluence import (
     CONFLUENCE_MANIFEST,
     create_confluence_adapter,
 )
+from eylo.sor.knowledge.vendors.linear import (
+    LINEAR_KNOWLEDGE_MANIFEST,
+    create_linear_knowledge_adapter,
+)
 from eylo.sor.knowledge.vendors.notion import (
     NOTION_MANIFEST,
     create_notion_adapter,
@@ -1255,6 +1259,13 @@ PROFILE_SPECS = (
                     "timestamp",
                     writable=False,
                 ),
+                _field(
+                    "custom_fields",
+                    "Source context",
+                    "Bounded vendor context not represented by canonical fields.",
+                    "bounded_json",
+                    writable=False,
+                ),
             ),
             _entity(
                 "block",
@@ -1612,6 +1623,21 @@ VENDOR_CANDIDATES = (
     ),
     SorVendorCandidate(
         SorProfile.KNOWLEDGE,
+        "linear",
+        "Linear Documents",
+        "Current Markdown documents and their authors from Linear.",
+        (ConnectionAuthKind.OAUTH2,),
+        setup_notes=(
+            "Reuse the organization's existing Linear OAuth app and active "
+            "workspace authorization when available.",
+            "Enable Documents on the Linear OAuth application's webhook settings "
+            "so document edits reach Eylo between scheduled reconciliations.",
+            "Eylo imports the latest document content only; open Linear for older "
+            "revision history.",
+        ),
+    ),
+    SorVendorCandidate(
+        SorProfile.KNOWLEDGE,
         "sharepoint",
         "SharePoint",
         "Sites, lists, document libraries, pages, and custom columns.",
@@ -1664,6 +1690,10 @@ def get_sor_registry() -> SorRegistry:
     registry.register_adapter(
         manifest=NOTION_MANIFEST,
         factory=create_notion_adapter,
+    )
+    registry.register_adapter(
+        manifest=LINEAR_KNOWLEDGE_MANIFEST,
+        factory=create_linear_knowledge_adapter,
     )
     return registry
 

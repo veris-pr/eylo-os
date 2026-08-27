@@ -62,7 +62,8 @@ contract.
 - Persistence shape: SQLAlchemy models plus the single Alembic baseline.
 - Provider availability and form fields: backend catalogs and factories.
 - Curated integration tools: the in-process curated registry.
-- Runtime composition: `eylo.app`, `eylo.agent_run_worker`, and pipeline wiring.
+- Runtime composition: `eylo.app`, `eylo.agent_run_worker`,
+  `eylo.taskiq_runtime`, and pipeline wiring.
 - System of Record profiles, vendors, tools, and grid metadata: the SOR runtime
   registry and public SOR API.
 - Frontend behavior: the console and widget stores, services, routes, and state

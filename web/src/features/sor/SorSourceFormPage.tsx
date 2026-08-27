@@ -220,21 +220,27 @@ const SorSourceFormPage = observer(function SorSourceFormPage() {
     setIsAuthorizing(true);
     onboarding.clearError();
     try {
-      const standardObjects = new Set(
-        vendor.capabilities?.streams.map((stream) => stream.key) ?? [],
-      );
-      const redirect = await onboarding.beginAuthorization(
-        activeOrganizationId,
-        onboarding.draft.selectedObjects.filter((objectKey) =>
-          standardObjects.has(objectKey),
-        ),
-      );
-      if (redirect === null) return;
-      await openSorAuthorizationPopup(
-        redirect.authorization_url,
-        redirect.callback_origin,
-        vendor.vendorKey,
-      );
+      const reuseActiveLinearConnection =
+        profile.profile === "knowledge" &&
+        vendor.vendorKey === "linear" &&
+        onboarding.connector?.connection?.status === "ACTIVE";
+      if (!reuseActiveLinearConnection) {
+        const standardObjects = new Set(
+          vendor.capabilities?.streams.map((stream) => stream.key) ?? [],
+        );
+        const redirect = await onboarding.beginAuthorization(
+          activeOrganizationId,
+          onboarding.draft.selectedObjects.filter((objectKey) =>
+            standardObjects.has(objectKey),
+          ),
+        );
+        if (redirect === null) return;
+        await openSorAuthorizationPopup(
+          redirect.authorization_url,
+          redirect.callback_origin,
+          vendor.vendorKey,
+        );
+      }
       const verified = await onboarding.finishAuthorization(
         activeOrganizationId,
         profile,
@@ -378,7 +384,13 @@ const SorSourceFormPage = observer(function SorSourceFormPage() {
               connectors={
                 profile === null || vendor === null
                   ? []
-                  : sor.connectors.forVendor(profile.profile, vendor.vendorKey)
+                  : profile.profile === "knowledge" &&
+                      vendor.vendorKey === "linear"
+                    ? sor.connectors.forVendorAcrossProfiles(vendor.vendorKey)
+                    : sor.connectors.forVendor(
+                        profile.profile,
+                        vendor.vendorKey,
+                      )
               }
               copied={copied}
               isAuthorizing={isAuthorizing}
@@ -581,6 +593,10 @@ function ConnectionSection({
       return count >= field.minimumItems && count <= field.maximumItems;
     },
   );
+  const canReuseActiveConnection =
+    profile?.profile === "knowledge" &&
+    vendor.vendorKey === "linear" &&
+    onboarding.connector?.connection?.status === "ACTIVE";
   return (
     <FormSection
       description={
@@ -852,6 +868,8 @@ function ConnectionSection({
             <ExternalLink aria-hidden="true" />
             {isAuthorizing
               ? "Waiting for authorization…"
+              : canReuseActiveConnection
+                ? "Use connection and verify"
               : onboarding.connector?.app_webhook_state ===
                   "REINSTALLATION_REQUIRED"
                 ? `Reconnect ${vendor.displayName}`

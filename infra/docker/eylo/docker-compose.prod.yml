@@ -35,6 +35,14 @@ services:
     environment: *eylo-production-environment
     env_file: *eylo-production-env-file
 
+  task-worker:
+    environment: *eylo-production-environment
+    env_file: *eylo-production-env-file
+
+  task-scheduler:
+    environment: *eylo-production-environment
+    env_file: *eylo-production-env-file
+
   postgres-17:
     environment:
       POSTGRES_DB: ${DB_NAME:?Set DB_NAME in the production environment file}

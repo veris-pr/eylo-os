@@ -7,8 +7,8 @@ them.
 
 The repository contains the complete application:
 
-- `server/` — FastAPI API, agent runtime, PostgreSQL persistence, Redis, and
-  Absurd-backed durable work.
+- `server/` — FastAPI API, agent runtime, PostgreSQL persistence,
+  Absurd-backed durable work, and Taskiq ordinary tasks.
 - `web/` — React operator console built with MobX, Tailwind CSS, and Base UI.
 - `widget/` — embeddable TypeScript SDK plus a Preact chat and voice UI.
 - `cli/` — human-friendly client generated from the running API contract.
@@ -92,7 +92,10 @@ flowchart LR
     state[("PostgreSQL canonical state")]
     live["Ephemeral live projection"]
     absurd["DB-backed Absurd task"]
-    worker["Durable worker"]
+    durable_worker["Absurd durable worker"]
+    task_scheduler["Taskiq scheduler"]
+    taskiq["Redis Stream Taskiq task"]
+    task_worker["Taskiq ordinary worker"]
     pipeline["Cross-layer pipeline"]
     framework["Provider-neutral Agent framework"]
     socket["Vendor socket adapter"]
@@ -100,7 +103,8 @@ flowchart LR
 
     people --> clients --> api --> domain --> state
     state -. "post-commit" .-> live --> clients
-    state --> absurd --> worker --> pipeline
+    state --> absurd --> durable_worker --> pipeline
+    task_scheduler --> taskiq --> task_worker --> pipeline
     api --> pipeline
     pipeline --> framework
     pipeline --> socket --> provider
@@ -209,12 +213,24 @@ uv run alembic upgrade head
 uv run fastapi dev main.py
 ```
 
-Run the durable worker separately:
+Run the Absurd durable worker separately:
 
 ```bash
 cd server
 uv run python -m eylo.agent_run_worker
 ```
+
+Run the Taskiq ordinary worker and the single scheduler in separate terminals:
+
+```bash
+cd server
+uv run taskiq worker eylo.taskiq_runtime:broker --workers 1 \
+  --max-async-tasks 4 --ack-type when_executed --wait-tasks-timeout 25
+uv run taskiq scheduler eylo.taskiq_runtime:scheduler --skip-first-run
+```
+
+Scale Taskiq workers for ordinary-task throughput. Keep exactly one scheduler;
+multiple scheduler processes enqueue duplicate cron messages.
 
 Useful local checks:
 
@@ -273,6 +289,9 @@ belongs in `pipelines/`. The full procedure is
 - Redis is coordination infrastructure, not canonical business storage.
 - Absurd stores durable jobs in PostgreSQL. The worker must run for queued
   agent, knowledge, memory, deletion, campaign, event, and recording work.
+- Taskiq carries ordinary periodic actions in an acknowledged Redis Stream.
+  Redis remains non-canonical: each action scans or updates PostgreSQL-owned
+  product state.
 - Provider secrets are organization-scoped and encrypted at rest.
 - Uploaded and recorded objects are namespaced by organization and owning
   resource before reaching a storage adapter.

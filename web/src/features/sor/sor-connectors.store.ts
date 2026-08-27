@@ -49,6 +49,12 @@ class SorConnectorsStore {
     );
   }
 
+  forVendorAcrossProfiles(vendorKey: string): SorConnector[] {
+    return this.items.filter(
+      (connector) => connector.vendor_key === vendorKey,
+    );
+  }
+
   async load(organizationId: string, force = false): Promise<void> {
     if (
       !force &&

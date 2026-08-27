@@ -43,7 +43,7 @@ function SorDocumentViewer({
           {formatSorIdentifier(sourceFormat ?? "normalized")}
         </Badge>
         {version === null ? null : (
-          <Badge variant="outline">Version {version}</Badge>
+          <Badge variant="outline">{sourceVersionLabel(version)}</Badge>
         )}
         {hasPreviousVersions ? (
           <Badge variant="outline">Previous versions in source</Badge>
@@ -93,6 +93,10 @@ function SorDocumentViewer({
 function sourceHasPreviousVersions(version: string | null): boolean {
   if (version === null || !/^\d+$/.test(version)) return false;
   return Number.parseInt(version, 10) > 1;
+}
+
+function sourceVersionLabel(version: string): string {
+  return /^\d+$/.test(version) ? `Version ${version}` : "Latest source version";
 }
 
 export { SorDocumentViewer };

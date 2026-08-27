@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, TypeVar, cast
 from uuid import UUID
 
 from absurd_sdk import (
+    AbsurdHooks,
     AsyncAbsurd,
     AsyncTaskContext,
     CancellationPolicy,
@@ -33,6 +35,7 @@ DURABLE_CANCELLATION_POLICY = cast(
     {"max_duration": None, "max_delay": None},
 )
 DURABLE_CLAIM_TIMEOUT_SECONDS = 120
+DURABLE_HEARTBEAT_INTERVAL_SECONDS = 30
 DURABLE_WORKER_CONCURRENCY = 4
 DURABLE_POLL_INTERVAL_SECONDS = 0.25
 
@@ -41,6 +44,10 @@ DurableTaskHandler = Callable[
     Awaitable[dict[str, Any]],
 ]
 T = TypeVar("T")
+_HANDLER_HEARTBEAT_ACTIVE: ContextVar[bool] = ContextVar(
+    "eylo_durable_handler_heartbeat_active",
+    default=False,
+)
 
 
 class DurableRuntimeConfigurationError(Exception):
@@ -120,7 +127,35 @@ class PlatformDurableRuntime:
             self.config.database_url,
             queue_name=self.config.queue_name,
             default_max_attempts=self.config.max_attempts,
+            hooks=cast(
+                AbsurdHooks,
+                {"wrap_task_execution": self._execute_with_claim_heartbeat},
+            ),
         )
+
+    async def _execute_with_claim_heartbeat(
+        self,
+        context: AsyncTaskContext,
+        execute: Callable[[], Awaitable[Any]],
+    ) -> Any:
+        """Renew the claim for the full handler, including code between steps."""
+        interval_seconds = max(
+            1,
+            min(
+                DURABLE_HEARTBEAT_INTERVAL_SECONDS,
+                self.config.claim_timeout_seconds // 3,
+            ),
+        )
+        token = _HANDLER_HEARTBEAT_ACTIVE.set(True)
+        try:
+            return await _run_with_durable_heartbeat(
+                context,
+                execute,
+                heartbeat_seconds=self.config.claim_timeout_seconds,
+                interval_seconds=interval_seconds,
+            )
+        finally:
+            _HANDLER_HEARTBEAT_ACTIVE.reset(token)
 
     def register_task(
         self,
@@ -149,8 +184,9 @@ class PlatformDurableRuntime:
             name=name,
             handler=handler,
             max_attempts=attempts,
-            cancellation=dict(
-                cancellation or self.config.cancellation_policy()
+            cancellation=cast(
+                CancellationPolicy,
+                dict(cancellation or self.config.cancellation_policy()),
             ),
         )
         self._register_on(self._app, registration)
@@ -166,7 +202,10 @@ class PlatformDurableRuntime:
             registration.name,
             queue=self.config.queue_name,
             default_max_attempts=registration.max_attempts,
-            default_cancellation=dict(registration.cancellation),
+            default_cancellation=cast(
+                CancellationPolicy,
+                dict(registration.cancellation),
+            ),
         )
         decorator(registration.handler)
 
@@ -291,10 +330,28 @@ async def run_with_durable_heartbeat(
     heartbeat_seconds: int = DURABLE_CLAIM_TIMEOUT_SECONDS,
     interval_seconds: int = 30,
 ) -> T:
-    """Keep an Absurd claim live around one long external operation."""
+    """Renew a standalone operation unless the whole handler already renews."""
+    if _HANDLER_HEARTBEAT_ACTIVE.get():
+        return await operation()
+    return await _run_with_durable_heartbeat(
+        context,
+        operation,
+        heartbeat_seconds=heartbeat_seconds,
+        interval_seconds=interval_seconds,
+    )
+
+
+async def _run_with_durable_heartbeat(
+    context: AsyncTaskContext,
+    operation: Callable[[], Awaitable[T]],
+    *,
+    heartbeat_seconds: int,
+    interval_seconds: int,
+) -> T:
+    """Own one heartbeat loop and cancel work immediately after claim loss."""
     if heartbeat_seconds < 1 or interval_seconds < 1:
         raise ValueError("Durable heartbeat values must be positive.")
-    task = asyncio.create_task(operation())
+    task = asyncio.ensure_future(operation())
     try:
         while not task.done():
             await context.heartbeat(seconds=heartbeat_seconds)
@@ -318,6 +375,7 @@ async def run_with_durable_heartbeat(
 __all__ = [
     "AbsurdRuntimeConfig",
     "DURABLE_CANCELLATION_POLICY",
+    "DURABLE_HEARTBEAT_INTERVAL_SECONDS",
     "DURABLE_MAX_ATTEMPTS",
     "DURABLE_QUEUE",
     "DURABLE_RETRY_STRATEGY",

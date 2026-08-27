@@ -4,7 +4,7 @@
 
 | Path | Runtime responsibility |
 | --- | --- |
-| `server/` | FastAPI API, domain modules, provider sockets, pipelines, PostgreSQL persistence, Redis coordination, and durable worker |
+| `server/` | FastAPI API, domain modules, provider sockets, pipelines, PostgreSQL persistence, Absurd durable work, and Taskiq ordinary tasks |
 | `web/` | Member-facing React operator console using MobX, Tailwind CSS, and Base UI |
 | `widget/` | Headless TypeScript transport/state SDK plus the Preact contact UI |
 | `cli/` | OpenAPI-driven command-line client for public platform APIs |
@@ -46,15 +46,19 @@ widget routes, WebSocket, and WebRTC rather than member credentials.
 - `eylo.agent_run_worker` registers all durable workflows before four
   independent lanes poll the shared Absurd queue. One lane claims one task, so
   a long external operation cannot stall claim polling in the other lanes.
+- `eylo.taskiq_runtime` registers ordinary periodic actions on an acknowledged
+  Redis Stream. Scalable task workers execute them; one scheduler sends cron
+  messages.
 - PostgreSQL is canonical business and durable-work storage.
-- Redis supports coordination and live transport state; it is not canonical
-  business storage.
+- Redis supports coordination, live transport state, and the ordinary Taskiq
+  queue; it is not canonical business storage.
 
 ## Persistence
 
 `server/alembic/versions/eylo0001_initial_schema.py` is the compatibility
 baseline. Later revisions are incremental and immutable; `eylo0002` reconciles
-legacy `eylo0001` databases and installs SOR persistence.
+legacy `eylo0001` databases and installs SOR persistence, while `eylo0007`
+upgrades the embedded Absurd SQL contract to 0.5.0.
 `register_models()` imports every ORM model explicitly so API startup, workers,
 Alembic, and standalone verification see the same metadata.
 

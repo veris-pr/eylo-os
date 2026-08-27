@@ -47,6 +47,48 @@ services:
     stop_grace_period: 30s
     restart: unless-stopped
 
+  task-worker:
+    image: eylo-server:local
+    environment: *eylo-environment
+    command:
+      - taskiq
+      - worker
+      - eylo.taskiq_runtime:broker
+      - --workers
+      - "1"
+      - --max-async-tasks
+      - "4"
+      - --ack-type
+      - when_executed
+      - --wait-tasks-timeout
+      - "25"
+    healthcheck:
+      disable: true
+    depends_on:
+      eylo-server:
+        condition: service_healthy
+      redis-7:
+        condition: service_healthy
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+  task-scheduler:
+    image: eylo-server:local
+    environment: *eylo-environment
+    command:
+      - taskiq
+      - scheduler
+      - eylo.taskiq_runtime:scheduler
+      - --skip-first-run
+    healthcheck:
+      disable: true
+    depends_on:
+      eylo-server:
+        condition: service_healthy
+      redis-7:
+        condition: service_healthy
+    restart: unless-stopped
+
   postgres-17:
     image: pgvector/pgvector:pg17
     expose:

@@ -6,3 +6,7 @@ services:
   worker:
     volumes:
       - ${EYLO_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+
+  task-worker:
+    volumes:
+      - ${EYLO_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock

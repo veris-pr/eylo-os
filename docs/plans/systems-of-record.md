@@ -34,10 +34,14 @@ not yet proven canonical.
   acceptance remains pending.
 - Freshdesk proves API-key onboarding with pre-persistence verification and an
   encrypted organization-owned external connection.
-- Confluence and Notion now have registered adapters, recorded-transport and
-  real-PostgreSQL proofs, canonical Documents reads/tools, and the two-column
-  audit console. Live vendor acceptance remains pending. SharePoint and the
-  remaining third-vendor hardening remain deferred.
+- Confluence, Notion, and Linear Documents have registered adapters,
+  recorded-transport proofs, canonical Documents reads/tools, and the
+  two-column audit console. Linear reuses its connector-level authorization and
+  webhook across Issues and Documents sources. Its saved OAuth connection,
+  current document reads, and author reads passed against an operator-owned
+  Linear workspace; current-image delivery remains recorded-transport proven
+  because that sample contained no document images. SharePoint and the remaining
+  third-vendor hardening remain deferred.
 - Connection revocation now commits the credential revocation, source fence,
   safe event, and active-work snapshot atomically. Exact durable tasks are
   cancelled after commit; periodic recovery closes the process-crash gap; and
@@ -1182,10 +1186,12 @@ remain typed timestamps and render human-readably.
 
 ### Phase 5: External knowledge vertical slice
 
-- Confluence and Notion implementation is complete through recorded transport,
-  real PostgreSQL projection, canonical tools, hierarchy, versions, structured
-  blocks, unsupported-block disclosure, custom properties, and document view.
-- Run live acceptance against operator-owned Confluence and Notion accounts.
+- Confluence, Notion, and Linear Documents implementation is complete through
+  recorded transport, real PostgreSQL projection, canonical tools, hierarchy,
+  versions, structured blocks, unsupported-block disclosure, custom properties,
+  and document view. Linear current-document and author reads also passed live.
+- Run live acceptance against operator-owned Confluence and Notion accounts;
+  complete Linear image acceptance with a document containing a current upload.
 - Add SharePoint delta/subscription support.
 - Add an explicit later pipeline for publishing selected source documents to an
   Eylo internal Knowledgebase; do not hide it inside sync.

@@ -51,9 +51,12 @@ The worker registers these workflow families before it polls:
 - voice recording upload;
 - campaign attempts;
 - durable event delivery;
-- System of Record synchronization and mutation commands;
-- periodic work.
+- System of Record synchronization and mutation commands.
 
 Product rows are created first. Absurd owns the execution attempt, retry, wait,
 and cancellation. A detached worker always reloads its organization-scoped
 authority from DB.
+
+Ordinary periodic scans, recovery nudges, and cleanup actions are registered in
+`eylo.taskiq_runtime`. A singleton Taskiq scheduler sends independent Redis
+Stream messages; Taskiq workers execute them and reload canonical DB state.
