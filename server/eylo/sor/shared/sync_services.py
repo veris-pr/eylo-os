@@ -327,6 +327,12 @@ class SorSyncRunService:
             source_id=source_id,
             for_update=True,
         )
+        active_generation = await self.repository.get_active_source_sync_generation(
+            organization_id=organization_id,
+            source_id=source_id,
+        )
+        if active_generation is not None:
+            raise SorConflictError("SOR source already has active synchronization.")
         streams: list[SorSourceStreamModel] = []
         for stream_id in unique_stream_ids:
             stream = await self.repository.get_stream(

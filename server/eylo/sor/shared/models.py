@@ -1421,6 +1421,15 @@ class SorSyncGenerationModel(EyloOrganizationModel):
             "organization_id",
             "state",
         ),
+        Index(
+            "uq_sor_sync_generations_active_source",
+            "organization_id",
+            "source_id",
+            unique=True,
+            postgresql_where=text(
+                "deleted = false AND state IN ('PENDING', 'RUNNING', 'WAITING')"
+            ),
+        ),
     )
 
     source_id: Mapped[uuid.UUID] = mapped_column(

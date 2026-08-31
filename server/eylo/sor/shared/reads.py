@@ -122,7 +122,17 @@ async def read_record_relations(
     to_record = aliased(SorRecordModel)
     rows = (
         await session.execute(
-            select(SorRecordRelationModel, from_record, to_record)
+            select(
+                SorRecordRelationModel,
+                from_record.id,
+                from_record.canonical_entity_kind,
+                from_record.human_external_key,
+                from_record.source_url,
+                to_record.id,
+                to_record.canonical_entity_kind,
+                to_record.human_external_key,
+                to_record.source_url,
+            )
             .join(
                 from_record,
                 and_(
@@ -165,17 +175,27 @@ async def read_record_relations(
     grouped: dict[UUID, list[SorRecordRelationResponse]] = {
         record_id: [] for record_id in selected_ids
     }
-    for row, from_row, to_row in rows:
+    for (
+        row,
+        from_record_id,
+        from_entity,
+        from_key,
+        from_url,
+        to_record_id,
+        to_entity,
+        to_key,
+        to_url,
+    ) in rows:
         if row.from_record_id in selected:
             grouped[row.from_record_id].append(
                 SorRecordRelationResponse(
                     kind=row.canonical_relation_kind,
                     native_kind=row.native_relation_kind,
                     direction="outgoing",
-                    record_id=row.to_record_id,
-                    record_entity=to_row.canonical_entity_kind,
-                    record_key=to_row.human_external_key,
-                    source_url=to_row.source_url,
+                    record_id=to_record_id,
+                    record_entity=to_entity,
+                    record_key=to_key,
+                    source_url=to_url,
                 )
             )
         if row.to_record_id in selected:
@@ -184,10 +204,10 @@ async def read_record_relations(
                     kind=row.canonical_relation_kind,
                     native_kind=row.native_relation_kind,
                     direction="incoming",
-                    record_id=row.from_record_id,
-                    record_entity=from_row.canonical_entity_kind,
-                    record_key=from_row.human_external_key,
-                    source_url=from_row.source_url,
+                    record_id=from_record_id,
+                    record_entity=from_entity,
+                    record_key=from_key,
+                    source_url=from_url,
                 )
             )
     return {

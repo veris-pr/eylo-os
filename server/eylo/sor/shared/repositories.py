@@ -516,6 +516,34 @@ class SorRepository:
             query = query.with_for_update()
         return await self.session.scalar(query)
 
+    async def get_active_source_sync_generation(
+        self,
+        *,
+        organization_id: UUID,
+        source_id: UUID,
+    ) -> SorSyncGenerationModel | None:
+        """Return the source's sole unfinished generation, if one exists."""
+        return await self.session.scalar(
+            select(SorSyncGenerationModel)
+            .where(
+                SorSyncGenerationModel.organization_id == organization_id,
+                SorSyncGenerationModel.source_id == source_id,
+                SorSyncGenerationModel.state.in_(
+                    (
+                        SorWorkState.PENDING,
+                        SorWorkState.RUNNING,
+                        SorWorkState.WAITING,
+                    )
+                ),
+                SorSyncGenerationModel.deleted.is_(False),
+            )
+            .order_by(
+                SorSyncGenerationModel.created_at.asc(),
+                SorSyncGenerationModel.id.asc(),
+            )
+            .limit(1)
+        )
+
     async def list_generation_runs(
         self,
         *,

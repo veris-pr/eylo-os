@@ -501,6 +501,9 @@ def _revision_to_schema(row: ToolRevisionModel) -> ToolInDb:
         {
             "id": row.tool_id,
             "organization_id": row.organization_id,
+            "deleted": False,
+            "created_at": row.created_at,
+            "updated_at": row.updated_at,
             **_executable_tool_values(row),
             "mcp_server_revision": row.mcp_server_revision,
             "lifecycle": "published",

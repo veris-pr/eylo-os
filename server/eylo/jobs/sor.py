@@ -29,6 +29,7 @@ from eylo.sor.shared.contracts import (
 from eylo.sor.shared.models import (
     SorSourceModel,
     SorSourceStreamModel,
+    SorSyncGenerationModel,
     SorSyncRunModel,
 )
 from eylo.sor.shared.relationships import SorRelationshipService
@@ -74,19 +75,20 @@ async def dispatch_due_sor_syncs() -> dict[str, int]:
                             (SorSourceState.ACTIVE, SorSourceState.DEGRADED)
                         ),
                         SorSourceModel.deleted.is_(False),
-                        ~select(SorSyncRunModel.id)
+                        ~select(SorSyncGenerationModel.id)
                         .where(
-                            SorSyncRunModel.organization_id
+                            SorSyncGenerationModel.organization_id
                             == SorSourceStreamModel.organization_id,
-                            SorSyncRunModel.stream_id == SorSourceStreamModel.id,
-                            SorSyncRunModel.state.in_(
+                            SorSyncGenerationModel.source_id
+                            == SorSourceStreamModel.source_id,
+                            SorSyncGenerationModel.state.in_(
                                 (
                                     SorWorkState.PENDING,
                                     SorWorkState.RUNNING,
                                     SorWorkState.WAITING,
                                 )
                             ),
-                            SorSyncRunModel.deleted.is_(False),
+                            SorSyncGenerationModel.deleted.is_(False),
                         )
                         .exists(),
                     )

@@ -330,9 +330,12 @@ async def run_with_durable_heartbeat(
     heartbeat_seconds: int = DURABLE_CLAIM_TIMEOUT_SECONDS,
     interval_seconds: int = 30,
 ) -> T:
-    """Renew a standalone operation unless the whole handler already renews."""
+    """Renew standalone work or validate the outer claim at operation boundaries."""
     if _HANDLER_HEARTBEAT_ACTIVE.get():
-        return await operation()
+        await context.heartbeat(seconds=heartbeat_seconds)
+        result = await operation()
+        await context.heartbeat(seconds=heartbeat_seconds)
+        return result
     return await _run_with_durable_heartbeat(
         context,
         operation,
@@ -362,7 +365,12 @@ async def _run_with_durable_heartbeat(
                 )
             except TimeoutError:
                 continue
-        return await task
+        result = await task
+        # A blocked event loop can let the claim expire at the same moment the
+        # handler finishes. Validate ownership once more before Absurd records
+        # completion; otherwise a stale worker can complete a reclaimed run.
+        await context.heartbeat(seconds=heartbeat_seconds)
+        return result
     finally:
         if not task.done():
             task.cancel()
