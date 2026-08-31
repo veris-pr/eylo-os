@@ -174,6 +174,5 @@ export {
   WidgetRow,
   WidgetSection,
   WidgetStack,
-  WidgetTable,
   WidgetText,
 } from "./compositions";

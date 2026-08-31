@@ -1,5 +1,6 @@
 import type { ComponentChildren } from "preact";
 import { Component, type FC } from "preact/compat";
+import { useEffect } from "preact/hooks";
 import type {
   TCompoundWidgetNode,
   TCompoundWidgetPayload,
@@ -15,15 +16,13 @@ import {
   AlertTitle,
   Card,
   CardContent,
-  List,
-  ListItem,
-  Stack,
 } from "../../design-system";
 import { getLayoutRenderer, getWidgetRenderer, isLayoutComponent } from "./registry";
 
 type DynamicWidgetRendererProps = {
   payload: TWidgetPayloadEnvelope | TCompoundWidgetPayload;
-  onInteraction?: (interaction: TWidgetInteraction) => void;
+  instanceId?: string;
+  onInteraction?: (interaction: TWidgetInteraction) => boolean;
   isReadOnly?: boolean;
   submission?: TWidgetResponseData | null;
 };
@@ -63,7 +62,16 @@ export class DynamicWidgetRenderBoundary extends Component<
 
   render() {
     if (this.state.hasError) {
-      return this.props.fallback ?? null;
+      return (
+        this.props.fallback ?? (
+          <Alert>
+            <AlertTitle>Interactive content unavailable</AlertTitle>
+            <AlertDescription>
+              Ask the agent to present this interaction again.
+            </AlertDescription>
+          </Alert>
+        )
+      );
     }
 
     return this.props.children;
@@ -71,26 +79,19 @@ export class DynamicWidgetRenderBoundary extends Component<
 }
 
 export const InvalidDynamicWidgetPayload: FC<InvalidDynamicWidgetPayloadProps> = ({ issues }) => {
+  useEffect(() => {
+    console.error("[DynamicWidget] Rejected invalid widget payload.", issues);
+  }, [issues]);
+
   return (
-    <Card border shadow="sm">
+    <Card border shadow="none">
       <CardContent>
-        <Stack spacing="md">
-          <Alert variant="destructive">
-            <AlertTitle>Widget payload is invalid</AlertTitle>
-            <AlertDescription>
-              The current payload does not match any active registered component schema.
-            </AlertDescription>
-          </Alert>
-          <List>
-            {issues.map((issue) => (
-              <ListItem
-                key={`${issue.path}:${issue.message}`}
-                label={issue.path}
-                description={issue.message}
-              />
-            ))}
-          </List>
-        </Stack>
+        <Alert>
+          <AlertTitle>Interactive content unavailable</AlertTitle>
+          <AlertDescription>
+            Ask the agent to present this interaction again.
+          </AlertDescription>
+        </Alert>
       </CardContent>
     </Card>
   );
@@ -103,18 +104,20 @@ export const InvalidDynamicWidgetPayload: FC<InvalidDynamicWidgetPayloadProps> =
 type CompoundNodeRendererProps = {
   nodeId: string;
   nodeMap: Map<string, TCompoundWidgetNode>;
-  onInteraction?: (interaction: TWidgetInteraction) => void;
+  instanceId?: string;
+  onInteraction?: (interaction: TWidgetInteraction) => boolean;
   isReadOnly?: boolean;
   submission?: TWidgetResponseData | null;
   visited?: Set<string>;
   depth?: number;
 };
 
-const MAX_RENDER_DEPTH = 5;
+const MAX_RENDER_DEPTH = 3;
 
 const CompoundNodeRenderer: FC<CompoundNodeRendererProps> = ({
   nodeId,
   nodeMap,
+  instanceId,
   onInteraction,
   isReadOnly,
   submission,
@@ -148,6 +151,7 @@ const CompoundNodeRenderer: FC<CompoundNodeRendererProps> = ({
         key={childId}
         nodeId={childId}
         nodeMap={nodeMap}
+        instanceId={instanceId}
         onInteraction={onInteraction}
         isReadOnly={isReadOnly}
         submission={submission}
@@ -178,6 +182,7 @@ const CompoundNodeRenderer: FC<CompoundNodeRendererProps> = ({
     <DynamicWidgetRenderBoundary component={node.component}>
       <ContentRenderer
         payload={payload as never}
+        instanceId={instanceId}
         onInteraction={onInteraction}
         isReadOnly={isReadOnly}
         submission={submission}
@@ -188,10 +193,11 @@ const CompoundNodeRenderer: FC<CompoundNodeRendererProps> = ({
 
 const CompoundWidgetRenderer: FC<{
   payload: TCompoundWidgetPayload;
-  onInteraction?: (interaction: TWidgetInteraction) => void;
+  instanceId?: string;
+  onInteraction?: (interaction: TWidgetInteraction) => boolean;
   isReadOnly?: boolean;
   submission?: TWidgetResponseData | null;
-}> = ({ payload, onInteraction, isReadOnly, submission }) => {
+}> = ({ payload, instanceId, onInteraction, isReadOnly, submission }) => {
   const nodeMap = new Map<string, TCompoundWidgetNode>();
   for (const node of payload.components) {
     nodeMap.set(node.id, node);
@@ -206,6 +212,7 @@ const CompoundWidgetRenderer: FC<{
     <CompoundNodeRenderer
       nodeId={payload.root}
       nodeMap={nodeMap}
+      instanceId={instanceId}
       onInteraction={onInteraction}
       isReadOnly={isReadOnly}
       submission={submission}
@@ -219,6 +226,7 @@ const CompoundWidgetRenderer: FC<{
 
 export const DynamicWidgetRenderer: FC<DynamicWidgetRendererProps> = ({
   payload,
+  instanceId,
   onInteraction,
   isReadOnly = false,
   submission = null,
@@ -229,6 +237,7 @@ export const DynamicWidgetRenderer: FC<DynamicWidgetRendererProps> = ({
       <DynamicWidgetRenderBoundary component="compound">
         <CompoundWidgetRenderer
           payload={payload}
+          instanceId={instanceId}
           onInteraction={onInteraction}
           isReadOnly={isReadOnly}
           submission={submission}
@@ -250,6 +259,7 @@ export const DynamicWidgetRenderer: FC<DynamicWidgetRendererProps> = ({
     <DynamicWidgetRenderBoundary component={payload.component}>
       <Renderer
         payload={payload as never}
+        instanceId={instanceId}
         onInteraction={onInteraction}
         isReadOnly={isReadOnly}
         submission={submission}

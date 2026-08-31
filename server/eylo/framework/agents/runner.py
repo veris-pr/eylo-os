@@ -1042,10 +1042,14 @@ def _terminal_metadata_from_tool_result(
     """Return result metadata for terminal tool completions."""
     if result is None:
         return {}
-    return {
+    metadata = {
         "terminal_response": True,
         "terminal_tool_call_id": result.tool_call_id,
     }
+    terminal_artifact = result.metadata.get("terminal_artifact")
+    if terminal_artifact is not None:
+        metadata["terminal_artifact"] = terminal_artifact
+    return metadata
 
 
 def _add_usage(current: ModelUsage, incoming: ModelUsage) -> ModelUsage:

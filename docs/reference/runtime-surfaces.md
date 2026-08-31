@@ -21,7 +21,10 @@ background as an alternative execution owner.
 
 `taskiq worker eylo.taskiq_runtime:broker` consumes acknowledged messages from
 the `eylo-ordinary-tasks-v1` Redis Stream. Each cron action is an independent
-message, so one failure does not suppress other due actions.
+message, so one failure does not suppress other due actions. Per-action Redis
+locks prevent two workers from executing the same catalog action concurrently;
+execution, lock, redelivery, and stream-retention bounds are explicit in
+`eylo.periodic_work` and `eylo.taskiq_runtime`.
 
 `taskiq scheduler eylo.taskiq_runtime:scheduler --skip-first-run` is the one
 allowed scheduler process. It sends due messages but does not execute tasks.

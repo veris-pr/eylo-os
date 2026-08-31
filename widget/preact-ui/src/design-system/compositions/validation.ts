@@ -59,31 +59,44 @@ const resolveDateCeiling = (constraint: string): Date | null => {
   return floor;
 };
 
-const MAX_PATTERN_LENGTH = 200;
-
-const validatePattern = (pattern: string, value: string): boolean => {
-  const namedPattern = NAMED_PATTERNS[pattern];
-  if (namedPattern) {
-    return namedPattern.test(value);
-  }
-
-  // Guard against ReDoS from LLM-generated patterns
-  if (pattern.length > MAX_PATTERN_LENGTH) {
-    return true;
-  }
-
-  try {
-    return new RegExp(pattern).test(value);
-  } catch {
-    return true;
-  }
-};
+const validatePattern = (pattern: keyof typeof NAMED_PATTERNS, value: string): boolean =>
+  NAMED_PATTERNS[pattern].test(value);
 
 const validationMessage = (
   validation: TWidgetFieldValidation | undefined,
   fallback: string
 ): string => {
   return validation?.message || fallback;
+};
+
+const localDateValue = (date: Date): string => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
+export const nativeDateConstraint = (
+  constraint: string | undefined,
+  mode: "date" | "datetime",
+  boundary: "min" | "max"
+): string | undefined => {
+  if (!constraint) {
+    return undefined;
+  }
+
+  const resolved = constraint === "today" ? localDateValue(new Date()) : constraint;
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(resolved);
+
+  if (mode === "date") {
+    return dateOnly ? resolved : resolved.slice(0, 10);
+  }
+
+  if (dateOnly) {
+    return `${resolved}T${boundary === "min" ? "00:00" : "23:59"}`;
+  }
+
+  return resolved;
 };
 
 export const validateFieldValue = (field: TWidgetFormField, rawValue: unknown): string | null => {

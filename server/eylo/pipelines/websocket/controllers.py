@@ -7,16 +7,13 @@ from typing import Optional
 from uuid import UUID
 
 import arrow
-from fastapi import Depends, Request, WebSocket, status
+from fastapi import Request, WebSocket, status
 from fastapi.websockets import WebSocketState
 from starlette.websockets import WebSocketDisconnect
 
 from eylo.common.contracts.websocket import WsResponse
 from eylo.common.database import start_transaction
-from eylo.modules.auth.services.session_service import (
-    AuthSessionService,
-    get_auth_session_service,
-)
+from eylo.modules.auth.services.session_service import AuthSessionService
 from eylo.modules.user_sessions.domain import (
     UserSessionEntryChannel,
     UserSessionError,
@@ -53,9 +50,6 @@ def extract_client_info(request: Request) -> dict:
 class WebSocketController:
     """Controller for handling WebSocket connections."""
 
-    def __init__(self, auth_session_service: AuthSessionService):
-        self._auth_session_service = auth_session_service
-
     # flake8: noqa
     async def handle_connection(
         self,
@@ -66,7 +60,8 @@ class WebSocketController:
         request: Optional[Request] = None,
     ):
         """Handles the entire lifecycle of a WebSocket connection."""
-        auth_session = await self._auth_session_service.validate_session_token(session_id)
+        async with start_transaction() as db:
+            auth_session = await AuthSessionService(db).validate_session_token(session_id)
 
         if not auth_session or auth_session.organization_id != organization_id:
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
@@ -498,8 +493,6 @@ class WebSocketController:
             )
 
 
-def get_websocket_controller(
-    auth_session_service: AuthSessionService = Depends(get_auth_session_service),
-) -> WebSocketController:
+def get_websocket_controller() -> WebSocketController:
     """Dependency provider for the WebSocketController."""
-    return WebSocketController(auth_session_service=auth_session_service)
+    return WebSocketController()

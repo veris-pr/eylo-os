@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 
 _VENDOR_OPERATION_TIMEOUT_SECONDS = 30.0
 _FAILED_RETRY_DELAY = timedelta(minutes=15)
-_MAINTENANCE_LIMIT = 100
+_MAINTENANCE_LIMIT = 10
 
 
 @dataclass(frozen=True, slots=True)

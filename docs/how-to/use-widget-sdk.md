@@ -235,6 +235,11 @@ Render unread count and last activity from the hydrated conversation. Call
 `markRead(conversationId)` after the selected conversation and its current
 messages are visible.
 
+Keep next-page and exhaustion state with the SDK instance, not the list
+component. Returning from a conversation should retain already-loaded pages,
+scroll position, and the All/Unread choice. A later-page failure should leave
+current rows visible and offer a local retry.
+
 ## 5. Start a conversation with request correlation
 
 Conversation creation is asynchronous. The Preact implementation stores the
@@ -338,6 +343,11 @@ useEffect(() => {
 The production `mergeConversationMessages()` also removes a transient voice
 transcript when a committed row with the same `externalId` arrives, then sorts
 by `createdAt`. Preserve that rule in another renderer.
+
+History hydration is not a live message. Only live creation events advance the
+offset after the first page is loaded. When older rows are prepended, capture
+the container height and scroll position before the request, then restore the
+same reading anchor after layout.
 
 Participant, contact, and Agent records may hydrate after the message. The
 reference UI subscribes to all three relation stores and re-runs
@@ -491,7 +501,7 @@ const result = sdk.messageService.getWidgetPayload(message);
 if (!result.ok) {
   renderInvalidPayload(result.issues);
 } else {
-  renderRegisteredComponent(result.value, (interaction) => {
+  renderRegisteredComponent(result.value, (interaction) =>
     sdk.sendWidgetResponse(
       {
         conversationId: message.conversationId,
@@ -501,13 +511,22 @@ if (!result.ok) {
         data: interaction.data,
       },
       crypto.randomUUID(),
-    );
-  });
+    ),
+  );
 }
 ```
 
-The SDK validates payloads and responses. Your UI must still map component
-names to safe Preact renderers and add a render error boundary. See
+Only make the rendered control read-only when `sendWidgetResponse()` returns
+`true`. A `false` result means transport did not accept the send; keep the form
+or choice usable and show connection state. The server then verifies that the
+response belongs to the exact parent widget and matches the generated
+component/action contract.
+
+Use normal Markdown for prose, headings, lists, code, images, and tables.
+Dynamic widgets are reserved for forms, button choices, selectable cards, date
+pickers, alerts, progress, and layouts with titles or subtitles. Your UI must
+map registered component names to safe Preact renderers and add a render error
+boundary. See
 `widget/preact-ui/src/components/DynamicWidget/` for the single/compound
 renderer split.
 
@@ -538,12 +557,19 @@ unmounts the root, removes `#eylo-widget`, and clears `window.Eylo`.
 ## Verification checklist
 
 - Invalid or expired invitation shows a generic unavailable state.
-- UI does not render until transport and `userSessionId` are ready.
+- Markdown tables render as message content; no dynamic table renderer exists.
+- A disconnected widget interaction stays editable when send returns `false`.
+- A response with the wrong parent, component, action, or offered value is
+  rejected before an AgentRun is created.
+- UI does not render before its first transport and `userSessionId` are ready;
+  after that, a reconnect keeps the current route and history visible while
+  connection-dependent controls are disabled.
 - Refresh/reconnect continues the same user session without duplicating it
   across copied tabs.
 - Conversation creation matches the exact request ID.
 - Messages appear live and committed messages replace transient transcripts.
-- Pagination does not duplicate messages.
+- Repeated conversation and message pagination reaches exhaustion without
+  duplicates; detail navigation preserves loaded pages and the reading anchor.
 - Agent terminal success and failure both re-enable input.
 - Upload is absent when capability is false; successful ingestion becomes
   queryable in that conversation.

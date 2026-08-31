@@ -11,7 +11,8 @@ from uuid import UUID
 
 from absurd_sdk import AsyncTaskContext, CancelledTask
 from pydantic import ValidationError
-from sqlalchemy import and_, exists, func, or_, select, text, tuple_
+from sqlalchemy import and_, cast, exists, func, literal, or_, select, text, tuple_
+from sqlalchemy.dialects.postgresql import JSONPATH
 from sqlalchemy.orm import aliased
 
 from eylo.absurd_work import (
@@ -83,6 +84,10 @@ _MEMORY_TOOL_NAMES = (
     "memory_recall",
     "memory_refresh",
     "memory_remember",
+)
+_TEXT_BLOCK_JSONPATH = cast(
+    literal(r'$[*] ? (@.type == "text" && @.text like_regex "\\S")'),
+    JSONPATH,
 )
 
 
@@ -255,6 +260,17 @@ def _cursor_has_backlog(cursor: MemoryFormationCursorModel) -> bool:
 def _eligible_message_query(scope: MemoryScope, *entities: Any):
     """Select learnable messages, excluding requests that operated on Memory."""
     tool_message = aliased(MessagesModel)
+    message_content = MessagesModel.content["content"]
+    has_learnable_text = or_(
+        and_(
+            func.jsonb_typeof(message_content) == "string",
+            func.length(func.btrim(message_content.astext)) > 0,
+        ),
+        and_(
+            func.jsonb_typeof(message_content) == "array",
+            func.jsonb_path_exists(message_content, _TEXT_BLOCK_JSONPATH),
+        ),
+    )
     memory_tool_in_request = exists(
         select(tool_message.id).where(
             tool_message.conversation_id == MessagesModel.conversation_id,
@@ -290,6 +306,7 @@ def _eligible_message_query(scope: MemoryScope, *entities: Any):
             MessagesModel.kind.in_(
                 [MessageKind.USER.value, MessageKind.ASSISTANT.value]
             ),
+            has_learnable_text,
             ~memory_tool_in_request,
         )
     )
@@ -871,7 +888,13 @@ async def _handle_failure(
             retryable=True,
         ) from None
     if state is DurableState.FAILED:
-        logger.warning("Memory formation %s failed: %s", job_id, summary)
+        logger.warning(
+            "Memory formation %s failed: %s error_type=%s reason=%s",
+            job_id,
+            summary,
+            type(error).__name__,
+            str(error),
+        )
     return receipt
 
 

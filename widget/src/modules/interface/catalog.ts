@@ -21,7 +21,7 @@ type TWidgetFieldValidation = {
   maxLength?: number;
   min?: number;
   max?: number;
-  pattern?: string;
+  pattern?: "email" | "phone" | "url";
   message?: string;
   minDate?: string;
   maxDate?: string;
@@ -144,7 +144,11 @@ const fieldValidationSchema = {
     maxLength: numberSchema(true),
     min: numberSchema(true),
     max: numberSchema(true),
-    pattern: stringSchema(true),
+    pattern: {
+      type: "string" as const,
+      enum: ["email", "phone", "url"],
+      optional: true,
+    },
     message: stringSchema(true),
     minDate: stringSchema(true),
     maxDate: stringSchema(true),
@@ -462,46 +466,6 @@ const progressPayloadSchema = {
   },
 };
 
-const tablePayloadSchema = {
-  type: "object" as const,
-  additionalProperties: false,
-  required: ["component", "props"],
-  properties: {
-    component: { type: "string" as const, enum: ["table"] },
-    props: {
-      type: "object" as const,
-      additionalProperties: false,
-      required: ["columns", "rows"],
-      properties: {
-        columns: {
-          type: "array" as const,
-          minItems: 1,
-          items: {
-            type: "object" as const,
-            additionalProperties: false,
-            required: ["key", "label"],
-            properties: {
-              key: stringSchema(),
-              label: stringSchema(),
-              align: {
-                type: "string" as const,
-                enum: ["left", "center", "right"],
-                optional: true,
-              },
-            },
-          },
-        },
-        rows: {
-          type: "array" as const,
-          minItems: 1,
-          items: anySchema(),
-        },
-        caption: stringSchema(true),
-      },
-    },
-  },
-};
-
 const dividerPayloadSchema = {
   type: "object" as const,
   additionalProperties: false,
@@ -701,13 +665,6 @@ export const defaultWidgetComponentDefinitions: readonly TRegisteredWidgetCompon
     description: "Step progress indicator for multi-step flows.",
     schema: progressPayloadSchema,
     validatePayload: (payload) => validateProgressPayload(payload as { props: { currentStep: number; totalSteps: number; steps?: TWidgetProgressStep[] } }),
-  },
-  {
-    type: "table",
-    version: "1",
-    status: "active",
-    description: "Data table with columns and rows.",
-    schema: tablePayloadSchema,
   },
   {
     type: "divider",

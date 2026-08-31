@@ -2,9 +2,15 @@
 
 from typing import Annotated, Any, Dict, List, Literal, Optional, Set, Union
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 _ALLOWED_URL_SCHEMES = ("http://", "https://", "/")
+
+
+class WidgetSchemaModel(BaseModel):
+    """Reject undeclared LLM-generated widget data at every schema depth."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
 
 def _validate_safe_url(url: str) -> str:
@@ -16,24 +22,24 @@ def _validate_safe_url(url: str) -> str:
     return url
 
 
-class WidgetOption(BaseModel):
+class WidgetOption(WidgetSchemaModel):
     value: str
     label: str
     description: Optional[str] = None
 
 
-class WidgetFieldValidation(BaseModel):
+class WidgetFieldValidation(WidgetSchemaModel):
     min_length: Optional[int] = Field(default=None, alias="minLength")
     max_length: Optional[int] = Field(default=None, alias="maxLength")
     min: Optional[float] = None
     max: Optional[float] = None
-    pattern: Optional[str] = None
+    pattern: Optional[Literal["email", "phone", "url"]] = None
     message: Optional[str] = None
     min_date: Optional[str] = Field(default=None, alias="minDate")
     max_date: Optional[str] = Field(default=None, alias="maxDate")
 
 
-class WidgetFormField(BaseModel):
+class WidgetFormField(WidgetSchemaModel):
     type: Literal[
         "text",
         "email",
@@ -62,7 +68,7 @@ class WidgetFormField(BaseModel):
         return self
 
 
-class WidgetFormProps(BaseModel):
+class WidgetFormProps(WidgetSchemaModel):
     title: str
     description: Optional[str] = None
     fields: List[WidgetFormField] = Field(min_length=1)
@@ -77,7 +83,7 @@ class WidgetFormProps(BaseModel):
         return self
 
 
-class WidgetButton(BaseModel):
+class WidgetButton(WidgetSchemaModel):
     value: str
     label: str
     variant: Optional[
@@ -86,7 +92,7 @@ class WidgetButton(BaseModel):
     icon: Optional[str] = None
 
 
-class WidgetButtonGroupProps(BaseModel):
+class WidgetButtonGroupProps(WidgetSchemaModel):
     question: Optional[str] = None
     layout: Optional[Literal["horizontal", "vertical"]] = None
     buttons: List[WidgetButton] = Field(min_length=1)
@@ -99,7 +105,7 @@ class WidgetButtonGroupProps(BaseModel):
         return self
 
 
-class WidgetCard(BaseModel):
+class WidgetCard(WidgetSchemaModel):
     id: str
     title: str
     description: Optional[str] = None
@@ -116,7 +122,7 @@ class WidgetCard(BaseModel):
         return v
 
 
-class WidgetCardListProps(BaseModel):
+class WidgetCardListProps(WidgetSchemaModel):
     title: Optional[str] = None
     description: Optional[str] = None
     selection_mode: Optional[Literal["single", "multiple"]] = Field(
@@ -133,13 +139,13 @@ class WidgetCardListProps(BaseModel):
         return self
 
 
-class WidgetDatePickerValidation(BaseModel):
+class WidgetDatePickerValidation(WidgetSchemaModel):
     min_date: Optional[str] = Field(default=None, alias="minDate")
     max_date: Optional[str] = Field(default=None, alias="maxDate")
     message: Optional[str] = None
 
 
-class WidgetDatePickerProps(BaseModel):
+class WidgetDatePickerProps(WidgetSchemaModel):
     label: str
     name: str
     description: Optional[str] = None
@@ -164,19 +170,19 @@ class WidgetDatePickerProps(BaseModel):
         return self
 
 
-class WidgetAlertProps(BaseModel):
+class WidgetAlertProps(WidgetSchemaModel):
     title: Optional[str] = None
     message: str
     dismissible: bool = False
     severity: Optional[Literal["info", "success", "warning", "error"]] = None
 
 
-class WidgetTextProps(BaseModel):
+class WidgetTextProps(WidgetSchemaModel):
     content: str = Field(..., description="Text or markdown content to display.")
     variant: Optional[Literal["body", "heading", "caption", "code"]] = None
 
 
-class WidgetImageProps(BaseModel):
+class WidgetImageProps(WidgetSchemaModel):
     src: str = Field(..., description="Image URL.")
     alt: str = Field(..., description="Accessible alt text.")
     caption: Optional[str] = None
@@ -189,12 +195,12 @@ class WidgetImageProps(BaseModel):
         return _validate_safe_url(v)
 
 
-class WidgetProgressStep(BaseModel):
+class WidgetProgressStep(WidgetSchemaModel):
     label: str
     status: Literal["pending", "active", "completed"] = "pending"
 
 
-class WidgetProgressProps(BaseModel):
+class WidgetProgressProps(WidgetSchemaModel):
     current_step: int = Field(..., alias="currentStep", ge=1)
     total_steps: int = Field(..., alias="totalSteps", ge=1)
     label: Optional[str] = None
@@ -209,71 +215,44 @@ class WidgetProgressProps(BaseModel):
         return self
 
 
-class WidgetTableColumn(BaseModel):
-    key: str
-    label: str
-    align: Optional[Literal["left", "center", "right"]] = None
-
-    @field_validator("align", mode="before")
-    @classmethod
-    def normalize_align(cls, v: Any) -> Any:
-        """Accept CSS-style start/end as aliases for left/right."""
-        if v == "start":
-            return "left"
-        if v == "end":
-            return "right"
-        return v
-
-
-class WidgetTableProps(BaseModel):
-    columns: List[WidgetTableColumn] = Field(..., min_length=1)
-    rows: List[Dict[str, Any]] = Field(..., min_length=1)
-    caption: Optional[str] = None
-
-
-class WidgetFormPayload(BaseModel):
+class WidgetFormPayload(WidgetSchemaModel):
     component: Literal["form"]
     props: WidgetFormProps
 
 
-class WidgetButtonGroupPayload(BaseModel):
+class WidgetButtonGroupPayload(WidgetSchemaModel):
     component: Literal["button_group"]
     props: WidgetButtonGroupProps
 
 
-class WidgetCardListPayload(BaseModel):
+class WidgetCardListPayload(WidgetSchemaModel):
     component: Literal["card_list"]
     props: WidgetCardListProps
 
 
-class WidgetDatePickerPayload(BaseModel):
+class WidgetDatePickerPayload(WidgetSchemaModel):
     component: Literal["date_picker"]
     props: WidgetDatePickerProps
 
 
-class WidgetAlertPayload(BaseModel):
+class WidgetAlertPayload(WidgetSchemaModel):
     component: Literal["alert"]
     props: WidgetAlertProps
 
 
-class WidgetTextPayload(BaseModel):
+class WidgetTextPayload(WidgetSchemaModel):
     component: Literal["text"]
     props: WidgetTextProps
 
 
-class WidgetImagePayload(BaseModel):
+class WidgetImagePayload(WidgetSchemaModel):
     component: Literal["image"]
     props: WidgetImageProps
 
 
-class WidgetProgressPayload(BaseModel):
+class WidgetProgressPayload(WidgetSchemaModel):
     component: Literal["progress"]
     props: WidgetProgressProps
-
-
-class WidgetTablePayload(BaseModel):
-    component: Literal["table"]
-    props: WidgetTableProps
 
 
 WidgetComponentPayload = Annotated[
@@ -286,13 +265,12 @@ WidgetComponentPayload = Annotated[
         WidgetTextPayload,
         WidgetImagePayload,
         WidgetProgressPayload,
-        WidgetTablePayload,
     ],
     Field(discriminator="component"),
 ]
 
 
-class WidgetCatalogEntry(BaseModel):
+class WidgetCatalogEntry(WidgetSchemaModel):
     component: str
     version: str
     status: Literal["active", "deferred"]
@@ -309,26 +287,27 @@ class WidgetCatalogEntry(BaseModel):
 # They compose children but produce no interactive submissions.
 
 
-LAYOUT_COMPONENT_TYPES = {"stack", "row", "section", "divider"}
+LAYOUT_COMPONENT_TYPES = {"stack", "row", "section"}
+INTERACTIVE_COMPONENT_TYPES = {"form", "button_group", "card_list", "date_picker"}
 
 SPACING_VALUES = ("xs", "sm", "md", "lg", "xl")
 ALIGN_VALUES = ("start", "center", "end", "stretch")
 
 
-class WidgetDividerProps(BaseModel):
+class WidgetDividerProps(WidgetSchemaModel):
     label: Optional[str] = None
 
 
-class WidgetStackProps(BaseModel):
+class WidgetStackProps(WidgetSchemaModel):
     spacing: Optional[Literal["xs", "sm", "md", "lg", "xl"]] = None
 
 
-class WidgetRowProps(BaseModel):
+class WidgetRowProps(WidgetSchemaModel):
     spacing: Optional[Literal["xs", "sm", "md", "lg", "xl"]] = None
     align: Optional[Literal["start", "center", "end", "stretch"]] = None
 
 
-class WidgetSectionProps(BaseModel):
+class WidgetSectionProps(WidgetSchemaModel):
     title: Optional[str] = None
     description: Optional[str] = None
     collapsible: bool = False
@@ -349,7 +328,7 @@ ALL_COMPOUND_COMPONENT_TYPES = sorted(
         "text",
         "image",
         "progress",
-        "table",
+        "divider",
     }
     | LAYOUT_COMPONENT_TYPES
 )
@@ -358,7 +337,7 @@ COMPOUND_MAX_DEPTH = 3
 COMPOUND_MAX_COMPONENTS = 15
 
 
-class CompoundWidgetNode(BaseModel):
+class CompoundWidgetNode(WidgetSchemaModel):
     """A single node in the compound widget adjacency list."""
 
     id: str = Field(
@@ -396,8 +375,14 @@ class CompoundWidgetNode(BaseModel):
             return parsed
         return v
 
+    @field_validator("children", mode="before")
+    @classmethod
+    def _normalize_empty_children(cls, value: Any) -> Any:
+        """Treat an empty child list like no children for leaf components."""
+        return None if value == [] else value
 
-class CompoundWidgetPayload(BaseModel):
+
+class CompoundWidgetPayload(WidgetSchemaModel):
     """Top-level compound widget payload — adjacency-list model."""
 
     components: List[CompoundWidgetNode] = Field(
@@ -445,7 +430,9 @@ class CompoundWidgetPayload(BaseModel):
                     f"({', '.join(sorted(LAYOUT_COMPONENT_TYPES))}) support children."
                 )
 
-        # All child references must point to existing IDs
+        # All child references must point to existing IDs. A compound widget is
+        # a tree, not a DAG: one rendered component cannot have two parents.
+        parent_by_child: Dict[str, str] = {}
         for node in self.components:
             for child_id in node.children or []:
                 if child_id not in id_set:
@@ -453,6 +440,13 @@ class CompoundWidgetPayload(BaseModel):
                         f"Component '{node.id}' references unknown child '{child_id}'. "
                         f"Available IDs: {sorted(id_set)}"
                     )
+                previous_parent = parent_by_child.get(child_id)
+                if previous_parent is not None:
+                    raise ValueError(
+                        f"Component '{child_id}' has multiple parents: "
+                        f"'{previous_parent}' and '{node.id}'."
+                    )
+                parent_by_child[child_id] = node.id
 
         # Detect cycles via DFS
         visited: Set[str] = set()
@@ -491,6 +485,17 @@ class CompoundWidgetPayload(BaseModel):
             raise ValueError(
                 f"Compound widget tree depth is {depth}, "
                 f"exceeds maximum of {COMPOUND_MAX_DEPTH}."
+            )
+
+        interactive_nodes = [
+            node.id
+            for node in self.components
+            if node.component in INTERACTIVE_COMPONENT_TYPES
+        ]
+        if len(interactive_nodes) > 1:
+            raise ValueError(
+                "Compound widgets support one interactive component per message. "
+                f"Found: {interactive_nodes}"
             )
 
         return self

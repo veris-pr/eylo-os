@@ -330,29 +330,6 @@ const individualSamples: TWidgetSample[] = [
       },
     } satisfies TDynamicWidgetPayload,
   },
-  {
-    id: "table",
-    title: "Table",
-    description: "Data table with columns and rows.",
-    category: "individual",
-    payload: {
-      component: "table",
-      props: {
-        caption: "Recent conversations",
-        columns: [
-          { key: "id", label: "#", align: "center" },
-          { key: "contact", label: "Contact" },
-          { key: "status", label: "Status", align: "center" },
-          { key: "messages", label: "Messages", align: "right" },
-        ],
-        rows: [
-          { id: 1, contact: "Jane Cooper", status: "Active", messages: 24 },
-          { id: 2, contact: "Wade Warren", status: "Resolved", messages: 8 },
-          { id: 3, contact: "Esther Howard", status: "Pending", messages: 3 },
-        ],
-      },
-    } satisfies TDynamicWidgetPayload,
-  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -471,7 +448,7 @@ const compoundSamples: TWidgetSample[] = [
     id: "compound-dashboard",
     title: "⊞ Mini Dashboard",
     description:
-      "Section with table + image side-by-side in a row, plus a divider and action buttons.",
+      "Section with progress + image side-by-side in a row, plus a divider and action buttons.",
     category: "compound",
     payload: {
       root: "root",
@@ -503,23 +480,15 @@ const compoundSamples: TWidgetSample[] = [
           id: "content-row",
           component: "row",
           props: { spacing: "md", align: "start" },
-          children: ["stats-table", "chart-image"],
+          children: ["volume-progress", "chart-image"],
         },
         {
-          id: "stats-table",
-          component: "table",
+          id: "volume-progress",
+          component: "progress",
           props: {
-            caption: "Top agents by volume",
-            columns: [
-              { key: "agent", label: "Agent" },
-              { key: "conversations", label: "Conversations", align: "right" },
-              { key: "resolution", label: "Resolution %", align: "right" },
-            ],
-            rows: [
-              { agent: "Support Bot", conversations: 187, resolution: "94%" },
-              { agent: "Sales Agent", conversations: 98, resolution: "82%" },
-              { agent: "Onboarding", conversations: 57, resolution: "91%" },
-            ],
+            currentStep: 342,
+            totalSteps: 400,
+            label: "Weekly conversation target",
           },
         },
         {
@@ -552,7 +521,7 @@ const compoundSamples: TWidgetSample[] = [
   {
     id: "compound-scheduling",
     title: "⊞ Scheduling Wizard",
-    description: "Section-wrapped date picker + form in a stack, with progress bar.",
+    description: "Section-wrapped scheduling form in a stack, with progress bar.",
     category: "compound",
     payload: {
       root: "root",
@@ -561,7 +530,7 @@ const compoundSamples: TWidgetSample[] = [
           id: "root",
           component: "stack",
           props: { spacing: "md" },
-          children: ["progress", "heading", "date-section", "details-section"],
+          children: ["progress", "heading", "details-section"],
         },
         {
           id: "progress",
@@ -582,26 +551,9 @@ const compoundSamples: TWidgetSample[] = [
           props: { content: "Schedule your consultation", variant: "heading" },
         },
         {
-          id: "date-section",
-          component: "section",
-          props: { title: "When works for you?" },
-          children: ["date-picker"],
-        },
-        {
-          id: "date-picker",
-          component: "date_picker",
-          props: {
-            label: "Meeting date & time",
-            name: "consultation_at",
-            mode: "datetime",
-            required: true,
-            submitLabel: "Lock in time",
-          },
-        },
-        {
           id: "details-section",
           component: "section",
-          props: { title: "Additional details", collapsible: true },
+          props: { title: "Appointment details" },
           children: ["details-form"],
         },
         {
@@ -611,6 +563,12 @@ const compoundSamples: TWidgetSample[] = [
             title: "Tell us more",
             submitLabel: "Confirm booking",
             fields: [
+              {
+                type: "datetime",
+                name: "consultation_at",
+                label: "Meeting date and time",
+                required: true,
+              },
               {
                 type: "text",
                 name: "topic",

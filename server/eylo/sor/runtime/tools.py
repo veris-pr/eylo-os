@@ -18,6 +18,7 @@ from pydantic import (
 
 from eylo.sor.runtime.catalog import get_sor_registry
 from eylo.sor.shared.contracts import SorProfile, SorToolEffect, SorToolSpec
+from eylo.sor.shared.query import SorAgentSortField, SorSortDirection
 
 
 class SorReadSelectionInput(BaseModel):
@@ -50,6 +51,16 @@ class SorReadSelectionInput(BaseModel):
     )
     limit: int = Field(default=25, ge=1, le=100)
     cursor: str | None = Field(default=None, min_length=1, max_length=2_048)
+    sort_by: SorAgentSortField = Field(
+        default=SorAgentSortField.PROJECTED_AT,
+        description=(
+            "Sort by Eylo projection time or the source system's update time."
+        ),
+    )
+    sort_direction: SorSortDirection = Field(
+        default=SorSortDirection.DESC,
+        description="Sort ascending or descending; null timestamps remain last.",
+    )
 
     @model_validator(mode="after")
     def validate_identity(self) -> "SorReadSelectionInput":
@@ -69,6 +80,26 @@ class SorReadToolInput(SorReadSelectionInput):
         description=(
             "Canonical target entity. Supply this only when the tool declaration "
             "lists more than one selectable target."
+        ),
+    )
+
+
+class SorDocumentGetInput(SorReadSelectionInput):
+    """Bounded current-content window for one external document."""
+
+    content_offset: int = Field(
+        default=0,
+        ge=0,
+        le=1_000_000,
+        description="Character offset into the normalized current document content.",
+    )
+    content_limit_chars: int = Field(
+        default=20_000,
+        ge=1,
+        le=50_000,
+        description=(
+            "Maximum normalized content characters to return. Continue with the "
+            "next offset when the response reports more content."
         ),
     )
 
@@ -139,15 +170,17 @@ def _declaration_function(spec: SorToolSpec) -> Callable[..., Any]:
     execute_through_sor_pipeline.__name__ = spec.name
     execute_through_sor_pipeline.__doc__ = _tool_description(spec)
     execute_through_sor_pipeline.__eylo_schema_model__ = (  # type: ignore[attr-defined]
-        _read_declaration_model(spec)
+        read_tool_input_model(spec)
         if spec.effect is SorToolEffect.READ
         else SorMutationToolInput
     )
     return execute_through_sor_pipeline
 
 
-def _read_declaration_model(spec: SorToolSpec) -> type[BaseModel]:
+def read_tool_input_model(spec: SorToolSpec) -> type[BaseModel]:
     """Expose entity choice only when one read genuinely has several targets."""
+    if spec.name == "docs_get":
+        return SorDocumentGetInput
     targets = tuple(sorted(spec.target_entities))
     if len(targets) == 1:
         return SorReadSelectionInput
@@ -191,9 +224,11 @@ def _tool_description(spec: SorToolSpec) -> str:
 
 __all__ = [
     "SorMutationToolInput",
+    "SorDocumentGetInput",
     "SorReadSelectionInput",
     "SorReadToolInput",
     "SorToolDeclaration",
     "iter_sor_tool_declarations",
+    "read_tool_input_model",
     "resolve_sor_tool",
 ]

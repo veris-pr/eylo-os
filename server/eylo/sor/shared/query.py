@@ -34,6 +34,13 @@ class SorSortDirection(str, Enum):
     DESC = "desc"
 
 
+class SorAgentSortField(str, Enum):
+    """Stable timestamp fields available to model-facing SOR reads."""
+
+    PROJECTED_AT = "projected_at"
+    SOURCE_UPDATED_AT = "source_updated_at"
+
+
 class SorNullPlacement(str, Enum):
     FIRST = "first"
     LAST = "last"
@@ -213,5 +220,6 @@ __all__ = [
     "SorGroupTerm",
     "SorNullPlacement",
     "SorSortDirection",
+    "SorAgentSortField",
     "SorSortTerm",
 ]

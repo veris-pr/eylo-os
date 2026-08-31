@@ -225,7 +225,7 @@ const EyloProvider: FC<TEyloProviderProps> = ({
 
   return (
     <EyloSDKContext.Provider value={contextValue}>
-      {isInitialized && isConnected && hasUserSession && (
+      {isInitialized && hasUserSession && (
         <App initialConversationId={initialConversationId} />
       )}
     </EyloSDKContext.Provider>

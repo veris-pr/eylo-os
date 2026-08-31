@@ -13,6 +13,24 @@ import { orderBy } from "es-toolkit";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { useEyloSDK } from "../main";
 
+type ConversationPaginationState = {
+  exhausted: boolean;
+  hasMore: boolean;
+  nextPage: number;
+};
+
+const conversationPaginationBySdk = new WeakMap<Eylo, ConversationPaginationState>();
+
+function paginationFor(sdk: Eylo): ConversationPaginationState {
+  const existing = conversationPaginationBySdk.get(sdk);
+  if (existing) {
+    return existing;
+  }
+  const created = { exhausted: false, hasMore: true, nextPage: 2 };
+  conversationPaginationBySdk.set(sdk, created);
+  return created;
+}
+
 /**
  * Generic hook to subscribe to a specific property in any Eylo store
  */
@@ -160,7 +178,8 @@ export function useConversations(eylo?: Eylo) {
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [error, setError] = useState<Error | null>(null);
-  const nextPageRef = useRef(1);
+  const [loadMoreError, setLoadMoreError] = useState<Error | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
   const loadingMoreRef = useRef(false);
 
   // This will reactively update when the store changes after the fetch.
@@ -181,8 +200,7 @@ export function useConversations(eylo?: Eylo) {
     const fetchConversations = async () => {
       setLoading(true);
       setError(null);
-      setHasMore(false);
-      nextPageRef.current = 1;
+      setLoadMoreError(null);
       try {
         const itemCount = await sdk.conversationService.listConversations({
           page: 1,
@@ -191,8 +209,11 @@ export function useConversations(eylo?: Eylo) {
         if (disposed) {
           return;
         }
-        nextPageRef.current = 2;
-        setHasMore(itemCount === pageSize);
+        const pagination = paginationFor(sdk);
+        if (!pagination.exhausted) {
+          pagination.hasMore = itemCount === pageSize;
+        }
+        setHasMore(pagination.hasMore);
       } catch (err) {
         if (!disposed) {
           console.error("Failed to fetch conversations:", err);
@@ -209,7 +230,7 @@ export function useConversations(eylo?: Eylo) {
     return () => {
       disposed = true;
     };
-  }, [sdk, isConnected]);
+  }, [sdk, isConnected, reloadKey]);
 
   const loadMore = async () => {
     if (!sdk || !isConnected || !hasMore || loadingMoreRef.current) {
@@ -217,17 +238,23 @@ export function useConversations(eylo?: Eylo) {
     }
     loadingMoreRef.current = true;
     setLoadingMore(true);
-    setError(null);
+    setLoadMoreError(null);
     try {
+      const pagination = paginationFor(sdk);
+      const page = pagination.nextPage;
       const itemCount = await sdk.conversationService.listConversations({
-        page: nextPageRef.current,
+        page,
         limit: pageSize,
       });
-      nextPageRef.current += 1;
-      setHasMore(itemCount === pageSize);
+      if (itemCount > 0) {
+        pagination.nextPage = page + 1;
+      }
+      pagination.exhausted = itemCount < pageSize;
+      pagination.hasMore = itemCount === pageSize;
+      setHasMore(pagination.hasMore);
     } catch (err) {
       console.error("Failed to load older conversations:", err);
-      setError(err as Error);
+      setLoadMoreError(err as Error);
     } finally {
       loadingMoreRef.current = false;
       setLoadingMore(false);
@@ -240,7 +267,9 @@ export function useConversations(eylo?: Eylo) {
     loadingMore,
     hasMore,
     loadMore,
+    reload: () => setReloadKey((value) => value + 1),
     error: listError || error,
+    loadMoreError,
     getById: (id: string) => conversationStore?.get_(id),
     getByExternalId: (externalId: string) => conversationStore?.get_byExternalId(externalId),
     activeConversations: useMemo(
@@ -261,6 +290,15 @@ export function useConversations(eylo?: Eylo) {
         ),
       [conversations]
     ),
+    orderedConversations: useMemo(
+      () =>
+        orderBy(
+          conversations,
+          [(obj) => new Date(obj.updatedAt).getTime()],
+          ["desc"]
+        ),
+      [conversations]
+    ),
   };
 }
 
@@ -276,6 +314,7 @@ export function useConversationMessages(eyloParam?: Eylo, conversationId?: strin
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<Error | null>(null);
   const [hasMore, setHasMore] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
   const messageOffsetRef = useRef(0);
   const totalMessageCountRef = useRef(0);
   const initialLoadedRef = useRef(false);
@@ -292,13 +331,20 @@ export function useConversationMessages(eyloParam?: Eylo, conversationId?: strin
     }
 
     let disposed = false;
-    setLoading(true);
+    const cachedContext = eylo.conversationService.getCachedConversationContext(conversationId);
+    const cachedMessages = mergeConversationMessages(
+      [],
+      cachedContext?.messages ?? [],
+      conversationId
+    );
+    const cachedTotal = cachedContext?.conversation.messageCount ?? cachedMessages.length;
+    setLoading(cachedMessages.length === 0);
     setError(null);
-    setMessages([]);
-    setHasMore(false);
-    messageOffsetRef.current = 0;
-    totalMessageCountRef.current = 0;
-    initialLoadedRef.current = false;
+    setMessages(cachedMessages);
+    setHasMore(cachedMessages.length < cachedTotal);
+    messageOffsetRef.current = cachedMessages.length;
+    totalMessageCountRef.current = cachedTotal;
+    initialLoadedRef.current = cachedMessages.length > 0;
     isLoadingMoreRef.current = false;
 
     // Subscribe to new messages for this conversation
@@ -306,9 +352,16 @@ export function useConversationMessages(eyloParam?: Eylo, conversationId?: strin
       if (message.conversationId === conversationId) {
         // Use the service to resolve the full message with participant info
         const resolvedMessage = eylo.messageService.resolveMessage(message);
-        setMessages((current) =>
-          mergeConversationMessages(current, [resolvedMessage], conversationId)
-        );
+        setMessages((current) => {
+          const alreadyLoaded = hasEquivalentMessage(current, resolvedMessage);
+          if (initialLoadedRef.current && !alreadyLoaded) {
+            // Server offsets count from the newest message. Advance the offset
+            // for live arrivals so the next history page cannot overlap or skip.
+            messageOffsetRef.current += 1;
+            totalMessageCountRef.current += 1;
+          }
+          return mergeConversationMessages(current, [resolvedMessage], conversationId);
+        });
       }
     };
 
@@ -329,11 +382,13 @@ export function useConversationMessages(eyloParam?: Eylo, conversationId?: strin
         if (disposed) {
           return;
         }
-        messageOffsetRef.current = page.messages.length;
-        totalMessageCountRef.current = page.totalMessageCount;
-        initialLoadedRef.current = true;
-        setMessages((current) => mergeConversationMessages(current, page.messages, conversationId));
-        setHasMore(messageOffsetRef.current < page.totalMessageCount);
+        setMessages((current) => {
+          const merged = mergeConversationMessages(current, page.messages, conversationId);
+          messageOffsetRef.current = merged.length;
+          totalMessageCountRef.current = page.totalMessageCount;
+          initialLoadedRef.current = true;
+          return merged;
+        });
       } catch (err) {
         if (!disposed) {
           console.error(`Failed to resolve conversation messages for ${conversationId}:`, err);
@@ -354,9 +409,16 @@ export function useConversationMessages(eyloParam?: Eylo, conversationId?: strin
       eylo.ee.off(EYLO_EVENTS.MESSAGE_TRANSCRIPT, handleNewMessage);
       unsubscribeMessageRelations();
     };
-  }, [eylo, conversationId]);
+  }, [eylo, conversationId, reloadKey]);
 
-  const loadMore = async () => {
+  useEffect(() => {
+    if (!initialLoadedRef.current) {
+      return;
+    }
+    setHasMore(messageOffsetRef.current < totalMessageCountRef.current);
+  }, [messages]);
+
+  const loadMore = async (): Promise<number> => {
     if (
       !eylo ||
       !conversationId ||
@@ -364,11 +426,12 @@ export function useConversationMessages(eyloParam?: Eylo, conversationId?: strin
       !hasMore ||
       !initialLoadedRef.current
     ) {
-      return;
+      return 0;
     }
 
     isLoadingMoreRef.current = true;
     setLoadingMore(true);
+    setError(null);
 
     try {
       const messageLimit = 20;
@@ -378,7 +441,7 @@ export function useConversationMessages(eyloParam?: Eylo, conversationId?: strin
         messageOffsetRef.current
       );
       if (activeConversationIdRef.current !== conversationId) {
-        return;
+        return 0;
       }
       messageOffsetRef.current += page.messages.length;
       totalMessageCountRef.current = page.totalMessageCount;
@@ -386,16 +449,37 @@ export function useConversationMessages(eyloParam?: Eylo, conversationId?: strin
       setHasMore(
         page.messages.length > 0 && messageOffsetRef.current < totalMessageCountRef.current
       );
+      return page.messages.length;
     } catch (err) {
       console.error("Failed to load more messages:", err);
       setError(err as Error);
+      return -1;
     } finally {
       setLoadingMore(false);
       isLoadingMoreRef.current = false;
     }
   };
 
-  return { messages, loading, error, loadingMore, hasMore, loadMore, isLoadingMoreRef };
+  return {
+    messages,
+    loading,
+    error,
+    loadingMore,
+    hasMore,
+    loadMore,
+    reload: () => setReloadKey((value) => value + 1),
+  };
+}
+
+function hasEquivalentMessage(
+  current: TMessageWParticipant[],
+  incoming: TMessageWParticipant
+): boolean {
+  return current.some(
+    (message) =>
+      message.id === incoming.id ||
+      Boolean(message.externalId && message.externalId === incoming.externalId)
+  );
 }
 
 function mergeConversationMessages(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import and_, select
@@ -10,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.sor.shared.contracts import SorProfile
 from eylo.sor.shared.models import SorRecordModel
+from eylo.sor.shared.schemas import SorAgentViewResponse
 
 from .models import (
     KnowledgeAttachmentModel,
@@ -20,6 +22,7 @@ from .models import (
 )
 
 KNOWLEDGE_AGENT_RELATED_RECORD_LIMIT = 100
+KNOWLEDGE_SEARCH_EXCERPT_CHARS = 1_200
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,12 +38,119 @@ class KnowledgeAgentRelatedRecords:
 def knowledge_related_entities(tool_name: str) -> tuple[str, ...]:
     """Return the exact related collections promised by one Documents tool."""
     if tool_name == "docs_get":
-        return ("block", "property", "attachment")
+        return ("property", "attachment")
     if tool_name == "docs_list_children":
         return ("document",)
     if tool_name == "docs_get_version":
         return ("version",)
     return ()
+
+
+def shape_knowledge_tool_response(
+    projection: SorAgentViewResponse,
+    *,
+    tool_name: str,
+    search: str,
+    content_offset: int = 0,
+    content_limit_chars: int = 20_000,
+) -> dict[str, Any]:
+    """Remove raw vendor bodies and bound model-facing document content."""
+    data = projection.model_dump(mode="json")
+    _remove_source_bodies(data)
+    if tool_name == "docs_search":
+        for item in data["items"]:
+            _apply_search_excerpt(item, search=search)
+        data["content_mode"] = "search_excerpt"
+    elif tool_name == "docs_get":
+        for item in data["items"]:
+            _apply_content_window(
+                item,
+                offset=content_offset,
+                limit=content_limit_chars,
+            )
+        data["content_mode"] = "current_content_window"
+    return data
+
+
+def _remove_source_bodies(data: dict[str, Any]) -> None:
+    data["fields"] = [
+        field for field in data.get("fields", ()) if field.get("key") != "source_body"
+    ]
+    for item in data.get("items", ()):
+        _remove_source_body(item)
+    for collection in data.get("related", ()):
+        collection["fields"] = [
+            field
+            for field in collection.get("fields", ())
+            if field.get("key") != "source_body"
+        ]
+        for item in collection.get("items", ()):
+            _remove_source_body(item)
+
+
+def _remove_source_body(item: dict[str, Any]) -> None:
+    values = item.get("values")
+    if isinstance(values, dict):
+        values.pop("source_body", None)
+
+
+def _apply_search_excerpt(item: dict[str, Any], *, search: str) -> None:
+    values = item.get("values")
+    if not isinstance(values, dict):
+        return
+    content = values.get("normalized_text")
+    if not isinstance(content, str):
+        return
+    excerpt, start, end = _content_excerpt(content, search=search)
+    values["normalized_text"] = excerpt
+    item["content_window"] = {
+        "offset": start,
+        "end": end,
+        "total_chars": len(content),
+        "has_more": end < len(content),
+        "next_offset": end if end < len(content) else None,
+    }
+
+
+def _apply_content_window(item: dict[str, Any], *, offset: int, limit: int) -> None:
+    values = item.get("values")
+    if not isinstance(values, dict):
+        return
+    content = values.get("normalized_text")
+    if not isinstance(content, str):
+        return
+    start = min(offset, len(content))
+    end = min(start + limit, len(content))
+    values["normalized_text"] = content[start:end]
+    item["content_window"] = {
+        "offset": start,
+        "end": end,
+        "total_chars": len(content),
+        "has_more": end < len(content),
+        "next_offset": end if end < len(content) else None,
+    }
+
+
+def _content_excerpt(content: str, *, search: str) -> tuple[str, int, int]:
+    if len(content) <= KNOWLEDGE_SEARCH_EXCERPT_CHARS:
+        return content, 0, len(content)
+    normalized_search = search.strip().casefold()
+    normalized_content = content.casefold()
+    match_at = normalized_content.find(normalized_search) if normalized_search else -1
+    if match_at < 0 and normalized_search:
+        match_at = next(
+            (
+                normalized_content.find(term)
+                for term in normalized_search.split()
+                if normalized_content.find(term) >= 0
+            ),
+            -1,
+        )
+    center = match_at if match_at >= 0 else 0
+    start = max(0, center - KNOWLEDGE_SEARCH_EXCERPT_CHARS // 3)
+    end = min(len(content), start + KNOWLEDGE_SEARCH_EXCERPT_CHARS)
+    start = max(0, end - KNOWLEDGE_SEARCH_EXCERPT_CHARS)
+    return content[start:end], start, end
 
 
 async def read_knowledge_related_records(
@@ -242,7 +352,9 @@ async def _related_rows(
 
 
 __all__ = [
+    "KNOWLEDGE_SEARCH_EXCERPT_CHARS",
     "KnowledgeAgentRelatedRecords",
     "knowledge_related_entities",
     "read_knowledge_related_records",
+    "shape_knowledge_tool_response",
 ]

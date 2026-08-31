@@ -11,7 +11,6 @@ import {
   CardHeader,
   CardTitle,
   Flex,
-  ScrollArea,
   Stack,
   Text,
   cm,
@@ -21,7 +20,7 @@ import type { TWidgetCardListPayload } from "./types";
 
 type WidgetCardListProps = {
   payload: TWidgetCardListPayload;
-  onInteraction?: (interaction: TWidgetInteraction) => void;
+  onInteraction?: (interaction: TWidgetInteraction) => boolean;
   isReadOnly?: boolean;
   submission?: TWidgetResponseData | null;
 };
@@ -67,16 +66,18 @@ export const WidgetCardList: FC<WidgetCardListProps> = ({
       return;
     }
 
-    setIsSubmitted(true);
-    onInteraction?.({
+    const accepted = onInteraction?.({
       component: "card_list",
       action: "submit",
       data: { selectedIds },
     });
+    if (accepted) {
+      setIsSubmitted(true);
+    }
   };
 
   return (
-    <Card border shadow="sm">
+    <Card border shadow="none">
       {props.title || props.description ? (
         <CardHeader>
           {props.title ? <CardTitle>{props.title}</CardTitle> : null}
@@ -84,63 +85,57 @@ export const WidgetCardList: FC<WidgetCardListProps> = ({
         </CardHeader>
       ) : null}
       <CardContent>
-        <ScrollArea style={{ maxHeight: "24rem" }}>
-          <Stack spacing="md">
-            {props.cards.map((card) => {
-              const isSelected = selectedIds.includes(card.id);
+        <div className={styles.optionList}>
+          {props.cards.map((card) => {
+            const isSelected = selectedIds.includes(card.id);
+            const visibleFeatures = card.features?.filter(
+              (feature, index, features) =>
+                feature !== card.description && features.indexOf(feature) === index
+            );
 
-              return (
-                <button
-                  key={card.id}
-                  type="button"
-                  className={styles.cardButton}
-                  onClick={() => toggleSelection(card.id)}
-                  disabled={effectiveReadOnly}
-                  aria-pressed={isSelected}
-                >
-                  <Card
-                    border
-                    shadow="xs"
-                    padding="md"
-                    interactive={!effectiveReadOnly}
-                    className={cm(isSelected && styles.cardSelected)}
-                  >
-                    <Stack spacing="sm">
-                      {card.image ? (
-                        <img src={card.image} alt={card.title} className={styles.cardMedia} />
-                      ) : null}
-                      <Flex justify="between" align="center" gap="sm">
-                        <CardTitle>{card.title}</CardTitle>
-                        {card.badge ? <Badge>{card.badge}</Badge> : null}
-                      </Flex>
-                      {card.description ? <Text variant="muted">{card.description}</Text> : null}
-                      {card.price ? <Text semibold>{card.price}</Text> : null}
-                      {card.features?.length ? (
-                        <ul className={styles.featureList}>
-                          {card.features.map((feature) => (
-                            <li key={feature}>
-                              <Text size="small">{feature}</Text>
-                            </li>
-                          ))}
-                        </ul>
-                      ) : null}
-                    </Stack>
-                  </Card>
-                </button>
-              );
-            })}
-          </Stack>
-        </ScrollArea>
+            return (
+              <button
+                key={card.id}
+                type="button"
+                className={styles.cardButton}
+                onClick={() => toggleSelection(card.id)}
+                disabled={effectiveReadOnly}
+                aria-pressed={isSelected}
+              >
+                <div className={cm(styles.cardOption, isSelected && styles.cardSelected)}>
+                  <Stack spacing="sm">
+                    {card.image ? (
+                      <img src={card.image} alt={card.title} className={styles.cardMedia} />
+                    ) : null}
+                    <Flex justify="between" align="center" gap="sm">
+                      <CardTitle>{card.title}</CardTitle>
+                      {card.badge ? <Badge>{card.badge}</Badge> : null}
+                    </Flex>
+                    {card.description ? <Text variant="muted">{card.description}</Text> : null}
+                    {card.price ? <Text semibold>{card.price}</Text> : null}
+                    {visibleFeatures?.length ? (
+                      <ul className={styles.featureList}>
+                        {visibleFeatures.map((feature) => (
+                          <li key={feature}>
+                            <Text size="small">{feature}</Text>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </Stack>
+                </div>
+              </button>
+            );
+          })}
+        </div>
       </CardContent>
-      <CardFooter>
-        <Button
-          width="full"
-          onClick={handleSubmit}
-          disabled={effectiveReadOnly || selectedCount === 0}
-        >
-          {props.submitLabel || "Select"}
-        </Button>
-      </CardFooter>
+      {!effectiveReadOnly ? (
+        <CardFooter>
+          <Button size="lg" width="full" onClick={handleSubmit} disabled={selectedCount === 0}>
+            {props.submitLabel || "Select"}
+          </Button>
+        </CardFooter>
+      ) : null}
     </Card>
   );
 };

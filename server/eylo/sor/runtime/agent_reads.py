@@ -10,7 +10,7 @@ from collections.abc import Sequence
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import and_, desc, func, or_, select
+from sqlalchemy import and_, asc, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.sor.knowledge.agent_reads import (
@@ -38,6 +38,7 @@ from eylo.sor.shared.models import (
     SorSourceModel,
     SorSourceStreamModel,
 )
+from eylo.sor.shared.query import SorAgentSortField, SorSortDirection
 from eylo.sor.shared.reads import read_record_relations
 from eylo.sor.shared.schemas import (
     SorAgentRecordResponse,
@@ -50,7 +51,7 @@ from eylo.sor.shared.schemas import (
 )
 from eylo.sor.support.agent_reads import read_support_related_records
 
-_CURSOR_VERSION = 1
+_CURSOR_VERSION = 2
 _MAX_SEARCH_CHARS = 1_000
 _MAX_CURSOR_CHARS = 2_048
 
@@ -74,6 +75,8 @@ async def read_agent_view(
     required_tool: str | None = None,
     limit: int = 50,
     cursor: str | None = None,
+    sort_by: SorAgentSortField = SorAgentSortField.PROJECTED_AT,
+    sort_direction: SorSortDirection = SorSortDirection.DESC,
     include_relations: bool = False,
     registry: SorRegistry | None = None,
 ) -> SorAgentViewResponse:
@@ -119,6 +122,8 @@ async def read_agent_view(
         source_ids=tuple(source_map),
         record_id=record_id,
         external_key=normalized_external_key,
+        sort_by=sort_by,
+        sort_direction=sort_direction,
     )
     boundary = _decode_cursor(cursor, fingerprint=fingerprint)
     if not source_map:
@@ -152,25 +157,30 @@ async def read_agent_view(
         predicates.append(SorRecordModel.id == record_id)
     if normalized_external_key is not None:
         predicates.append(SorRecordModel.human_external_key == normalized_external_key)
+    sort_column = (
+        SorRecordModel.source_updated_at
+        if sort_by is SorAgentSortField.SOURCE_UPDATED_AT
+        else SorRecordModel.projected_at
+    )
     if boundary is not None:
-        projected_at, record_id = boundary
+        sort_value, boundary_record_id = boundary
         predicates.append(
-            or_(
-                SorRecordModel.projected_at < projected_at,
-                and_(
-                    SorRecordModel.projected_at == projected_at,
-                    SorRecordModel.id < record_id,
-                ),
+            _cursor_predicate(
+                sort_column=sort_column,
+                sort_value=sort_value,
+                record_id=boundary_record_id,
+                direction=sort_direction,
             )
         )
+    order = asc if sort_direction is SorSortDirection.ASC else desc
     rows = list(
         (
             await session.scalars(
                 select(SorRecordModel)
                 .where(*predicates)
                 .order_by(
-                    desc(SorRecordModel.projected_at),
-                    desc(SorRecordModel.id),
+                    order(sort_column).nullslast(),
+                    order(SorRecordModel.id),
                 )
                 .limit(limit + 1)
             )
@@ -207,7 +217,7 @@ async def read_agent_view(
     )
     next_cursor = (
         _encode_cursor(
-            projected_at=page[-1].projected_at,
+            sort_value=getattr(page[-1], sort_by.value),
             record_id=page[-1].id,
             fingerprint=fingerprint,
         )
@@ -551,6 +561,8 @@ def _fingerprint(
     source_ids: Sequence[UUID],
     record_id: UUID | None,
     external_key: str | None,
+    sort_by: SorAgentSortField,
+    sort_direction: SorSortDirection,
 ) -> str:
     payload = json.dumps(
         {
@@ -562,6 +574,8 @@ def _fingerprint(
             "source_ids": sorted(str(source_id) for source_id in source_ids),
             "record_id": str(record_id) if record_id is not None else None,
             "external_key": external_key,
+            "sort_by": sort_by.value,
+            "sort_direction": sort_direction.value,
         },
         separators=(",", ":"),
         sort_keys=True,
@@ -571,7 +585,7 @@ def _fingerprint(
 
 def _encode_cursor(
     *,
-    projected_at: datetime,
+    sort_value: datetime | None,
     record_id: UUID,
     fingerprint: str,
 ) -> str:
@@ -579,7 +593,7 @@ def _encode_cursor(
         {
             "v": _CURSOR_VERSION,
             "f": fingerprint,
-            "projected_at": projected_at.isoformat(),
+            "sort_value": sort_value.isoformat() if sort_value is not None else None,
             "record_id": str(record_id),
         },
         separators=(",", ":"),
@@ -592,7 +606,7 @@ def _decode_cursor(
     cursor: str | None,
     *,
     fingerprint: str,
-) -> tuple[datetime, UUID] | None:
+) -> tuple[datetime | None, UUID] | None:
     if cursor is None:
         return None
     if not cursor or len(cursor) > _MAX_CURSOR_CHARS:
@@ -606,13 +620,49 @@ def _decode_cursor(
             or value.get("f") != fingerprint
         ):
             raise ValueError
-        projected_at = datetime.fromisoformat(value["projected_at"])
+        raw_sort_value = value["sort_value"]
+        sort_value = (
+            datetime.fromisoformat(raw_sort_value)
+            if isinstance(raw_sort_value, str)
+            else None
+        )
+        if raw_sort_value is not None and sort_value is None:
+            raise ValueError
         record_id = UUID(value["record_id"])
     except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, ValueError):
         raise SorAgentReadError("Agent view cursor is invalid.") from None
-    if projected_at.tzinfo is None or projected_at.utcoffset() is None:
+    if sort_value is not None and (
+        sort_value.tzinfo is None or sort_value.utcoffset() is None
+    ):
         raise SorAgentReadError("Agent view cursor is invalid.")
-    return projected_at, record_id
+    return sort_value, record_id
+
+
+def _cursor_predicate(
+    *,
+    sort_column,
+    sort_value: datetime | None,
+    record_id: UUID,
+    direction: SorSortDirection,
+):
+    """Select rows after one nulls-last, ID-stabilized cursor boundary."""
+    id_after = (
+        SorRecordModel.id > record_id
+        if direction is SorSortDirection.ASC
+        else SorRecordModel.id < record_id
+    )
+    if sort_value is None:
+        return and_(sort_column.is_(None), id_after)
+    value_after = (
+        sort_column > sort_value
+        if direction is SorSortDirection.ASC
+        else sort_column < sort_value
+    )
+    return or_(
+        value_after,
+        and_(sort_column == sort_value, id_after),
+        sort_column.is_(None),
+    )
 
 
 __all__ = ["SorAgentReadError", "read_agent_view"]

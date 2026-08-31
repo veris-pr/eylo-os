@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
 from absurd_sdk import AsyncTaskContext
+from redis.exceptions import LockNotOwnedError
 
+from eylo.common.redis import get_redis_client
 from eylo.durable_runtime import PlatformDurableRuntime
 from eylo.events.durable.binding import spawn_unbound_event_deliveries
 from eylo.jobs.agent_runs import reconcile_terminal_agent_runs
@@ -41,6 +44,8 @@ from eylo.pipelines.integrations_v2.tasks import refresh_expiring_curated_tokens
 logger = logging.getLogger(__name__)
 
 LEGACY_PERIODIC_WORKFLOW = "eylo.periodic.tick.v1"
+ORDINARY_TASK_MAX_RUNTIME_SECONDS = 8 * 60
+ORDINARY_TASK_LOCK_TIMEOUT_SECONDS = 10 * 60
 
 PeriodicCallable = Callable[[], Awaitable[Any]]
 
@@ -138,20 +143,39 @@ _ACTIONS_BY_NAME = {action.name: action for action in PERIODIC_ACTIONS}
 
 
 async def run_periodic_action(action_name: str) -> None:
-    """Run one catalogued action; the next cron dispatch remains independent."""
+    """Run one bounded catalog action without overlapping the same action."""
     try:
         action = _ACTIONS_BY_NAME[action_name]
     except KeyError as error:
         raise ValueError(f"Unknown periodic action: {action_name}") from error
-    try:
-        await action.run()
-    except Exception as error:
-        logger.exception(
-            "Periodic action failed action=%s error_type=%s; later schedules retry",
-            action.name,
-            type(error).__name__,
+
+    async with get_redis_client() as redis_client:
+        lock = redis_client.lock(
+            f"eylo:ordinary-task-lock:{action.name}",
+            timeout=ORDINARY_TASK_LOCK_TIMEOUT_SECONDS,
         )
-        raise
+        if not await lock.acquire(blocking=False):
+            logger.info("Periodic action already running action=%s", action.name)
+            return
+        try:
+            async with asyncio.timeout(ORDINARY_TASK_MAX_RUNTIME_SECONDS):
+                await action.run()
+        except Exception as error:
+            logger.exception(
+                "Periodic action failed action=%s error_type=%s; "
+                "later schedules retry",
+                action.name,
+                type(error).__name__,
+            )
+            raise
+        finally:
+            try:
+                await lock.release()
+            except LockNotOwnedError:
+                logger.error(
+                    "Periodic action lock expired before release action=%s",
+                    action.name,
+                )
 
 
 def register_legacy_periodic_workflow(runtime: PlatformDurableRuntime) -> None:
@@ -180,6 +204,8 @@ async def _retire_legacy_periodic_tick(
 
 __all__ = [
     "LEGACY_PERIODIC_WORKFLOW",
+    "ORDINARY_TASK_LOCK_TIMEOUT_SECONDS",
+    "ORDINARY_TASK_MAX_RUNTIME_SECONDS",
     "PERIODIC_ACTIONS",
     "PeriodicAction",
     "register_legacy_periodic_workflow",

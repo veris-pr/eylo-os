@@ -65,9 +65,12 @@ class CompoundRenderWidgetInput(BaseModel):
         max_length=COMPOUND_MAX_COMPONENTS,
         description="Flat list of component nodes with ID-based relationships.",
     )
-    root: str = Field(
-        ...,
-        description="ID of the root component.",
+    root: str | None = Field(
+        default=None,
+        description=(
+            "ID of the root component. May be omitted when the component tree "
+            "has exactly one unreferenced root node."
+        ),
     )
 
     class Config:
@@ -108,7 +111,7 @@ def _build_log_context(
 _build_log_context.__eylo_hidden__ = True  # type: ignore[attr-defined]
 
 
-def _build_text_fallback_result(reason: str) -> str:
+def compound_widget_text_fallback(reason: str) -> str:
     """Tell the model to stop retrying and answer in text."""
     return (
         "Compound widget rendering could not be completed. "
@@ -118,7 +121,7 @@ def _build_text_fallback_result(reason: str) -> str:
     )
 
 
-_build_text_fallback_result.__eylo_hidden__ = True  # type: ignore[attr-defined]
+compound_widget_text_fallback.__eylo_hidden__ = True  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------
@@ -128,14 +131,14 @@ _build_text_fallback_result.__eylo_hidden__ = True  # type: ignore[attr-defined]
 
 async def compound_render_widget(
     components: list[dict[str, Any]],
-    root: str,
+    root: str | None,
     ctx: ConversationContext,
 ) -> str:
     """Render a compound layout of UI components in the user's chat widget.
 
-    Use for both collecting structured input (forms, selections) and
-    presenting information (tables, cards, alerts, progress, text) in
-    a visually rich, organized manner.
+    Use for collecting structured input and presenting interactive cards,
+    alerts, progress, or compact titled layouts that Markdown cannot express.
+    Use normal Markdown for prose, headings, lists, code, images, and tables.
     """
     raw = {"components": components, "root": root}
     log_context = _build_log_context(raw=raw, ctx=ctx)
@@ -146,7 +149,7 @@ async def compound_render_widget(
             "compound_render_widget called outside widget/browser conversation: %s",
             log_context,
         )
-        return _build_text_fallback_result(
+        return compound_widget_text_fallback(
             "Interactive widgets are unavailable in this conversation.",
         )
 
@@ -169,7 +172,7 @@ async def compound_render_widget(
         )
         # This textual fallback is currently classified by the execution layer
         # as a successful tool result rather than a transport failure.
-        return _build_text_fallback_result(
+        return compound_widget_text_fallback(
             "Widget input was invalid. Reply in plain text instead."
         )
 
@@ -179,7 +182,7 @@ async def compound_render_widget(
             "compound_render_widget missing primary agent participant: %s",
             log_context,
         )
-        return _build_text_fallback_result(
+        return compound_widget_text_fallback(
             "No primary agent participant is available for widget delivery.",
         )
 
@@ -248,14 +251,11 @@ async def compound_render_widget(
 
     ctx.messages = [*(ctx.messages or []), widget_message]
 
-    component_summary = ", ".join(
-        f"{n.id}({n.component})" for n in validated_payload.components
-    )
-    return (
-        f"Compound widget delivered to the user via `compound_render_widget`. "
-        f"Root: {validated_payload.root}. "
-        f"Components: {component_summary}."
-    )
+    return {
+        "status": "delivered",
+        "widget_message_id": str(widget_message.id),
+        "root": validated_payload.root,
+    }
 
 
 compound_render_widget.__eylo_schema_model__ = CompoundRenderWidgetInput

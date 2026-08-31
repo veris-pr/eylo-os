@@ -27,6 +27,7 @@ from eylo.modules.agent_runs.domain import (
 )
 from eylo.modules.conversations.exceptions import ConversationNotFound
 from eylo.modules.conversations.schemas.message_content import (
+    WidgetResponseMessageContent,
     normalize_widget_response_message_content,
 )
 from eylo.modules.conversations.schemas.messages import (
@@ -52,6 +53,10 @@ from eylo.modules.provider_configs.errors import NotConfiguredError
 from eylo.modules.session_context.schemas import SessionContext
 from eylo.modules.user_sessions.events import file_user_session_fact
 from eylo.modules.user_sessions.service import UserSessionService
+from eylo.pipelines.conversation.widget_responses import (
+    WidgetResponseRejected,
+    require_valid_widget_response,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -281,6 +286,15 @@ class MessageWsController:
                     message_content = normalize_widget_response_message_content(
                         request.content or {}
                     )
+                    widget_response = WidgetResponseMessageContent.model_validate(
+                        message_content
+                    )
+                    await require_valid_widget_response(
+                        db,
+                        conversation_id=conversation_indb.id,
+                        parent_message_id=request.parent_message_id,
+                        response=widget_response,
+                    )
                 else:
                     message_content = {
                         "role": MessageKind.USER.value.lower(),
@@ -363,6 +377,25 @@ class MessageWsController:
                 data=MessageApiResponseSchema.model_validate(message_indb).model_dump(
                     by_alias=True
                 ),
+                organization_id=ctx.organization_id,
+                session_id=ctx.session_id,
+                request_id=event.request_id,
+            )
+        except WidgetResponseRejected as error:
+            logger.info(
+                "Widget response rejected request_id=%s reason=%s",
+                event.request_id,
+                str(error),
+            )
+            return WsResponse(
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                kind=WsEventAction.ERROR,
+                data={
+                    "message": (
+                        "This interaction is no longer valid. "
+                        "Refresh the conversation and try again."
+                    )
+                },
                 organization_id=ctx.organization_id,
                 session_id=ctx.session_id,
                 request_id=event.request_id,

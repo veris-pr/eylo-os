@@ -11,7 +11,6 @@ import {
   WidgetRow,
   WidgetSection,
   WidgetStack,
-  WidgetTable,
   WidgetText,
 } from "../../design-system/compositions";
 import { Alert, AlertDescription, AlertTitle } from "../../design-system";
@@ -27,13 +26,13 @@ import type {
   TWidgetRowProps,
   TWidgetSectionProps,
   TWidgetStackProps,
-  TWidgetTablePayload,
   TWidgetTextPayload,
 } from "../../design-system/compositions/types";
 
 export type WidgetRendererProps<TPayload extends TDynamicWidgetPayload = TDynamicWidgetPayload> = {
   payload: TPayload;
-  onInteraction?: (interaction: TWidgetInteraction) => void;
+  instanceId?: string;
+  onInteraction?: (interaction: TWidgetInteraction) => boolean;
   isReadOnly?: boolean;
   submission?: TWidgetResponseData | null;
 };
@@ -47,7 +46,6 @@ type WidgetRendererMap = {
   text: ComponentType<WidgetRendererProps<TWidgetTextPayload>>;
   image: ComponentType<WidgetRendererProps<TWidgetImagePayload>>;
   progress: ComponentType<WidgetRendererProps<TWidgetProgressPayload>>;
-  table: ComponentType<WidgetRendererProps<TWidgetTablePayload>>;
 };
 
 const WidgetAlertRenderer: WidgetRendererMap["alert"] = ({ payload }) => {
@@ -77,7 +75,6 @@ const widgetRendererMap: WidgetRendererMap = {
   text: WidgetText,
   image: WidgetImage,
   progress: WidgetProgress,
-  table: WidgetTable,
 };
 
 export const getWidgetRenderer = (type: string): ComponentType<WidgetRendererProps> | undefined => {

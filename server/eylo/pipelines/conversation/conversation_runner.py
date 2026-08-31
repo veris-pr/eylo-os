@@ -77,6 +77,7 @@ from eylo.modules.conversations.schemas.message_content import (
     ToolUseContent,
     ToolUseMessageContent,
     UserMessageContent,
+    WidgetResponseMessageContent,
 )
 from eylo.modules.conversations.schemas.messages import (
     MessageContentKind,
@@ -126,6 +127,7 @@ CONTINUATION_KEY = "continuation"
 TERMINAL_RESPONSE_KEY = "terminal_response"
 TERMINAL_TOOL_CALL_ID_KEY = "terminal_tool_call_id"
 TERMINAL_OUTPUT_KEY = "terminal_output"
+TERMINAL_ARTIFACT_KEY = "terminal_artifact"
 
 
 class FrameworkMessageMeta(BaseModel):
@@ -671,7 +673,10 @@ class FrameworkConversationRunner:
                     text=final_message.get_text_content(),
                     turn_id=str(result.run_id),
                 )
-            elif not run_config.stream:
+            elif (
+                not run_config.stream
+                and final_message.content_kind == MessageContentKind.TEXT
+            ):
                 from eylo.pipelines.llm.streaming_tts import (
                     push_voice_message_to_tts,
                 )
@@ -1029,24 +1034,39 @@ class FrameworkConversationRunner:
             request_status,
             conversation_id=user_message.conversation_id,
         )
-        message = await self._message_service.create_(
-            _primary_agent_message_create(
-                context,
-                kind=MessageKind.ASSISTANT,
-                content_kind=MessageContentKind.TEXT,
-                content=AssistantMessageContent(
-                    content=TextContent(text=text),
-                ),
-                external_id=str(result.run_id),
-                meta=_terminal_message_meta(result, agent),
-                created_at=arrow.utcnow().datetime,
-                parent_message_id=parent_message_id,
-                request_id=user_message.request_id,
-                request_status=request_status,
-                agent_run_id=agent_run_id,
-            )
+        message = _terminal_artifact_message(
+            result,
+            context=context,
+            user_message=user_message,
         )
+        if message is None:
+            message = await self._message_service.create_(
+                _primary_agent_message_create(
+                    context,
+                    kind=MessageKind.ASSISTANT,
+                    content_kind=MessageContentKind.TEXT,
+                    content=AssistantMessageContent(
+                        content=TextContent(text=text),
+                    ),
+                    external_id=str(result.run_id),
+                    meta=_terminal_message_meta(result, agent),
+                    created_at=arrow.utcnow().datetime,
+                    parent_message_id=parent_message_id,
+                    request_id=user_message.request_id,
+                    request_status=request_status,
+                    agent_run_id=agent_run_id,
+                )
+            )
         if agent_run_id is not None:
+            if message.agent_run_id is None:
+                message = await self._message_service.update_(
+                    message.id,
+                    {"agent_run_id": agent_run_id},
+                )
+            elif message.agent_run_id != agent_run_id:
+                raise ValueError(
+                    "Terminal artifact message belongs to a different AgentRun."
+                )
             if result.status in _PAUSE_STATUSES:
                 kind, prompt, expected_schema, continuation = _agent_run_pause_fields(
                     result
@@ -1863,11 +1883,17 @@ def _message_from_run_message(
 
     kind = _message_kind_from_metadata(message) or _message_kind_from_role(message.role)
     content_kind = _content_kind_from_metadata(message) or MessageContentKind.TEXT
-    content = _message_content_for_kind(
-        kind,
-        message.content,
-        content_blocks=_content_blocks_from_metadata(message),
-    )
+    if content_kind == MessageContentKind.WIDGET_RESPONSE:
+        widget_response = message.metadata.get("widget_response")
+        if widget_response is None:
+            raise ValueError("Widget response run message is missing structured content.")
+        content = WidgetResponseMessageContent.model_validate(widget_response)
+    else:
+        content = _message_content_for_kind(
+            kind,
+            message.content,
+            content_blocks=_content_blocks_from_metadata(message),
+        )
     return _message_indb(
         message,
         conversation_context,
@@ -2239,6 +2265,40 @@ def _request_status_for_result(result) -> RequestStatus:
 
 def _should_emit_terminal_message_tokens(result) -> bool:
     return (
-        result.metadata.get("terminal_response") is True
+        (
+            result.metadata.get("terminal_response") is True
+            and result.metadata.get(TERMINAL_ARTIFACT_KEY) is None
+        )
         or result.status in _PAUSE_STATUSES
     )
+
+
+def _terminal_artifact_message(
+    result,
+    *,
+    context: object,
+    user_message: MessageInDb,
+) -> MessageInDb | None:
+    """Resolve a tool-persisted assistant artifact used as the run result."""
+    artifact = result.metadata.get(TERMINAL_ARTIFACT_KEY)
+    if artifact is None:
+        return None
+    if not isinstance(artifact, dict) or artifact.get("kind") != "conversation_message":
+        raise ValueError("Terminal artifact reference is invalid.")
+    try:
+        message_id = UUID(str(artifact.get("id")))
+    except (TypeError, ValueError) as error:
+        raise ValueError("Terminal artifact message ID is invalid.") from error
+
+    for message in context.messages or []:
+        if message.id != message_id:
+            continue
+        if (
+            message.conversation_id != user_message.conversation_id
+            or message.kind != MessageKind.ASSISTANT
+            or message.content_kind != MessageContentKind.WIDGET
+            or message.request_id != user_message.request_id
+        ):
+            raise ValueError("Terminal artifact message authority is invalid.")
+        return message
+    raise ValueError("Terminal artifact message was not persisted by this run.")

@@ -5,7 +5,9 @@ import styles from "./Field.module.css";
 
 export interface FieldProps extends JSX.HTMLAttributes<HTMLDivElement> {
   label?: string;
+  labelId?: string;
   htmlFor?: string;
+  errorId?: string;
   required?: boolean;
   error?: string;
   description?: string;
@@ -18,7 +20,9 @@ export const Field = forwardRef<HTMLDivElement, FieldProps>(
     {
       className,
       label,
+      labelId,
       htmlFor,
+      errorId,
       required = false,
       error,
       description,
@@ -42,6 +46,7 @@ export const Field = forwardRef<HTMLDivElement, FieldProps>(
       >
         {label && (
           <label
+            id={labelId}
             htmlFor={htmlFor}
             className={styles.fieldLabel}
             data-required={required}
@@ -57,7 +62,12 @@ export const Field = forwardRef<HTMLDivElement, FieldProps>(
           {children}
 
           {hasError && (
-            <div className={styles.fieldError} role="alert" aria-live="polite">
+            <div
+              id={errorId}
+              className={styles.fieldError}
+              role="alert"
+              aria-live="polite"
+            >
               <svg
                 className={styles.fieldErrorIcon}
                 xmlns="http://www.w3.org/2000/svg"

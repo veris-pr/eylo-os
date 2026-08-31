@@ -302,7 +302,12 @@ class PostgresSchedulerStore:
             )
             await session.commit()
 
-    async def stranded(self, *, limit: int = 100) -> list[tuple[str, int]]:
+    async def stranded(
+        self,
+        *,
+        claimed_before: datetime,
+        limit: int = 100,
+    ) -> list[tuple[str, int]]:
         """Schedules claimed but never dispatched, so their `next_at` is lost.
 
         The recovery half of `claim_due`. A worker that claimed a schedule and
@@ -323,11 +328,12 @@ class PostgresSchedulerStore:
                     SELECT id, published_revision FROM scheduler_schedules
                     WHERE enabled IS TRUE AND deleted IS FALSE
                       AND next_at IS NULL AND retired_at IS NULL
+                      AND updated_at <= :claimed_before
                     ORDER BY updated_at
                     LIMIT :limit
                     """
                 ),
-                {"limit": limit},
+                {"claimed_before": claimed_before, "limit": limit},
             )
             return [(str(row.id), row.published_revision) for row in rows]
 

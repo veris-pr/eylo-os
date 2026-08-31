@@ -29,6 +29,9 @@ from eylo.modules.conversations.schemas.participants import ParticipantInDb
 from eylo.modules.conversations.services.participants import (
     ConversationParticipantService,
 )
+from eylo.modules.tools.services.executors.system_tools.compound_render_widget import (
+    compound_widget_text_fallback,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -85,11 +88,7 @@ async def execute_registered_tool(
             requested_tool.published_revision,
         )
         if requested_tool.slug == "compound_render_widget":
-            has_components = bool(tool_call.input and tool_call.input.get("components"))
-            if not has_components:
-                raise ValueError(
-                    "compound_render_widget received empty input"
-                ) from error
+            return compound_widget_text_fallback("Widget input was invalid.")
         raise RuntimeError(error_map["tool_execution_failed"]) from error
     except ToolExecutorNotFoundError:
         logger.error(

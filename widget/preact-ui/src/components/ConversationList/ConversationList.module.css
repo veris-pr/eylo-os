@@ -1,3 +1,14 @@
+.listToolbar {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  display: flex;
+  gap: var(--ew-spacing-2xs);
+  padding: var(--ew-spacing-xs) var(--ew-spacing-sm);
+  border-bottom: 1px solid oklch(var(--ew-border));
+  background: oklch(var(--ew-background));
+}
+
 .conversationItem {
   gap: var(--ew-spacing-2xs);
   padding: var(--ew-spacing-sm) var(--ew-spacing);
@@ -45,4 +56,16 @@
 .timestamp {
   font-size: var(--ew-text-xs);
   line-height: 1.3;
+}
+
+.paginationError {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ew-spacing-sm);
+  padding: var(--ew-spacing-xs) var(--ew-spacing-sm);
+  border: 1px solid oklch(var(--ew-destructive) / 0.35);
+  border-radius: var(--ew-radius);
+  color: oklch(var(--ew-destructive));
+  font-size: var(--ew-text-xs);
 }

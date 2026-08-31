@@ -37,6 +37,18 @@
   color: oklch(var(--ew-destructive));
 }
 
+.historyError {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ew-spacing-sm);
+  margin: 0 0 var(--ew-spacing-sm);
+  padding: var(--ew-spacing-xs) var(--ew-spacing-sm);
+  border: 1px solid oklch(var(--ew-destructive) / 0.35);
+  border-radius: var(--ew-radius);
+  color: oklch(var(--ew-destructive));
+}
+
 /* ============================================
    VOICE CONTROLS
    ============================================ */
@@ -84,6 +96,11 @@
   gap: 0.25rem;
 }
 
+.messageBubbleWrapperWidget {
+  width: 100%;
+  max-width: 100%;
+}
+
 .messageBubbleMeta {
   display: flex;
   align-items: center;
@@ -122,6 +139,13 @@
   border: 1px solid oklch(var(--ew-border));
   background-color: oklch(var(--ew-message-bot));
   color: oklch(var(--ew-message-bot-foreground));
+}
+
+.messageBubbleContentWidget {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
 }
 
 .loadMoreRow {

@@ -11,6 +11,7 @@ from eylo.modules.interfaces.schemas.api import (
     ALL_COMPOUND_COMPONENT_TYPES,
     COMPOUND_MAX_COMPONENTS,
     COMPOUND_MAX_DEPTH,
+    INTERACTIVE_COMPONENT_TYPES,
     LAYOUT_COMPONENT_TYPES,
     CompoundWidgetNode,
     CompoundWidgetPayload,
@@ -26,7 +27,6 @@ from eylo.modules.interfaces.schemas.api import (
     WidgetRowProps,
     WidgetSectionProps,
     WidgetStackProps,
-    WidgetTablePayload,
     WidgetTextPayload,
 )
 
@@ -46,6 +46,32 @@ def _payload_cache_key(raw: Dict[str, Any]) -> str:
     """Deterministic hash of a compound widget payload dict."""
     serialized = json.dumps(raw, sort_keys=True, default=str)
     return hashlib.md5(serialized.encode()).hexdigest()
+
+
+def _infer_unambiguous_root(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """Fill an omitted root only when the adjacency list identifies one."""
+    if raw.get("root"):
+        return raw
+    components = raw.get("components")
+    if not isinstance(components, list):
+        return raw
+
+    component_ids = {
+        node.get("id")
+        for node in components
+        if isinstance(node, dict) and isinstance(node.get("id"), str)
+    }
+    child_ids = {
+        child_id
+        for node in components
+        if isinstance(node, dict) and isinstance(node.get("children"), list)
+        for child_id in node["children"]
+        if isinstance(child_id, str)
+    }
+    candidates = component_ids - child_ids
+    if len(candidates) != 1:
+        return raw
+    return {**raw, "root": next(iter(candidates))}
 
 
 class CompoundWidgetSchemaValidatorService:
@@ -69,7 +95,6 @@ class CompoundWidgetSchemaValidatorService:
             "text": WidgetTextPayload,
             "image": WidgetImagePayload,
             "progress": WidgetProgressPayload,
-            "table": WidgetTablePayload,
         }
         self._layout_props_map = {
             "stack": WidgetStackProps,
@@ -112,10 +137,25 @@ class CompoundWidgetSchemaValidatorService:
                 "maxLength": number_schema(True),
                 "min": number_schema(True),
                 "max": number_schema(True),
-                "pattern": string_schema(True),
+                "pattern": {
+                    "type": "string",
+                    "enum": ["email", "phone", "url"],
+                    "optional": True,
+                },
                 "message": string_schema(True),
                 "minDate": string_schema(True),
                 "maxDate": string_schema(True),
+            },
+        }
+
+        date_validation_schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "optional": True,
+            "properties": {
+                "minDate": string_schema(True),
+                "maxDate": string_schema(True),
+                "message": string_schema(True),
             },
         }
 
@@ -283,6 +323,7 @@ class CompoundWidgetSchemaValidatorService:
                                                     "link",
                                                 ],
                                             },
+                                            "icon": string_schema(True),
                                         },
                                     },
                                 },
@@ -343,6 +384,7 @@ class CompoundWidgetSchemaValidatorService:
                             "required": ["cards"],
                             "properties": {
                                 "title": string_schema(True),
+                                "description": string_schema(True),
                                 "cards": {
                                     "type": "array",
                                     "minItems": 1,
@@ -369,6 +411,7 @@ class CompoundWidgetSchemaValidatorService:
                                     "optional": True,
                                     "enum": ["single", "multiple"],
                                 },
+                                "submitLabel": string_schema(True),
                             },
                         },
                     },
@@ -441,6 +484,7 @@ class CompoundWidgetSchemaValidatorService:
                                 "required": boolean_schema(True),
                                 "defaultValue": string_schema(True),
                                 "submitLabel": string_schema(True),
+                                "validation": date_validation_schema,
                             },
                         },
                     },
@@ -455,6 +499,7 @@ class CompoundWidgetSchemaValidatorService:
                     "mode defaults to date if omitted",
                     "time mode defaultValue uses HH:MM format (24h)",
                     "date mode defaultValue uses YYYY-MM-DD format",
+                    "put minimum and maximum values in validation.minDate and validation.maxDate",
                 ],
                 example_payload=WidgetDatePickerPayload.model_validate(
                     {
@@ -464,6 +509,10 @@ class CompoundWidgetSchemaValidatorService:
                             "name": "meeting_date",
                             "mode": "datetime",
                             "required": True,
+                            "validation": {
+                                "minDate": "2026-09-01",
+                                "maxDate": "2026-09-30",
+                            },
                             "submitLabel": "Confirm",
                         },
                     }
@@ -528,14 +577,15 @@ class CompoundWidgetSchemaValidatorService:
         1. Pydantic structural validation (IDs, root, cycles, depth, orphans)
         2. Per-node component+props validation against the typed schema
         """
-        cache_key = _payload_cache_key(raw)
+        normalized = _infer_unambiguous_root(raw)
+        cache_key = _payload_cache_key(normalized)
         cached = _validation_cache.get(cache_key)
         if cached is not None:
             logger.debug("compound validation cache hit: %s", cache_key[:16])
             return cached
 
         try:
-            payload = CompoundWidgetPayload.model_validate(raw)
+            payload = CompoundWidgetPayload.model_validate(normalized)
         except ValidationError as exc:
             hint = self._build_compound_validation_hint(exc)
             raise ValueError(hint) from exc
@@ -692,7 +742,8 @@ class CompoundWidgetSchemaValidatorService:
 
         # --- v0: compact reference ---
         descriptions.append(f"""\
-Render interactive UI in the chat widget. Use to collect structured input OR display data visually.
+Render interactive UI in the chat widget when Markdown cannot express the interaction.
+Use normal Markdown for prose, headings, lists, code, images, and tables.
 
 ## Required Input
 
@@ -722,7 +773,7 @@ Build a UI component tree. Input: {{"components": [...], "root": "<root_id>"}}.
 
 Each component: {{"id": string, "component": string, "props": JSON string, "children": [child_ids]}}.
 "props" must be a JSON-serialized object string, e.g. "{{\\"title\\": \\"Hello\\"}}".
-children is ONLY for layout types: stack, row, section, divider.
+children is ONLY for layout types: stack, row, section. Divider is a leaf.
 All other types are leaves (no children).
 
 Max {COMPOUND_MAX_COMPONENTS} components, max depth {COMPOUND_MAX_DEPTH}. IDs must be unique. Must be a valid tree.
@@ -738,9 +789,9 @@ Layout: stack (spacing?), row (spacing?, align?), section (title?, description?,
 ## compound_render_widget — Rich Interactive UI Tool
 
 ### Purpose
-Render structured, interactive UI layouts in the user's chat widget. Use this tool both to **collect information** (forms, selections, date pickers) and to **present information** (tables, cards, alerts, progress indicators, formatted text) in a visually rich, organized manner.
+Render structured, interactive UI layouts in the user's chat widget. Use this tool to **collect information** (forms, selections, date pickers) and present UI that Markdown cannot express well (selectable cards, alerts, and progress indicators).
 
-This tool is your primary mechanism for delivering structured content to the user. Whenever plain text would be harder to read, less organized, or less actionable — use this tool instead.
+Normal prose, headings, lists, code, images, and tables belong in the assistant's Markdown response, not in this tool.
 
 ---
 
@@ -753,13 +804,12 @@ You SHOULD use `compound_render_widget` when ANY of these are true:
 - The input requires validation (types, required fields, enums, constraints)
 - You are gathering multiple related pieces of information
 
-### Presenting Information
-- You want to display data in a table, card list, or structured layout
+### Presenting Interactive Information
+- You want to display a selectable card list or structured action layout
 - You are showing progress through a multi-step flow
 - You want to highlight important information with alerts or callouts
 - You are presenting options the user should choose from (card selection)
-- The response would benefit from visual hierarchy (headings, sections, dividers)
-- You are summarizing or comparing data that would be hard to read as plain text
+- The interaction needs titles, subtitles, sections, or dividers around controls
 
 ### Examples — Data Collection
 - Signup or onboarding forms
@@ -768,13 +818,12 @@ You SHOULD use `compound_render_widget` when ANY of these are true:
 - Survey or feedback collection
 - Multi-field search or filter inputs
 
-### Examples — Data Presentation
-- Order summary or confirmation (table + alert)
+### Examples — Interactive Presentation
+- Order confirmation requiring a user action
 - Product or plan comparison (card list)
 - Step-by-step progress tracker (progress + sections)
-- Structured report or data summary (table + text)
-- Important notices or warnings (alert + text)
-- Search results or recommendations (card list + text)
+- Important notices or warnings paired with a control
+- Selectable search results or recommendations
 
 ---
 
@@ -784,6 +833,7 @@ Do NOT use this tool if:
 - A short, simple text response is sufficient (one-liners, greetings)
 - You are asking a single yes/no or open-ended question
 - The conversation is purely conversational with no structure needed
+- Markdown can express the response, including any table or formatting
 
 ---
 
@@ -793,12 +843,12 @@ You are building a tree of UI components:
 
 - Exactly ONE root component
 - Layout components define structure
-- Content components (forms, tables, cards, alerts, text) are leaves
+- Content components (forms, cards, alerts, text) are leaves
 
 ### Construction Strategy
 
-1. Decide what to present: collecting input, displaying data, or both
-2. Define all leaf components (forms, tables, alerts, text, cards)
+1. Decide what interaction or non-Markdown UI to present
+2. Define all leaf components (forms, alerts, text, cards)
 3. Group them using layout components (stack, row, section)
 4. Assign a single root that contains everything
 
@@ -826,6 +876,8 @@ Return:
 - All component IDs MUST be unique
 - ONLY layout components may have children
 - ALL children must reference valid component IDs
+- Each child has exactly one parent
+- At most one interactive component: {', '.join(sorted(INTERACTIVE_COMPONENT_TYPES))}
 - The structure MUST be a valid tree:
   - No cycles
   - Exactly one root
@@ -886,7 +938,7 @@ Children:
 
 ## Functional Components (LEAVES)
 
-- Inputs, buttons, alerts, tables, cards, text, images, progress — all are leaves
+- Inputs, buttons, alerts, cards, text, images, progress — all are leaves
 - MUST NOT have children
 - MUST be placed inside layout components
 
@@ -918,12 +970,12 @@ stack
 
 ---
 
-### Data Presentation (displaying information)
+### Actionable Presentation
 
 stack
- ├── text (heading/summary)
- ├── table (structured data)
- └── alert (key takeaway or next step)
+ ├── section (title/description)
+ ├── card_list (selectable options)
+ └── alert (key guidance)
 
 ---
 
@@ -963,7 +1015,7 @@ stack
 - Keep layouts shallow and readable
 - Group logically related content inside `section`
 - Always include an explicit action row (submit / cancel) for forms
-- For display-only layouts, prefer combining text + table or text + card_list
+- Use `text` only for brief context inside a widget; use Markdown for the main response
 - Use alert to draw attention to important information or next steps
 - Use progress to show the user where they are in a multi-step flow
 - Do not generate orphan components
@@ -974,7 +1026,7 @@ stack
 
 ## Goal
 
-Produce a valid, complete, and structured UI tree that can be rendered without errors. For input collection, map directly to a validated workflow. For information display, present data clearly with visual hierarchy and logical grouping.
+Produce a valid, complete UI tree that can be rendered without errors. Keep ordinary content in Markdown and use this tool only for interactions or presentation Markdown cannot express well.
 """)
 
         if idx >= len(descriptions):
@@ -1046,11 +1098,6 @@ Produce a valid, complete, and structured UI tree that can be rendered without e
             "Props: currentStep (required): number; totalSteps (required): number; "
             "label (optional); steps (optional): array of {label, status: pending|active|completed}"
         )
-        sections.append(
-            "**table** — Data table. "
-            "Props: columns (required): array of {key, label, align?}; "
-            "rows (required): array of objects; caption (optional)"
-        )
 
         # Constraints
         sections.append("")
@@ -1058,7 +1105,8 @@ Produce a valid, complete, and structured UI tree that can be rendered without e
         sections.append(
             f"Max {COMPOUND_MAX_COMPONENTS} components, max depth {COMPOUND_MAX_DEPTH}. "
             "All IDs unique. Only layout components have children. "
-            "Must form a valid tree — no cycles, no orphans, exactly one root."
+            "Must form a valid tree — no cycles, no shared children, no orphans, "
+            "exactly one root. Use at most one interactive component per message."
         )
 
         # One compact example
@@ -1069,38 +1117,42 @@ Produce a valid, complete, and structured UI tree that can be rendered without e
                 {
                     "id": "root",
                     "component": "stack",
-                    "props": {"spacing": "md"},
+                    "props": json.dumps({"spacing": "md"}),
                     "children": ["info", "main_form"],
                 },
                 {
                     "id": "info",
                     "component": "alert",
-                    "props": {
-                        "severity": "info",
-                        "message": "Please complete this form to continue.",
-                    },
+                    "props": json.dumps(
+                        {
+                            "severity": "info",
+                            "message": "Please complete this form to continue.",
+                        }
+                    ),
                 },
                 {
                     "id": "main_form",
                     "component": "form",
-                    "props": {
-                        "title": "Contact Information",
-                        "fields": [
-                            {
-                                "type": "text",
-                                "name": "name",
-                                "label": "Your Name",
-                                "required": True,
-                            },
-                            {
-                                "type": "email",
-                                "name": "email",
-                                "label": "Email",
-                                "required": True,
-                            },
-                        ],
-                        "submitLabel": "Submit",
-                    },
+                    "props": json.dumps(
+                        {
+                            "title": "Contact Information",
+                            "fields": [
+                                {
+                                    "type": "text",
+                                    "name": "name",
+                                    "label": "Your Name",
+                                    "required": True,
+                                },
+                                {
+                                    "type": "email",
+                                    "name": "email",
+                                    "label": "Email",
+                                    "required": True,
+                                },
+                            ],
+                            "submitLabel": "Submit",
+                        }
+                    ),
                 },
             ],
             "root": "root",
@@ -1129,9 +1181,8 @@ Produce a valid, complete, and structured UI tree that can be rendered without e
         # Display components — single line each
         sections.append("")
         sections.append(
-            "Display-only: text (content), image (src, alt), "
-            "progress (currentStep, totalSteps), "
-            "table (columns, rows)"
+            "Display-only: text (brief in-widget context), image (src, alt), "
+            "progress (currentStep, totalSteps). Use Markdown for tables and formatting."
         )
 
         # Minimal example
@@ -1145,12 +1196,18 @@ Produce a valid, complete, and structured UI tree that can be rendered without e
                         {
                             "id": "f",
                             "component": "form",
-                            "props": {
-                                "title": "Contact",
-                                "fields": [
-                                    {"type": "text", "name": "name", "label": "Name"}
-                                ],
-                            },
+                            "props": json.dumps(
+                                {
+                                    "title": "Contact",
+                                    "fields": [
+                                        {
+                                            "type": "text",
+                                            "name": "name",
+                                            "label": "Name",
+                                        }
+                                    ],
+                                }
+                            ),
                         },
                     ],
                     "root": "r",
@@ -1208,16 +1265,6 @@ Produce a valid, complete, and structured UI tree that can be rendered without e
             "status: pending|active|completed }. "
             "If steps is provided, its length must equal totalSteps."
         )
-        sections.append("")
-        sections.append('### component: "table"')
-        sections.append("Data table with columns and rows.")
-        sections.append(
-            "Props: columns (required): array of { key: string, label: string, "
-            'align?: "left"|"center"|"right" }; '
-            "rows (required): array of objects where keys match column keys; "
-            "caption (optional): string"
-        )
-
         # Compound example
         sections.append("")
         sections.append("## Compound Example")
@@ -1226,38 +1273,42 @@ Produce a valid, complete, and structured UI tree that can be rendered without e
                 {
                     "id": "root",
                     "component": "stack",
-                    "props": {"spacing": "md"},
+                    "props": json.dumps({"spacing": "md"}),
                     "children": ["info", "main_form"],
                 },
                 {
                     "id": "info",
                     "component": "alert",
-                    "props": {
-                        "severity": "info",
-                        "message": "Please complete this form to continue.",
-                    },
+                    "props": json.dumps(
+                        {
+                            "severity": "info",
+                            "message": "Please complete this form to continue.",
+                        }
+                    ),
                 },
                 {
                     "id": "main_form",
                     "component": "form",
-                    "props": {
-                        "title": "Contact Information",
-                        "fields": [
-                            {
-                                "type": "text",
-                                "name": "name",
-                                "label": "Your Name",
-                                "required": True,
-                            },
-                            {
-                                "type": "email",
-                                "name": "email",
-                                "label": "Email",
-                                "required": True,
-                            },
-                        ],
-                        "submitLabel": "Submit",
-                    },
+                    "props": json.dumps(
+                        {
+                            "title": "Contact Information",
+                            "fields": [
+                                {
+                                    "type": "text",
+                                    "name": "name",
+                                    "label": "Your Name",
+                                    "required": True,
+                                },
+                                {
+                                    "type": "email",
+                                    "name": "email",
+                                    "label": "Email",
+                                    "required": True,
+                                },
+                            ],
+                            "submitLabel": "Submit",
+                        }
+                    ),
                 },
             ],
             "root": "root",

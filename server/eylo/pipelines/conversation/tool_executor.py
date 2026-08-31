@@ -387,6 +387,24 @@ class PlatformToolExecutor:
             )
 
         content = await execute_registered_tool(conversation_context, block)
+        if (
+            requested_tool.slug == "compound_render_widget"
+            and isinstance(content, dict)
+            and content.get("status") == "delivered"
+            and content.get("widget_message_id")
+        ):
+            return ToolResult(
+                tool_call_id=call.id,
+                content=content,
+                metadata={
+                    "terminal_response": True,
+                    "terminal_output": "Interactive content delivered.",
+                    "terminal_artifact": {
+                        "kind": "conversation_message",
+                        "id": content["widget_message_id"],
+                    },
+                },
+            )
         return ToolResult(tool_call_id=call.id, content=content)
 
 

@@ -168,7 +168,10 @@ Confluence Cloud and Notion implement these reads:
 - `docs_describe_fields`
 
 Both implement `docs_create`, `docs_update`, and `docs_append`; Notion also
-implements `docs_comment`. `docs_get` returns the current document projection.
+implements `docs_comment`. `docs_search` returns bounded content excerpts and
+`docs_get` returns a caller-pageable window of the current normalized document.
+Raw vendor document bodies are not exposed to the Agent. Document properties
+and attachments remain available as related current data.
 Eylo does not expose a separate historical-version tool. Tool visibility still
 requires the published Agent tool, a compatible source grant, selected streams,
 active mappings, and required OAuth scopes. Documents are external SOR

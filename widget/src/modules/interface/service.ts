@@ -339,6 +339,7 @@ export const validateWidgetPayload = (
 };
 
 const LAYOUT_COMPONENT_TYPES = new Set(["stack", "row", "section"]);
+const INTERACTIVE_COMPONENT_TYPES = new Set(["form", "button_group", "card_list", "date_picker"]);
 const COMPOUND_MAX_DEPTH = 3;
 const COMPOUND_MAX_COMPONENTS = 15;
 
@@ -401,14 +402,38 @@ export const validateCompoundWidgetPayload = (
       continue;
     }
 
-    const children = Array.isArray(node.children) ? (node.children as string[]) : undefined;
-    const props = isRecord(node.props) ? (node.props as Record<string, unknown>) : {};
+    if (!isRecord(node.props)) {
+      issues.push({ path: `$.components[${i}].props`, message: "Component props must be an object." });
+      continue;
+    }
+    if (node.children !== undefined && node.children !== null && !Array.isArray(node.children)) {
+      issues.push({ path: `$.components[${i}].children`, message: "Component children must be an array or null." });
+      continue;
+    }
+
+    const children = Array.isArray(node.children) && node.children.length > 0
+      ? (node.children as string[])
+      : undefined;
+    const props = node.props as Record<string, unknown>;
 
     nodeMap.set(id, { id, component, props, children });
   }
 
   if (issues.length > 0) {
     return { ok: false, issues };
+  }
+
+  const interactiveNodes = [...nodeMap.values()].filter((node) =>
+    INTERACTIVE_COMPONENT_TYPES.has(node.component)
+  );
+  if (interactiveNodes.length > 1) {
+    return {
+      ok: false,
+      issues: [{
+        path: "$.components",
+        message: `Compound widgets support one interactive component per message. Found: ${interactiveNodes.map((node) => node.id).join(", ")}.`,
+      }],
+    };
   }
 
   // Root must exist

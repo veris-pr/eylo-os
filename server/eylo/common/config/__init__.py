@@ -6,6 +6,7 @@ import enum
 import logging
 import os
 from typing import Any
+from urllib.parse import quote
 from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
@@ -195,7 +196,8 @@ class EyloSettings(BaseModel):
     def update_database_url(self):
         self.DATABASE_URL = f"postgresql+asyncpg://{self.DB_USER}:{self.DB_PASSWORD}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
         if self.REDIS_PASSWORD:
-            self.REDIS_URL = f"redis://:{self.REDIS_PASSWORD}@{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
+            encoded_password = quote(self.REDIS_PASSWORD, safe="")
+            self.REDIS_URL = f"redis://:{encoded_password}@{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
         else:
             self.REDIS_URL = (
                 f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"

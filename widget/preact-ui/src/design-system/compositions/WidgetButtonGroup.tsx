@@ -1,11 +1,12 @@
 import { useState, type FC } from "preact/compat";
 import type { TWidgetInteraction, TWidgetResponseData } from "@eylo";
-import { Button, Card, CardContent, CardHeader, CardTitle, Flex, Stack, Text } from "../index";
+import { Button, Card, CardContent, CardHeader, CardTitle, Flex, cm } from "../index";
 import type { TWidgetButtonGroupPayload } from "./types";
+import styles from "./WidgetButtonGroup.module.css";
 
 type WidgetButtonGroupProps = {
   payload: TWidgetButtonGroupPayload;
-  onInteraction?: (interaction: TWidgetInteraction) => void;
+  onInteraction?: (interaction: TWidgetInteraction) => boolean;
   isReadOnly?: boolean;
   submission?: TWidgetResponseData | null;
 };
@@ -30,15 +31,12 @@ export const WidgetButtonGroup: FC<WidgetButtonGroupProps> = ({
   const [isSubmitted, setIsSubmitted] = useState(Boolean(submission));
   const effectiveReadOnly = isReadOnly || isSubmitted;
   const isVertical = props.layout === "vertical";
-  const selectedLabel =
-    typeof submission?.data.label === "string"
-      ? submission.data.label
-      : typeof submission?.data.value === "string"
-        ? submission.data.value
-        : null;
+  const [selectedValue, setSelectedValue] = useState<string | null>(() =>
+    typeof submission?.data.value === "string" ? submission.data.value : null
+  );
 
   return (
-    <Card border shadow="sm">
+    <Card border shadow="none">
       {props.question ? (
         <CardHeader>
           <CardTitle>{props.question}</CardTitle>
@@ -50,13 +48,22 @@ export const WidgetButtonGroup: FC<WidgetButtonGroupProps> = ({
             <Button
               key={button.value}
               variant={toButtonVariant(button.variant)}
+              size="lg"
+              className={cm(
+                isVertical && styles.verticalButton,
+                selectedValue === button.value && styles.selectedButton
+              )}
+              aria-pressed={selectedValue === button.value}
               onClick={() => {
-                setIsSubmitted(true);
-                onInteraction?.({
+                const accepted = onInteraction?.({
                   component: "button_group",
                   action: "select",
                   data: { value: button.value, label: button.label },
                 });
+                if (accepted) {
+                  setSelectedValue(button.value);
+                  setIsSubmitted(true);
+                }
               }}
               disabled={effectiveReadOnly}
             >
@@ -64,18 +71,6 @@ export const WidgetButtonGroup: FC<WidgetButtonGroupProps> = ({
             </Button>
           ))}
         </Flex>
-        {effectiveReadOnly ? (
-          <Stack spacing="xs">
-            <Text size="small" variant="muted">
-              This button group is now read-only.
-            </Text>
-            {selectedLabel ? (
-              <Text size="small" variant="muted">
-                Selected: {selectedLabel}
-              </Text>
-            ) : null}
-          </Stack>
-        ) : null}
       </CardContent>
     </Card>
   );

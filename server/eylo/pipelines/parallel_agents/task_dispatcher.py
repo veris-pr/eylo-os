@@ -284,6 +284,9 @@ class TaskDispatcher:
         execution_agent_id, execution_agent_revision = (
             task_content.execution_agent_ref()
         )
+        task_meta = dict(meta)
+        if request_id is not None:
+            task_meta["triggering_request_id"] = str(request_id)
         message = MessageCreate(
             conversation_id=self.ctx.conversation.id,
             sender_participant_id=sender_participant_id,
@@ -291,9 +294,12 @@ class TaskDispatcher:
             kind=MessageKind.SYSTEM,
             content_kind=MessageContentKind.TASK,
             content=SystemMessageContent(content=task_content.to_json()),
-            request_id=request_id,
+            # A parallel task owns an independent request lifecycle. Reusing
+            # its trigger's ID lets the task's PENDING state block the parent
+            # request from reaching COMPLETED.
+            request_id=uuid4(),
             request_status=RequestStatus.PENDING,
-            meta=meta,
+            meta=task_meta,
         )
         return await self.message_service.create_task_with_agent_run(
             message=message,

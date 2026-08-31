@@ -42,11 +42,24 @@ executes the action. `task-worker` runs at most four async actions in its one
 child process. Scale `task-worker` replicas for throughput; do not scale
 `task-scheduler`, because each scheduler would enqueue the same cron work.
 
+Each action has an eight-minute execution budget and a ten-minute Redis lock,
+so another scheduled copy or another worker cannot run the same action at the
+same time. A hard-killed task becomes eligible for Redis Stream redelivery
+after twelve minutes. Taskiq checks stale claims after subsequent stream
+traffic; the minute-level catalog provides that wake-up in this deployment.
+The stream retains at most 250,000 recent trigger messages; PostgreSQL, not
+retained Taskiq history, is the recovery authority.
+
 If a Taskiq worker is unavailable, the Redis Stream retains scheduled messages
 and a worker consumes them after recovery. If the scheduler itself is down, no
 new cron message exists for that interval. Minute-level recovery scans catch up
 from PostgreSQL on the next tick; hourly/daily cleanup waits for its next cron
 unless an operator invokes the underlying action deliberately.
+
+Schedule occurrence recovery waits fifteen minutes before treating a claimed
+row as stranded. This keeps recovery behind the ordinary-action execution
+budget instead of racing a live dispatcher whose claim is temporarily marked
+with `next_at = NULL`.
 
 During the first deployment, the Absurd worker completes any already-filed
 `eylo.periodic.tick.v1` task as retired and does not spawn a successor. This

@@ -166,7 +166,7 @@ async def exchange_widget_invitation(
                             )
                         ]
                     ),
-                    "channel": ConversationChannels.WEB,
+                    "channel": ConversationChannels.WIDGET,
                     "context": {
                         "widget_invitation": {
                             "invitation_id": str(invitation.id),

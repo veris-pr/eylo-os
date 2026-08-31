@@ -32,6 +32,10 @@ class WsMessageEvent(WsEvent):
             raise ValueError("text is required for TEXT messages")
 
         if self.content_kind == MessageContentKind.WIDGET_RESPONSE:
+            if self.parent_message_id is None:
+                raise ValueError(
+                    "parentMessageId is required for WIDGET_RESPONSE messages"
+                )
             if self.content is None:
                 raise ValueError("content is required for WIDGET_RESPONSE messages")
             if not isinstance(self.content, dict):

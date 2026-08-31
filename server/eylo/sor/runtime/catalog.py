@@ -1453,9 +1453,8 @@ PROFILE_SPECS = (
             _tool(
                 "docs_get",
                 READ,
-                "Get one document with source provenance.",
+                "Get one current document content window with source provenance.",
                 "document",
-                "block",
                 "property",
                 "attachment",
             ),

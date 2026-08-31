@@ -110,7 +110,10 @@ const hasUserSession = Boolean(sdk.store.cm.get("userSessionId"));
 ```
 
 The Preact UI subscribes to both values before calling `initialize()` so it
-cannot miss an early transition.
+cannot miss an early transition. After that first ready state, it keeps the
+conversation route and hydrated history mounted through a recoverable
+disconnect; connection-dependent controls stay disabled until transport
+returns.
 
 Use `suspend()` for component unmount, route replacement, or recoverable host
 UI teardown. Use `terminate()` only when the end user intentionally closes the
@@ -157,6 +160,7 @@ correlated event arrives; do not match concurrent work only by conversation.
 | `listConversations({ page?, limit? })` | Fetch one aggregate page, hydrate related stores, and resolve with the number of returned conversations |
 | `markRead(conversationId)` | Mark the conversation read; returns whether the frame was accepted |
 | `resolveConversation(conversationId, messageLimit?)` | Return hydrated context, or request it and return `undefined` while data arrives |
+| `getCachedConversationContext(conversationId)` | Return only already-hydrated conversation, participant, and message state without starting a request |
 | `getLastMessage(conversationId)` | Return the latest hydrated message |
 | `loadMoreMessages(conversationId, limit?, offset?)` | Resolve a correlated message page and hydrate the stores |
 
@@ -189,7 +193,10 @@ the `channel` field to impersonate another transport.
 `listConversations()` returns a count, not the rows. Read the hydrated rows
 from `sdk.store.conversationStore.list_()` and subscribe to the
 `conversations` key. `loadMoreMessages()` returns rows directly because the
-caller needs exact page boundaries.
+caller needs exact page boundaries. Aggregate-query hydration does not emit
+`eylo:message:created`; that event is reserved for live creation. Renderers
+must advance their history offset when a genuinely live message arrives so a
+later older-message page cannot overlap or skip rows.
 
 ## Message service
 
@@ -417,10 +424,18 @@ UI calls `registerDefaultWidgetComponents()` once at startup, validates each
 component names to Preact renderers, and sends interactions with
 `sendWidgetResponse()`.
 
+Dynamic widgets are the Agent's interactive presentation layer, not a second
+document renderer. Use them for forms, button choices, selectable cards, date
+pickers, alerts, images, progress, and layouts with titles or subtitles. Keep
+ordinary prose, headings, lists, code, images, and tables in Markdown. There is
+no dynamic `table` component.
+
 Validation covers active component status, schema types and constraints,
-compound-tree identity, cycles, orphans, allowed layout parents, tree depth,
-and component count. Registration validates data; rendering remains the host
-UI's responsibility.
+compound-tree identity, cycles, shared children, orphans, allowed layout
+parents, tree depth, component count, and the one-interactive-component limit.
+A response must name the exact parent widget message and match its generated
+component, action, and offered values. Registration validates data; rendering
+remains the host UI's responsibility.
 
 ## Preact bundle globals
 
@@ -445,6 +460,9 @@ browser SDK.
 - `send*` returning `false` means the WebSocket is unavailable; retain or
   restore user input and show a connection error.
 - Conversation list/history promises time out after 10 seconds.
+- Transport retries continue with bounded backoff until explicit suspension or
+  termination; a temporary API outage must not discard the active route or
+  hydrated history.
 - Missing entity resolvers may start hydration and return `undefined`; render a
   loading state and subscribe instead of treating it as a permanent 404.
 - Knowledge HTTP calls require active session and user-session IDs.

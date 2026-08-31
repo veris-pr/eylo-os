@@ -78,6 +78,27 @@ class LLMVendorAdapter(ABC):
             stack[-1] = prev_
         elif current_kind == MessageKind.ASSISTANT:
             stack.append(msg)
+        elif current_kind == MessageKind.TOOL_USE:
+            tool_id = self._extract_tool_use_id(msg)
+            if not tool_id:
+                logger.error(
+                    "TOOL_USE message missing 'id' field. Rejecting message %s",
+                    msg.id,
+                )
+                return
+            if tool_id in pending_tool_calls:
+                logger.error(
+                    "Duplicate tool-use identity; rejecting message=%s",
+                    msg.id,
+                )
+                return
+            stack.append(msg)
+            pending_tool_calls[tool_id] = msg.id
+            logger.debug(
+                "Registered tool-use message=%s pending_count=%d",
+                msg.id,
+                len(pending_tool_calls),
+            )
         else:
             logger.warning(
                 f"Invalid transition: USER -> {current_kind}. Skipping message."

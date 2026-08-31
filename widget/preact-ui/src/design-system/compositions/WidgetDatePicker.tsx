@@ -11,15 +11,15 @@ import {
   CardTitle,
   Field,
   Input,
-  Text,
 } from "../index";
-import { validateDatePickerValue } from "./validation";
+import { nativeDateConstraint, validateDatePickerValue } from "./validation";
 import type { TWidgetDatePickerPayload } from "./types";
 import styles from "./WidgetDatePicker.module.css";
 
 type WidgetDatePickerProps = {
   payload: TWidgetDatePickerPayload;
-  onInteraction?: (interaction: TWidgetInteraction) => void;
+  instanceId?: string;
+  onInteraction?: (interaction: TWidgetInteraction) => boolean;
   isReadOnly?: boolean;
   submission?: TWidgetResponseData | null;
 };
@@ -62,6 +62,7 @@ const formatDisplayValue = (mode: string, raw: string): string => {
 
 export const WidgetDatePicker: FC<WidgetDatePickerProps> = ({
   payload,
+  instanceId = "widget",
   onInteraction,
   isReadOnly = false,
   submission = null,
@@ -69,6 +70,9 @@ export const WidgetDatePicker: FC<WidgetDatePickerProps> = ({
   const { props } = payload;
   const mode = props.mode || "date";
   const inputType = INPUT_TYPE_MAP[mode] || "date";
+  const controlId = `${instanceId}-${props.name}`;
+  const descriptionId = props.description ? `${controlId}-description` : undefined;
+  const nativeMode = mode === "datetime" ? "datetime" : "date";
 
   const submittedValue =
     typeof submission?.data[props.name] === "string" ? (submission.data[props.name] as string) : "";
@@ -76,6 +80,7 @@ export const WidgetDatePicker: FC<WidgetDatePickerProps> = ({
   const [value, setValue] = useState(submittedValue || props.defaultValue || "");
   const [error, setError] = useState<string | null>(null);
   const [isSubmitted, setIsSubmitted] = useState(Boolean(submission));
+  const errorId = error ? `${controlId}-error` : undefined;
 
   const effectiveReadOnly = isReadOnly || isSubmitted;
 
@@ -84,44 +89,69 @@ export const WidgetDatePicker: FC<WidgetDatePickerProps> = ({
     setError(nextError);
     if (nextError) return;
 
-    setIsSubmitted(true);
-    onInteraction?.({
+    const accepted = onInteraction?.({
       component: "date_picker",
       action: "submit",
       data: { [props.name]: value },
     });
+    if (accepted) {
+      setIsSubmitted(true);
+    }
   };
 
   return (
-    <Card border shadow="sm">
+    <Card border shadow="none">
       <CardHeader>
-        <CardTitle>{props.label}</CardTitle>
-        {props.description ? <CardDescription>{props.description}</CardDescription> : null}
+        <CardTitle id={`${controlId}-label`}>
+          {props.label}
+          {props.required ? <span aria-hidden="true"> *</span> : null}
+        </CardTitle>
+        {props.description ? (
+          <CardDescription id={descriptionId}>{props.description}</CardDescription>
+        ) : null}
       </CardHeader>
       <CardContent>
         {effectiveReadOnly && value ? (
           <div className={styles.selectedDisplay}>{formatDisplayValue(mode, value)}</div>
         ) : (
-          <Field error={error || undefined}>
+          <Field error={error || undefined} errorId={errorId}>
             <Input
+              id={controlId}
+              name={props.name}
               type={inputType}
               value={value}
+              min={
+                mode === "time"
+                  ? undefined
+                  : nativeDateConstraint(props.validation?.minDate, nativeMode, "min")
+              }
+              max={
+                mode === "time"
+                  ? undefined
+                  : nativeDateConstraint(props.validation?.maxDate, nativeMode, "max")
+              }
+              required={props.required}
+              aria-labelledby={`${controlId}-label`}
+              aria-describedby={[descriptionId, errorId].filter(Boolean).join(" ") || undefined}
+              error={Boolean(error)}
               disabled={effectiveReadOnly}
-              onInput={(e) => setValue((e.currentTarget as HTMLInputElement).value)}
+              onInput={(e) => {
+                setValue((e.currentTarget as HTMLInputElement).value);
+                if (error) {
+                  setError(null);
+                }
+              }}
             />
           </Field>
         )}
       </CardContent>
-      <CardFooter>
-        <Button width="full" onClick={handleSubmit} disabled={effectiveReadOnly || !value}>
-          {props.submitLabel || "Select"}
-        </Button>
-        {effectiveReadOnly ? (
-          <Text size="xs" variant="muted" align="center">
-            Selection confirmed
-          </Text>
-        ) : null}
-      </CardFooter>
+      {!effectiveReadOnly ? (
+        <CardFooter>
+          <Button size="lg" width="full" onClick={handleSubmit} disabled={!value}>
+            {props.submitLabel || "Select"}
+          </Button>
+        </CardFooter>
+      ) : null}
     </Card>
   );
 };

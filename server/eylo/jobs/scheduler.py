@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 # through over several ticks rather than in one transaction.
 DISPATCH_BATCH = 25
 SPAWN_BATCH = 100
+STRANDED_CLAIM_RECOVERY_DELAY_MINUTES = 15
 
 
 def _adapter() -> PostgresSchedulerStore:
@@ -253,7 +254,12 @@ async def recover_stranded_schedules() -> dict:
     # recurring job that stops forever with nothing anywhere saying so.
     adapter = _adapter()
     restored = 0
-    for schedule_id, schedule_revision in await adapter.stranded():
+    claimed_before = arrow.utcnow().shift(
+        minutes=-STRANDED_CLAIM_RECOVERY_DELAY_MINUTES
+    ).datetime
+    for schedule_id, schedule_revision in await adapter.stranded(
+        claimed_before=claimed_before
+    ):
         async with start_transaction() as session:
             schedule = await session.get(ScheduleModel, schedule_id)
             if schedule is None:

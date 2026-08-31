@@ -20,6 +20,7 @@ from eylo.modules.conversations.schemas.message_content import (
     SystemMessageContent,
     TextMessageContentBlocks,
     UserMessageContent,
+    WidgetResponseMessageContent,
 )
 from eylo.modules.conversations.schemas.messages import (
     MessageContentKind,
@@ -97,6 +98,7 @@ class ExistingRunMessageMetadata(FrameworkMetadata):
     request_id: str | None = None
     meta: MessageMeta
     content_blocks: TextMessageContentBlocks | None = None
+    widget_response: WidgetResponseMessageContent | None = None
     tool_call: ExistingToolCallMetadata | None = None
     tool_result: ExistingToolResultMetadata | None = None
 
@@ -214,6 +216,7 @@ def run_message_from_indb(message: MessageInDb) -> RunMessage:
     tool_call_metadata: ExistingToolCallMetadata | None = None
     tool_result_metadata: ExistingToolResultMetadata | None = None
     content_blocks: TextMessageContentBlocks | None = None
+    widget_response: WidgetResponseMessageContent | None = None
 
     if message.kind == MessageKind.TOOL_USE:
         parsed = message.get_tool_use_content()
@@ -234,7 +237,9 @@ def run_message_from_indb(message: MessageInDb) -> RunMessage:
             )
     else:
         parsed = message.get_parsed_content()
-        if isinstance(
+        if isinstance(parsed, WidgetResponseMessageContent):
+            widget_response = parsed
+        elif isinstance(
             parsed,
             UserMessageContent | AssistantMessageContent | SystemMessageContent,
         ):
@@ -246,6 +251,7 @@ def run_message_from_indb(message: MessageInDb) -> RunMessage:
         request_id=str(message.request_id) if message.request_id else None,
         meta=message.meta or MessageMeta(),
         content_blocks=content_blocks,
+        widget_response=widget_response,
         tool_call=tool_call_metadata,
         tool_result=tool_result_metadata,
     )

@@ -5,14 +5,14 @@ import { WS_ACTIONS } from "./constants";
 import type { TMessageHandlerMap, TRetryOptions, TWebSocketConfig, TWsMessage } from "./types";
 
 const DEFAULT_RETRY_OPTIONS: TRetryOptions = {
-  maxRetries: 5,
+  maxRetries: Number.POSITIVE_INFINITY,
   initialDelay: 1000, // 1 second
-  maxDelay: 30000, // 30 seconds
+  maxDelay: 10000, // 10 seconds
   backoffMultiplier: 2,
 };
 
 const WS_CLOSE_CODE_NORMAL = 1000;
-const WS_CLOSE_CODE_ERROR = 1006; // Abnormal closure
+const WS_CLOSE_CODE_RETRY = 4000;
 const DEFAULT_PING_INTERVAL = 5000; // 5 seconds
 const DEFAULT_PONG_TIMEOUT = 10000; // 10 seconds
 
@@ -103,6 +103,8 @@ export class WebSocketClient {
       ws.close(code, reason);
     }
     this._cleanupTimers();
+    this._isRetrying = false;
+    this._retryCount = 0;
     logger.debug("WebSocket terminated:", { code, reason });
   };
 
@@ -143,6 +145,7 @@ export class WebSocketClient {
     };
 
     this._ws.onclose = (event: CloseEvent) => {
+      this._clearPingTimer();
       logger.debug("WebSocket closed:", event);
       if (event.code !== WS_CLOSE_CODE_NORMAL && this._shouldAutoReconnect) {
         logger.warn("WebSocket closed abnormally. Attempting to reconnect...");
@@ -167,19 +170,21 @@ export class WebSocketClient {
       retryOptions.initialDelay * Math.pow(retryOptions.backoffMultiplier, this._retryCount - 1),
       retryOptions.maxDelay
     );
-    logger.debug(`Retrying WebSocket connection in ${delay} ms (attempt ${this._retryCount})...`);
     if (this._retryCount > retryOptions.maxRetries) {
       logger.error(`Max retry attempts (${retryOptions.maxRetries}) reached. Giving up.`);
-      this.terminate(WS_CLOSE_CODE_ERROR, "Max retry attempts reached");
+      this.terminate(WS_CLOSE_CODE_NORMAL, "Max retry attempts reached");
       return;
     }
+    logger.debug(`Retrying WebSocket connection in ${delay} ms (attempt ${this._retryCount})...`);
     this._retryTimeoutId = setTimeout(() => {
+      this._retryTimeoutId = null;
       this._isRetrying = false;
       this.initialize(this._sessionId!, this._userSessionId);
     }, delay);
   };
 
   private _setupKeepAlive = (): void => {
+    this._clearPingTimer();
     this._pingTimeoutId = setTimeout(() => {
       if (this._isConnected()) {
         const pingPacket: TWsMessage = {
@@ -245,8 +250,9 @@ export class WebSocketClient {
       this._pingMissCount++;
     }
     if (this._pingMissCount >= this._maxPingMissTolerance) {
-      logger.warn(`Ping miss count exceeded (${this._pingMissCount}). Disconnecting...`);
-      this.terminate(WS_CLOSE_CODE_ERROR, "Ping miss count exceeded");
+      logger.warn(`Ping miss count exceeded (${this._pingMissCount}). Reconnecting...`);
+      this._pingMissCount = 0;
+      this._ws?.close(WS_CLOSE_CODE_RETRY, "Ping miss count exceeded");
     }
   };
 
@@ -336,13 +342,17 @@ export class WebSocketClient {
   }
 
   private _cleanupTimers = (): void => {
-    if (this._pingTimeoutId) {
-      clearTimeout(this._pingTimeoutId);
-      this._pingTimeoutId = null;
-    }
+    this._clearPingTimer();
     if (this._retryTimeoutId) {
       clearTimeout(this._retryTimeoutId);
       this._retryTimeoutId = null;
+    }
+  };
+
+  private _clearPingTimer = (): void => {
+    if (this._pingTimeoutId) {
+      clearTimeout(this._pingTimeoutId);
+      this._pingTimeoutId = null;
     }
   };
 }

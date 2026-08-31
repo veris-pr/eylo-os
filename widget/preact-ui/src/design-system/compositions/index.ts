@@ -8,5 +8,4 @@ export { WidgetProgress } from "./WidgetProgress";
 export { WidgetRow } from "./WidgetRow";
 export { WidgetSection } from "./WidgetSection";
 export { WidgetStack } from "./WidgetStack";
-export { WidgetTable } from "./WidgetTable";
 export { WidgetText } from "./WidgetText";

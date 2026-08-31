@@ -22,12 +22,13 @@ import {
   Stack,
   Textarea,
 } from "../index";
-import { validateFieldValue, validateFormValues } from "./validation";
+import { nativeDateConstraint, validateFieldValue, validateFormValues } from "./validation";
 import type { TWidgetFormField, TWidgetFormPayload } from "./types";
 
 type WidgetFormProps = {
   payload: TWidgetFormPayload;
-  onInteraction?: (interaction: TWidgetInteraction) => void;
+  instanceId?: string;
+  onInteraction?: (interaction: TWidgetInteraction) => boolean;
   isReadOnly?: boolean;
   submission?: TWidgetResponseData | null;
 };
@@ -52,6 +53,7 @@ const buildInitialValues = (fields: TWidgetFormField[]): Record<string, unknown>
 
 export const WidgetForm: FC<WidgetFormProps> = ({
   payload,
+  instanceId = "widget",
   onInteraction,
   isReadOnly = false,
   submission = null,
@@ -91,15 +93,23 @@ export const WidgetForm: FC<WidgetFormProps> = ({
     setErrors(nextErrors);
 
     if (Object.keys(nextErrors).length > 0) {
+      const firstInvalidField = props.fields.find((field) => nextErrors[field.name]);
+      if (firstInvalidField) {
+        requestAnimationFrame(() => {
+          document.getElementById(`${instanceId}-${firstInvalidField.name}`)?.focus();
+        });
+      }
       return;
     }
 
-    setIsSubmitted(true);
-    onInteraction?.({
+    const accepted = onInteraction?.({
       component: "form",
       action: "submit",
       data: values,
     });
+    if (accepted) {
+      setIsSubmitted(true);
+    }
   };
 
   const handleCancel = (): void => {
@@ -113,20 +123,26 @@ export const WidgetForm: FC<WidgetFormProps> = ({
   const renderField = (field: TWidgetFormField) => {
     const fieldValue = values[field.name];
     const fieldError = errors[field.name];
+    const controlId = `${instanceId}-${field.name}`;
+    const errorId = fieldError ? `${controlId}-error` : undefined;
 
     if (field.type === "textarea") {
       return (
         <Field
           key={field.name}
           label={field.label}
-          htmlFor={field.name}
+          htmlFor={controlId}
           required={field.required}
           error={fieldError}
+          errorId={errorId}
         >
           <Textarea
-            id={field.name}
+            id={controlId}
+            name={field.name}
             value={String(fieldValue ?? "")}
             placeholder={field.placeholder}
+            error={Boolean(fieldError)}
+            aria-describedby={errorId}
             disabled={effectiveReadOnly}
             onInput={(event) =>
               updateValue(field, (event.currentTarget as HTMLTextAreaElement).value)
@@ -138,14 +154,24 @@ export const WidgetForm: FC<WidgetFormProps> = ({
 
     if (field.type === "select") {
       return (
-        <Field key={field.name} label={field.label} required={field.required} error={fieldError}>
+        <Field
+          key={field.name}
+          label={field.label}
+          htmlFor={controlId}
+          required={field.required}
+          error={fieldError}
+          errorId={errorId}
+        >
           <Select
             value={typeof fieldValue === "string" ? fieldValue : undefined}
             onValueChange={(nextValue) => updateValue(field, nextValue)}
             disabled={effectiveReadOnly}
           >
             <SelectTrigger
+              id={controlId}
               error={Boolean(fieldError)}
+              aria-invalid={Boolean(fieldError) || undefined}
+              aria-describedby={errorId}
               placeholder={field.placeholder || "Select..."}
             >
               <SelectValue placeholder={field.placeholder || "Select..."} />
@@ -163,12 +189,24 @@ export const WidgetForm: FC<WidgetFormProps> = ({
     }
 
     if (field.type === "radio") {
+      const labelId = `${controlId}-label`;
       return (
-        <Field key={field.name} label={field.label} required={field.required} error={fieldError}>
+        <Field
+          key={field.name}
+          label={field.label}
+          labelId={labelId}
+          required={field.required}
+          error={fieldError}
+          errorId={errorId}
+        >
           <RadioGroup
+            name={controlId}
             value={typeof fieldValue === "string" ? fieldValue : undefined}
             onValueChange={(nextValue) => updateValue(field, nextValue)}
             disabled={effectiveReadOnly}
+            aria-labelledby={labelId}
+            aria-describedby={errorId}
+            aria-invalid={Boolean(fieldError) || undefined}
           >
             {field.options?.map((option) => (
               <RadioGroupItem
@@ -184,13 +222,25 @@ export const WidgetForm: FC<WidgetFormProps> = ({
     }
 
     if (field.type === "checkbox") {
+      const labelId = `${controlId}-label`;
       return (
-        <Field key={field.name} label={field.label} required={field.required} error={fieldError}>
+        <Field
+          key={field.name}
+          label={field.label}
+          labelId={labelId}
+          required={field.required}
+          error={fieldError}
+          errorId={errorId}
+        >
           <Checkbox
+            id={controlId}
             checked={Boolean(fieldValue)}
             disabled={effectiveReadOnly}
             onChange={(checked) => updateValue(field, checked)}
             label={field.placeholder || "Enable"}
+            aria-labelledby={labelId}
+            aria-describedby={errorId}
+            aria-invalid={Boolean(fieldError) || undefined}
           />
         </Field>
       );
@@ -200,18 +250,29 @@ export const WidgetForm: FC<WidgetFormProps> = ({
       <Field
         key={field.name}
         label={field.label}
-        htmlFor={field.name}
+        htmlFor={controlId}
         required={field.required}
         error={fieldError}
+        errorId={errorId}
       >
         <Input
-          id={field.name}
+          id={controlId}
+          name={field.name}
           type={getInputType(field)}
           value={fieldValue === undefined ? "" : String(fieldValue)}
-          min={field.validation?.min}
-          max={field.validation?.max}
+          min={
+            field.type === "date" || field.type === "datetime"
+              ? nativeDateConstraint(field.validation?.minDate, field.type, "min")
+              : field.validation?.min
+          }
+          max={
+            field.type === "date" || field.type === "datetime"
+              ? nativeDateConstraint(field.validation?.maxDate, field.type, "max")
+              : field.validation?.max
+          }
           placeholder={field.placeholder}
           error={Boolean(fieldError)}
+          aria-describedby={errorId}
           disabled={effectiveReadOnly}
           onInput={(event) => {
             const nextValue = (event.currentTarget as HTMLInputElement).value;
@@ -226,7 +287,7 @@ export const WidgetForm: FC<WidgetFormProps> = ({
   };
 
   return (
-    <Card border shadow="sm">
+    <Card border shadow="none">
       <form
         onSubmit={(e: Event) => {
           e.preventDefault();
@@ -240,18 +301,20 @@ export const WidgetForm: FC<WidgetFormProps> = ({
         <CardContent>
           <Stack spacing="md">{props.fields.map(renderField)}</Stack>
         </CardContent>
-        <CardFooter>
-          <Stack spacing="sm">
-            <Button type="submit" width="full" disabled={effectiveReadOnly}>
-              {props.submitLabel || "Submit"}
-            </Button>
-            {!effectiveReadOnly && props.cancelLabel ? (
-              <Button width="full" variant="outline" onClick={handleCancel}>
-                {props.cancelLabel}
+        {!effectiveReadOnly ? (
+          <CardFooter>
+            <Stack spacing="sm">
+              <Button type="submit" size="lg" width="full">
+                {props.submitLabel || "Submit"}
               </Button>
-            ) : null}
-          </Stack>
-        </CardFooter>
+              {props.cancelLabel ? (
+                <Button size="lg" width="full" variant="outline" onClick={handleCancel}>
+                  {props.cancelLabel}
+                </Button>
+              ) : null}
+            </Stack>
+          </CardFooter>
+        ) : null}
       </form>
     </Card>
   );

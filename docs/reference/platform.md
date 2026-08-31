@@ -58,7 +58,8 @@ widget routes, WebSocket, and WebRTC rather than member credentials.
 `server/alembic/versions/eylo0001_initial_schema.py` is the compatibility
 baseline. Later revisions are incremental and immutable; `eylo0002` reconciles
 legacy `eylo0001` databases and installs SOR persistence, while `eylo0007`
-upgrades the embedded Absurd SQL contract to 0.5.0.
+introduces Absurd 0.5 UUID generation and `eylo0008` completes the exact
+upstream Absurd 0.5 retry and task-function contract.
 `register_models()` imports every ORM model explicitly so API startup, workers,
 Alembic, and standalone verification see the same metadata.
 

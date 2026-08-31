@@ -168,10 +168,18 @@ _CEREBRAS_LEGACY_MODELS = [
 ]
 
 _GROQ_MODELS = [
-    "llama-3.1-8b-instant",
-    "llama-3.3-70b-versatile",
     "openai/gpt-oss-120b",
     "openai/gpt-oss-20b",
+]
+# Retain these only for reading existing configs. Groq no longer serves the
+# Llama models to free/developer accounts after August 16, 2026, and Qwen 3
+# 32B was removed on July 17, 2026. Kimi K2 is also absent from the current
+# supported-model catalog, so new configs must not offer any of them.
+# Sources: https://console.groq.com/docs/deprecations
+# https://console.groq.com/docs/models
+_GROQ_LEGACY_MODELS = [
+    "llama-3.1-8b-instant",
+    "llama-3.3-70b-versatile",
     "moonshotai/kimi-k2-instruct-0905",
     "qwen/qwen3-32b",
 ]
@@ -367,7 +375,7 @@ _MODELS_BY_PROVIDER = {
     LLMProviders.BEDROCK: tuple(_AWS_CLAUDE_MODELS),
     LLMProviders.CEREBRAS: tuple(_CEREBRAS_MODELS + _CEREBRAS_LEGACY_MODELS),
     LLMProviders.GEMINI: tuple(_GEMINI_MODELS),
-    LLMProviders.GROQ: tuple(_GROQ_MODELS),
+    LLMProviders.GROQ: tuple(_GROQ_MODELS + _GROQ_LEGACY_MODELS),
     LLMProviders.OPENAI: tuple(_OPENAI_MODELS),
     LLMProviders.OPENAI_RESPONSES: tuple(_OPENAI_RESPONSES_MODELS),
     LLMProviders.SARVAM: tuple(_SARVAM_MODELS),
@@ -375,6 +383,7 @@ _MODELS_BY_PROVIDER = {
 _SELECTABLE_MODELS_BY_PROVIDER = {
     **_MODELS_BY_PROVIDER,
     LLMProviders.CEREBRAS: tuple(_CEREBRAS_MODELS),
+    LLMProviders.GROQ: tuple(_GROQ_MODELS),
 }
 
 

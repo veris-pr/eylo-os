@@ -2,7 +2,7 @@ import { forwardRef } from "preact/compat";
 import { cm } from "../utils";
 import styles from "./Textarea.module.css";
 
-export interface TextareaProps extends preact.JSX.HTMLAttributes<HTMLTextAreaElement> {
+export interface TextareaProps extends preact.JSX.TextareaHTMLAttributes<HTMLTextAreaElement> {
   error?: boolean;
   value?: string;
   defaultValue?: string;
@@ -18,9 +18,12 @@ export interface TextareaProps extends preact.JSX.HTMLAttributes<HTMLTextAreaEle
 
 export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
   ({ className, error, minHeight, maxHeight, ...props }, ref) => {
+    const ariaInvalid = props["aria-invalid"] ?? (error ? true : undefined);
+
     return (
       <textarea
         ref={ref}
+        aria-invalid={ariaInvalid}
         className={cm(
           styles.textarea,
           error && styles.error,

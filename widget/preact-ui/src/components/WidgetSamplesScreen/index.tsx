@@ -6,6 +6,7 @@ import {
   validateCompoundWidgetPayload,
   validateWidgetPayload,
   type TWidgetInteraction,
+  type TWidgetResponseData,
 } from "@eylo";
 import {
   Badge,
@@ -26,6 +27,7 @@ import {
   DynamicWidgetRenderer,
   InvalidDynamicWidgetPayload,
 } from "../DynamicWidget";
+import { WidgetResponseSummary } from "../DynamicWidget/WidgetResponseSummary";
 import { registerDynamicWidgetComponents } from "../../design-system/compositions/register";
 import { widgetSamples, type TWidgetSample } from "./samples";
 import styles from "./WidgetSamplesScreen.module.css";
@@ -47,6 +49,7 @@ const CATEGORIES: TWidgetSample["category"][] = ["individual", "compound", "erro
 const WidgetSamplesScreen: FC = () => {
   const [activeSampleId, setActiveSampleId] = useState(widgetSamples[0]?.id || "");
   const [interactions, setInteractions] = useState<TWidgetInteraction[]>([]);
+  const [submission, setSubmission] = useState<TWidgetResponseData | null>(null);
 
   const activeSample = useMemo(
     () => widgetSamples.find((sample) => sample.id === activeSampleId) || widgetSamples[0],
@@ -63,8 +66,16 @@ const WidgetSamplesScreen: FC = () => {
 
   const activeComponents = useMemo(() => getActiveWidgetComponents(), []);
 
-  const handleInteraction = (interaction: TWidgetInteraction): void => {
+  const handleInteraction = (interaction: TWidgetInteraction): boolean => {
     setInteractions((previous) => [interaction, ...previous].slice(0, 10));
+    setSubmission({
+      type: "widget_response",
+      widget_message_id: `sample-${activeSampleId}`,
+      component: interaction.component,
+      action: interaction.action,
+      data: interaction.data,
+    });
+    return true;
   };
 
   return (
@@ -112,7 +123,10 @@ const WidgetSamplesScreen: FC = () => {
                                 key={sample.id}
                                 variant={sample.id === activeSample?.id ? "default" : "outline"}
                                 size="sm"
-                                onClick={() => setActiveSampleId(sample.id)}
+                                onClick={() => {
+                                  setSubmission(null);
+                                  setActiveSampleId(sample.id);
+                                }}
                                 width="full"
                               >
                                 {sample.title}
@@ -153,8 +167,12 @@ const WidgetSamplesScreen: FC = () => {
                   </DynamicWidgetRenderBoundary>
                 ) : activeSample && validation?.ok ? (
                   <DynamicWidgetRenderer
+                    key={activeSample.id}
                     payload={validation.value}
+                    instanceId={`sample-${activeSample.id}`}
                     onInteraction={handleInteraction}
+                    isReadOnly={Boolean(submission)}
+                    submission={submission}
                   />
                 ) : validation && !validation.ok ? (
                   <InvalidDynamicWidgetPayload issues={validation.issues} />
@@ -179,6 +197,16 @@ const WidgetSamplesScreen: FC = () => {
                 ) : (
                   <ScrollArea className={styles.interactionLog}>
                     <Stack spacing="sm">
+                      {submission && validation?.ok ? (
+                        <Card border shadow="none">
+                          <CardContent>
+                            <WidgetResponseSummary
+                              response={submission}
+                              sourcePayload={validation.value}
+                            />
+                          </CardContent>
+                        </Card>
+                      ) : null}
                       {interactions.map((interaction, index) => (
                         <Card
                           key={`${interaction.component}-${interaction.action}-${index}`}

@@ -39,7 +39,9 @@ import NewMessagesIndicator from "./NewMessagesIndicator";
 import type {
   TKnowledgeIngestion,
   TMessageWParticipant,
+  TCompoundWidgetPayload,
   TWidgetInteraction,
+  TWidgetPayloadEnvelope,
   TWidgetResponseData,
 } from "@eylo";
 import VoiceWaveform from "../VoiceWaveform";
@@ -49,7 +51,7 @@ import { Button } from "../../design-system/components/Button";
 import { Empty } from "../../design-system/components/Empty";
 import { Text } from "../../design-system/components/Typography";
 import { Flex } from "../../design-system/components/Flex";
-import { formatMessageTimestamp } from "../../utils";
+import { formatConversationTitle, formatMessageTimestamp } from "../../utils";
 import styles from "./ConversationDetails.module.css";
 
 // VoiceSystemState type is moved to useVoiceSystemState hook
@@ -91,7 +93,7 @@ const ConversationDetails: FC<{
     loadingMore,
     hasMore,
     loadMore,
-    isLoadingMoreRef,
+    reload: reloadMessages,
   } = useConversationMessages(undefined, activeConversationId);
   const { isSessionActive, remoteStream, localStream } = useVoiceState();
   const isVoiceActive = isSessionActive;
@@ -111,9 +113,17 @@ const ConversationDetails: FC<{
 
   // Custom hooks for complex logic
   const scrollBehavior = useScrollBehavior({
+    contextKey: activeConversationId,
     messages,
-    isLoadingMore: isLoadingMoreRef?.current,
   });
+
+  const handleLoadOlderMessages = async () => {
+    scrollBehavior.prepareForPrepend();
+    const loadedCount = await loadMore();
+    if (loadedCount <= 0) {
+      scrollBehavior.cancelPrependPreservation();
+    }
+  };
 
   const { voiceSystemState, canUserSpeak, voiceState } = useVoiceSystemState({
     eyloSDK,
@@ -357,9 +367,29 @@ const ConversationDetails: FC<{
     return responses;
   }, [eyloSDK, messages, optimisticWidgetResponses]);
 
-  const handleWidgetInteraction = (widgetMessageId: string, interaction: TWidgetInteraction) => {
+  const widgetPayloadsByMessageId = useMemo(() => {
+    const payloads = new Map<string, TWidgetPayloadEnvelope | TCompoundWidgetPayload>();
+
+    if (!eyloSDK) {
+      return payloads;
+    }
+
+    messages.forEach((currentMessage) => {
+      const payload = eyloSDK.messageService.getWidgetPayload(currentMessage);
+      if (payload.ok) {
+        payloads.set(currentMessage.id, payload.value);
+      }
+    });
+
+    return payloads;
+  }, [eyloSDK, messages]);
+
+  const handleWidgetInteraction = (
+    widgetMessageId: string,
+    interaction: TWidgetInteraction
+  ): boolean => {
     if (!activeConversationId) {
-      return;
+      return false;
     }
 
     const requestId = crypto.randomUUID();
@@ -388,6 +418,7 @@ const ConversationDetails: FC<{
         [widgetMessageId]: response,
       }));
     }
+    return isSent;
   };
 
   const handleVoiceToggle = async () => {
@@ -417,7 +448,7 @@ const ConversationDetails: FC<{
     }
   };
 
-  if (!params.id) {
+  if (!activeConversationId) {
     return (
       <>
         <ChatWidgetContainer.ChatHeader title="No Conversation Selected" onBack={navigateBack} />
@@ -478,7 +509,7 @@ const ConversationDetails: FC<{
   return (
     <>
       <ChatWidgetContainer.ChatHeader
-        title={conversation?.title || "Chat"}
+        title={formatConversationTitle(conversation?.title)}
         onBack={navigateBack}
         agentStatus={agentStatus}
       />
@@ -487,6 +518,13 @@ const ConversationDetails: FC<{
         <div className={styles.messagesContainer} ref={scrollBehavior.messagesContainerRef}>
           {loading ? (
             <div className={styles.loadingMessage}>Loading messages...</div>
+          ) : messagesError && filteredMessages.length === 0 ? (
+            <div className={styles.historyError} role="alert">
+              <Text size="small">Conversation history could not be loaded.</Text>
+              <Button variant="outline" size="sm" onClick={reloadMessages}>
+                Try again
+              </Button>
+            </div>
           ) : filteredMessages.length === 0 ? (
             <div className={styles.emptyStateContainer}>
               <Empty
@@ -497,13 +535,25 @@ const ConversationDetails: FC<{
             </div>
           ) : (
             <>
+              {messagesError && (
+                <div className={styles.historyError} role="alert">
+                  <Text size="small">Older messages could not be loaded.</Text>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void handleLoadOlderMessages()}
+                  >
+                    Try again
+                  </Button>
+                </div>
+              )}
               {/* Load More Messages Button */}
-              {hasMore && (
+              {hasMore && !messagesError && (
                 <div className={styles.loadMoreRow}>
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={loadMore}
+                    onClick={() => void handleLoadOlderMessages()}
                     disabled={loadingMore}
                     width="full"
                   >
@@ -531,6 +581,11 @@ const ConversationDetails: FC<{
                   handleRetry={handleRetry}
                   onWidgetInteraction={handleWidgetInteraction}
                   widgetSubmission={widgetResponsesByMessageId.get(message.id) ?? null}
+                  sourceWidgetPayload={
+                    message.parentMessageId
+                      ? widgetPayloadsByMessageId.get(message.parentMessageId) ?? null
+                      : null
+                  }
                 />
               ))}
             </>
@@ -628,8 +683,9 @@ const MessageBubble = memo<{
   onFeedbackClick: (feedbackType: "positive" | "negative") => void;
   agentStatus: Feedback;
   handleRetry: () => void;
-  onWidgetInteraction: (widgetMessageId: string, interaction: TWidgetInteraction) => void;
+  onWidgetInteraction: (widgetMessageId: string, interaction: TWidgetInteraction) => boolean;
   widgetSubmission: TWidgetResponseData | null;
+  sourceWidgetPayload: TWidgetPayloadEnvelope | TCompoundWidgetPayload | null;
 }>(
   ({
     message,
@@ -640,6 +696,7 @@ const MessageBubble = memo<{
     handleRetry,
     onWidgetInteraction,
     widgetSubmission,
+    sourceWidgetPayload,
   }) => {
     const isUser = message.kind === "USER";
     const senderName = message.contact?.name || message.senderParticipant?.entityKind || "Unknown";
@@ -647,13 +704,16 @@ const MessageBubble = memo<{
     const messageContent = useMessageContent(message);
     const widgetPayload = useWidgetMessagePayload(message);
     const widgetResponseData = useWidgetResponseData(message);
+    const isWidgetMessage = message.contentKind === "WIDGET";
 
     return (
       <div className={styles.messageBubbleContainer}>
         <div
           className={`${styles.messageBubbleRow} ${isUser ? styles.messageBubbleRowUser : styles.messageBubbleRowBot}`}
         >
-          <div className={styles.messageBubbleWrapper}>
+          <div
+            className={`${styles.messageBubbleWrapper} ${isWidgetMessage ? styles.messageBubbleWrapperWidget : ""}`}
+          >
             <div
               className={`${styles.messageBubbleMeta} ${isUser ? styles.messageBubbleMetaUser : styles.messageBubbleMetaBot}`}
             >
@@ -665,12 +725,13 @@ const MessageBubble = memo<{
               </Text>
             </div>
             <div
-              className={`${styles.messageBubbleContent} ${isUser ? styles.messageBubbleContentUser : styles.messageBubbleContentBot}`}
+              className={`${styles.messageBubbleContent} ${isUser ? styles.messageBubbleContentUser : styles.messageBubbleContentBot} ${isWidgetMessage ? styles.messageBubbleContentWidget : ""}`}
             >
               {message.contentKind === "WIDGET" ? (
                 widgetPayload?.ok ? (
                   <DynamicWidgetRenderer
                     payload={widgetPayload.value}
+                    instanceId={`widget-${message.id}`}
                     onInteraction={(interaction) => onWidgetInteraction(message.id, interaction)}
                     isReadOnly={Boolean(widgetSubmission)}
                     submission={widgetSubmission}
@@ -679,7 +740,10 @@ const MessageBubble = memo<{
                   <InvalidDynamicWidgetPayload issues={widgetPayload?.issues ?? []} />
                 )
               ) : message.contentKind === "WIDGET_RESPONSE" && widgetResponseData ? (
-                <WidgetResponseSummary response={widgetResponseData} />
+                <WidgetResponseSummary
+                  response={widgetResponseData}
+                  sourcePayload={sourceWidgetPayload}
+                />
               ) : (
                 <MessageContent content={messageContent || ""} className="" />
               )}

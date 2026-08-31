@@ -12,7 +12,11 @@ from eylo.common.config import settings
 from eylo.common.database import cleanup_database
 from eylo.common.models import register_models
 from eylo.listeners.py_events import ListenerProcessRole, setup_listeners
-from eylo.periodic_work import PERIODIC_ACTIONS, run_periodic_action
+from eylo.periodic_work import (
+    ORDINARY_TASK_LOCK_TIMEOUT_SECONDS,
+    PERIODIC_ACTIONS,
+    run_periodic_action,
+)
 from eylo.pipelines.composition import register_pipeline_extensions
 
 logger = logging.getLogger(__name__)
@@ -20,6 +24,10 @@ logger = logging.getLogger(__name__)
 ORDINARY_TASK_QUEUE = "eylo-ordinary-tasks-v1"
 ORDINARY_TASK_CONSUMER_GROUP = "eylo-ordinary-workers-v1"
 ORDINARY_PERIODIC_TASK = "eylo.periodic.action.v1"
+ORDINARY_TASK_STREAM_MAX_LENGTH = 250_000
+ORDINARY_TASK_REDELIVERY_TIMEOUT_MS = (
+    ORDINARY_TASK_LOCK_TIMEOUT_SECONDS + 2 * 60
+) * 1000
 
 broker = RedisStreamBroker(
     url=settings.REDIS_URL,
@@ -27,6 +35,8 @@ broker = RedisStreamBroker(
     consumer_group_name=ORDINARY_TASK_CONSUMER_GROUP,
     consumer_id="0",
     max_connection_pool_size=20,
+    maxlen=ORDINARY_TASK_STREAM_MAX_LENGTH,
+    idle_timeout=ORDINARY_TASK_REDELIVERY_TIMEOUT_MS,
     xread_count=4,
     unacknowledged_batch_size=4,
     unacknowledged_lock_timeout=30,

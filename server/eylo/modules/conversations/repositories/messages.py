@@ -16,7 +16,11 @@ from eylo.modules.agents.models import AgentRevisionModel
 from eylo.modules.conversations.models.conversations import ConversationsModel
 from eylo.modules.conversations.models.messages import MessageKind, MessagesModel
 from eylo.modules.conversations.models.participants import ParticipantsModel
-from eylo.modules.conversations.schemas.messages import MessageCreate, RequestStatus
+from eylo.modules.conversations.schemas.messages import (
+    MessageContentKind,
+    MessageCreate,
+    RequestStatus,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,6 +240,25 @@ class MessageRepository(BaseORMRepository[MessagesModel]):
                 self.model.conversation_id == conversation_id,
                 self.model.deleted.is_(False),
             )
+        )
+
+    async def get_widget_response_parent_for_update(
+        self,
+        *,
+        parent_message_id: UUID,
+        conversation_id: UUID,
+    ) -> MessagesModel | None:
+        """Lock the exact assistant widget message accepting a response."""
+        return await self.db_session.scalar(
+            select(self.model)
+            .where(
+                self.model.id == parent_message_id,
+                self.model.conversation_id == conversation_id,
+                self.model.kind == MessageKind.ASSISTANT,
+                self.model.content_kind == MessageContentKind.WIDGET,
+                self.model.deleted.is_(False),
+            )
+            .with_for_update()
         )
 
     async def get_request_user_session_id(

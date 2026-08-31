@@ -26,7 +26,7 @@ export type TWidgetFieldValidation = {
   maxLength?: number;
   min?: number;
   max?: number;
-  pattern?: string;
+  pattern?: "email" | "phone" | "url";
   message?: string;
   minDate?: string;
   maxDate?: string;
@@ -150,22 +150,9 @@ export type TWidgetProgressProps = {
   steps?: TWidgetProgressStep[];
 };
 
-export type TWidgetTableColumn = {
-  key: string;
-  label: string;
-  align?: "left" | "center" | "right";
-};
-
-export type TWidgetTableProps = {
-  columns: TWidgetTableColumn[];
-  rows: Record<string, unknown>[];
-  caption?: string;
-};
-
 export type TWidgetTextPayload = TWidgetPayloadEnvelope<"text", TWidgetTextProps>;
 export type TWidgetImagePayload = TWidgetPayloadEnvelope<"image", TWidgetImageProps>;
 export type TWidgetProgressPayload = TWidgetPayloadEnvelope<"progress", TWidgetProgressProps>;
-export type TWidgetTablePayload = TWidgetPayloadEnvelope<"table", TWidgetTableProps>;
 
 // Layout component payloads (structural only — no submissions)
 
@@ -202,7 +189,6 @@ export type TDynamicWidgetPayload =
   | TWidgetTextPayload
   | TWidgetImagePayload
   | TWidgetProgressPayload
-  | TWidgetTablePayload
   | TWidgetStackPayload
   | TWidgetRowPayload
   | TWidgetSectionPayload

@@ -182,9 +182,11 @@ class ConversationService {
                 messageSummary,
                 aggregateData.id
               );
+              // Query hydration updates canonical stores; it is not a live
+              // creation event. Emitting MESSAGE_CREATED here makes history
+              // pagination look like new traffic to UI subscribers.
               this._conversationStore.messageStore.add_(msg);
               pageMessages.push(messageService.resolveMessage(msg));
-              this._eyloStore.ee.emit(EYLO_EVENTS.MESSAGE_CREATED, msg);
             });
           }
           pages.set(aggregateData.id, {
@@ -363,9 +365,9 @@ class ConversationService {
       logger.warn("Conversation ID is null or undefined.");
       return;
     }
-    const conversation = this._conversationStore.get_(conversationId);
+    const cached = this.getCachedConversationContext(conversationId);
 
-    if (!conversation) {
+    if (!cached) {
       // Query with aggregate to get all related data in one call
       // For detail view, load 50 messages starting from offset 0
       const messageOffset = 0;
@@ -385,6 +387,16 @@ class ConversationService {
       return;
     }
 
+    return cached;
+  };
+
+  public getCachedConversationContext = (
+    conversationId: string
+  ): TConversationContext | undefined => {
+    const conversation = this._conversationStore.get_(conversationId);
+    if (!conversation) {
+      return;
+    }
     const _ms = new MessageService(this._eyloStore);
     const messages = _ms.resolve_byConversationId(conversationId);
     return {

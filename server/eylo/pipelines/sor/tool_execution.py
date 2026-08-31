@@ -17,6 +17,7 @@ from eylo.modules.agent_runs.service import (
     resume_agent_run_from_tool_in_transaction,
 )
 from eylo.pipelines.outbound.durable_execution import DurableStepContext
+from eylo.sor.knowledge.agent_reads import shape_knowledge_tool_response
 from eylo.sor.runtime.agent_reads import SorAgentReadError, read_agent_view
 from eylo.sor.runtime.authority import SorAuthorityError, resolve_agent_sources
 from eylo.sor.runtime.commands import (
@@ -27,8 +28,10 @@ from eylo.sor.runtime.commands import (
     sor_command_terminal_event,
 )
 from eylo.sor.runtime.tools import (
+    SorDocumentGetInput,
     SorMutationToolInput,
-    SorReadToolInput,
+    SorReadSelectionInput,
+    read_tool_input_model,
     resolve_sor_tool,
 )
 from eylo.sor.runtime.work import SorWorkConflict, SorWorkNotFound
@@ -75,8 +78,8 @@ async def execute_sor_read_tool(
         return _error_outcome("sor_tool_unavailable")
     profile, spec = resolved
     try:
-        command = SorReadToolInput.model_validate(dict(tool_input))
-        entity = _selected_entity(spec, command.entity)
+        command = read_tool_input_model(spec).model_validate(dict(tool_input))
+        entity = _selected_entity(spec, getattr(command, "entity", None))
         _require_read_identity_when_needed(spec, command)
         agent_id, agent_revision = _agent_identity(conversation_context)
         organization_id = UUID(str(conversation_context.conversation.organization_id))
@@ -95,6 +98,8 @@ async def execute_sor_read_tool(
                 required_tool=tool_name,
                 limit=command.limit,
                 cursor=command.cursor,
+                sort_by=command.sort_by,
+                sort_direction=command.sort_direction,
                 include_relations="relation" in spec.entities,
             )
     except ValidationError:
@@ -102,7 +107,25 @@ async def execute_sor_read_tool(
     except (SorAgentReadError, SorAuthorityError, ValueError) as error:
         return _error_outcome(_safe_error_code(error))
 
-    data = projection.model_dump(mode="json")
+    data = (
+        shape_knowledge_tool_response(
+            projection,
+            tool_name=tool_name,
+            search=command.search,
+            content_offset=(
+                command.content_offset
+                if isinstance(command, SorDocumentGetInput)
+                else 0
+            ),
+            content_limit_chars=(
+                command.content_limit_chars
+                if isinstance(command, SorDocumentGetInput)
+                else 20_000
+            ),
+        )
+        if profile is SorProfile.KNOWLEDGE
+        else projection.model_dump(mode="json")
+    )
     if "describe" in tool_name:
         data["items"] = []
         data["next_cursor"] = None
@@ -301,7 +324,7 @@ def _selected_entity(spec: SorToolSpec, requested: str | None) -> str:
 
 def _require_read_identity_when_needed(
     spec: SorToolSpec,
-    command: SorReadToolInput,
+    command: SorReadSelectionInput,
 ) -> None:
     if "_get" not in spec.name:
         return
