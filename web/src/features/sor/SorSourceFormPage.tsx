@@ -837,8 +837,7 @@ function ConnectionSection({
               {onboarding.connector?.connection?.status ?? "Not connected"}
             </Badge>
           </div>
-          {vendor.vendorKey === "linear" &&
-          vendor.capabilities.changeMode === "APP_WEBHOOK" &&
+          {vendor.capabilities.changeMode === "APP_WEBHOOK" &&
           onboarding.connector !== null ? (
             <SorAppWebhookSetup
               connector={onboarding.connector}
@@ -850,8 +849,7 @@ function ConnectionSection({
           <Button
             disabled={
               isAuthorizing ||
-              (vendor.vendorKey === "linear" &&
-                vendor.capabilities.changeMode === "APP_WEBHOOK" &&
+              (vendor.capabilities.changeMode === "APP_WEBHOOK" &&
                 onboarding.connector?.app_webhook_state !==
                   "AUTHORIZATION_REQUIRED" &&
                 onboarding.connector?.app_webhook_state !==

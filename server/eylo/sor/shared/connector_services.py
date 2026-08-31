@@ -109,10 +109,7 @@ class SorConnectorService:
             oauth_client_secret=encrypted_secret,
             webhook_endpoint_key=(
                 uuid.UUID(str(uuid_utils.uuid7()))
-                if (
-                    manifest.change_mode is SorChangeMode.APP_WEBHOOK
-                    and normalized_vendor == "linear"
-                )
+                if manifest.change_mode is SorChangeMode.APP_WEBHOOK
                 else None
             ),
             config_revision=config_revision,
@@ -190,7 +187,6 @@ class SorConnectorService:
         )
         if (
             manifest.change_mode is SorChangeMode.APP_WEBHOOK
-            and connector.vendor_key == "linear"
             and normalized_external_id is None
         ):
             raise SorConfigurationError(

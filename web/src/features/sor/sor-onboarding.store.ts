@@ -10,7 +10,7 @@ import {
   repairRequiredFieldMappings,
   updateMappingTarget,
 } from "@/features/sor/sor-onboarding";
-import { SorService } from "@/features/sor/sor.service";
+import { SorService, SorServiceError } from "@/features/sor/sor.service";
 import type {
   SorAuthorizationRedirect,
   SorConnector,
@@ -355,6 +355,11 @@ class SorOnboardingStore {
         };
       });
     } catch (error) {
+      if (error instanceof SorServiceError && error.status === 404) {
+        if (this.operationId !== operationId) return;
+        runInAction(() => this.recoverMissingSourceDraft());
+        return;
+      }
       this.failOperation(
         operationId,
         error,
@@ -696,6 +701,14 @@ class SorOnboardingStore {
       selectedObjects: [],
       sourceId: null,
     });
+  }
+
+  private recoverMissingSourceDraft(): void {
+    this.activation = null;
+    this.discovery = null;
+    this.errorMessage = null;
+    this.source = null;
+    this.updateDraft({ fieldMappings: [], sourceId: null });
   }
 
   private applyRequestedIdentity(defaults: {

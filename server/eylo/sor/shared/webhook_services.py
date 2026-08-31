@@ -32,6 +32,7 @@ from .models import SorSourceModel, SorWebhookReceiptModel
 from .repositories import SorRepository
 from .secrets import (
     SorSecretEnvelopeError,
+    decrypt_connector_client_secret,
     decrypt_connector_webhook_signing_secret,
     encrypt_bytes,
     encrypt_source_webhook_signing_secret,
@@ -103,10 +104,7 @@ class SorWebhookService:
             raise SorConfigurationError(
                 "Managed webhook endpoints are owned by the subscription lifecycle."
             )
-        if (
-            manifest.change_mode is SorChangeMode.APP_WEBHOOK
-            and source.vendor_key == "linear"
-        ):
+        if manifest.change_mode is SorChangeMode.APP_WEBHOOK:
             raise SorConfigurationError(
                 "App webhook endpoints are owned by the OAuth connector."
             )
@@ -135,20 +133,40 @@ class SorWebhookService:
             profile=connector.profile,
             vendor_key=connector.vendor_key,
         )
-        if (
-            manifest.change_mode is not SorChangeMode.APP_WEBHOOK
-            or connector.vendor_key != "linear"
-        ):
+        if manifest.change_mode is not SorChangeMode.APP_WEBHOOK:
             raise SorNotFoundError("SOR webhook endpoint not found.")
-        if (
-            connector.external_connection_id is None
-            or connector.webhook_signing_secret is None
-        ):
+        if connector.external_connection_id is None:
             raise SorNotFoundError("SOR webhook endpoint not found.")
+        try:
+            if connector.vendor_key == "linear":
+                if connector.webhook_signing_secret is None:
+                    raise SorNotFoundError("SOR webhook endpoint not found.")
+                signing_secret = decrypt_connector_webhook_signing_secret(
+                    connector.webhook_signing_secret,
+                    organization_id=connector.organization_id,
+                    connector_id=connector.id,
+                    secret_revision=connector.webhook_signing_secret_revision,
+                )
+                secret_revision = connector.webhook_signing_secret_revision
+            elif connector.vendor_key == "hubspot":
+                if connector.oauth_client_secret is None:
+                    raise SorNotFoundError("SOR webhook endpoint not found.")
+                signing_secret = decrypt_connector_client_secret(
+                    connector.oauth_client_secret,
+                    organization_id=connector.organization_id,
+                    connector_id=connector.id,
+                    config_revision=connector.config_revision,
+                )
+                secret_revision = connector.config_revision
+            else:
+                raise SorNotFoundError("SOR webhook endpoint not found.")
+        except SorSecretEnvelopeError as error:
+            raise SorConfigurationError(
+                "SOR webhook authority could not be authenticated."
+            ) from error
         if (
             expected_secret_revision is not None
-            and connector.webhook_signing_secret_revision
-            != expected_secret_revision
+            and secret_revision != expected_secret_revision
         ):
             raise SorConflictError("Webhook authority changed during delivery.")
         connection = await self.repository.get_connection(
@@ -163,17 +181,6 @@ class SorWebhookService:
             != connection.revision
         ):
             raise SorNotFoundError("SOR webhook endpoint not found.")
-        try:
-            signing_secret = decrypt_connector_webhook_signing_secret(
-                connector.webhook_signing_secret,
-                organization_id=connector.organization_id,
-                connector_id=connector.id,
-                secret_revision=connector.webhook_signing_secret_revision,
-            )
-        except SorSecretEnvelopeError as error:
-            raise SorConfigurationError(
-                "SOR webhook authority could not be authenticated."
-            ) from error
         sources = tuple(
             source
             for source in await self.repository.list_sources_for_connection(
@@ -193,7 +200,7 @@ class SorWebhookService:
             vendor_key=connector.vendor_key,
             vendor_account_external_id=connector.vendor_account_external_id,
             signing_secret=signing_secret,
-            signing_secret_revision=connector.webhook_signing_secret_revision,
+            signing_secret_revision=secret_revision,
             sources=sources,
         )
 

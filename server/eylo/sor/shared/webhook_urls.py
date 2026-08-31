@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 from urllib.parse import urlsplit
+from uuid import UUID
 
 from eylo.common.config import settings
 from eylo.sor.shared.services import SorConfigurationError
+
+_VENDOR_KEY = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 
 
 def public_webhook_api_base_url() -> str:
@@ -45,4 +49,13 @@ def public_webhook_api_base_url() -> str:
     return normalized
 
 
-__all__ = ["public_webhook_api_base_url"]
+def public_app_webhook_url(*, vendor_key: str, endpoint_key: UUID) -> str:
+    """Build the one public URI used for app-webhook display and verification."""
+    if not _VENDOR_KEY.fullmatch(vendor_key):
+        raise SorConfigurationError("SOR webhook vendor key is invalid.")
+    return (
+        f"{public_webhook_api_base_url()}/sor/webhooks/{vendor_key}/apps/{endpoint_key}"
+    )
+
+
+__all__ = ["public_app_webhook_url", "public_webhook_api_base_url"]

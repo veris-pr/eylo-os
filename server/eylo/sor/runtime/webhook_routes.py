@@ -20,6 +20,7 @@ from eylo.sor.shared.services import (
     SorNotFoundError,
 )
 from eylo.sor.shared.webhook_services import SOR_WEBHOOK_MAX_BODY_BYTES
+from eylo.sor.shared.webhook_urls import public_app_webhook_url
 
 router = APIRouter(prefix="/sor/webhooks", tags=["systems-of-record-webhooks"])
 
@@ -112,6 +113,10 @@ async def receive_sor_app_webhook(
             endpoint_key=endpoint_key,
             headers=dict(request.headers),
             body=body,
+            request_uri=public_app_webhook_url(
+                vendor_key=vendor_key,
+                endpoint_key=endpoint_key,
+            ),
         )
     except SorNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None

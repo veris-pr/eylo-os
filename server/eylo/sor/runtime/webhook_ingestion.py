@@ -6,6 +6,10 @@ import logging
 from uuid import UUID
 
 from eylo.common.database import start_transaction
+from eylo.sor.crm.vendors.hubspot import (
+    parse_hubspot_app_webhook,
+    verify_hubspot_app_webhook,
+)
 from eylo.sor.runtime.adapters import acquire_source_adapter
 from eylo.sor.runtime.registry import SorRegistry
 from eylo.sor.runtime.webhook_processing import spawn_sor_webhook_receipt
@@ -84,13 +88,12 @@ async def accept_sor_app_webhook(
     endpoint_key: UUID,
     headers: dict[str, str],
     body: bytes,
+    request_uri: str,
     registry: SorRegistry | None = None,
 ) -> tuple[tuple[UUID, ...], int]:
     """Verify one connector-level delivery and fan it out to selected sources."""
     if len(body) > SOR_WEBHOOK_MAX_BODY_BYTES:
         raise SorConfigurationError("SOR webhook body is too large.")
-    if vendor_key != "linear":
-        raise SorConfigurationError("This app webhook vendor is not supported.")
     async with start_transaction(ro=True) as session:
         authority = await SorWebhookService(
             session,
@@ -99,16 +102,30 @@ async def accept_sor_app_webhook(
             vendor_key=vendor_key,
             endpoint_key=endpoint_key,
         )
-    verify_linear_app_webhook(
-        headers=headers,
-        body=body,
-        signing_secret=authority.signing_secret,
-    )
-    delivery = parse_linear_app_webhook(headers=headers, body=body)
+    if vendor_key == "linear":
+        verify_linear_app_webhook(
+            headers=headers,
+            body=body,
+            signing_secret=authority.signing_secret,
+        )
+        linear_delivery = parse_linear_app_webhook(headers=headers, body=body)
+        organization_external_id = linear_delivery.organization_external_id
+        signals = (linear_delivery.signal,)
+    elif vendor_key == "hubspot":
+        verify_hubspot_app_webhook(
+            headers=headers,
+            body=body,
+            client_secret=authority.signing_secret,
+            request_uri=request_uri,
+        )
+        hubspot_delivery = parse_hubspot_app_webhook(body=body)
+        organization_external_id = hubspot_delivery.organization_external_id
+        signals = hubspot_delivery.signals
+    else:
+        raise SorConfigurationError("This app webhook vendor is not supported.")
     if (
         authority.vendor_account_external_id is not None
-        and delivery.organization_external_id
-        != authority.vendor_account_external_id
+        and organization_external_id != authority.vendor_account_external_id
     ):
         raise SorConfigurationError(
             "Webhook workspace does not match the authorized connector."
@@ -124,24 +141,28 @@ async def accept_sor_app_webhook(
         )
         if (
             current.vendor_account_external_id is not None
-            and current.vendor_account_external_id
-            != delivery.organization_external_id
+            and current.vendor_account_external_id != organization_external_id
         ):
             raise SorConfigurationError(
                 "Webhook workspace does not match the authorized connector."
             )
         await service.bind_app_webhook_account(
             endpoint_key=endpoint_key,
-            organization_external_id=delivery.organization_external_id,
+            organization_external_id=organization_external_id,
         )
         for source in current.sources:
-            stream_key = delivery.signal.vendor_object_key
-            if stream_key is not None and stream_key not in source.selected_objects:
+            source_signals = tuple(
+                signal
+                for signal in signals
+                if signal.vendor_object_key is None
+                or signal.vendor_object_key in source.selected_objects
+            )
+            if not source_signals:
                 continue
             receipt, created = await service.record_verified_delivery(
                 source=source,
                 body=body,
-                signals=(delivery.signal,),
+                signals=source_signals,
             )
             committed.append((source.organization_id, receipt.id, created))
 

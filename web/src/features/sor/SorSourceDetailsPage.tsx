@@ -101,9 +101,7 @@ const SorSourceDetailsPage = observer(function SorSourceDetailsPage({
     );
   const webhookChangeMode = selectedVendor?.capabilities?.changeMode ?? null;
   const hasOperatorConfiguredWebhook =
-    webhookChangeMode === "OPERATOR_WEBHOOK" ||
-    (webhookChangeMode === "APP_WEBHOOK" &&
-      sources.selectedSource?.vendor_key !== "linear");
+    webhookChangeMode === "OPERATOR_WEBHOOK";
 
   return (
     <section
@@ -251,7 +249,9 @@ function SourceHeaderActions({
           aria-hidden="true"
           className={isReauthorizing ? "animate-spin" : undefined}
         />
-        {isReauthorizing ? "Waiting for provider" : "Reconnect Linear"}
+        {isReauthorizing
+          ? "Waiting for provider"
+          : `Reconnect ${formatSorIdentifier(source.vendor_key)}`}
       </Button>
     );
   }

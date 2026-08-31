@@ -807,11 +807,11 @@ async def _activate_connection(
             external_connection_id=context.connection_id,
             expected_connection_revision=context.expected_connection_revision,
         )
-        if (
-            context.change_mode is SorChangeMode.APP_WEBHOOK
-            and context.vendor_key == "linear"
-        ):
-            if connector.webhook_signing_secret is None:
+        if context.change_mode is SorChangeMode.APP_WEBHOOK:
+            if (
+                context.vendor_key == "linear"
+                and connector.webhook_signing_secret is None
+            ):
                 raise SorOAuthError(
                     "app_webhook_not_configured",
                     "Configure the OAuth app webhook before authorizing it.",
@@ -828,15 +828,11 @@ def _require_app_webhook_authorization_ready(
     connector: SorConnectorModel,
     manifest: SorAdapterCapabilityManifest,
 ) -> None:
-    """Refuse Linear consent until its app-owned webhook can be installed."""
-    if (
-        manifest.change_mode is not SorChangeMode.APP_WEBHOOK
-        or connector.vendor_key != "linear"
-    ):
+    """Refuse consent until the connector-owned webhook has a public endpoint."""
+    if manifest.change_mode is not SorChangeMode.APP_WEBHOOK:
         return
-    if (
-        connector.webhook_signing_secret is None
-        or connector.webhook_endpoint_key is None
+    if connector.webhook_endpoint_key is None or (
+        connector.vendor_key == "linear" and connector.webhook_signing_secret is None
     ):
         raise SorOAuthError(
             "app_webhook_not_configured",

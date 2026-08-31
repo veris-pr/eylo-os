@@ -76,12 +76,23 @@ const VENDOR_FIELD_TARGETS: Record<
   string,
   Record<string, Record<string, string>>
 > = {
+  hubspot: {
+    deal: {
+      "hubspot.association.companies": "company_external_ids",
+      "hubspot.association.contacts": "contact_external_ids",
+    },
+  },
   jira: {
     issue: {
       "com.pyxis.greenhopper.jira:gh-sprint": "cycle_external_id",
     },
   },
 };
+
+const SECONDARY_RELATION_FIELD_TYPES = new Set([
+  "hubspot.association.companies",
+  "hubspot.association.contacts",
+]);
 
 function emptySorOnboardingDraft(
   profile: SorProfileKey | null = null,
@@ -156,7 +167,9 @@ function createInitialFieldMappings(
         sensitivity: "STANDARD",
         transform_config: {},
         transform_kind: transformFor(target?.dataType, customType),
-        ui_default_column: target !== null || useCustom,
+        ui_default_column:
+          (target !== null || useCustom) &&
+          !SECONDARY_RELATION_FIELD_TYPES.has(field.vendor_type ?? ""),
         vendor_field_key: field.key,
         vendor_object_key: object.key,
       });

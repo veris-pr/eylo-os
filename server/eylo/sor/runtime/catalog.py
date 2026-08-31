@@ -1502,8 +1502,14 @@ VENDOR_CANDIDATES = (
         SorProfile.CRM,
         "hubspot",
         "HubSpot",
-        "CRM contacts, companies, deals, activities, and custom properties.",
-        (ConnectionAuthKind.OAUTH2, ConnectionAuthKind.API_KEY),
+        "CRM contacts, companies, deals, their associations, and custom properties.",
+        (ConnectionAuthKind.OAUTH2,),
+        setup_notes=(
+            "Create a HubSpot public OAuth app and register the exact Eylo callback URL shown below.",
+            "After saving the OAuth app in Eylo, copy the generated app webhook URL into the HubSpot app configuration before authorization.",
+            "Enable Contact, Company, and Deal creation, deletion, restore, merge, association, and required property-change subscriptions.",
+            "HubSpot v3 deliveries are verified with the OAuth app client secret; no separate webhook signing secret is required.",
+        ),
     ),
     SorVendorCandidate(
         SorProfile.CRM,

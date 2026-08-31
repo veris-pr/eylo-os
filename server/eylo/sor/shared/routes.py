@@ -127,7 +127,7 @@ from eylo.sor.shared.services import (
 )
 from eylo.sor.shared.sync_services import SorStreamService, SorSyncRunService
 from eylo.sor.shared.webhook_services import SorWebhookService
-from eylo.sor.shared.webhook_urls import public_webhook_api_base_url
+from eylo.sor.shared.webhook_urls import public_app_webhook_url
 
 router = APIRouter(prefix="/{organization_id}/sor", tags=["systems-of-record"])
 logger = logging.getLogger(__name__)
@@ -347,14 +347,14 @@ def _app_webhook_state(view: SorConnectorView) -> SorAppWebhookState:
         profile=connector.profile,
         vendor_key=connector.vendor_key,
     )
-    if (
-        manifest.change_mode is not SorChangeMode.APP_WEBHOOK
-        or connector.vendor_key != "linear"
-    ):
+    if manifest.change_mode is not SorChangeMode.APP_WEBHOOK:
         return SorAppWebhookState.NOT_APPLICABLE
     if _app_webhook_url(view) is None:
         return SorAppWebhookState.PUBLIC_ENDPOINT_REQUIRED
-    if connector.webhook_signing_secret is None:
+    if (
+        connector.vendor_key == "linear"
+        and connector.webhook_signing_secret is None
+    ):
         return SorAppWebhookState.SIGNING_SECRET_REQUIRED
     connection = view.connection
     if connection is None or connection.status is ExternalConnectionStatus.INITIATED:
@@ -369,13 +369,12 @@ def _app_webhook_url(view: SorConnectorView) -> str | None:
     if connector.webhook_endpoint_key is None:
         return None
     try:
-        base_url = public_webhook_api_base_url()
+        return public_app_webhook_url(
+            vendor_key=connector.vendor_key,
+            endpoint_key=connector.webhook_endpoint_key,
+        )
     except SorConfigurationError:
         return None
-    return (
-        f"{base_url}/sor/webhooks/{connector.vendor_key}/apps/"
-        f"{connector.webhook_endpoint_key}"
-    )
 
 
 def _custom_dataset_response(

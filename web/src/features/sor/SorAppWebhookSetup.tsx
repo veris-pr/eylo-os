@@ -22,6 +22,7 @@ function SorAppWebhookSetup({
   );
   const [signingSecret, setSigningSecret] = useState("");
   const state = connector.app_webhook_state;
+  const requiresSigningSecret = connector.vendor_key === "linear";
 
   async function copyWebhookUrl(): Promise<void> {
     if (connector.app_webhook_url === null) return;
@@ -42,10 +43,10 @@ function SorAppWebhookSetup({
   return (
     <div className="space-y-4 border-y py-4">
       <div className="space-y-1">
-        <p className="text-sm font-medium">Linear app</p>
+        <p className="text-sm font-medium">{vendorName} app webhook</p>
         <p className="text-xs leading-5 text-muted-foreground">
-          Add these values to the {vendorName} OAuth app before connecting the
-          workspace.
+          Add this target URL to the {vendorName} OAuth app before connecting
+          the account.
         </p>
       </div>
 
@@ -79,13 +80,14 @@ function SorAppWebhookSetup({
             </p>
           ) : null}
           <p className="text-xs leading-5 text-muted-foreground">
-            Enable app webhooks for Comments, Cycles, Issue Labels, Issues,
-            Projects, and Users.
+            {connector.vendor_key === "hubspot"
+              ? "Enable Contact, Company, and Deal creation, deletion, restore, merge, association, and required property-change subscriptions. Eylo verifies deliveries with the OAuth client secret already saved."
+              : "Enable app webhooks for Comments, Cycles, Issue Labels, Issues, Projects, and Users."}
           </p>
         </div>
       )}
 
-      {state === "PUBLIC_ENDPOINT_REQUIRED" ? null : (
+      {state === "PUBLIC_ENDPOINT_REQUIRED" || !requiresSigningSecret ? null : (
         <div className="space-y-2">
           <Label htmlFor={`sor-app-webhook-secret-${connector.id}`}>
             {connector.has_app_webhook_signing_secret

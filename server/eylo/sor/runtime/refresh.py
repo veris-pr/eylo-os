@@ -45,6 +45,7 @@ from eylo.sor.runtime.oauth_payload import (
 )
 from eylo.sor.runtime.registry import SorRegistry
 from eylo.sor.shared.contracts import (
+    SorChangeMode,
     SorOAuthSpec,
     SorSourceState,
     SorSourceTransition,
@@ -120,6 +121,7 @@ class _RefreshSnapshot:
     client_id: str
     client_secret: str
     oauth: SorOAuthSpec
+    change_mode: SorChangeMode
     fixed_origin: str | None
     instance_origin: str | None
 
@@ -325,6 +327,7 @@ async def _load_snapshot(
             client_id=connector.oauth_client_id,
             client_secret=client_secret,
             oauth=manifest.oauth,
+            change_mode=manifest.change_mode,
             fixed_origin=manifest.fixed_origin,
             instance_origin=connection.instance_origin,
         )
@@ -503,7 +506,7 @@ async def _persist_renewal(
                 connection_id=snapshot.connection_id,
                 revision=connection.revision + 1,
             )
-            await ExternalConnectionService(session).renew_credentials(
+            renewed = await ExternalConnectionService(session).renew_credentials(
                 organization_id=snapshot.organization_id,
                 connection_id=snapshot.connection_id,
                 expected_revision=connection.revision,
@@ -512,6 +515,9 @@ async def _persist_renewal(
                 granted_scopes=list(renewal.granted_scopes),
                 instance_origin=renewal.instance_origin,
             )
+            if snapshot.change_mode is SorChangeMode.APP_WEBHOOK:
+                connector.webhook_authorized_connection_revision = renewed.revision
+                await session.flush()
     except (
         ExternalConnectionRevisionConflictError,
         ExternalConnectionStateError,

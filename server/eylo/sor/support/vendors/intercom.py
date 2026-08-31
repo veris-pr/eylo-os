@@ -236,7 +236,7 @@ INTERCOM_MANIFEST = SorAdapterCapabilityManifest(
         operator_instance_origin=True,
     ),
     requires_instance_origin=True,
-    change_mode=SorChangeMode.APP_WEBHOOK,
+    change_mode=SorChangeMode.OPERATOR_WEBHOOK,
     supports_custom_fields=True,
     supports_history=False,
     supports_comments=True,
