@@ -1,6 +1,9 @@
 import { makeAutoObservable, runInAction } from "mobx";
 
-import { SorService } from "@/features/sor/sor.service";
+import {
+  SorService,
+  SorServiceError,
+} from "@/features/sor/sor.service";
 import type {
   SorConnector,
   SorConnectorCreateInput,
@@ -47,12 +50,6 @@ class SorConnectorsStore {
     return this.items.filter(
       (connector) =>
         connector.profile === profile && connector.vendor_key === vendorKey,
-    );
-  }
-
-  forVendorAcrossProfiles(vendorKey: string): SorConnector[] {
-    return this.items.filter(
-      (connector) => connector.vendor_key === vendorKey,
     );
   }
 
@@ -145,6 +142,37 @@ class SorConnectorsStore {
         this.isSaving = false;
       });
     }
+  }
+
+  async discard(
+    organizationId: string,
+    connectorId: string,
+  ): Promise<boolean> {
+    if (this.isSaving) return false;
+    this.isSaving = true;
+    this.saveErrorMessage = null;
+    try {
+      await this.service.deleteConnector(organizationId, connectorId);
+    } catch (error) {
+      if (!(error instanceof SorServiceError && error.status === 404)) {
+        runInAction(() => {
+          this.saveErrorMessage = messageFrom(
+            error,
+            "The unfinished OAuth configuration could not be discarded.",
+          );
+        });
+        return false;
+      }
+    } finally {
+      runInAction(() => {
+        this.isSaving = false;
+      });
+    }
+    runInAction(() => {
+      this.connectorsById.delete(connectorId);
+      this.connectorIds = this.connectorIds.filter((id) => id !== connectorId);
+    });
+    return true;
   }
 
   async saveAppWebhookSigningSecret(

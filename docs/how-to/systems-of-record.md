@@ -146,9 +146,11 @@ public API and never bypasses source lifecycle or tenant checks.
 OAuth client fields and API keys are held only in the open form and clear after
 successful connection or **Start new**. Non-secret onboarding progress is
 resumable; secret fields are never stored in the browser draft. **Start new**
-discards the saved draft and creates a new onboarding-attempt ID. Retrying the
-same saved flow reuses its source; it does not create another source for a
-duplicate submit or repeated OAuth return.
+deletes the unfinished source or OAuth configuration, clears its locally stored
+credentials and OAuth states, then creates a new onboarding-attempt ID.
+Retrying the same saved flow reuses its own source; it does not create another
+source for a duplicate submit or repeated OAuth return. A saved OAuth config is
+never selectable for a different source.
 
 For Intercom, select only the permissions listed by the chosen streams and
 tools in Developer Hub. Intercom permissions are app configuration, not an

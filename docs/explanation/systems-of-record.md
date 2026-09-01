@@ -29,8 +29,8 @@ vendor records, and generic integrations do not define SOR policy.
 
 An organization configures a source in this order:
 
-1. Create or select an OAuth connector, or enter an API-key credential for a
-   vendor that declares API-key authentication.
+1. Create a new OAuth configuration and authorize it, or enter an API-key
+   credential for a vendor that declares API-key authentication.
 2. Create an unusable source draft with selected source objects.
 3. Verify the account and persist one immutable schema discovery.
 4. Map discovered fields to canonical fields or typed custom fields.
@@ -54,7 +54,9 @@ Every new-source flow also carries an organization-scoped onboarding-attempt
 ID. Browser retry, popup retry, or a duplicated submit reuses the same source
 when the non-secret definition still matches. Reusing that ID for different
 input fails closed. **Start new** is the explicit boundary that creates another
-source attempt.
+source attempt. It first deletes any unfinished source or OAuth configuration,
+including locally stored credentials and transient OAuth states. A connection
+cannot be claimed by another source.
 
 ## Projection, custom data, and source authority
 

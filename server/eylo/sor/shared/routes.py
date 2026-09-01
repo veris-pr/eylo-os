@@ -23,7 +23,12 @@ from eylo.sor.runtime.api_key_sources import (
 from eylo.sor.runtime.authority import SorAuthorityError
 from eylo.sor.runtime.catalog import get_sor_registry
 from eylo.sor.runtime.commands import cancel_active_sor_commands
-from eylo.sor.runtime.deletion import delete_sor_source as delete_source_with_data
+from eylo.sor.runtime.deletion import (
+    delete_sor_connector as discard_sor_connector,
+)
+from eylo.sor.runtime.deletion import (
+    delete_sor_source as delete_source_with_data,
+)
 from eylo.sor.runtime.discovery import (
     SorDiscoveryResult,
     rediscover_source_schema,
@@ -205,6 +210,27 @@ async def get_sor_connector(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(error),
         ) from None
+
+
+@router.delete(
+    "/connectors/{connector_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_sor_connector(
+    organization_id: UUID,
+    connector_id: UUID,
+    current_user: CurrentUserSchema = Depends(get_current_user),
+) -> Response:
+    """Discard an unclaimed OAuth setup and its local credential authority."""
+    _authorize(organization_id, current_user)
+    try:
+        await discard_sor_connector(
+            organization_id=organization_id,
+            connector_id=connector_id,
+        )
+    except (SorConflictError, SorNotFoundError) as error:
+        raise _configuration_error(error) from None
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.put(
@@ -697,18 +723,15 @@ async def delete_sor_source(
     source_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
 ) -> Response:
-    """Delete one source and its Eylo projection without changing vendor data."""
+    """Delete one source, its local auth config, and its Eylo projection."""
     _authorize(organization_id, current_user)
     try:
         await delete_source_with_data(
             organization_id=organization_id,
             source_id=source_id,
         )
-    except SorNotFoundError as error:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(error),
-        ) from None
+    except (SorConflictError, SorNotFoundError) as error:
+        raise _configuration_error(error) from None
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

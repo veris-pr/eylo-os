@@ -160,7 +160,7 @@ const SorSourceFormPage = observer(function SorSourceFormPage() {
   }
 
   function selectProfile(nextProfile: SorProfileKey): void {
-    onboarding.setProfile(nextProfile);
+    if (!onboarding.setProfile(nextProfile)) return;
     const next = new URLSearchParams(searchParams);
     next.set("profile", nextProfile);
     next.delete("vendor");
@@ -168,25 +168,26 @@ const SorSourceFormPage = observer(function SorSourceFormPage() {
   }
 
   function selectVendor(vendorKey: string): void {
-    onboarding.setVendor(vendorKey);
+    if (!onboarding.setVendor(vendorKey)) return;
     const next = new URLSearchParams(searchParams);
     next.set("vendor", vendorKey);
     setSearchParams(next);
   }
 
   function selectAuthKind(nextAuthKind: SorOnboardingAuthKind): void {
-    onboarding.setAuthKind(nextAuthKind);
+    if (!onboarding.setAuthKind(nextAuthKind)) return;
     setClientId("");
     setClientSecret("");
     setApiKey("");
     setConnectorName("");
   }
 
-  function startNew(): void {
-    onboarding.startNew(
+  async function startNew(): Promise<void> {
+    const started = await onboarding.startNew(
       { memberKey: activeMember.email, organizationId: activeOrganizationId },
       { profile: requestedProfile, vendorKey: requestedVendor },
     );
+    if (!started) return;
     resumedSourceId.current = null;
     setClientId("");
     setClientSecret("");
@@ -220,27 +221,21 @@ const SorSourceFormPage = observer(function SorSourceFormPage() {
     setIsAuthorizing(true);
     onboarding.clearError();
     try {
-      const reuseActiveLinearConnection =
-        profile.profile === "knowledge" &&
-        vendor.vendorKey === "linear" &&
-        onboarding.connector?.connection?.status === "ACTIVE";
-      if (!reuseActiveLinearConnection) {
-        const standardObjects = new Set(
-          vendor.capabilities?.streams.map((stream) => stream.key) ?? [],
-        );
-        const redirect = await onboarding.beginAuthorization(
-          activeOrganizationId,
-          onboarding.draft.selectedObjects.filter((objectKey) =>
-            standardObjects.has(objectKey),
-          ),
-        );
-        if (redirect === null) return;
-        await openSorAuthorizationPopup(
-          redirect.authorization_url,
-          redirect.callback_origin,
-          vendor.vendorKey,
-        );
-      }
+      const standardObjects = new Set(
+        vendor.capabilities?.streams.map((stream) => stream.key) ?? [],
+      );
+      const redirect = await onboarding.beginAuthorization(
+        activeOrganizationId,
+        onboarding.draft.selectedObjects.filter((objectKey) =>
+          standardObjects.has(objectKey),
+        ),
+      );
+      if (redirect === null) return;
+      await openSorAuthorizationPopup(
+        redirect.authorization_url,
+        redirect.callback_origin,
+        vendor.vendorKey,
+      );
       const verified = await onboarding.finishAuthorization(
         activeOrganizationId,
         profile,
@@ -319,7 +314,7 @@ const SorSourceFormPage = observer(function SorSourceFormPage() {
           <Button
             disabled={onboarding.isBusy}
             variant="outline"
-            onClick={startNew}
+            onClick={() => void startNew()}
           >
             <RotateCcw aria-hidden="true" />
             Start new
@@ -381,17 +376,6 @@ const SorSourceFormPage = observer(function SorSourceFormPage() {
               clientId={clientId}
               clientSecret={clientSecret}
               connectorName={connectorName}
-              connectors={
-                profile === null || vendor === null
-                  ? []
-                  : profile.profile === "knowledge" &&
-                      vendor.vendorKey === "linear"
-                    ? sor.connectors.forVendorAcrossProfiles(vendor.vendorKey)
-                    : sor.connectors.forVendor(
-                        profile.profile,
-                        vendor.vendorKey,
-                      )
-              }
               copied={copied}
               isAuthorizing={isAuthorizing}
               isSaving={sor.connectors.isSaving}
@@ -533,7 +517,6 @@ function ConnectionSection({
   clientId,
   clientSecret,
   connectorName,
-  connectors,
   copied,
   isAuthorizing,
   isSaving,
@@ -558,7 +541,6 @@ function ConnectionSection({
   clientId: string;
   clientSecret: string;
   connectorName: string;
-  connectors: readonly SorConnector[];
   copied: boolean;
   isAuthorizing: boolean;
   isSaving: boolean;
@@ -600,10 +582,6 @@ function ConnectionSection({
       return count >= field.minimumItems && count <= field.maximumItems;
     },
   );
-  const canReuseActiveConnection =
-    profile?.profile === "knowledge" &&
-    vendor.vendorKey === "linear" &&
-    onboarding.connector?.connection?.status === "ACTIVE";
   return (
     <FormSection
       description={
@@ -762,33 +740,6 @@ function ConnectionSection({
         </div>
       ) : null}
 
-      {usesOAuth && connectors.length > 0 ? (
-        <div className="space-y-2">
-          <Label htmlFor="sor-existing-connector">Saved OAuth app</Label>
-          <Select
-            value={onboarding.draft.connectorId ?? "none"}
-            onValueChange={(value) =>
-              onboarding.selectConnector(value === "none" ? null : value)
-            }
-          >
-            <SelectTrigger className="w-full" id="sor-existing-connector">
-              <SelectValue>
-                {onboarding.connector?.name ?? "Choose a saved OAuth app"}
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="none">Create a new OAuth app</SelectItem>
-              {connectors.map((connector) => (
-                <SelectItem key={connector.id} value={connector.id}>
-                  {connector.name} ·{" "}
-                  {connector.connection?.status ?? "Not connected"}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-      ) : null}
-
       {usesOAuth && onboarding.draft.connectorId === null ? (
         <div className="space-y-4 border p-4">
           <div>
@@ -874,8 +825,6 @@ function ConnectionSection({
             <ExternalLink aria-hidden="true" />
             {isAuthorizing
               ? "Waiting for authorization…"
-              : canReuseActiveConnection
-                ? "Use connection and verify"
               : onboarding.connector?.app_webhook_state ===
                   "REINSTALLATION_REQUIRED"
                 ? `Reconnect ${vendor.displayName}`

@@ -104,19 +104,63 @@ class SorOnboardingStore {
     this.applyRequestedIdentity(defaults);
   }
 
-  startNew(
+  async startNew(
     context: SorOnboardingDraftContext,
     defaults: { profile: SorProfileKey | null; vendorKey: string },
-  ): void {
-    ++this.operationId;
-    this.context = context;
-    this.storage.clear(context);
-    this.activation = null;
-    this.discovery = null;
-    this.errorMessage = null;
-    this.source = null;
-    this.draft = emptySorOnboardingDraft(defaults.profile, defaults.vendorKey);
-    this.persist();
+  ): Promise<boolean> {
+    if (this.isBusy) return false;
+    const sourceId = this.draft.sourceId;
+    const connectorId = this.draft.connectorId;
+    const operationId = this.beginOperation();
+    try {
+      if (sourceId !== null) {
+        try {
+          await this.service.deleteSource(context.organizationId, sourceId);
+        } catch (error) {
+          if (!(error instanceof SorServiceError && error.status === 404)) {
+            throw error;
+          }
+        }
+        if (connectorId !== null) {
+          await this.connectors.load(context.organizationId, true);
+        }
+      } else if (connectorId !== null) {
+        const discarded = await this.connectors.discard(
+          context.organizationId,
+          connectorId,
+        );
+        if (!discarded) {
+          throw new Error(
+            this.connectors.saveErrorMessage ??
+              "The unfinished OAuth configuration could not be discarded.",
+          );
+        }
+      }
+      if (this.operationId !== operationId) return false;
+      runInAction(() => {
+        this.context = context;
+        this.storage.clear(context);
+        this.activation = null;
+        this.discovery = null;
+        this.errorMessage = null;
+        this.source = null;
+        this.draft = emptySorOnboardingDraft(
+          defaults.profile,
+          defaults.vendorKey,
+        );
+        this.persist();
+      });
+      return true;
+    } catch (error) {
+      this.failOperation(
+        operationId,
+        error,
+        "The unfinished source could not be discarded.",
+      );
+      return false;
+    } finally {
+      this.endOperation(operationId);
+    }
   }
 
   setIdentity(sourceName: string): void {
@@ -127,26 +171,30 @@ class SorOnboardingStore {
     this.updateDraft({ instanceOrigin: instanceOrigin.slice(0, 512) });
   }
 
-  setProfile(profile: SorProfileKey): void {
-    if (profile === this.draft.profile) return;
+  setProfile(profile: SorProfileKey): boolean {
+    if (profile === this.draft.profile) return true;
+    if (!this.canChangeConnectionIdentity()) return false;
     this.resetAfterVendorChange({ profile, vendorKey: "" });
+    return true;
   }
 
-  setVendor(vendorKey: string): void {
-    if (vendorKey === this.draft.vendorKey) return;
+  setVendor(vendorKey: string): boolean {
+    if (vendorKey === this.draft.vendorKey) return true;
+    if (!this.canChangeConnectionIdentity()) return false;
     this.resetAfterVendorChange({ vendorKey });
+    return true;
   }
 
   setAccess(access: SorOnboardingDraft["access"]): void {
     this.updateDraft({ access });
   }
 
-  setAuthKind(authKind: SorOnboardingAuthKind): void {
-    if (authKind === this.draft.authKind) return;
-    if (this.draft.sourceId !== null) {
+  setAuthKind(authKind: SorOnboardingAuthKind): boolean {
+    if (authKind === this.draft.authKind) return true;
+    if (!this.canChangeConnectionIdentity()) {
       this.errorMessage =
-        "Start new before changing authentication for an existing source draft.";
-      return;
+        "Start new before changing authentication for this source setup.";
+      return false;
     }
     ++this.operationId;
     this.activation = null;
@@ -159,6 +207,7 @@ class SorOnboardingStore {
       fieldMappings: [],
       sourceId: null,
     });
+    return true;
   }
 
   setConfigurationField(key: string, values: readonly string[]): void {
@@ -181,17 +230,6 @@ class SorOnboardingStore {
     if (Number.isInteger(seconds) && seconds > 0) {
       this.updateDraft({ requiredSyncIntervalSeconds: seconds });
     }
-  }
-
-  selectConnector(connectorId: string | null): void {
-    if (connectorId === this.draft.connectorId) return;
-    this.activation = null;
-    this.discovery = null;
-    this.updateDraft({
-      authKind: connectorId === null ? this.draft.authKind : "oauth2",
-      connectorId,
-      fieldMappings: [],
-    });
   }
 
   setSelectedObjects(
@@ -500,34 +538,10 @@ class SorOnboardingStore {
           this.updateDraft({ sourceId: createdSource.id });
         });
       } else if (source.external_connection_id !== connector.connection.id) {
-        const standardObjects = new Set(
-          vendor.capabilities?.streams.map((stream) => stream.key) ?? [],
+        throw new Error(
+          "This saved source belongs to another connection. Start new to " +
+            "discard it and configure a replacement.",
         );
-        const selectedObjects = this.draft.selectedObjects.filter((objectKey) =>
-          standardObjects.has(objectKey),
-        );
-        if (selectedObjects.length === 0) {
-          throw new Error(
-            "Select at least one standard object before reconnecting the source.",
-          );
-        }
-        const reconnectedSource = await this.service.reconnectSource(
-          organizationId,
-          source.id,
-          connector.connection.id,
-          selectedObjects,
-          source.config_revision,
-        );
-        source = reconnectedSource;
-        runInAction(() => {
-          this.source = reconnectedSource;
-          this.discovery = null;
-          this.updateDraft({
-            fieldMappings: [],
-            selectedObjects,
-            sourceId: reconnectedSource.id,
-          });
-        });
       }
       const discovery = await this.service.verifySource(
         organizationId,
@@ -714,6 +728,15 @@ class SorOnboardingStore {
     });
   }
 
+  private canChangeConnectionIdentity(): boolean {
+    if (this.draft.connectorId === null && this.draft.sourceId === null) {
+      return true;
+    }
+    this.errorMessage =
+      "Start new before changing the System of Record or vendor.";
+    return false;
+  }
+
   private recoverMissingSourceDraft(): void {
     this.activation = null;
     this.discovery = null;
@@ -741,6 +764,7 @@ class SorOnboardingStore {
     if (profile === this.draft.profile && vendorKey === this.draft.vendorKey) {
       return;
     }
+    if (!this.canChangeConnectionIdentity()) return;
     this.resetAfterVendorChange({ profile, vendorKey });
   }
 

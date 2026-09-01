@@ -31,7 +31,7 @@ only through a registered adapter and an active source.
 | Support | Freshdesk | Implemented; live acceptance pending | API key | tickets, contacts, agents, groups, email inboxes, conversations, tags, SLA targets, attachments; companies and Freshdesk custom objects as custom datasets | updated-at polling plus full reconciliation; custom fields and objects; public replies/private notes; mapped writes; no API-key webhook support |
 | Documents | Confluence Cloud | Implemented; live acceptance pending | OAuth 2.0 with REST v2 granular scopes | spaces, pages, page bodies, current revisions, properties, attachments, authors | full reconciliation; loss-aware HTML normalization; current revision and author reads; authenticated current-image previews; mapped create/update/append |
 | Documents | Notion | Implemented; live acceptance pending | OAuth 2.0 | data sources, pages, recursive blocks, properties, attachments, authors | signed app webhooks plus full reconciliation; completed paginated relation/rollup properties; unsupported-block disclosure; mapped create/update/append/comment |
-| Documents | Linear Documents | Implemented; live read acceptance complete; live image acceptance pending | OAuth 2.0 with PKCE; may reuse the active Linear connector | documents, authors, document images | updated-at sync; signed connector webhook; latest Markdown content; authenticated current-image previews; read-only |
+| Documents | Linear Documents | Implemented; live read acceptance complete; live image acceptance pending | OAuth 2.0 with PKCE | documents, authors, document images | updated-at sync; signed source-owned connector webhook; latest Markdown content; authenticated current-image previews; read-only |
 | Documents | SharePoint | Planned | — | — | no registered adapter |
 
 “Planned” means catalog visibility only. It does not mean credentials can be
@@ -76,11 +76,11 @@ data.
 Periodic reconciliation remains the correctness path, so no separate freshness
 state is persisted.
 
-Linear's webhook belongs to the saved OAuth app connector, not to an individual
-source or profile. Eylo generates one stable connector callback, stores the
-Linear signing secret encrypted, and fans each verified workspace event out
-only to Issues and Documents sources whose selected objects include that event
-type. The Linear app webhook must be enabled before workspace authorization.
+Linear's webhook belongs to the source-owned OAuth app connector. Eylo
+generates one stable connector callback, stores the Linear signing secret
+encrypted, and sends each verified workspace event to that connector's source
+when the selected objects include the event type. The Linear app webhook must
+be enabled before workspace authorization.
 Intercom's callback belongs to the saved OAuth app connector. Developer Hub
 validates the endpoint with `HEAD`, then signs workspace events with the app
 client secret. Eylo pins the event's `app_id` to the workspace identity proven
@@ -219,8 +219,8 @@ active mappings, and required OAuth scopes. Documents are external SOR
 projections, not internal Eylo Knowledgebases and not `kb_*` retrieval tools.
 
 Linear Documents implements `docs_search` and `docs_get`. It reuses the same
-canonical tools and may reuse the same active Linear OAuth connection as an
-Issues source; it does not expose a second vendor-specific Agent namespace.
+canonical tools as other document vendors, but its source owns a distinct OAuth
+configuration and connection; it does not expose a second vendor-specific Agent namespace.
 V1 imports only the latest Markdown content, author identity, parent provenance,
 and current `uploads.linear.app` images. Linear remains authoritative for older
 revisions and document mutations.
@@ -421,7 +421,8 @@ Copying the URL reproduces the same audit view.
 All organization routes are under `/api/{organization_id}/sor`:
 
 - `/catalog` and `/oauth/configuration`;
-- `/connectors` and `/connectors/{connector_id}/authorize`;
+- `/connectors`, `/connectors/{connector_id}/authorize`, and deletion of an
+  unclaimed onboarding connector;
 - `/sources` and `/sources/api-key`, source verification, discovery, selection,
   mapping, activation, streams, sync runs, webhook endpoint management, and
   managed webhook subscription registration/removal;

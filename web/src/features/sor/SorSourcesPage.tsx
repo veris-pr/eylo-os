@@ -103,6 +103,7 @@ const SorSourcesPage = observer(function SorSourcesPage() {
       sourceToDelete.id,
     );
     if (deleted) {
+      void sor.connectors.load(activeOrganizationId, true);
       if (sourceId === sourceToDelete.id) closeSource();
       setSourceToDelete(null);
     }

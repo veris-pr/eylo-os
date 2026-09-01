@@ -3758,7 +3758,11 @@ export interface paths {
         get: operations["get_sor_connector_api__organization_id__sor_connectors__connector_id__get"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Delete Sor Connector
+         * @description Discard an unclaimed OAuth setup and its local credential authority.
+         */
+        delete: operations["delete_sor_connector_api__organization_id__sor_connectors__connector_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -3924,7 +3928,7 @@ export interface paths {
         post?: never;
         /**
          * Delete Sor Source
-         * @description Delete one source and its Eylo projection without changing vendor data.
+         * @description Delete one source, its local auth config, and its Eylo projection.
          */
         delete: operations["delete_sor_source_api__organization_id__sor_sources__source_id__delete"];
         options?: never;
@@ -24408,6 +24412,39 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["SorConnectorResponse"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_sor_connector_api__organization_id__sor_connectors__connector_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                connector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

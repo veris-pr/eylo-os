@@ -15,6 +15,7 @@ from sqlalchemy import delete, func, or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.modules.connections.domain import (
+    ConnectionAuthKind,
     ConnectionOwnerKind,
     ExternalConnectionStatus,
 )
@@ -166,6 +167,11 @@ class SorSourceService:
             connection=connection,
             manifest=draft.manifest,
             required_scopes=required_scopes,
+        )
+        await self._require_unclaimed_connection(
+            organization_id=organization_id,
+            connection=connection,
+            profile=draft.profile,
         )
 
         source = SorSourceModel(
@@ -382,6 +388,18 @@ class SorSourceService:
             required_scopes=required_scopes,
         )
 
+        if source.external_connection_id != connection.id:
+            raise SorConflictError(
+                "A source connection cannot be replaced during setup. "
+                "Start new or reauthorize the existing source."
+            )
+        await self._require_unclaimed_connection(
+            organization_id=organization_id,
+            connection=connection,
+            profile=source.profile,
+            source_id=source.id,
+        )
+
         if (
             source.external_connection_id == connection.id
             and tuple(source.selected_objects or ()) == objects
@@ -397,6 +415,43 @@ class SorSourceService:
         source.last_error_summary = None
         await self.session.flush()
         return source
+
+    async def _require_unclaimed_connection(
+        self,
+        *,
+        organization_id: UUID,
+        connection: ExternalConnectionModel,
+        profile: SorProfile,
+        source_id: UUID | None = None,
+    ) -> None:
+        """Keep one external connection owned by one source onboarding flow."""
+        connector = await self.repository.get_connector_for_connection(
+            organization_id=organization_id,
+            connection_id=connection.id,
+        )
+        if connection.auth_kind == ConnectionAuthKind.OAUTH2:
+            if connector is None:
+                raise SorConfigurationError(
+                    "The OAuth connection has no System of Record configuration."
+                )
+            if connector.profile is not profile:
+                raise SorConfigurationError(
+                    "The OAuth configuration belongs to another System of Record."
+                )
+            if connector.vendor_key != connection.vendor_key:
+                raise SorConfigurationError(
+                    "The OAuth configuration does not match the connection vendor."
+                )
+
+        claims = await self.repository.list_sources_for_connection(
+            organization_id=organization_id,
+            connection_id=connection.id,
+        )
+        if any(claim.id != source_id for claim in claims):
+            raise SorConflictError(
+                "This connection already belongs to another source. "
+                "Configure and authorize a new connection."
+            )
 
     async def get(
         self,

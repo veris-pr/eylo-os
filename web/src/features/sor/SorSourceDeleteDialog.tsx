@@ -51,9 +51,9 @@ function SorSourceDeleteDialog({
           <DialogTitle>Delete {source.name} and its data?</DialogTitle>
           <DialogDescription>
             Eylo will permanently remove this source, its synchronized records,
-            mappings, Agent grants, and sync history. The reusable connection and
-            data in {source.vendor_key} remain unchanged. Type the source name to
-            confirm.
+            mappings, Agent grants, sync history, and its saved local connection
+            credentials. Data in {source.vendor_key} remains unchanged. Type the
+            source name to confirm.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-2">

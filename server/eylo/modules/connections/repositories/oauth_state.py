@@ -148,5 +148,22 @@ class OAuthStateRepository(EyloBaseRepository[OAuthStateModel]):
         await self.db_session.flush()
         return len(rows)
 
+    async def delete_for_connection(
+        self,
+        *,
+        organization_id: UUID,
+        external_connection_id: UUID,
+    ) -> int:
+        """Hard-delete every transient OAuth state owned by one connection."""
+        result = await self.db_session.execute(
+            delete(OAuthStateModel).where(
+                OAuthStateModel.organization_id == organization_id,
+                OAuthStateModel.external_connection_id
+                == external_connection_id,
+            )
+        )
+        await self.db_session.flush()
+        return result.rowcount or 0
+
 
 __all__ = ["ExpiredOAuthState", "OAuthStateRepository"]

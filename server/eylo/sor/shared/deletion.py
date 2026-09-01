@@ -34,7 +34,7 @@ from .models import (
     SorSyncRunModel,
     SorWebhookReceiptModel,
 )
-from .services import SorSourceService
+from .services import SorConflictError, SorNotFoundError, SorSourceService
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +43,8 @@ class SorSourceDeletionPlan:
 
     organization_id: UUID
     source_id: UUID
+    external_connection_id: UUID
+    connector_id: UUID | None
     sync_run_ids: tuple[UUID, ...]
     webhook_receipt_ids: tuple[UUID, ...]
     command_ids: tuple[UUID, ...]
@@ -67,6 +69,29 @@ class SorSourceDeletionService:
             source_id=source_id,
             for_update=True,
         )
+        connection = await self.sources.repository.get_connection(
+            organization_id=organization_id,
+            connection_id=source.external_connection_id,
+            vendor_key=source.vendor_key,
+            for_update=True,
+            include_deleted=True,
+        )
+        if connection is None:
+            raise SorNotFoundError("External connection not found.")
+        claims = await self.sources.repository.list_sources_for_connection(
+            organization_id=organization_id,
+            connection_id=source.external_connection_id,
+        )
+        if any(claim.id != source.id for claim in claims):
+            raise SorConflictError(
+                "This source shares a connection with another source and cannot "
+                "be deleted safely."
+            )
+        connector = await self.sources.repository.get_connector_for_connection(
+            organization_id=organization_id,
+            connection_id=source.external_connection_id,
+            for_update=True,
+        )
         if source.state is not SorSourceState.DISABLED:
             source = await self.sources.transition(
                 organization_id=organization_id,
@@ -77,6 +102,8 @@ class SorSourceDeletionService:
         return SorSourceDeletionPlan(
             organization_id=organization_id,
             source_id=source_id,
+            external_connection_id=source.external_connection_id,
+            connector_id=connector.id if connector is not None else None,
             sync_run_ids=await self._active_ids(
                 SorSyncRunModel,
                 organization_id=organization_id,

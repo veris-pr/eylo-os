@@ -147,6 +147,32 @@ class SorService {
     );
   }
 
+  async deleteConnector(
+    organizationId: string,
+    connectorId: string,
+  ): Promise<void> {
+    const result = await this.api.DELETE(
+      "/api/{organization_id}/sor/connectors/{connector_id}",
+      {
+        params: {
+          path: {
+            organization_id: organizationId,
+            connector_id: connectorId,
+          },
+        },
+      },
+    );
+    if (!result.response.ok) {
+      throw new SorServiceError(
+        errorMessage(
+          result.error,
+          "The unfinished OAuth configuration could not be discarded.",
+        ),
+        result.response.status,
+      );
+    }
+  }
+
   async updateConnectorAppWebhookSigningSecret(
     organizationId: string,
     connectorId: string,
