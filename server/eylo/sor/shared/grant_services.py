@@ -337,8 +337,7 @@ class SorSourceGrantService:
                 and_(
                     SorSourceStreamModel.organization_id
                     == SorFieldMappingModel.organization_id,
-                    SorSourceStreamModel.source_id
-                    == SorFieldMappingModel.source_id,
+                    SorSourceStreamModel.source_id == SorFieldMappingModel.source_id,
                     SorSourceStreamModel.vendor_object_key
                     == SorFieldMappingModel.vendor_object_key,
                 ),
@@ -348,8 +347,7 @@ class SorSourceGrantService:
                 SorFieldMappingModel.source_id == source.id,
                 SorFieldMappingModel.mapping_revision_id
                 == source.active_mapping_revision_id,
-                SorFieldMappingModel.direction
-                == SorFieldMappingDirection.READ_WRITE,
+                SorFieldMappingModel.direction == SorFieldMappingDirection.READ_WRITE,
                 SorFieldMappingModel.state == SorFieldMappingState.ACTIVE,
                 SorFieldMappingModel.deleted.is_(False),
                 SorSourceStreamModel.canonical_entity_kind.in_(entities),
@@ -375,8 +373,7 @@ class SorSourceGrantService:
                 SorFieldMappingModel.mapping_revision_id
                 == source.active_mapping_revision_id,
                 SorFieldMappingModel.vendor_object_key == vendor_object_key,
-                SorFieldMappingModel.direction
-                != SorFieldMappingDirection.IGNORE,
+                SorFieldMappingModel.direction != SorFieldMappingDirection.IGNORE,
                 SorFieldMappingModel.state == SorFieldMappingState.ACTIVE,
                 SorFieldMappingModel.deleted.is_(False),
             )

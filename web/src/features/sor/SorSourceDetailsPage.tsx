@@ -19,9 +19,20 @@ import type {
   SorSource,
   SorSourceOperations,
   SorStream,
+  SorWebhookSubscriptionState,
+  SorWorkState,
 } from "@/features/sor/sor.types";
 
-const ACTIVE_WORK_STATES = new Set(["PENDING", "RUNNING", "WAITING"]);
+const ACTIVE_WORK_STATES = new Set<SorWorkState>([
+  "PENDING",
+  "RUNNING",
+  "WAITING",
+]);
+const FAILED_WEBHOOK_STATES = new Set<SorWebhookSubscriptionState>([
+  "REGISTRATION_FAILED",
+  "RENEWAL_FAILED",
+  "REMOVAL_FAILED",
+]);
 
 const SorSourceDetailsPage = observer(function SorSourceDetailsPage({
   onClose,
@@ -427,7 +438,7 @@ function SourceDetails({
             <DetailRow label="Webhook">
               <Badge
                 variant={
-                  source.webhook_subscription_status.endsWith("_FAILED")
+                  FAILED_WEBHOOK_STATES.has(source.webhook_subscription_status)
                     ? "destructive"
                     : "outline"
                 }

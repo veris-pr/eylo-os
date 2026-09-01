@@ -8,7 +8,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
+from enum import IntEnum, StrEnum
 from html.parser import HTMLParser
+from http import HTTPStatus
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from eylo.modules.connections.domain import ConnectionAuthKind
@@ -30,6 +32,8 @@ from eylo.sor.shared.contracts import (
     SorExternalRecordNotFound,
     SorProfile,
     SorRecordPage,
+    SorRecoveryPolicy,
+    SorVendorErrorCode,
     SorVendorOperationError,
     SorVendorStreamSpec,
     SorWebhookSignal,
@@ -39,12 +43,18 @@ from eylo.sor.support.contracts import (
     SupportAgent,
     SupportAttachment,
     SupportCustomer,
+    SupportEntityKind,
     SupportInbox,
     SupportMessage,
+    SupportMessageDirection,
+    SupportMessageVisibility,
     SupportQueue,
     SupportSlaMetric,
+    SupportSlaState,
     SupportTag,
     SupportTicket,
+    SupportTicketState,
+    SupportToolName,
 )
 
 FRESHDESK_API_VERSION = "v2"
@@ -56,95 +66,164 @@ FRESHDESK_EXPANSION_TICKET_PAGE = 10
 FRESHDESK_MAX_CONVERSATION_PAGES = 5
 FRESHDESK_MAX_EMPTY_EXPANSIONS = 30
 
-_STATUS_NAMES = {2: "open", 3: "pending", 4: "resolved", 5: "closed"}
+
+class FreshdeskTicketStatusCode(IntEnum):
+    """Freshdesk's documented numeric ticket status codes."""
+
+    OPEN = 2
+    PENDING = 3
+    RESOLVED = 4
+    CLOSED = 5
+
+
+class FreshdeskTicketPriorityCode(IntEnum):
+    """Freshdesk's documented numeric ticket priority codes."""
+
+    LOW = 1
+    MEDIUM = 2
+    HIGH = 3
+    URGENT = 4
+
+
+class FreshdeskTicketSourceCode(IntEnum):
+    """Freshdesk's documented numeric ticket source codes."""
+
+    EMAIL = 1
+    PORTAL = 2
+    PHONE = 3
+    CHAT = 7
+    FEEDBACK_WIDGET = 9
+    OUTBOUND_EMAIL = 10
+
+
+_STATUS_NAMES = {code: code.name.casefold() for code in FreshdeskTicketStatusCode}
 _STATUS_CODES = {value: key for key, value in _STATUS_NAMES.items()}
 _NORMALIZED_STATUS = {
-    "open": "OPEN",
-    "pending": "PENDING",
-    "resolved": "RESOLVED",
-    "closed": "CLOSED",
+    "open": SupportTicketState.OPEN,
+    "pending": SupportTicketState.PENDING,
+    "resolved": SupportTicketState.RESOLVED,
+    "closed": SupportTicketState.CLOSED,
 }
-_PRIORITY_NAMES = {1: "low", 2: "medium", 3: "high", 4: "urgent"}
+_PRIORITY_NAMES = {code: code.name.casefold() for code in FreshdeskTicketPriorityCode}
 _PRIORITY_CODES = {value: key for key, value in _PRIORITY_NAMES.items()}
-_SOURCE_NAMES = {
-    1: "email",
-    2: "portal",
-    3: "phone",
-    7: "chat",
-    9: "feedback_widget",
-    10: "outbound_email",
-}
+_SOURCE_NAMES = {code: code.name.casefold() for code in FreshdeskTicketSourceCode}
+
+
+class FreshdeskStream(StrEnum):
+    """Closed vendor stream vocabulary owned by this adapter."""
+
+    TICKETS = "tickets"
+    CONTACTS = "contacts"
+    AGENTS = "agents"
+    GROUPS = "groups"
+    EMAIL_CONFIGS = "email_configs"
+    CONVERSATIONS = "conversations"
+    TAGS = "tags"
+    SLA_METRICS = "sla_metrics"
+    ATTACHMENTS = "attachments"
+
 
 _STREAM_ENTITY = {
-    "tickets": "ticket",
-    "contacts": "customer",
-    "agents": "agent",
-    "groups": "queue",
-    "email_configs": "inbox",
-    "conversations": "message",
-    "tags": "tag",
-    "sla_metrics": "sla_metric",
-    "attachments": "attachment",
+    FreshdeskStream.TICKETS: SupportEntityKind.TICKET,
+    FreshdeskStream.CONTACTS: SupportEntityKind.CUSTOMER,
+    FreshdeskStream.AGENTS: SupportEntityKind.AGENT,
+    FreshdeskStream.GROUPS: SupportEntityKind.QUEUE,
+    FreshdeskStream.EMAIL_CONFIGS: SupportEntityKind.INBOX,
+    FreshdeskStream.CONVERSATIONS: SupportEntityKind.MESSAGE,
+    FreshdeskStream.TAGS: SupportEntityKind.TAG,
+    FreshdeskStream.SLA_METRICS: SupportEntityKind.SLA_METRIC,
+    FreshdeskStream.ATTACHMENTS: SupportEntityKind.ATTACHMENT,
 }
 _RELATIONSHIP_TARGETS = {
-    "tickets": {
-        "requester": "contacts",
-        "assignee": "agents",
-        "queue": "groups",
-        "inbox": "email_configs",
-        "tag": "tags",
+    FreshdeskStream.TICKETS: {
+        "requester": FreshdeskStream.CONTACTS,
+        "assignee": FreshdeskStream.AGENTS,
+        "queue": FreshdeskStream.GROUPS,
+        "inbox": FreshdeskStream.EMAIL_CONFIGS,
+        "tag": FreshdeskStream.TAGS,
     },
-    "conversations": {"ticket": "tickets"},
-    "sla_metrics": {"ticket": "tickets"},
-    "attachments": {"ticket": "tickets", "message": "conversations"},
+    FreshdeskStream.CONVERSATIONS: {"ticket": FreshdeskStream.TICKETS},
+    FreshdeskStream.SLA_METRICS: {"ticket": FreshdeskStream.TICKETS},
+    FreshdeskStream.ATTACHMENTS: {
+        "ticket": FreshdeskStream.TICKETS,
+        "message": FreshdeskStream.CONVERSATIONS,
+    },
 }
 _UPDATED_STREAMS = frozenset(
-    {"tickets", "contacts", "conversations", "tags", "sla_metrics", "attachments"}
+    {
+        FreshdeskStream.TICKETS,
+        FreshdeskStream.CONTACTS,
+        FreshdeskStream.CONVERSATIONS,
+        FreshdeskStream.TAGS,
+        FreshdeskStream.SLA_METRICS,
+        FreshdeskStream.ATTACHMENTS,
+    }
 )
-_FULL_RECONCILE_STREAMS = frozenset({"agents", "groups", "email_configs"})
-_EXPANDED_STREAMS = frozenset({"conversations", "tags", "sla_metrics", "attachments"})
+_FULL_RECONCILE_STREAMS = frozenset(
+    {FreshdeskStream.AGENTS, FreshdeskStream.GROUPS, FreshdeskStream.EMAIL_CONFIGS}
+)
+_EXPANDED_STREAMS = frozenset(
+    {
+        FreshdeskStream.CONVERSATIONS,
+        FreshdeskStream.TAGS,
+        FreshdeskStream.SLA_METRICS,
+        FreshdeskStream.ATTACHMENTS,
+    }
+)
 _READ_TOOLS = frozenset(
     {
-        "support_find_customer",
-        "support_find_ticket",
-        "support_get_ticket",
-        "support_get_customer_history",
-        "support_list_queues",
-        "support_describe_ticket_fields",
+        SupportToolName.FIND_CUSTOMER,
+        SupportToolName.FIND_TICKET,
+        SupportToolName.GET_TICKET,
+        SupportToolName.GET_CUSTOMER_HISTORY,
+        SupportToolName.LIST_QUEUES,
+        SupportToolName.DESCRIBE_TICKET_FIELDS,
     }
 )
 _WRITE_TOOLS = frozenset(
     {
-        "support_open_ticket",
-        "support_update_ticket",
-        "support_assign_ticket",
-        "support_reply",
-        "support_add_note",
-        "support_close_ticket",
-        "support_add_tag",
-        "support_remove_tag",
+        SupportToolName.OPEN_TICKET,
+        SupportToolName.UPDATE_TICKET,
+        SupportToolName.ASSIGN_TICKET,
+        SupportToolName.REPLY,
+        SupportToolName.ADD_NOTE,
+        SupportToolName.CLOSE_TICKET,
+        SupportToolName.ADD_TAG,
+        SupportToolName.REMOVE_TAG,
     }
 )
 _TOOL_STREAMS = {
-    "support_find_customer": frozenset({"contacts"}),
-    "support_find_ticket": frozenset({"tickets"}),
-    "support_get_ticket": frozenset({"tickets", "conversations"}),
-    "support_get_customer_history": frozenset({"contacts", "tickets"}),
-    "support_list_queues": frozenset({"groups"}),
-    "support_describe_ticket_fields": frozenset({"tickets"}),
-    "support_open_ticket": frozenset({"tickets"}),
-    "support_update_ticket": frozenset({"tickets"}),
-    "support_assign_ticket": frozenset({"tickets", "agents"}),
-    "support_reply": frozenset({"tickets", "conversations"}),
-    "support_add_note": frozenset({"tickets", "conversations"}),
-    "support_close_ticket": frozenset({"tickets"}),
-    "support_add_tag": frozenset({"tickets", "tags"}),
-    "support_remove_tag": frozenset({"tickets", "tags"}),
+    SupportToolName.FIND_CUSTOMER: frozenset({FreshdeskStream.CONTACTS}),
+    SupportToolName.FIND_TICKET: frozenset({FreshdeskStream.TICKETS}),
+    SupportToolName.GET_TICKET: frozenset(
+        {FreshdeskStream.TICKETS, FreshdeskStream.CONVERSATIONS}
+    ),
+    SupportToolName.GET_CUSTOMER_HISTORY: frozenset(
+        {FreshdeskStream.CONTACTS, FreshdeskStream.TICKETS}
+    ),
+    SupportToolName.LIST_QUEUES: frozenset({FreshdeskStream.GROUPS}),
+    SupportToolName.DESCRIBE_TICKET_FIELDS: frozenset({FreshdeskStream.TICKETS}),
+    SupportToolName.OPEN_TICKET: frozenset({FreshdeskStream.TICKETS}),
+    SupportToolName.UPDATE_TICKET: frozenset({FreshdeskStream.TICKETS}),
+    SupportToolName.ASSIGN_TICKET: frozenset(
+        {FreshdeskStream.TICKETS, FreshdeskStream.AGENTS}
+    ),
+    SupportToolName.REPLY: frozenset(
+        {FreshdeskStream.TICKETS, FreshdeskStream.CONVERSATIONS}
+    ),
+    SupportToolName.ADD_NOTE: frozenset(
+        {FreshdeskStream.TICKETS, FreshdeskStream.CONVERSATIONS}
+    ),
+    SupportToolName.CLOSE_TICKET: frozenset({FreshdeskStream.TICKETS}),
+    SupportToolName.ADD_TAG: frozenset({FreshdeskStream.TICKETS, FreshdeskStream.TAGS}),
+    SupportToolName.REMOVE_TAG: frozenset(
+        {FreshdeskStream.TICKETS, FreshdeskStream.TAGS}
+    ),
 }
 _MUTATION_RESULT_STREAMS = {
-    **{name: "tickets" for name in _WRITE_TOOLS},
-    "support_reply": "conversations",
-    "support_add_note": "conversations",
+    **{name: FreshdeskStream.TICKETS for name in _WRITE_TOOLS},
+    SupportToolName.REPLY: FreshdeskStream.CONVERSATIONS,
+    SupportToolName.ADD_NOTE: FreshdeskStream.CONVERSATIONS,
 }
 
 
@@ -156,26 +235,26 @@ FRESHDESK_MANIFEST = SorAdapterCapabilityManifest(
         SorVendorStreamSpec(
             key=stream_key,
             label={
-                "tickets": "Tickets",
-                "contacts": "Contacts",
-                "agents": "Agents",
-                "groups": "Groups",
-                "email_configs": "Email inboxes",
-                "conversations": "Conversations",
-                "tags": "Tags",
-                "sla_metrics": "SLA targets",
-                "attachments": "Attachments",
+                FreshdeskStream.TICKETS: "Tickets",
+                FreshdeskStream.CONTACTS: "Contacts",
+                FreshdeskStream.AGENTS: "Agents",
+                FreshdeskStream.GROUPS: "Groups",
+                FreshdeskStream.EMAIL_CONFIGS: "Email inboxes",
+                FreshdeskStream.CONVERSATIONS: "Conversations",
+                FreshdeskStream.TAGS: "Tags",
+                FreshdeskStream.SLA_METRICS: "SLA targets",
+                FreshdeskStream.ATTACHMENTS: "Attachments",
             }[stream_key],
             description={
-                "tickets": "Freshdesk tickets, assignment, state, tags, and custom fields.",
-                "contacts": "Freshdesk contacts who request support.",
-                "agents": "Freshdesk agents who may own tickets.",
-                "groups": "Freshdesk groups used as support queues.",
-                "email_configs": "Freshdesk support addresses used as ticket inboxes.",
-                "conversations": "Customer-visible replies and private Agent notes.",
-                "tags": "Classification tags observed on synchronized tickets.",
-                "sla_metrics": "Response and resolution targets derived from tickets.",
-                "attachments": "Metadata for files attached to conversations.",
+                FreshdeskStream.TICKETS: "Freshdesk tickets, assignment, state, tags, and custom fields.",
+                FreshdeskStream.CONTACTS: "Freshdesk contacts who request support.",
+                FreshdeskStream.AGENTS: "Freshdesk agents who may own tickets.",
+                FreshdeskStream.GROUPS: "Freshdesk groups used as support queues.",
+                FreshdeskStream.EMAIL_CONFIGS: "Freshdesk support addresses used as ticket inboxes.",
+                FreshdeskStream.CONVERSATIONS: "Customer-visible replies and private Agent notes.",
+                FreshdeskStream.TAGS: "Classification tags observed on synchronized tickets.",
+                FreshdeskStream.SLA_METRICS: "Response and resolution targets derived from tickets.",
+                FreshdeskStream.ATTACHMENTS: "Metadata for files attached to conversations.",
             }[stream_key],
             canonical_entity=entity,
             change_strategies=(
@@ -184,8 +263,7 @@ FRESHDESK_MANIFEST = SorAdapterCapabilityManifest(
                 else frozenset({SorChangeStrategy.FULL_RECONCILE})
             ),
             depends_on=frozenset(
-                set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values())
-                - {stream_key}
+                set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values()) - {stream_key}
             ),
             relationship_targets=_RELATIONSHIP_TARGETS.get(stream_key, {}),
         )
@@ -234,16 +312,28 @@ def _field(
 
 
 _SCHEMA_FIELDS = {
-    "tickets": (
+    FreshdeskStream.TICKETS: (
         _field("subject", "Subject", "text", writable=True),
         _field("normalized_description", "Description", "text", writable=True),
         _field("requester_external_id", "Requester ID", "reference", writable=True),
         _field("assignee_external_id", "Assignee ID", "reference", writable=True),
         _field("group_external_id", "Group ID", "reference", writable=True),
         _field("inbox_external_id", "Email config ID", "reference", writable=True),
-        _field("native_status", "Status", "enum", writable=True, choices=tuple(_STATUS_CODES)),
+        _field(
+            "native_status",
+            "Status",
+            "enum",
+            writable=True,
+            choices=tuple(_STATUS_CODES),
+        ),
         _field("normalized_status", "Normalized status", "enum"),
-        _field("priority", "Priority", "enum", writable=True, choices=tuple(_PRIORITY_CODES)),
+        _field(
+            "priority",
+            "Priority",
+            "enum",
+            writable=True,
+            choices=tuple(_PRIORITY_CODES),
+        ),
         _field("category", "Type", "text", writable=True),
         _field("channel", "Source channel", "text"),
         _field("tag_external_ids", "Tags", "string_array", writable=True),
@@ -252,31 +342,31 @@ _SCHEMA_FIELDS = {
         _field("closed_at", "Closed", "timestamp"),
         _field("sla_state", "SLA state", "enum"),
     ),
-    "contacts": (
+    FreshdeskStream.CONTACTS: (
         _field("name", "Name", "text", writable=True),
         _field("primary_email", "Email", "text", writable=True),
         _field("primary_phone", "Phone", "text", writable=True),
         _field("company_external_id", "Company ID", "reference", writable=True),
         _field("active", "Active", "boolean", writable=True),
     ),
-    "agents": (
+    FreshdeskStream.AGENTS: (
         _field("name", "Name", "text", nullable=False),
         _field("primary_email", "Email", "text"),
         _field("active", "Active", "boolean"),
         _field("assignable", "Assignable", "boolean"),
         _field("avatar_url", "Avatar URL", "url"),
     ),
-    "groups": (
+    FreshdeskStream.GROUPS: (
         _field("name", "Name", "text", nullable=False),
         _field("description", "Description", "text"),
         _field("active", "Active", "boolean"),
     ),
-    "email_configs": (
+    FreshdeskStream.EMAIL_CONFIGS: (
         _field("name", "Name", "text", nullable=False),
         _field("kind", "Kind", "text"),
         _field("active", "Active", "boolean"),
     ),
-    "conversations": (
+    FreshdeskStream.CONVERSATIONS: (
         _field("ticket_external_id", "Ticket ID", "reference", nullable=False),
         _field("visibility", "Visibility", "enum", nullable=False),
         _field("direction", "Direction", "enum"),
@@ -288,8 +378,8 @@ _SCHEMA_FIELDS = {
         _field("created_at", "Created", "timestamp", nullable=False),
         _field("updated_at", "Updated", "timestamp"),
     ),
-    "tags": (_field("name", "Name", "text", nullable=False),),
-    "sla_metrics": (
+    FreshdeskStream.TAGS: (_field("name", "Name", "text", nullable=False),),
+    FreshdeskStream.SLA_METRICS: (
         _field("ticket_external_id", "Ticket ID", "reference", nullable=False),
         _field("metric", "Metric", "text", nullable=False),
         _field("value", "Value", "decimal"),
@@ -300,7 +390,7 @@ _SCHEMA_FIELDS = {
         _field("achieved_at", "Achieved", "timestamp"),
         _field("breached_at", "Breached", "timestamp"),
     ),
-    "attachments": (
+    FreshdeskStream.ATTACHMENTS: (
         _field("ticket_external_id", "Ticket ID", "reference", nullable=False),
         _field("message_external_id", "Message ID", "reference"),
         _field("name", "Name", "text", nullable=False),
@@ -369,11 +459,10 @@ class FreshdeskSupportAdapter:
             else None
         )
         return SorConnectionVerification(
-            account_external_id=_required_id(agent.get("id"), field="Freshdesk Agent ID"),
-            account_display_name=(
-                contact_name
-                or _optional_string(agent.get("name"))
-            )
+            account_external_id=_required_id(
+                agent.get("id"), field="Freshdesk Agent ID"
+            ),
+            account_display_name=(contact_name or _optional_string(agent.get("name")))
             or _optional_string(agent.get("email"))
             or "Freshdesk account",
             granted_scopes=(),
@@ -383,9 +472,9 @@ class FreshdeskSupportAdapter:
     async def discover_schema(self) -> SorDiscoveredSchema:
         if not self._context.selected_objects:
             raise SorVendorOperationError(
-                "source_selection_empty",
+                SorVendorErrorCode.SOURCE_SELECTION_EMPTY,
                 "The Freshdesk source selects no streams.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         manifest_streams = {stream.key: stream for stream in FRESHDESK_MANIFEST.streams}
         objects: list[SorDiscoveredObject] = []
@@ -394,10 +483,16 @@ class FreshdeskSupportAdapter:
                 raise _invalid_stream("Freshdesk does not recognize a selected stream.")
             if stream_key in manifest_streams:
                 fields = _SCHEMA_FIELDS[stream_key]
-                if stream_key == "tickets":
-                    fields = (*fields, *await self._discover_fields("ticket_fields", "ticket"))
-                elif stream_key == "contacts":
-                    fields = (*fields, *await self._discover_fields("contact_fields", "contact"))
+                if stream_key == FreshdeskStream.TICKETS:
+                    fields = (
+                        *fields,
+                        *await self._discover_fields("ticket_fields", "ticket"),
+                    )
+                elif stream_key == FreshdeskStream.CONTACTS:
+                    fields = (
+                        *fields,
+                        *await self._discover_fields("contact_fields", "contact"),
+                    )
                 objects.append(
                     SorDiscoveredObject(
                         key=stream_key,
@@ -453,13 +548,13 @@ class FreshdeskSupportAdapter:
             vendor_object_key,
             selected=self._context.selected_objects,
         )
-        if stream_key == "tags":
+        if stream_key == FreshdeskStream.TAGS:
             name = _required_string(external_id, field="Freshdesk tag")
-            return self._external_record("tags", {"name": name})
-        if stream_key in {"conversations", "attachments"}:
+            return self._external_record(FreshdeskStream.TAGS, {"name": name})
+        if stream_key in {FreshdeskStream.CONVERSATIONS, FreshdeskStream.ATTACHMENTS}:
             ticket_id, child_id, attachment_id = _split_expanded_id(
                 external_id,
-                attachment=stream_key == "attachments",
+                attachment=stream_key == FreshdeskStream.ATTACHMENTS,
             )
             conversations = await self._ticket_conversations(ticket_id)
             conversation = next(
@@ -476,7 +571,7 @@ class FreshdeskSupportAdapter:
                     vendor_object_key=stream_key,
                     external_id=external_id,
                 )
-            if stream_key == "conversations":
+            if stream_key == FreshdeskStream.CONVERSATIONS:
                 row = dict(conversation)
                 row["_ticket_id"] = ticket_id
                 return self._external_record(stream_key, row)
@@ -484,7 +579,7 @@ class FreshdeskSupportAdapter:
                 (
                     row
                     for row in _object_list(
-                        conversation.get("attachments") or [],
+                        conversation.get(FreshdeskStream.ATTACHMENTS) or [],
                         field="Freshdesk conversation attachments",
                     )
                     if _required_id(row.get("id"), field="Freshdesk attachment ID")
@@ -501,11 +596,15 @@ class FreshdeskSupportAdapter:
             row["_ticket_id"] = ticket_id
             row["_conversation_id"] = child_id
             return self._external_record(stream_key, row)
-        if stream_key == "sla_metrics":
+        if stream_key == FreshdeskStream.SLA_METRICS:
             ticket_id, metric = _split_metric_id(external_id)
             ticket = await self._ticket(ticket_id)
             row = next(
-                (item for item in _expand_sla_metrics(ticket) if item["_metric"] == metric),
+                (
+                    item
+                    for item in _expand_sla_metrics(ticket)
+                    if item["_metric"] == metric
+                ),
                 None,
             )
             if row is None:
@@ -527,15 +626,17 @@ class FreshdeskSupportAdapter:
             return self._fetched_record(stream_key, external_id, response)
 
         endpoint = {
-            "tickets": f"/api/v2/tickets/{_path_id(external_id)}",
-            "contacts": f"/api/v2/contacts/{_path_id(external_id)}",
-            "agents": f"/api/v2/agents/{_path_id(external_id)}",
-            "groups": f"/api/v2/groups/{_path_id(external_id)}",
-            "email_configs": f"/api/v2/email_configs/{_path_id(external_id)}",
+            FreshdeskStream.TICKETS: f"/api/v2/tickets/{_path_id(external_id)}",
+            FreshdeskStream.CONTACTS: f"/api/v2/contacts/{_path_id(external_id)}",
+            FreshdeskStream.AGENTS: f"/api/v2/agents/{_path_id(external_id)}",
+            FreshdeskStream.GROUPS: f"/api/v2/groups/{_path_id(external_id)}",
+            FreshdeskStream.EMAIL_CONFIGS: f"/api/v2/email_configs/{_path_id(external_id)}",
         }[stream_key]
         response = await self._client.request(
             endpoint,
-            query={"include": "stats"} if stream_key == "tickets" else None,
+            query={"include": "stats"}
+            if stream_key == FreshdeskStream.TICKETS
+            else None,
         )
         return self._fetched_record(stream_key, external_id, response)
 
@@ -559,10 +660,14 @@ class FreshdeskSupportAdapter:
         self,
         subscription: SorWebhookSubscription,
     ) -> SorWebhookSubscription:
-        raise SorCapabilityUnavailable("Freshdesk polling sources have no webhook lease.")
+        raise SorCapabilityUnavailable(
+            "Freshdesk polling sources have no webhook lease."
+        )
 
     async def remove_webhook(self, subscription: SorWebhookSubscription) -> None:
-        raise SorCapabilityUnavailable("Freshdesk polling sources have no webhook lease.")
+        raise SorCapabilityUnavailable(
+            "Freshdesk polling sources have no webhook lease."
+        )
 
     async def verify_webhook(
         self,
@@ -587,29 +692,33 @@ class FreshdeskSupportAdapter:
     async def execute_command(self, command: SorCommandRequest) -> SorCommandResult:
         if command.tool_name not in _WRITE_TOOLS:
             raise SorVendorOperationError(
-                "vendor_tool_unsupported",
+                SorVendorErrorCode.VENDOR_TOOL_UNSUPPORTED,
                 "This Freshdesk adapter does not execute the requested support action.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
-        if command.tool_name == "support_open_ticket":
+        if command.tool_name == SupportToolName.OPEN_TICKET:
             return await self._open_ticket(command)
         ticket_id = _required_target(command)
-        if command.tool_name == "support_update_ticket":
+        if command.tool_name == SupportToolName.UPDATE_TICKET:
             return await self._update_ticket(ticket_id, command)
-        if command.tool_name == "support_assign_ticket":
+        if command.tool_name == SupportToolName.ASSIGN_TICKET:
             return await self._assign_ticket(ticket_id, command)
-        if command.tool_name in {"support_reply", "support_add_note"}:
+        if command.tool_name in {SupportToolName.REPLY, SupportToolName.ADD_NOTE}:
             return await self._add_conversation(
                 ticket_id,
                 command,
-                public=command.tool_name == "support_reply",
+                visibility=(
+                    SupportMessageVisibility.PUBLIC
+                    if command.tool_name == SupportToolName.REPLY
+                    else SupportMessageVisibility.PRIVATE
+                ),
             )
-        if command.tool_name == "support_close_ticket":
+        if command.tool_name == SupportToolName.CLOSE_TICKET:
             return await self._close_ticket(ticket_id, command)
         return await self._change_tag(
             ticket_id,
             command,
-            add=command.tool_name == "support_add_tag",
+            add=command.tool_name == SupportToolName.ADD_TAG,
         )
 
     def normalize_ticket(self, record: SorExternalRecord) -> SupportTicket:
@@ -617,13 +726,17 @@ class FreshdeskSupportAdapter:
         return SupportTicket(
             external_id=record.external_id,
             subject=_optional_string(values.get("subject")),
-            normalized_description=_optional_string(values.get("normalized_description")),
+            normalized_description=_optional_string(
+                values.get("normalized_description")
+            ),
             requester_external_id=_optional_id(values.get("requester_external_id")),
             assignee_external_id=_optional_id(values.get("assignee_external_id")),
             group_external_id=_optional_id(values.get("group_external_id")),
             inbox_external_id=_optional_id(values.get("inbox_external_id")),
             native_status=_optional_string(values.get("native_status")),
-            normalized_status=_optional_string(values.get("normalized_status")),
+            normalized_status=SupportTicketState.from_value(
+                _optional_string(values.get("normalized_status"))
+            ),
             priority=_optional_string(values.get("priority")),
             category=_optional_string(values.get("category")),
             channel=_optional_string(values.get("channel")),
@@ -631,7 +744,9 @@ class FreshdeskSupportAdapter:
             first_response_at=_optional_datetime(values.get("first_response_at")),
             resolved_at=_optional_datetime(values.get("resolved_at")),
             closed_at=_optional_datetime(values.get("closed_at")),
-            sla_state=_optional_string(values.get("sla_state")),
+            sla_state=SupportSlaState.from_value(
+                _optional_string(values.get("sla_state"))
+            ),
             source_updated_at=record.source_updated_at,
             source_url=record.source_url,
             custom_fields={
@@ -677,11 +792,15 @@ class FreshdeskSupportAdapter:
                 values.get("ticket_external_id"),
                 field="Freshdesk conversation ticket ID",
             ),
-            visibility=_required_string(
-                values.get("visibility"),
-                field="Freshdesk conversation visibility",
+            visibility=SupportMessageVisibility(
+                _required_string(
+                    values.get("visibility"),
+                    field="Freshdesk conversation visibility",
+                ).upper()
             ),
-            direction=_optional_string(values.get("direction")),
+            direction=SupportMessageDirection.from_value(
+                _optional_string(values.get("direction"))
+            ),
             author_external_id=_optional_id(values.get("author_external_id")),
             normalized_text=_required_string(
                 values.get("normalized_text"),
@@ -735,7 +854,9 @@ class FreshdeskSupportAdapter:
             value=_optional_decimal(values.get("value")),
             unit=_optional_string(values.get("unit")),
             native_state=_optional_string(values.get("native_state")),
-            normalized_state=_optional_string(values.get("normalized_state")),
+            normalized_state=SupportSlaState.from_value(
+                _optional_string(values.get("normalized_state"))
+            ),
             target_at=_optional_datetime(values.get("target_at")),
             achieved_at=_optional_datetime(values.get("achieved_at")),
             breached_at=_optional_datetime(values.get("breached_at")),
@@ -750,7 +871,9 @@ class FreshdeskSupportAdapter:
                 field="Freshdesk attachment ticket ID",
             ),
             message_external_id=_optional_id(values.get("message_external_id")),
-            name=_required_string(values.get("name"), field="Freshdesk attachment name"),
+            name=_required_string(
+                values.get("name"), field="Freshdesk attachment name"
+            ),
             content_type=_optional_string(values.get("content_type")),
             size_bytes=_optional_integer(values.get("size_bytes")),
             source_url=_safe_source_url(values.get("source_url")),
@@ -767,7 +890,10 @@ class FreshdeskSupportAdapter:
         optional: bool = False,
     ) -> tuple[SorDiscoveredField, ...]:
         response = await self._client.request(f"/api/v2/{endpoint}")
-        if optional and response.status_code in {403, 404}:
+        if optional and response.status_code in {
+            HTTPStatus.FORBIDDEN,
+            HTTPStatus.NOT_FOUND,
+        }:
             return ()
         rows = _object_list(
             _expect(response, operation=f"list Freshdesk {kind} fields"),
@@ -782,10 +908,12 @@ class FreshdeskSupportAdapter:
 
     async def _discover_custom_objects(self) -> tuple[SorDiscoveredObject, ...]:
         response = await self._client.request("/api/v2/custom_objects/schemas")
-        if response.status_code in {403, 404}:
+        if response.status_code in {HTTPStatus.FORBIDDEN, HTTPStatus.NOT_FOUND}:
             return ()
         data = _object(_expect(response, operation="list Freshdesk custom objects"))
-        schemas = _object_list(data.get("schemas") or [], field="Freshdesk custom schemas")
+        schemas = _object_list(
+            data.get("schemas") or [], field="Freshdesk custom schemas"
+        )
         objects: list[SorDiscoveredObject] = []
         for schema in schemas:
             if schema.get("deleted") is True:
@@ -801,20 +929,39 @@ class FreshdeskSupportAdapter:
             ]
             fields.extend(
                 (
-                    _field("display_id", "Display ID", "text", nullable=False, group="Freshdesk custom object"),
-                    _field("created_time", "Created", "timestamp", group="Freshdesk custom object"),
-                    _field("updated_time", "Updated", "timestamp", group="Freshdesk custom object"),
+                    _field(
+                        "display_id",
+                        "Display ID",
+                        "text",
+                        nullable=False,
+                        group="Freshdesk custom object",
+                    ),
+                    _field(
+                        "created_time",
+                        "Created",
+                        "timestamp",
+                        group="Freshdesk custom object",
+                    ),
+                    _field(
+                        "updated_time",
+                        "Updated",
+                        "timestamp",
+                        group="Freshdesk custom object",
+                    ),
                 )
             )
             objects.append(
                 SorDiscoveredObject(
                     key=f"freshdesk_custom_{schema_id}",
-                    label=_optional_string(schema.get("name")) or f"Custom object {schema_id}",
+                    label=_optional_string(schema.get("name"))
+                    or f"Custom object {schema_id}",
                     fields=tuple(_unique_fields(fields)),
                     custom=True,
                 )
             )
-        return tuple(sorted(objects, key=lambda item: (item.label.casefold(), item.key)))
+        return tuple(
+            sorted(objects, key=lambda item: (item.label.casefold(), item.key))
+        )
 
     async def _read_page(
         self,
@@ -823,7 +970,9 @@ class FreshdeskSupportAdapter:
         cursor: str | None,
         limit: int,
     ) -> SorRecordPage:
-        stream_key = _require_stream(stream_key, selected=self._context.selected_objects)
+        stream_key = _require_stream(
+            stream_key, selected=self._context.selected_objects
+        )
         page_limit = _page_limit(limit)
         if stream_key in _UPDATED_STREAMS:
             if stream_key in _EXPANDED_STREAMS:
@@ -886,9 +1035,9 @@ class FreshdeskSupportAdapter:
             raise _scan_limit()
         response = await self._client.request(
             {
-                "agents": "/api/v2/agents",
-                "groups": "/api/v2/groups",
-                "email_configs": "/api/v2/email_configs",
+                FreshdeskStream.AGENTS: "/api/v2/agents",
+                FreshdeskStream.GROUPS: "/api/v2/groups",
+                FreshdeskStream.EMAIL_CONFIGS: "/api/v2/email_configs",
                 "companies": "/api/v2/companies",
             }[stream_key],
             query={"page": page, "per_page": limit},
@@ -924,7 +1073,7 @@ class FreshdeskSupportAdapter:
         empty_expansions = 0
         while True:
             tickets, next_scan, scan_has_more = await self._updated_rows(
-                stream_key="tickets",
+                stream_key=FreshdeskStream.TICKETS,
                 checkpoint=checkpoint.scan,
                 limit=FRESHDESK_EXPANSION_TICKET_PAGE,
             )
@@ -965,9 +1114,9 @@ class FreshdeskSupportAdapter:
             empty_expansions += 1
             if empty_expansions > FRESHDESK_MAX_EMPTY_EXPANSIONS:
                 raise SorVendorOperationError(
-                    "vendor_expansion_budget_exceeded",
+                    SorVendorErrorCode.VENDOR_EXPANSION_BUDGET_EXCEEDED,
                     "Freshdesk returned too many ticket pages without the selected child records.",
-                    retryable=True,
+                    recovery=SorRecoveryPolicy.RETRY,
                 )
             checkpoint = _ExpansionCursor(scan=next_scan, offset=0)
 
@@ -1016,7 +1165,7 @@ class FreshdeskSupportAdapter:
             "page": checkpoint.page,
             "per_page": limit,
         }
-        if stream_key == "tickets":
+        if stream_key == FreshdeskStream.TICKETS:
             query.update(
                 {
                     "include": "stats",
@@ -1025,9 +1174,10 @@ class FreshdeskSupportAdapter:
                 }
             )
         response = await self._client.request(
-            {"tickets": "/api/v2/tickets", "contacts": "/api/v2/contacts"}[
-                stream_key
-            ],
+            {
+                FreshdeskStream.TICKETS: "/api/v2/tickets",
+                FreshdeskStream.CONTACTS: "/api/v2/contacts",
+            }[stream_key],
             query=query,
         )
         rows = _object_list(
@@ -1042,7 +1192,9 @@ class FreshdeskSupportAdapter:
             return rows, _UpdatedCursor(checkpoint.since, checkpoint.page + 1), True
         return (
             rows,
-            _UpdatedCursor(max(FRESHDESK_INITIAL_SINCE, requested_at - FRESHDESK_OVERLAP), 1),
+            _UpdatedCursor(
+                max(FRESHDESK_INITIAL_SINCE, requested_at - FRESHDESK_OVERLAP), 1
+            ),
             False,
         )
 
@@ -1051,17 +1203,21 @@ class FreshdeskSupportAdapter:
         stream_key: str,
         tickets: Sequence[Mapping[str, object]],
     ) -> list[dict[str, object]]:
-        if stream_key == "tags":
+        if stream_key == FreshdeskStream.TAGS:
             return _deduplicate_rows(
                 [
                     {"name": tag}
                     for ticket in tickets
-                    for tag in _string_list(ticket.get("tags") or [], field="Freshdesk tags")
+                    for tag in _string_list(
+                        ticket.get(FreshdeskStream.TAGS) or [], field="Freshdesk tags"
+                    )
                 ],
                 identity="name",
             )
-        if stream_key == "sla_metrics":
-            return [metric for ticket in tickets for metric in _expand_sla_metrics(ticket)]
+        if stream_key == FreshdeskStream.SLA_METRICS:
+            return [
+                metric for ticket in tickets for metric in _expand_sla_metrics(ticket)
+            ]
         rows: list[dict[str, object]] = []
         for ticket in tickets:
             ticket_id = _required_id(ticket.get("id"), field="Freshdesk ticket ID")
@@ -1071,13 +1227,13 @@ class FreshdeskSupportAdapter:
                     conversation.get("id"),
                     field="Freshdesk conversation ID",
                 )
-                if stream_key == "conversations":
+                if stream_key == FreshdeskStream.CONVERSATIONS:
                     row = dict(conversation)
                     row["_ticket_id"] = ticket_id
                     rows.append(row)
                     continue
                 for attachment in _object_list(
-                    conversation.get("attachments") or [],
+                    conversation.get(FreshdeskStream.ATTACHMENTS) or [],
                     field="Freshdesk conversation attachments",
                 ):
                     row = dict(attachment)
@@ -1101,9 +1257,9 @@ class FreshdeskSupportAdapter:
             if len(page_rows) < 100:
                 return rows
         raise SorVendorOperationError(
-            "vendor_expansion_limit_exceeded",
+            SorVendorErrorCode.VENDOR_EXPANSION_LIMIT_EXCEEDED,
             "A Freshdesk ticket has more conversations than this adapter can safely expand.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
 
     async def _ticket(self, ticket_id: str) -> dict[str, object]:
@@ -1111,9 +1267,9 @@ class FreshdeskSupportAdapter:
             f"/api/v2/tickets/{_path_id(ticket_id)}",
             query={"include": "stats"},
         )
-        if response.status_code in {404, 410}:
+        if response.status_code in {HTTPStatus.NOT_FOUND, HTTPStatus.GONE}:
             raise SorExternalRecordNotFound(
-                vendor_object_key="tickets",
+                vendor_object_key=FreshdeskStream.TICKETS,
                 external_id=ticket_id,
             )
         return _object(_expect(response, operation="read a Freshdesk ticket"))
@@ -1124,7 +1280,7 @@ class FreshdeskSupportAdapter:
         external_id: str,
         response: SorJsonResponse,
     ) -> SorExternalRecord:
-        if response.status_code in {404, 410}:
+        if response.status_code in {HTTPStatus.NOT_FOUND, HTTPStatus.GONE}:
             raise SorExternalRecordNotFound(
                 vendor_object_key=stream_key,
                 external_id=external_id,
@@ -1137,7 +1293,7 @@ class FreshdeskSupportAdapter:
         stream_key: str,
         row: Mapping[str, object],
     ) -> SorExternalRecord:
-        if stream_key == "tickets":
+        if stream_key == FreshdeskStream.TICKETS:
             ticket_id = _required_id(row.get("id"), field="Freshdesk ticket ID")
             status = _status_name(row.get("status"))
             stats = _optional_object(row.get("stats"))
@@ -1156,7 +1312,7 @@ class FreshdeskSupportAdapter:
                 "priority": _priority_name(row.get("priority")),
                 "category": row.get("type"),
                 "channel": _source_name(row.get("source")),
-                "tag_external_ids": row.get("tags") or [],
+                "tag_external_ids": row.get(FreshdeskStream.TAGS) or [],
                 "first_response_at": stats.get("first_responded_at"),
                 "resolved_at": stats.get("resolved_at"),
                 "closed_at": stats.get("closed_at"),
@@ -1172,7 +1328,7 @@ class FreshdeskSupportAdapter:
                 source_revision=_revision(updated_at),
                 source_url=f"{self._origin}/a/tickets/{ticket_id}",
             )
-        if stream_key == "contacts":
+        if stream_key == FreshdeskStream.CONTACTS:
             contact_id = _required_id(row.get("id"), field="Freshdesk contact ID")
             updated_at = _optional_datetime(row.get("updated_at"))
             payload = {
@@ -1192,7 +1348,7 @@ class FreshdeskSupportAdapter:
                 source_revision=_revision(updated_at),
                 source_url=f"{self._origin}/a/contacts/{contact_id}",
             )
-        if stream_key == "agents":
+        if stream_key == FreshdeskStream.AGENTS:
             contact = _optional_object(row.get("contact"))
             agent_id = _required_id(row.get("id"), field="Freshdesk Agent ID")
             avatar = _optional_object(contact.get("avatar"))
@@ -1207,7 +1363,7 @@ class FreshdeskSupportAdapter:
                     "avatar_url": avatar.get("avatar_url"),
                 },
             )
-        if stream_key == "groups":
+        if stream_key == FreshdeskStream.GROUPS:
             return SorExternalRecord(
                 vendor_object_key=stream_key,
                 external_id=_required_id(row.get("id"), field="Freshdesk group ID"),
@@ -1219,24 +1375,26 @@ class FreshdeskSupportAdapter:
                 source_created_at=_optional_datetime(row.get("created_at")),
                 source_updated_at=_optional_datetime(row.get("updated_at")),
             )
-        if stream_key == "email_configs":
+        if stream_key == FreshdeskStream.EMAIL_CONFIGS:
             inbox_id = _required_id(row.get("id"), field="Freshdesk email config ID")
             return SorExternalRecord(
                 vendor_object_key=stream_key,
                 external_id=inbox_id,
                 payload={
-                    "name": row.get("name") or row.get("reply_email") or row.get("email"),
+                    "name": row.get("name")
+                    or row.get("reply_email")
+                    or row.get("email"),
                     "kind": "email",
                     "active": row.get("active"),
                 },
             )
-        if stream_key == "conversations":
+        if stream_key == FreshdeskStream.CONVERSATIONS:
             ticket_id = _required_id(row.get("_ticket_id"), field="Freshdesk ticket ID")
             conversation_id = _required_id(
                 row.get("id"), field="Freshdesk conversation ID"
             )
             attachments = _object_list(
-                row.get("attachments") or [],
+                row.get(FreshdeskStream.ATTACHMENTS) or [],
                 field="Freshdesk conversation attachments",
             )
             created_at = _required_datetime(
@@ -1249,16 +1407,22 @@ class FreshdeskSupportAdapter:
                 payload={
                     "ticket_external_id": ticket_id,
                     "visibility": "PRIVATE" if row.get("private") is True else "PUBLIC",
-                    "direction": "INBOUND" if row.get("incoming") is True else "OUTBOUND",
+                    "direction": "INBOUND"
+                    if row.get("incoming") is True
+                    else "OUTBOUND",
                     "author_external_id": row.get("user_id") or row.get("from_email"),
-                    "normalized_text": _plain_text(row.get("body_text") or row.get("body")),
+                    "normalized_text": _plain_text(
+                        row.get("body_text") or row.get("body")
+                    ),
                     "source_body": dict(row),
                     "body_format": "text/html" if row.get("body") else "text/plain",
                     "attachment_external_ids": [
                         _attachment_id(
                             ticket_id,
                             conversation_id,
-                            _required_id(item.get("id"), field="Freshdesk attachment ID"),
+                            _required_id(
+                                item.get("id"), field="Freshdesk attachment ID"
+                            ),
                         )
                         for item in attachments
                     ],
@@ -1270,14 +1434,14 @@ class FreshdeskSupportAdapter:
                 source_revision=_revision(updated_at or created_at),
                 source_url=f"{self._origin}/a/tickets/{ticket_id}",
             )
-        if stream_key == "tags":
+        if stream_key == FreshdeskStream.TAGS:
             name = _required_string(row.get("name"), field="Freshdesk tag")
             return SorExternalRecord(
                 vendor_object_key=stream_key,
                 external_id=name,
                 payload={"name": name},
             )
-        if stream_key == "sla_metrics":
+        if stream_key == FreshdeskStream.SLA_METRICS:
             ticket_id = _required_id(row.get("id"), field="Freshdesk SLA ticket ID")
             metric = _required_string(row.get("_metric"), field="Freshdesk SLA metric")
             return SorExternalRecord(
@@ -1298,14 +1462,12 @@ class FreshdeskSupportAdapter:
                 source_revision=_revision(_optional_datetime(row.get("updated_at"))),
                 source_url=f"{self._origin}/a/tickets/{ticket_id}",
             )
-        if stream_key == "attachments":
+        if stream_key == FreshdeskStream.ATTACHMENTS:
             ticket_id = _required_id(row.get("_ticket_id"), field="Freshdesk ticket ID")
             conversation_id = _required_id(
                 row.get("_conversation_id"), field="Freshdesk conversation ID"
             )
-            attachment_id = _required_id(
-                row.get("id"), field="Freshdesk attachment ID"
-            )
+            attachment_id = _required_id(row.get("id"), field="Freshdesk attachment ID")
             source_url = _safe_source_url(row.get("attachment_url"))
             return SorExternalRecord(
                 vendor_object_key=stream_key,
@@ -1334,7 +1496,9 @@ class FreshdeskSupportAdapter:
                 source_revision=_revision(_optional_datetime(row.get("updated_at"))),
                 source_url=f"{self._origin}/a/companies/{company_id}",
             )
-        display_id = _required_id(row.get("display_id"), field="Freshdesk custom record ID")
+        display_id = _required_id(
+            row.get("display_id"), field="Freshdesk custom record ID"
+        )
         payload = _object(row.get("data"), field="Freshdesk custom record data")
         created_at = _epoch_millis_datetime(row.get("created_time"))
         updated_at = _epoch_millis_datetime(row.get("updated_time"))
@@ -1356,9 +1520,17 @@ class FreshdeskSupportAdapter:
 
     async def _open_ticket(self, command: SorCommandRequest) -> SorCommandResult:
         if command.target_external_id is not None:
-            raise _invalid_command("Opening a Freshdesk ticket cannot target an existing ticket.")
+            raise _invalid_command(
+                "Opening a Freshdesk ticket cannot target an existing ticket."
+            )
         fields = self._ticket_write_values(command.payload)
-        for required in ("subject", "description", "requester_id", "status", "priority"):
+        for required in (
+            "subject",
+            "description",
+            "requester_id",
+            "status",
+            "priority",
+        ):
             if required not in fields:
                 raise _invalid_command(
                     "Opening a Freshdesk ticket requires mapped subject, description, "
@@ -1381,7 +1553,9 @@ class FreshdeskSupportAdapter:
     ) -> SorCommandResult:
         fields = self._ticket_write_values(command.payload)
         if not fields:
-            raise _invalid_command("Updating a Freshdesk ticket requires mapped fields.")
+            raise _invalid_command(
+                "Updating a Freshdesk ticket requires mapped fields."
+            )
         await self._require_revision(ticket_id, command.expected_source_revision)
         response = await self._mutation_request(
             f"/api/v2/tickets/{ticket_id}",
@@ -1428,39 +1602,53 @@ class FreshdeskSupportAdapter:
         ticket_id: str,
         command: SorCommandRequest,
         *,
-        public: bool,
+        visibility: SupportMessageVisibility,
     ) -> SorCommandResult:
         if set(command.payload) != {"normalized_text"}:
-            raise _invalid_command("A Freshdesk reply or note requires only normalized_text.")
+            raise _invalid_command(
+                "A Freshdesk reply or note requires only normalized_text."
+            )
         text = _required_string(
             command.payload.get("normalized_text"),
             field="Freshdesk conversation body",
         )
         await self._require_revision(ticket_id, command.expected_source_revision)
         response = await self._mutation_request(
-            f"/api/v2/tickets/{ticket_id}/{'reply' if public else 'notes'}",
+            f"/api/v2/tickets/{ticket_id}/"
+            f"{'reply' if visibility is SupportMessageVisibility.PUBLIC else 'notes'}",
             method="POST",
-            payload={"body": text, **({} if public else {"private": True})},
+            payload={
+                "body": text,
+                **(
+                    {}
+                    if visibility is SupportMessageVisibility.PUBLIC
+                    else {"private": True}
+                ),
+            },
             command=command,
             operation=(
                 "reply to a Freshdesk customer"
-                if public
+                if visibility is SupportMessageVisibility.PUBLIC
                 else "add a Freshdesk private note"
             ),
         )
-        conversation = _object(_expect(response, operation="create a Freshdesk conversation"))
+        conversation = _object(
+            _expect(response, operation="create a Freshdesk conversation")
+        )
         conversation_id = _required_id(
             conversation.get("id"), field="Freshdesk conversation ID"
         )
         return SorCommandResult(
-            vendor_object_key="conversations",
+            vendor_object_key=FreshdeskStream.CONVERSATIONS,
             external_id=_conversation_id(ticket_id, conversation_id),
             external_request_id=_request_id(response),
-            source_revision=_revision(_optional_datetime(conversation.get("updated_at"))),
+            source_revision=_revision(
+                _optional_datetime(conversation.get("updated_at"))
+            ),
             source_url=f"{self._origin}/a/tickets/{ticket_id}",
             response={
                 "status": "accepted",
-                "visibility": "PUBLIC" if public else "PRIVATE",
+                "visibility": visibility.value,
             },
         )
 
@@ -1496,10 +1684,14 @@ class FreshdeskSupportAdapter:
     ) -> SorCommandResult:
         if set(command.payload) != {"tag_external_id"}:
             raise _invalid_command("Changing a Freshdesk tag requires tag_external_id.")
-        tag = _required_string(command.payload.get("tag_external_id"), field="Freshdesk tag")
+        tag = _required_string(
+            command.payload.get("tag_external_id"), field="Freshdesk tag"
+        )
         ticket = await self._ticket(ticket_id)
         self._assert_revision(ticket, command.expected_source_revision)
-        tags = _string_list(ticket.get("tags") or [], field="Freshdesk ticket tags")
+        tags = _string_list(
+            ticket.get(FreshdeskStream.TAGS) or [], field="Freshdesk ticket tags"
+        )
         if add and tag not in tags:
             tags.append(tag)
         if not add:
@@ -1507,7 +1699,7 @@ class FreshdeskSupportAdapter:
         response = await self._mutation_request(
             f"/api/v2/tickets/{ticket_id}",
             method="PUT",
-            payload={"tags": tags},
+            payload={FreshdeskStream.TAGS: tags},
             command=command,
             operation="change a Freshdesk ticket tag",
         )
@@ -1518,16 +1710,18 @@ class FreshdeskSupportAdapter:
         writable = {
             field.agent_key: field.vendor_field_key
             for field in self._context.fields
-            if field.vendor_object_key == "tickets" and field.writable
+            if field.vendor_object_key == FreshdeskStream.TICKETS and field.writable
         }
         if not payload:
-            raise _invalid_command("A Freshdesk ticket mutation requires mapped fields.")
+            raise _invalid_command(
+                "A Freshdesk ticket mutation requires mapped fields."
+            )
         unknown = set(payload) - set(writable)
         if unknown:
             raise SorVendorOperationError(
-                "vendor_field_not_writable",
+                SorVendorErrorCode.VENDOR_FIELD_NOT_WRITABLE,
                 "The Freshdesk mutation contains fields absent from the writable mapping.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         result: dict[str, object] = {}
         custom_fields: dict[str, object] = {}
@@ -1541,27 +1735,34 @@ class FreshdeskSupportAdapter:
             "native_status": "status",
             "priority": "priority",
             "category": "type",
-            "tag_external_ids": "tags",
+            "tag_external_ids": FreshdeskStream.TAGS,
         }
         for agent_key, value in payload.items():
             vendor_key = writable[agent_key]
             if vendor_key.startswith("custom_field_"):
-                custom_fields[vendor_key.removeprefix("custom_field_")] = _json_value(value)
+                custom_fields[vendor_key.removeprefix("custom_field_")] = _json_value(
+                    value
+                )
                 continue
             source_key = mapping.get(vendor_key)
             if source_key is None:
                 raise SorVendorOperationError(
-                    "vendor_field_not_writable",
+                    SorVendorErrorCode.VENDOR_FIELD_NOT_WRITABLE,
                     "The mapped Freshdesk field is not writable by this adapter.",
-                    retryable=False,
+                    recovery=SorRecoveryPolicy.TERMINAL,
                 )
-            if source_key in {"requester_id", "responder_id", "group_id", "email_config_id"}:
+            if source_key in {
+                "requester_id",
+                "responder_id",
+                "group_id",
+                "email_config_id",
+            }:
                 result[source_key] = _numeric_id(value, field=f"Freshdesk {source_key}")
             elif source_key == "status":
                 result[source_key] = _status_code(value)
             elif source_key == "priority":
                 result[source_key] = _priority_code(value)
-            elif source_key == "tags":
+            elif source_key == FreshdeskStream.TAGS:
                 result[source_key] = _string_list(value, field="Freshdesk tags")
             else:
                 result[source_key] = value
@@ -1603,19 +1804,19 @@ class FreshdeskSupportAdapter:
                 payload=payload,
                 idempotency_key=command.idempotency_key,
             )
-            if response.status_code >= 500:
+            if response.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR:
                 _expect(response, operation=operation)
             return response
         except SorVendorOperationError as error:
             if error.code in {
-                "vendor_timeout",
-                "vendor_transport_failed",
-                "vendor_server_failed",
+                SorVendorErrorCode.VENDOR_TIMEOUT,
+                SorVendorErrorCode.VENDOR_TRANSPORT_FAILED,
+                SorVendorErrorCode.VENDOR_SERVER_FAILED,
             }:
                 raise SorVendorOperationError(
-                    "vendor_mutation_outcome_unknown",
+                    SorVendorErrorCode.VENDOR_MUTATION_OUTCOME_UNKNOWN,
                     "Freshdesk may have applied the action; reconcile before retrying.",
-                    retryable=False,
+                    recovery=SorRecoveryPolicy.RECONCILE_REQUIRED,
                 ) from error
             raise
 
@@ -1628,7 +1829,7 @@ class FreshdeskSupportAdapter:
         ticket_id = _required_id(ticket.get("id"), field="Freshdesk ticket ID")
         updated_at = _optional_datetime(ticket.get("updated_at"))
         return SorCommandResult(
-            vendor_object_key="tickets",
+            vendor_object_key=FreshdeskStream.TICKETS,
             external_id=ticket_id,
             external_request_id=_request_id(response),
             source_revision=_revision(updated_at),
@@ -1674,10 +1875,9 @@ def _credential(credentials: Mapping[str, object], key: str) -> str:
     value = credentials.get(key)
     if not isinstance(value, str) or not value.strip():
         raise SorVendorOperationError(
-            "vendor_configuration_invalid",
+            SorVendorErrorCode.VENDOR_CONFIGURATION_INVALID,
             "Freshdesk API key is missing.",
-            retryable=False,
-            requires_reauthorization=True,
+            recovery=SorRecoveryPolicy.REAUTH_REQUIRED,
         )
     return value.strip()
 
@@ -1687,9 +1887,9 @@ def _require_stream(stream_key: str, *, selected: Sequence[str]) -> str:
         raise _invalid_stream("This Freshdesk adapter does not recognize the stream.")
     if stream_key not in selected:
         raise SorVendorOperationError(
-            "vendor_stream_unavailable",
+            SorVendorErrorCode.VENDOR_STREAM_UNAVAILABLE,
             "The requested Freshdesk stream is not selected for this source.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return stream_key
 
@@ -1699,9 +1899,10 @@ def _is_custom_stream(value: str) -> bool:
 
 
 def _is_freshdesk_custom_object(value: str) -> bool:
-    return value.startswith("freshdesk_custom_") and value.removeprefix(
-        "freshdesk_custom_"
-    ).isdecimal()
+    return (
+        value.startswith("freshdesk_custom_")
+        and value.removeprefix("freshdesk_custom_").isdecimal()
+    )
 
 
 def _custom_schema_id(value: str) -> str:
@@ -1793,10 +1994,7 @@ def _custom_field_values(value: object) -> dict[str, object]:
     if value is None:
         return {}
     fields = _object(value, field="Freshdesk custom fields")
-    return {
-        f"custom_field_{key}": _json_value(item)
-        for key, item in fields.items()
-    }
+    return {f"custom_field_{key}": _json_value(item) for key, item in fields.items()}
 
 
 def _unique_objects(values: Sequence[SorDiscoveredObject]) -> list[SorDiscoveredObject]:
@@ -1806,7 +2004,9 @@ def _unique_objects(values: Sequence[SorDiscoveredObject]) -> list[SorDiscovered
         if existing is not None and existing != value:
             raise _invalid_response("Freshdesk returned conflicting object schemas.")
         by_key[value.key] = value
-    return sorted(by_key.values(), key=lambda item: (item.custom, item.label.casefold(), item.key))
+    return sorted(
+        by_key.values(), key=lambda item: (item.custom, item.label.casefold(), item.key)
+    )
 
 
 def _unique_fields(values: Sequence[SorDiscoveredField]) -> list[SorDiscoveredField]:
@@ -1816,15 +2016,18 @@ def _unique_fields(values: Sequence[SorDiscoveredField]) -> list[SorDiscoveredFi
         if existing is not None and existing != value:
             raise _invalid_response("Freshdesk returned conflicting field schemas.")
         by_key[value.key] = value
-    return sorted(by_key.values(), key=lambda item: (item.group or "", item.label.casefold(), item.key))
+    return sorted(
+        by_key.values(),
+        key=lambda item: (item.group or "", item.label.casefold(), item.key),
+    )
 
 
 def _page_limit(limit: int) -> int:
     if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
         raise SorVendorOperationError(
-            "vendor_page_invalid",
+            SorVendorErrorCode.VENDOR_PAGE_INVALID,
             "Freshdesk page limit must be positive.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return min(limit, 100)
 
@@ -1861,7 +2064,9 @@ def _encode_expansion_cursor(cursor: _ExpansionCursor, *, stream_key: str) -> st
     )
 
 
-def _decode_expansion_cursor(cursor: str | None, *, stream_key: str) -> _ExpansionCursor:
+def _decode_expansion_cursor(
+    cursor: str | None, *, stream_key: str
+) -> _ExpansionCursor:
     if cursor is None:
         return _ExpansionCursor(_UpdatedCursor(FRESHDESK_INITIAL_SINCE, 1), 0)
     data = _decode_cursor(cursor, stream_key=stream_key, kind="expanded")
@@ -1874,7 +2079,11 @@ def _decode_expansion_cursor(cursor: str | None, *, stream_key: str) -> _Expansi
 def _updated_cursor_values(data: Mapping[str, object]) -> _UpdatedCursor:
     since = _required_datetime(data.get("since"), field="Freshdesk cursor timestamp")
     page = data.get("page")
-    if isinstance(page, bool) or not isinstance(page, int) or not 1 <= page <= FRESHDESK_MAX_PAGES:
+    if (
+        isinstance(page, bool)
+        or not isinstance(page, int)
+        or not 1 <= page <= FRESHDESK_MAX_PAGES
+    ):
         raise _invalid_cursor("Freshdesk cursor page is invalid.")
     return _UpdatedCursor(since, page)
 
@@ -1945,7 +2154,9 @@ def _decode_cursor(cursor: str, *, stream_key: str, kind: str) -> dict[str, obje
         payload = json.loads(base64.urlsafe_b64decode(cursor + padding))
     except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise _invalid_cursor("Freshdesk cursor is invalid.") from error
-    if not isinstance(payload, dict) or any(not isinstance(key, str) for key in payload):
+    if not isinstance(payload, dict) or any(
+        not isinstance(key, str) for key in payload
+    ):
         raise _invalid_cursor("Freshdesk cursor payload is invalid.")
     if (
         payload.get("version") != FRESHDESK_CURSOR_VERSION
@@ -1998,14 +2209,21 @@ def _expand_sla_metrics(ticket: Mapping[str, object]) -> list[dict[str, object]]
     updated_at = ticket.get("updated_at")
     metrics: list[dict[str, object]] = []
     for metric, target_key, achieved_key, breached in (
-        ("first_response", "fr_due_by", "first_responded_at", ticket.get("fr_escalated") is True),
+        (
+            "first_response",
+            "fr_due_by",
+            "first_responded_at",
+            ticket.get("fr_escalated") is True,
+        ),
         ("resolution", "due_by", "resolved_at", ticket.get("is_escalated") is True),
     ):
         target = ticket.get(target_key)
         achieved = stats.get(achieved_key)
         if target is None and achieved is None:
             continue
-        state = "breached" if breached else "achieved" if achieved is not None else "active"
+        state = (
+            "breached" if breached else "achieved" if achieved is not None else "active"
+        )
         metrics.append(
             {
                 "id": ticket_id,
@@ -2221,53 +2439,55 @@ def _safe_source_url(value: object) -> str | None:
 def _expect(response: SorJsonResponse, *, operation: str) -> object:
     if response.ok:
         return response.data
-    if response.status_code == 401:
+    if response.status_code == HTTPStatus.UNAUTHORIZED:
         raise SorVendorOperationError(
-            "vendor_authorization_expired",
+            SorVendorErrorCode.VENDOR_AUTHORIZATION_EXPIRED,
             f"Freshdesk refused the API key while attempting to {operation}.",
-            retryable=False,
-            requires_reauthorization=True,
+            recovery=SorRecoveryPolicy.REAUTH_REQUIRED,
         )
-    if response.status_code == 403:
+    if response.status_code == HTTPStatus.FORBIDDEN:
         raise SorVendorOperationError(
-            "vendor_forbidden",
+            SorVendorErrorCode.VENDOR_FORBIDDEN,
             f"Freshdesk refused permission to {operation}.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
-    if response.status_code == 404:
+    if response.status_code == HTTPStatus.NOT_FOUND:
         raise SorVendorOperationError(
-            "vendor_resource_unavailable",
+            SorVendorErrorCode.VENDOR_RESOURCE_UNAVAILABLE,
             f"Freshdesk could not find the resource needed to {operation}.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
-    if response.status_code in {409, 412}:
+    if response.status_code in {HTTPStatus.CONFLICT, HTTPStatus.PRECONDITION_FAILED}:
         raise SorVendorOperationError(
-            "vendor_revision_conflict",
+            SorVendorErrorCode.VENDOR_REVISION_CONFLICT,
             f"Freshdesk rejected stale state while attempting to {operation}.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
-    if response.status_code in {400, 422}:
+    if response.status_code in {
+        HTTPStatus.BAD_REQUEST,
+        HTTPStatus.UNPROCESSABLE_CONTENT,
+    }:
         raise SorVendorOperationError(
-            "vendor_command_invalid",
+            SorVendorErrorCode.VENDOR_COMMAND_INVALID,
             f"Freshdesk rejected the data used to {operation}.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
-    if response.status_code == 429:
+    if response.status_code == HTTPStatus.TOO_MANY_REQUESTS:
         raise SorVendorOperationError(
-            "vendor_rate_limited",
+            SorVendorErrorCode.VENDOR_RATE_LIMITED,
             "Freshdesk rate-limited the source.",
-            retryable=True,
+            recovery=SorRecoveryPolicy.RETRY,
         )
-    if response.status_code >= 500:
+    if response.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR:
         raise SorVendorOperationError(
-            "vendor_server_failed",
+            SorVendorErrorCode.VENDOR_SERVER_FAILED,
             f"Freshdesk failed while attempting to {operation}.",
-            retryable=True,
+            recovery=SorRecoveryPolicy.RETRY,
         )
     raise SorVendorOperationError(
-        "vendor_request_failed",
+        SorVendorErrorCode.VENDOR_REQUEST_FAILED,
         f"Freshdesk refused the request to {operation}.",
-        retryable=False,
+        recovery=SorRecoveryPolicy.TERMINAL,
     )
 
 
@@ -2288,7 +2508,9 @@ def _object_list(value: object, *, field: str) -> list[dict[str, object]]:
 
 
 def _string_list(value: object, *, field: str) -> list[str]:
-    if not isinstance(value, (list, tuple)) or not all(isinstance(item, str) for item in value):
+    if not isinstance(value, (list, tuple)) or not all(
+        isinstance(item, str) for item in value
+    ):
         raise _invalid_response(f"{field} must be a string list.")
     return list(value)
 
@@ -2400,7 +2622,9 @@ def _json_value(value: object) -> object | None:
         try:
             json.dumps(value, ensure_ascii=False, allow_nan=False)
         except (TypeError, ValueError) as error:
-            raise _invalid_response("Freshdesk value is not JSON compatible.") from error
+            raise _invalid_response(
+                "Freshdesk value is not JSON compatible."
+            ) from error
         return value
     raise _invalid_response("Freshdesk value is not JSON compatible.")
 
@@ -2412,26 +2636,42 @@ def _json_mapping(value: Mapping[str, object]) -> dict[str, object]:
 
 def _scan_limit() -> SorVendorOperationError:
     return SorVendorOperationError(
-        "vendor_scan_limit_exceeded",
+        SorVendorErrorCode.VENDOR_SCAN_LIMIT_EXCEEDED,
         "Freshdesk's 300-page listing limit was reached; narrow or partition the source.",
-        retryable=False,
+        recovery=SorRecoveryPolicy.TERMINAL,
     )
 
 
 def _invalid_command(message: str) -> SorVendorOperationError:
-    return SorVendorOperationError("vendor_command_invalid", message, retryable=False)
+    return SorVendorOperationError(
+        SorVendorErrorCode.VENDOR_COMMAND_INVALID,
+        message,
+        recovery=SorRecoveryPolicy.TERMINAL,
+    )
 
 
 def _invalid_cursor(message: str) -> SorVendorOperationError:
-    return SorVendorOperationError("vendor_cursor_invalid", message, retryable=False)
+    return SorVendorOperationError(
+        SorVendorErrorCode.VENDOR_CURSOR_INVALID,
+        message,
+        recovery=SorRecoveryPolicy.TERMINAL,
+    )
 
 
 def _invalid_response(message: str) -> SorVendorOperationError:
-    return SorVendorOperationError("vendor_response_invalid", message, retryable=False)
+    return SorVendorOperationError(
+        SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
+        message,
+        recovery=SorRecoveryPolicy.TERMINAL,
+    )
 
 
 def _invalid_stream(message: str) -> SorVendorOperationError:
-    return SorVendorOperationError("vendor_stream_unsupported", message, retryable=False)
+    return SorVendorOperationError(
+        SorVendorErrorCode.VENDOR_STREAM_UNSUPPORTED,
+        message,
+        recovery=SorRecoveryPolicy.TERMINAL,
+    )
 
 
 __all__ = [

@@ -10,7 +10,9 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import StrEnum
 from html.parser import HTMLParser
+from http import HTTPStatus
 from urllib.parse import urlsplit
 
 from eylo.modules.connections.domain import ConnectionAuthKind
@@ -34,6 +36,8 @@ from eylo.sor.shared.contracts import (
     SorOAuthSpec,
     SorProfile,
     SorRecordPage,
+    SorRecoveryPolicy,
+    SorVendorErrorCode,
     SorVendorOperationError,
     SorVendorStreamSpec,
     SorWebhookPayloadError,
@@ -45,12 +49,18 @@ from eylo.sor.support.contracts import (
     SupportAgent,
     SupportAttachment,
     SupportCustomer,
+    SupportEntityKind,
     SupportInbox,
     SupportMessage,
+    SupportMessageDirection,
+    SupportMessageVisibility,
     SupportQueue,
     SupportSlaMetric,
+    SupportSlaState,
     SupportTag,
     SupportTicket,
+    SupportTicketState,
+    SupportToolName,
 )
 
 INTERCOM_API_VERSION = "2.16"
@@ -76,95 +86,123 @@ _AUTHORIZATION_ORIGINS = {
     "https://api.eu.intercom.io": "https://app.eu.intercom.com",
     "https://api.au.intercom.io": "https://app.au.intercom.com",
 }
+
+
+class IntercomStream(StrEnum):
+    """Closed vendor stream vocabulary owned by this adapter."""
+
+    CONVERSATIONS = "conversations"
+    CONTACTS = "contacts"
+    ADMINS = "admins"
+    TEAMS = "teams"
+    CONVERSATION_PARTS = "conversation_parts"
+    TAGS = "tags"
+    ATTACHMENTS = "attachments"
+
+
 _STREAM_ENTITY = {
-    "conversations": "ticket",
-    "contacts": "customer",
-    "admins": "agent",
-    "teams": "queue",
-    "conversation_parts": "message",
-    "tags": "tag",
-    "attachments": "attachment",
+    IntercomStream.CONVERSATIONS: SupportEntityKind.TICKET,
+    IntercomStream.CONTACTS: SupportEntityKind.CUSTOMER,
+    IntercomStream.ADMINS: SupportEntityKind.AGENT,
+    IntercomStream.TEAMS: SupportEntityKind.QUEUE,
+    IntercomStream.CONVERSATION_PARTS: SupportEntityKind.MESSAGE,
+    IntercomStream.TAGS: SupportEntityKind.TAG,
+    IntercomStream.ATTACHMENTS: SupportEntityKind.ATTACHMENT,
 }
 _RELATIONSHIP_TARGETS = {
-    "conversations": {
-        "requester": "contacts",
-        "assignee": "admins",
-        "queue": "teams",
-        "tag": "tags",
+    IntercomStream.CONVERSATIONS: {
+        "requester": IntercomStream.CONTACTS,
+        "assignee": IntercomStream.ADMINS,
+        "queue": IntercomStream.TEAMS,
+        "tag": IntercomStream.TAGS,
     },
-    "conversation_parts": {"ticket": "conversations"},
-    "attachments": {
-        "ticket": "conversations",
-        "message": "conversation_parts",
+    IntercomStream.CONVERSATION_PARTS: {"ticket": IntercomStream.CONVERSATIONS},
+    IntercomStream.ATTACHMENTS: {
+        "ticket": IntercomStream.CONVERSATIONS,
+        "message": IntercomStream.CONVERSATION_PARTS,
     },
 }
 _READ_TOOLS = frozenset(
     {
-        "support_find_customer",
-        "support_find_ticket",
-        "support_get_ticket",
-        "support_get_customer_history",
-        "support_list_queues",
-        "support_describe_ticket_fields",
+        SupportToolName.FIND_CUSTOMER,
+        SupportToolName.FIND_TICKET,
+        SupportToolName.GET_TICKET,
+        SupportToolName.GET_CUSTOMER_HISTORY,
+        SupportToolName.LIST_QUEUES,
+        SupportToolName.DESCRIBE_TICKET_FIELDS,
     }
 )
 _WRITE_TOOLS = frozenset(
     {
-        "support_open_ticket",
-        "support_update_ticket",
-        "support_assign_ticket",
-        "support_reply",
-        "support_add_note",
-        "support_close_ticket",
-        "support_add_tag",
-        "support_remove_tag",
+        SupportToolName.OPEN_TICKET,
+        SupportToolName.UPDATE_TICKET,
+        SupportToolName.ASSIGN_TICKET,
+        SupportToolName.REPLY,
+        SupportToolName.ADD_NOTE,
+        SupportToolName.CLOSE_TICKET,
+        SupportToolName.ADD_TAG,
+        SupportToolName.REMOVE_TAG,
     }
 )
 _TOOL_STREAMS = {
-    "support_find_customer": frozenset({"contacts"}),
-    "support_find_ticket": frozenset({"conversations"}),
-    "support_get_ticket": frozenset({"conversations", "conversation_parts"}),
-    "support_get_customer_history": frozenset({"contacts", "conversations"}),
-    "support_list_queues": frozenset({"teams"}),
-    "support_describe_ticket_fields": frozenset({"conversations"}),
-    "support_open_ticket": frozenset({"conversations"}),
-    "support_update_ticket": frozenset({"conversations"}),
-    "support_assign_ticket": frozenset({"conversations", "admins", "teams"}),
-    "support_reply": frozenset({"conversations", "conversation_parts"}),
-    "support_add_note": frozenset({"conversations", "conversation_parts"}),
-    "support_close_ticket": frozenset({"conversations"}),
-    "support_add_tag": frozenset({"conversations", "tags"}),
-    "support_remove_tag": frozenset({"conversations", "tags"}),
+    SupportToolName.FIND_CUSTOMER: frozenset({IntercomStream.CONTACTS}),
+    SupportToolName.FIND_TICKET: frozenset({IntercomStream.CONVERSATIONS}),
+    SupportToolName.GET_TICKET: frozenset(
+        {IntercomStream.CONVERSATIONS, IntercomStream.CONVERSATION_PARTS}
+    ),
+    SupportToolName.GET_CUSTOMER_HISTORY: frozenset(
+        {IntercomStream.CONTACTS, IntercomStream.CONVERSATIONS}
+    ),
+    SupportToolName.LIST_QUEUES: frozenset({IntercomStream.TEAMS}),
+    SupportToolName.DESCRIBE_TICKET_FIELDS: frozenset({IntercomStream.CONVERSATIONS}),
+    SupportToolName.OPEN_TICKET: frozenset({IntercomStream.CONVERSATIONS}),
+    SupportToolName.UPDATE_TICKET: frozenset({IntercomStream.CONVERSATIONS}),
+    SupportToolName.ASSIGN_TICKET: frozenset(
+        {IntercomStream.CONVERSATIONS, IntercomStream.ADMINS, IntercomStream.TEAMS}
+    ),
+    SupportToolName.REPLY: frozenset(
+        {IntercomStream.CONVERSATIONS, IntercomStream.CONVERSATION_PARTS}
+    ),
+    SupportToolName.ADD_NOTE: frozenset(
+        {IntercomStream.CONVERSATIONS, IntercomStream.CONVERSATION_PARTS}
+    ),
+    SupportToolName.CLOSE_TICKET: frozenset({IntercomStream.CONVERSATIONS}),
+    SupportToolName.ADD_TAG: frozenset(
+        {IntercomStream.CONVERSATIONS, IntercomStream.TAGS}
+    ),
+    SupportToolName.REMOVE_TAG: frozenset(
+        {IntercomStream.CONVERSATIONS, IntercomStream.TAGS}
+    ),
 }
 _MUTATION_RESULT_STREAMS = {
-    **{name: "conversations" for name in _WRITE_TOOLS},
-    "support_reply": "conversation_parts",
-    "support_add_note": "conversation_parts",
+    **{name: IntercomStream.CONVERSATIONS for name in _WRITE_TOOLS},
+    SupportToolName.REPLY: IntercomStream.CONVERSATION_PARTS,
+    SupportToolName.ADD_NOTE: IntercomStream.CONVERSATION_PARTS,
 }
 _STREAM_SCOPES = {
-    "conversations": (READ_CONVERSATIONS,),
-    "contacts": (READ_USERS,),
-    "admins": (READ_ADMINS,),
-    "teams": (READ_ADMINS,),
-    "conversation_parts": (READ_CONVERSATIONS,),
-    "tags": (READ_TAGS,),
-    "attachments": (READ_CONVERSATIONS,),
+    IntercomStream.CONVERSATIONS: (READ_CONVERSATIONS,),
+    IntercomStream.CONTACTS: (READ_USERS,),
+    IntercomStream.ADMINS: (READ_ADMINS,),
+    IntercomStream.TEAMS: (READ_ADMINS,),
+    IntercomStream.CONVERSATION_PARTS: (READ_CONVERSATIONS,),
+    IntercomStream.TAGS: (READ_TAGS,),
+    IntercomStream.ATTACHMENTS: (READ_CONVERSATIONS,),
 }
 _TOOL_SCOPES = {
-    "support_find_customer": (READ_USERS,),
-    "support_find_ticket": (READ_CONVERSATIONS,),
-    "support_get_ticket": (READ_CONVERSATIONS,),
-    "support_get_customer_history": (READ_USERS, READ_CONVERSATIONS),
-    "support_list_queues": (READ_ADMINS,),
-    "support_describe_ticket_fields": (READ_CONVERSATIONS,),
-    "support_open_ticket": (WRITE_CONVERSATIONS,),
-    "support_update_ticket": (WRITE_CONVERSATIONS,),
-    "support_assign_ticket": (WRITE_CONVERSATIONS, READ_ADMINS),
-    "support_reply": (WRITE_CONVERSATIONS, READ_ADMINS),
-    "support_add_note": (WRITE_CONVERSATIONS, READ_ADMINS),
-    "support_close_ticket": (WRITE_CONVERSATIONS, READ_ADMINS),
-    "support_add_tag": (WRITE_CONVERSATIONS, WRITE_TAGS, READ_ADMINS),
-    "support_remove_tag": (WRITE_CONVERSATIONS, WRITE_TAGS, READ_ADMINS),
+    SupportToolName.FIND_CUSTOMER: (READ_USERS,),
+    SupportToolName.FIND_TICKET: (READ_CONVERSATIONS,),
+    SupportToolName.GET_TICKET: (READ_CONVERSATIONS,),
+    SupportToolName.GET_CUSTOMER_HISTORY: (READ_USERS, READ_CONVERSATIONS),
+    SupportToolName.LIST_QUEUES: (READ_ADMINS,),
+    SupportToolName.DESCRIBE_TICKET_FIELDS: (READ_CONVERSATIONS,),
+    SupportToolName.OPEN_TICKET: (WRITE_CONVERSATIONS,),
+    SupportToolName.UPDATE_TICKET: (WRITE_CONVERSATIONS,),
+    SupportToolName.ASSIGN_TICKET: (WRITE_CONVERSATIONS, READ_ADMINS),
+    SupportToolName.REPLY: (WRITE_CONVERSATIONS, READ_ADMINS),
+    SupportToolName.ADD_NOTE: (WRITE_CONVERSATIONS, READ_ADMINS),
+    SupportToolName.CLOSE_TICKET: (WRITE_CONVERSATIONS, READ_ADMINS),
+    SupportToolName.ADD_TAG: (WRITE_CONVERSATIONS, WRITE_TAGS, READ_ADMINS),
+    SupportToolName.REMOVE_TAG: (WRITE_CONVERSATIONS, WRITE_TAGS, READ_ADMINS),
 }
 
 
@@ -176,33 +214,37 @@ INTERCOM_MANIFEST = SorAdapterCapabilityManifest(
         SorVendorStreamSpec(
             key=stream_key,
             label={
-                "conversations": "Conversations",
-                "contacts": "Contacts",
-                "admins": "Admins",
-                "teams": "Teams",
-                "conversation_parts": "Conversation messages",
-                "tags": "Tags",
-                "attachments": "Conversation attachments",
+                IntercomStream.CONVERSATIONS: "Conversations",
+                IntercomStream.CONTACTS: "Contacts",
+                IntercomStream.ADMINS: "Admins",
+                IntercomStream.TEAMS: "Teams",
+                IntercomStream.CONVERSATION_PARTS: "Conversation messages",
+                IntercomStream.TAGS: "Tags",
+                IntercomStream.ATTACHMENTS: "Conversation attachments",
             }[stream_key],
             description={
-                "conversations": "Intercom conversations represented as support cases.",
-                "contacts": "People who open and participate in conversations.",
-                "admins": "Workspace teammates who may act on conversations.",
-                "teams": "Inbox teams used as canonical support queues.",
-                "conversation_parts": "Customer-visible replies and private notes.",
-                "tags": "Workspace tags available for conversation classification.",
-                "attachments": "Metadata for files attached to conversation messages.",
+                IntercomStream.CONVERSATIONS: "Intercom conversations represented as support cases.",
+                IntercomStream.CONTACTS: "People who open and participate in conversations.",
+                IntercomStream.ADMINS: "Workspace teammates who may act on conversations.",
+                IntercomStream.TEAMS: "Inbox teams used as canonical support queues.",
+                IntercomStream.CONVERSATION_PARTS: "Customer-visible replies and private notes.",
+                IntercomStream.TAGS: "Workspace tags available for conversation classification.",
+                IntercomStream.ATTACHMENTS: "Metadata for files attached to conversation messages.",
             }[stream_key],
             canonical_entity=entity,
             change_strategies=(
                 frozenset({SorChangeStrategy.UPDATED_AT})
                 if stream_key
-                in {"conversations", "contacts", "conversation_parts", "attachments"}
+                in {
+                    IntercomStream.CONVERSATIONS,
+                    IntercomStream.CONTACTS,
+                    IntercomStream.CONVERSATION_PARTS,
+                    IntercomStream.ATTACHMENTS,
+                }
                 else frozenset({SorChangeStrategy.FULL_RECONCILE})
             ),
             depends_on=frozenset(
-                set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values())
-                - {stream_key}
+                set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values()) - {stream_key}
             ),
             relationship_targets=_RELATIONSHIP_TARGETS.get(stream_key, {}),
         )
@@ -263,18 +305,17 @@ def verify_intercom_app_webhook(
     """Authenticate one Intercom app delivery against its raw request bytes."""
     signature = _header(headers, "x-hub-signature")
     if signature is None or not signature.startswith("sha1="):
-        raise SorWebhookVerificationError(
-            "Intercom webhook signature is missing."
-        )
-    expected = "sha1=" + hmac.new(
-        client_secret.encode("utf-8"),
-        body,
-        hashlib.sha1,
-    ).hexdigest()
+        raise SorWebhookVerificationError("Intercom webhook signature is missing.")
+    expected = (
+        "sha1="
+        + hmac.new(
+            client_secret.encode("utf-8"),
+            body,
+            hashlib.sha1,
+        ).hexdigest()
+    )
     if not hmac.compare_digest(signature, expected):
-        raise SorWebhookVerificationError(
-            "Intercom webhook signature is invalid."
-        )
+        raise SorWebhookVerificationError("Intercom webhook signature is invalid.")
 
 
 def parse_intercom_app_webhook(*, body: bytes) -> IntercomAppWebhookDelivery:
@@ -337,7 +378,7 @@ def _field(
 
 
 _SCHEMA_FIELDS = {
-    "conversations": (
+    IntercomStream.CONVERSATIONS: (
         _field("subject", "Title", "text", writable=True),
         _field("normalized_description", "Opening message", "text", writable=True),
         _field("requester_external_id", "Contact ID", "reference", writable=True),
@@ -354,26 +395,26 @@ _SCHEMA_FIELDS = {
         _field("closed_at", "Closed at", "timestamp"),
         _field("sla_state", "SLA state", "text"),
     ),
-    "contacts": (
+    IntercomStream.CONTACTS: (
         _field("name", "Name", "text"),
         _field("primary_email", "Email", "text"),
         _field("primary_phone", "Phone", "text"),
         _field("company_external_id", "Company ID", "reference"),
         _field("active", "Active", "boolean"),
     ),
-    "admins": (
+    IntercomStream.ADMINS: (
         _field("name", "Name", "text", nullable=False),
         _field("primary_email", "Email", "text"),
         _field("active", "Active", "boolean"),
         _field("assignable", "Has inbox seat", "boolean"),
         _field("avatar_url", "Avatar URL", "link"),
     ),
-    "teams": (
+    IntercomStream.TEAMS: (
         _field("name", "Name", "text", nullable=False),
         _field("description", "Description", "text"),
         _field("active", "Active", "boolean"),
     ),
-    "conversation_parts": (
+    IntercomStream.CONVERSATION_PARTS: (
         _field("ticket_external_id", "Conversation ID", "reference", nullable=False),
         _field("visibility", "Visibility", "enum", nullable=False),
         _field("direction", "Direction", "enum"),
@@ -385,8 +426,8 @@ _SCHEMA_FIELDS = {
         _field("created_at", "Created at", "timestamp", nullable=False),
         _field("updated_at", "Updated at", "timestamp"),
     ),
-    "tags": (_field("name", "Name", "text", nullable=False),),
-    "attachments": (
+    IntercomStream.TAGS: (_field("name", "Name", "text", nullable=False),),
+    IntercomStream.ATTACHMENTS: (
         _field("ticket_external_id", "Conversation ID", "reference", nullable=False),
         _field("message_external_id", "Message ID", "reference"),
         _field("name", "Name", "text", nullable=False),
@@ -395,7 +436,11 @@ _SCHEMA_FIELDS = {
         _field("source_url", "Download URL", "link"),
     ),
 }
-_STATUS_MAP = {"open": "OPEN", "closed": "CLOSED", "snoozed": "PENDING"}
+_STATUS_MAP = {
+    "open": SupportTicketState.OPEN,
+    "closed": SupportTicketState.CLOSED,
+    "snoozed": SupportTicketState.PENDING,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -437,9 +482,9 @@ class IntercomSupportAdapter:
         expected_region = _ORIGIN_REGIONS[self._origin][1]
         if region != expected_region:
             raise SorVendorOperationError(
-                "vendor_region_mismatch",
+                SorVendorErrorCode.VENDOR_REGION_MISMATCH,
                 "The selected Intercom data region does not match this workspace.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         return SorConnectionVerification(
             account_external_id=_required_id(
@@ -454,13 +499,13 @@ class IntercomSupportAdapter:
     async def discover_schema(self) -> SorDiscoveredSchema:
         if not self._context.selected_objects:
             raise SorVendorOperationError(
-                "source_selection_empty",
+                SorVendorErrorCode.SOURCE_SELECTION_EMPTY,
                 "The Intercom source selects no streams.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         contact_attributes: tuple[SorDiscoveredField, ...] = ()
         conversation_attributes: tuple[SorDiscoveredField, ...] = ()
-        if "contacts" in self._context.selected_objects:
+        if IntercomStream.CONTACTS in self._context.selected_objects:
             response = await self._client.request(
                 "/data_attributes", query={"model": "contact"}
             )
@@ -469,7 +514,7 @@ class IntercomSupportAdapter:
                 _object_list(data.get("data"), field="Intercom contact fields"),
                 writable=False,
             )
-        if "conversations" in self._context.selected_objects:
+        if IntercomStream.CONVERSATIONS in self._context.selected_objects:
             response = await self._client.request("/conversations/attributes")
             data = _object(
                 _expect(response, operation="list Intercom conversation fields")
@@ -484,9 +529,9 @@ class IntercomSupportAdapter:
         for stream_key in self._context.selected_objects:
             _require_stream(stream_key, selected=self._context.selected_objects)
             fields = _SCHEMA_FIELDS[stream_key]
-            if stream_key == "contacts":
+            if stream_key == IntercomStream.CONTACTS:
                 fields = (*fields, *contact_attributes)
-            elif stream_key == "conversations":
+            elif stream_key == IntercomStream.CONVERSATIONS:
                 fields = (*fields, *conversation_attributes)
             objects.append(
                 SorDiscoveredObject(
@@ -529,14 +574,14 @@ class IntercomSupportAdapter:
             selected=self._context.selected_objects,
         )
         record_id = _required_id(external_id, field="Intercom record ID")
-        if stream_key == "conversations":
+        if stream_key == IntercomStream.CONVERSATIONS:
             return self._external_record(
                 stream_key,
                 await self._conversation(record_id),
             )
-        if stream_key == "contacts":
+        if stream_key == IntercomStream.CONTACTS:
             response = await self._client.request(f"/contacts/{_path_id(record_id)}")
-            if response.status_code in {404, 410}:
+            if response.status_code in {HTTPStatus.NOT_FOUND, HTTPStatus.GONE}:
                 raise SorExternalRecordNotFound(
                     vendor_object_key=stream_key,
                     external_id=record_id,
@@ -545,14 +590,14 @@ class IntercomSupportAdapter:
                 stream_key,
                 _object(_expect(response, operation="read Intercom contact")),
             )
-        if stream_key in {"admins", "teams", "tags"}:
+        if stream_key in {
+            IntercomStream.ADMINS,
+            IntercomStream.TEAMS,
+            IntercomStream.TAGS,
+        }:
             rows = await self._reconcile_rows(stream_key)
             row = next(
-                (
-                    item
-                    for item in rows
-                    if _optional_id(item.get("id")) == record_id
-                ),
+                (item for item in rows if _optional_id(item.get("id")) == record_id),
                 None,
             )
             if row is None:
@@ -561,7 +606,7 @@ class IntercomSupportAdapter:
                     external_id=record_id,
                 )
             return self._external_record(stream_key, row)
-        if stream_key == "conversation_parts":
+        if stream_key == IntercomStream.CONVERSATION_PARTS:
             conversation_id, part_id = _split_expanded_id(record_id)
             conversation = await self._conversation(conversation_id)
             _require_complete_parts(conversation)
@@ -619,9 +664,7 @@ class IntercomSupportAdapter:
         )
 
     async def remove_webhook(self, subscription: SorWebhookSubscription) -> None:
-        raise SorCapabilityUnavailable(
-            "Remove the Intercom webhook in Developer Hub."
-        )
+        raise SorCapabilityUnavailable("Remove the Intercom webhook in Developer Hub.")
 
     async def verify_webhook(
         self,
@@ -651,29 +694,33 @@ class IntercomSupportAdapter:
     async def execute_command(self, command: SorCommandRequest) -> SorCommandResult:
         if command.tool_name not in _WRITE_TOOLS:
             raise SorVendorOperationError(
-                "vendor_tool_unsupported",
+                SorVendorErrorCode.VENDOR_TOOL_UNSUPPORTED,
                 "This Intercom adapter does not execute the requested support action.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
-        if command.tool_name == "support_open_ticket":
+        if command.tool_name == SupportToolName.OPEN_TICKET:
             return await self._open_conversation(command)
         conversation_id = _required_target(command)
-        if command.tool_name == "support_update_ticket":
+        if command.tool_name == SupportToolName.UPDATE_TICKET:
             return await self._update_conversation(conversation_id, command)
-        if command.tool_name == "support_assign_ticket":
+        if command.tool_name == SupportToolName.ASSIGN_TICKET:
             return await self._assign_conversation(conversation_id, command)
-        if command.tool_name in {"support_reply", "support_add_note"}:
+        if command.tool_name in {SupportToolName.REPLY, SupportToolName.ADD_NOTE}:
             return await self._reply(
                 conversation_id,
                 command,
-                public=command.tool_name == "support_reply",
+                visibility=(
+                    SupportMessageVisibility.PUBLIC
+                    if command.tool_name == SupportToolName.REPLY
+                    else SupportMessageVisibility.PRIVATE
+                ),
             )
-        if command.tool_name == "support_close_ticket":
+        if command.tool_name == SupportToolName.CLOSE_TICKET:
             return await self._close_conversation(conversation_id, command)
         return await self._change_tag(
             conversation_id,
             command,
-            add=command.tool_name == "support_add_tag",
+            add=command.tool_name == SupportToolName.ADD_TAG,
         )
 
     def normalize_ticket(self, record: SorExternalRecord) -> SupportTicket:
@@ -684,14 +731,14 @@ class IntercomSupportAdapter:
             normalized_description=_optional_string(
                 values.get("normalized_description")
             ),
-            requester_external_id=_optional_string(
-                values.get("requester_external_id")
-            ),
+            requester_external_id=_optional_string(values.get("requester_external_id")),
             assignee_external_id=_optional_string(values.get("assignee_external_id")),
             group_external_id=_optional_string(values.get("group_external_id")),
             inbox_external_id=None,
             native_status=_optional_string(values.get("native_status")),
-            normalized_status=_optional_string(values.get("normalized_status")),
+            normalized_status=SupportTicketState.from_value(
+                _optional_string(values.get("normalized_status"))
+            ),
             priority=_optional_string(values.get("priority")),
             category=_optional_string(values.get("category")),
             channel=_optional_string(values.get("channel")),
@@ -699,7 +746,9 @@ class IntercomSupportAdapter:
             first_response_at=_optional_datetime(values.get("first_response_at")),
             resolved_at=_optional_datetime(values.get("resolved_at")),
             closed_at=_optional_datetime(values.get("closed_at")),
-            sla_state=_optional_string(values.get("sla_state")),
+            sla_state=SupportSlaState.from_value(
+                _optional_string(values.get("sla_state"))
+            ),
             source_updated_at=record.source_updated_at,
             source_url=record.source_url,
             custom_fields={
@@ -744,10 +793,14 @@ class IntercomSupportAdapter:
             ticket_external_id=_required_string(
                 values.get("ticket_external_id"), field="Intercom conversation ID"
             ),
-            visibility=_required_string(
-                values.get("visibility"), field="Intercom message visibility"
+            visibility=SupportMessageVisibility(
+                _required_string(
+                    values.get("visibility"), field="Intercom message visibility"
+                ).upper()
             ),
-            direction=_optional_string(values.get("direction")),
+            direction=SupportMessageDirection.from_value(
+                _optional_string(values.get("direction"))
+            ),
             author_external_id=_optional_string(values.get("author_external_id")),
             normalized_text=_required_string(
                 values.get("normalized_text"), field="Intercom message text"
@@ -780,7 +833,9 @@ class IntercomSupportAdapter:
     def normalize_tag(self, record: SorExternalRecord) -> SupportTag:
         return SupportTag(
             external_id=record.external_id,
-            name=_required_string(record.payload.get("name"), field="Intercom tag name"),
+            name=_required_string(
+                record.payload.get("name"), field="Intercom tag name"
+            ),
         )
 
     def normalize_sla_metric(self, record: SorExternalRecord) -> SupportSlaMetric:
@@ -796,9 +851,7 @@ class IntercomSupportAdapter:
                 values.get("ticket_external_id"), field="Intercom conversation ID"
             ),
             message_external_id=_optional_string(values.get("message_external_id")),
-            name=_required_string(
-                values.get("name"), field="Intercom attachment name"
-            ),
+            name=_required_string(values.get("name"), field="Intercom attachment name"),
             content_type=_optional_string(values.get("content_type")),
             size_bytes=_optional_integer(values.get("size_bytes")),
             source_url=_optional_string(values.get("source_url")),
@@ -820,17 +873,20 @@ class IntercomSupportAdapter:
         )
         if limit <= 0:
             raise SorVendorOperationError(
-                "vendor_page_invalid",
+                SorVendorErrorCode.VENDOR_PAGE_INVALID,
                 "Intercom page limit must be positive.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
-        if stream_key in {"conversations", "contacts"}:
+        if stream_key in {IntercomStream.CONVERSATIONS, IntercomStream.CONTACTS}:
             return await self._read_search_page(
                 stream_key=stream_key,
                 cursor=cursor,
                 limit=min(limit, 150),
             )
-        if stream_key in {"conversation_parts", "attachments"}:
+        if stream_key in {
+            IntercomStream.CONVERSATION_PARTS,
+            IntercomStream.ATTACHMENTS,
+        }:
             return await self._read_expanded_page(
                 stream_key=stream_key,
                 cursor=cursor,
@@ -888,7 +944,7 @@ class IntercomSupportAdapter:
         empty_expansions = 0
         while len(records) < limit:
             rows, next_page, max_seen = await self._search_rows(
-                stream_key="conversations",
+                stream_key=IntercomStream.CONVERSATIONS,
                 state=state,
                 limit=1,
             )
@@ -912,7 +968,7 @@ class IntercomSupportAdapter:
             _require_complete_parts(conversation)
             expanded = (
                 _message_rows(conversation)
-                if stream_key == "conversation_parts"
+                if stream_key == IntercomStream.CONVERSATION_PARTS
                 else _attachment_rows(conversation)
             )
             if state.item_offset > len(expanded):
@@ -987,7 +1043,7 @@ class IntercomSupportAdapter:
             pagination["starting_after"] = state.starting_after
         response = await self._client.request(
             "/contacts/search"
-            if stream_key == "contacts"
+            if stream_key == IntercomStream.CONTACTS
             else "/conversations/search",
             method="POST",
             payload={
@@ -1000,11 +1056,13 @@ class IntercomSupportAdapter:
                 "sort": {"field": "updated_at", "order": "ascending"},
             },
         )
-        data = _object(
-            _expect(response, operation=f"search Intercom {stream_key}")
-        )
+        data = _object(_expect(response, operation=f"search Intercom {stream_key}"))
         rows = _object_list(
-            data.get("data" if stream_key == "contacts" else "conversations"),
+            data.get(
+                "data"
+                if stream_key == IntercomStream.CONTACTS
+                else IntercomStream.CONVERSATIONS
+            ),
             field=f"Intercom {stream_key}",
         )
         if len(rows) > limit:
@@ -1044,13 +1102,15 @@ class IntercomSupportAdapter:
 
     async def _reconcile_rows(self, stream_key: str) -> list[dict[str, object]]:
         endpoint, response_key = {
-            "admins": ("/admins", "admins"),
-            "teams": ("/teams", "teams"),
-            "tags": ("/tags", "data"),
+            IntercomStream.ADMINS: ("/admins", IntercomStream.ADMINS),
+            IntercomStream.TEAMS: ("/teams", IntercomStream.TEAMS),
+            IntercomStream.TAGS: ("/tags", "data"),
         }[stream_key]
         response = await self._client.request(
             endpoint,
-            query={"display_avatar": True} if stream_key == "admins" else None,
+            query={"display_avatar": True}
+            if stream_key == IntercomStream.ADMINS
+            else None,
         )
         data = _object(_expect(response, operation=f"list Intercom {stream_key}"))
         return _object_list(data.get(response_key), field=f"Intercom {stream_key}")
@@ -1060,9 +1120,9 @@ class IntercomSupportAdapter:
             f"/conversations/{_path_id(conversation_id)}",
             query={"display_as": "plaintext"},
         )
-        if response.status_code in {404, 410}:
+        if response.status_code in {HTTPStatus.NOT_FOUND, HTTPStatus.GONE}:
             raise SorExternalRecordNotFound(
-                vendor_object_key="conversations",
+                vendor_object_key=IntercomStream.CONVERSATIONS,
                 external_id=conversation_id,
             )
         return _object(_expect(response, operation="read Intercom conversation"))
@@ -1087,20 +1147,20 @@ class IntercomSupportAdapter:
         stream_key: str,
         row: Mapping[str, object],
     ) -> SorExternalRecord:
-        if stream_key == "conversations":
+        if stream_key == IntercomStream.CONVERSATIONS:
             record_id = _required_id(row.get("id"), field="Intercom conversation ID")
             source = _optional_object(row.get("source"))
             statistics = _optional_object(row.get("statistics"))
             sla = _optional_object(row.get("sla_applied"))
             state = _optional_string(row.get("state"))
             contacts = _nested_object_list(
-                row.get("contacts"),
-                "contacts",
+                row.get(IntercomStream.CONTACTS),
+                IntercomStream.CONTACTS,
                 field="Intercom conversation contacts",
             )
             tags = _nested_object_list(
-                row.get("tags"),
-                "tags",
+                row.get(IntercomStream.TAGS),
+                IntercomStream.TAGS,
                 field="Intercom conversation tags",
             )
             updated_epoch = _optional_epoch(row.get("updated_at"))
@@ -1110,9 +1170,7 @@ class IntercomSupportAdapter:
                 "requester_external_id": (
                     _optional_id(contacts[0].get("id")) if contacts else None
                 ),
-                "assignee_external_id": _optional_id(
-                    row.get("admin_assignee_id")
-                ),
+                "assignee_external_id": _optional_id(row.get("admin_assignee_id")),
                 "group_external_id": _optional_id(row.get("team_assignee_id")),
                 "native_status": state,
                 "normalized_status": _STATUS_MAP.get(state or ""),
@@ -1148,7 +1206,7 @@ class IntercomSupportAdapter:
                 source_updated_at=_epoch_datetime(updated_epoch),
                 source_revision=_epoch_revision(updated_epoch),
             )
-        if stream_key == "contacts":
+        if stream_key == IntercomStream.CONTACTS:
             record_id = _required_id(row.get("id"), field="Intercom contact ID")
             companies = _nested_object_list(
                 row.get("companies"),
@@ -1174,7 +1232,7 @@ class IntercomSupportAdapter:
                 source_updated_at=_epoch_datetime(updated_epoch),
                 source_revision=_epoch_revision(updated_epoch),
             )
-        if stream_key == "admins":
+        if stream_key == IntercomStream.ADMINS:
             avatar = _optional_object(row.get("avatar"))
             return SorExternalRecord(
                 vendor_object_key=stream_key,
@@ -1187,19 +1245,19 @@ class IntercomSupportAdapter:
                     "avatar_url": _safe_source_url(avatar.get("image_url")),
                 },
             )
-        if stream_key == "teams":
+        if stream_key == IntercomStream.TEAMS:
             return SorExternalRecord(
                 vendor_object_key=stream_key,
                 external_id=_required_id(row.get("id"), field="Intercom team ID"),
                 payload={"name": row.get("name"), "description": None, "active": True},
             )
-        if stream_key == "tags":
+        if stream_key == IntercomStream.TAGS:
             return SorExternalRecord(
                 vendor_object_key=stream_key,
                 external_id=_required_id(row.get("id"), field="Intercom tag ID"),
                 payload={"name": row.get("name")},
             )
-        if stream_key == "conversation_parts":
+        if stream_key == IntercomStream.CONVERSATION_PARTS:
             conversation_id = _required_id(
                 row.get("_conversation_id"), field="Intercom conversation ID"
             )
@@ -1212,11 +1270,11 @@ class IntercomSupportAdapter:
                 row.get("created_at"), field="Intercom message creation time"
             )
             attachments = _object_list(
-                row.get("attachments") or [], field="Intercom message attachments"
+                row.get(IntercomStream.ATTACHMENTS) or [],
+                field="Intercom message attachments",
             )
             attachment_ids = [
-                _attachment_external_id(conversation_id, item)
-                for item in attachments
+                _attachment_external_id(conversation_id, item) for item in attachments
             ]
             return SorExternalRecord(
                 vendor_object_key=stream_key,
@@ -1240,12 +1298,8 @@ class IntercomSupportAdapter:
         conversation_id = _required_id(
             row.get("_conversation_id"), field="Intercom conversation ID"
         )
-        message_id = _required_id(
-            row.get("_message_id"), field="Intercom message ID"
-        )
-        attachment_id = _required_id(
-            row.get("id"), field="Intercom attachment ID"
-        )
+        message_id = _required_id(row.get("_message_id"), field="Intercom message ID")
+        attachment_id = _required_id(row.get("id"), field="Intercom attachment ID")
         return SorExternalRecord(
             vendor_object_key=stream_key,
             external_id=_attachment_id(
@@ -1304,7 +1358,7 @@ class IntercomSupportAdapter:
                 operation="finish an Intercom conversation",
             )
         return SorCommandResult(
-            vendor_object_key="conversations",
+            vendor_object_key=IntercomStream.CONVERSATIONS,
             external_id=conversation_id,
             external_request_id=_request_id(response),
             source_url=None,
@@ -1317,9 +1371,7 @@ class IntercomSupportAdapter:
         command: SorCommandRequest,
     ) -> SorCommandResult:
         values = self._ticket_write_values(command.payload)
-        unsupported = {
-            key for key in values if key.startswith("_")
-        }
+        unsupported = {key for key in values if key.startswith("_")}
         if unsupported:
             raise _invalid_command(
                 "Intercom cannot update a conversation requester or opening message."
@@ -1382,7 +1434,7 @@ class IntercomSupportAdapter:
         conversation_id: str,
         command: SorCommandRequest,
         *,
-        public: bool,
+        visibility: SupportMessageVisibility,
     ) -> SorCommandResult:
         if set(command.payload) != {"normalized_text"}:
             raise _invalid_command(
@@ -1398,22 +1450,26 @@ class IntercomSupportAdapter:
             payload={
                 "type": "admin",
                 "admin_id": await self._admin_id(),
-                "message_type": "comment" if public else "note",
+                "message_type": (
+                    "comment"
+                    if visibility is SupportMessageVisibility.PUBLIC
+                    else "note"
+                ),
                 "body": text,
             },
             operation=(
                 "reply to an Intercom conversation"
-                if public
+                if visibility is SupportMessageVisibility.PUBLIC
                 else "add an Intercom private note"
             ),
         )
         conversation = _object(
             _expect(response, operation="write an Intercom conversation message")
         )
-        part = _latest_message_part(conversation, public=public)
+        part = _latest_message_part(conversation, visibility=visibility)
         part_id = _required_id(part.get("id"), field="Intercom message ID")
         return SorCommandResult(
-            vendor_object_key="conversation_parts",
+            vendor_object_key=IntercomStream.CONVERSATION_PARTS,
             external_id=_expanded_id(conversation_id, part_id),
             external_request_id=_request_id(response),
             source_revision=_epoch_revision(
@@ -1421,7 +1477,7 @@ class IntercomSupportAdapter:
             ),
             response={
                 "status": "accepted",
-                "visibility": "PUBLIC" if public else "PRIVATE",
+                "visibility": visibility.value,
             },
         )
 
@@ -1483,7 +1539,7 @@ class IntercomSupportAdapter:
         )
         _expect(response, operation="change an Intercom conversation tag")
         return SorCommandResult(
-            vendor_object_key="conversations",
+            vendor_object_key=IntercomStream.CONVERSATIONS,
             external_id=conversation_id,
             external_request_id=_request_id(response),
             response={"status": "accepted"},
@@ -1496,7 +1552,8 @@ class IntercomSupportAdapter:
         writable = {
             field.agent_key: field.vendor_field_key
             for field in self._context.fields
-            if field.vendor_object_key == "conversations" and field.writable
+            if field.vendor_object_key == IntercomStream.CONVERSATIONS
+            and field.writable
         }
         if not payload:
             raise _invalid_command(
@@ -1505,9 +1562,9 @@ class IntercomSupportAdapter:
         unknown = set(payload) - set(writable)
         if unknown:
             raise SorVendorOperationError(
-                "vendor_field_not_writable",
+                SorVendorErrorCode.VENDOR_FIELD_NOT_WRITABLE,
                 "The requested Intercom field is not writable by this source mapping.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         values: dict[str, object] = {}
         custom: dict[str, object] = {}
@@ -1527,9 +1584,9 @@ class IntercomSupportAdapter:
                 custom[_custom_attribute_name(vendor_key)] = value
             else:
                 raise SorVendorOperationError(
-                    "vendor_field_not_writable",
+                    SorVendorErrorCode.VENDOR_FIELD_NOT_WRITABLE,
                     "The mapped Intercom field is not writable by this adapter.",
-                    retryable=False,
+                    recovery=SorRecoveryPolicy.TERMINAL,
                 )
         if custom:
             values["custom_attributes"] = custom
@@ -1553,14 +1610,14 @@ class IntercomSupportAdapter:
             return response
         except SorVendorOperationError as error:
             if error.code in {
-                "vendor_timeout",
-                "vendor_transport_failed",
-                "vendor_server_failed",
+                SorVendorErrorCode.VENDOR_TIMEOUT,
+                SorVendorErrorCode.VENDOR_TRANSPORT_FAILED,
+                SorVendorErrorCode.VENDOR_SERVER_FAILED,
             }:
                 raise SorVendorOperationError(
-                    "vendor_mutation_outcome_unknown",
+                    SorVendorErrorCode.VENDOR_MUTATION_OUTCOME_UNKNOWN,
                     "Intercom may have applied the action; reconcile before retrying.",
-                    retryable=False,
+                    recovery=SorRecoveryPolicy.RECONCILE_REQUIRED,
                 ) from error
             raise
 
@@ -1575,7 +1632,7 @@ class IntercomSupportAdapter:
         )
         updated_epoch = _optional_epoch(conversation.get("updated_at"))
         return SorCommandResult(
-            vendor_object_key="conversations",
+            vendor_object_key=IntercomStream.CONVERSATIONS,
             external_id=conversation_id,
             external_request_id=_request_id(response),
             source_revision=_epoch_revision(updated_epoch),
@@ -1621,9 +1678,9 @@ def _credential(credentials: Mapping[str, object], name: str) -> str:
 def _require_stream(stream_key: str, *, selected: Sequence[str]) -> str:
     if stream_key not in _STREAM_ENTITY or stream_key not in selected:
         raise SorVendorOperationError(
-            "vendor_stream_unavailable",
+            SorVendorErrorCode.VENDOR_STREAM_UNAVAILABLE,
             "The requested Intercom stream is not selected for this source.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return stream_key
 
@@ -1679,7 +1736,9 @@ def _custom_attribute_name(key: str) -> str:
             validate=True,
         ).decode()
     except (UnicodeDecodeError, ValueError) as error:
-        raise _invalid_command("Intercom custom attribute identity is invalid.") from error
+        raise _invalid_command(
+            "Intercom custom attribute identity is invalid."
+        ) from error
     if not decoded or _custom_attribute_key(decoded) != key:
         raise _invalid_command("Intercom custom attribute identity is invalid.")
     return decoded
@@ -1799,9 +1858,9 @@ def _decode_cursor(value: str) -> dict[str, object]:
 
 def _invalid_cursor() -> SorVendorOperationError:
     return SorVendorOperationError(
-        "vendor_cursor_invalid",
+        SorVendorErrorCode.VENDOR_CURSOR_INVALID,
         "The Intercom cursor is invalid or belongs to another stream.",
-        retryable=False,
+        recovery=SorRecoveryPolicy.TERMINAL,
     )
 
 
@@ -1847,27 +1906,25 @@ def _message_rows(conversation: Mapping[str, object]) -> list[dict[str, object]]
             "created_at"
         )
         opening["updated_at"] = conversation.get("updated_at")
-        opening["attachments"] = _annotated_attachments(
-            opening.get("attachments"),
+        opening[IntercomStream.ATTACHMENTS] = _annotated_attachments(
+            opening.get(IntercomStream.ATTACHMENTS),
             conversation_id=conversation_id,
             message_id=_required_id(opening.get("id"), field="Intercom message ID"),
         )
         result.append(opening)
-    parts = _optional_object(conversation.get("conversation_parts"))
+    parts = _optional_object(conversation.get(IntercomStream.CONVERSATION_PARTS))
     for raw_part in _object_list(
-        parts.get("conversation_parts") or [],
+        parts.get(IntercomStream.CONVERSATION_PARTS) or [],
         field="Intercom conversation parts",
     ):
         part_type = _optional_string(raw_part.get("part_type"))
-        if part_type not in {"comment", "note"} or not _has_message_content(
-            raw_part
-        ):
+        if part_type not in {"comment", "note"} or not _has_message_content(raw_part):
             continue
         part = dict(raw_part)
         part["_conversation_id"] = conversation_id
         part["_part_type"] = part_type
-        part["attachments"] = _annotated_attachments(
-            part.get("attachments"),
+        part[IntercomStream.ATTACHMENTS] = _annotated_attachments(
+            part.get(IntercomStream.ATTACHMENTS),
             conversation_id=conversation_id,
             message_id=_required_id(part.get("id"), field="Intercom message ID"),
         )
@@ -1884,7 +1941,7 @@ def _message_rows(conversation: Mapping[str, object]) -> list[dict[str, object]]
 def _has_message_content(row: Mapping[str, object]) -> bool:
     if _plain_text(row.get("body")):
         return True
-    attachments = row.get("attachments")
+    attachments = row.get(IntercomStream.ATTACHMENTS)
     return isinstance(attachments, list) and bool(attachments)
 
 
@@ -1893,12 +1950,11 @@ def _message_text(row: Mapping[str, object]) -> str:
     if body:
         return body
     attachments = _object_list(
-        row.get("attachments") or [],
+        row.get(IntercomStream.ATTACHMENTS) or [],
         field="Intercom message attachments",
     )
     names = [
-        _optional_string(item.get("name")) or "unnamed file"
-        for item in attachments
+        _optional_string(item.get("name")) or "unnamed file" for item in attachments
     ]
     if names:
         return "\n".join(f"[Attachment: {name}]" for name in names)
@@ -1910,7 +1966,7 @@ def _attachment_rows(conversation: Mapping[str, object]) -> list[dict[str, objec
     for message in _message_rows(conversation):
         result.extend(
             _object_list(
-                message.get("attachments") or [],
+                message.get(IntercomStream.ATTACHMENTS) or [],
                 field="Intercom message attachments",
             )
         )
@@ -1933,9 +1989,9 @@ def _annotated_attachments(
 
 
 def _require_complete_parts(conversation: Mapping[str, object]) -> None:
-    parts = _optional_object(conversation.get("conversation_parts"))
+    parts = _optional_object(conversation.get(IntercomStream.CONVERSATION_PARTS))
     rows = _object_list(
-        parts.get("conversation_parts") or [],
+        parts.get(IntercomStream.CONVERSATION_PARTS) or [],
         field="Intercom conversation parts",
     )
     total = _optional_integer(parts.get("total_count"))
@@ -1945,29 +2001,29 @@ def _require_complete_parts(conversation: Mapping[str, object]) -> None:
         )
     if total is not None and total > len(rows):
         raise SorVendorOperationError(
-            "vendor_history_truncated",
+            SorVendorErrorCode.VENDOR_HISTORY_TRUNCATED,
             "Intercom exposes only the 500 most recent parts for this conversation.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     if len(rows) > INTERCOM_MAX_PARTS:
         raise _invalid_response("Intercom returned more than 500 conversation parts.")
     if total is None and len(rows) == INTERCOM_MAX_PARTS:
         raise SorVendorOperationError(
-            "vendor_history_truncated",
+            SorVendorErrorCode.VENDOR_HISTORY_TRUNCATED,
             "Intercom may have truncated this conversation at its 500-part limit.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
 
 
 def _latest_message_part(
     conversation: Mapping[str, object],
     *,
-    public: bool,
+    visibility: SupportMessageVisibility,
 ) -> dict[str, object]:
-    expected = "comment" if public else "note"
-    parts = _optional_object(conversation.get("conversation_parts"))
+    expected = "comment" if visibility is SupportMessageVisibility.PUBLIC else "note"
+    parts = _optional_object(conversation.get(IntercomStream.CONVERSATION_PARTS))
     rows = _object_list(
-        parts.get("conversation_parts") or [],
+        parts.get(IntercomStream.CONVERSATION_PARTS) or [],
         field="Intercom conversation parts",
     )
     for part in reversed(rows):
@@ -1982,7 +2038,7 @@ def _webhook_identity(
 ) -> tuple[str | None, str | None]:
     lowered = topic.casefold()
     if lowered.startswith("contact.") or lowered.startswith("user."):
-        return "contacts", _optional_id(item.get("id"))
+        return IntercomStream.CONTACTS, _optional_id(item.get("id"))
     if lowered.startswith("conversation."):
         direct = _optional_id(item.get("conversation_id"))
         if direct is None:
@@ -1990,7 +2046,7 @@ def _webhook_identity(
             direct = _optional_id(conversation.get("id"))
         if direct is None and _optional_string(item.get("type")) == "conversation":
             direct = _optional_id(item.get("id"))
-        return "conversations", direct
+        return IntercomStream.CONVERSATIONS, direct
     return None, None
 
 
@@ -2098,47 +2154,46 @@ def _request_id(response: SorJsonResponse) -> str | None:
 def _expect(response: SorJsonResponse, *, operation: str) -> object:
     if response.ok:
         return response.data
-    if response.status_code == 401:
+    if response.status_code == HTTPStatus.UNAUTHORIZED:
         raise SorVendorOperationError(
-            "vendor_authorization_expired",
+            SorVendorErrorCode.VENDOR_AUTHORIZATION_EXPIRED,
             f"Intercom refused authorization while attempting to {operation}.",
-            retryable=False,
-            requires_reauthorization=True,
+            recovery=SorRecoveryPolicy.REAUTH_REQUIRED,
         )
-    if response.status_code == 403:
+    if response.status_code == HTTPStatus.FORBIDDEN:
         raise SorVendorOperationError(
-            "vendor_forbidden",
+            SorVendorErrorCode.VENDOR_FORBIDDEN,
             f"Intercom refused permission to {operation}.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
-    if response.status_code == 404:
+    if response.status_code == HTTPStatus.NOT_FOUND:
         raise SorVendorOperationError(
-            "vendor_resource_unavailable",
+            SorVendorErrorCode.VENDOR_RESOURCE_UNAVAILABLE,
             f"Intercom could not find the resource needed to {operation}.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
-    if response.status_code in {409, 422}:
+    if response.status_code in {HTTPStatus.CONFLICT, HTTPStatus.UNPROCESSABLE_CONTENT}:
         raise SorVendorOperationError(
-            "vendor_command_invalid",
+            SorVendorErrorCode.VENDOR_COMMAND_INVALID,
             f"Intercom rejected the data used to {operation}.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
-    if response.status_code == 429:
+    if response.status_code == HTTPStatus.TOO_MANY_REQUESTS:
         raise SorVendorOperationError(
-            "vendor_rate_limited",
+            SorVendorErrorCode.VENDOR_RATE_LIMITED,
             "Intercom rate-limited the source.",
-            retryable=True,
+            recovery=SorRecoveryPolicy.RETRY,
         )
-    if response.status_code >= 500:
+    if response.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR:
         raise SorVendorOperationError(
-            "vendor_server_failed",
+            SorVendorErrorCode.VENDOR_SERVER_FAILED,
             f"Intercom failed while attempting to {operation}.",
-            retryable=True,
+            recovery=SorRecoveryPolicy.RETRY,
         )
     raise SorVendorOperationError(
-        "vendor_request_failed",
+        SorVendorErrorCode.VENDOR_REQUEST_FAILED,
         f"Intercom refused the request to {operation}.",
-        retryable=False,
+        recovery=SorRecoveryPolicy.TERMINAL,
     )
 
 
@@ -2236,7 +2291,9 @@ def _epoch_datetime(value: int | None) -> datetime | None:
     try:
         return datetime.fromtimestamp(value, tz=timezone.utc)
     except (OverflowError, OSError, ValueError) as error:
-        raise _invalid_response("Intercom timestamp is outside the supported range.") from error
+        raise _invalid_response(
+            "Intercom timestamp is outside the supported range."
+        ) from error
 
 
 def _optional_datetime(value: object) -> datetime | None:
@@ -2309,7 +2366,9 @@ def _required_target(command: SorCommandRequest) -> str:
 
 def _header(headers: Mapping[str, str], name: str) -> str | None:
     expected = name.casefold()
-    values = [value.strip() for key, value in headers.items() if key.casefold() == expected]
+    values = [
+        value.strip() for key, value in headers.items() if key.casefold() == expected
+    ]
     if len(values) != 1 or not values[0] or len(values[0]) > 4_096:
         return None
     return values[0]
@@ -2317,17 +2376,17 @@ def _header(headers: Mapping[str, str], name: str) -> str | None:
 
 def _invalid_response(message: str) -> SorVendorOperationError:
     return SorVendorOperationError(
-        "vendor_response_invalid",
+        SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
         message,
-        retryable=False,
+        recovery=SorRecoveryPolicy.TERMINAL,
     )
 
 
 def _invalid_command(message: str) -> SorVendorOperationError:
     return SorVendorOperationError(
-        "vendor_command_invalid",
+        SorVendorErrorCode.VENDOR_COMMAND_INVALID,
         message,
-        retryable=False,
+        recovery=SorRecoveryPolicy.TERMINAL,
     )
 
 

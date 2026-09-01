@@ -321,7 +321,10 @@ class SorSourceService:
                 connection_id=existing.external_connection_id,
                 vendor_key=draft.vendor_key,
             )
-            if connection is None or connection.instance_origin != expected_instance_origin:
+            if (
+                connection is None
+                or connection.instance_origin != expected_instance_origin
+            ):
                 raise SorConflictError(
                     "This onboarding attempt is already bound to another instance."
                 )
@@ -636,9 +639,7 @@ class SorSourceService:
             for_update=True,
         )
         if source.state is not SorSourceState.REAUTH_REQUIRED:
-            raise SorConflictError(
-                "Only a source awaiting reauthorization can resume."
-            )
+            raise SorConflictError("Only a source awaiting reauthorization can resume.")
         if (
             source.active_schema_revision_id is None
             or source.active_mapping_revision_id is None
@@ -1631,9 +1632,7 @@ class SorProjectionService:
             predicates.append(SorRecordRelationModel.to_record_id.in_(record_ids))
         if relation_external_ids:
             predicates.append(
-                SorRecordRelationModel.external_relation_id.in_(
-                    relation_external_ids
-                )
+                SorRecordRelationModel.external_relation_id.in_(relation_external_ids)
             )
         if not predicates:
             return 0

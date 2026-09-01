@@ -96,9 +96,7 @@ class SorOnboardingService:
             for_update=True,
         )
         if source.state is not SorSourceState.DRAFT:
-            raise SorConflictError(
-                "Only a verified draft source can be activated."
-            )
+            raise SorConflictError("Only a verified draft source can be activated.")
         if source.active_mapping_revision_id is not None:
             raise SorConflictError("This source already has an active mapping.")
         if source.active_schema_revision_id is None:
@@ -153,11 +151,14 @@ class SorOnboardingService:
             )
         if source.active_mapping_revision_id is None:
             raise SorConflictError("Activate the source before expanding it.")
-        if await self.repository.get_active_source_sync_run(
-            organization_id=organization_id,
-            source_id=source_id,
-            for_update=True,
-        ) is not None:
+        if (
+            await self.repository.get_active_source_sync_run(
+                organization_id=organization_id,
+                source_id=source_id,
+                for_update=True,
+            )
+            is not None
+        ):
             raise SorConflictError(
                 "Wait for active source synchronization to finish before "
                 "enabling objects."
@@ -468,7 +469,8 @@ class SorOnboardingService:
         manifest_streams = {stream.key: stream for stream in manifest.streams}
         selected_streams = set(selected)
         profile_entities = {
-            entity.key: entity for entity in self.registry.get_profile(source.profile).entities
+            entity.key: entity
+            for entity in self.registry.get_profile(source.profile).entities
         }
         mapped_fields = [
             field
@@ -511,9 +513,7 @@ class SorOnboardingService:
                         "Custom-object mappings must be read-only typed audit fields."
                     )
                 continue
-            missing_dependencies = sorted(
-                manifest_stream.depends_on - selected_streams
-            )
+            missing_dependencies = sorted(manifest_stream.depends_on - selected_streams)
             if missing_dependencies:
                 raise SorConfigurationError(
                     f"{manifest_stream.label} requires source objects: "

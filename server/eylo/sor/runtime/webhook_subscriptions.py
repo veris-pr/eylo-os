@@ -221,8 +221,7 @@ async def _execute_subscription_plan(
             "Webhook subscription operation has no callback authority."
         )
     callback_url = (
-        f"{api_base_url}/sor/webhooks/{plan.vendor_key}/"
-        f"{plan.endpoint_token}"
+        f"{api_base_url}/sor/webhooks/{plan.vendor_key}/{plan.endpoint_token}"
     )
     async with asyncio.timeout(_VENDOR_OPERATION_TIMEOUT_SECONDS):
         async with acquire_source_adapter(
@@ -300,12 +299,8 @@ async def _record_subscription_failure(
     error: Exception,
 ) -> None:
     requires_reauthorization = (
-        isinstance(error, SorAdapterUnavailableError)
-        and error.requires_reauthorization
-    ) or (
-        isinstance(error, SorVendorOperationError)
-        and error.requires_reauthorization
-    )
+        isinstance(error, SorAdapterUnavailableError) and error.requires_reauthorization
+    ) or (isinstance(error, SorVendorOperationError) and error.requires_reauthorization)
     try:
         async with start_transaction() as session:
             await SorWebhookService(session).fail_subscription(
@@ -413,9 +408,9 @@ async def _due_source_ids(*, now: datetime) -> tuple[tuple[UUID, UUID], ...]:
 
 def _managed_endpoint_token(*, organization_id: UUID, source_id: UUID) -> str:
     """Derive stable opaque callback authority for crash-safe registration."""
-    payload = (
-        f"eylo.sor.managed-webhook.v1:{organization_id}:{source_id}"
-    ).encode("ascii")
+    payload = (f"eylo.sor.managed-webhook.v1:{organization_id}:{source_id}").encode(
+        "ascii"
+    )
     digest = hmac.new(
         settings.AUTH_SECRET_KEY.encode("utf-8"),
         payload,

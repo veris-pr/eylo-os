@@ -20,12 +20,17 @@ from .contracts import (
     SupportAgent,
     SupportAttachment,
     SupportCustomer,
+    SupportEntityKind,
     SupportInbox,
     SupportMessage,
+    SupportMessageDirection,
+    SupportMessageVisibility,
     SupportQueue,
     SupportSlaMetric,
+    SupportSlaState,
     SupportTag,
     SupportTicket,
+    SupportTicketState,
 )
 from .models import (
     SupportAgentModel,
@@ -41,10 +46,10 @@ from .models import (
 
 SupportRecordModel = TypeVar("SupportRecordModel", bound=SorProfileRecordModel)
 
-_TICKET_STATUSES = frozenset({"NEW", "OPEN", "PENDING", "HOLD", "RESOLVED", "CLOSED"})
-_MESSAGE_VISIBILITIES = frozenset({"PUBLIC", "PRIVATE"})
-_MESSAGE_DIRECTIONS = frozenset({"INBOUND", "OUTBOUND", "SYSTEM", "UNKNOWN"})
-_SLA_STATES = frozenset({"ACTIVE", "ACHIEVED", "BREACHED", "PAUSED", "UNAVAILABLE"})
+_TICKET_STATUSES = frozenset(SupportTicketState)
+_MESSAGE_VISIBILITIES = frozenset(SupportMessageVisibility)
+_MESSAGE_DIRECTIONS = frozenset(SupportMessageDirection)
+_SLA_STATES = frozenset(SupportSlaState)
 
 
 class SupportProjectionService:
@@ -68,7 +73,7 @@ class SupportProjectionService:
             organization_id=organization_id,
             source_id=source_id,
             record_id=record_id,
-            entity_kind="ticket",
+            entity_kind=SupportEntityKind.TICKET,
             vendor_external_id=ticket.external_id,
             values={
                 "subject": ticket.subject,
@@ -78,7 +83,11 @@ class SupportProjectionService:
                 "group_external_id": ticket.group_external_id,
                 "inbox_external_id": ticket.inbox_external_id,
                 "native_status": ticket.native_status,
-                "normalized_status": ticket.normalized_status,
+                "normalized_status": (
+                    ticket.normalized_status.value
+                    if ticket.normalized_status is not None
+                    else None
+                ),
                 "priority": ticket.priority,
                 "category": ticket.category,
                 "channel": ticket.channel,
@@ -86,7 +95,7 @@ class SupportProjectionService:
                 "first_response_at": ticket.first_response_at,
                 "resolved_at": ticket.resolved_at,
                 "closed_at": ticket.closed_at,
-                "sla_state": ticket.sla_state,
+                "sla_state": ticket.sla_state.value if ticket.sla_state else None,
             },
             search_values=(
                 ticket.subject,
@@ -112,7 +121,7 @@ class SupportProjectionService:
             organization_id=organization_id,
             source_id=source_id,
             record_id=record_id,
-            entity_kind="customer",
+            entity_kind=SupportEntityKind.CUSTOMER,
             vendor_external_id=customer.external_id,
             values={
                 "name": customer.name,
@@ -142,7 +151,7 @@ class SupportProjectionService:
             organization_id=organization_id,
             source_id=source_id,
             record_id=record_id,
-            entity_kind="agent",
+            entity_kind=SupportEntityKind.AGENT,
             vendor_external_id=agent.external_id,
             values={
                 "name": agent.name,
@@ -168,7 +177,7 @@ class SupportProjectionService:
             organization_id=organization_id,
             source_id=source_id,
             record_id=record_id,
-            entity_kind="queue",
+            entity_kind=SupportEntityKind.QUEUE,
             vendor_external_id=queue.external_id,
             values={
                 "name": queue.name,
@@ -192,7 +201,7 @@ class SupportProjectionService:
             organization_id=organization_id,
             source_id=source_id,
             record_id=record_id,
-            entity_kind="inbox",
+            entity_kind=SupportEntityKind.INBOX,
             vendor_external_id=inbox.external_id,
             values={"name": inbox.name, "kind": inbox.kind, "active": inbox.active},
             search_values=(inbox.name, inbox.kind),
@@ -212,12 +221,14 @@ class SupportProjectionService:
             organization_id=organization_id,
             source_id=source_id,
             record_id=record_id,
-            entity_kind="message",
+            entity_kind=SupportEntityKind.MESSAGE,
             vendor_external_id=message.external_id,
             values={
                 "ticket_external_id": message.ticket_external_id,
-                "visibility": message.visibility,
-                "direction": message.direction,
+                "visibility": message.visibility.value,
+                "direction": (
+                    message.direction.value if message.direction is not None else None
+                ),
                 "author_external_id": message.author_external_id,
                 "normalized_text": message.normalized_text,
                 "source_body": message.source_body,
@@ -247,7 +258,7 @@ class SupportProjectionService:
             organization_id=organization_id,
             source_id=source_id,
             record_id=record_id,
-            entity_kind="tag",
+            entity_kind=SupportEntityKind.TAG,
             vendor_external_id=tag.external_id,
             values={"name": tag.name},
             search_values=(tag.name,),
@@ -267,7 +278,7 @@ class SupportProjectionService:
             organization_id=organization_id,
             source_id=source_id,
             record_id=record_id,
-            entity_kind="sla_metric",
+            entity_kind=SupportEntityKind.SLA_METRIC,
             vendor_external_id=metric.external_id,
             values={
                 "ticket_external_id": metric.ticket_external_id,
@@ -275,7 +286,11 @@ class SupportProjectionService:
                 "value": metric.value,
                 "unit": metric.unit,
                 "native_state": metric.native_state,
-                "normalized_state": metric.normalized_state,
+                "normalized_state": (
+                    metric.normalized_state.value
+                    if metric.normalized_state is not None
+                    else None
+                ),
                 "target_at": metric.target_at,
                 "achieved_at": metric.achieved_at,
                 "breached_at": metric.breached_at,
@@ -297,7 +312,7 @@ class SupportProjectionService:
             organization_id=organization_id,
             source_id=source_id,
             record_id=record_id,
-            entity_kind="attachment",
+            entity_kind=SupportEntityKind.ATTACHMENT,
             vendor_external_id=attachment.external_id,
             values={
                 "ticket_external_id": attachment.ticket_external_id,
@@ -317,7 +332,7 @@ class SupportProjectionService:
         organization_id: UUID,
         source_id: UUID,
         record_id: UUID,
-        entity_kind: str,
+        entity_kind: SupportEntityKind,
         vendor_external_id: str,
         values: dict[str, object],
         search_values: Sequence[str | None],
@@ -343,7 +358,7 @@ class SupportProjectionService:
                 source_id=source_id,
                 record_id=record_id,
                 profile=SorProfile.SUPPORT,
-                canonical_entity_kind=entity_kind,
+                canonical_entity_kind=entity_kind.value,
                 **values,
             )
             self.session.add(row)
@@ -360,7 +375,7 @@ class SupportProjectionService:
         organization_id: UUID,
         source_id: UUID,
         record_id: UUID,
-        entity_kind: str,
+        entity_kind: SupportEntityKind,
         vendor_external_id: str,
     ) -> SorRecordModel:
         record = await self.records.get_record(
@@ -373,7 +388,7 @@ class SupportProjectionService:
             raise SorProjectionError("Canonical support source record not found.")
         if (
             record.profile is not SorProfile.SUPPORT
-            or record.canonical_entity_kind != entity_kind
+            or record.canonical_entity_kind != entity_kind.value
             or record.vendor_external_id != vendor_external_id
         ):
             raise SorProjectionError(

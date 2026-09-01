@@ -8,11 +8,21 @@ from collections.abc import Mapping
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from email.utils import format_datetime
+from enum import StrEnum
+from http import HTTPStatus
 from typing import Any
 from urllib.parse import urlsplit
 
 from eylo.modules.connections.domain import ConnectionAuthKind
-from eylo.sor.crm.contracts import CrmActivity, CrmCompany, CrmContact, CrmDeal
+from eylo.sor.crm.contracts import (
+    CrmActivity,
+    CrmCompany,
+    CrmContact,
+    CrmDeal,
+    CrmDealState,
+    CrmEntityKind,
+    CrmToolName,
+)
 from eylo.sor.runtime.http import SorHttpTransport, SorJsonHttpClient, SorJsonResponse
 from eylo.sor.shared.contracts import (
     SorAdapterCapabilityManifest,
@@ -28,9 +38,12 @@ from eylo.sor.shared.contracts import (
     SorDiscoveredSchema,
     SorExternalRecord,
     SorExternalRecordNotFound,
+    SorMutationOperation,
     SorOAuthSpec,
     SorProfile,
     SorRecordPage,
+    SorRecoveryPolicy,
+    SorVendorErrorCode,
     SorVendorOperationError,
     SorVendorStreamSpec,
     SorWebhookSignal,
@@ -43,42 +56,67 @@ SALESFORCE_API_PREFIX = f"/services/data/v{SALESFORCE_API_VERSION}"
 API_SCOPE = "api"
 REFRESH_SCOPE = "refresh_token"
 
+
+class SalesforceStream(StrEnum):
+    """Closed vendor stream vocabulary owned by this adapter."""
+
+    CONTACT = "Contact"
+    ACCOUNT = "Account"
+    OPPORTUNITY = "Opportunity"
+    TASK = "Task"
+
+
 _STREAM_ENTITY = {
-    "Contact": "contact",
-    "Account": "company",
-    "Opportunity": "deal",
-    "Task": "activity",
+    SalesforceStream.CONTACT: CrmEntityKind.CONTACT,
+    SalesforceStream.ACCOUNT: CrmEntityKind.COMPANY,
+    SalesforceStream.OPPORTUNITY: CrmEntityKind.DEAL,
+    SalesforceStream.TASK: CrmEntityKind.ACTIVITY,
 }
 _RELATIONSHIP_TARGETS = {
-    "Opportunity": {"contact": "Contact", "company": "Account"},
+    SalesforceStream.OPPORTUNITY: {
+        "contact": SalesforceStream.CONTACT,
+        "company": SalesforceStream.ACCOUNT,
+    },
 }
 _TOOL_STREAM = {
-    "crm_create_contact": ("Contact", True),
-    "crm_update_contact": ("Contact", False),
-    "crm_create_company": ("Account", True),
-    "crm_update_company": ("Account", False),
-    "crm_create_deal": ("Opportunity", True),
-    "crm_update_deal": ("Opportunity", False),
-    "crm_move_deal": ("Opportunity", False),
-    "crm_log_activity": ("Task", True),
+    CrmToolName.CREATE_CONTACT: (SalesforceStream.CONTACT, SorMutationOperation.CREATE),
+    CrmToolName.UPDATE_CONTACT: (SalesforceStream.CONTACT, SorMutationOperation.UPDATE),
+    CrmToolName.CREATE_COMPANY: (SalesforceStream.ACCOUNT, SorMutationOperation.CREATE),
+    CrmToolName.UPDATE_COMPANY: (SalesforceStream.ACCOUNT, SorMutationOperation.UPDATE),
+    CrmToolName.CREATE_DEAL: (
+        SalesforceStream.OPPORTUNITY,
+        SorMutationOperation.CREATE,
+    ),
+    CrmToolName.UPDATE_DEAL: (
+        SalesforceStream.OPPORTUNITY,
+        SorMutationOperation.UPDATE,
+    ),
+    CrmToolName.MOVE_DEAL: (SalesforceStream.OPPORTUNITY, SorMutationOperation.UPDATE),
+    CrmToolName.LOG_ACTIVITY: (SalesforceStream.TASK, SorMutationOperation.CREATE),
 }
 _READ_TOOLS = frozenset(
     {
-        "crm_find_customer",
-        "crm_get_customer",
-        "crm_list_deals",
-        "crm_get_deal",
-        "crm_describe_customer_fields",
-        "crm_describe_deal_fields",
+        CrmToolName.FIND_CUSTOMER,
+        CrmToolName.GET_CUSTOMER,
+        CrmToolName.LIST_DEALS,
+        CrmToolName.GET_DEAL,
+        CrmToolName.DESCRIBE_CUSTOMER_FIELDS,
+        CrmToolName.DESCRIBE_DEAL_FIELDS,
     }
 )
 _TOOL_STREAMS = {
-    "crm_find_customer": frozenset({"Contact", "Account"}),
-    "crm_get_customer": frozenset({"Contact", "Account"}),
-    "crm_list_deals": frozenset({"Opportunity"}),
-    "crm_get_deal": frozenset({"Opportunity"}),
-    "crm_describe_customer_fields": frozenset({"Contact", "Account"}),
-    "crm_describe_deal_fields": frozenset({"Opportunity"}),
+    CrmToolName.FIND_CUSTOMER: frozenset(
+        {SalesforceStream.CONTACT, SalesforceStream.ACCOUNT}
+    ),
+    CrmToolName.GET_CUSTOMER: frozenset(
+        {SalesforceStream.CONTACT, SalesforceStream.ACCOUNT}
+    ),
+    CrmToolName.LIST_DEALS: frozenset({SalesforceStream.OPPORTUNITY}),
+    CrmToolName.GET_DEAL: frozenset({SalesforceStream.OPPORTUNITY}),
+    CrmToolName.DESCRIBE_CUSTOMER_FIELDS: frozenset(
+        {SalesforceStream.CONTACT, SalesforceStream.ACCOUNT}
+    ),
+    CrmToolName.DESCRIBE_DEAL_FIELDS: frozenset({SalesforceStream.OPPORTUNITY}),
     **{
         tool_name: frozenset({stream_key})
         for tool_name, (stream_key, _creates) in _TOOL_STREAM.items()
@@ -96,30 +134,30 @@ SALESFORCE_MANIFEST = SorAdapterCapabilityManifest(
     auth_kinds=(ConnectionAuthKind.OAUTH2,),
     streams=(
         SorVendorStreamSpec(
-            key="Contact",
+            key=SalesforceStream.CONTACT,
             label="Contacts",
             description="Salesforce contacts and selected custom fields.",
             canonical_entity="contact",
             change_strategies=frozenset({SorChangeStrategy.UPDATED_AT}),
         ),
         SorVendorStreamSpec(
-            key="Account",
+            key=SalesforceStream.ACCOUNT,
             label="Accounts",
             description="Salesforce accounts and selected custom fields.",
             canonical_entity="company",
             change_strategies=frozenset({SorChangeStrategy.UPDATED_AT}),
         ),
         SorVendorStreamSpec(
-            key="Opportunity",
+            key=SalesforceStream.OPPORTUNITY,
             label="Opportunities",
             description="Salesforce opportunities and pipeline stages.",
             canonical_entity="deal",
             change_strategies=frozenset({SorChangeStrategy.UPDATED_AT}),
-            depends_on=frozenset({"Contact", "Account"}),
-            relationship_targets=_RELATIONSHIP_TARGETS["Opportunity"],
+            depends_on=frozenset({SalesforceStream.CONTACT, SalesforceStream.ACCOUNT}),
+            relationship_targets=_RELATIONSHIP_TARGETS[SalesforceStream.OPPORTUNITY],
         ),
         SorVendorStreamSpec(
-            key="Task",
+            key=SalesforceStream.TASK,
             label="Tasks",
             description="Salesforce CRM tasks exposed as canonical activities.",
             canonical_entity="activity",
@@ -141,9 +179,7 @@ SALESFORCE_MANIFEST = SorAdapterCapabilityManifest(
         for tool_name, (stream_key, _creates) in _TOOL_STREAM.items()
     },
     oauth=SorOAuthSpec(
-        authorization_url=(
-            "https://login.salesforce.com/services/oauth2/authorize"
-        ),
+        authorization_url=("https://login.salesforce.com/services/oauth2/authorize"),
         token_url="https://login.salesforce.com/services/oauth2/token",
         base_scopes=(REFRESH_SCOPE,),
         pkce=True,
@@ -193,9 +229,9 @@ class SalesforceCrmAdapter:
         missing = sorted(set(self._context.selected_objects) - available)
         if missing:
             raise SorVendorOperationError(
-                "vendor_stream_unavailable",
+                SorVendorErrorCode.VENDOR_STREAM_UNAVAILABLE,
                 "Salesforce does not permit the selected CRM objects.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         return SorConnectionVerification(
             account_display_name="Salesforce organization",
@@ -272,7 +308,7 @@ class SalesforceCrmAdapter:
             f"{SALESFORCE_API_PREFIX}/sobjects/{stream_key}/{record_id}",
             query={"fields": ",".join(_query_fields(selected_fields))},
         )
-        if response.status_code in {404, 410}:
+        if response.status_code in {HTTPStatus.NOT_FOUND, HTTPStatus.GONE}:
             raise SorExternalRecordNotFound(
                 vendor_object_key=stream_key,
                 external_id=record_id,
@@ -331,39 +367,45 @@ class SalesforceCrmAdapter:
 
     async def execute_command(self, command: SorCommandRequest) -> SorCommandResult:
         try:
-            stream_key, creates_record = _TOOL_STREAM[command.tool_name]
+            stream_key, operation = _TOOL_STREAM[command.tool_name]
         except KeyError as error:
             raise SorVendorOperationError(
-                "vendor_tool_unsupported",
+                SorVendorErrorCode.VENDOR_TOOL_UNSUPPORTED,
                 "This Salesforce adapter does not execute the requested CRM action.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             ) from error
         _require_stream(stream_key, selected=self._context.selected_objects)
-        if creates_record and command.target_external_id is not None:
+        if (
+            operation is SorMutationOperation.CREATE
+            and command.target_external_id is not None
+        ):
             raise SorVendorOperationError(
-                "vendor_command_invalid",
+                SorVendorErrorCode.VENDOR_COMMAND_INVALID,
                 "A CRM create action cannot target an existing record.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
-        if not creates_record and command.target_external_id is None:
+        if (
+            operation is SorMutationOperation.UPDATE
+            and command.target_external_id is None
+        ):
             raise SorVendorOperationError(
-                "vendor_command_invalid",
+                SorVendorErrorCode.VENDOR_COMMAND_INVALID,
                 "A CRM update action requires an existing record.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
-        if command.tool_name == "crm_move_deal" and set(command.payload) != {
+        if command.tool_name == CrmToolName.MOVE_DEAL and set(command.payload) != {
             "stage_external_id"
         }:
             raise SorVendorOperationError(
-                "vendor_command_invalid",
+                SorVendorErrorCode.VENDOR_COMMAND_INVALID,
                 "Moving a deal requires only stage_external_id.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         values = self._write_fields(stream_key, command.payload)
         path = f"{SALESFORCE_API_PREFIX}/sobjects/{stream_key}"
         method = "POST"
         record_id: str | None = None
-        if not creates_record:
+        if operation is SorMutationOperation.UPDATE:
             record_id = _required_record_id(command.target_external_id)
             path = f"{path}/{record_id}"
             method = "PATCH"
@@ -374,23 +416,25 @@ class SalesforceCrmAdapter:
                 payload=values,
                 idempotency_key=command.idempotency_key,
                 if_unmodified_since=(
-                    None if creates_record else command.expected_source_revision
+                    None
+                    if operation is SorMutationOperation.CREATE
+                    else command.expected_source_revision
                 ),
             )
-            _expect_mutation(response, creates_record=creates_record)
+            _expect_mutation(response, operation=operation)
         except SorVendorOperationError as error:
-            if creates_record and error.code in {
-                "vendor_timeout",
-                "vendor_transport_failed",
-                "vendor_server_failed",
+            if operation is SorMutationOperation.CREATE and error.code in {
+                SorVendorErrorCode.VENDOR_TIMEOUT,
+                SorVendorErrorCode.VENDOR_TRANSPORT_FAILED,
+                SorVendorErrorCode.VENDOR_SERVER_FAILED,
             }:
                 raise SorVendorOperationError(
-                    "vendor_mutation_outcome_unknown",
+                    SorVendorErrorCode.VENDOR_MUTATION_OUTCOME_UNKNOWN,
                     "Salesforce may have created the record; reconcile before retrying.",
-                    retryable=False,
+                    recovery=SorRecoveryPolicy.RECONCILE_REQUIRED,
                 ) from error
             raise
-        if creates_record:
+        if operation is SorMutationOperation.CREATE:
             body = _object(response.data)
             record_id = _required_record_id(body.get("id"))
         assert record_id is not None
@@ -407,14 +451,17 @@ class SalesforceCrmAdapter:
         values = record.payload
         name = _optional_string(values.get("name"))
         if name is None:
-            name = " ".join(
-                value
-                for value in (
-                    _optional_string(values.get("first_name")),
-                    _optional_string(values.get("last_name")),
+            name = (
+                " ".join(
+                    value
+                    for value in (
+                        _optional_string(values.get("first_name")),
+                        _optional_string(values.get("last_name")),
+                    )
+                    if value
                 )
-                if value
-            ) or None
+                or None
+            )
         return CrmContact(
             external_id=record.external_id,
             name=name,
@@ -444,12 +491,12 @@ class SalesforceCrmAdapter:
         return CrmDeal(
             external_id=record.external_id,
             title=_required_string(values.get("title"), field="CRM deal title"),
-            pipeline_external_id=_optional_string(
-                values.get("pipeline_external_id")
-            ),
+            pipeline_external_id=_optional_string(values.get("pipeline_external_id")),
             stage_external_id=_optional_string(values.get("stage_external_id")),
             native_stage=_optional_string(values.get("native_stage")),
-            normalized_state=_optional_string(values.get("normalized_state")),
+            normalized_state=CrmDealState.from_value(
+                _optional_string(values.get("normalized_state"))
+            ),
             amount=_optional_decimal(values.get("amount")),
             currency=_optional_string(values.get("currency")),
             probability=_optional_decimal(values.get("probability")),
@@ -476,9 +523,7 @@ class SalesforceCrmAdapter:
             participant_external_ids=_string_tuple(
                 values.get("participant_external_ids")
             ),
-            related_external_ids=_string_tuple(
-                values.get("related_external_ids")
-            ),
+            related_external_ids=_string_tuple(values.get("related_external_ids")),
             source_url=record.source_url,
         )
 
@@ -511,9 +556,9 @@ class SalesforceCrmAdapter:
         )
         if not fields:
             raise SorVendorOperationError(
-                "vendor_schema_empty",
+                SorVendorErrorCode.VENDOR_SCHEMA_EMPTY,
                 f"Salesforce returned no fields for {object_key}.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         return SorDiscoveredObject(
             key=object_key,
@@ -539,9 +584,9 @@ class SalesforceCrmAdapter:
         )
         if limit <= 0:
             raise SorVendorOperationError(
-                "vendor_page_invalid",
+                SorVendorErrorCode.VENDOR_PAGE_INVALID,
                 "Salesforce page limit must be positive.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         page_limit = min(limit, 200)
         selected_fields = self._selected_fields(stream_key)
@@ -560,9 +605,9 @@ class SalesforceCrmAdapter:
         rows = _object_list(data.get("records"), field="Salesforce records")
         if len(rows) > page_limit:
             raise SorVendorOperationError(
-                "vendor_response_invalid",
+                SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
                 "Salesforce returned more rows than the requested page limit.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         next_cursor = cursor
         if rows:
@@ -593,9 +638,9 @@ class SalesforceCrmAdapter:
         )
         if not fields:
             raise SorVendorOperationError(
-                "source_mapping_empty",
+                SorVendorErrorCode.SOURCE_MAPPING_EMPTY,
                 f"The active mapping selects no {stream_key} fields.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         return fields
 
@@ -611,16 +656,16 @@ class SalesforceCrmAdapter:
         }
         if not payload:
             raise SorVendorOperationError(
-                "vendor_command_invalid",
+                SorVendorErrorCode.VENDOR_COMMAND_INVALID,
                 "A CRM mutation requires at least one mapped field.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         unknown = set(payload) - set(writable)
         if unknown:
             raise SorVendorOperationError(
-                "vendor_field_not_writable",
+                SorVendorErrorCode.VENDOR_FIELD_NOT_WRITABLE,
                 "The CRM mutation contains fields absent from the writable mapping.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         values: dict[str, object] = {}
         for agent_key, value in payload.items():
@@ -672,20 +717,18 @@ def create_salesforce_adapter(context: SorAdapterContext) -> SalesforceCrmAdapte
 def _salesforce_origin(value: str | None) -> str:
     if not isinstance(value, str) or not value.strip():
         raise SorVendorOperationError(
-            "vendor_origin_invalid",
+            SorVendorErrorCode.VENDOR_ORIGIN_INVALID,
             "Salesforce instance origin is unavailable.",
-            retryable=False,
-            requires_reauthorization=True,
+            recovery=SorRecoveryPolicy.REAUTH_REQUIRED,
         )
     try:
         parsed = urlsplit(value.strip())
         port = parsed.port
     except ValueError as error:
         raise SorVendorOperationError(
-            "vendor_origin_invalid",
+            SorVendorErrorCode.VENDOR_ORIGIN_INVALID,
             "Salesforce instance origin is invalid.",
-            retryable=False,
-            requires_reauthorization=True,
+            recovery=SorRecoveryPolicy.REAUTH_REQUIRED,
         ) from error
     host = (parsed.hostname or "").casefold().rstrip(".")
     if (
@@ -699,10 +742,9 @@ def _salesforce_origin(value: str | None) -> str:
         or not host.endswith(".salesforce.com")
     ):
         raise SorVendorOperationError(
-            "vendor_origin_invalid",
+            SorVendorErrorCode.VENDOR_ORIGIN_INVALID,
             "Salesforce instance origin must be an HTTPS salesforce.com origin.",
-            retryable=False,
-            requires_reauthorization=True,
+            recovery=SorRecoveryPolicy.REAUTH_REQUIRED,
         )
     return f"https://{host}"
 
@@ -711,10 +753,9 @@ def _credential(credentials: Mapping[str, object], key: str) -> str:
     value = credentials.get(key)
     if not isinstance(value, str) or not value.strip() or len(value) > 16_384:
         raise SorVendorOperationError(
-            "vendor_credentials_invalid",
+            SorVendorErrorCode.VENDOR_CREDENTIALS_INVALID,
             "Salesforce OAuth credentials are unavailable.",
-            retryable=False,
-            requires_reauthorization=True,
+            recovery=SorRecoveryPolicy.REAUTH_REQUIRED,
         )
     return value.strip()
 
@@ -723,9 +764,9 @@ def _require_stream(stream_key: str, *, selected: tuple[str, ...]) -> str:
     object_key = _identifier(stream_key)
     if object_key not in selected:
         raise SorVendorOperationError(
-            "vendor_stream_unavailable",
+            SorVendorErrorCode.VENDOR_STREAM_UNAVAILABLE,
             "The Salesforce stream is not selected for this source.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return object_key
 
@@ -743,10 +784,10 @@ def _custom_object_keys(rows: list[dict[str, Any]]) -> tuple[str, ...]:
     )
     if len(keys) > _CUSTOM_OBJECT_LIMIT:
         raise SorVendorOperationError(
-            "vendor_custom_object_limit_exceeded",
+            SorVendorErrorCode.VENDOR_CUSTOM_OBJECT_LIMIT_EXCEEDED,
             "Salesforce exposes more custom objects than this source revision can "
             f"discover safely ({_CUSTOM_OBJECT_LIMIT}).",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return keys
 
@@ -754,49 +795,50 @@ def _custom_object_keys(rows: list[dict[str, Any]]) -> tuple[str, ...]:
 def _expect(response: SorJsonResponse, *, operation: str) -> object:
     if response.ok:
         return response.data
-    if response.status_code == 401:
+    if response.status_code == HTTPStatus.UNAUTHORIZED:
         raise SorVendorOperationError(
-            "vendor_access_token_expired",
+            SorVendorErrorCode.VENDOR_ACCESS_TOKEN_EXPIRED,
             "Salesforce rejected the current access token.",
-            retryable=True,
-            requires_reauthorization=True,
-            refreshable_authorization=True,
+            recovery=SorRecoveryPolicy.REFRESH_AND_RETRY,
         )
-    if response.status_code == 403:
+    if response.status_code == HTTPStatus.FORBIDDEN:
         raise SorVendorOperationError(
-            "vendor_reauthorization_required",
+            SorVendorErrorCode.VENDOR_REAUTHORIZATION_REQUIRED,
             "Salesforce authorization no longer permits this operation.",
-            retryable=False,
-            requires_reauthorization=True,
+            recovery=SorRecoveryPolicy.REAUTH_REQUIRED,
         )
-    if response.status_code == 429:
+    if response.status_code == HTTPStatus.TOO_MANY_REQUESTS:
         raise SorVendorOperationError(
-            "vendor_rate_limited",
+            SorVendorErrorCode.VENDOR_RATE_LIMITED,
             "Salesforce rate-limited the operation.",
-            retryable=True,
+            recovery=SorRecoveryPolicy.RETRY,
         )
-    if response.status_code >= 500:
+    if response.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR:
         raise SorVendorOperationError(
-            "vendor_server_failed",
+            SorVendorErrorCode.VENDOR_SERVER_FAILED,
             f"Salesforce could not {operation}.",
-            retryable=True,
+            recovery=SorRecoveryPolicy.RETRY,
         )
     raise SorVendorOperationError(
-        "vendor_request_rejected",
+        SorVendorErrorCode.VENDOR_REQUEST_REJECTED,
         f"Salesforce rejected the request to {operation}.",
-        retryable=False,
+        recovery=SorRecoveryPolicy.TERMINAL,
     )
 
 
-def _expect_mutation(response: SorJsonResponse, *, creates_record: bool) -> None:
-    expected = {201} if creates_record else {200, 204}
+def _expect_mutation(
+    response: SorJsonResponse,
+    *,
+    operation: SorMutationOperation,
+) -> None:
+    expected = {201} if operation is SorMutationOperation.CREATE else {200, 204}
     if response.status_code in expected:
         return
-    if response.status_code in {409, 412}:
+    if response.status_code in {HTTPStatus.CONFLICT, HTTPStatus.PRECONDITION_FAILED}:
         raise SorVendorOperationError(
-            "vendor_conflict",
+            SorVendorErrorCode.VENDOR_CONFLICT,
             "Salesforce rejected a stale or conflicting record update.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     _expect(response, operation="apply the CRM action")
 
@@ -913,9 +955,9 @@ def _decode_cursor(value: str | None) -> tuple[datetime, str] | None:
 
 def _invalid_cursor() -> SorVendorOperationError:
     return SorVendorOperationError(
-        "vendor_cursor_invalid",
+        SorVendorErrorCode.VENDOR_CURSOR_INVALID,
         "The Salesforce stream cursor is invalid.",
-        retryable=False,
+        recovery=SorRecoveryPolicy.TERMINAL,
     )
 
 
@@ -927,9 +969,9 @@ def _soql_datetime(value: datetime) -> str:
 def _identifier(value: str) -> str:
     if not _IDENTIFIER.fullmatch(value):
         raise SorVendorOperationError(
-            "vendor_schema_invalid",
+            SorVendorErrorCode.VENDOR_SCHEMA_INVALID,
             "Salesforce returned an invalid schema identifier.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return value
 
@@ -938,9 +980,9 @@ def _required_record_id(value: object) -> str:
     normalized = _required_string(value, field="Salesforce record ID")
     if not _RECORD_ID.fullmatch(normalized):
         raise SorVendorOperationError(
-            "vendor_response_invalid",
+            SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
             "Salesforce record ID is invalid.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return normalized
 
@@ -948,9 +990,9 @@ def _required_record_id(value: object) -> str:
 def _object(value: object) -> dict[str, Any]:
     if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
         raise SorVendorOperationError(
-            "vendor_response_invalid",
+            SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
             "Salesforce returned an invalid object.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return value
 
@@ -958,9 +1000,9 @@ def _object(value: object) -> dict[str, Any]:
 def _object_list(value: object, *, field: str) -> list[dict[str, Any]]:
     if not isinstance(value, list) or len(value) > 20_000:
         raise SorVendorOperationError(
-            "vendor_response_invalid",
+            SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
             f"{field} have an invalid shape.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return [_object(item) for item in value]
 
@@ -969,9 +1011,9 @@ def _required_string(value: object, *, field: str) -> str:
     normalized = _optional_string(value)
     if normalized is None:
         raise SorVendorOperationError(
-            "vendor_response_invalid",
+            SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
             f"{field} is unavailable.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return normalized
 
@@ -989,9 +1031,9 @@ def _required_datetime(value: object, *, field: str) -> datetime:
     parsed = _optional_datetime(value)
     if parsed is None:
         raise SorVendorOperationError(
-            "vendor_response_invalid",
+            SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
             f"{field} is unavailable.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return parsed
 
@@ -1009,15 +1051,15 @@ def _optional_datetime(value: object) -> datetime | None:
             parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
         except ValueError as error:
             raise SorVendorOperationError(
-                "vendor_response_invalid",
+                SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
                 "Salesforce returned an invalid timestamp.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             ) from error
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise SorVendorOperationError(
-            "vendor_response_invalid",
+            SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
             "Salesforce returned a timestamp without a timezone.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return parsed.astimezone(timezone.utc)
 
@@ -1029,9 +1071,9 @@ def _optional_decimal(value: object) -> Decimal | None:
         return Decimal(str(value))
     except (InvalidOperation, ValueError) as error:
         raise SorVendorOperationError(
-            "vendor_response_invalid",
+            SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
             "Salesforce returned an invalid decimal value.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         ) from error
 
 
@@ -1042,16 +1084,16 @@ def _from_salesforce_value(
     value: object,
 ) -> object:
     """Convert documented vendor units before canonical mapping."""
-    if stream_key != "Opportunity" or vendor_field_key != "Probability":
+    if stream_key != SalesforceStream.OPPORTUNITY or vendor_field_key != "Probability":
         return value
     probability = _optional_decimal(value)
     if probability is None:
         return None
     if not Decimal("0") <= probability <= Decimal("100"):
         raise SorVendorOperationError(
-            "vendor_response_invalid",
+            SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
             "Salesforce returned an Opportunity probability outside 0 through 100.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return float(probability / Decimal("100"))
 
@@ -1063,21 +1105,21 @@ def _to_salesforce_value(
     value: object,
 ) -> object:
     """Convert canonical fractions back to Salesforce percentage units."""
-    if stream_key != "Opportunity" or vendor_field_key != "Probability":
+    if stream_key != SalesforceStream.OPPORTUNITY or vendor_field_key != "Probability":
         return value
     try:
         probability = Decimal(str(value))
     except (InvalidOperation, ValueError) as error:
         raise SorVendorOperationError(
-            "vendor_command_invalid",
+            SorVendorErrorCode.VENDOR_COMMAND_INVALID,
             "CRM deal probability must be a number between 0 and 1.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         ) from error
     if not Decimal("0") <= probability <= Decimal("1"):
         raise SorVendorOperationError(
-            "vendor_command_invalid",
+            SorVendorErrorCode.VENDOR_COMMAND_INVALID,
             "CRM deal probability must be between 0 and 1.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return float(probability * Decimal("100"))
 
@@ -1090,9 +1132,9 @@ def _optional_date(value: object) -> date | None:
         return date.fromisoformat(normalized[:10])
     except ValueError as error:
         raise SorVendorOperationError(
-            "vendor_response_invalid",
+            SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
             "Salesforce returned an invalid date value.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         ) from error
 
 
@@ -1101,9 +1143,9 @@ def _string_tuple(value: object) -> tuple[str, ...]:
         return ()
     if not isinstance(value, (tuple, list)):
         raise SorVendorOperationError(
-            "vendor_response_invalid",
+            SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
             "Salesforce returned an invalid relationship list.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     values = tuple(
         normalized
@@ -1112,9 +1154,9 @@ def _string_tuple(value: object) -> tuple[str, ...]:
     )
     if len(values) > 10_000:
         raise SorVendorOperationError(
-            "vendor_response_invalid",
+            SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
             "Salesforce returned too many relationships.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return values
 

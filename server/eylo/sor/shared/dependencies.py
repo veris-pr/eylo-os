@@ -39,7 +39,9 @@ def topological_stream_layers(
         )
         if not ready:
             cycle_nodes = ", ".join(sorted(remaining))
-            raise ValueError(f"SOR stream dependency graph contains a cycle: {cycle_nodes}.")
+            raise ValueError(
+                f"SOR stream dependency graph contains a cycle: {cycle_nodes}."
+            )
         layers.append(ready)
         resolved.update(ready)
         for key in ready:

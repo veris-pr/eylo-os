@@ -22,6 +22,7 @@ from .contracts import (
     KnowledgeAuthor,
     KnowledgeBlock,
     KnowledgeDocument,
+    KnowledgeEntityKind,
     KnowledgeProperty,
     KnowledgeSpace,
     KnowledgeVersion,
@@ -63,7 +64,7 @@ class KnowledgeProjectionService:
             organization_id=organization_id,
             source_id=source_id,
             record_id=record_id,
-            entity_kind="space",
+            entity_kind=KnowledgeEntityKind.SPACE,
             vendor_external_id=space.external_id,
             values={"name": space.name, "kind": space.kind},
             search_values=(space.name, space.kind),
@@ -83,7 +84,7 @@ class KnowledgeProjectionService:
             organization_id=organization_id,
             source_id=source_id,
             record_id=record_id,
-            entity_kind="document",
+            entity_kind=KnowledgeEntityKind.DOCUMENT,
             vendor_external_id=document.external_id,
             values={
                 "title": document.title,
@@ -125,7 +126,7 @@ class KnowledgeProjectionService:
             organization_id=organization_id,
             source_id=source_id,
             record_id=record_id,
-            entity_kind="block",
+            entity_kind=KnowledgeEntityKind.BLOCK,
             vendor_external_id=block.external_id,
             values={
                 "document_external_id": block.document_external_id,
@@ -155,7 +156,7 @@ class KnowledgeProjectionService:
             organization_id=organization_id,
             source_id=source_id,
             record_id=record_id,
-            entity_kind="version",
+            entity_kind=KnowledgeEntityKind.VERSION,
             vendor_external_id=version.external_id,
             values={
                 "document_external_id": version.document_external_id,
@@ -184,7 +185,7 @@ class KnowledgeProjectionService:
             organization_id=organization_id,
             source_id=source_id,
             record_id=record_id,
-            entity_kind="property",
+            entity_kind=KnowledgeEntityKind.PROPERTY,
             vendor_external_id=property_value.external_id,
             values={
                 "document_external_id": property_value.document_external_id,
@@ -216,7 +217,7 @@ class KnowledgeProjectionService:
             organization_id=organization_id,
             source_id=source_id,
             record_id=record_id,
-            entity_kind="attachment",
+            entity_kind=KnowledgeEntityKind.ATTACHMENT,
             vendor_external_id=attachment.external_id,
             values={
                 "document_external_id": attachment.document_external_id,
@@ -243,7 +244,7 @@ class KnowledgeProjectionService:
             organization_id=organization_id,
             source_id=source_id,
             record_id=record_id,
-            entity_kind="author",
+            entity_kind=KnowledgeEntityKind.AUTHOR,
             vendor_external_id=author.external_id,
             values={
                 "name": author.name,
@@ -261,7 +262,7 @@ class KnowledgeProjectionService:
         organization_id: UUID,
         source_id: UUID,
         record_id: UUID,
-        entity_kind: str,
+        entity_kind: KnowledgeEntityKind,
         vendor_external_id: str,
         values: dict[str, object],
         search_values: Sequence[str | None],
@@ -287,7 +288,7 @@ class KnowledgeProjectionService:
                 source_id=source_id,
                 record_id=record_id,
                 profile=SorProfile.KNOWLEDGE,
-                canonical_entity_kind=entity_kind,
+                canonical_entity_kind=entity_kind.value,
                 **values,
             )
             self.session.add(row)
@@ -304,7 +305,7 @@ class KnowledgeProjectionService:
         organization_id: UUID,
         source_id: UUID,
         record_id: UUID,
-        entity_kind: str,
+        entity_kind: KnowledgeEntityKind,
         vendor_external_id: str,
     ) -> SorRecordModel:
         record = await self.records.get_record(
@@ -317,7 +318,7 @@ class KnowledgeProjectionService:
             raise SorProjectionError("Canonical document source record not found.")
         if (
             record.profile is not SorProfile.KNOWLEDGE
-            or record.canonical_entity_kind != entity_kind
+            or record.canonical_entity_kind != entity_kind.value
             or record.vendor_external_id != vendor_external_id
         ):
             raise SorProjectionError(
@@ -419,7 +420,9 @@ def _validate_attachment(attachment: KnowledgeAttachment) -> None:
     _optional(attachment.media_type, maximum=320, field="attachment media type")
     _optional(attachment.source_url, maximum=2_048, field="attachment source URL")
     if attachment.size_bytes is not None and not 0 <= attachment.size_bytes < 2**63:
-        raise SorProjectionError("Document attachment size is outside the supported range.")
+        raise SorProjectionError(
+            "Document attachment size is outside the supported range."
+        )
     _aware_optional(
         attachment.source_url_expires_at,
         field="attachment source URL expiry",

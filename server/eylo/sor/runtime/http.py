@@ -21,7 +21,11 @@ from eylo.common.http_egress import (
     parse_https_target,
 )
 from eylo.sockets.http.transport import SafeHttpTransport
-from eylo.sor.shared.contracts import SorVendorOperationError
+from eylo.sor.shared.contracts import (
+    SorRecoveryPolicy,
+    SorVendorErrorCode,
+    SorVendorOperationError,
+)
 
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _SAFE_TRANSPORT_RETRY_DELAYS = (0.25, 1.0)
@@ -50,17 +54,19 @@ class SorVendorTransportError(SorVendorOperationError):
     """A vendor egress failure raised by the shared JSON transport."""
 
 
-def _transport_error(error: TimeoutError | HttpEgressPolicyError) -> SorVendorTransportError:
+def _transport_error(
+    error: TimeoutError | HttpEgressPolicyError,
+) -> SorVendorTransportError:
     if isinstance(error, TimeoutError):
         return SorVendorTransportError(
-            "vendor_timeout",
+            SorVendorErrorCode.VENDOR_TIMEOUT,
             "The vendor did not answer within the operation budget.",
-            retryable=True,
+            recovery=SorRecoveryPolicy.RETRY,
         )
     code = {
-        "dns_resolution_failed": "vendor_dns_unavailable",
-        "transport_failed": "vendor_transport_failed",
-    }.get(error.code, "vendor_egress_rejected")
+        "dns_resolution_failed": SorVendorErrorCode.VENDOR_DNS_UNAVAILABLE,
+        "transport_failed": SorVendorErrorCode.VENDOR_TRANSPORT_FAILED,
+    }.get(error.code, SorVendorErrorCode.VENDOR_EGRESS_REJECTED)
     summary = (
         "The vendor connection failed before a response was received."
         if error.code == "transport_failed"
@@ -69,7 +75,11 @@ def _transport_error(error: TimeoutError | HttpEgressPolicyError) -> SorVendorTr
     return SorVendorTransportError(
         code,
         summary,
-        retryable=error.code in {"dns_resolution_failed", "transport_failed"},
+        recovery=(
+            SorRecoveryPolicy.RETRY
+            if error.code in {"dns_resolution_failed", "transport_failed"}
+            else SorRecoveryPolicy.TERMINAL
+        ),
     )
 
 
@@ -87,9 +97,7 @@ class SorJsonResponse:
 
     def header_values(self, name: str) -> tuple[str, ...]:
         expected = name.casefold()
-        return tuple(
-            value for key, value in self.headers if key.casefold() == expected
-        )
+        return tuple(value for key, value in self.headers if key.casefold() == expected)
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,9 +114,7 @@ class SorBinaryResponse:
 
     def header_values(self, name: str) -> tuple[str, ...]:
         expected = name.casefold()
-        return tuple(
-            value for key, value in self.headers if key.casefold() == expected
-        )
+        return tuple(value for key, value in self.headers if key.casefold() == expected)
 
 
 class SorJsonHttpClient:
@@ -137,7 +143,7 @@ class SorJsonHttpClient:
             raise SorVendorTransportError(
                 "vendor_transport_invalid",
                 "The vendor transport configuration is invalid.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             ) from error
         self._origin = parsed_origin
         self._origin_headers = origin_headers
@@ -198,13 +204,13 @@ class SorJsonHttpClient:
                 raise SorVendorTransportError(
                     "vendor_redirect_invalid",
                     "The vendor returned an invalid download redirect.",
-                    retryable=False,
+                    recovery=SorRecoveryPolicy.TERMINAL,
                 )
             if redirects >= _MAX_BINARY_REDIRECTS:
                 raise SorVendorTransportError(
                     "vendor_redirect_limit",
                     "The vendor download exceeded its redirect limit.",
-                    retryable=False,
+                    recovery=SorRecoveryPolicy.TERMINAL,
                 )
             next_url = urljoin(current_url, locations[0].strip())
             try:
@@ -238,7 +244,7 @@ class SorJsonHttpClient:
                 raise SorVendorTransportError(
                     "vendor_redirect_invalid",
                     "The vendor returned an invalid download redirect.",
-                    retryable=False,
+                    recovery=SorRecoveryPolicy.TERMINAL,
                 ) from error
             current_url = next_url
             redirects += 1
@@ -281,7 +287,7 @@ class SorJsonHttpClient:
             raise SorVendorTransportError(
                 "vendor_path_invalid",
                 "A SOR adapter must use an absolute path on its pinned origin.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         pairs = _query_pairs(query)
         url = f"{self._origin}{path}"
@@ -305,7 +311,7 @@ class SorJsonHttpClient:
             raise SorVendorTransportError(
                 "vendor_request_invalid",
                 "The vendor request was rejected before network access.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             ) from error
 
     def _build(
@@ -322,14 +328,14 @@ class SorJsonHttpClient:
             raise SorVendorTransportError(
                 "vendor_path_invalid",
                 "A SOR adapter must use an absolute path on its pinned origin.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         normalized_method = method.strip().upper()
         if payload is not None and normalized_method in _SAFE_METHODS:
             raise SorVendorTransportError(
                 "vendor_request_invalid",
                 "A safe-method vendor request cannot carry a body.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         body = b""
         headers = {
@@ -349,7 +355,7 @@ class SorJsonHttpClient:
                 raise SorVendorTransportError(
                     "vendor_request_invalid",
                     "The vendor request payload is not JSON serializable.",
-                    retryable=False,
+                    recovery=SorRecoveryPolicy.TERMINAL,
                 ) from error
             headers["Content-Type"] = "application/json"
         if idempotency_key is not None:
@@ -364,7 +370,7 @@ class SorJsonHttpClient:
                 raise SorVendorTransportError(
                     "vendor_request_invalid",
                     "The conditional source revision is invalid.",
-                    retryable=False,
+                    recovery=SorRecoveryPolicy.TERMINAL,
                 )
             headers["If-Unmodified-Since"] = if_unmodified_since.strip()
         pairs = _query_pairs(query)
@@ -386,7 +392,7 @@ class SorJsonHttpClient:
             raise SorVendorTransportError(
                 "vendor_request_invalid",
                 "The vendor request was rejected before network access.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             ) from error
 
 
@@ -409,13 +415,13 @@ def _query_pairs(
                     raise SorVendorTransportError(
                         "vendor_query_invalid",
                         "Vendor query lists must contain scalar values.",
-                        retryable=False,
+                        recovery=SorRecoveryPolicy.TERMINAL,
                     )
         else:
             raise SorVendorTransportError(
                 "vendor_query_invalid",
                 "Vendor query values must be scalar values or scalar lists.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
     return pairs
 
@@ -444,7 +450,7 @@ def _validated_default_headers(
             raise SorVendorTransportError(
                 "vendor_transport_invalid",
                 "The vendor transport headers are invalid.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         seen.add(folded_name)
         validated[normalized_name] = normalized_value
@@ -461,15 +467,15 @@ def _parse_json(response: HttpEgressResponse) -> object | None:
             raise SorVendorTransportError(
                 "vendor_media_unsupported",
                 "The vendor returned an unsupported response media type.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
     try:
         return json.loads(response.body)
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
         raise SorVendorTransportError(
-            "vendor_response_invalid",
+            SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
             "The vendor returned invalid JSON.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         ) from error
 
 

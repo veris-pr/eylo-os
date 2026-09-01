@@ -56,13 +56,16 @@ class SorSyncCounts:
     rejected: int = 0
 
     def __post_init__(self) -> None:
-        if min(
-            self.added,
-            self.updated,
-            self.tombstoned,
-            self.unchanged,
-            self.rejected,
-        ) < 0:
+        if (
+            min(
+                self.added,
+                self.updated,
+                self.tombstoned,
+                self.unchanged,
+                self.rejected,
+            )
+            < 0
+        ):
             raise ValueError("SOR sync counts cannot be negative.")
 
     def add(self, other: "SorSyncCounts") -> "SorSyncCounts":
@@ -165,7 +168,11 @@ class SorStreamService:
             vendor_key=source.vendor_key,
         )
         stream_spec = next(
-            (candidate for candidate in manifest.streams if candidate.key == object_key),
+            (
+                candidate
+                for candidate in manifest.streams
+                if candidate.key == object_key
+            ),
             None,
         )
         if stream_spec is None:
@@ -280,7 +287,9 @@ class SorStreamService:
                 "Adapter does not expose the requested custom-object stream."
             )
         if source.active_schema_revision_id is None:
-            raise SorConfigurationError("Discover a source schema before creating streams.")
+            raise SorConfigurationError(
+                "Discover a source schema before creating streams."
+            )
         schema = await self.repository.get_schema_revision(
             organization_id=organization_id,
             source_id=source.id,
@@ -398,8 +407,7 @@ class SorSyncRunService:
                 max_attempts=max_attempts,
                 checkpoint_before=(
                     None
-                    if kind
-                    in {SorSyncRunKind.BOOTSTRAP, SorSyncRunKind.RECONCILIATION}
+                    if kind in {SorSyncRunKind.BOOTSTRAP, SorSyncRunKind.RECONCILIATION}
                     else stream.checkpoint
                 ),
             )
@@ -526,7 +534,9 @@ class SorSyncRunService:
         runs_by_key: dict[str, SorSyncRunModel] = {}
         for run in runs:
             if run.stream_id is None or run.stream_id not in streams:
-                raise SorConflictError("SOR sync generation references a missing stream.")
+                raise SorConflictError(
+                    "SOR sync generation references a missing stream."
+                )
             key = streams[run.stream_id].vendor_object_key
             if key in runs_by_key:
                 raise SorConflictError("SOR sync generation repeats a source stream.")
@@ -547,8 +557,7 @@ class SorSyncRunService:
                     if dependency in runs_by_key
                 ]
                 if any(
-                    dependency.state
-                    in {SorWorkState.FAILED, SorWorkState.CANCELLED}
+                    dependency.state in {SorWorkState.FAILED, SorWorkState.CANCELLED}
                     for dependency in dependencies
                 ):
                     run.state = SorWorkState.FAILED
@@ -579,9 +588,7 @@ class SorSyncRunService:
                 run.state in {SorWorkState.FAILED, SorWorkState.CANCELLED}
                 for run in runs
             )
-            generation.state = (
-                SorWorkState.FAILED if failed else SorWorkState.SUCCEEDED
-            )
+            generation.state = SorWorkState.FAILED if failed else SorWorkState.SUCCEEDED
             generation.finished_at = now
             if failed:
                 generation.safe_error_code = "GENERATION_INCOMPLETE"
@@ -634,7 +641,9 @@ class SorSyncRunService:
             expected_checkpoint=expected_checkpoint,
         )
         if context.run.scan_complete:
-            raise SorConflictError("SOR sync scan has already committed its final page.")
+            raise SorConflictError(
+                "SOR sync scan has already committed its final page."
+            )
         return context
 
     async def lock_finalization_context(
@@ -678,11 +687,7 @@ class SorSyncRunService:
             run_id=run_id,
             for_update=True,
         )
-        if (
-            run is None
-            or run.stream_id is None
-            or run.source_id != source.id
-        ):
+        if run is None or run.stream_id is None or run.source_id != source.id:
             raise SorNotFoundError("SOR stream sync run not found.")
         if run.state is not SorWorkState.RUNNING:
             raise SorConflictError("SOR sync run is no longer running.")
@@ -701,8 +706,7 @@ class SorSyncRunService:
             )
         current_checkpoint = (
             run.checkpoint_after
-            if run.kind
-            in {SorSyncRunKind.BOOTSTRAP, SorSyncRunKind.RECONCILIATION}
+            if run.kind in {SorSyncRunKind.BOOTSTRAP, SorSyncRunKind.RECONCILIATION}
             else stream.checkpoint
         )
         if current_checkpoint != expected_checkpoint:
@@ -907,11 +911,7 @@ class SorSyncRunService:
             run_id=run_id,
             for_update=True,
         )
-        if (
-            run is None
-            or run.stream_id is None
-            or run.source_id != identity.source_id
-        ):
+        if run is None or run.stream_id is None or run.source_id != identity.source_id:
             return
         stream = await self.repository.get_stream(
             organization_id=organization_id,
@@ -970,7 +970,9 @@ class SorSyncRunService:
             )
 
 
-def _add_counts(row: SorSourceStreamModel | SorSyncRunModel, counts: SorSyncCounts) -> None:
+def _add_counts(
+    row: SorSourceStreamModel | SorSyncRunModel, counts: SorSyncCounts
+) -> None:
     row.records_added += counts.added
     row.records_updated += counts.updated
     row.records_tombstoned += counts.tombstoned
@@ -978,7 +980,9 @@ def _add_counts(row: SorSourceStreamModel | SorSyncRunModel, counts: SorSyncCoun
     row.records_rejected += counts.rejected
 
 
-def _set_counts(row: SorSourceStreamModel | SorSyncRunModel, counts: SorSyncCounts) -> None:
+def _set_counts(
+    row: SorSourceStreamModel | SorSyncRunModel, counts: SorSyncCounts
+) -> None:
     row.records_added = counts.added
     row.records_updated = counts.updated
     row.records_tombstoned = counts.tombstoned

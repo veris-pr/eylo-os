@@ -8,10 +8,7 @@ from eylo.sor.support.reads import SUPPORT_READ_SPECS
 from eylo.sor.ticketing.reads import TICKETING_READ_SPECS
 
 _READ_SPECS = {
-    **{
-        (SorProfile.CRM, entity): spec
-        for entity, spec in CRM_READ_SPECS.items()
-    },
+    **{(SorProfile.CRM, entity): spec for entity, spec in CRM_READ_SPECS.items()},
     **{
         (SorProfile.TICKETING, entity): spec
         for entity, spec in TICKETING_READ_SPECS.items()

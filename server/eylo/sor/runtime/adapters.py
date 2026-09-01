@@ -35,6 +35,8 @@ from eylo.sor.shared.contracts import (
     SorFieldMappingDirection,
     SorFieldMappingState,
     SorLifecycleAdapter,
+    SorRecoveryPolicy,
+    SorVendorErrorCode,
     SorVendorOperationError,
 )
 from eylo.sor.shared.models import SorSourceModel
@@ -158,9 +160,9 @@ async def _refresh_after_vendor_authorization_failure(
         if refresh_error.requires_reauthorization:
             return None
         return SorVendorOperationError(
-            "vendor_authorization_refresh_deferred",
+            SorVendorErrorCode.VENDOR_AUTHORIZATION_REFRESH_DEFERRED,
             "The source credential refresh is temporarily unavailable.",
-            retryable=True,
+            recovery=SorRecoveryPolicy.RETRY,
         )
     except Exception as refresh_error:
         logger.error(
@@ -174,9 +176,9 @@ async def _refresh_after_vendor_authorization_failure(
     if outcome is SorRefreshDisposition.NOT_DUE:
         return None
     return SorVendorOperationError(
-        "vendor_authorization_refreshed",
+        SorVendorErrorCode.VENDOR_AUTHORIZATION_REFRESHED,
         "The source credential was refreshed; retry the operation.",
-        retryable=True,
+        recovery=SorRecoveryPolicy.RETRY,
     )
 
 
@@ -256,9 +258,10 @@ async def _resolve_source_adapter(
     if (
         manifest.fixed_origin
         and not manifest.requires_instance_origin
-        and connection.instance_origin not in {
-        None,
-        manifest.fixed_origin,
+        and connection.instance_origin
+        not in {
+            None,
+            manifest.fixed_origin,
         }
     ):
         raise SorAdapterUnavailableError(

@@ -103,9 +103,7 @@ class SorBoundWorkService:
         if row.state in self.contract.terminal:
             return row
         if row.absurd_task_id is None:
-            raise SorWorkBindingPending(
-                "Absurd SOR task binding is not visible yet."
-            )
+            raise SorWorkBindingPending("Absurd SOR task binding is not visible yet.")
         if row.state not in {self.contract.pending, self.contract.running}:
             raise SorWorkConflict(
                 f"A {row.state.value} SOR row cannot begin an attempt."
@@ -187,9 +185,7 @@ class SorBoundWorkService:
         if row.state in self.contract.terminal:
             return row.state
         if row.state is not self.contract.running:
-            raise SorWorkConflict(
-                f"A {row.state.value} SOR row cannot record failure."
-            )
+            raise SorWorkConflict(f"A {row.state.value} SOR row cannot record failure.")
         exhausted = permanent or row.attempts >= row.max_attempts
         row.state = self.contract.failed if exhausted else self.contract.pending
         setattr(row, self.contract.error_code_field, error_code[:128])
@@ -245,12 +241,14 @@ class SorBoundWorkService:
         if row.state in self.contract.terminal:
             return row
         if row.state is not self.contract.running:
-            raise SorWorkConflict(
-                f"A {row.state.value} SOR row cannot finish."
-            )
+            raise SorWorkConflict(f"A {row.state.value} SOR row cannot finish.")
         self._assign(row, values or {})
         row.state = state
-        setattr(row, self.contract.error_code_field, error_code[:128] if error_code else None)
+        setattr(
+            row,
+            self.contract.error_code_field,
+            error_code[:128] if error_code else None,
+        )
         setattr(
             row,
             self.contract.error_summary_field,
@@ -281,7 +279,9 @@ class SorBoundWorkService:
         return True, row.absurd_task_id
 
     def _cancelled(self, row: Any) -> bool:
-        return self.contract.cancelled is not None and row.state is self.contract.cancelled
+        return (
+            self.contract.cancelled is not None and row.state is self.contract.cancelled
+        )
 
     def _assign(self, row: Any, values: dict[str, Any]) -> None:
         for field, value in values.items():
@@ -309,9 +309,7 @@ async def spawn_sor_bound_work(
         if row.absurd_task_id is not None:
             return row.absurd_task_id
         if row.state is not contract.pending:
-            raise SorWorkConflict(
-                f"A {row.state.value} SOR row cannot be spawned."
-            )
+            raise SorWorkConflict(f"A {row.state.value} SOR row cannot be spawned.")
         await _require_spawn_source_authority(
             session,
             row=row,

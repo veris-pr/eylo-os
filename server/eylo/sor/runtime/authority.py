@@ -142,8 +142,7 @@ async def resolve_agent_sources(
     if tool.effect is SorToolEffect.MUTATION:
         predicates.extend(
             (
-                SorAgentRevisionSourceGrantModel.access
-                == SorSourceAccess.READ_WRITE,
+                SorAgentRevisionSourceGrantModel.access == SorSourceAccess.READ_WRITE,
                 SorSourceGrantModel.access == SorSourceAccess.READ_WRITE,
             )
         )
@@ -158,8 +157,7 @@ async def resolve_agent_sources(
                 and_(
                     SorSourceStreamModel.organization_id
                     == SorFieldMappingModel.organization_id,
-                    SorSourceStreamModel.source_id
-                    == SorFieldMappingModel.source_id,
+                    SorSourceStreamModel.source_id == SorFieldMappingModel.source_id,
                     SorSourceStreamModel.vendor_object_key
                     == SorFieldMappingModel.vendor_object_key,
                 ),
@@ -203,8 +201,7 @@ async def resolve_agent_sources(
             .join(
                 SorSourceModel,
                 and_(
-                    SorSourceModel.id
-                    == SorAgentRevisionSourceGrantModel.source_id,
+                    SorSourceModel.id == SorAgentRevisionSourceGrantModel.source_id,
                     SorSourceModel.organization_id
                     == SorAgentRevisionSourceGrantModel.organization_id,
                 ),
@@ -222,8 +219,7 @@ async def resolve_agent_sources(
             .join(
                 ExternalConnectionModel,
                 and_(
-                    ExternalConnectionModel.id
-                    == SorSourceModel.external_connection_id,
+                    ExternalConnectionModel.id == SorSourceModel.external_connection_id,
                     ExternalConnectionModel.organization_id
                     == SorSourceModel.organization_id,
                     ExternalConnectionModel.vendor_key == SorSourceModel.vendor_key,

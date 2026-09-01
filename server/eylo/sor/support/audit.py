@@ -227,9 +227,7 @@ class SupportTicketAuditService:
                 direction=message.direction,
                 author_external_id=message.author_external_id,
                 author_name=(
-                    author_labels.get(
-                        (source_id, "agent", message.author_external_id)
-                    )
+                    author_labels.get((source_id, "agent", message.author_external_id))
                     or author_labels.get(
                         (source_id, "customer", message.author_external_id)
                     )

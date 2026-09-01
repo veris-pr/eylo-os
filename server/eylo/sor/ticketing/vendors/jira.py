@@ -9,6 +9,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
+from enum import StrEnum
+from http import HTTPStatus
 
 import jwt
 from jwt.exceptions import PyJWTError
@@ -30,9 +32,12 @@ from eylo.sor.shared.contracts import (
     SorDiscoveredSchema,
     SorExternalRecord,
     SorExternalRecordNotFound,
+    SorMutationOperation,
     SorOAuthSpec,
     SorProfile,
     SorRecordPage,
+    SorRecoveryPolicy,
+    SorVendorErrorCode,
     SorVendorOperationError,
     SorVendorStreamSpec,
     SorWebhookPayloadError,
@@ -43,12 +48,15 @@ from eylo.sor.shared.contracts import (
 from eylo.sor.ticketing.contracts import (
     TicketingComment,
     TicketingCycle,
+    TicketingEntityKind,
     TicketingIssue,
     TicketingIssueRelation,
     TicketingLabel,
     TicketingProject,
     TicketingRelationKind,
+    TicketingToolName,
     TicketingUser,
+    TicketingWorkState,
     TicketingWorkflowState,
 )
 
@@ -76,69 +84,88 @@ MANAGE_WEBHOOK_SCOPE = "manage:jira-webhook"
 JIRA_WEBHOOK_LIFETIME = timedelta(days=30)
 JIRA_ALL_PROJECTS_WEBHOOK_JQL = "project != EMPTY"
 
+
+class JiraStream(StrEnum):
+    """Closed vendor stream vocabulary owned by this adapter."""
+
+    ISSUES = "issues"
+    PROJECTS = "projects"
+    WORKFLOW_STATES = "workflow_states"
+    USERS = "users"
+    LABELS = "labels"
+    SPRINTS = "sprints"
+    COMMENTS = "comments"
+    ISSUE_RELATIONS = "issue_relations"
+
+
 _STREAM_ENTITY = {
-    "issues": "issue",
-    "projects": "project",
-    "workflow_states": "workflow_state",
-    "users": "user",
-    "labels": "label",
-    "sprints": "cycle",
-    "comments": "comment",
-    "issue_relations": "relation",
+    JiraStream.ISSUES: TicketingEntityKind.ISSUE,
+    JiraStream.PROJECTS: TicketingEntityKind.PROJECT,
+    JiraStream.WORKFLOW_STATES: TicketingEntityKind.WORKFLOW_STATE,
+    JiraStream.USERS: TicketingEntityKind.USER,
+    JiraStream.LABELS: TicketingEntityKind.LABEL,
+    JiraStream.SPRINTS: TicketingEntityKind.CYCLE,
+    JiraStream.COMMENTS: TicketingEntityKind.COMMENT,
+    JiraStream.ISSUE_RELATIONS: TicketingEntityKind.RELATION,
 }
 _RELATIONSHIP_TARGETS = {
-    "issues": {
-        "project": "projects",
-        "assignee": "users",
-        "reporter": "users",
-        "label": "labels",
-        "parent": "issues",
-        "cycle": "sprints",
+    JiraStream.ISSUES: {
+        "project": JiraStream.PROJECTS,
+        "assignee": JiraStream.USERS,
+        "reporter": JiraStream.USERS,
+        "label": JiraStream.LABELS,
+        "parent": JiraStream.ISSUES,
+        "cycle": JiraStream.SPRINTS,
     },
-    "labels": {"project": "projects", "parent": "labels"},
-    "comments": {"issue": "issues", "author": "users"},
-    "issue_relations": {"from_issue": "issues", "to_issue": "issues"},
+    JiraStream.LABELS: {"project": JiraStream.PROJECTS, "parent": JiraStream.LABELS},
+    JiraStream.COMMENTS: {"issue": JiraStream.ISSUES, "author": JiraStream.USERS},
+    JiraStream.ISSUE_RELATIONS: {
+        "from_issue": JiraStream.ISSUES,
+        "to_issue": JiraStream.ISSUES,
+    },
 }
 _READ_TOOLS = frozenset(
     {
-        "issue_search",
-        "issue_get",
-        "issue_list_projects",
-        "issue_list_workflow_states",
-        "issue_describe_fields",
+        TicketingToolName.SEARCH,
+        TicketingToolName.GET,
+        TicketingToolName.LIST_PROJECTS,
+        TicketingToolName.LIST_WORKFLOW_STATES,
+        TicketingToolName.DESCRIBE_FIELDS,
     }
 )
 _WRITE_TOOLS = frozenset(
     {
-        "issue_create",
-        "issue_update",
-        "issue_transition",
-        "issue_assign",
-        "issue_add_label",
-        "issue_remove_label",
-        "issue_comment",
-        "issue_link",
+        TicketingToolName.CREATE,
+        TicketingToolName.UPDATE,
+        TicketingToolName.TRANSITION,
+        TicketingToolName.ASSIGN,
+        TicketingToolName.ADD_LABEL,
+        TicketingToolName.REMOVE_LABEL,
+        TicketingToolName.COMMENT,
+        TicketingToolName.LINK,
     }
 )
 _TOOL_STREAMS = {
-    "issue_search": frozenset({"issues"}),
-    "issue_get": frozenset({"issues"}),
-    "issue_list_projects": frozenset({"projects"}),
-    "issue_list_workflow_states": frozenset({"workflow_states"}),
-    "issue_describe_fields": frozenset({"issues"}),
-    "issue_create": frozenset({"issues", "projects"}),
-    "issue_update": frozenset({"issues"}),
-    "issue_transition": frozenset({"issues", "workflow_states"}),
-    "issue_assign": frozenset({"issues", "users"}),
-    "issue_add_label": frozenset({"issues", "labels"}),
-    "issue_remove_label": frozenset({"issues", "labels"}),
-    "issue_comment": frozenset({"issues", "comments"}),
-    "issue_link": frozenset({"issues", "issue_relations"}),
+    TicketingToolName.SEARCH: frozenset({JiraStream.ISSUES}),
+    TicketingToolName.GET: frozenset({JiraStream.ISSUES}),
+    TicketingToolName.LIST_PROJECTS: frozenset({JiraStream.PROJECTS}),
+    TicketingToolName.LIST_WORKFLOW_STATES: frozenset({JiraStream.WORKFLOW_STATES}),
+    TicketingToolName.DESCRIBE_FIELDS: frozenset({JiraStream.ISSUES}),
+    TicketingToolName.CREATE: frozenset({JiraStream.ISSUES, JiraStream.PROJECTS}),
+    TicketingToolName.UPDATE: frozenset({JiraStream.ISSUES}),
+    TicketingToolName.TRANSITION: frozenset(
+        {JiraStream.ISSUES, JiraStream.WORKFLOW_STATES}
+    ),
+    TicketingToolName.ASSIGN: frozenset({JiraStream.ISSUES, JiraStream.USERS}),
+    TicketingToolName.ADD_LABEL: frozenset({JiraStream.ISSUES, JiraStream.LABELS}),
+    TicketingToolName.REMOVE_LABEL: frozenset({JiraStream.ISSUES, JiraStream.LABELS}),
+    TicketingToolName.COMMENT: frozenset({JiraStream.ISSUES, JiraStream.COMMENTS}),
+    TicketingToolName.LINK: frozenset({JiraStream.ISSUES, JiraStream.ISSUE_RELATIONS}),
 }
 _MUTATION_RESULT_STREAMS = {
-    **{tool_name: "issues" for tool_name in _WRITE_TOOLS},
-    "issue_comment": "comments",
-    "issue_link": "issue_relations",
+    **{tool_name: JiraStream.ISSUES for tool_name in _WRITE_TOOLS},
+    TicketingToolName.COMMENT: JiraStream.COMMENTS,
+    TicketingToolName.LINK: JiraStream.ISSUE_RELATIONS,
 }
 
 
@@ -150,41 +177,40 @@ JIRA_MANIFEST = SorAdapterCapabilityManifest(
         SorVendorStreamSpec(
             key=stream_key,
             label={
-                "issues": "Issues",
-                "projects": "Projects",
-                "workflow_states": "Workflow states",
-                "users": "Users",
-                "labels": "Labels",
-                "sprints": "Sprints",
-                "comments": "Comments",
-                "issue_relations": "Issue relations",
+                JiraStream.ISSUES: "Issues",
+                JiraStream.PROJECTS: "Projects",
+                JiraStream.WORKFLOW_STATES: "Workflow states",
+                JiraStream.USERS: "Users",
+                JiraStream.LABELS: "Labels",
+                JiraStream.SPRINTS: "Sprints",
+                JiraStream.COMMENTS: "Comments",
+                JiraStream.ISSUE_RELATIONS: "Issue relations",
             }[stream_key],
             description={
-                "issues": "Jira issues, ownership, labels, planning fields, and custom fields.",
-                "projects": "Jira projects exposed as ticketing work containers.",
-                "workflow_states": "Jira statuses and normalized status categories.",
-                "users": "Visible active and inactive Jira users.",
-                "labels": "Values used by Jira's global label field.",
-                "sprints": (
+                JiraStream.ISSUES: "Jira issues, ownership, labels, planning fields, and custom fields.",
+                JiraStream.PROJECTS: "Jira projects exposed as ticketing work containers.",
+                JiraStream.WORKFLOW_STATES: "Jira statuses and normalized status categories.",
+                JiraStream.USERS: "Visible active and inactive Jira users.",
+                JiraStream.LABELS: "Values used by Jira's global label field.",
+                JiraStream.SPRINTS: (
                     "Jira Software sprints referenced by the issue Sprint field."
                 ),
-                "comments": "Chronological issue comments with Atlassian Document Format retained.",
-                "issue_relations": "Typed Jira issue links normalized into canonical directions.",
+                JiraStream.COMMENTS: "Chronological issue comments with Atlassian Document Format retained.",
+                JiraStream.ISSUE_RELATIONS: "Typed Jira issue links normalized into canonical directions.",
             }[stream_key],
             canonical_entity=entity,
             change_strategies=(
                 frozenset({SorChangeStrategy.UPDATED_AT})
-                if stream_key == "issues"
+                if stream_key == JiraStream.ISSUES
                 else frozenset({SorChangeStrategy.FULL_RECONCILE})
             ),
             scope_category=(
                 "Classic Jira + granular Jira Software scopes"
-                if stream_key == "sprints"
+                if stream_key == JiraStream.SPRINTS
                 else "Classic Jira Cloud platform scopes"
             ),
             depends_on=frozenset(
-                set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values())
-                - {stream_key}
+                set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values()) - {stream_key}
             ),
             relationship_targets=_RELATIONSHIP_TARGETS.get(stream_key, {}),
         )
@@ -198,14 +224,14 @@ JIRA_MANIFEST = SorAdapterCapabilityManifest(
         {SorChangeStrategy.UPDATED_AT, SorChangeStrategy.FULL_RECONCILE}
     ),
     required_scopes={
-        "issues": (READ_WORK_SCOPE,),
-        "projects": (READ_WORK_SCOPE,),
-        "workflow_states": (READ_WORK_SCOPE,),
-        "users": (READ_USER_SCOPE,),
-        "labels": (READ_WORK_SCOPE,),
-        "sprints": (READ_WORK_SCOPE, READ_SPRINT_SCOPE),
-        "comments": (READ_WORK_SCOPE,),
-        "issue_relations": (READ_WORK_SCOPE,),
+        JiraStream.ISSUES: (READ_WORK_SCOPE,),
+        JiraStream.PROJECTS: (READ_WORK_SCOPE,),
+        JiraStream.WORKFLOW_STATES: (READ_WORK_SCOPE,),
+        JiraStream.USERS: (READ_USER_SCOPE,),
+        JiraStream.LABELS: (READ_WORK_SCOPE,),
+        JiraStream.SPRINTS: (READ_WORK_SCOPE, READ_SPRINT_SCOPE),
+        JiraStream.COMMENTS: (READ_WORK_SCOPE,),
+        JiraStream.ISSUE_RELATIONS: (READ_WORK_SCOPE,),
     },
     tool_required_scopes={tool_name: (WRITE_SCOPE,) for tool_name in _WRITE_TOOLS},
     tool_streams=_TOOL_STREAMS,
@@ -251,7 +277,7 @@ def _field(
 
 
 _SCHEMA_FIELDS = {
-    "issues": (
+    JiraStream.ISSUES: (
         _field("key", "Key", "text", nullable=False),
         _field("title", "Title", "text", nullable=False, writable=True),
         _field("normalized_description", "Description", "text", writable=True),
@@ -274,18 +300,18 @@ _SCHEMA_FIELDS = {
         _field("due_date", "Due date", "date", writable=True),
         _field("completed_at", "Completed at", "timestamp"),
     ),
-    "projects": (
+    JiraStream.PROJECTS: (
         _field("key", "Key", "text", nullable=False),
         _field("name", "Name", "text", nullable=False),
         _field("description", "Description", "text"),
     ),
-    "workflow_states": (
+    JiraStream.WORKFLOW_STATES: (
         _field("name", "Name", "text", nullable=False),
         _field("native_category", "Source category", "text"),
         _field("normalized_category", "Normalized category", "enum"),
         _field("order", "Order", "integer"),
     ),
-    "users": (
+    JiraStream.USERS: (
         _field("name", "Name", "text", nullable=False),
         _field("display_name", "Display name", "text"),
         _field("primary_email", "Email", "text"),
@@ -293,7 +319,7 @@ _SCHEMA_FIELDS = {
         _field("assignable", "Assignable", "boolean"),
         _field("avatar_url", "Avatar URL", "link"),
     ),
-    "labels": (
+    JiraStream.LABELS: (
         _field("name", "Name", "text", nullable=False),
         _field("description", "Description", "text"),
         _field("color", "Color", "text"),
@@ -301,7 +327,7 @@ _SCHEMA_FIELDS = {
         _field("parent_external_id", "Parent label ID", "reference"),
         _field("is_group", "Group", "boolean", nullable=False),
     ),
-    "sprints": (
+    JiraStream.SPRINTS: (
         _field("name", "Name", "text", nullable=False),
         _field("number", "Number", "integer"),
         _field("description", "Goal", "text"),
@@ -310,7 +336,7 @@ _SCHEMA_FIELDS = {
         _field("completed_at", "Completed at", "timestamp"),
         _field("active", "Active", "boolean"),
     ),
-    "comments": (
+    JiraStream.COMMENTS: (
         _field("issue_external_id", "Issue ID", "reference", nullable=False),
         _field("author_external_id", "Author ID", "reference"),
         _field("normalized_text", "Comment", "text", nullable=False),
@@ -318,7 +344,7 @@ _SCHEMA_FIELDS = {
         _field("created_at", "Created at", "timestamp", nullable=False),
         _field("updated_at", "Updated at", "timestamp"),
     ),
-    "issue_relations": (
+    JiraStream.ISSUE_RELATIONS: (
         _field("issue_vendor_object_key", "Issue stream", "text", nullable=False),
         _field("from_issue_external_id", "From issue ID", "reference", nullable=False),
         _field("to_issue_external_id", "To issue ID", "reference", nullable=False),
@@ -333,7 +359,7 @@ _ISSUE_API_FIELDS = {
     "description",
     "duedate",
     "issuetype",
-    "labels",
+    JiraStream.LABELS,
     "parent",
     "priority",
     "project",
@@ -356,7 +382,7 @@ _NORMALIZED_TO_JIRA_FIELD = {
     "assignee_external_id": "assignee",
     "reporter_external_id": "reporter",
     "estimate": "timeoriginalestimate",
-    "label_external_ids": "labels",
+    "label_external_ids": JiraStream.LABELS,
     "parent_external_id": "parent",
     "due_date": "duedate",
     "completed_at": "resolutiondate",
@@ -425,7 +451,7 @@ class JiraTicketingAdapter:
         self._issue_agent_keys = {
             field.vendor_field_key: field.agent_key
             for field in context.fields
-            if field.vendor_object_key == "issues"
+            if field.vendor_object_key == JiraStream.ISSUES
         }
         self._site_origin = _jira_site_origin(context.instance_origin)
         self._cloud_id: str | None = None
@@ -442,7 +468,9 @@ class JiraTicketingAdapter:
     async def verify_connection(self) -> SorConnectionVerification:
         cloud_id, site_name = await self._resolve_site()
         response = await self._jira_request("/myself")
-        viewer = _object(_expect(response, operation="verify Jira account"), field="Jira user")
+        viewer = _object(
+            _expect(response, operation="verify Jira account"), field="Jira user"
+        )
         display = _optional_string(viewer.get("displayName"))
         return SorConnectionVerification(
             account_external_id=cloud_id,
@@ -454,17 +482,23 @@ class JiraTicketingAdapter:
     async def discover_schema(self) -> SorDiscoveredSchema:
         if not self._context.selected_objects:
             raise SorVendorOperationError(
-                "source_selection_empty",
+                SorVendorErrorCode.SOURCE_SELECTION_EMPTY,
                 "The Jira source selects no streams.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         custom_fields: tuple[SorDiscoveredField, ...] = ()
-        if "issues" in self._context.selected_objects:
+        if JiraStream.ISSUES in self._context.selected_objects:
             response = await self._jira_request("/field")
-            rows = _object_list(_expect(response, operation="list Jira fields"), field="Jira fields")
+            rows = _object_list(
+                _expect(response, operation="list Jira fields"), field="Jira fields"
+            )
             custom_fields = tuple(
                 sorted(
-                    (_jira_custom_field(row) for row in rows if row.get("custom") is True),
+                    (
+                        _jira_custom_field(row)
+                        for row in rows
+                        if row.get("custom") is True
+                    ),
                     key=lambda field: (field.label.casefold(), field.key),
                 )
             )
@@ -473,7 +507,7 @@ class JiraTicketingAdapter:
         for stream_key in self._context.selected_objects:
             _require_stream(stream_key, selected=self._context.selected_objects)
             fields = _SCHEMA_FIELDS[stream_key]
-            if stream_key == "issues":
+            if stream_key == JiraStream.ISSUES:
                 fields = (*fields, *custom_fields)
             objects.append(
                 SorDiscoveredObject(
@@ -482,7 +516,9 @@ class JiraTicketingAdapter:
                     fields=fields,
                 )
             )
-        return SorDiscoveredSchema(objects=tuple(objects), vendor_api_version=JIRA_API_VERSION)
+        return SorDiscoveredSchema(
+            objects=tuple(objects), vendor_api_version=JIRA_API_VERSION
+        )
 
     async def bootstrap_stream(
         self,
@@ -513,25 +549,25 @@ class JiraTicketingAdapter:
             selected=self._context.selected_objects,
         )
         record_id = _required_id(external_id, field="Jira record ID")
-        if stream_key == "labels":
-            return self._external_record("labels", {"name": record_id})
-        if stream_key == "issues":
+        if stream_key == JiraStream.LABELS:
+            return self._external_record(JiraStream.LABELS, {"name": record_id})
+        if stream_key == JiraStream.ISSUES:
             response = await self._jira_request(
                 f"/issue/{_path_segment(record_id)}",
                 query={"fields": list(self._issue_fields())},
             )
-        elif stream_key == "projects":
+        elif stream_key == JiraStream.PROJECTS:
             response = await self._jira_request(f"/project/{_path_segment(record_id)}")
-        elif stream_key == "workflow_states":
+        elif stream_key == JiraStream.WORKFLOW_STATES:
             response = await self._jira_request(f"/status/{_path_segment(record_id)}")
-        elif stream_key == "users":
+        elif stream_key == JiraStream.USERS:
             response = await self._jira_request(
                 "/user",
                 query={"accountId": record_id},
             )
-        elif stream_key == "sprints":
+        elif stream_key == JiraStream.SPRINTS:
             return await self._fetch_sprint(record_id)
-        elif stream_key == "comments":
+        elif stream_key == JiraStream.COMMENTS:
             issue_id, comment_id = _split_comment_external_id(record_id)
             response = await self._jira_request(
                 f"/issue/{_path_segment(issue_id)}/comment/{_path_segment(comment_id)}"
@@ -540,13 +576,15 @@ class JiraTicketingAdapter:
             response = await self._jira_request(
                 f"/issueLink/{_path_segment(record_id)}"
             )
-        if response.status_code in {404, 410}:
+        if response.status_code in {HTTPStatus.NOT_FOUND, HTTPStatus.GONE}:
             raise SorExternalRecordNotFound(
                 vendor_object_key=stream_key,
                 external_id=record_id,
             )
-        row = _object(_expect(response, operation="read Jira record"), field="Jira record")
-        if stream_key == "comments":
+        row = _object(
+            _expect(response, operation="read Jira record"), field="Jira record"
+        )
+        if stream_key == JiraStream.COMMENTS:
             issue_id, _comment_id = _split_comment_external_id(record_id)
             row["_issue_external_id"] = issue_id
         return self._external_record(stream_key, row)
@@ -606,9 +644,9 @@ class JiraTicketingAdapter:
             )
             if parsed_errors:
                 raise SorVendorOperationError(
-                    "vendor_webhook_rejected",
+                    SorVendorErrorCode.VENDOR_WEBHOOK_REJECTED,
                     "Jira rejected the webhook event selection.",
-                    retryable=False,
+                    recovery=SorRecoveryPolicy.TERMINAL,
                 )
         external_id = _required_id(
             result.get("createdWebhookId"),
@@ -671,8 +709,7 @@ class JiraTicketingAdapter:
                 reverse=True,
             )
             stale_ids.extend(
-                _webhook_id(subscription.external_id)
-                for subscription in exact[1:]
+                _webhook_id(subscription.external_id) for subscription in exact[1:]
             )
         if stale_ids:
             await self._remove_webhook_ids(stale_ids)
@@ -709,9 +746,11 @@ class JiraTicketingAdapter:
             method="DELETE",
             payload={"webhookIds": list(webhook_ids)},
         )
-        if response.status_code != 202:
+        if response.status_code != HTTPStatus.ACCEPTED:
             _expect(response, operation="remove Jira webhooks")
-            raise _invalid_response("Jira returned an unexpected webhook deletion status.")
+            raise _invalid_response(
+                "Jira returned an unexpected webhook deletion status."
+            )
 
     async def verify_webhook(
         self,
@@ -786,27 +825,27 @@ class JiraTicketingAdapter:
     async def execute_command(self, command: SorCommandRequest) -> SorCommandResult:
         if command.tool_name not in _WRITE_TOOLS:
             raise SorVendorOperationError(
-                "vendor_tool_unsupported",
+                SorVendorErrorCode.VENDOR_TOOL_UNSUPPORTED,
                 "This Jira adapter does not execute the requested issue action.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
-        if command.tool_name == "issue_create":
+        if command.tool_name == TicketingToolName.CREATE:
             return await self._create_issue(command)
         target_id = _required_target(command)
-        if command.tool_name == "issue_update":
+        if command.tool_name == TicketingToolName.UPDATE:
             return await self._update_issue(target_id, command)
-        if command.tool_name == "issue_transition":
+        if command.tool_name == TicketingToolName.TRANSITION:
             return await self._transition_issue(target_id, command)
-        if command.tool_name == "issue_assign":
+        if command.tool_name == TicketingToolName.ASSIGN:
             return await self._assign_issue(target_id, command)
-        if command.tool_name == "issue_comment":
+        if command.tool_name == TicketingToolName.COMMENT:
             return await self._comment_issue(target_id, command)
-        if command.tool_name == "issue_link":
+        if command.tool_name == TicketingToolName.LINK:
             return await self._link_issue(target_id, command)
         return await self._change_label(
             target_id,
             command,
-            add=command.tool_name == "issue_add_label",
+            add=command.tool_name == TicketingToolName.ADD_LABEL,
         )
 
     def normalize_issue(self, record: SorExternalRecord) -> TicketingIssue:
@@ -815,11 +854,15 @@ class JiraTicketingAdapter:
             external_id=record.external_id,
             key=_optional_string(values.get("key")),
             title=_required_string(values.get("title"), field="Jira issue title"),
-            normalized_description=_optional_string(values.get("normalized_description")),
+            normalized_description=_optional_string(
+                values.get("normalized_description")
+            ),
             source_description=_json_value(values.get("source_description")),
             issue_type=_optional_string(values.get("issue_type")),
             native_status=_optional_string(values.get("native_status")),
-            normalized_status=_optional_string(values.get("normalized_status")),
+            normalized_status=TicketingWorkState.from_value(
+                _optional_string(values.get("normalized_status"))
+            ),
             priority=_optional_string(values.get("priority")),
             project_external_id=_optional_string(values.get("project_external_id")),
             team_external_id=_optional_string(values.get("team_external_id")),
@@ -846,7 +889,9 @@ class JiraTicketingAdapter:
         return TicketingProject(
             external_id=record.external_id,
             key=_optional_string(record.payload.get("key")),
-            name=_required_string(record.payload.get("name"), field="Jira project name"),
+            name=_required_string(
+                record.payload.get("name"), field="Jira project name"
+            ),
             description=_optional_string(record.payload.get("description")),
             source_url=record.source_url,
         )
@@ -862,10 +907,12 @@ class JiraTicketingAdapter:
                 field="Jira workflow state name",
             ),
             native_category=_optional_string(record.payload.get("native_category")),
-            normalized_category=_optional_string(
-                record.payload.get("normalized_category")
+            normalized_category=TicketingWorkState.from_value(
+                _optional_string(record.payload.get("normalized_category"))
             ),
-            order=_optional_integer(record.payload.get("order"), field="Jira status order"),
+            order=_optional_integer(
+                record.payload.get("order"), field="Jira status order"
+            ),
         )
 
     def normalize_user(self, record: SorExternalRecord) -> TicketingUser:
@@ -890,7 +937,9 @@ class JiraTicketingAdapter:
             color=_optional_string(values.get("color")),
             project_external_id=_optional_string(values.get("project_external_id")),
             parent_external_id=_optional_string(values.get("parent_external_id")),
-            is_group=_required_boolean(values.get("is_group"), field="Jira label group flag"),
+            is_group=_required_boolean(
+                values.get("is_group"), field="Jira label group flag"
+            ),
         )
 
     def normalize_cycle(self, record: SorExternalRecord) -> TicketingCycle:
@@ -899,9 +948,7 @@ class JiraTicketingAdapter:
             external_id=record.external_id,
             name=_required_string(values.get("name"), field="Jira sprint name"),
             number=_optional_integer(values.get("number"), field="Jira sprint number"),
-            project_external_id=_optional_string(
-                values.get("project_external_id")
-            ),
+            project_external_id=_optional_string(values.get("project_external_id")),
             description=_optional_string(values.get("description")),
             starts_at=_optional_datetime(values.get("starts_at")),
             ends_at=_optional_datetime(values.get("ends_at")),
@@ -934,7 +981,7 @@ class JiraTicketingAdapter:
         values = record.payload
         return TicketingIssueRelation(
             external_id=record.external_id,
-            issue_vendor_object_key="issues",
+            issue_vendor_object_key=JiraStream.ISSUES,
             from_issue_external_id=_required_string(
                 values.get("from_issue_external_id"),
                 field="Jira relation source issue ID",
@@ -945,7 +992,7 @@ class JiraTicketingAdapter:
             ),
             canonical_kind=_jira_relation_kind(
                 values.get("canonical_relation_kind"),
-                error_code="vendor_response_invalid",
+                error_code=SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
             ),
             native_kind=_required_string(
                 values.get("native_relation_kind"),
@@ -972,10 +1019,9 @@ class JiraTicketingAdapter:
         ]
         if len(matches) != 1:
             raise SorVendorOperationError(
-                "vendor_site_unavailable",
+                SorVendorErrorCode.VENDOR_SITE_UNAVAILABLE,
                 "The authorized Atlassian account does not expose the configured Jira site.",
-                retryable=False,
-                requires_reauthorization=True,
+                recovery=SorRecoveryPolicy.REAUTH_REQUIRED,
             )
         site = matches[0]
         self._cloud_id = _required_id(site.get("id"), field="Jira cloud ID")
@@ -1048,39 +1094,45 @@ class JiraTicketingAdapter:
         cursor: str | None,
         limit: int,
     ) -> SorRecordPage:
-        stream_key = _require_stream(stream_key, selected=self._context.selected_objects)
+        stream_key = _require_stream(
+            stream_key, selected=self._context.selected_objects
+        )
         if limit <= 0:
             raise SorVendorOperationError(
-                "vendor_page_invalid",
+                SorVendorErrorCode.VENDOR_PAGE_INVALID,
                 "Jira page limit must be positive.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
-        if stream_key == "comments":
+        if stream_key == JiraStream.COMMENTS:
             return await self._read_comment_page(
                 cursor=cursor,
                 limit=min(limit, 200),
             )
         page_limit = min(limit, 100)
-        if stream_key == "issues":
+        if stream_key == JiraStream.ISSUES:
             return await self._read_issues(cursor=cursor, limit=page_limit)
-        if stream_key == "issue_relations":
+        if stream_key == JiraStream.ISSUE_RELATIONS:
             return await self._read_issue_relation_page(
                 cursor=cursor,
                 limit=page_limit,
             )
-        if stream_key == "sprints":
+        if stream_key == JiraStream.SPRINTS:
             return await self._read_sprints(cursor=cursor, limit=page_limit)
         offset = _decode_offset_cursor(cursor, stream_key=stream_key)
         rows: list[dict[str, object]]
-        if stream_key == "projects":
+        if stream_key == JiraStream.PROJECTS:
             response = await self._jira_request(
                 "/project/search",
                 query={"startAt": offset, "maxResults": page_limit, "orderBy": "key"},
             )
-            data = _object(_expect(response, operation="list Jira projects"), field="Jira projects")
+            data = _object(
+                _expect(response, operation="list Jira projects"), field="Jira projects"
+            )
             rows = _object_list(data.get("values"), field="Jira projects")
-            has_more = not _required_boolean(data.get("isLast"), field="Jira projects isLast")
-        elif stream_key == "workflow_states":
+            has_more = not _required_boolean(
+                data.get("isLast"), field="Jira projects isLast"
+            )
+        elif stream_key == JiraStream.WORKFLOW_STATES:
             response = await self._jira_request("/status")
             all_rows = sorted(
                 _object_list(
@@ -1097,26 +1149,37 @@ class JiraTicketingAdapter:
             )
             rows = all_rows[offset : offset + page_limit]
             has_more = offset + len(rows) < len(all_rows)
-        elif stream_key == "users":
+        elif stream_key == JiraStream.USERS:
             response = await self._jira_request(
                 "/users",
                 query={"startAt": offset, "maxResults": page_limit},
             )
-            rows = _object_list(_expect(response, operation="list Jira users"), field="Jira users")
+            rows = _object_list(
+                _expect(response, operation="list Jira users"), field="Jira users"
+            )
             has_more = len(rows) == page_limit
         else:
             response = await self._jira_request(
                 "/label",
                 query={"startAt": offset, "maxResults": page_limit},
             )
-            data = _object(_expect(response, operation="list Jira labels"), field="Jira labels")
+            data = _object(
+                _expect(response, operation="list Jira labels"), field="Jira labels"
+            )
             labels = _string_list(data.get("values"), field="Jira labels")
             rows = [{"name": label} for label in labels]
-            has_more = not _required_boolean(data.get("isLast"), field="Jira labels isLast")
+            has_more = not _required_boolean(
+                data.get("isLast"), field="Jira labels isLast"
+            )
         if len(rows) > page_limit:
-            raise _invalid_response("Jira returned more rows than the requested page limit.")
+            raise _invalid_response(
+                "Jira returned more rows than the requested page limit."
+            )
         return SorRecordPage(
-            records=tuple(self._external_record(stream_key, row, position=offset + index) for index, row in enumerate(rows)),
+            records=tuple(
+                self._external_record(stream_key, row, position=offset + index)
+                for index, row in enumerate(rows)
+            ),
             next_cursor=(
                 _encode_offset_cursor(offset + len(rows), stream_key=stream_key)
                 if has_more
@@ -1154,11 +1217,17 @@ class JiraTicketingAdapter:
             payload=payload,
             retry_transport_failures=True,
         )
-        data = _object(_expect(response, operation="search Jira issues"), field="Jira issue search")
-        rows = _object_list(data.get("issues"), field="Jira issues")
+        data = _object(
+            _expect(response, operation="search Jira issues"), field="Jira issue search"
+        )
+        rows = _object_list(data.get(JiraStream.ISSUES), field="Jira issues")
         if len(rows) > limit:
-            raise _invalid_response("Jira returned more issues than the requested page limit.")
-        is_last = _required_boolean(data.get("isLast"), field="Jira issue search isLast")
+            raise _invalid_response(
+                "Jira returned more issues than the requested page limit."
+            )
+        is_last = _required_boolean(
+            data.get("isLast"), field="Jira issue search isLast"
+        )
         next_token = _optional_string(data.get("nextPageToken"))
         if not is_last and next_token is None:
             raise _invalid_response("Jira omitted the next issue page token.")
@@ -1188,7 +1257,9 @@ class JiraTicketingAdapter:
                 )
             )
         return SorRecordPage(
-            records=tuple(self._external_record("issues", row) for row in rows),
+            records=tuple(
+                self._external_record(JiraStream.ISSUES, row) for row in rows
+            ),
             next_cursor=next_cursor,
             has_more=not scan_complete,
         )
@@ -1222,7 +1293,7 @@ class JiraTicketingAdapter:
             _expect(response, operation="scan Jira issue links"),
             field="Jira issue-link scan",
         )
-        issues = _object_list(data.get("issues"), field="Jira issue-link scan")
+        issues = _object_list(data.get(JiraStream.ISSUES), field="Jira issue-link scan")
         if len(issues) > limit:
             raise _invalid_response("Jira returned too many issues for a link scan.")
         is_last = _required_boolean(
@@ -1242,10 +1313,10 @@ class JiraTicketingAdapter:
                 field="Jira issue links",
             ):
                 link["_current_issue_external_id"] = issue_id
-                records.append(self._external_record("issue_relations", link))
+                records.append(self._external_record(JiraStream.ISSUE_RELATIONS, link))
         records = _deduplicate_child_records(
             records,
-            stream_key="issue_relations",
+            stream_key=JiraStream.ISSUE_RELATIONS,
         )
         if len(records) > limit:
             raise _invalid_response(
@@ -1323,7 +1394,7 @@ class JiraTicketingAdapter:
                 field="Jira issue-comment scan",
             )
             issues = _object_list(
-                data.get("issues"),
+                data.get(JiraStream.ISSUES),
                 field="Jira issue-comment scan",
             )
             if len(issues) > issue_limit:
@@ -1356,7 +1427,7 @@ class JiraTicketingAdapter:
                     field="Jira embedded comments",
                 )
                 rows = _object_list(
-                    comment_page.get("comments"),
+                    comment_page.get(JiraStream.COMMENTS),
                     field="Jira embedded comments",
                 )
                 start_at = _required_nonnegative_integer(
@@ -1374,7 +1445,7 @@ class JiraTicketingAdapter:
                     )
                 for row in rows:
                     row["_issue_external_id"] = issue_id
-                    records.append(self._external_record("comments", row))
+                    records.append(self._external_record(JiraStream.COMMENTS, row))
                 if start_at > 0:
                     pending_issue_ids.append(issue_id)
                     pending_item_offsets.append(0)
@@ -1459,7 +1530,9 @@ class JiraTicketingAdapter:
             outcomes,
             strict=True,
         ):
-            records.extend(self._external_record("comments", row) for row in rows)
+            records.extend(
+                self._external_record(JiraStream.COMMENTS, row) for row in rows
+            )
             if has_more:
                 pending_issue_ids.append(issue_id)
                 pending_item_offsets.append(item_offset + len(rows))
@@ -1511,7 +1584,7 @@ class JiraTicketingAdapter:
             _expect(response, operation="list Jira issue comments"),
             field="Jira comments",
         )
-        rows = _object_list(data.get("comments"), field="Jira comments")
+        rows = _object_list(data.get(JiraStream.COMMENTS), field="Jira comments")
         if len(rows) > page_limit:
             raise _invalid_response("Jira returned too many issue comments.")
         start_at = _required_nonnegative_integer(
@@ -1568,7 +1641,7 @@ class JiraTicketingAdapter:
                 field="Jira Sprint-field scan",
             )
             issues = _object_list(
-                data.get("issues"),
+                data.get(JiraStream.ISSUES),
                 field="Jira Sprint-field scan",
             )
             if len(issues) > JIRA_SPRINT_ISSUE_BATCH_SIZE:
@@ -1678,9 +1751,9 @@ class JiraTicketingAdapter:
         if cached is not None:
             return cached
         response = await self._agile_request(f"/sprint/{_path_segment(sprint_id)}")
-        if response.status_code in {404, 410}:
+        if response.status_code in {HTTPStatus.NOT_FOUND, HTTPStatus.GONE}:
             raise SorExternalRecordNotFound(
-                vendor_object_key="sprints",
+                vendor_object_key=JiraStream.SPRINTS,
                 external_id=sprint_id,
             )
         row = _object(
@@ -1701,9 +1774,9 @@ class JiraTicketingAdapter:
         )
         if len(fields) != 1:
             raise SorVendorOperationError(
-                "mapping_invalid",
+                SorVendorErrorCode.MAPPING_INVALID,
                 "The active Jira mapping must select exactly one Sprint field.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         return fields[0]
 
@@ -1711,7 +1784,7 @@ class JiraTicketingAdapter:
         custom = {
             field.vendor_field_key
             for field in self._context.fields
-            if field.vendor_object_key == "issues"
+            if field.vendor_object_key == JiraStream.ISSUES
             and field.vendor_field_key.startswith("customfield_")
         }
         return tuple(sorted(_ISSUE_API_FIELDS | custom))
@@ -1723,9 +1796,9 @@ class JiraTicketingAdapter:
         *,
         position: int | None = None,
     ) -> SorExternalRecord:
-        if stream_key == "issues":
+        if stream_key == JiraStream.ISSUES:
             return self._external_issue(row)
-        if stream_key == "projects":
+        if stream_key == JiraStream.PROJECTS:
             record_id = _required_id(row.get("id"), field="Jira project ID")
             key = _optional_string(row.get("key"))
             return SorExternalRecord(
@@ -1733,15 +1806,19 @@ class JiraTicketingAdapter:
                 external_id=record_id,
                 payload={
                     "key": key,
-                    "name": _required_string(row.get("name"), field="Jira project name"),
+                    "name": _required_string(
+                        row.get("name"), field="Jira project name"
+                    ),
                     "description": _adf_text(row.get("description")),
                 },
                 source_url=f"{self._site_origin}/browse/{key}" if key else None,
             )
-        if stream_key == "workflow_states":
+        if stream_key == JiraStream.WORKFLOW_STATES:
             record_id = _required_id(row.get("id"), field="Jira status ID")
             category = _optional_object(row.get("statusCategory"))
-            native = _optional_string(category.get("key")) or _optional_string(category.get("name"))
+            native = _optional_string(category.get("key")) or _optional_string(
+                category.get("name")
+            )
             return SorExternalRecord(
                 vendor_object_key=stream_key,
                 external_id=record_id,
@@ -1752,9 +1829,11 @@ class JiraTicketingAdapter:
                     "order": position,
                 },
             )
-        if stream_key == "users":
+        if stream_key == JiraStream.USERS:
             record_id = _required_id(row.get("accountId"), field="Jira account ID")
-            display_name = _required_string(row.get("displayName"), field="Jira display name")
+            display_name = _required_string(
+                row.get("displayName"), field="Jira display name"
+            )
             avatars = _optional_object(row.get("avatarUrls"))
             return SorExternalRecord(
                 vendor_object_key=stream_key,
@@ -1763,16 +1842,18 @@ class JiraTicketingAdapter:
                     "name": display_name,
                     "display_name": display_name,
                     "primary_email": _optional_string(row.get("emailAddress")),
-                    "active": _required_boolean(row.get("active"), field="Jira user active"),
+                    "active": _required_boolean(
+                        row.get("active"), field="Jira user active"
+                    ),
                     "assignable": None,
                     "avatar_url": _optional_string(avatars.get("48x48")),
                 },
             )
-        if stream_key == "sprints":
+        if stream_key == JiraStream.SPRINTS:
             return self._external_sprint(row)
-        if stream_key == "comments":
+        if stream_key == JiraStream.COMMENTS:
             return self._external_comment(row)
-        if stream_key == "issue_relations":
+        if stream_key == JiraStream.ISSUE_RELATIONS:
             return self._external_relation(row)
         label = _required_string(row.get("name"), field="Jira label")
         return SorExternalRecord(
@@ -1794,13 +1875,19 @@ class JiraTicketingAdapter:
         fields = _object(row.get("fields"), field="Jira issue fields")
         status = _optional_object(fields.get("status"))
         category = _optional_object(status.get("statusCategory"))
-        native_category = _optional_string(category.get("key")) or _optional_string(category.get("name"))
+        native_category = _optional_string(category.get("key")) or _optional_string(
+            category.get("name")
+        )
         description = fields.get("description")
-        updated = _required_datetime(fields.get("updated"), field="Jira issue update time")
+        updated = _required_datetime(
+            fields.get("updated"), field="Jira issue update time"
+        )
         resolution_at = _optional_datetime(fields.get("resolutiondate"))
         payload: dict[str, object] = {
             "key": key,
-            "title": _required_string(fields.get("summary"), field="Jira issue summary"),
+            "title": _required_string(
+                fields.get("summary"), field="Jira issue summary"
+            ),
             "normalized_description": _adf_text(description),
             "source_description": _json_value(description),
             "issue_type": _nested_string(fields.get("issuetype"), "name"),
@@ -1812,12 +1899,19 @@ class JiraTicketingAdapter:
             "assignee_external_id": _nested_id(fields.get("assignee"), key="accountId"),
             "reporter_external_id": _nested_id(fields.get("reporter"), key="accountId"),
             "estimate": fields.get("timeoriginalestimate"),
-            "label_external_ids": _string_list(fields.get("labels"), field="Jira issue labels"),
+            "label_external_ids": _string_list(
+                fields.get(JiraStream.LABELS), field="Jira issue labels"
+            ),
             "parent_external_id": _nested_id(fields.get("parent")),
             "cycle_external_id": None,
             "due_date": fields.get("duedate"),
             "started_at": None,
-            "completed_at": resolution_at if _normalized_jira_status(native_category) == "COMPLETED" else None,
+            "completed_at": (
+                resolution_at
+                if _normalized_jira_status(native_category)
+                is TicketingWorkState.COMPLETED
+                else None
+            ),
             "cancelled_at": None,
         }
         for field_key in self._issue_fields():
@@ -1827,7 +1921,7 @@ class JiraTicketingAdapter:
                     value = _jira_current_sprint_id(value)
                 payload[field_key] = value
         return SorExternalRecord(
-            vendor_object_key="issues",
+            vendor_object_key=JiraStream.ISSUES,
             external_id=record_id,
             payload=payload,
             source_created_at=_optional_datetime(fields.get("created")),
@@ -1843,7 +1937,7 @@ class JiraTicketingAdapter:
             row.get("boardId")
         )
         return SorExternalRecord(
-            vendor_object_key="sprints",
+            vendor_object_key=JiraStream.SPRINTS,
             external_id=record_id,
             payload={
                 "name": _required_string(row.get("name"), field="Jira sprint name"),
@@ -1875,7 +1969,7 @@ class JiraTicketingAdapter:
         updated_at = _optional_datetime(row.get("updated")) or created_at
         author = _optional_object(row.get("author"))
         return SorExternalRecord(
-            vendor_object_key="comments",
+            vendor_object_key=JiraStream.COMMENTS,
             external_id=_comment_external_id(issue_id, comment_id),
             payload={
                 "issue_external_id": issue_id,
@@ -1915,10 +2009,10 @@ class JiraTicketingAdapter:
         if canonical_kind is TicketingRelationKind.RELATED and from_id > to_id:
             from_id, to_id = to_id, from_id
         return SorExternalRecord(
-            vendor_object_key="issue_relations",
+            vendor_object_key=JiraStream.ISSUE_RELATIONS,
             external_id=relation_id,
             payload={
-                "issue_vendor_object_key": "issues",
+                "issue_vendor_object_key": JiraStream.ISSUES,
                 "from_issue_external_id": from_id,
                 "to_issue_external_id": to_id,
                 "canonical_kind": canonical_kind.value,
@@ -1929,13 +2023,18 @@ class JiraTicketingAdapter:
 
     async def _create_issue(self, command: SorCommandRequest) -> SorCommandResult:
         if command.target_external_id is not None:
-            raise _invalid_command("Creating a Jira issue cannot target an existing issue.")
+            raise _invalid_command(
+                "Creating a Jira issue cannot target an existing issue."
+            )
         required = {"title", "project_external_id", "issue_type"}
         if not required.issubset(command.payload):
             raise _invalid_command(
                 "Creating a Jira issue requires title, project_external_id, and issue_type."
             )
-        fields = self._write_issue_fields(command.payload, create=True)
+        fields = self._write_issue_fields(
+            command.payload,
+            operation=SorMutationOperation.CREATE,
+        )
         try:
             response = await self._jira_request(
                 "/issue",
@@ -1943,9 +2042,14 @@ class JiraTicketingAdapter:
                 payload={"fields": fields},
                 idempotency_key=command.idempotency_key,
             )
-            data = _object(_expect_mutation(response, operation="create Jira issue"), field="Jira issue create result")
+            data = _object(
+                _expect_mutation(response, operation="create Jira issue"),
+                field="Jira issue create result",
+            )
         except SorVendorOperationError as error:
-            _raise_unknown_create(error, "Jira may have created the issue; reconcile before retrying.")
+            _raise_unknown_create(
+                error, "Jira may have created the issue; reconcile before retrying."
+            )
             raise
         issue_id = _required_id(data.get("id"), field="Jira issue ID")
         key = _optional_string(data.get("key"))
@@ -1956,7 +2060,10 @@ class JiraTicketingAdapter:
         target_id: str,
         command: SorCommandRequest,
     ) -> SorCommandResult:
-        fields = self._write_issue_fields(command.payload, create=False)
+        fields = self._write_issue_fields(
+            command.payload,
+            operation=SorMutationOperation.UPDATE,
+        )
         response = await self._jira_request(
             f"/issue/{_path_segment(target_id)}",
             method="PUT",
@@ -1979,7 +2086,10 @@ class JiraTicketingAdapter:
         available = await self._jira_request(
             f"/issue/{_path_segment(target_id)}/transitions",
         )
-        data = _object(_expect(available, operation="list Jira transitions"), field="Jira transitions")
+        data = _object(
+            _expect(available, operation="list Jira transitions"),
+            field="Jira transitions",
+        )
         transitions = _object_list(data.get("transitions"), field="Jira transitions")
         transition_id = next(
             (
@@ -1990,7 +2100,9 @@ class JiraTicketingAdapter:
             None,
         )
         if transition_id is None:
-            raise _invalid_command("The requested Jira status is not reachable from this issue.")
+            raise _invalid_command(
+                "The requested Jira status is not reachable from this issue."
+            )
         response = await self._jira_request(
             f"/issue/{_path_segment(target_id)}/transitions",
             method="POST",
@@ -2052,7 +2164,7 @@ class JiraTicketingAdapter:
             field="Jira comment creation time",
         )
         return SorCommandResult(
-            vendor_object_key="comments",
+            vendor_object_key=JiraStream.COMMENTS,
             external_id=_comment_external_id(target_id, comment_id),
             external_request_id=_request_id(response),
             source_revision=updated_at.isoformat(),
@@ -2097,7 +2209,9 @@ class JiraTicketingAdapter:
         payload = {
             "inwardIssue": {"id": inward_id},
             "outwardIssue": {"id": outward_id},
-            "type": {"id": _required_id(link_type.get("id"), field="Jira link type ID")},
+            "type": {
+                "id": _required_id(link_type.get("id"), field="Jira link type ID")
+            },
         }
         try:
             response = await self._jira_request(
@@ -2120,7 +2234,10 @@ class JiraTicketingAdapter:
             else requested_kind
         )
         expected_from, expected_to = outward_id, inward_id
-        if canonical_kind is TicketingRelationKind.RELATED and expected_from > expected_to:
+        if (
+            canonical_kind is TicketingRelationKind.RELATED
+            and expected_from > expected_to
+        ):
             expected_from, expected_to = expected_to, expected_from
         relation_id = await self._find_issue_link(
             issue_id=target_id,
@@ -2130,13 +2247,13 @@ class JiraTicketingAdapter:
         )
         if relation_id is None:
             raise SorVendorOperationError(
-                "vendor_mutation_outcome_unknown",
+                SorVendorErrorCode.VENDOR_MUTATION_OUTCOME_UNKNOWN,
                 "Jira accepted the issue link but did not expose its ID yet; reconcile "
                 "before retrying.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.RECONCILE_REQUIRED,
             )
         return SorCommandResult(
-            vendor_object_key="issue_relations",
+            vendor_object_key=JiraStream.ISSUE_RELATIONS,
             external_id=relation_id,
             external_request_id=_request_id(response),
             response={"status": "accepted"},
@@ -2160,7 +2277,9 @@ class JiraTicketingAdapter:
         return min(
             matches,
             key=lambda row: (
-                _required_string(row.get("name"), field="Jira link type name").casefold(),
+                _required_string(
+                    row.get("name"), field="Jira link type name"
+                ).casefold(),
                 _required_id(row.get("id"), field="Jira link type ID"),
             ),
         )
@@ -2210,7 +2329,9 @@ class JiraTicketingAdapter:
         response = await self._jira_request(
             f"/issue/{_path_segment(target_id)}",
             method="PUT",
-            payload={"update": {"labels": [{"add" if add else "remove": label}]}},
+            payload={
+                "update": {JiraStream.LABELS: [{"add" if add else "remove": label}]}
+            },
             idempotency_key=command.idempotency_key,
         )
         _expect_mutation(response, operation="change Jira issue label")
@@ -2220,14 +2341,14 @@ class JiraTicketingAdapter:
         self,
         payload: Mapping[str, object],
         *,
-        create: bool,
+        operation: SorMutationOperation,
     ) -> dict[str, object]:
         if not payload:
             raise _invalid_command("A Jira issue mutation requires at least one field.")
         writable = {
             field.agent_key: field.vendor_field_key
             for field in self._context.fields
-            if field.vendor_object_key == "issues" and field.writable
+            if field.vendor_object_key == JiraStream.ISSUES and field.writable
         }
         allowed = set(writable) | {
             "title",
@@ -2243,20 +2364,36 @@ class JiraTicketingAdapter:
         unknown = set(payload) - allowed
         if unknown:
             raise SorVendorOperationError(
-                "vendor_field_not_writable",
+                SorVendorErrorCode.VENDOR_FIELD_NOT_WRITABLE,
                 "The Jira mutation contains fields absent from the writable mapping.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         result: dict[str, object] = {}
         mappings = {
             "title": ("summary", _required_command_string),
             "normalized_description": ("description", _adf_document_or_none),
-            "issue_type": ("issuetype", lambda value: {"name": _required_command_string(value)}),
-            "priority": ("priority", lambda value: None if value is None else {"name": _required_command_string(value)}),
-            "project_external_id": ("project", lambda value: {"id": _required_command_string(value)}),
+            "issue_type": (
+                "issuetype",
+                lambda value: {"name": _required_command_string(value)},
+            ),
+            "priority": (
+                "priority",
+                lambda value: None
+                if value is None
+                else {"name": _required_command_string(value)},
+            ),
+            "project_external_id": (
+                "project",
+                lambda value: {"id": _required_command_string(value)},
+            ),
             "estimate": ("timeoriginalestimate", _optional_positive_integer),
-            "label_external_ids": ("labels", _command_string_list),
-            "parent_external_id": ("parent", lambda value: None if value is None else {"id": _required_command_string(value)}),
+            "label_external_ids": (JiraStream.LABELS, _command_string_list),
+            "parent_external_id": (
+                "parent",
+                lambda value: None
+                if value is None
+                else {"id": _required_command_string(value)},
+            ),
             "due_date": ("duedate", _optional_command_string),
         }
         for key, value in payload.items():
@@ -2266,7 +2403,7 @@ class JiraTicketingAdapter:
                 continue
             vendor_key = writable[key]
             result[vendor_key] = value
-        if create:
+        if operation is SorMutationOperation.CREATE:
             for field in ("summary", "project", "issuetype"):
                 if field not in result:
                     raise _invalid_command(
@@ -2282,7 +2419,7 @@ class JiraTicketingAdapter:
         key: str | None = None,
     ) -> SorCommandResult:
         return SorCommandResult(
-            vendor_object_key="issues",
+            vendor_object_key=JiraStream.ISSUES,
             external_id=issue_id,
             external_request_id=_request_id(response),
             source_url=f"{self._site_origin}/browse/{key}" if key else None,
@@ -2414,38 +2551,44 @@ def _numeric_string_key(value: str) -> tuple[int, int | str]:
 
 
 def _expect(response: SorJsonResponse, *, operation: str) -> object:
-    if response.status_code in {401, 403}:
+    if response.status_code in {HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN}:
         raise SorVendorOperationError(
-            "vendor_authorization_failed",
+            SorVendorErrorCode.VENDOR_AUTHORIZATION_FAILED,
             f"Jira refused authorization while attempting to {operation}.",
-            retryable=False,
-            requires_reauthorization=True,
-            refreshable_authorization=response.status_code == 401,
+            recovery=(
+                SorRecoveryPolicy.REFRESH_AND_RETRY
+                if response.status_code == HTTPStatus.UNAUTHORIZED
+                else SorRecoveryPolicy.REAUTH_REQUIRED
+            ),
         )
-    if response.status_code == 429:
+    if response.status_code == HTTPStatus.TOO_MANY_REQUESTS:
         raise SorVendorOperationError(
-            "vendor_rate_limited",
+            SorVendorErrorCode.VENDOR_RATE_LIMITED,
             "Jira rate limited the operation.",
-            retryable=True,
+            recovery=SorRecoveryPolicy.RETRY,
         )
-    if response.status_code >= 500:
+    if response.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR:
         raise SorVendorOperationError(
-            "vendor_server_failed",
+            SorVendorErrorCode.VENDOR_SERVER_FAILED,
             "Jira could not complete the operation.",
-            retryable=True,
+            recovery=SorRecoveryPolicy.RETRY,
         )
     if not response.ok:
         raise SorVendorOperationError(
-            "vendor_request_rejected",
+            SorVendorErrorCode.VENDOR_REQUEST_REJECTED,
             f"Jira rejected the request while attempting to {operation}.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return response.data
 
 
 def _expect_mutation(response: SorJsonResponse, *, operation: str) -> object:
     value = _expect(response, operation=operation)
-    if response.status_code not in {200, 201, 204}:
+    if response.status_code not in {
+        HTTPStatus.OK,
+        HTTPStatus.CREATED,
+        HTTPStatus.NO_CONTENT,
+    }:
         raise _invalid_response("Jira returned an unexpected mutation status.")
     return value
 
@@ -2465,7 +2608,7 @@ def _decode_issue_cursor(value: str | None) -> _IssueCursor:
         payload = json.loads(value)
     except (TypeError, ValueError, json.JSONDecodeError) as error:
         raise _invalid_cursor("issue") from error
-    if not isinstance(payload, dict) or payload.get("stream") != "issues":
+    if not isinstance(payload, dict) or payload.get("stream") != JiraStream.ISSUES:
         raise _invalid_cursor("issue")
     if payload.get("v") == JIRA_CURSOR_VERSION and set(payload) == {
         "floor",
@@ -2543,7 +2686,7 @@ def _encode_issue_cursor(cursor: _IssueCursor) -> str:
             "next_token": cursor.next_token,
             "project_offset": cursor.project_offset,
             "started_at": _datetime_value(cursor.started_at),
-            "stream": "issues",
+            "stream": JiraStream.ISSUES,
             "v": JIRA_ISSUE_CURSOR_VERSION,
         },
         separators=(",", ":"),
@@ -2599,7 +2742,7 @@ def _encode_offset_cursor(offset: int, *, stream_key: str) -> str:
 
 
 def _decode_comment_cursor(value: str | None) -> _CommentCursor:
-    stream_key = "comments"
+    stream_key = JiraStream.COMMENTS
     initial = _CommentCursor(
         project_offset=0,
         next_issue_token=None,
@@ -2623,21 +2766,17 @@ def _decode_comment_cursor(value: str | None) -> _CommentCursor:
         JIRA_NESTED_CURSOR_VERSION,
     }:
         return initial
-    if (
-        payload.get("v") != JIRA_COMMENT_CURSOR_VERSION
-        or set(payload)
-        != {
-            "current_project_is_last",
-            "issue_ids",
-            "issue_page_is_last",
-            "item_offsets",
-            "item_stops",
-            "next_issue_token",
-            "project_offset",
-            "stream",
-            "v",
-        }
-    ):
+    if payload.get("v") != JIRA_COMMENT_CURSOR_VERSION or set(payload) != {
+        "current_project_is_last",
+        "issue_ids",
+        "issue_page_is_last",
+        "item_offsets",
+        "item_stops",
+        "next_issue_token",
+        "project_offset",
+        "stream",
+        "v",
+    }:
         raise _invalid_cursor(stream_key)
     next_issue_token = _optional_string(payload.get("next_issue_token"))
     raw_issue_ids = payload.get("issue_ids")
@@ -2712,7 +2851,7 @@ def _encode_comment_cursor(cursor: _CommentCursor) -> str:
             "item_stops": cursor.item_stops,
             "next_issue_token": cursor.next_issue_token,
             "project_offset": cursor.project_offset,
-            "stream": "comments",
+            "stream": JiraStream.COMMENTS,
             "v": JIRA_COMMENT_CURSOR_VERSION,
         },
         separators=(",", ":"),
@@ -2747,9 +2886,12 @@ def _decode_relation_cursor(value: str | None) -> _RelationCursor:
     try:
         payload = json.loads(value)
     except (TypeError, ValueError, json.JSONDecodeError) as error:
-        raise _invalid_cursor("issue_relations") from error
-    if not isinstance(payload, dict) or payload.get("stream") != "issue_relations":
-        raise _invalid_cursor("issue_relations")
+        raise _invalid_cursor(JiraStream.ISSUE_RELATIONS) from error
+    if (
+        not isinstance(payload, dict)
+        or payload.get("stream") != JiraStream.ISSUE_RELATIONS
+    ):
+        raise _invalid_cursor(JiraStream.ISSUE_RELATIONS)
     if payload.get("v") in {
         JIRA_CURSOR_VERSION,
         JIRA_ISSUE_CURSOR_VERSION,
@@ -2762,7 +2904,7 @@ def _decode_relation_cursor(value: str | None) -> _RelationCursor:
         "stream",
         "v",
     }:
-        raise _invalid_cursor("issue_relations")
+        raise _invalid_cursor(JiraStream.ISSUE_RELATIONS)
     next_issue_token = _optional_string(payload.get("next_issue_token"))
     project_offset = payload.get("project_offset")
     if (
@@ -2772,7 +2914,7 @@ def _decode_relation_cursor(value: str | None) -> _RelationCursor:
         or next_issue_token is not None
         and len(next_issue_token) > 4_096
     ):
-        raise _invalid_cursor("issue_relations")
+        raise _invalid_cursor(JiraStream.ISSUE_RELATIONS)
     return _RelationCursor(
         project_offset=project_offset,
         next_issue_token=next_issue_token,
@@ -2784,7 +2926,7 @@ def _encode_relation_cursor(cursor: _RelationCursor) -> str:
         {
             "next_issue_token": cursor.next_issue_token,
             "project_offset": cursor.project_offset,
-            "stream": "issue_relations",
+            "stream": JiraStream.ISSUE_RELATIONS,
             "v": JIRA_RELATION_CURSOR_VERSION,
         },
         separators=(",", ":"),
@@ -2845,10 +2987,10 @@ def _decode_sprint_cursor(value: str | None) -> _SprintCursor:
     try:
         payload = json.loads(value)
     except (TypeError, ValueError, json.JSONDecodeError) as error:
-        raise _invalid_cursor("sprints") from error
+        raise _invalid_cursor(JiraStream.SPRINTS) from error
     if (
         isinstance(payload, dict)
-        and payload.get("stream") == "sprints"
+        and payload.get("stream") == JiraStream.SPRINTS
         and payload.get("v") == JIRA_CURSOR_VERSION
         and set(payload)
         == {
@@ -2885,10 +3027,10 @@ def _decode_sprint_cursor(value: str | None) -> _SprintCursor:
             "stream",
             "v",
         }
-        or payload.get("stream") != "sprints"
+        or payload.get("stream") != JiraStream.SPRINTS
         or payload.get("v") != JIRA_SPRINT_CURSOR_VERSION
     ):
-        raise _invalid_cursor("sprints")
+        raise _invalid_cursor(JiraStream.SPRINTS)
     floor = _optional_datetime(payload.get("floor"))
     high = _optional_datetime(payload.get("high"))
     started_at = _optional_datetime(payload.get("started_at"))
@@ -2908,7 +3050,7 @@ def _decode_sprint_cursor(value: str | None) -> _SprintCursor:
         or next_issue_token is not None
         and len(next_issue_token) > 4_096
     ):
-        raise _invalid_cursor("sprints")
+        raise _invalid_cursor(JiraStream.SPRINTS)
     if completed:
         if (
             project_offset != 0
@@ -2916,7 +3058,7 @@ def _decode_sprint_cursor(value: str | None) -> _SprintCursor:
             or item_offset != 0
             or high is not None
         ):
-            raise _invalid_cursor("sprints")
+            raise _invalid_cursor(JiraStream.SPRINTS)
         return _SprintCursor(
             floor=floor,
             project_offset=0,
@@ -2927,7 +3069,7 @@ def _decode_sprint_cursor(value: str | None) -> _SprintCursor:
             completed=False,
         )
     if next_issue_token is not None and high is None:
-        raise _invalid_cursor("sprints")
+        raise _invalid_cursor(JiraStream.SPRINTS)
     return _SprintCursor(
         floor=floor,
         project_offset=project_offset,
@@ -2949,7 +3091,7 @@ def _encode_sprint_cursor(cursor: _SprintCursor) -> str:
             "next_issue_token": cursor.next_issue_token,
             "project_offset": cursor.project_offset,
             "started_at": _datetime_value(cursor.started_at),
-            "stream": "sprints",
+            "stream": JiraStream.SPRINTS,
             "v": JIRA_SPRINT_CURSOR_VERSION,
         },
         separators=(",", ":"),
@@ -2985,7 +3127,9 @@ def _maximum_issue_updated_at(
     result = current
     for row in rows:
         fields = _object(row.get("fields"), field="Jira issue fields")
-        updated = _required_datetime(fields.get("updated"), field="Jira issue update time")
+        updated = _required_datetime(
+            fields.get("updated"), field="Jira issue update time"
+        )
         if result is None or updated > result:
             result = updated
     return result
@@ -2993,29 +3137,31 @@ def _maximum_issue_updated_at(
 
 def _invalid_cursor(stream_key: str) -> SorVendorOperationError:
     return SorVendorOperationError(
-        "vendor_cursor_invalid",
+        SorVendorErrorCode.VENDOR_CURSOR_INVALID,
         f"The Jira {stream_key} cursor is invalid.",
-        retryable=False,
+        recovery=SorRecoveryPolicy.TERMINAL,
     )
 
 
 def _require_stream(value: str, *, selected: tuple[str, ...]) -> str:
     if value not in _STREAM_ENTITY or value not in selected:
         raise SorVendorOperationError(
-            "vendor_stream_unsupported",
+            SorVendorErrorCode.VENDOR_STREAM_UNSUPPORTED,
             "The requested Jira stream is not selected for this source.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return value
 
 
 def _jira_site_origin(value: str | None) -> str:
     normalized = _normalized_origin(value)
-    if normalized is None or not normalized.removeprefix("https://").endswith(".atlassian.net"):
+    if normalized is None or not normalized.removeprefix("https://").endswith(
+        ".atlassian.net"
+    ):
         raise SorVendorOperationError(
-            "vendor_site_invalid",
+            SorVendorErrorCode.VENDOR_SITE_INVALID,
             "Jira Cloud requires an exact HTTPS *.atlassian.net site URL.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return normalized
 
@@ -3033,9 +3179,9 @@ def _path_segment(value: str) -> str:
     normalized = value.strip()
     if not re.fullmatch(r"[A-Za-z0-9._~-]{1,512}", normalized):
         raise SorVendorOperationError(
-            "vendor_identifier_invalid",
+            SorVendorErrorCode.VENDOR_IDENTIFIER_INVALID,
             "A Jira source identifier is invalid.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return normalized
 
@@ -3048,9 +3194,9 @@ def _split_comment_external_id(value: str) -> tuple[str, str]:
     parts = value.split(":")
     if len(parts) != 2:
         raise SorVendorOperationError(
-            "vendor_identifier_invalid",
+            SorVendorErrorCode.VENDOR_IDENTIFIER_INVALID,
             "A Jira comment identity is invalid.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return _path_segment(parts[0]), _path_segment(parts[1])
 
@@ -3058,7 +3204,7 @@ def _split_comment_external_id(value: str) -> tuple[str, str]:
 def _jira_relation_kind(
     value: object,
     *,
-    error_code: str = "vendor_command_invalid",
+    error_code: SorVendorErrorCode = SorVendorErrorCode.VENDOR_COMMAND_INVALID,
 ) -> TicketingRelationKind:
     if isinstance(value, TicketingRelationKind):
         return value
@@ -3072,7 +3218,7 @@ def _jira_relation_kind(
         raise SorVendorOperationError(
             error_code,
             "The Jira relation kind is invalid.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         ) from error
 
 
@@ -3183,9 +3329,7 @@ def _adf_document_or_none(value: object) -> object | None:
         return None
     text = _required_command_string(value, field="Jira description")
     return {
-        "content": [
-            {"content": [{"text": text, "type": "text"}], "type": "paragraph"}
-        ],
+        "content": [{"content": [{"text": text, "type": "text"}], "type": "paragraph"}],
         "type": "doc",
         "version": 1,
     }
@@ -3212,7 +3356,14 @@ def _adf_text(value: object) -> str | None:
         if node_type == "hardBreak":
             parts.append("\n")
         walk(node.get("content"))
-        if node_type in {"blockquote", "bulletList", "heading", "listItem", "orderedList", "paragraph"}:
+        if node_type in {
+            "blockquote",
+            "bulletList",
+            "heading",
+            "listItem",
+            "orderedList",
+            "paragraph",
+        }:
             parts.append("\n")
 
     walk(value)
@@ -3220,18 +3371,18 @@ def _adf_text(value: object) -> str | None:
     return result[:262_144] or None
 
 
-def _normalized_jira_status(value: str | None) -> str | None:
+def _normalized_jira_status(value: str | None) -> TicketingWorkState | None:
     if value is None:
         return None
     normalized = value.strip().casefold().replace("_", " ")
     return {
-        "new": "UNSTARTED",
-        "to do": "UNSTARTED",
-        "indeterminate": "STARTED",
-        "in progress": "STARTED",
-        "done": "COMPLETED",
-        "complete": "COMPLETED",
-    }.get(normalized, value.strip().upper().replace(" ", "_"))
+        "new": TicketingWorkState.UNSTARTED,
+        "to do": TicketingWorkState.UNSTARTED,
+        "indeterminate": TicketingWorkState.STARTED,
+        "in progress": TicketingWorkState.STARTED,
+        "done": TicketingWorkState.COMPLETED,
+        "complete": TicketingWorkState.COMPLETED,
+    }.get(normalized, TicketingWorkState.UNKNOWN)
 
 
 def _nested_id(value: object, *, key: str = "id") -> str | None:
@@ -3255,11 +3406,15 @@ def _request_id(response: SorJsonResponse) -> str | None:
 
 
 def _raise_unknown_create(error: SorVendorOperationError, message: str) -> None:
-    if error.code in {"vendor_timeout", "vendor_transport_failed", "vendor_server_failed"}:
+    if error.code in {
+        SorVendorErrorCode.VENDOR_TIMEOUT,
+        SorVendorErrorCode.VENDOR_TRANSPORT_FAILED,
+        SorVendorErrorCode.VENDOR_SERVER_FAILED,
+    }:
         raise SorVendorOperationError(
-            "vendor_mutation_outcome_unknown",
+            SorVendorErrorCode.VENDOR_MUTATION_OUTCOME_UNKNOWN,
             message,
-            retryable=False,
+            recovery=SorRecoveryPolicy.RECONCILE_REQUIRED,
         ) from error
 
 
@@ -3267,10 +3422,9 @@ def _credential(credentials: Mapping[str, object], key: str) -> str:
     value = credentials.get(key)
     if not isinstance(value, str) or not value:
         raise SorVendorOperationError(
-            "vendor_credentials_invalid",
+            SorVendorErrorCode.VENDOR_CREDENTIALS_INVALID,
             "The Jira credential is unavailable.",
-            retryable=False,
-            requires_reauthorization=True,
+            recovery=SorRecoveryPolicy.REAUTH_REQUIRED,
         )
     return value
 
@@ -3294,7 +3448,9 @@ def _object_list(value: object, *, field: str) -> list[dict[str, object]]:
 def _string_list(value: object, *, field: str) -> list[str]:
     if value is None:
         return []
-    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+    if not isinstance(value, list) or not all(
+        isinstance(item, str) and item for item in value
+    ):
         raise _invalid_response(f"{field} is not a list of text values.")
     if len(value) != len(set(value)):
         raise _invalid_response(f"{field} contains duplicates.")
@@ -3432,7 +3588,10 @@ def _datetime_value(value: datetime | None) -> str | None:
 def _webhook_events(selected_objects: tuple[str, ...]) -> tuple[str, ...]:
     """Return the one bounded dynamic-webhook event set Jira supports."""
     events: list[str] = []
-    if "issues" in selected_objects or "issue_relations" in selected_objects:
+    if (
+        JiraStream.ISSUES in selected_objects
+        or JiraStream.ISSUE_RELATIONS in selected_objects
+    ):
         events.extend(
             (
                 "jira:issue_created",
@@ -3440,9 +3599,9 @@ def _webhook_events(selected_objects: tuple[str, ...]) -> tuple[str, ...]:
                 "jira:issue_deleted",
             )
         )
-    if "comments" in selected_objects:
+    if JiraStream.COMMENTS in selected_objects:
         events.extend(("comment_created", "comment_updated", "comment_deleted"))
-    if "sprints" in selected_objects:
+    if JiraStream.SPRINTS in selected_objects:
         events.extend(
             (
                 "sprint_created",
@@ -3460,15 +3619,15 @@ def _webhook_id(value: str) -> int:
         result = int(value)
     except (TypeError, ValueError) as error:
         raise SorVendorOperationError(
-            "vendor_webhook_invalid",
+            SorVendorErrorCode.VENDOR_WEBHOOK_INVALID,
             "The Jira webhook subscription identity is invalid.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         ) from error
     if result <= 0:
         raise SorVendorOperationError(
-            "vendor_webhook_invalid",
+            SorVendorErrorCode.VENDOR_WEBHOOK_INVALID,
             "The Jira webhook subscription identity is invalid.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return result
 
@@ -3536,16 +3695,18 @@ def _jira_webhook_record_identity(
 ) -> tuple[str | None, str | None]:
     if event_type.startswith("jira:issue_"):
         issue = _webhook_object(payload.get("issue"), field="issue")
-        return "issues", _webhook_record_id(issue.get("id"), field="issue ID")
+        return JiraStream.ISSUES, _webhook_record_id(issue.get("id"), field="issue ID")
     if event_type.startswith("comment_"):
         issue = _webhook_object(payload.get("issue"), field="issue")
         comment = _webhook_object(payload.get("comment"), field="comment")
         issue_id = _webhook_record_id(issue.get("id"), field="issue ID")
         comment_id = _webhook_record_id(comment.get("id"), field="comment ID")
-        return "comments", f"{issue_id}:{comment_id}"
+        return JiraStream.COMMENTS, f"{issue_id}:{comment_id}"
     if event_type.startswith("sprint_"):
         sprint = _webhook_object(payload.get("sprint"), field="sprint")
-        return "sprints", _webhook_record_id(sprint.get("id"), field="sprint ID")
+        return JiraStream.SPRINTS, _webhook_record_id(
+            sprint.get("id"), field="sprint ID"
+        )
     return None, None
 
 
@@ -3582,17 +3743,17 @@ def _jira_webhook_occurred_at(payload: Mapping[str, object]) -> datetime | None:
 
 def _invalid_command(message: str) -> SorVendorOperationError:
     return SorVendorOperationError(
-        "vendor_command_invalid",
+        SorVendorErrorCode.VENDOR_COMMAND_INVALID,
         message,
-        retryable=False,
+        recovery=SorRecoveryPolicy.TERMINAL,
     )
 
 
 def _invalid_response(message: str) -> SorVendorOperationError:
     return SorVendorOperationError(
-        "vendor_response_invalid",
+        SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
         message,
-        retryable=False,
+        recovery=SorRecoveryPolicy.TERMINAL,
     )
 
 

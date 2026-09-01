@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.sor.shared.contracts import SorProfile
 from eylo.sor.shared.models import SorRecordModel
+from eylo.sor.support.contracts import SupportEntityKind, SupportToolName
 from eylo.sor.support.models import SupportMessageModel, SupportTicketModel
 
 SUPPORT_AGENT_RELATED_RECORD_LIMIT = 100
@@ -33,11 +34,11 @@ async def read_support_related_records(
     parents: tuple[SorRecordModel, ...],
 ) -> tuple[SupportAgentRelatedRecords, ...]:
     """Read only the explicit relation promised by one Support tool contract."""
-    if tool_name == "support_get_ticket":
-        entity = "message"
+    if tool_name == SupportToolName.GET_TICKET:
+        entity = SupportEntityKind.MESSAGE.value
         read_one = _ticket_messages
-    elif tool_name == "support_get_customer_history":
-        entity = "ticket"
+    elif tool_name == SupportToolName.GET_CUSTOMER_HISTORY:
+        entity = SupportEntityKind.TICKET.value
         read_one = _customer_tickets
     else:
         return ()
@@ -63,7 +64,7 @@ async def read_support_related_records(
         )
         truncated = len(rows) > remaining
         selected = tuple(rows[:remaining])
-        if entity == "message":
+        if entity == SupportEntityKind.MESSAGE:
             selected = tuple(reversed(selected))
         remaining -= len(selected)
         results.append(
@@ -104,8 +105,7 @@ async def _ticket_messages(
                     SorRecordModel.canonical_entity_kind == "message",
                     SorRecordModel.tombstoned_at.is_(None),
                     SorRecordModel.deleted.is_(False),
-                    SupportMessageModel.ticket_external_id
-                    == parent.vendor_external_id,
+                    SupportMessageModel.ticket_external_id == parent.vendor_external_id,
                     SupportMessageModel.deleted.is_(False),
                 )
                 .order_by(

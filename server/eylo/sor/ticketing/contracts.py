@@ -6,10 +6,62 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
-from enum import Enum
+from enum import Enum, StrEnum
 from typing import Protocol, runtime_checkable
 
 from eylo.sor.shared.contracts import SorExternalRecord, SorLifecycleAdapter
+
+
+class TicketingWorkState(str, Enum):
+    """Bounded platform state for issues and workflow categories."""
+
+    UNSTARTED = "UNSTARTED"
+    STARTED = "STARTED"
+    COMPLETED = "COMPLETED"
+    CANCELLED = "CANCELLED"
+    UNKNOWN = "UNKNOWN"
+
+    @classmethod
+    def from_value(cls, value: str | None) -> "TicketingWorkState | None":
+        if value is None:
+            return None
+        try:
+            return cls(value.strip().upper())
+        except ValueError:
+            return cls.UNKNOWN
+
+
+class TicketingEntityKind(StrEnum):
+    """Stable canonical issue-tracking entity vocabulary."""
+
+    ISSUE = "issue"
+    PROJECT = "project"
+    WORKFLOW_STATE = "workflow_state"
+    USER = "user"
+    LABEL = "label"
+    CYCLE = "cycle"
+    COMMENT = "comment"
+    ATTACHMENT = "attachment"
+    RELATION = "relation"
+
+
+class TicketingToolName(StrEnum):
+    """Stable model-visible issue-tracking tool names."""
+
+    SEARCH = "issue_search"
+    GET = "issue_get"
+    GET_HISTORY = "issue_get_history"
+    LIST_PROJECTS = "issue_list_projects"
+    LIST_WORKFLOW_STATES = "issue_list_workflow_states"
+    DESCRIBE_FIELDS = "issue_describe_fields"
+    CREATE = "issue_create"
+    UPDATE = "issue_update"
+    TRANSITION = "issue_transition"
+    ASSIGN = "issue_assign"
+    COMMENT = "issue_comment"
+    LINK = "issue_link"
+    ADD_LABEL = "issue_add_label"
+    REMOVE_LABEL = "issue_remove_label"
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,7 +73,7 @@ class TicketingIssue:
     source_description: object | None
     issue_type: str | None
     native_status: str | None
-    normalized_status: str | None
+    normalized_status: TicketingWorkState | None
     priority: str | None
     project_external_id: str | None
     team_external_id: str | None
@@ -54,7 +106,7 @@ class TicketingWorkflowState:
     external_id: str
     name: str
     native_category: str | None
-    normalized_category: str | None
+    normalized_category: TicketingWorkState | None
     order: int | None
 
 
@@ -166,11 +218,14 @@ __all__ = [
     "TicketingAdapter",
     "TicketingComment",
     "TicketingCycle",
+    "TicketingEntityKind",
     "TicketingIssue",
     "TicketingIssueRelation",
     "TicketingLabel",
     "TicketingProject",
     "TicketingRelationKind",
+    "TicketingToolName",
     "TicketingUser",
+    "TicketingWorkState",
     "TicketingWorkflowState",
 ]

@@ -21,6 +21,7 @@ from eylo.sor.shared.services import SorProjectionError
 from .contracts import (
     TicketingComment,
     TicketingCycle,
+    TicketingEntityKind,
     TicketingIssue,
     TicketingIssueRelation,
     TicketingLabel,
@@ -63,7 +64,7 @@ class TicketingProjectionService:
             organization_id=organization_id,
             source_id=source_id,
             record_id=record_id,
-            entity_kind="issue",
+            entity_kind=TicketingEntityKind.ISSUE,
             vendor_external_id=issue.external_id,
         )
         _validate_issue(issue)
@@ -81,7 +82,11 @@ class TicketingProjectionService:
             "source_description": issue.source_description,
             "issue_type": issue.issue_type,
             "native_status": issue.native_status,
-            "normalized_status": issue.normalized_status,
+            "normalized_status": (
+                issue.normalized_status.value
+                if issue.normalized_status is not None
+                else None
+            ),
             "priority": issue.priority,
             "project_external_id": issue.project_external_id,
             "team_external_id": issue.team_external_id,
@@ -102,7 +107,7 @@ class TicketingProjectionService:
                 source_id=source_id,
                 record_id=record_id,
                 profile=SorProfile.TICKETING,
-                canonical_entity_kind="issue",
+                canonical_entity_kind=TicketingEntityKind.ISSUE.value,
                 **values,
             )
             self.session.add(row)
@@ -132,7 +137,7 @@ class TicketingProjectionService:
             organization_id=organization_id,
             source_id=source_id,
             record_id=record_id,
-            entity_kind="project",
+            entity_kind=TicketingEntityKind.PROJECT,
             vendor_external_id=project.external_id,
         )
         _validate_project(project)
@@ -153,7 +158,7 @@ class TicketingProjectionService:
                 source_id=source_id,
                 record_id=record_id,
                 profile=SorProfile.TICKETING,
-                canonical_entity_kind="project",
+                canonical_entity_kind=TicketingEntityKind.PROJECT.value,
                 **values,
             )
             self.session.add(row)
@@ -176,7 +181,7 @@ class TicketingProjectionService:
             organization_id=organization_id,
             source_id=source_id,
             record_id=record_id,
-            entity_kind="workflow_state",
+            entity_kind=TicketingEntityKind.WORKFLOW_STATE,
             vendor_external_id=workflow_state.external_id,
         )
         _validate_workflow_state(workflow_state)
@@ -189,7 +194,11 @@ class TicketingProjectionService:
         values: dict[str, object] = {
             "name": workflow_state.name,
             "native_category": workflow_state.native_category,
-            "normalized_category": workflow_state.normalized_category,
+            "normalized_category": (
+                workflow_state.normalized_category.value
+                if workflow_state.normalized_category is not None
+                else None
+            ),
             "display_order": workflow_state.order,
         }
         if row is None:
@@ -198,7 +207,7 @@ class TicketingProjectionService:
                 source_id=source_id,
                 record_id=record_id,
                 profile=SorProfile.TICKETING,
-                canonical_entity_kind="workflow_state",
+                canonical_entity_kind=TicketingEntityKind.WORKFLOW_STATE.value,
                 **values,
             )
             self.session.add(row)
@@ -226,7 +235,7 @@ class TicketingProjectionService:
             organization_id=organization_id,
             source_id=source_id,
             record_id=record_id,
-            entity_kind="user",
+            entity_kind=TicketingEntityKind.USER,
             vendor_external_id=user.external_id,
         )
         _validate_user(user)
@@ -250,7 +259,7 @@ class TicketingProjectionService:
                 source_id=source_id,
                 record_id=record_id,
                 profile=SorProfile.TICKETING,
-                canonical_entity_kind="user",
+                canonical_entity_kind=TicketingEntityKind.USER.value,
                 **values,
             )
             self.session.add(row)
@@ -273,7 +282,7 @@ class TicketingProjectionService:
             organization_id=organization_id,
             source_id=source_id,
             record_id=record_id,
-            entity_kind="label",
+            entity_kind=TicketingEntityKind.LABEL,
             vendor_external_id=label.external_id,
         )
         _validate_label(label)
@@ -297,7 +306,7 @@ class TicketingProjectionService:
                 source_id=source_id,
                 record_id=record_id,
                 profile=SorProfile.TICKETING,
-                canonical_entity_kind="label",
+                canonical_entity_kind=TicketingEntityKind.LABEL.value,
                 **values,
             )
             self.session.add(row)
@@ -320,7 +329,7 @@ class TicketingProjectionService:
             organization_id=organization_id,
             source_id=source_id,
             record_id=record_id,
-            entity_kind="cycle",
+            entity_kind=TicketingEntityKind.CYCLE,
             vendor_external_id=cycle.external_id,
         )
         _validate_cycle(cycle)
@@ -346,7 +355,7 @@ class TicketingProjectionService:
                 source_id=source_id,
                 record_id=record_id,
                 profile=SorProfile.TICKETING,
-                canonical_entity_kind="cycle",
+                canonical_entity_kind=TicketingEntityKind.CYCLE.value,
                 **values,
             )
             self.session.add(row)
@@ -369,7 +378,7 @@ class TicketingProjectionService:
             organization_id=organization_id,
             source_id=source_id,
             record_id=record_id,
-            entity_kind="comment",
+            entity_kind=TicketingEntityKind.COMMENT,
             vendor_external_id=comment.external_id,
         )
         _validate_comment(comment)
@@ -393,7 +402,7 @@ class TicketingProjectionService:
                 source_id=source_id,
                 record_id=record_id,
                 profile=SorProfile.TICKETING,
-                canonical_entity_kind="comment",
+                canonical_entity_kind=TicketingEntityKind.COMMENT.value,
                 **values,
             )
             self.session.add(row)
@@ -416,7 +425,7 @@ class TicketingProjectionService:
             organization_id=organization_id,
             source_id=source_id,
             record_id=record_id,
-            entity_kind="relation",
+            entity_kind=TicketingEntityKind.RELATION,
             vendor_external_id=relation.external_id,
         )
         _validate_relation(relation)
@@ -439,7 +448,7 @@ class TicketingProjectionService:
                 source_id=source_id,
                 record_id=record_id,
                 profile=SorProfile.TICKETING,
-                canonical_entity_kind="relation",
+                canonical_entity_kind=TicketingEntityKind.RELATION.value,
                 **values,
             )
             self.session.add(row)
@@ -461,7 +470,7 @@ class TicketingProjectionService:
         organization_id: UUID,
         source_id: UUID,
         record_id: UUID,
-        entity_kind: str,
+        entity_kind: TicketingEntityKind,
         vendor_external_id: str,
     ) -> SorRecordModel:
         record = await self.records.get_record(
@@ -474,7 +483,7 @@ class TicketingProjectionService:
             raise SorProjectionError("Canonical source record not found.")
         if (
             record.profile is not SorProfile.TICKETING
-            or record.canonical_entity_kind != entity_kind
+            or record.canonical_entity_kind != entity_kind.value
             or record.vendor_external_id != vendor_external_id
         ):
             raise SorProjectionError(

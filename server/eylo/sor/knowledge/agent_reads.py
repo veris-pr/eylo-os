@@ -9,6 +9,7 @@ from uuid import UUID
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from eylo.sor.knowledge.contracts import KnowledgeEntityKind, KnowledgeToolName
 from eylo.sor.shared.contracts import SorProfile
 from eylo.sor.shared.models import SorRecordModel
 from eylo.sor.shared.schemas import SorAgentViewResponse
@@ -37,12 +38,15 @@ class KnowledgeAgentRelatedRecords:
 
 def knowledge_related_entities(tool_name: str) -> tuple[str, ...]:
     """Return the exact related collections promised by one Documents tool."""
-    if tool_name == "docs_get":
-        return ("property", "attachment")
-    if tool_name == "docs_list_children":
-        return ("document",)
-    if tool_name == "docs_get_version":
-        return ("version",)
+    if tool_name == KnowledgeToolName.GET:
+        return (
+            KnowledgeEntityKind.PROPERTY.value,
+            KnowledgeEntityKind.ATTACHMENT.value,
+        )
+    if tool_name == KnowledgeToolName.LIST_CHILDREN:
+        return (KnowledgeEntityKind.DOCUMENT.value,)
+    if tool_name == KnowledgeToolName.GET_VERSION:
+        return (KnowledgeEntityKind.VERSION.value,)
     return ()
 
 
@@ -57,11 +61,11 @@ def shape_knowledge_tool_response(
     """Remove raw vendor bodies and bound model-facing document content."""
     data = projection.model_dump(mode="json")
     _remove_source_bodies(data)
-    if tool_name == "docs_search":
+    if tool_name == KnowledgeToolName.SEARCH:
         for item in data["items"]:
             _apply_search_excerpt(item, search=search)
         data["content_mode"] = "search_excerpt"
-    elif tool_name == "docs_get":
+    elif tool_name == KnowledgeToolName.GET:
         for item in data["items"]:
             _apply_content_window(
                 item,

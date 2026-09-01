@@ -18,6 +18,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
+from eylo.sor.crm.contracts import CrmEntityKind
 from eylo.sor.shared.contracts import SorProfile
 from eylo.sor.shared.models import SorProfileRecordModel
 
@@ -31,7 +32,7 @@ class CrmContactModel(SorProfileRecordModel):
         *SorProfileRecordModel.get_record_constraints(
             __tablename__,
             profile=SorProfile.CRM,
-            entity_kind="contact",
+            entity_kind=CrmEntityKind.CONTACT,
         ),
         Index("ix_sor_crm_contacts_source_email", "source_id", "primary_email"),
         Index(
@@ -59,7 +60,7 @@ class CrmCompanyModel(SorProfileRecordModel):
         *SorProfileRecordModel.get_record_constraints(
             __tablename__,
             profile=SorProfile.CRM,
-            entity_kind="company",
+            entity_kind=CrmEntityKind.COMPANY,
         ),
         Index("ix_sor_crm_companies_source_domain", "source_id", "domain"),
         Index("ix_sor_crm_companies_source_industry", "source_id", "industry"),
@@ -81,7 +82,7 @@ class CrmDealModel(SorProfileRecordModel):
         *SorProfileRecordModel.get_record_constraints(
             __tablename__,
             profile=SorProfile.CRM,
-            entity_kind="deal",
+            entity_kind=CrmEntityKind.DEAL,
         ),
         CheckConstraint(
             "cardinality(contact_external_ids) <= 10000 "
@@ -95,9 +96,7 @@ class CrmDealModel(SorProfileRecordModel):
     )
 
     title: Mapped[str] = mapped_column(Text, nullable=False)
-    pipeline_external_id: Mapped[str | None] = mapped_column(
-        String(512), nullable=True
-    )
+    pipeline_external_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
     stage_external_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
     native_stage: Mapped[str | None] = mapped_column(String(320), nullable=True)
     normalized_state: Mapped[str | None] = mapped_column(String(96), nullable=True)
@@ -129,7 +128,7 @@ class CrmActivityModel(SorProfileRecordModel):
         *SorProfileRecordModel.get_record_constraints(
             __tablename__,
             profile=SorProfile.CRM,
-            entity_kind="activity",
+            entity_kind=CrmEntityKind.ACTIVITY,
         ),
         CheckConstraint(
             "cardinality(participant_external_ids) <= 10000 "
@@ -143,7 +142,9 @@ class CrmActivityModel(SorProfileRecordModel):
     kind: Mapped[str] = mapped_column(String(96), nullable=False)
     subject: Mapped[str | None] = mapped_column(Text, nullable=True)
     normalized_text: Mapped[str | None] = mapped_column(Text, nullable=True)
-    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
     actor_external_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
     participant_external_ids: Mapped[list[str]] = mapped_column(
         ARRAY(String(512)),

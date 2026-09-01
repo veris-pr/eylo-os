@@ -16,6 +16,7 @@ from pydantic import (
     model_validator,
 )
 
+from eylo.sor.knowledge.contracts import KnowledgeToolName
 from eylo.sor.runtime.catalog import get_sor_registry
 from eylo.sor.shared.contracts import SorProfile, SorToolEffect, SorToolSpec
 from eylo.sor.shared.query import SorAgentSortField, SorSortDirection
@@ -179,7 +180,7 @@ def _declaration_function(spec: SorToolSpec) -> Callable[..., Any]:
 
 def read_tool_input_model(spec: SorToolSpec) -> type[BaseModel]:
     """Expose entity choice only when one read genuinely has several targets."""
-    if spec.name == "docs_get":
+    if spec.name == KnowledgeToolName.GET:
         return SorDocumentGetInput
     targets = tuple(sorted(spec.target_entities))
     if len(targets) == 1:
@@ -208,18 +209,14 @@ def _tool_description(spec: SorToolSpec) -> str:
         if len(targets) == 1
         else f"Select one target entity: {', '.join(targets)}."
     )
-    related_guidance = (
-        f" Related data scope: {', '.join(related)}." if related else ""
-    )
+    related_guidance = f" Related data scope: {', '.join(related)}." if related else ""
     freshness = (
         "Reads Eylo's synchronized canonical projection and returns source, mapping, "
         "and freshness provenance."
         if spec.effect is SorToolEffect.READ
         else "Files one durable source command and returns only its terminal receipt."
     )
-    return (
-        f"{spec.description} {freshness} {target_guidance}{related_guidance}"
-    )
+    return f"{spec.description} {freshness} {target_guidance}{related_guidance}"
 
 
 __all__ = [

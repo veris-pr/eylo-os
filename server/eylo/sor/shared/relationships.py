@@ -59,7 +59,9 @@ class SorRelationshipService:
             raise SorProjectionError("Relationship origin record not found.")
         unique = {intent.external_relation_id for intent in intents}
         if len(unique) != len(intents):
-            raise SorProjectionError("Relationship intents repeat an external identity.")
+            raise SorProjectionError(
+                "Relationship intents repeat an external identity."
+            )
 
         current = list(
             (
@@ -149,19 +151,12 @@ class SorRelationshipService:
             ),
             SorRelationIntentModel.deleted.is_(False),
             or_(
-                (
-                    SorRelationIntentModel.from_vendor_object_key
-                    == vendor_object_key
-                )
+                (SorRelationIntentModel.from_vendor_object_key == vendor_object_key)
                 & (
-                    SorRelationIntentModel.from_vendor_external_id
-                    == vendor_external_id
+                    SorRelationIntentModel.from_vendor_external_id == vendor_external_id
                 ),
                 (SorRelationIntentModel.to_vendor_object_key == vendor_object_key)
-                & (
-                    SorRelationIntentModel.to_vendor_external_id
-                    == vendor_external_id
-                ),
+                & (SorRelationIntentModel.to_vendor_external_id == vendor_external_id),
             ),
         )
         if exclude_origin_record_id is not None:
@@ -171,8 +166,7 @@ class SorRelationshipService:
         rows = list(
             (
                 await self.session.scalars(
-                    query
-                    .order_by(
+                    query.order_by(
                         SorRelationIntentModel.updated_at.asc(),
                         SorRelationIntentModel.id.asc(),
                     )
@@ -226,8 +220,7 @@ class SorRelationshipService:
                 await self.session.scalars(
                     select(SorRelationIntentModel)
                     .where(
-                        SorRelationIntentModel.state
-                        == SorRelationIntentState.PENDING,
+                        SorRelationIntentModel.state == SorRelationIntentState.PENDING,
                         SorRelationIntentModel.deleted.is_(False),
                         or_(
                             SorRelationIntentModel.last_attempt_at.is_(None),
@@ -324,7 +317,8 @@ class SorRelationshipService:
                 from_record_id=from_record.id,
                 to_record_id=to_record.id,
                 canonical_relation_kind=row.canonical_relation_kind,
-                native_relation_kind=row.native_relation_kind,
+                relationship_role=row.relationship_role,
+                vendor_relation_kind=row.vendor_relation_kind,
                 external_relation_id=row.external_relation_id,
                 source_revision=row.source_revision,
                 tombstoned_at=None,
@@ -336,8 +330,7 @@ class SorRelationshipService:
             .where(
                 SorRecordRelationModel.organization_id == row.organization_id,
                 SorRecordRelationModel.source_id == row.source_id,
-                SorRecordRelationModel.external_relation_id
-                == row.external_relation_id,
+                SorRecordRelationModel.external_relation_id == row.external_relation_id,
                 SorRecordRelationModel.deleted.is_(False),
             )
             .with_for_update()
@@ -352,8 +345,9 @@ class SorRelationshipService:
                     SorRecordRelationModel.to_record_id == to_record.id,
                     SorRecordRelationModel.canonical_relation_kind
                     == row.canonical_relation_kind,
-                    SorRecordRelationModel.native_relation_kind
-                    == row.native_relation_kind,
+                    SorRecordRelationModel.relationship_role == row.relationship_role,
+                    SorRecordRelationModel.vendor_relation_kind
+                    == row.vendor_relation_kind,
                     SorRecordRelationModel.deleted.is_(False),
                 )
                 .with_for_update()
@@ -363,7 +357,8 @@ class SorRelationshipService:
         edge.from_record_id = from_record.id
         edge.to_record_id = to_record.id
         edge.canonical_relation_kind = row.canonical_relation_kind
-        edge.native_relation_kind = row.native_relation_kind
+        edge.relationship_role = row.relationship_role
+        edge.vendor_relation_kind = row.vendor_relation_kind
         edge.external_relation_id = row.external_relation_id
         edge.source_revision = row.source_revision
         edge.tombstoned_at = None
@@ -386,8 +381,7 @@ class SorRelationshipService:
             .where(
                 SorRecordRelationModel.organization_id == row.organization_id,
                 SorRecordRelationModel.source_id == row.source_id,
-                SorRecordRelationModel.external_relation_id
-                == row.external_relation_id,
+                SorRecordRelationModel.external_relation_id == row.external_relation_id,
                 SorRecordRelationModel.tombstoned_at.is_(None),
                 SorRecordRelationModel.deleted.is_(False),
             )
@@ -406,8 +400,7 @@ class SorRelationshipService:
             .where(
                 SorRelationIntentModel.organization_id == organization_id,
                 SorRelationIntentModel.source_id == source_id,
-                SorRelationIntentModel.external_relation_id
-                == external_relation_id,
+                SorRelationIntentModel.external_relation_id == external_relation_id,
                 SorRelationIntentModel.deleted.is_(False),
             )
             .with_for_update()
@@ -427,12 +420,17 @@ def _validate_intent(intent: SorRelationIntentDraft) -> None:
         (intent.from_vendor_external_id, 512),
         (intent.to_vendor_object_key, 160),
         (intent.to_vendor_external_id, 512),
-        (intent.canonical_relation_kind, 96),
-        (intent.native_relation_kind, 160),
+        (intent.canonical_relation_kind.value, 96),
+        (intent.relationship_role.value, 160),
         (intent.external_relation_id, 512),
     )
     if any(not value.strip() or len(value) > maximum for value, maximum in bounds):
         raise SorProjectionError("Relationship intent contains an invalid identity.")
+    if intent.vendor_relation_kind is not None and (
+        not intent.vendor_relation_kind.strip()
+        or len(intent.vendor_relation_kind) > 160
+    ):
+        raise SorProjectionError("Vendor relationship kind is invalid.")
     if (
         intent.from_vendor_object_key == intent.to_vendor_object_key
         and intent.from_vendor_external_id == intent.to_vendor_external_id
@@ -448,8 +446,9 @@ def _intent_values(intent: SorRelationIntentDraft) -> dict[str, object]:
         "from_vendor_external_id": intent.from_vendor_external_id,
         "to_vendor_object_key": intent.to_vendor_object_key,
         "to_vendor_external_id": intent.to_vendor_external_id,
-        "canonical_relation_kind": intent.canonical_relation_kind,
-        "native_relation_kind": intent.native_relation_kind,
+        "canonical_relation_kind": intent.canonical_relation_kind.value,
+        "relationship_role": intent.relationship_role.value,
+        "vendor_relation_kind": intent.vendor_relation_kind or "",
         "external_relation_id": intent.external_relation_id,
         "source_revision": intent.source_revision,
     }

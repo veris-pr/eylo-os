@@ -337,9 +337,7 @@ class SorSourceModel(EyloOrganizationModel):
         default=0,
         server_default="0",
     )
-    webhook_subscription_id: Mapped[str | None] = mapped_column(
-        Text, nullable=True
-    )
+    webhook_subscription_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     webhook_subscription_status: Mapped[str | None] = mapped_column(
         String(64), nullable=True
     )
@@ -967,7 +965,8 @@ class SorRecordRelationModel(EyloOrganizationModel):
             "from_record_id",
             "to_record_id",
             "canonical_relation_kind",
-            "native_relation_kind",
+            "relationship_role",
+            "vendor_relation_kind",
             name="uq_sor_record_relations_identity",
         ),
         ForeignKeyConstraint(
@@ -1011,7 +1010,10 @@ class SorRecordRelationModel(EyloOrganizationModel):
         UUID(as_uuid=True), nullable=False, index=True
     )
     canonical_relation_kind: Mapped[str] = mapped_column(String(96), nullable=False)
-    native_relation_kind: Mapped[str] = mapped_column(String(160), nullable=False)
+    relationship_role: Mapped[str] = mapped_column(String(160), nullable=False)
+    vendor_relation_kind: Mapped[str] = mapped_column(
+        String(160), nullable=False, default="", server_default=""
+    )
     external_relation_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
     source_revision: Mapped[str | None] = mapped_column(String(512), nullable=True)
     tombstoned_at: Mapped[datetime | None] = mapped_column(
@@ -1096,7 +1098,10 @@ class SorRelationIntentModel(EyloOrganizationModel):
     to_vendor_object_key: Mapped[str] = mapped_column(String(160), nullable=False)
     to_vendor_external_id: Mapped[str] = mapped_column(String(512), nullable=False)
     canonical_relation_kind: Mapped[str] = mapped_column(String(96), nullable=False)
-    native_relation_kind: Mapped[str] = mapped_column(String(160), nullable=False)
+    relationship_role: Mapped[str] = mapped_column(String(160), nullable=False)
+    vendor_relation_kind: Mapped[str] = mapped_column(
+        String(160), nullable=False, default="", server_default=""
+    )
     external_relation_id: Mapped[str] = mapped_column(String(512), nullable=False)
     source_revision: Mapped[str | None] = mapped_column(String(512), nullable=True)
     state: Mapped[SorRelationIntentState] = mapped_column(

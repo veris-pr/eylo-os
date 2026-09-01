@@ -21,6 +21,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from eylo.sor.shared.contracts import SorProfile
 from eylo.sor.shared.models import SorProfileRecordModel
+from eylo.sor.support.contracts import SupportEntityKind
 
 
 class SupportTicketModel(SorProfileRecordModel):
@@ -30,11 +31,13 @@ class SupportTicketModel(SorProfileRecordModel):
     __table_args__ = (
         *SorProfileRecordModel.get_organization_constraints(__tablename__),
         *SorProfileRecordModel.get_record_constraints(
-            __tablename__, profile=SorProfile.SUPPORT, entity_kind="ticket"
+            __tablename__,
+            profile=SorProfile.SUPPORT,
+            entity_kind=SupportEntityKind.TICKET,
         ),
         CheckConstraint(
             "normalized_status IS NULL OR normalized_status IN "
-            "('NEW', 'OPEN', 'PENDING', 'HOLD', 'RESOLVED', 'CLOSED')",
+            "('NEW', 'OPEN', 'PENDING', 'HOLD', 'RESOLVED', 'CLOSED', 'UNKNOWN')",
             name="ck_sor_support_tickets_normalized_status",
         ),
         CheckConstraint(
@@ -96,7 +99,9 @@ class SupportCustomerModel(SorProfileRecordModel):
     __table_args__ = (
         *SorProfileRecordModel.get_organization_constraints(__tablename__),
         *SorProfileRecordModel.get_record_constraints(
-            __tablename__, profile=SorProfile.SUPPORT, entity_kind="customer"
+            __tablename__,
+            profile=SorProfile.SUPPORT,
+            entity_kind=SupportEntityKind.CUSTOMER,
         ),
         Index("ix_sor_support_customers_source_name", "source_id", "name"),
         Index(
@@ -125,7 +130,9 @@ class SupportAgentModel(SorProfileRecordModel):
     __table_args__ = (
         *SorProfileRecordModel.get_organization_constraints(__tablename__),
         *SorProfileRecordModel.get_record_constraints(
-            __tablename__, profile=SorProfile.SUPPORT, entity_kind="agent"
+            __tablename__,
+            profile=SorProfile.SUPPORT,
+            entity_kind=SupportEntityKind.AGENT,
         ),
         Index("ix_sor_support_agents_source_name", "source_id", "name"),
         Index("ix_sor_support_agents_source_active", "source_id", "active"),
@@ -145,7 +152,9 @@ class SupportQueueModel(SorProfileRecordModel):
     __table_args__ = (
         *SorProfileRecordModel.get_organization_constraints(__tablename__),
         *SorProfileRecordModel.get_record_constraints(
-            __tablename__, profile=SorProfile.SUPPORT, entity_kind="queue"
+            __tablename__,
+            profile=SorProfile.SUPPORT,
+            entity_kind=SupportEntityKind.QUEUE,
         ),
         Index("ix_sor_support_queues_source_name", "source_id", "name"),
     )
@@ -162,7 +171,9 @@ class SupportInboxModel(SorProfileRecordModel):
     __table_args__ = (
         *SorProfileRecordModel.get_organization_constraints(__tablename__),
         *SorProfileRecordModel.get_record_constraints(
-            __tablename__, profile=SorProfile.SUPPORT, entity_kind="inbox"
+            __tablename__,
+            profile=SorProfile.SUPPORT,
+            entity_kind=SupportEntityKind.INBOX,
         ),
         Index("ix_sor_support_inboxes_source_name", "source_id", "name"),
     )
@@ -179,7 +190,9 @@ class SupportMessageModel(SorProfileRecordModel):
     __table_args__ = (
         *SorProfileRecordModel.get_organization_constraints(__tablename__),
         *SorProfileRecordModel.get_record_constraints(
-            __tablename__, profile=SorProfile.SUPPORT, entity_kind="message"
+            __tablename__,
+            profile=SorProfile.SUPPORT,
+            entity_kind=SupportEntityKind.MESSAGE,
         ),
         CheckConstraint(
             "visibility IN ('PUBLIC', 'PRIVATE')",
@@ -236,7 +249,7 @@ class SupportTagModel(SorProfileRecordModel):
     __table_args__ = (
         *SorProfileRecordModel.get_organization_constraints(__tablename__),
         *SorProfileRecordModel.get_record_constraints(
-            __tablename__, profile=SorProfile.SUPPORT, entity_kind="tag"
+            __tablename__, profile=SorProfile.SUPPORT, entity_kind=SupportEntityKind.TAG
         ),
         Index("ix_sor_support_tags_source_name", "source_id", "name"),
     )
@@ -251,11 +264,13 @@ class SupportSlaMetricModel(SorProfileRecordModel):
     __table_args__ = (
         *SorProfileRecordModel.get_organization_constraints(__tablename__),
         *SorProfileRecordModel.get_record_constraints(
-            __tablename__, profile=SorProfile.SUPPORT, entity_kind="sla_metric"
+            __tablename__,
+            profile=SorProfile.SUPPORT,
+            entity_kind=SupportEntityKind.SLA_METRIC,
         ),
         CheckConstraint(
             "normalized_state IS NULL OR normalized_state IN "
-            "('ACTIVE', 'ACHIEVED', 'BREACHED', 'PAUSED', 'UNAVAILABLE')",
+            "('ACTIVE', 'ACHIEVED', 'BREACHED', 'PAUSED', 'UNAVAILABLE', 'UNKNOWN')",
             name="ck_sor_support_sla_metrics_normalized_state",
         ),
         Index(
@@ -289,7 +304,9 @@ class SupportAttachmentModel(SorProfileRecordModel):
     __table_args__ = (
         *SorProfileRecordModel.get_organization_constraints(__tablename__),
         *SorProfileRecordModel.get_record_constraints(
-            __tablename__, profile=SorProfile.SUPPORT, entity_kind="attachment"
+            __tablename__,
+            profile=SorProfile.SUPPORT,
+            entity_kind=SupportEntityKind.ATTACHMENT,
         ),
         CheckConstraint(
             "size_bytes IS NULL OR size_bytes >= 0",

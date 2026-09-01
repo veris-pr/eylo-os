@@ -21,6 +21,180 @@ class SorProfile(str, Enum):
     KNOWLEDGE = "knowledge"
 
 
+class SorVendorErrorCode(str, Enum):
+    """Stable failure reasons shared by vendor adapters and durable work."""
+
+    MAPPING_INVALID = "mapping_invalid"
+    SOURCE_CONFIGURATION_INVALID = "source_configuration_invalid"
+    SOURCE_MAPPING_EMPTY = "source_mapping_empty"
+    SOURCE_MAPPING_INVALID = "source_mapping_invalid"
+    SOURCE_SELECTION_EMPTY = "source_selection_empty"
+    VENDOR_ACCESS_TOKEN_EXPIRED = "vendor_access_token_expired"
+    VENDOR_AUTHORIZATION_EXPIRED = "vendor_authorization_expired"
+    VENDOR_AUTHORIZATION_FAILED = "vendor_authorization_failed"
+    VENDOR_AUTHORIZATION_REFRESH_DEFERRED = "vendor_authorization_refresh_deferred"
+    VENDOR_AUTHORIZATION_REFRESHED = "vendor_authorization_refreshed"
+    VENDOR_BATCH_PARTIAL = "vendor_batch_partial"
+    VENDOR_COMMAND_INVALID = "vendor_command_invalid"
+    VENDOR_CONFIGURATION_INVALID = "vendor_configuration_invalid"
+    VENDOR_CONFLICT = "vendor_conflict"
+    VENDOR_CREDENTIALS_INVALID = "vendor_credentials_invalid"
+    VENDOR_CURSOR_INVALID = "vendor_cursor_invalid"
+    VENDOR_CUSTOM_OBJECT_LIMIT_EXCEEDED = "vendor_custom_object_limit_exceeded"
+    VENDOR_EXPANSION_BUDGET_EXCEEDED = "vendor_expansion_budget_exceeded"
+    VENDOR_EXPANSION_LIMIT_EXCEEDED = "vendor_expansion_limit_exceeded"
+    VENDOR_FIELD_NOT_WRITABLE = "vendor_field_not_writable"
+    VENDOR_FORBIDDEN = "vendor_forbidden"
+    VENDOR_HISTORY_TRUNCATED = "vendor_history_truncated"
+    VENDOR_IDENTIFIER_INVALID = "vendor_identifier_invalid"
+    VENDOR_MUTATION_OUTCOME_UNKNOWN = "vendor_mutation_outcome_unknown"
+    VENDOR_DNS_UNAVAILABLE = "vendor_dns_unavailable"
+    VENDOR_EGRESS_REJECTED = "vendor_egress_rejected"
+    VENDOR_ORIGIN_INVALID = "vendor_origin_invalid"
+    VENDOR_PAGE_INVALID = "vendor_page_invalid"
+    VENDOR_RATE_LIMITED = "vendor_rate_limited"
+    VENDOR_REAUTHORIZATION_REQUIRED = "vendor_reauthorization_required"
+    VENDOR_REGION_MISMATCH = "vendor_region_mismatch"
+    VENDOR_RELATIONSHIP_LIMIT_EXCEEDED = "vendor_relationship_limit_exceeded"
+    VENDOR_REQUEST_FAILED = "vendor_request_failed"
+    VENDOR_REQUEST_REJECTED = "vendor_request_rejected"
+    VENDOR_RESOURCE_UNAVAILABLE = "vendor_resource_unavailable"
+    VENDOR_RESPONSE_INVALID = "vendor_response_invalid"
+    VENDOR_REVISION_CONFLICT = "vendor_revision_conflict"
+    VENDOR_SCAN_LIMIT_EXCEEDED = "vendor_scan_limit_exceeded"
+    VENDOR_SCOPE_MISSING = "vendor_scope_missing"
+    VENDOR_SCHEMA_EMPTY = "vendor_schema_empty"
+    VENDOR_SCHEMA_INVALID = "vendor_schema_invalid"
+    VENDOR_SERVER_FAILED = "vendor_server_failed"
+    VENDOR_SITE_INVALID = "vendor_site_invalid"
+    VENDOR_SITE_UNAVAILABLE = "vendor_site_unavailable"
+    VENDOR_STREAM_UNAVAILABLE = "vendor_stream_unavailable"
+    VENDOR_STREAM_UNSUPPORTED = "vendor_stream_unsupported"
+    VENDOR_SOURCE_CONFLICT = "vendor_source_conflict"
+    VENDOR_TIMEOUT = "vendor_timeout"
+    VENDOR_TOOL_UNSUPPORTED = "vendor_tool_unsupported"
+    VENDOR_TRANSPORT_FAILED = "vendor_transport_failed"
+    VENDOR_WEBHOOK_AMBIGUOUS = "vendor_webhook_ambiguous"
+    VENDOR_WEBHOOK_IDENTITY_INVALID = "vendor_webhook_identity_invalid"
+    VENDOR_WEBHOOK_INVALID = "vendor_webhook_invalid"
+    VENDOR_WEBHOOK_REJECTED = "vendor_webhook_rejected"
+    VENDOR_WEBHOOK_STALE = "vendor_webhook_stale"
+    VENDOR_WEBHOOK_UNSIGNED = "vendor_webhook_unsigned"
+
+
+class SorRecoveryPolicy(str, Enum):
+    """One explicit durable response to a vendor operation failure."""
+
+    TERMINAL = "TERMINAL"
+    RETRY = "RETRY"
+    REFRESH_AND_RETRY = "REFRESH_AND_RETRY"
+    REAUTH_REQUIRED = "REAUTH_REQUIRED"
+    RECONCILE_REQUIRED = "RECONCILE_REQUIRED"
+
+    @property
+    def retryable(self) -> bool:
+        return self in {SorRecoveryPolicy.RETRY, SorRecoveryPolicy.REFRESH_AND_RETRY}
+
+    @property
+    def requires_reauthorization(self) -> bool:
+        return self is SorRecoveryPolicy.REAUTH_REQUIRED
+
+    @property
+    def refreshable_authorization(self) -> bool:
+        return self is SorRecoveryPolicy.REFRESH_AND_RETRY
+
+
+class SorFieldDataType(str, Enum):
+    """Bounded semantic types exposed by SOR discovery and mappings."""
+
+    TEXT = "text"
+    BOOLEAN = "boolean"
+    INTEGER = "integer"
+    DECIMAL = "decimal"
+    DATE = "date"
+    DATETIME = "datetime"
+    TIMESTAMP = "timestamp"
+    ENUM = "enum"
+    REFERENCE = "reference"
+    STRING_ARRAY = "string_array"
+    STRING_LIST = "string_list"
+    LINK = "link"
+    URL = "url"
+    JSON = "json"
+    BOUNDED_JSON = "bounded_json"
+    UNKNOWN = "unknown"
+
+
+class SorCanonicalRelationKind(str, Enum):
+    """Stable relationship meanings shared across SOR profiles."""
+
+    ACTIVITY_FOR_COMPANY = "ACTIVITY_FOR_COMPANY"
+    ACTIVITY_FOR_DEAL = "ACTIVITY_FOR_DEAL"
+    ACTIVITY_WITH_CONTACT = "ACTIVITY_WITH_CONTACT"
+    ASSIGNED_TO = "ASSIGNED_TO"
+    ATTACHED_TO = "ATTACHED_TO"
+    ATTACHED_TO_MESSAGE = "ATTACHED_TO_MESSAGE"
+    AUTHORED_BY = "AUTHORED_BY"
+    BELONGS_TO_PROJECT = "BELONGS_TO_PROJECT"
+    BELONGS_TO_TEAM = "BELONGS_TO_TEAM"
+    BLOCKED_BY = "BLOCKED_BY"
+    BLOCKS = "BLOCKS"
+    CHILD = "CHILD"
+    COMMENT_ON = "COMMENT_ON"
+    DUPLICATE = "DUPLICATE"
+    FOR_COMPANY = "FOR_COMPANY"
+    HAS_CONTACT = "HAS_CONTACT"
+    HAS_LABEL = "HAS_LABEL"
+    HAS_TAG = "HAS_TAG"
+    IN_CYCLE = "IN_CYCLE"
+    IN_INBOX = "IN_INBOX"
+    IN_QUEUE = "IN_QUEUE"
+    IN_SPACE = "IN_SPACE"
+    MEASURES = "MEASURES"
+    MESSAGE_IN = "MESSAGE_IN"
+    PARENT = "PARENT"
+    PART_OF_DOCUMENT = "PART_OF_DOCUMENT"
+    PROPERTY_OF = "PROPERTY_OF"
+    RELATED = "RELATED"
+    REPORTED_BY = "REPORTED_BY"
+    REQUESTED_BY = "REQUESTED_BY"
+    SCOPED_TO_PROJECT = "SCOPED_TO_PROJECT"
+    VERSION_OF = "VERSION_OF"
+
+
+class SorRelationshipRole(str, Enum):
+    """Platform role used to resolve one relation endpoint."""
+
+    ASSIGNEE = "assignee"
+    AUTHOR = "author"
+    COMPANY = "company"
+    CONTACT = "contact"
+    CYCLE = "cycle"
+    DEAL = "deal"
+    DOCUMENT = "document"
+    EXPLICIT_ISSUE_RELATION = "explicit_issue_relation"
+    INBOX = "inbox"
+    ISSUE = "issue"
+    LABEL = "label"
+    MESSAGE = "message"
+    PARENT = "parent"
+    PROJECT = "project"
+    QUEUE = "queue"
+    REPORTER = "reporter"
+    REQUESTER = "requester"
+    SPACE = "space"
+    TAG = "tag"
+    TEAM = "team"
+    TICKET = "ticket"
+
+
+class SorRelationshipDirection(str, Enum):
+    """Direction of an edge relative to the record being viewed."""
+
+    OUTGOING = "outgoing"
+    INCOMING = "incoming"
+
+
 class SorSourceState(str, Enum):
     """Persisted lifecycle of one configured source."""
 
@@ -345,6 +519,13 @@ class SorToolEffect(str, Enum):
     MUTATION = "MUTATION"
 
 
+class SorMutationOperation(str, Enum):
+    """Whether a vendor mutation creates or updates a source record."""
+
+    CREATE = "CREATE"
+    UPDATE = "UPDATE"
+
+
 class SorImplementationStatus(str, Enum):
     """Catalog status derived from whether an executable factory exists."""
 
@@ -365,9 +546,12 @@ class SorCanonicalFieldSpec:
     key: str
     label: str
     description: str
-    data_type: str
+    data_type: SorFieldDataType
     writable: bool = True
     required: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "data_type", SorFieldDataType(self.data_type))
 
 
 @dataclass(frozen=True, slots=True)
@@ -438,8 +622,9 @@ class SorRelationIntentDraft:
     from_vendor_external_id: str
     to_vendor_object_key: str
     to_vendor_external_id: str
-    canonical_relation_kind: str
-    native_relation_kind: str
+    canonical_relation_kind: SorCanonicalRelationKind
+    relationship_role: SorRelationshipRole
+    vendor_relation_kind: str | None
     external_relation_id: str
     source_revision: str | None = None
 
@@ -573,13 +758,16 @@ class SorDiscoveredField:
 
     key: str
     label: str
-    data_type: str
+    data_type: SorFieldDataType
     nullable: bool
     writable: bool
     choices: tuple[str, ...] = ()
     description: str | None = None
     group: str | None = None
     vendor_type: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "data_type", SorFieldDataType(self.data_type))
 
 
 @dataclass(frozen=True, slots=True)
@@ -802,18 +990,33 @@ class SorVendorOperationError(Exception):
 
     def __init__(
         self,
-        code: str,
+        code: SorVendorErrorCode,
         message: str,
         *,
-        retryable: bool,
-        requires_reauthorization: bool = False,
-        refreshable_authorization: bool = False,
+        recovery: SorRecoveryPolicy,
     ) -> None:
         super().__init__(message)
+        if not isinstance(code, SorVendorErrorCode):
+            raise TypeError("SOR vendor error code must be a SorVendorErrorCode.")
+        if not isinstance(recovery, SorRecoveryPolicy):
+            raise TypeError("SOR recovery policy must be a SorRecoveryPolicy.")
         self.code = code
-        self.retryable = retryable
-        self.requires_reauthorization = requires_reauthorization
-        self.refreshable_authorization = refreshable_authorization
+        self.recovery = recovery
+
+    @property
+    def retryable(self) -> bool:
+        """Compatibility projection used by durable retry callers."""
+        return self.recovery.retryable
+
+    @property
+    def requires_reauthorization(self) -> bool:
+        """Compatibility projection used by source lifecycle callers."""
+        return self.recovery.requires_reauthorization
+
+    @property
+    def refreshable_authorization(self) -> bool:
+        """Compatibility projection used by the credential refresh boundary."""
+        return self.recovery.refreshable_authorization
 
 
 class SorExternalRecordNotFound(Exception):
@@ -859,6 +1062,7 @@ __all__ = [
     "SorAdapterFieldSelection",
     "SorAppWebhookState",
     "SorCanonicalFieldSpec",
+    "SorCanonicalRelationKind",
     "SorCapabilityUnavailable",
     "SorChangeMode",
     "SorChangeStrategy",
@@ -873,6 +1077,7 @@ __all__ = [
     "SorDiscoveredObject",
     "SorDiscoveredSchema",
     "SorEntitySpec",
+    "SorFieldDataType",
     "SorExternalRecordNotFound",
     "SorExternalRecord",
     "SorCustomFieldType",
@@ -882,6 +1087,7 @@ __all__ = [
     "SorImplementationStatus",
     "SorLifecycleAdapter",
     "SorMappingState",
+    "SorMutationOperation",
     "SorOAuthOriginOption",
     "SorOAuthSpec",
     "SorProfile",
@@ -889,8 +1095,11 @@ __all__ = [
     "SorProjectionDisposition",
     "SorProjectionOutcome",
     "SorRecordPage",
+    "SorRecoveryPolicy",
     "SorRelationIntentDraft",
     "SorRelationIntentState",
+    "SorRelationshipDirection",
+    "SorRelationshipRole",
     "SorSchemaDifference",
     "SorSensitivity",
     "SorSourceAccess",
@@ -904,6 +1113,7 @@ __all__ = [
     "SorToolSpec",
     "SorTransformKind",
     "SorVendorCandidate",
+    "SorVendorErrorCode",
     "SorVendorOperationError",
     "SorVendorStreamSpec",
     "SorWebhookReceiptState",

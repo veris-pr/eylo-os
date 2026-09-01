@@ -592,10 +592,7 @@ class SorRegistry:
             ("token grant type", oauth.token_grant_type),
         ):
             if value is not None and (
-                not value
-                or len(value) > 128
-                or "\r" in value
-                or "\n" in value
+                not value or len(value) > 128 or "\r" in value or "\n" in value
             ):
                 raise ValueError(f"SOR OAuth {label} is invalid.")
         reserved_params = {

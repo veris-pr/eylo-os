@@ -10,6 +10,7 @@ import secrets
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from http import HTTPStatus
 from urllib.parse import urlencode, urlsplit
 from uuid import UUID
 
@@ -641,7 +642,7 @@ async def _exchange_code(
             "oauth_endpoint_unreachable",
             "The provider token endpoint could not be reached safely.",
         ) from error
-    if response.status_code != 200:
+    if response.status_code != HTTPStatus.OK:
         raise SorOAuthError(
             "oauth_exchange_rejected",
             "The provider rejected the authorization code exchange.",
@@ -1105,8 +1106,7 @@ def normalize_sor_instance_origin(
         origin in allowed_origins
         if allowed_origins
         else any(
-            host == suffix or host.endswith(f".{suffix}")
-            for suffix in allowed_suffixes
+            host == suffix or host.endswith(f".{suffix}") for suffix in allowed_suffixes
         )
     )
     if not trusted:

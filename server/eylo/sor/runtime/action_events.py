@@ -9,8 +9,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.events.durable.domain import DurableEventEnvelope
 from eylo.events.durable.service import DurableEventService
+from eylo.sor.crm.contracts import CrmToolName
+from eylo.sor.knowledge.contracts import KnowledgeToolName
 from eylo.sor.shared.contracts import SorProfile
 from eylo.sor.shared.models import SorCommandModel, SorSourceModel
+from eylo.sor.support.contracts import SupportToolName
+from eylo.sor.ticketing.contracts import TicketingToolName
 
 SOR_RECORD_SUBJECT_TYPE = "sor.record"
 SOR_CONNECTION_SUBJECT_TYPE = "sor.connection"
@@ -25,30 +29,30 @@ _CONNECTION_EVENT_TYPES = frozenset(
 )
 
 _ACTION_EVENT_TYPES = {
-    "crm_create_contact": "crm.contact.created",
-    "crm_update_contact": "crm.contact.updated",
-    "crm_create_deal": "crm.deal.created",
-    "crm_update_deal": "crm.deal.updated",
-    "crm_move_deal": "crm.deal.stage_changed",
-    "issue_create": "issue.created",
-    "issue_update": "issue.updated",
-    "issue_assign": "issue.updated",
-    "issue_add_label": "issue.updated",
-    "issue_remove_label": "issue.updated",
-    "issue_link": "issue.updated",
-    "issue_transition": "issue.transitioned",
-    "issue_comment": "issue.commented",
-    "support_open_ticket": "support.ticket.opened",
-    "support_update_ticket": "support.ticket.updated",
-    "support_assign_ticket": "support.ticket.assigned",
-    "support_reply": "support.ticket.replied",
-    "support_add_note": "support.ticket.noted",
-    "support_close_ticket": "support.ticket.closed",
-    "support_add_tag": "support.ticket.updated",
-    "support_remove_tag": "support.ticket.updated",
-    "docs_create": "docs.document.created",
-    "docs_update": "docs.document.updated",
-    "docs_append": "docs.document.appended",
+    CrmToolName.CREATE_CONTACT: "crm.contact.created",
+    CrmToolName.UPDATE_CONTACT: "crm.contact.updated",
+    CrmToolName.CREATE_DEAL: "crm.deal.created",
+    CrmToolName.UPDATE_DEAL: "crm.deal.updated",
+    CrmToolName.MOVE_DEAL: "crm.deal.stage_changed",
+    TicketingToolName.CREATE: "issue.created",
+    TicketingToolName.UPDATE: "issue.updated",
+    TicketingToolName.ASSIGN: "issue.updated",
+    TicketingToolName.ADD_LABEL: "issue.updated",
+    TicketingToolName.REMOVE_LABEL: "issue.updated",
+    TicketingToolName.LINK: "issue.updated",
+    TicketingToolName.TRANSITION: "issue.transitioned",
+    TicketingToolName.COMMENT: "issue.commented",
+    SupportToolName.OPEN_TICKET: "support.ticket.opened",
+    SupportToolName.UPDATE_TICKET: "support.ticket.updated",
+    SupportToolName.ASSIGN_TICKET: "support.ticket.assigned",
+    SupportToolName.REPLY: "support.ticket.replied",
+    SupportToolName.ADD_NOTE: "support.ticket.noted",
+    SupportToolName.CLOSE_TICKET: "support.ticket.closed",
+    SupportToolName.ADD_TAG: "support.ticket.updated",
+    SupportToolName.REMOVE_TAG: "support.ticket.updated",
+    KnowledgeToolName.CREATE: "docs.document.created",
+    KnowledgeToolName.UPDATE: "docs.document.updated",
+    KnowledgeToolName.APPEND: "docs.document.appended",
 }
 
 

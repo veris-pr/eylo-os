@@ -310,7 +310,8 @@ does not become a second unbounded data lake and never stores credentials.
 #### `sor_record_relations`
 
 - source-scoped `from_record_id` and `to_record_id`
-- canonical relation kind and native relation kind
+- canonical relation kind, platform relationship role, and optional
+  vendor-native relation kind
 - external relation ID when supplied
 - source revision and tombstone state
 
@@ -324,7 +325,8 @@ need to exist:
 
 - source-scoped origin record and stable external relation identity;
 - exact from/to vendor object keys and external IDs;
-- canonical and vendor-native relation kinds;
+- canonical relation kind, platform relationship role, and optional
+  vendor-native relation kind;
 - `PENDING | RESOLVED | TOMBSTONED` state, attempt metadata, and safe error code.
 
 Resolution looks up both endpoints by organization, source, vendor object, and

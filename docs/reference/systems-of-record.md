@@ -353,6 +353,13 @@ external ID. Endpoint projection resolves affected intents immediately. The
 trusted worker retries older pending intents in bounded batches, at most once
 per five-minute window; stream finalization does not absorb that backlog.
 
+Every relation keeps three meanings separate: `kind` is the bounded canonical
+business relation, `role` is the platform-owned endpoint role used for target
+resolution, and optional `vendor_kind` preserves a vendor-native subtype for
+audit. Vendor relation text never becomes a platform lookup key. API responses
+also expose bounded `outgoing` or `incoming` direction instead of arbitrary
+direction strings.
+
 Reference columns retain the raw vendor identifier as canonical data and add a
 batched `display_values` projection for the operator grid. The display value is
 resolved only within the same organization and source. Ambiguous or absent

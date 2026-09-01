@@ -7,6 +7,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
+from http import HTTPStatus
 from typing import Protocol
 from uuid import UUID
 
@@ -443,17 +444,21 @@ async def _post_refresh(
         )
     except (HttpEgressPolicyError, SorOAuthEndpointError, TimeoutError) as error:
         raise _RefreshFailure("token_endpoint_unreachable") from error
-    if response.status_code != 200:
+    if response.status_code != HTTPStatus.OK:
         payload = _optional_json_payload(response.body)
         provider_code = payload.get("error")
-        exhausted = response.status_code in {400, 401, 403} or provider_code in {
+        exhausted = response.status_code in {
+            HTTPStatus.BAD_REQUEST,
+            HTTPStatus.UNAUTHORIZED,
+            HTTPStatus.FORBIDDEN,
+        } or provider_code in {
             "invalid_client",
             "invalid_grant",
             "invalid_refresh_token",
         }
         if exhausted:
             raise _RefreshFailure("refresh_token_rejected", exhausted=True)
-        if response.status_code == 429:
+        if response.status_code == HTTPStatus.TOO_MANY_REQUESTS:
             raise _RefreshFailure("token_endpoint_rate_limited")
         raise _RefreshFailure("token_endpoint_unavailable")
     return _json_payload(response.body)

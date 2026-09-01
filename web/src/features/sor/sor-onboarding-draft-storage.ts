@@ -5,6 +5,7 @@ import type {
   SorOnboardingDraftContext,
   StoredSorOnboardingDraft,
 } from "@/features/sor/sor.types";
+import { SOR_PROFILE_KEYS } from "@/features/sor/sor.types";
 
 class SorOnboardingDraftStorage {
   private readonly storage: Storage;
@@ -196,7 +197,7 @@ function parseMappings(value: unknown): SorFieldMappingDraftInput[] | null {
 function isProfile(
   value: unknown,
 ): value is "crm" | "ticketing" | "support" | "knowledge" {
-  return ["crm", "ticketing", "support", "knowledge"].includes(String(value));
+  return SOR_PROFILE_KEYS.some((profile) => profile === value);
 }
 
 function isCustomType(

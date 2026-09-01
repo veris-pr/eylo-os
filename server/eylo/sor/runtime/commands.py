@@ -53,6 +53,7 @@ from eylo.sor.shared.contracts import (
     SorFieldMappingDirection,
     SorFieldMappingState,
     SorProfile,
+    SorRecoveryPolicy,
     SorSourceAccess,
     SorSourceState,
     SorToolEffect,
@@ -84,9 +85,7 @@ SOR_COMMAND_WORKFLOW = "eylo.sor.execute-command.v1"
 SOR_COMMAND_WAIT_OWNER_KIND = "sor_command"
 SOR_COMMAND_MAX_PAYLOAD_BYTES = 524_288
 SOR_COMMAND_MAX_SAFE_RESULT_BYTES = 65_536
-SOR_COMMAND_SOURCE_STATES = frozenset(
-    {SorSourceState.ACTIVE, SorSourceState.DEGRADED}
-)
+SOR_COMMAND_SOURCE_STATES = frozenset({SorSourceState.ACTIVE, SorSourceState.DEGRADED})
 
 SOR_COMMAND_WORK = SorWorkContract(
     model=SorCommandModel,
@@ -253,10 +252,7 @@ async def cancel_sor_command(*, organization_id: UUID, command_id: UUID) -> bool
         if row.state in SOR_COMMAND_WORK.terminal:
             return False
         task_id = row.absurd_task_id
-        if (
-            row.state is SorCommandState.PENDING
-            and row.mutation_applied_at is None
-        ):
+        if row.state is SorCommandState.PENDING and row.mutation_applied_at is None:
             cancelled, _ = await work.cancel(
                 work_id=command_id,
                 organization_id=organization_id,
@@ -831,8 +827,7 @@ async def _require_agent_authority(
             lifecycle_predicate,
             and_(
                 AgentRunModel.lifecycle == AgentRunLifecycle.WAITING_FOR_TOOL,
-                AgentRunModel.waiting_tool_owner_kind
-                == SOR_COMMAND_WAIT_OWNER_KIND,
+                AgentRunModel.waiting_tool_owner_kind == SOR_COMMAND_WAIT_OWNER_KIND,
                 AgentRunModel.waiting_tool_owner_id == command_id,
             ),
         )
@@ -1326,7 +1321,16 @@ def _classify_failure(error: Exception) -> tuple[str, str, bool]:
     if isinstance(error, SorAdapterUnavailableError):
         return error.error_code, str(error), error.requires_reauthorization
     if isinstance(error, SorVendorOperationError):
-        return error.code, str(error), not error.retryable
+        return (
+            error.code.value,
+            str(error),
+            error.recovery
+            in {
+                SorRecoveryPolicy.TERMINAL,
+                SorRecoveryPolicy.REAUTH_REQUIRED,
+                SorRecoveryPolicy.RECONCILE_REQUIRED,
+            },
+        )
     if isinstance(error, SorSecretEnvelopeError):
         return "COMMAND_PAYLOAD_INVALID", str(error), True
     if isinstance(error, (SorConfigurationError, SorConflictError, SorProjectionError)):
@@ -1465,10 +1469,7 @@ def _external_record_version(
         return record.source_revision
     if selected_payload is None:
         raise SorProjectionError("Hash-versioned SOR command lost its target fields.")
-    current = {
-        key: record.payload.get(key)
-        for key in selected_payload
-    }
+    current = {key: record.payload.get(key) for key in selected_payload}
     payload = _canonical_json(current, maximum=SOR_COMMAND_MAX_PAYLOAD_BYTES)
     return f"hash:{hashlib.sha256(payload).hexdigest()}"
 

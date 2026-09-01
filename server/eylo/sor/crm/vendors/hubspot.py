@@ -12,12 +12,22 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
+from enum import StrEnum
 from html.parser import HTMLParser
+from http import HTTPStatus
 from typing import Any
 from urllib.parse import urlsplit
 
 from eylo.modules.connections.domain import ConnectionAuthKind
-from eylo.sor.crm.contracts import CrmActivity, CrmCompany, CrmContact, CrmDeal
+from eylo.sor.crm.contracts import (
+    CrmActivity,
+    CrmCompany,
+    CrmContact,
+    CrmDeal,
+    CrmDealState,
+    CrmEntityKind,
+    CrmToolName,
+)
 from eylo.sor.runtime.http import (
     SorHttpTransport,
     SorJsonHttpClient,
@@ -38,9 +48,12 @@ from eylo.sor.shared.contracts import (
     SorDiscoveredSchema,
     SorExternalRecord,
     SorExternalRecordNotFound,
+    SorMutationOperation,
     SorOAuthSpec,
     SorProfile,
     SorRecordPage,
+    SorRecoveryPolicy,
+    SorVendorErrorCode,
     SorVendorOperationError,
     SorVendorStreamSpec,
     SorWebhookPayloadError,
@@ -60,46 +73,59 @@ DEALS_READ = "crm.objects.deals.read"
 DEALS_WRITE = "crm.objects.deals.write"
 NOTES_READ = CONTACTS_READ
 
+
+class HubSpotStream(StrEnum):
+    """Closed vendor stream vocabulary owned by this adapter."""
+
+    CONTACTS = "contacts"
+    COMPANIES = "companies"
+    DEALS = "deals"
+    NOTES = "notes"
+
+
 _STREAM_ENTITY = {
-    "contacts": "contact",
-    "companies": "company",
-    "deals": "deal",
-    "notes": "activity",
+    HubSpotStream.CONTACTS: CrmEntityKind.CONTACT,
+    HubSpotStream.COMPANIES: CrmEntityKind.COMPANY,
+    HubSpotStream.DEALS: CrmEntityKind.DEAL,
+    HubSpotStream.NOTES: CrmEntityKind.ACTIVITY,
 }
 _RELATIONSHIP_TARGETS = {
-    "deals": {"contact": "contacts", "company": "companies"},
-    "notes": {
-        "contact": "contacts",
-        "company": "companies",
-        "deal": "deals",
+    HubSpotStream.DEALS: {
+        "contact": HubSpotStream.CONTACTS,
+        "company": HubSpotStream.COMPANIES,
+    },
+    HubSpotStream.NOTES: {
+        "contact": HubSpotStream.CONTACTS,
+        "company": HubSpotStream.COMPANIES,
+        "deal": HubSpotStream.DEALS,
     },
 }
 _ASSOCIATION_FIELDS = {
-    "deals": {
+    HubSpotStream.DEALS: {
         "eylo_associated_contact_ids": (
-            "contacts",
+            HubSpotStream.CONTACTS,
             "hubspot.association.contacts",
             "Associated contacts",
         ),
         "eylo_associated_company_ids": (
-            "companies",
+            HubSpotStream.COMPANIES,
             "hubspot.association.companies",
             "Associated companies",
         ),
     },
-    "notes": {
+    HubSpotStream.NOTES: {
         "eylo_associated_contact_ids": (
-            "contacts",
+            HubSpotStream.CONTACTS,
             "hubspot.association.contacts",
             "Associated contacts",
         ),
         "eylo_associated_company_ids": (
-            "companies",
+            HubSpotStream.COMPANIES,
             "hubspot.association.companies",
             "Associated companies",
         ),
         "eylo_associated_deal_ids": (
-            "deals",
+            HubSpotStream.DEALS,
             "hubspot.association.deals",
             "Associated deals",
         ),
@@ -108,12 +134,12 @@ _ASSOCIATION_FIELDS = {
 _MAX_ASSOCIATIONS_PER_RECORD = 10_000
 _MAX_ASSOCIATION_PAGES = 100
 _WEBHOOK_STREAMS = {
-    "company": "companies",
-    "contact": "contacts",
-    "deal": "deals",
-    "0-1": "contacts",
-    "0-2": "companies",
-    "0-3": "deals",
+    "company": HubSpotStream.COMPANIES,
+    "contact": HubSpotStream.CONTACTS,
+    "deal": HubSpotStream.DEALS,
+    "0-1": HubSpotStream.CONTACTS,
+    "0-2": HubSpotStream.COMPANIES,
+    "0-3": HubSpotStream.DEALS,
 }
 _WEBHOOK_MAX_EVENTS = 100
 _WEBHOOK_MAX_AGE_MILLISECONDS = 300_000
@@ -133,40 +159,46 @@ _SIGNATURE_URI_DECODES = {
 }
 _PERCENT_ESCAPE = re.compile(r"%[0-9a-fA-F]{2}")
 _TOOL_STREAM = {
-    "crm_create_contact": ("contacts", True),
-    "crm_update_contact": ("contacts", False),
-    "crm_create_company": ("companies", True),
-    "crm_update_company": ("companies", False),
-    "crm_create_deal": ("deals", True),
-    "crm_update_deal": ("deals", False),
-    "crm_move_deal": ("deals", False),
+    CrmToolName.CREATE_CONTACT: (HubSpotStream.CONTACTS, SorMutationOperation.CREATE),
+    CrmToolName.UPDATE_CONTACT: (HubSpotStream.CONTACTS, SorMutationOperation.UPDATE),
+    CrmToolName.CREATE_COMPANY: (HubSpotStream.COMPANIES, SorMutationOperation.CREATE),
+    CrmToolName.UPDATE_COMPANY: (HubSpotStream.COMPANIES, SorMutationOperation.UPDATE),
+    CrmToolName.CREATE_DEAL: (HubSpotStream.DEALS, SorMutationOperation.CREATE),
+    CrmToolName.UPDATE_DEAL: (HubSpotStream.DEALS, SorMutationOperation.UPDATE),
+    CrmToolName.MOVE_DEAL: (HubSpotStream.DEALS, SorMutationOperation.UPDATE),
 }
 _WRITE_SCOPES = {
-    "crm_create_contact": (CONTACTS_WRITE,),
-    "crm_update_contact": (CONTACTS_WRITE,),
-    "crm_create_company": (COMPANIES_WRITE,),
-    "crm_update_company": (COMPANIES_WRITE,),
-    "crm_create_deal": (DEALS_WRITE,),
-    "crm_update_deal": (DEALS_WRITE,),
-    "crm_move_deal": (DEALS_WRITE,),
+    CrmToolName.CREATE_CONTACT: (CONTACTS_WRITE,),
+    CrmToolName.UPDATE_CONTACT: (CONTACTS_WRITE,),
+    CrmToolName.CREATE_COMPANY: (COMPANIES_WRITE,),
+    CrmToolName.UPDATE_COMPANY: (COMPANIES_WRITE,),
+    CrmToolName.CREATE_DEAL: (DEALS_WRITE,),
+    CrmToolName.UPDATE_DEAL: (DEALS_WRITE,),
+    CrmToolName.MOVE_DEAL: (DEALS_WRITE,),
 }
 _READ_TOOLS = frozenset(
     {
-        "crm_find_customer",
-        "crm_get_customer",
-        "crm_list_deals",
-        "crm_get_deal",
-        "crm_describe_customer_fields",
-        "crm_describe_deal_fields",
+        CrmToolName.FIND_CUSTOMER,
+        CrmToolName.GET_CUSTOMER,
+        CrmToolName.LIST_DEALS,
+        CrmToolName.GET_DEAL,
+        CrmToolName.DESCRIBE_CUSTOMER_FIELDS,
+        CrmToolName.DESCRIBE_DEAL_FIELDS,
     }
 )
 _TOOL_STREAMS = {
-    "crm_find_customer": frozenset({"contacts", "companies"}),
-    "crm_get_customer": frozenset({"contacts", "companies"}),
-    "crm_list_deals": frozenset({"deals"}),
-    "crm_get_deal": frozenset({"deals"}),
-    "crm_describe_customer_fields": frozenset({"contacts", "companies"}),
-    "crm_describe_deal_fields": frozenset({"deals"}),
+    CrmToolName.FIND_CUSTOMER: frozenset(
+        {HubSpotStream.CONTACTS, HubSpotStream.COMPANIES}
+    ),
+    CrmToolName.GET_CUSTOMER: frozenset(
+        {HubSpotStream.CONTACTS, HubSpotStream.COMPANIES}
+    ),
+    CrmToolName.LIST_DEALS: frozenset({HubSpotStream.DEALS}),
+    CrmToolName.GET_DEAL: frozenset({HubSpotStream.DEALS}),
+    CrmToolName.DESCRIBE_CUSTOMER_FIELDS: frozenset(
+        {HubSpotStream.CONTACTS, HubSpotStream.COMPANIES}
+    ),
+    CrmToolName.DESCRIBE_DEAL_FIELDS: frozenset({HubSpotStream.DEALS}),
     **{
         tool_name: frozenset({stream_key})
         for tool_name, (stream_key, _creates) in _TOOL_STREAM.items()
@@ -179,36 +211,38 @@ HUBSPOT_MANIFEST = SorAdapterCapabilityManifest(
     auth_kinds=(ConnectionAuthKind.OAUTH2,),
     streams=(
         SorVendorStreamSpec(
-            key="contacts",
+            key=HubSpotStream.CONTACTS,
             label="Contacts",
             description="People and their selected standard or custom properties.",
             canonical_entity="contact",
             change_strategies=frozenset({SorChangeStrategy.FULL_RECONCILE}),
         ),
         SorVendorStreamSpec(
-            key="companies",
+            key=HubSpotStream.COMPANIES,
             label="Companies",
             description="Companies and their selected standard or custom properties.",
             canonical_entity="company",
             change_strategies=frozenset({SorChangeStrategy.FULL_RECONCILE}),
         ),
         SorVendorStreamSpec(
-            key="deals",
+            key=HubSpotStream.DEALS,
             label="Deals",
             description="Deals and their selected standard or custom properties.",
             canonical_entity="deal",
             change_strategies=frozenset({SorChangeStrategy.FULL_RECONCILE}),
-            depends_on=frozenset({"contacts", "companies"}),
-            relationship_targets=_RELATIONSHIP_TARGETS["deals"],
+            depends_on=frozenset({HubSpotStream.CONTACTS, HubSpotStream.COMPANIES}),
+            relationship_targets=_RELATIONSHIP_TARGETS[HubSpotStream.DEALS],
         ),
         SorVendorStreamSpec(
-            key="notes",
+            key=HubSpotStream.NOTES,
             label="Notes",
             description="CRM timeline notes and their record associations.",
             canonical_entity="activity",
             change_strategies=frozenset({SorChangeStrategy.FULL_RECONCILE}),
-            depends_on=frozenset({"contacts", "companies", "deals"}),
-            relationship_targets=_RELATIONSHIP_TARGETS["notes"],
+            depends_on=frozenset(
+                {HubSpotStream.CONTACTS, HubSpotStream.COMPANIES, HubSpotStream.DEALS}
+            ),
+            relationship_targets=_RELATIONSHIP_TARGETS[HubSpotStream.NOTES],
         ),
     ),
     readable_entities=frozenset(_STREAM_ENTITY.values()),
@@ -219,10 +253,10 @@ HUBSPOT_MANIFEST = SorAdapterCapabilityManifest(
     writable_tools=frozenset(_TOOL_STREAM),
     change_strategies=frozenset({SorChangeStrategy.FULL_RECONCILE}),
     required_scopes={
-        "contacts": (CONTACTS_READ,),
-        "companies": (COMPANIES_READ,),
-        "deals": (DEALS_READ,),
-        "notes": (NOTES_READ,),
+        HubSpotStream.CONTACTS: (CONTACTS_READ,),
+        HubSpotStream.COMPANIES: (COMPANIES_READ,),
+        HubSpotStream.DEALS: (DEALS_READ,),
+        HubSpotStream.NOTES: (NOTES_READ,),
     },
     tool_required_scopes=_WRITE_SCOPES,
     tool_streams=_TOOL_STREAMS,
@@ -305,9 +339,9 @@ class HubSpotCrmAdapter:
             )
             if not fields:
                 raise SorVendorOperationError(
-                    "vendor_schema_empty",
+                    SorVendorErrorCode.VENDOR_SCHEMA_EMPTY,
                     f"HubSpot returned no fields for {stream_key}.",
-                    retryable=False,
+                    recovery=SorRecoveryPolicy.TERMINAL,
                 )
             objects.append(
                 SorDiscoveredObject(
@@ -356,7 +390,7 @@ class HubSpotCrmAdapter:
             f"/crm/objects/{HUBSPOT_API_VERSION}/{vendor_object_key}/{record_id}",
             query=query,
         )
-        if response.status_code == 404:
+        if response.status_code == HTTPStatus.NOT_FOUND:
             raise SorExternalRecordNotFound(
                 vendor_object_key=vendor_object_key,
                 external_id=record_id,
@@ -425,38 +459,44 @@ class HubSpotCrmAdapter:
 
     async def execute_command(self, command: SorCommandRequest) -> SorCommandResult:
         try:
-            stream_key, creates_record = _TOOL_STREAM[command.tool_name]
+            stream_key, operation = _TOOL_STREAM[command.tool_name]
         except KeyError as error:
             raise SorVendorOperationError(
-                "vendor_tool_unsupported",
+                SorVendorErrorCode.VENDOR_TOOL_UNSUPPORTED,
                 "This HubSpot adapter does not execute the requested CRM action.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             ) from error
         _require_stream(stream_key, selected=self._context.selected_objects)
-        if creates_record and command.target_external_id is not None:
+        if (
+            operation is SorMutationOperation.CREATE
+            and command.target_external_id is not None
+        ):
             raise SorVendorOperationError(
-                "vendor_command_invalid",
+                SorVendorErrorCode.VENDOR_COMMAND_INVALID,
                 "A CRM create action cannot target an existing record.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
-        if not creates_record and command.target_external_id is None:
+        if (
+            operation is SorMutationOperation.UPDATE
+            and command.target_external_id is None
+        ):
             raise SorVendorOperationError(
-                "vendor_command_invalid",
+                SorVendorErrorCode.VENDOR_COMMAND_INVALID,
                 "A CRM update action requires an existing record.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
-        if command.tool_name == "crm_move_deal" and set(command.payload) != {
+        if command.tool_name == CrmToolName.MOVE_DEAL and set(command.payload) != {
             "stage_external_id"
         }:
             raise SorVendorOperationError(
-                "vendor_command_invalid",
+                SorVendorErrorCode.VENDOR_COMMAND_INVALID,
                 "Moving a deal requires only stage_external_id.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         properties = self._write_properties(stream_key, command.payload)
         path = f"/crm/objects/{HUBSPOT_API_VERSION}/{stream_key}"
         method = "POST"
-        if not creates_record:
+        if operation is SorMutationOperation.UPDATE:
             record_id = _required_id(
                 command.target_external_id,
                 field="HubSpot record ID",
@@ -470,17 +510,17 @@ class HubSpotCrmAdapter:
                 payload={"properties": properties},
                 idempotency_key=command.idempotency_key,
             )
-            data = _object(_expect_mutation(response, creates_record=creates_record))
+            data = _object(_expect_mutation(response, operation=operation))
         except SorVendorOperationError as error:
-            if creates_record and error.code in {
-                "vendor_timeout",
-                "vendor_transport_failed",
-                "vendor_server_failed",
+            if operation is SorMutationOperation.CREATE and error.code in {
+                SorVendorErrorCode.VENDOR_TIMEOUT,
+                SorVendorErrorCode.VENDOR_TRANSPORT_FAILED,
+                SorVendorErrorCode.VENDOR_SERVER_FAILED,
             }:
                 raise SorVendorOperationError(
-                    "vendor_mutation_outcome_unknown",
+                    SorVendorErrorCode.VENDOR_MUTATION_OUTCOME_UNKNOWN,
                     "HubSpot may have created the record; reconcile before retrying.",
-                    retryable=False,
+                    recovery=SorRecoveryPolicy.RECONCILE_REQUIRED,
                 ) from error
             raise
         external_id = _required_id(data.get("id"), field="HubSpot record ID")
@@ -541,7 +581,9 @@ class HubSpotCrmAdapter:
             pipeline_external_id=_optional_string(values.get("pipeline_external_id")),
             stage_external_id=_optional_string(values.get("stage_external_id")),
             native_stage=_optional_string(values.get("native_stage")),
-            normalized_state=_optional_string(values.get("normalized_state")),
+            normalized_state=CrmDealState.from_value(
+                _optional_string(values.get("normalized_state"))
+            ),
             amount=_optional_decimal(values.get("amount")),
             currency=_optional_string(values.get("currency")),
             probability=_optional_decimal(values.get("probability")),
@@ -591,9 +633,9 @@ class HubSpotCrmAdapter:
         _require_stream(stream_key, selected=self._context.selected_objects)
         if limit <= 0:
             raise SorVendorOperationError(
-                "vendor_page_invalid",
+                SorVendorErrorCode.VENDOR_PAGE_INVALID,
                 "HubSpot page limit must be positive.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         fields = self._selected_fields(stream_key)
         property_fields = _property_fields(stream_key, fields)
@@ -616,9 +658,9 @@ class HubSpotCrmAdapter:
         )
         if len(set(record_ids)) != len(record_ids):
             raise SorVendorOperationError(
-                "vendor_response_invalid",
+                SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
                 "HubSpot returned duplicate record IDs in one page.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         associations = await self._association_values(
             stream_key=stream_key,
@@ -652,9 +694,9 @@ class HubSpotCrmAdapter:
         )
         if not fields:
             raise SorVendorOperationError(
-                "source_mapping_empty",
+                SorVendorErrorCode.SOURCE_MAPPING_EMPTY,
                 f"The active mapping selects no {stream_key} fields.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         return fields
 
@@ -727,9 +769,9 @@ class HubSpotCrmAdapter:
                 )
                 if source_id not in pending or source_id in seen:
                     raise SorVendorOperationError(
-                        "vendor_response_invalid",
+                        SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
                         "HubSpot returned mismatched association results.",
-                        retryable=False,
+                        recovery=SorRecoveryPolicy.TERMINAL,
                     )
                 seen.add(source_id)
                 targets = _object_list(
@@ -744,18 +786,18 @@ class HubSpotCrmAdapter:
                     )
                 if len(collected[source_id]) > _MAX_ASSOCIATIONS_PER_RECORD:
                     raise SorVendorOperationError(
-                        "vendor_relationship_limit_exceeded",
+                        SorVendorErrorCode.VENDOR_RELATIONSHIP_LIMIT_EXCEEDED,
                         "A HubSpot record has too many associations to synchronize safely.",
-                        retryable=False,
+                        recovery=SorRecoveryPolicy.TERMINAL,
                     )
                 after = _next_cursor(row.get("paging"))
                 if after is not None:
                     next_pending[source_id] = after
             if seen & no_association_ids or seen | no_association_ids != set(pending):
                 raise SorVendorOperationError(
-                    "vendor_response_invalid",
+                    SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
                     "HubSpot omitted records from an association batch.",
-                    retryable=False,
+                    recovery=SorRecoveryPolicy.TERMINAL,
                 )
             if not next_pending:
                 return {
@@ -764,9 +806,9 @@ class HubSpotCrmAdapter:
                 }
             pending = next_pending
         raise SorVendorOperationError(
-            "vendor_relationship_limit_exceeded",
+            SorVendorErrorCode.VENDOR_RELATIONSHIP_LIMIT_EXCEEDED,
             "HubSpot association pagination exceeded the synchronization limit.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
 
     def _write_properties(
@@ -781,16 +823,16 @@ class HubSpotCrmAdapter:
         }
         if not payload:
             raise SorVendorOperationError(
-                "vendor_command_invalid",
+                SorVendorErrorCode.VENDOR_COMMAND_INVALID,
                 "A CRM mutation requires at least one mapped field.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         unknown = set(payload) - set(writable)
         if unknown:
             raise SorVendorOperationError(
-                "vendor_field_not_writable",
+                SorVendorErrorCode.VENDOR_FIELD_NOT_WRITABLE,
                 "The CRM mutation contains fields absent from the writable mapping.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         return {writable[key]: value for key, value in payload.items()}
 
@@ -907,10 +949,9 @@ def _credential(credentials: Mapping[str, object], key: str) -> str:
     value = credentials.get(key)
     if not isinstance(value, str) or not value.strip() or len(value) > 16_384:
         raise SorVendorOperationError(
-            "vendor_credentials_invalid",
+            SorVendorErrorCode.VENDOR_CREDENTIALS_INVALID,
             "HubSpot OAuth credentials are unavailable.",
-            retryable=False,
-            requires_reauthorization=True,
+            recovery=SorRecoveryPolicy.REAUTH_REQUIRED,
         )
     return value.strip()
 
@@ -971,9 +1012,9 @@ def _webhook_datetime(value: object) -> datetime:
 def _require_stream(stream_key: str, *, selected: tuple[str, ...]) -> str:
     if stream_key not in _STREAM_ENTITY or stream_key not in selected:
         raise SorVendorOperationError(
-            "vendor_stream_unavailable",
+            SorVendorErrorCode.VENDOR_STREAM_UNAVAILABLE,
             "The HubSpot stream is not selected for this source.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return stream_key
 
@@ -981,57 +1022,61 @@ def _require_stream(stream_key: str, *, selected: tuple[str, ...]) -> str:
 def _expect(response: SorJsonResponse, *, operation: str) -> object:
     if response.ok:
         return response.data
-    if response.status_code == 401:
+    if response.status_code == HTTPStatus.UNAUTHORIZED:
         raise SorVendorOperationError(
-            "vendor_access_token_expired",
+            SorVendorErrorCode.VENDOR_ACCESS_TOKEN_EXPIRED,
             "HubSpot rejected the current access token.",
-            retryable=True,
-            requires_reauthorization=True,
-            refreshable_authorization=True,
+            recovery=SorRecoveryPolicy.REFRESH_AND_RETRY,
         )
-    if response.status_code == 403:
+    if response.status_code == HTTPStatus.FORBIDDEN:
         raise SorVendorOperationError(
-            "vendor_reauthorization_required",
+            SorVendorErrorCode.VENDOR_REAUTHORIZATION_REQUIRED,
             "HubSpot authorization no longer permits this operation.",
-            retryable=False,
-            requires_reauthorization=True,
+            recovery=SorRecoveryPolicy.REAUTH_REQUIRED,
         )
-    if response.status_code == 429:
+    if response.status_code == HTTPStatus.TOO_MANY_REQUESTS:
         raise SorVendorOperationError(
-            "vendor_rate_limited",
+            SorVendorErrorCode.VENDOR_RATE_LIMITED,
             "HubSpot rate-limited the operation.",
-            retryable=True,
+            recovery=SorRecoveryPolicy.RETRY,
         )
-    if response.status_code >= 500:
+    if response.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR:
         raise SorVendorOperationError(
-            "vendor_server_failed",
+            SorVendorErrorCode.VENDOR_SERVER_FAILED,
             f"HubSpot could not {operation}.",
-            retryable=True,
+            recovery=SorRecoveryPolicy.RETRY,
         )
     raise SorVendorOperationError(
-        "vendor_request_rejected",
+        SorVendorErrorCode.VENDOR_REQUEST_REJECTED,
         f"HubSpot rejected the request to {operation}.",
-        retryable=False,
+        recovery=SorRecoveryPolicy.TERMINAL,
     )
 
 
-def _expect_mutation(response: SorJsonResponse, *, creates_record: bool) -> object:
-    if response.status_code in {200, 201}:
+def _expect_mutation(
+    response: SorJsonResponse,
+    *,
+    operation: SorMutationOperation,
+) -> object:
+    if response.status_code in {HTTPStatus.OK, HTTPStatus.CREATED}:
         return response.data
-    if response.status_code in {409, 412}:
+    if response.status_code in {HTTPStatus.CONFLICT, HTTPStatus.PRECONDITION_FAILED}:
         raise SorVendorOperationError(
-            "vendor_conflict",
+            SorVendorErrorCode.VENDOR_CONFLICT,
             "HubSpot rejected conflicting record data.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     try:
         return _expect(response, operation="apply the CRM action")
     except SorVendorOperationError as error:
-        if creates_record and error.code == "vendor_server_failed":
+        if (
+            operation is SorMutationOperation.CREATE
+            and error.code == SorVendorErrorCode.VENDOR_SERVER_FAILED
+        ):
             raise SorVendorOperationError(
-                "vendor_server_failed",
+                SorVendorErrorCode.VENDOR_SERVER_FAILED,
                 str(error),
-                retryable=True,
+                recovery=SorRecoveryPolicy.RETRY,
             ) from error
         raise
 
@@ -1161,9 +1206,9 @@ def _activity_text(value: object) -> str | None:
         parser.close()
     except Exception as error:
         raise SorVendorOperationError(
-            "vendor_response_invalid",
+            SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
             "HubSpot returned unreadable activity content.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         ) from error
     lines = (
         re.sub(r"\s+", " ", line).strip() for line in "".join(parser.parts).splitlines()
@@ -1192,9 +1237,9 @@ def _external_record(
         isinstance(key, str) for key in properties
     ):
         raise SorVendorOperationError(
-            "vendor_response_invalid",
+            SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
             "HubSpot record properties are invalid.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     selected = {
         key: (
@@ -1228,9 +1273,9 @@ def _next_cursor(value: object) -> str | None:
 def _object(value: object) -> dict[str, Any]:
     if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
         raise SorVendorOperationError(
-            "vendor_response_invalid",
+            SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
             "HubSpot returned an invalid object.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return value
 
@@ -1238,9 +1283,9 @@ def _object(value: object) -> dict[str, Any]:
 def _object_list(value: object, *, field: str) -> list[dict[str, Any]]:
     if not isinstance(value, list) or len(value) > 20_000:
         raise SorVendorOperationError(
-            "vendor_response_invalid",
+            SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
             f"{field} have an invalid shape.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return [_object(item) for item in value]
 
@@ -1263,9 +1308,9 @@ def _no_association_ids(
             or row.get("subCategory") != "crm.associations.NO_ASSOCIATIONS_FOUND"
         ):
             raise SorVendorOperationError(
-                "vendor_batch_partial",
+                SorVendorErrorCode.VENDOR_BATCH_PARTIAL,
                 "HubSpot returned an incomplete association batch.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         context = _object(row.get("context"))
         source_ids = _context_values(
@@ -1288,9 +1333,9 @@ def _no_association_ids(
             or result & source_ids
         ):
             raise SorVendorOperationError(
-                "vendor_response_invalid",
+                SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
                 "HubSpot returned mismatched association error context.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         result.update(source_ids)
     return result
@@ -1299,16 +1344,16 @@ def _no_association_ids(
 def _context_values(value: object, *, field: str) -> frozenset[str]:
     if not isinstance(value, list) or not value:
         raise SorVendorOperationError(
-            "vendor_response_invalid",
+            SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
             f"{field} are invalid.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     values = frozenset(_required_id(item, field=field) for item in value)
     if len(values) != len(value):
         raise SorVendorOperationError(
-            "vendor_response_invalid",
+            SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
             f"{field} contain duplicates.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return values
 
@@ -1323,9 +1368,9 @@ def _required_id(value: object, *, field: str) -> str:
     normalized = _required_string(value, field=field)
     if len(normalized) > 320 or any(character in normalized for character in "/?#"):
         raise SorVendorOperationError(
-            "vendor_response_invalid",
+            SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
             f"{field} is invalid.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return normalized
 
@@ -1334,9 +1379,9 @@ def _required_string(value: object, *, field: str) -> str:
     normalized = _optional_string(value)
     if normalized is None:
         raise SorVendorOperationError(
-            "vendor_response_invalid",
+            SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
             f"{field} is unavailable.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return normalized
 
@@ -1354,9 +1399,9 @@ def _required_datetime(value: object, *, field: str) -> datetime:
     parsed = _optional_datetime(value)
     if parsed is None:
         raise SorVendorOperationError(
-            "vendor_response_invalid",
+            SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
             f"{field} is unavailable.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return parsed
 
@@ -1374,15 +1419,15 @@ def _optional_datetime(value: object) -> datetime | None:
             parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
         except ValueError as error:
             raise SorVendorOperationError(
-                "vendor_response_invalid",
+                SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
                 "HubSpot returned an invalid timestamp.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             ) from error
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise SorVendorOperationError(
-            "vendor_response_invalid",
+            SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
             "HubSpot returned a timestamp without a timezone.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return parsed.astimezone(timezone.utc)
 
@@ -1394,9 +1439,9 @@ def _optional_decimal(value: object) -> Decimal | None:
         return Decimal(str(value))
     except (InvalidOperation, ValueError) as error:
         raise SorVendorOperationError(
-            "vendor_response_invalid",
+            SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
             "HubSpot returned an invalid decimal value.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         ) from error
 
 
@@ -1408,9 +1453,9 @@ def _optional_date(value: object) -> date | None:
         return date.fromisoformat(normalized[:10])
     except ValueError as error:
         raise SorVendorOperationError(
-            "vendor_response_invalid",
+            SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
             "HubSpot returned an invalid date value.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         ) from error
 
 
@@ -1419,9 +1464,9 @@ def _string_tuple(value: object) -> tuple[str, ...]:
         return ()
     if not isinstance(value, (tuple, list)):
         raise SorVendorOperationError(
-            "vendor_response_invalid",
+            SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
             "HubSpot returned an invalid relationship list.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     values = tuple(
         normalized
@@ -1430,9 +1475,9 @@ def _string_tuple(value: object) -> tuple[str, ...]:
     )
     if len(values) > 10_000:
         raise SorVendorOperationError(
-            "vendor_response_invalid",
+            SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
             "HubSpot returned too many relationships.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return values
 

@@ -178,8 +178,7 @@ async def _stop_each(
             await stop(work_id)
         except Exception as error:  # noqa: BLE001 - the source fence is authority
             logger.error(
-                "Could not stop SOR %s before source purge work_id=%s "
-                "error_type=%s",
+                "Could not stop SOR %s before source purge work_id=%s error_type=%s",
                 kind,
                 work_id,
                 type(error).__name__,

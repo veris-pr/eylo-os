@@ -103,9 +103,10 @@ async def accept_sor_app_webhook(
     """Verify one connector-level delivery and fan it out to selected sources."""
     if len(body) > SOR_WEBHOOK_MAX_BODY_BYTES:
         raise SorConfigurationError("SOR webhook body is too large.")
-    if vendor_key == "notion" and (
-        verification_token := notion_verification_token(body=body)
-    ) is not None:
+    if (
+        vendor_key == "notion"
+        and (verification_token := notion_verification_token(body=body)) is not None
+    ):
         async with start_transaction() as session:
             await SorWebhookService(
                 session,

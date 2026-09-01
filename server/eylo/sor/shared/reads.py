@@ -32,10 +32,13 @@ from sqlalchemy.sql import Select
 from sqlalchemy.sql.elements import ColumnElement
 
 from eylo.sor.shared.contracts import (
+    SorCanonicalRelationKind,
     SorCustomFieldType,
     SorFieldMappingDirection,
     SorFieldMappingState,
     SorProfile,
+    SorRelationshipDirection,
+    SorRelationshipRole,
 )
 from eylo.sor.shared.models import (
     SorCustomFieldDefinitionModel,
@@ -163,7 +166,7 @@ async def read_record_relations(
             )
             .order_by(
                 SorRecordRelationModel.canonical_relation_kind.asc(),
-                SorRecordRelationModel.native_relation_kind.asc(),
+                SorRecordRelationModel.relationship_role.asc(),
                 SorRecordRelationModel.id.asc(),
             )
         )
@@ -186,9 +189,10 @@ async def read_record_relations(
         if row.from_record_id in selected:
             grouped[row.from_record_id].append(
                 SorRecordRelationResponse(
-                    kind=row.canonical_relation_kind,
-                    native_kind=row.native_relation_kind,
-                    direction="outgoing",
+                    kind=SorCanonicalRelationKind(row.canonical_relation_kind),
+                    role=SorRelationshipRole(row.relationship_role),
+                    vendor_kind=row.vendor_relation_kind or None,
+                    direction=SorRelationshipDirection.OUTGOING,
                     record_id=to_record_id,
                     record_entity=to_entity,
                     record_key=to_key,
@@ -198,9 +202,10 @@ async def read_record_relations(
         if row.to_record_id in selected:
             grouped[row.to_record_id].append(
                 SorRecordRelationResponse(
-                    kind=row.canonical_relation_kind,
-                    native_kind=row.native_relation_kind,
-                    direction="incoming",
+                    kind=SorCanonicalRelationKind(row.canonical_relation_kind),
+                    role=SorRelationshipRole(row.relationship_role),
+                    vendor_kind=row.vendor_relation_kind or None,
+                    direction=SorRelationshipDirection.INCOMING,
                     record_id=from_record_id,
                     record_entity=from_entity,
                     record_key=from_key,

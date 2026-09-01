@@ -9,6 +9,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
+from enum import StrEnum
+from http import HTTPStatus
 
 from eylo.modules.connections.domain import ConnectionAuthKind
 from eylo.sor.runtime.http import SorHttpTransport, SorJsonHttpClient, SorJsonResponse
@@ -27,9 +29,12 @@ from eylo.sor.shared.contracts import (
     SorDiscoveredSchema,
     SorExternalRecord,
     SorExternalRecordNotFound,
+    SorMutationOperation,
     SorOAuthSpec,
     SorProfile,
     SorRecordPage,
+    SorRecoveryPolicy,
+    SorVendorErrorCode,
     SorVendorOperationError,
     SorVendorStreamSpec,
     SorWebhookPayloadError,
@@ -40,12 +45,15 @@ from eylo.sor.shared.contracts import (
 from eylo.sor.ticketing.contracts import (
     TicketingComment,
     TicketingCycle,
+    TicketingEntityKind,
     TicketingIssue,
     TicketingIssueRelation,
     TicketingLabel,
     TicketingProject,
     TicketingRelationKind,
+    TicketingToolName,
     TicketingUser,
+    TicketingWorkState,
     TicketingWorkflowState,
 )
 
@@ -60,82 +68,122 @@ WRITE_SCOPE = "write"
 ISSUES_CREATE_SCOPE = "issues:create"
 COMMENTS_CREATE_SCOPE = "comments:create"
 
+
+class LinearTicketingStream(StrEnum):
+    """Closed vendor stream vocabulary owned by this adapter."""
+
+    ISSUES = "issues"
+    TEAMS = "teams"
+    PROJECTS = "projects"
+    WORKFLOW_STATES = "workflow_states"
+    USERS = "users"
+    ISSUE_LABELS = "issue_labels"
+    CYCLES = "cycles"
+    COMMENTS = "comments"
+    ISSUE_RELATIONS = "issue_relations"
+
+
 _STREAM_ENTITY = {
-    "issues": "issue",
-    "teams": "project",
-    "projects": "project",
-    "workflow_states": "workflow_state",
-    "users": "user",
-    "issue_labels": "label",
-    "cycles": "cycle",
-    "comments": "comment",
-    "issue_relations": "relation",
+    LinearTicketingStream.ISSUES: TicketingEntityKind.ISSUE,
+    LinearTicketingStream.TEAMS: TicketingEntityKind.PROJECT,
+    LinearTicketingStream.PROJECTS: TicketingEntityKind.PROJECT,
+    LinearTicketingStream.WORKFLOW_STATES: TicketingEntityKind.WORKFLOW_STATE,
+    LinearTicketingStream.USERS: TicketingEntityKind.USER,
+    LinearTicketingStream.ISSUE_LABELS: TicketingEntityKind.LABEL,
+    LinearTicketingStream.CYCLES: TicketingEntityKind.CYCLE,
+    LinearTicketingStream.COMMENTS: TicketingEntityKind.COMMENT,
+    LinearTicketingStream.ISSUE_RELATIONS: TicketingEntityKind.RELATION,
 }
 _RELATIONSHIP_TARGETS = {
-    "issues": {
-        "project": "projects",
-        "team": "teams",
-        "assignee": "users",
-        "reporter": "users",
-        "label": "issue_labels",
-        "parent": "issues",
-        "cycle": "cycles",
+    LinearTicketingStream.ISSUES: {
+        "project": LinearTicketingStream.PROJECTS,
+        "team": LinearTicketingStream.TEAMS,
+        "assignee": LinearTicketingStream.USERS,
+        "reporter": LinearTicketingStream.USERS,
+        "label": LinearTicketingStream.ISSUE_LABELS,
+        "parent": LinearTicketingStream.ISSUES,
+        "cycle": LinearTicketingStream.CYCLES,
     },
-    "issue_labels": {"project": "teams", "parent": "issue_labels"},
-    "cycles": {"project": "teams"},
-    "comments": {"issue": "issues", "author": "users"},
-    "issue_relations": {"from_issue": "issues", "to_issue": "issues"},
+    LinearTicketingStream.ISSUE_LABELS: {
+        "project": LinearTicketingStream.TEAMS,
+        "parent": LinearTicketingStream.ISSUE_LABELS,
+    },
+    LinearTicketingStream.CYCLES: {"project": LinearTicketingStream.TEAMS},
+    LinearTicketingStream.COMMENTS: {
+        "issue": LinearTicketingStream.ISSUES,
+        "author": LinearTicketingStream.USERS,
+    },
+    LinearTicketingStream.ISSUE_RELATIONS: {
+        "from_issue": LinearTicketingStream.ISSUES,
+        "to_issue": LinearTicketingStream.ISSUES,
+    },
 }
 _READ_TOOLS = frozenset(
     {
-        "issue_search",
-        "issue_get",
-        "issue_list_projects",
-        "issue_list_workflow_states",
-        "issue_describe_fields",
+        TicketingToolName.SEARCH,
+        TicketingToolName.GET,
+        TicketingToolName.LIST_PROJECTS,
+        TicketingToolName.LIST_WORKFLOW_STATES,
+        TicketingToolName.DESCRIBE_FIELDS,
     }
 )
 _WRITE_TOOLS = frozenset(
     {
-        "issue_create",
-        "issue_update",
-        "issue_transition",
-        "issue_assign",
-        "issue_comment",
-        "issue_link",
-        "issue_add_label",
-        "issue_remove_label",
+        TicketingToolName.CREATE,
+        TicketingToolName.UPDATE,
+        TicketingToolName.TRANSITION,
+        TicketingToolName.ASSIGN,
+        TicketingToolName.COMMENT,
+        TicketingToolName.LINK,
+        TicketingToolName.ADD_LABEL,
+        TicketingToolName.REMOVE_LABEL,
     }
 )
 _TOOL_STREAMS = {
-    "issue_search": frozenset({"issues"}),
-    "issue_get": frozenset({"issues"}),
-    "issue_list_projects": frozenset({"teams", "projects"}),
-    "issue_list_workflow_states": frozenset({"workflow_states"}),
-    "issue_describe_fields": frozenset({"issues"}),
-    "issue_create": frozenset({"issues"}),
-    "issue_update": frozenset({"issues"}),
-    "issue_transition": frozenset({"issues", "workflow_states"}),
-    "issue_assign": frozenset({"issues", "users"}),
-    "issue_comment": frozenset({"issues", "comments"}),
-    "issue_link": frozenset({"issues", "issue_relations"}),
-    "issue_add_label": frozenset({"issues", "issue_labels"}),
-    "issue_remove_label": frozenset({"issues", "issue_labels"}),
+    TicketingToolName.SEARCH: frozenset({LinearTicketingStream.ISSUES}),
+    TicketingToolName.GET: frozenset({LinearTicketingStream.ISSUES}),
+    TicketingToolName.LIST_PROJECTS: frozenset(
+        {LinearTicketingStream.TEAMS, LinearTicketingStream.PROJECTS}
+    ),
+    TicketingToolName.LIST_WORKFLOW_STATES: frozenset(
+        {LinearTicketingStream.WORKFLOW_STATES}
+    ),
+    TicketingToolName.DESCRIBE_FIELDS: frozenset({LinearTicketingStream.ISSUES}),
+    TicketingToolName.CREATE: frozenset({LinearTicketingStream.ISSUES}),
+    TicketingToolName.UPDATE: frozenset({LinearTicketingStream.ISSUES}),
+    TicketingToolName.TRANSITION: frozenset(
+        {LinearTicketingStream.ISSUES, LinearTicketingStream.WORKFLOW_STATES}
+    ),
+    TicketingToolName.ASSIGN: frozenset(
+        {LinearTicketingStream.ISSUES, LinearTicketingStream.USERS}
+    ),
+    TicketingToolName.COMMENT: frozenset(
+        {LinearTicketingStream.ISSUES, LinearTicketingStream.COMMENTS}
+    ),
+    TicketingToolName.LINK: frozenset(
+        {LinearTicketingStream.ISSUES, LinearTicketingStream.ISSUE_RELATIONS}
+    ),
+    TicketingToolName.ADD_LABEL: frozenset(
+        {LinearTicketingStream.ISSUES, LinearTicketingStream.ISSUE_LABELS}
+    ),
+    TicketingToolName.REMOVE_LABEL: frozenset(
+        {LinearTicketingStream.ISSUES, LinearTicketingStream.ISSUE_LABELS}
+    ),
 }
 _MUTATION_RESULT_STREAMS = {
-    **{tool_name: "issues" for tool_name in _WRITE_TOOLS},
-    "issue_comment": "comments",
-    "issue_link": "issue_relations",
+    **{tool_name: LinearTicketingStream.ISSUES for tool_name in _WRITE_TOOLS},
+    TicketingToolName.COMMENT: LinearTicketingStream.COMMENTS,
+    TicketingToolName.LINK: LinearTicketingStream.ISSUE_RELATIONS,
 }
-_FULL_RECONCILE_STREAMS = frozenset({"issue_relations"})
+_FULL_RECONCILE_STREAMS = frozenset({LinearTicketingStream.ISSUE_RELATIONS})
 _WEBHOOK_STREAMS = {
-    "Issue": "issues",
-    "Comment": "comments",
-    "Project": "projects",
-    "IssueRelation": "issue_relations",
-    "IssueLabel": "issue_labels",
-    "Cycle": "cycles",
-    "User": "users",
+    "Issue": LinearTicketingStream.ISSUES,
+    "Comment": LinearTicketingStream.COMMENTS,
+    "Project": LinearTicketingStream.PROJECTS,
+    "IssueRelation": LinearTicketingStream.ISSUE_RELATIONS,
+    "IssueLabel": LinearTicketingStream.ISSUE_LABELS,
+    "Cycle": LinearTicketingStream.CYCLES,
+    "User": LinearTicketingStream.USERS,
     "Document": "documents",
 }
 
@@ -156,26 +204,26 @@ LINEAR_MANIFEST = SorAdapterCapabilityManifest(
         SorVendorStreamSpec(
             key=stream_key,
             label={
-                "issues": "Issues",
-                "teams": "Teams",
-                "projects": "Projects",
-                "workflow_states": "Workflow states",
-                "users": "Users",
-                "issue_labels": "Labels",
-                "cycles": "Cycles",
-                "comments": "Comments",
-                "issue_relations": "Issue relations",
+                LinearTicketingStream.ISSUES: "Issues",
+                LinearTicketingStream.TEAMS: "Teams",
+                LinearTicketingStream.PROJECTS: "Projects",
+                LinearTicketingStream.WORKFLOW_STATES: "Workflow states",
+                LinearTicketingStream.USERS: "Users",
+                LinearTicketingStream.ISSUE_LABELS: "Labels",
+                LinearTicketingStream.CYCLES: "Cycles",
+                LinearTicketingStream.COMMENTS: "Comments",
+                LinearTicketingStream.ISSUE_RELATIONS: "Issue relations",
             }[stream_key],
             description={
-                "issues": "Issues, workflow state, ownership, labels, and planning fields.",
-                "teams": "Linear teams exposed as ticketing work containers.",
-                "projects": "Linear projects exposed as ticketing projects.",
-                "workflow_states": "Team workflow states and normalized categories.",
-                "users": "Assignable and inactive Linear workspace users.",
-                "issue_labels": "Workspace and team-scoped issue labels.",
-                "cycles": "Team cycles used to time-box issues.",
-                "comments": "Chronological issue comments.",
-                "issue_relations": "Typed relationships between issues.",
+                LinearTicketingStream.ISSUES: "Issues, workflow state, ownership, labels, and planning fields.",
+                LinearTicketingStream.TEAMS: "Linear teams exposed as ticketing work containers.",
+                LinearTicketingStream.PROJECTS: "Linear projects exposed as ticketing projects.",
+                LinearTicketingStream.WORKFLOW_STATES: "Team workflow states and normalized categories.",
+                LinearTicketingStream.USERS: "Assignable and inactive Linear workspace users.",
+                LinearTicketingStream.ISSUE_LABELS: "Workspace and team-scoped issue labels.",
+                LinearTicketingStream.CYCLES: "Team cycles used to time-box issues.",
+                LinearTicketingStream.COMMENTS: "Chronological issue comments.",
+                LinearTicketingStream.ISSUE_RELATIONS: "Typed relationships between issues.",
             }[stream_key],
             canonical_entity=entity,
             change_strategies=(
@@ -184,8 +232,7 @@ LINEAR_MANIFEST = SorAdapterCapabilityManifest(
                 else frozenset({SorChangeStrategy.UPDATED_AT})
             ),
             depends_on=frozenset(
-                set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values())
-                - {stream_key}
+                set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values()) - {stream_key}
             ),
             relationship_targets=_RELATIONSHIP_TARGETS.get(stream_key, {}),
         )
@@ -200,11 +247,12 @@ LINEAR_MANIFEST = SorAdapterCapabilityManifest(
     ),
     required_scopes={stream_key: (READ_SCOPE,) for stream_key in _STREAM_ENTITY},
     tool_required_scopes={
-        "issue_create": (ISSUES_CREATE_SCOPE,),
-        "issue_comment": (COMMENTS_CREATE_SCOPE,),
+        TicketingToolName.CREATE: (ISSUES_CREATE_SCOPE,),
+        TicketingToolName.COMMENT: (COMMENTS_CREATE_SCOPE,),
         **{
             tool_name: (WRITE_SCOPE,)
-            for tool_name in _WRITE_TOOLS - {"issue_create", "issue_comment"}
+            for tool_name in _WRITE_TOOLS
+            - {TicketingToolName.CREATE, TicketingToolName.COMMENT}
         },
     },
     tool_streams=_TOOL_STREAMS,
@@ -245,7 +293,7 @@ def _field(
 
 
 _SCHEMA_FIELDS = {
-    "issues": (
+    LinearTicketingStream.ISSUES: (
         _field("identifier", "Identifier", "text", nullable=False),
         _field("title", "Title", "text", nullable=False, writable=True),
         _field("description", "Description", "text", writable=True),
@@ -271,23 +319,23 @@ _SCHEMA_FIELDS = {
         _field("completed_at", "Completed at", "timestamp"),
         _field("cancelled_at", "Cancelled at", "timestamp"),
     ),
-    "teams": (
+    LinearTicketingStream.TEAMS: (
         _field("key", "Key", "text", nullable=False),
         _field("name", "Name", "text", nullable=False),
         _field("description", "Description", "text"),
     ),
-    "projects": (
+    LinearTicketingStream.PROJECTS: (
         _field("key", "Slug", "text"),
         _field("name", "Name", "text", nullable=False),
         _field("description", "Description", "text"),
     ),
-    "workflow_states": (
+    LinearTicketingStream.WORKFLOW_STATES: (
         _field("name", "Name", "text", nullable=False),
         _field("native_category", "Source category", "text"),
         _field("normalized_category", "Normalized category", "enum"),
         _field("position", "Position", "decimal"),
     ),
-    "users": (
+    LinearTicketingStream.USERS: (
         _field("name", "Name", "text", nullable=False),
         _field("display_name", "Display name", "text"),
         _field("primary_email", "Email", "text"),
@@ -295,7 +343,7 @@ _SCHEMA_FIELDS = {
         _field("assignable", "Assignable", "boolean"),
         _field("avatar_url", "Avatar URL", "link"),
     ),
-    "issue_labels": (
+    LinearTicketingStream.ISSUE_LABELS: (
         _field("name", "Name", "text", nullable=False),
         _field("description", "Description", "text"),
         _field("color", "Color", "text"),
@@ -303,7 +351,7 @@ _SCHEMA_FIELDS = {
         _field("parent_external_id", "Parent label ID", "reference"),
         _field("is_group", "Group", "boolean", nullable=False),
     ),
-    "cycles": (
+    LinearTicketingStream.CYCLES: (
         _field("name", "Name", "text"),
         _field("number", "Number", "integer", nullable=False),
         _field("project_external_id", "Team ID", "reference", nullable=False),
@@ -313,7 +361,7 @@ _SCHEMA_FIELDS = {
         _field("completed_at", "Completed at", "timestamp"),
         _field("active", "Active", "boolean", nullable=False),
     ),
-    "comments": (
+    LinearTicketingStream.COMMENTS: (
         _field("issue_id", "Issue ID", "reference", nullable=False),
         _field("author_id", "Author ID", "reference"),
         _field("body", "Comment", "text", nullable=False),
@@ -326,7 +374,7 @@ _SCHEMA_FIELDS = {
         _field("created_at", "Created at", "timestamp", nullable=False),
         _field("updated_at", "Updated at", "timestamp"),
     ),
-    "issue_relations": (
+    LinearTicketingStream.ISSUE_RELATIONS: (
         _field("issue_id", "From issue ID", "reference", nullable=False),
         _field(
             "related_issue_id",
@@ -358,7 +406,7 @@ _ISSUE_FIELDS = """
   cycle { id }
 """
 _PAGE_QUERIES = {
-    "issues": f"""
+    LinearTicketingStream.ISSUES: f"""
       query EyloIssues($first: Int!, $after: String, $filter: IssueFilter) {{
         issues(first: $first, after: $after, filter: $filter, orderBy: updatedAt) {{
           nodes {{{_ISSUE_FIELDS}}}
@@ -366,7 +414,7 @@ _PAGE_QUERIES = {
         }}
       }}
     """,
-    "teams": """
+    LinearTicketingStream.TEAMS: """
       query EyloTeams($first: Int!, $after: String, $filter: TeamFilter) {
         teams(first: $first, after: $after, filter: $filter, orderBy: updatedAt) {
           nodes { id key name description createdAt updatedAt }
@@ -374,7 +422,7 @@ _PAGE_QUERIES = {
         }
       }
     """,
-    "projects": """
+    LinearTicketingStream.PROJECTS: """
       query EyloProjects($first: Int!, $after: String, $filter: ProjectFilter) {
         projects(first: $first, after: $after, filter: $filter, orderBy: updatedAt) {
           nodes { id slugId name description url createdAt updatedAt archivedAt }
@@ -382,7 +430,7 @@ _PAGE_QUERIES = {
         }
       }
     """,
-    "workflow_states": """
+    LinearTicketingStream.WORKFLOW_STATES: """
       query EyloWorkflowStates(
         $first: Int!, $after: String, $filter: WorkflowStateFilter
       ) {
@@ -394,7 +442,7 @@ _PAGE_QUERIES = {
         }
       }
     """,
-    "users": """
+    LinearTicketingStream.USERS: """
       query EyloUsers($first: Int!, $after: String, $filter: UserFilter) {
         users(
           first: $first, after: $after, filter: $filter,
@@ -408,7 +456,7 @@ _PAGE_QUERIES = {
         }
       }
     """,
-    "issue_labels": """
+    LinearTicketingStream.ISSUE_LABELS: """
       query EyloIssueLabels(
         $first: Int!, $after: String, $filter: IssueLabelFilter
       ) {
@@ -424,7 +472,7 @@ _PAGE_QUERIES = {
         }
       }
     """,
-    "cycles": """
+    LinearTicketingStream.CYCLES: """
       query EyloCycles($first: Int!, $after: String, $filter: CycleFilter) {
         cycles(first: $first, after: $after, filter: $filter, orderBy: updatedAt) {
           nodes {
@@ -436,7 +484,7 @@ _PAGE_QUERIES = {
         }
       }
     """,
-    "comments": """
+    LinearTicketingStream.COMMENTS: """
       query EyloComments($first: Int!, $after: String, $filter: CommentFilter) {
         comments(first: $first, after: $after, filter: $filter, orderBy: updatedAt) {
           nodes { id body createdAt updatedAt archivedAt issue { id } user { id } }
@@ -444,7 +492,7 @@ _PAGE_QUERIES = {
         }
       }
     """,
-    "issue_relations": """
+    LinearTicketingStream.ISSUE_RELATIONS: """
       query EyloIssueRelations($first: Int!, $after: String) {
         issueRelations(first: $first, after: $after, orderBy: updatedAt) {
           nodes {
@@ -527,9 +575,9 @@ class LinearTicketingAdapter:
         )
         if not objects:
             raise SorVendorOperationError(
-                "source_selection_empty",
+                SorVendorErrorCode.SOURCE_SELECTION_EMPTY,
                 "The Linear source selects no streams.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         return SorDiscoveredSchema(
             objects=objects,
@@ -566,39 +614,39 @@ class LinearTicketingAdapter:
         )
         record_id = _required_id(external_id, field="Linear record ID")
         singular = {
-            "issues": "issue",
-            "teams": "team",
-            "projects": "project",
-            "workflow_states": "workflowState",
-            "users": "user",
-            "issue_labels": "issueLabel",
-            "cycles": "cycle",
-            "comments": "comment",
-            "issue_relations": "issueRelation",
+            LinearTicketingStream.ISSUES: "issue",
+            LinearTicketingStream.TEAMS: "team",
+            LinearTicketingStream.PROJECTS: "project",
+            LinearTicketingStream.WORKFLOW_STATES: "workflowState",
+            LinearTicketingStream.USERS: "user",
+            LinearTicketingStream.ISSUE_LABELS: "issueLabel",
+            LinearTicketingStream.CYCLES: "cycle",
+            LinearTicketingStream.COMMENTS: "comment",
+            LinearTicketingStream.ISSUE_RELATIONS: "issueRelation",
         }[stream_key]
         selection = {
-            "issues": _ISSUE_FIELDS,
-            "teams": "id key name description createdAt updatedAt",
-            "projects": "id slugId name description url createdAt updatedAt archivedAt",
-            "workflow_states": (
+            LinearTicketingStream.ISSUES: _ISSUE_FIELDS,
+            LinearTicketingStream.TEAMS: "id key name description createdAt updatedAt",
+            LinearTicketingStream.PROJECTS: "id slugId name description url createdAt updatedAt archivedAt",
+            LinearTicketingStream.WORKFLOW_STATES: (
                 "id name type position createdAt updatedAt team { id }"
             ),
-            "users": (
+            LinearTicketingStream.USERS: (
                 "id name displayName email active isAssignable avatarUrl url "
                 "createdAt updatedAt archivedAt"
             ),
-            "issue_labels": (
+            LinearTicketingStream.ISSUE_LABELS: (
                 "id name description color isGroup createdAt updatedAt archivedAt "
                 "team { id } parent { id }"
             ),
-            "cycles": (
+            LinearTicketingStream.CYCLES: (
                 "id name number description startsAt endsAt completedAt isActive "
                 "createdAt updatedAt archivedAt team { id }"
             ),
-            "comments": (
+            LinearTicketingStream.COMMENTS: (
                 "id body createdAt updatedAt archivedAt issue { id } user { id }"
             ),
-            "issue_relations": (
+            LinearTicketingStream.ISSUE_RELATIONS: (
                 "id type createdAt updatedAt archivedAt "
                 "issue { id } relatedIssue { id }"
             ),
@@ -687,29 +735,30 @@ class LinearTicketingAdapter:
         if stream_key not in self._context.selected_objects:
             signal = replace(signal, vendor_object_key=None, external_id=None)
         elif external_id is None:
-            raise SorWebhookPayloadError(
-                "Linear webhook record identity is missing."
-            )
+            raise SorWebhookPayloadError("Linear webhook record identity is missing.")
         return (signal,)
 
     async def execute_command(self, command: SorCommandRequest) -> SorCommandResult:
         if command.tool_name not in _WRITE_TOOLS:
             raise SorVendorOperationError(
-                "vendor_tool_unsupported",
+                SorVendorErrorCode.VENDOR_TOOL_UNSUPPORTED,
                 "This Linear adapter does not execute the requested issue action.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
-        if command.tool_name == "issue_create":
+        if command.tool_name == TicketingToolName.CREATE:
             return await self._create_issue(command)
         target_id = _required_target(command)
-        if command.tool_name == "issue_update":
-            payload = _linear_issue_input(command.payload, create=False)
+        if command.tool_name == TicketingToolName.UPDATE:
+            payload = _linear_issue_input(
+                command.payload,
+                operation=SorMutationOperation.UPDATE,
+            )
             return await self._update_issue(
                 target_id=target_id,
                 payload=payload,
                 command=command,
             )
-        if command.tool_name == "issue_transition":
+        if command.tool_name == TicketingToolName.TRANSITION:
             state_id = _single_id_payload(
                 command.payload,
                 key="workflow_state_external_id",
@@ -720,7 +769,7 @@ class LinearTicketingAdapter:
                 payload={"stateId": state_id},
                 command=command,
             )
-        if command.tool_name == "issue_assign":
+        if command.tool_name == TicketingToolName.ASSIGN:
             assignee = _nullable_id_payload(
                 command.payload,
                 key="assignee_external_id",
@@ -731,9 +780,9 @@ class LinearTicketingAdapter:
                 payload={"assigneeId": assignee},
                 command=command,
             )
-        if command.tool_name == "issue_comment":
+        if command.tool_name == TicketingToolName.COMMENT:
             return await self._comment_issue(target_id=target_id, command=command)
-        if command.tool_name == "issue_link":
+        if command.tool_name == TicketingToolName.LINK:
             return await self._link_issue(target_id=target_id, command=command)
         label_id = _single_id_payload(
             command.payload,
@@ -743,7 +792,7 @@ class LinearTicketingAdapter:
         return await self._change_label(
             target_id=target_id,
             label_id=label_id,
-            add=command.tool_name == "issue_add_label",
+            add=command.tool_name == TicketingToolName.ADD_LABEL,
             command=command,
         )
 
@@ -759,23 +808,17 @@ class LinearTicketingAdapter:
             source_description=_json_value(values.get("source_description")),
             issue_type=_optional_string(values.get("issue_type")),
             native_status=_optional_string(values.get("native_status")),
-            normalized_status=_optional_string(values.get("normalized_status")),
+            normalized_status=TicketingWorkState.from_value(
+                _optional_string(values.get("normalized_status"))
+            ),
             priority=_optional_string(values.get("priority")),
-            project_external_id=_optional_string(
-                values.get("project_external_id")
-            ),
+            project_external_id=_optional_string(values.get("project_external_id")),
             team_external_id=_optional_string(values.get("team_external_id")),
-            assignee_external_id=_optional_string(
-                values.get("assignee_external_id")
-            ),
-            reporter_external_id=_optional_string(
-                values.get("reporter_external_id")
-            ),
+            assignee_external_id=_optional_string(values.get("assignee_external_id")),
+            reporter_external_id=_optional_string(values.get("reporter_external_id")),
             estimate=_optional_decimal(values.get("estimate")),
             label_external_ids=_string_tuple(values.get("label_external_ids")),
-            parent_external_id=_optional_string(
-                values.get("parent_external_id")
-            ),
+            parent_external_id=_optional_string(values.get("parent_external_id")),
             cycle_external_id=_optional_string(values.get("cycle_external_id")),
             due_date=_optional_date(values.get("due_date")),
             started_at=_optional_datetime(values.get("started_at")),
@@ -804,9 +847,9 @@ class LinearTicketingAdapter:
         order = _optional_decimal(record.payload.get("order"))
         if order is not None and order != order.to_integral_value():
             raise SorVendorOperationError(
-                "vendor_response_invalid",
+                SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
                 "Linear returned a fractional workflow position.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         return TicketingWorkflowState(
             external_id=record.external_id,
@@ -814,11 +857,9 @@ class LinearTicketingAdapter:
                 record.payload.get("name"),
                 field="Linear workflow state name",
             ),
-            native_category=_optional_string(
-                record.payload.get("native_category")
-            ),
-            normalized_category=_optional_string(
-                record.payload.get("normalized_category")
+            native_category=_optional_string(record.payload.get("native_category")),
+            normalized_category=TicketingWorkState.from_value(
+                _optional_string(record.payload.get("normalized_category"))
             ),
             order=int(order) if order is not None else None,
         )
@@ -843,9 +884,7 @@ class LinearTicketingAdapter:
             name=_required_string(values.get("name"), field="Linear label name"),
             description=_optional_string(values.get("description")),
             color=_optional_string(values.get("color")),
-            project_external_id=_optional_string(
-                values.get("project_external_id")
-            ),
+            project_external_id=_optional_string(values.get("project_external_id")),
             parent_external_id=_optional_string(values.get("parent_external_id")),
             is_group=_required_boolean(
                 values.get("is_group"),
@@ -865,9 +904,7 @@ class LinearTicketingAdapter:
             external_id=record.external_id,
             name=name,
             number=number,
-            project_external_id=_optional_string(
-                values.get("project_external_id")
-            ),
+            project_external_id=_optional_string(values.get("project_external_id")),
             description=_optional_string(values.get("description")),
             starts_at=_optional_datetime(values.get("starts_at")),
             ends_at=_optional_datetime(values.get("ends_at")),
@@ -903,7 +940,7 @@ class LinearTicketingAdapter:
     ) -> TicketingIssueRelation:
         return TicketingIssueRelation(
             external_id=record.external_id,
-            issue_vendor_object_key="issues",
+            issue_vendor_object_key=LinearTicketingStream.ISSUES,
             from_issue_external_id=_required_string(
                 record.payload.get("from_issue_external_id"),
                 field="Linear relation source issue ID",
@@ -914,7 +951,7 @@ class LinearTicketingAdapter:
             ),
             canonical_kind=_linear_relation_kind(
                 record.payload.get("canonical_relation_kind"),
-                error_code="vendor_response_invalid",
+                error_code=SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
             ),
             native_kind=_required_string(
                 record.payload.get("native_relation_kind"),
@@ -939,9 +976,9 @@ class LinearTicketingAdapter:
         )
         if not 1 <= limit <= 200:
             raise SorVendorOperationError(
-                "vendor_page_invalid",
+                SorVendorErrorCode.VENDOR_PAGE_INVALID,
                 "Linear page limit must be between 1 and 200.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         selected_fields = self._selected_fields(stream_key)
         checkpoint = _decode_cursor(cursor)
@@ -960,13 +997,15 @@ class LinearTicketingAdapter:
             variables,
             operation=f"list Linear {stream_key}",
         )
-        connection = _object(data.get(_connection_name(stream_key)), field="Linear page")
+        connection = _object(
+            data.get(_connection_name(stream_key)), field="Linear page"
+        )
         rows = _object_list(connection.get("nodes"), field="Linear page nodes")
         if len(rows) > limit:
             raise SorVendorOperationError(
-                "vendor_response_invalid",
+                SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
                 "Linear returned more records than requested.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         page_info = _object(connection.get("pageInfo"), field="Linear page info")
         has_more = page_info.get("hasNextPage")
@@ -1021,15 +1060,15 @@ class LinearTicketingAdapter:
         unknown = set(fields) - allowed
         if unknown:
             raise SorVendorOperationError(
-                "source_mapping_invalid",
+                SorVendorErrorCode.SOURCE_MAPPING_INVALID,
                 f"The Linear mapping selects unknown {stream_key} fields.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         if not fields:
             raise SorVendorOperationError(
-                "source_mapping_empty",
+                SorVendorErrorCode.SOURCE_MAPPING_EMPTY,
                 f"The active mapping selects no {stream_key} fields.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         return fields
 
@@ -1078,11 +1117,14 @@ class LinearTicketingAdapter:
     async def _create_issue(self, command: SorCommandRequest) -> SorCommandResult:
         if command.target_external_id is not None:
             raise SorVendorOperationError(
-                "vendor_command_invalid",
+                SorVendorErrorCode.VENDOR_COMMAND_INVALID,
                 "Creating a Linear issue cannot target an existing issue.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
-        payload = _linear_issue_input(command.payload, create=True)
+        payload = _linear_issue_input(
+            command.payload,
+            operation=SorMutationOperation.CREATE,
+        )
         try:
             data, response = await self._graphql(
                 f"""
@@ -1099,14 +1141,14 @@ class LinearTicketingAdapter:
             )
         except SorVendorOperationError as error:
             if error.code in {
-                "vendor_timeout",
-                "vendor_transport_failed",
-                "vendor_server_failed",
+                SorVendorErrorCode.VENDOR_TIMEOUT,
+                SorVendorErrorCode.VENDOR_TRANSPORT_FAILED,
+                SorVendorErrorCode.VENDOR_SERVER_FAILED,
             }:
                 raise SorVendorOperationError(
-                    "vendor_mutation_outcome_unknown",
+                    SorVendorErrorCode.VENDOR_MUTATION_OUTCOME_UNKNOWN,
                     "Linear may have created the issue; reconcile before retrying.",
-                    retryable=False,
+                    recovery=SorRecoveryPolicy.RECONCILE_REQUIRED,
                 ) from error
             raise
         result = _mutation_result(data, "issueCreate", operation="create issue")
@@ -1145,9 +1187,9 @@ class LinearTicketingAdapter:
     ) -> SorCommandResult:
         if set(command.payload) != {"text"}:
             raise SorVendorOperationError(
-                "vendor_command_invalid",
+                SorVendorErrorCode.VENDOR_COMMAND_INVALID,
                 "Commenting on a Linear issue requires only text.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         body = _required_string(command.payload.get("text"), field="Linear comment")
         try:
@@ -1166,14 +1208,14 @@ class LinearTicketingAdapter:
             )
         except SorVendorOperationError as error:
             if error.code in {
-                "vendor_timeout",
-                "vendor_transport_failed",
-                "vendor_server_failed",
+                SorVendorErrorCode.VENDOR_TIMEOUT,
+                SorVendorErrorCode.VENDOR_TRANSPORT_FAILED,
+                SorVendorErrorCode.VENDOR_SERVER_FAILED,
             }:
                 raise SorVendorOperationError(
-                    "vendor_mutation_outcome_unknown",
+                    SorVendorErrorCode.VENDOR_MUTATION_OUTCOME_UNKNOWN,
                     "Linear may have created the comment; reconcile before retrying.",
-                    retryable=False,
+                    recovery=SorRecoveryPolicy.RECONCILE_REQUIRED,
                 ) from error
             raise
         result = _mutation_result(
@@ -1188,7 +1230,7 @@ class LinearTicketingAdapter:
             field="Linear comment creation time",
         )
         return SorCommandResult(
-            vendor_object_key="comments",
+            vendor_object_key=LinearTicketingStream.COMMENTS,
             external_id=comment_id,
             external_request_id=_request_id(response),
             source_revision=updated.isoformat(),
@@ -1206,10 +1248,10 @@ class LinearTicketingAdapter:
             "relation_kind",
         }:
             raise SorVendorOperationError(
-                "vendor_command_invalid",
+                SorVendorErrorCode.VENDOR_COMMAND_INVALID,
                 "Linking Linear issues requires related_issue_external_id and "
                 "relation_kind only.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         related_id = _required_id(
             command.payload.get("related_issue_external_id"),
@@ -1217,9 +1259,9 @@ class LinearTicketingAdapter:
         )
         if related_id == target_id:
             raise SorVendorOperationError(
-                "vendor_command_invalid",
+                SorVendorErrorCode.VENDOR_COMMAND_INVALID,
                 "A Linear issue cannot link to itself.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         relation_kind = _linear_relation_kind(command.payload.get("relation_kind"))
         native_type = {
@@ -1230,10 +1272,10 @@ class LinearTicketingAdapter:
         }.get(relation_kind)
         if native_type is None:
             raise SorVendorOperationError(
-                "vendor_command_invalid",
+                SorVendorErrorCode.VENDOR_COMMAND_INVALID,
                 "Linear issue_link supports BLOCKS, BLOCKED_BY, RELATED, or "
                 "DUPLICATE. Use issue_update for parent relationships.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         issue_id, related_issue_id = (
             (related_id, target_id)
@@ -1266,15 +1308,15 @@ class LinearTicketingAdapter:
             )
         except SorVendorOperationError as error:
             if error.code in {
-                "vendor_timeout",
-                "vendor_transport_failed",
-                "vendor_server_failed",
+                SorVendorErrorCode.VENDOR_TIMEOUT,
+                SorVendorErrorCode.VENDOR_TRANSPORT_FAILED,
+                SorVendorErrorCode.VENDOR_SERVER_FAILED,
             }:
                 raise SorVendorOperationError(
-                    "vendor_mutation_outcome_unknown",
+                    SorVendorErrorCode.VENDOR_MUTATION_OUTCOME_UNKNOWN,
                     "Linear may have created the issue relation; reconcile before "
                     "retrying.",
-                    retryable=False,
+                    recovery=SorRecoveryPolicy.RECONCILE_REQUIRED,
                 ) from error
             raise
         result = _mutation_result(
@@ -1289,7 +1331,7 @@ class LinearTicketingAdapter:
             field="Linear relation creation time",
         )
         return SorCommandResult(
-            vendor_object_key="issue_relations",
+            vendor_object_key=LinearTicketingStream.ISSUE_RELATIONS,
             external_id=relation_id,
             external_request_id=_request_id(response),
             source_revision=updated.isoformat(),
@@ -1316,7 +1358,7 @@ class LinearTicketingAdapter:
         issue = data.get("issue")
         if issue is None:
             raise SorExternalRecordNotFound(
-                vendor_object_key="issues",
+                vendor_object_key=LinearTicketingStream.ISSUES,
                 external_id=target_id,
             )
         current = {
@@ -1346,7 +1388,7 @@ def _linear_payload(
     stream_key: str,
     row: Mapping[str, object],
 ) -> dict[str, object | None]:
-    if stream_key == "issues":
+    if stream_key == LinearTicketingStream.ISSUES:
         state = _optional_object(row.get("state"))
         state_type = _optional_string(state.get("type"))
         project = _optional_object(row.get("project"))
@@ -1380,13 +1422,15 @@ def _linear_payload(
             "completed_at": row.get("completedAt"),
             "cancelled_at": row.get("canceledAt"),
         }
-    if stream_key in {"teams", "projects"}:
+    if stream_key in {LinearTicketingStream.TEAMS, LinearTicketingStream.PROJECTS}:
         return {
-            "key": row.get("key") if stream_key == "teams" else row.get("slugId"),
+            "key": row.get("key")
+            if stream_key == LinearTicketingStream.TEAMS
+            else row.get("slugId"),
             "name": row.get("name"),
             "description": row.get("description"),
         }
-    if stream_key == "workflow_states":
+    if stream_key == LinearTicketingStream.WORKFLOW_STATES:
         native = _optional_string(row.get("type"))
         return {
             "name": row.get("name"),
@@ -1394,7 +1438,7 @@ def _linear_payload(
             "normalized_category": _normalized_linear_state(native),
             "position": row.get("position"),
         }
-    if stream_key == "users":
+    if stream_key == LinearTicketingStream.USERS:
         return {
             "name": row.get("name"),
             "display_name": row.get("displayName"),
@@ -1403,7 +1447,7 @@ def _linear_payload(
             "assignable": row.get("isAssignable"),
             "avatar_url": row.get("avatarUrl"),
         }
-    if stream_key == "issue_labels":
+    if stream_key == LinearTicketingStream.ISSUE_LABELS:
         team = _optional_object(row.get("team"))
         parent = _optional_object(row.get("parent"))
         return {
@@ -1414,7 +1458,7 @@ def _linear_payload(
             "parent_external_id": parent.get("id"),
             "is_group": row.get("isGroup"),
         }
-    if stream_key == "cycles":
+    if stream_key == LinearTicketingStream.CYCLES:
         team = _optional_object(row.get("team"))
         return {
             "name": row.get("name"),
@@ -1426,7 +1470,7 @@ def _linear_payload(
             "completed_at": row.get("completedAt"),
             "active": row.get("isActive"),
         }
-    if stream_key == "comments":
+    if stream_key == LinearTicketingStream.COMMENTS:
         issue = _optional_object(row.get("issue"))
         user = _optional_object(row.get("user"))
         body = row.get("body")
@@ -1438,7 +1482,7 @@ def _linear_payload(
             "created_at": row.get("createdAt"),
             "updated_at": row.get("updatedAt"),
         }
-    if stream_key == "issue_relations":
+    if stream_key == LinearTicketingStream.ISSUE_RELATIONS:
         issue = _optional_object(row.get("issue"))
         related_issue = _optional_object(row.get("relatedIssue"))
         native_type = _required_string(
@@ -1452,16 +1496,16 @@ def _linear_payload(
             "canonical_type": _normalized_linear_relation(native_type).value,
         }
     raise SorVendorOperationError(
-        "vendor_stream_unsupported",
+        SorVendorErrorCode.VENDOR_STREAM_UNSUPPORTED,
         "The requested Linear stream is unsupported.",
-        retryable=False,
+        recovery=SorRecoveryPolicy.TERMINAL,
     )
 
 
 def _linear_issue_input(
     payload: Mapping[str, object],
     *,
-    create: bool,
+    operation: SorMutationOperation,
 ) -> dict[str, object]:
     allowed = {
         "title",
@@ -1479,29 +1523,29 @@ def _linear_issue_input(
     unknown = set(payload) - allowed
     if unknown:
         raise SorVendorOperationError(
-            "vendor_command_invalid",
+            SorVendorErrorCode.VENDOR_COMMAND_INVALID,
             "Linear issue payload contains unsupported fields: "
             + ", ".join(sorted(unknown))
             + ".",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
-    if create and "title" not in payload:
+    if operation is SorMutationOperation.CREATE and "title" not in payload:
         raise SorVendorOperationError(
-            "vendor_command_invalid",
+            SorVendorErrorCode.VENDOR_COMMAND_INVALID,
             "Creating a Linear issue requires a title.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
-    if create and "team_external_id" not in payload:
+    if operation is SorMutationOperation.CREATE and "team_external_id" not in payload:
         raise SorVendorOperationError(
-            "vendor_command_invalid",
+            SorVendorErrorCode.VENDOR_COMMAND_INVALID,
             "Creating a Linear issue requires team_external_id.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     if not payload:
         raise SorVendorOperationError(
-            "vendor_command_invalid",
+            SorVendorErrorCode.VENDOR_COMMAND_INVALID,
             "Updating a Linear issue requires at least one field.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     result: dict[str, object] = {}
     mappings = {
@@ -1543,76 +1587,75 @@ def _graphql_data(
     *,
     operation: str,
 ) -> dict[str, object]:
-    if response.status_code in {401, 403}:
+    if response.status_code in {HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN}:
         raise SorVendorOperationError(
-            "vendor_authorization_failed",
+            SorVendorErrorCode.VENDOR_AUTHORIZATION_FAILED,
             f"Linear refused authorization while attempting to {operation}.",
-            retryable=False,
-            requires_reauthorization=True,
-            refreshable_authorization=response.status_code == 401,
+            recovery=(
+                SorRecoveryPolicy.REFRESH_AND_RETRY
+                if response.status_code == HTTPStatus.UNAUTHORIZED
+                else SorRecoveryPolicy.REAUTH_REQUIRED
+            ),
         )
-    if response.status_code == 429:
+    if response.status_code == HTTPStatus.TOO_MANY_REQUESTS:
         raise SorVendorOperationError(
-            "vendor_rate_limited",
+            SorVendorErrorCode.VENDOR_RATE_LIMITED,
             "Linear rate limited the operation.",
-            retryable=True,
+            recovery=SorRecoveryPolicy.RETRY,
         )
-    if response.status_code >= 500:
+    if response.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR:
         raise SorVendorOperationError(
-            "vendor_server_failed",
+            SorVendorErrorCode.VENDOR_SERVER_FAILED,
             "Linear could not complete the operation.",
-            retryable=True,
+            recovery=SorRecoveryPolicy.RETRY,
         )
     if not response.ok:
         raise SorVendorOperationError(
-            "vendor_request_rejected",
+            SorVendorErrorCode.VENDOR_REQUEST_REJECTED,
             f"Linear rejected the request while attempting to {operation}.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     payload = _object(response.data, field="Linear GraphQL response")
     errors = payload.get("errors")
     if errors:
-        code, message, retryable, reauthorize = _graphql_error(errors)
-        raise SorVendorOperationError(
-            code,
-            message,
-            retryable=retryable,
-            requires_reauthorization=reauthorize,
-            refreshable_authorization=reauthorize,
-        )
+        code, message, recovery = _graphql_error(errors)
+        raise SorVendorOperationError(code, message, recovery=recovery)
     return _object(payload.get("data"), field="Linear GraphQL data")
 
 
-def _graphql_error(errors: object) -> tuple[str, str, bool, bool]:
+def _graphql_error(
+    errors: object,
+) -> tuple[SorVendorErrorCode, str, SorRecoveryPolicy]:
     rows = _object_list(errors, field="Linear GraphQL errors")
     if not rows:
         return (
-            "vendor_request_rejected",
+            SorVendorErrorCode.VENDOR_REQUEST_REJECTED,
             "Linear rejected the operation.",
-            False,
-            False,
+            SorRecoveryPolicy.TERMINAL,
         )
     first = rows[0]
     extensions = _optional_object(first.get("extensions"))
     native_code = str(extensions.get("code") or "").upper()
     if native_code in {"AUTHENTICATION_ERROR", "UNAUTHENTICATED", "FORBIDDEN"}:
         return (
-            "vendor_authorization_failed",
+            SorVendorErrorCode.VENDOR_AUTHORIZATION_FAILED,
             "Linear authorization is no longer valid.",
-            False,
-            True,
+            SorRecoveryPolicy.REFRESH_AND_RETRY,
         )
     if native_code in {"RATELIMITED", "RATE_LIMITED", "INTERNAL_SERVER_ERROR"}:
         return (
-            "vendor_rate_limited"
+            SorVendorErrorCode.VENDOR_RATE_LIMITED
             if "RATE" in native_code
-            else "vendor_server_failed",
+            else SorVendorErrorCode.VENDOR_SERVER_FAILED,
             "Linear could not complete the operation yet.",
-            True,
-            False,
+            SorRecoveryPolicy.RETRY,
         )
     message = _optional_string(first.get("message")) or "Linear rejected the operation."
-    return "vendor_request_rejected", message[:500], False, False
+    return (
+        SorVendorErrorCode.VENDOR_REQUEST_REJECTED,
+        message[:500],
+        SorRecoveryPolicy.TERMINAL,
+    )
 
 
 def _mutation_result(
@@ -1625,9 +1668,9 @@ def _mutation_result(
     result = _object(data.get(key), field=f"Linear {operation} result")
     if result.get("success") is not True:
         raise SorVendorOperationError(
-            "vendor_request_rejected",
+            SorVendorErrorCode.VENDOR_REQUEST_REJECTED,
             f"Linear did not {operation}.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return _object(result.get(object_key), field=f"Linear {operation} record")
 
@@ -1643,7 +1686,7 @@ def _command_result(
         field="Linear issue update time",
     )
     return SorCommandResult(
-        vendor_object_key="issues",
+        vendor_object_key=LinearTicketingStream.ISSUES,
         external_id=issue_id,
         external_request_id=_request_id(response),
         source_revision=updated_at.isoformat(),
@@ -1747,17 +1790,17 @@ def _maximum_updated_at(
 
 def _invalid_cursor() -> SorVendorOperationError:
     return SorVendorOperationError(
-        "vendor_cursor_invalid",
+        SorVendorErrorCode.VENDOR_CURSOR_INVALID,
         "The Linear stream cursor is invalid.",
-        retryable=False,
+        recovery=SorRecoveryPolicy.TERMINAL,
     )
 
 
 def _connection_name(stream_key: str) -> str:
     return {
-        "workflow_states": "workflowStates",
-        "issue_labels": "issueLabels",
-        "issue_relations": "issueRelations",
+        LinearTicketingStream.WORKFLOW_STATES: "workflowStates",
+        LinearTicketingStream.ISSUE_LABELS: "issueLabels",
+        LinearTicketingStream.ISSUE_RELATIONS: "issueRelations",
     }.get(stream_key, stream_key)
 
 
@@ -1856,9 +1899,7 @@ def _linear_webhook_body(
         value = json.loads(body.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise error_type("Linear webhook body is not valid JSON.") from error
-    if not isinstance(value, dict) or not all(
-        isinstance(key, str) for key in value
-    ):
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
         raise error_type("Linear webhook body must be an object.")
     return value
 
@@ -1913,9 +1954,9 @@ def _connection_nodes(value: object, *, field: str) -> list[dict[str, object]]:
 def _require_stream(value: str, *, selected: tuple[str, ...]) -> str:
     if value not in _STREAM_ENTITY or value not in selected:
         raise SorVendorOperationError(
-            "vendor_stream_unsupported",
+            SorVendorErrorCode.VENDOR_STREAM_UNSUPPORTED,
             "The requested Linear stream is not selected for this source.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return value
 
@@ -1923,9 +1964,9 @@ def _require_stream(value: str, *, selected: tuple[str, ...]) -> str:
 def _required_target(command: SorCommandRequest) -> str:
     if command.target_external_id is None:
         raise SorVendorOperationError(
-            "vendor_command_invalid",
+            SorVendorErrorCode.VENDOR_COMMAND_INVALID,
             "This Linear action requires an existing issue.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return _required_id(command.target_external_id, field="Linear issue ID")
 
@@ -1938,9 +1979,9 @@ def _single_id_payload(
 ) -> str:
     if set(payload) != {key}:
         raise SorVendorOperationError(
-            "vendor_command_invalid",
+            SorVendorErrorCode.VENDOR_COMMAND_INVALID,
             f"This Linear action requires only {key}.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return _required_id(payload.get(key), field=field)
 
@@ -1953,9 +1994,9 @@ def _nullable_id_payload(
 ) -> str | None:
     if set(payload) != {key}:
         raise SorVendorOperationError(
-            "vendor_command_invalid",
+            SorVendorErrorCode.VENDOR_COMMAND_INVALID,
             f"This Linear action requires only {key}.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return _nullable_id(payload.get(key), field=field)
 
@@ -1978,16 +2019,16 @@ def _linear_priority(value: object) -> int | None:
         if normalized in values:
             return values[normalized]
     raise SorVendorOperationError(
-        "vendor_command_invalid",
+        SorVendorErrorCode.VENDOR_COMMAND_INVALID,
         "Linear priority must be none, urgent, high, medium, low, or 0 through 4.",
-        retryable=False,
+        recovery=SorRecoveryPolicy.TERMINAL,
     )
 
 
 def _linear_relation_kind(
     value: object,
     *,
-    error_code: str = "vendor_command_invalid",
+    error_code: SorVendorErrorCode = SorVendorErrorCode.VENDOR_COMMAND_INVALID,
 ) -> TicketingRelationKind:
     if isinstance(value, TicketingRelationKind):
         return value
@@ -1999,7 +2040,7 @@ def _linear_relation_kind(
     raise SorVendorOperationError(
         error_code,
         "Linear relation kind is invalid.",
-        retryable=False,
+        recovery=SorRecoveryPolicy.TERMINAL,
     )
 
 
@@ -2012,25 +2053,25 @@ def _normalized_linear_relation(value: str) -> TicketingRelationKind:
     }.get(value.strip().casefold())
     if relation is None:
         raise SorVendorOperationError(
-            "vendor_response_invalid",
+            SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
             "Linear returned an unsupported issue relation type.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return relation
 
 
-def _normalized_linear_state(value: str | None) -> str | None:
+def _normalized_linear_state(value: str | None) -> TicketingWorkState | None:
     if value is None:
         return None
     return {
-        "triage": "TRIAGE",
-        "backlog": "BACKLOG",
-        "unstarted": "UNSTARTED",
-        "started": "STARTED",
-        "completed": "COMPLETED",
-        "canceled": "CANCELLED",
-        "cancelled": "CANCELLED",
-    }.get(value.strip().casefold(), value.strip().upper())
+        "triage": TicketingWorkState.UNSTARTED,
+        "backlog": TicketingWorkState.UNSTARTED,
+        "unstarted": TicketingWorkState.UNSTARTED,
+        "started": TicketingWorkState.STARTED,
+        "completed": TicketingWorkState.COMPLETED,
+        "canceled": TicketingWorkState.CANCELLED,
+        "cancelled": TicketingWorkState.CANCELLED,
+    }.get(value.strip().casefold(), TicketingWorkState.UNKNOWN)
 
 
 def _request_id(response: SorJsonResponse) -> str | None:
@@ -2049,9 +2090,13 @@ def _safe_linear_url(value: object) -> str | None:
 
 
 def _linear_datetime(value: datetime) -> str:
-    return value.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace(
-        "+00:00",
-        "Z",
+    return (
+        value.astimezone(timezone.utc)
+        .isoformat(timespec="milliseconds")
+        .replace(
+            "+00:00",
+            "Z",
+        )
     )
 
 
@@ -2063,18 +2108,15 @@ def _credential(credentials: Mapping[str, object], key: str) -> str:
     value = credentials.get(key)
     if not isinstance(value, str) or not value:
         raise SorVendorOperationError(
-            "vendor_credentials_invalid",
+            SorVendorErrorCode.VENDOR_CREDENTIALS_INVALID,
             "The Linear credential is unavailable.",
-            retryable=False,
-            requires_reauthorization=True,
+            recovery=SorRecoveryPolicy.REAUTH_REQUIRED,
         )
     return value
 
 
 def _object(value: object, *, field: str) -> dict[str, object]:
-    if not isinstance(value, dict) or not all(
-        isinstance(key, str) for key in value
-    ):
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
         raise _invalid_response(f"{field} is not an object.")
     return value
 
@@ -2092,9 +2134,9 @@ def _object_list(value: object, *, field: str) -> list[dict[str, object]]:
 def _sequence(value: object, *, field: str) -> tuple[object, ...]:
     if not isinstance(value, (list, tuple)):
         raise SorVendorOperationError(
-            "vendor_command_invalid",
+            SorVendorErrorCode.VENDOR_COMMAND_INVALID,
             f"{field} must be a list.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return tuple(value)
 
@@ -2123,9 +2165,9 @@ def _nullable_string(value: object, *, field: str) -> str | None:
         return None
     if not isinstance(value, str):
         raise SorVendorOperationError(
-            "vendor_command_invalid",
+            SorVendorErrorCode.VENDOR_COMMAND_INVALID,
             f"{field} must be text or null.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return value
 
@@ -2232,9 +2274,9 @@ def _json_value(value: object) -> object | None:
 
 def _invalid_response(message: str) -> SorVendorOperationError:
     return SorVendorOperationError(
-        "vendor_response_invalid",
+        SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
         message,
-        retryable=False,
+        recovery=SorRecoveryPolicy.TERMINAL,
     )
 
 

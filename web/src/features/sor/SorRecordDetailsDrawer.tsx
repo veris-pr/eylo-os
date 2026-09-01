@@ -476,8 +476,7 @@ function RecordRelationships({
                   )}
                   <span className="ml-2 text-xs text-muted-foreground">
                     {formatSorIdentifier(relation.record_entity)} ·{" "}
-                    {formatSorIdentifier(relation.direction)} ·{" "}
-                    {formatSorIdentifier(relation.native_kind)}
+                    {formatSorIdentifier(relation.direction)}
                   </span>
                 </span>
               </div>
@@ -505,11 +504,11 @@ function IssueRelationships({
 function isIssueSpecificRelationship(relation: SorRecordRelation): boolean {
   const repeatsOverview =
     relation.direction === "outgoing" &&
-    ISSUE_OVERVIEW_RELATION_KINDS.has(relation.native_kind);
+    ISSUE_OVERVIEW_RELATION_KINDS.has(relation.role);
   const repeatsDiscussion =
     relation.direction === "incoming" &&
     relation.record_entity === "comment" &&
-    relation.native_kind === "issue";
+    relation.role === "issue";
 
   return !repeatsOverview && !repeatsDiscussion;
 }

@@ -5,9 +5,58 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Protocol, runtime_checkable
+from enum import Enum, StrEnum
+from typing import Protocol, TypedDict, runtime_checkable
 
 from eylo.sor.shared.contracts import SorExternalRecord, SorLifecycleAdapter
+
+
+class KnowledgeBodyRepresentation(str, Enum):
+    """Supported source-body representations with specialized console renderers."""
+
+    MARKDOWN = "markdown"
+    CONFLUENCE_STORAGE = "storage"
+
+
+class KnowledgeEntityKind(StrEnum):
+    """Stable canonical external-knowledge entity vocabulary."""
+
+    SPACE = "space"
+    DOCUMENT = "document"
+    BLOCK = "block"
+    VERSION = "version"
+    PROPERTY = "property"
+    ATTACHMENT = "attachment"
+    AUTHOR = "author"
+
+
+class KnowledgeToolName(StrEnum):
+    """Stable model-visible external-knowledge tool names."""
+
+    SEARCH = "docs_search"
+    GET = "docs_get"
+    LIST_CHILDREN = "docs_list_children"
+    GET_VERSION = "docs_get_version"
+    DESCRIBE_FIELDS = "docs_describe_fields"
+    CREATE = "docs_create"
+    UPDATE = "docs_update"
+    APPEND = "docs_append"
+    COMMENT = "docs_comment"
+
+
+class KnowledgeSourceBody(TypedDict):
+    """Discriminated source body retained for specialized human rendering."""
+
+    representation: str
+    value: str
+
+
+def knowledge_source_body(
+    representation: KnowledgeBodyRepresentation,
+    value: str,
+) -> KnowledgeSourceBody:
+    """Build the persisted wire shape from one bounded representation."""
+    return {"representation": representation.value, "value": value}
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,8 +198,13 @@ __all__ = [
     "KnowledgeAttachmentReader",
     "KnowledgeAuthor",
     "KnowledgeBlock",
+    "KnowledgeBodyRepresentation",
     "KnowledgeDocument",
+    "KnowledgeEntityKind",
     "KnowledgeProperty",
+    "KnowledgeSourceBody",
     "KnowledgeSpace",
     "KnowledgeVersion",
+    "KnowledgeToolName",
+    "knowledge_source_body",
 ]

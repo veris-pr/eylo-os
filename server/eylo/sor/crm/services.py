@@ -14,7 +14,7 @@ from eylo.sor.shared.models import SorProfileRecordModel, SorRecordModel
 from eylo.sor.shared.repositories import SorRepository
 from eylo.sor.shared.services import SorProjectionError
 
-from .contracts import CrmActivity, CrmCompany, CrmContact, CrmDeal
+from .contracts import CrmActivity, CrmCompany, CrmContact, CrmDeal, CrmEntityKind
 from .models import CrmActivityModel, CrmCompanyModel, CrmContactModel, CrmDealModel
 
 CrmRecordModel = TypeVar("CrmRecordModel", bound=SorProfileRecordModel)
@@ -39,7 +39,7 @@ class CrmProjectionService:
             organization_id=organization_id,
             source_id=source_id,
             record_id=record_id,
-            entity_kind="contact",
+            entity_kind=CrmEntityKind.CONTACT,
             vendor_external_id=contact.external_id,
         )
         _validate_contact(contact)
@@ -56,7 +56,7 @@ class CrmProjectionService:
             organization_id=organization_id,
             source_id=source_id,
             record_id=record_id,
-            entity_kind="contact",
+            entity_kind=CrmEntityKind.CONTACT,
             values=values,
         )
         _update_search(
@@ -82,7 +82,7 @@ class CrmProjectionService:
             organization_id=organization_id,
             source_id=source_id,
             record_id=record_id,
-            entity_kind="company",
+            entity_kind=CrmEntityKind.COMPANY,
             vendor_external_id=company.external_id,
         )
         _validate_company(company)
@@ -97,7 +97,7 @@ class CrmProjectionService:
             organization_id=organization_id,
             source_id=source_id,
             record_id=record_id,
-            entity_kind="company",
+            entity_kind=CrmEntityKind.COMPANY,
             values=values,
         )
         _update_search(record, company.name, company.domain, company.industry)
@@ -116,7 +116,7 @@ class CrmProjectionService:
             organization_id=organization_id,
             source_id=source_id,
             record_id=record_id,
-            entity_kind="deal",
+            entity_kind=CrmEntityKind.DEAL,
             vendor_external_id=deal.external_id,
         )
         _validate_deal(deal)
@@ -125,7 +125,11 @@ class CrmProjectionService:
             "pipeline_external_id": deal.pipeline_external_id,
             "stage_external_id": deal.stage_external_id,
             "native_stage": deal.native_stage,
-            "normalized_state": deal.normalized_state,
+            "normalized_state": (
+                deal.normalized_state.value
+                if deal.normalized_state is not None
+                else None
+            ),
             "amount": deal.amount,
             "currency": deal.currency,
             "probability": deal.probability,
@@ -139,7 +143,7 @@ class CrmProjectionService:
             organization_id=organization_id,
             source_id=source_id,
             record_id=record_id,
-            entity_kind="deal",
+            entity_kind=CrmEntityKind.DEAL,
             values=values,
         )
         _update_search(
@@ -164,7 +168,7 @@ class CrmProjectionService:
             organization_id=organization_id,
             source_id=source_id,
             record_id=record_id,
-            entity_kind="activity",
+            entity_kind=CrmEntityKind.ACTIVITY,
             vendor_external_id=activity.external_id,
         )
         _validate_activity(activity)
@@ -182,7 +186,7 @@ class CrmProjectionService:
             organization_id=organization_id,
             source_id=source_id,
             record_id=record_id,
-            entity_kind="activity",
+            entity_kind=CrmEntityKind.ACTIVITY,
             values=values,
         )
         _update_search(
@@ -200,7 +204,7 @@ class CrmProjectionService:
         organization_id: UUID,
         source_id: UUID,
         record_id: UUID,
-        entity_kind: str,
+        entity_kind: CrmEntityKind,
         vendor_external_id: str,
     ) -> SorRecordModel:
         record = await self.records.get_record(
@@ -213,7 +217,7 @@ class CrmProjectionService:
             raise SorProjectionError("Canonical CRM source record not found.")
         if (
             record.profile is not SorProfile.CRM
-            or record.canonical_entity_kind != entity_kind
+            or record.canonical_entity_kind != entity_kind.value
             or record.vendor_external_id != vendor_external_id
         ):
             raise SorProjectionError(
@@ -228,7 +232,7 @@ class CrmProjectionService:
         organization_id: UUID,
         source_id: UUID,
         record_id: UUID,
-        entity_kind: str,
+        entity_kind: CrmEntityKind,
         values: dict[str, object],
     ) -> CrmRecordModel:
         row = await self.session.scalar(
@@ -245,7 +249,7 @@ class CrmProjectionService:
                 source_id=source_id,
                 record_id=record_id,
                 profile=SorProfile.CRM,
-                canonical_entity_kind=entity_kind,
+                canonical_entity_kind=entity_kind.value,
                 **values,
             )
             self.session.add(row)

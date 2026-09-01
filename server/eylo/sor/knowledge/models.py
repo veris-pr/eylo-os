@@ -18,6 +18,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
+from eylo.sor.knowledge.contracts import KnowledgeEntityKind
 from eylo.sor.shared.contracts import SorProfile
 from eylo.sor.shared.models import SorProfileRecordModel
 
@@ -29,7 +30,9 @@ class KnowledgeSpaceModel(SorProfileRecordModel):
     __table_args__ = (
         *SorProfileRecordModel.get_organization_constraints(__tablename__),
         *SorProfileRecordModel.get_record_constraints(
-            __tablename__, profile=SorProfile.KNOWLEDGE, entity_kind="space"
+            __tablename__,
+            profile=SorProfile.KNOWLEDGE,
+            entity_kind=KnowledgeEntityKind.SPACE,
         ),
         Index("ix_sor_knowledge_spaces_source_name", "source_id", "name"),
         Index("ix_sor_knowledge_spaces_source_kind", "source_id", "kind"),
@@ -46,7 +49,9 @@ class KnowledgeDocumentModel(SorProfileRecordModel):
     __table_args__ = (
         *SorProfileRecordModel.get_organization_constraints(__tablename__),
         *SorProfileRecordModel.get_record_constraints(
-            __tablename__, profile=SorProfile.KNOWLEDGE, entity_kind="document"
+            __tablename__,
+            profile=SorProfile.KNOWLEDGE,
+            entity_kind=KnowledgeEntityKind.DOCUMENT,
         ),
         CheckConstraint(
             "content_hash ~ '^[0-9a-f]{64}$'",
@@ -131,7 +136,9 @@ class KnowledgeBlockModel(SorProfileRecordModel):
     __table_args__ = (
         *SorProfileRecordModel.get_organization_constraints(__tablename__),
         *SorProfileRecordModel.get_record_constraints(
-            __tablename__, profile=SorProfile.KNOWLEDGE, entity_kind="block"
+            __tablename__,
+            profile=SorProfile.KNOWLEDGE,
+            entity_kind=KnowledgeEntityKind.BLOCK,
         ),
         CheckConstraint("position >= 0", name="ck_sor_knowledge_blocks_position"),
         CheckConstraint(
@@ -175,7 +182,9 @@ class KnowledgeVersionModel(SorProfileRecordModel):
     __table_args__ = (
         *SorProfileRecordModel.get_organization_constraints(__tablename__),
         *SorProfileRecordModel.get_record_constraints(
-            __tablename__, profile=SorProfile.KNOWLEDGE, entity_kind="version"
+            __tablename__,
+            profile=SorProfile.KNOWLEDGE,
+            entity_kind=KnowledgeEntityKind.VERSION,
         ),
         CheckConstraint(
             "source_body IS NULL OR octet_length(source_body::text) <= 1048576",
@@ -210,7 +219,9 @@ class KnowledgePropertyModel(SorProfileRecordModel):
     __table_args__ = (
         *SorProfileRecordModel.get_organization_constraints(__tablename__),
         *SorProfileRecordModel.get_record_constraints(
-            __tablename__, profile=SorProfile.KNOWLEDGE, entity_kind="property"
+            __tablename__,
+            profile=SorProfile.KNOWLEDGE,
+            entity_kind=KnowledgeEntityKind.PROPERTY,
         ),
         CheckConstraint(
             "octet_length(value::text) <= 1048576",
@@ -243,7 +254,9 @@ class KnowledgeAttachmentModel(SorProfileRecordModel):
     __table_args__ = (
         *SorProfileRecordModel.get_organization_constraints(__tablename__),
         *SorProfileRecordModel.get_record_constraints(
-            __tablename__, profile=SorProfile.KNOWLEDGE, entity_kind="attachment"
+            __tablename__,
+            profile=SorProfile.KNOWLEDGE,
+            entity_kind=KnowledgeEntityKind.ATTACHMENT,
         ),
         CheckConstraint(
             "size_bytes IS NULL OR size_bytes >= 0",
@@ -274,7 +287,9 @@ class KnowledgeAuthorModel(SorProfileRecordModel):
     __table_args__ = (
         *SorProfileRecordModel.get_organization_constraints(__tablename__),
         *SorProfileRecordModel.get_record_constraints(
-            __tablename__, profile=SorProfile.KNOWLEDGE, entity_kind="author"
+            __tablename__,
+            profile=SorProfile.KNOWLEDGE,
+            entity_kind=KnowledgeEntityKind.AUTHOR,
         ),
         Index("ix_sor_knowledge_authors_source_name", "source_id", "name"),
         Index(

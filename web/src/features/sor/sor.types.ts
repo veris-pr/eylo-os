@@ -7,6 +7,7 @@ type SorToolEffect = components["schemas"]["SorToolEffect"];
 type SorAuthKind = components["schemas"]["ConnectionAuthKind"];
 type SorOnboardingAuthKind = Extract<SorAuthKind, "api_key" | "oauth2">;
 type SorChangeStrategy = components["schemas"]["SorChangeStrategy"];
+type SorChangeMode = components["schemas"]["SorChangeMode"];
 type SorCollectionPage = components["schemas"]["SorCollectionPageResponse"];
 type SorCollectionRow = components["schemas"]["SorCollectionRowResponse"];
 type SorCollectionQueryInput =
@@ -59,6 +60,16 @@ type SorStream = components["schemas"]["SorStreamResponse"];
 type SorStreamCreateInput = components["schemas"]["SorStreamCreateRequest"];
 type SorSyncRun = components["schemas"]["SorSyncRunResponse"];
 type SorSyncRunKind = components["schemas"]["SorSyncRunKind"];
+type SorWorkState = components["schemas"]["SorWorkState"];
+type SorWebhookSubscriptionState =
+  components["schemas"]["SorWebhookSubscriptionState"];
+
+const SOR_PROFILE_KEYS = [
+  "crm",
+  "ticketing",
+  "support",
+  "knowledge",
+] as const satisfies readonly SorProfileKey[];
 
 interface SorCollectionUrlState {
   cursor: string | null;
@@ -158,12 +169,7 @@ interface SorAdapterCapabilities {
   requiresInstanceOrigin: boolean;
   requiresInstanceOriginInput: boolean;
   instanceOriginOptions: SorInstanceOriginOptionDefinition[];
-  changeMode:
-    | "MANAGED_WEBHOOK"
-    | "OPERATOR_WEBHOOK"
-    | "APP_WEBHOOK"
-    | "CHANGE_STREAM"
-    | "POLL_ONLY";
+  changeMode: SorChangeMode;
   supportsDeletions: boolean;
   supportsCustomFields: boolean;
   supportsCustomObjects: boolean;
@@ -214,6 +220,8 @@ interface SorCatalog {
   profiles: SorProfileDefinition[];
 }
 
+export { SOR_PROFILE_KEYS };
+
 export type {
   SorAdapterCapabilities,
   SorAdapterConfigurationFieldDefinition,
@@ -221,6 +229,7 @@ export type {
   SorCatalog,
   SorAuthorizationRedirect,
   SorCanonicalFieldDefinition,
+  SorChangeMode,
   SorChangeStrategy,
   SorCollectionPage,
   SorCollectionQueryInput,
@@ -266,11 +275,13 @@ export type {
   SorSourceCreateInput,
   SorSourceState,
   SorWebhookEndpoint,
+  SorWebhookSubscriptionState,
   SorStream,
   SorStreamCreateInput,
   SorSyncGeneration,
   SorSyncRun,
   SorSyncRunKind,
+  SorWorkState,
   SorSupportTicketAudit,
   SorTicketingIssueAudit,
   SorToolDefinition,

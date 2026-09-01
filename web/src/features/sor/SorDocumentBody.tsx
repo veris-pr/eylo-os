@@ -3,6 +3,10 @@ import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 const MAX_DOCUMENT_NODES = 5_000;
+const KNOWLEDGE_BODY_REPRESENTATION = {
+  CONFLUENCE_STORAGE: "storage",
+  MARKDOWN: "markdown",
+} as const;
 const BLOCKED_TAGS = new Set([
   "audio",
   "button",
@@ -136,7 +140,8 @@ function linearMarkdownValue(sourceBody: unknown): string | null {
     return null;
   }
   const value = sourceBody as Record<string, unknown>;
-  return value.representation === "markdown" && typeof value.value === "string"
+  return value.representation === KNOWLEDGE_BODY_REPRESENTATION.MARKDOWN &&
+    typeof value.value === "string"
     ? value.value
     : null;
 }
@@ -317,7 +322,9 @@ function confluenceStorageValue(sourceBody: unknown): string | null {
     return null;
   }
   const value = sourceBody as Record<string, unknown>;
-  return value.representation === "storage" && typeof value.value === "string"
+  return value.representation ===
+    KNOWLEDGE_BODY_REPRESENTATION.CONFLUENCE_STORAGE &&
+    typeof value.value === "string"
     ? value.value
     : null;
 }

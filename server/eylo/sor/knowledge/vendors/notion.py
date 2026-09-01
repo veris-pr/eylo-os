@@ -11,6 +11,8 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
+from http import HTTPStatus
 from urllib.parse import quote, quote_from_bytes, unquote_to_bytes, urlsplit
 
 from eylo.modules.connections.domain import ConnectionAuthKind
@@ -19,8 +21,10 @@ from eylo.sor.knowledge.contracts import (
     KnowledgeAuthor,
     KnowledgeBlock,
     KnowledgeDocument,
+    KnowledgeEntityKind,
     KnowledgeProperty,
     KnowledgeSpace,
+    KnowledgeToolName,
     KnowledgeVersion,
 )
 from eylo.sor.runtime.http import SorHttpTransport, SorJsonHttpClient, SorJsonResponse
@@ -39,9 +43,12 @@ from eylo.sor.shared.contracts import (
     SorDiscoveredSchema,
     SorExternalRecord,
     SorExternalRecordNotFound,
+    SorMutationOperation,
     SorOAuthSpec,
     SorProfile,
     SorRecordPage,
+    SorRecoveryPolicy,
+    SorVendorErrorCode,
     SorVendorOperationError,
     SorVendorStreamSpec,
     SorWebhookPayloadError,
@@ -61,46 +68,77 @@ MAX_TREE_DEPTH = 100
 MAX_TREE_FRAMES = 4_096
 MAX_PROPERTY_ITEMS = 10_000
 
+
+class NotionStream(StrEnum):
+    """Closed vendor stream vocabulary owned by this adapter."""
+
+    DATA_SOURCES = "data_sources"
+    PAGES = "pages"
+    BLOCKS = "blocks"
+    PROPERTIES = "properties"
+    ATTACHMENTS = "attachments"
+    AUTHORS = "authors"
+
+
 _STREAM_ENTITY = {
-    "data_sources": "space",
-    "pages": "document",
-    "blocks": "block",
-    "properties": "property",
-    "attachments": "attachment",
-    "authors": "author",
+    NotionStream.DATA_SOURCES: KnowledgeEntityKind.SPACE,
+    NotionStream.PAGES: KnowledgeEntityKind.DOCUMENT,
+    NotionStream.BLOCKS: KnowledgeEntityKind.BLOCK,
+    NotionStream.PROPERTIES: KnowledgeEntityKind.PROPERTY,
+    NotionStream.ATTACHMENTS: KnowledgeEntityKind.ATTACHMENT,
+    NotionStream.AUTHORS: KnowledgeEntityKind.AUTHOR,
 }
 _RELATIONSHIP_TARGETS = {
-    "pages": {
-        "space": "data_sources",
-        "parent": "pages",
-        "author": "authors",
+    NotionStream.PAGES: {
+        "space": NotionStream.DATA_SOURCES,
+        "parent": NotionStream.PAGES,
+        "author": NotionStream.AUTHORS,
     },
-    "blocks": {"document": "pages", "parent": "blocks"},
-    "properties": {"document": "pages"},
-    "attachments": {"document": "pages"},
+    NotionStream.BLOCKS: {
+        "document": NotionStream.PAGES,
+        "parent": NotionStream.BLOCKS,
+    },
+    NotionStream.PROPERTIES: {"document": NotionStream.PAGES},
+    NotionStream.ATTACHMENTS: {"document": NotionStream.PAGES},
 }
 _READ_TOOLS = frozenset(
     {
-        "docs_search",
-        "docs_get",
-        "docs_list_children",
-        "docs_describe_fields",
+        KnowledgeToolName.SEARCH,
+        KnowledgeToolName.GET,
+        KnowledgeToolName.LIST_CHILDREN,
+        KnowledgeToolName.DESCRIBE_FIELDS,
     }
 )
 _WRITE_TOOLS = frozenset(
-    {"docs_create", "docs_update", "docs_append", "docs_comment"}
+    {
+        KnowledgeToolName.CREATE,
+        KnowledgeToolName.UPDATE,
+        KnowledgeToolName.APPEND,
+        KnowledgeToolName.COMMENT,
+    }
 )
 _TOOL_STREAMS = {
-    "docs_search": frozenset({"pages"}),
-    "docs_get": frozenset({"pages", "blocks", "properties", "attachments"}),
-    "docs_list_children": frozenset({"pages"}),
-    "docs_describe_fields": frozenset({"pages", "properties"}),
-    "docs_create": frozenset({"data_sources", "pages"}),
-    "docs_update": frozenset({"pages"}),
-    "docs_append": frozenset({"pages", "blocks"}),
-    "docs_comment": frozenset({"pages"}),
+    KnowledgeToolName.SEARCH: frozenset({NotionStream.PAGES}),
+    KnowledgeToolName.GET: frozenset(
+        {
+            NotionStream.PAGES,
+            NotionStream.BLOCKS,
+            NotionStream.PROPERTIES,
+            NotionStream.ATTACHMENTS,
+        }
+    ),
+    KnowledgeToolName.LIST_CHILDREN: frozenset({NotionStream.PAGES}),
+    KnowledgeToolName.DESCRIBE_FIELDS: frozenset(
+        {NotionStream.PAGES, NotionStream.PROPERTIES}
+    ),
+    KnowledgeToolName.CREATE: frozenset(
+        {NotionStream.DATA_SOURCES, NotionStream.PAGES}
+    ),
+    KnowledgeToolName.UPDATE: frozenset({NotionStream.PAGES}),
+    KnowledgeToolName.APPEND: frozenset({NotionStream.PAGES, NotionStream.BLOCKS}),
+    KnowledgeToolName.COMMENT: frozenset({NotionStream.PAGES}),
 }
-_MUTATION_RESULT_STREAMS = {tool: "pages" for tool in _WRITE_TOOLS}
+_MUTATION_RESULT_STREAMS = {tool: NotionStream.PAGES for tool in _WRITE_TOOLS}
 
 _SUPPORTED_BLOCK_TYPES = frozenset(
     {
@@ -152,26 +190,25 @@ NOTION_MANIFEST = SorAdapterCapabilityManifest(
         SorVendorStreamSpec(
             key=stream_key,
             label={
-                "data_sources": "Data sources",
-                "pages": "Pages",
-                "blocks": "Page blocks",
-                "properties": "Page properties",
-                "attachments": "Page files",
-                "authors": "Workspace users",
+                NotionStream.DATA_SOURCES: "Data sources",
+                NotionStream.PAGES: "Pages",
+                NotionStream.BLOCKS: "Page blocks",
+                NotionStream.PROPERTIES: "Page properties",
+                NotionStream.ATTACHMENTS: "Page files",
+                NotionStream.AUTHORS: "Workspace users",
             }[stream_key],
             description={
-                "data_sources": "Data sources shared with the Notion connection.",
-                "pages": "Pages with enhanced Markdown and source provenance.",
-                "blocks": "Recursive structured blocks retained for loss-aware audit.",
-                "properties": "Page properties, including completed relation and rollup values.",
-                "attachments": "File metadata from page properties and file blocks.",
-                "authors": "Users visible to the Notion connection.",
+                NotionStream.DATA_SOURCES: "Data sources shared with the Notion connection.",
+                NotionStream.PAGES: "Pages with enhanced Markdown and source provenance.",
+                NotionStream.BLOCKS: "Recursive structured blocks retained for loss-aware audit.",
+                NotionStream.PROPERTIES: "Page properties, including completed relation and rollup values.",
+                NotionStream.ATTACHMENTS: "File metadata from page properties and file blocks.",
+                NotionStream.AUTHORS: "Users visible to the Notion connection.",
             }[stream_key],
             canonical_entity=entity,
             change_strategies=frozenset({SorChangeStrategy.FULL_RECONCILE}),
             depends_on=frozenset(
-                set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values())
-                - {stream_key}
+                set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values()) - {stream_key}
             ),
             relationship_targets=_RELATIONSHIP_TARGETS.get(stream_key, {}),
         )
@@ -232,11 +269,14 @@ def verify_notion_app_webhook(
     signature = _header(headers, "x-notion-signature")
     if signature is None or not signature.startswith("sha256="):
         raise SorWebhookVerificationError("Notion webhook signature is missing.")
-    expected = "sha256=" + hmac.new(
-        verification_token.encode("utf-8"),
-        body,
-        hashlib.sha256,
-    ).hexdigest()
+    expected = (
+        "sha256="
+        + hmac.new(
+            verification_token.encode("utf-8"),
+            body,
+            hashlib.sha256,
+        ).hexdigest()
+    )
     if not hmac.compare_digest(signature, expected):
         raise SorWebhookVerificationError("Notion webhook signature is invalid.")
 
@@ -266,10 +306,10 @@ def parse_notion_app_webhook(*, body: bytes) -> NotionAppWebhookDelivery:
             field="webhook entity ID",
         )
         stream_key = {
-            "page": "pages",
-            "data_source": "data_sources",
-            "database": "data_sources",
-            "block": "blocks",
+            "page": NotionStream.PAGES,
+            "data_source": NotionStream.DATA_SOURCES,
+            "database": NotionStream.DATA_SOURCES,
+            "block": NotionStream.BLOCKS,
         }.get(entity_type)
         signal = SorWebhookSignal(
             delivery_id=_optional_string(data.get("id")),
@@ -305,12 +345,12 @@ def _field(
 
 
 _SCHEMA_FIELDS = {
-    "data_sources": (
+    NotionStream.DATA_SOURCES: (
         _field("name", "Name", "text", nullable=False),
         _field("kind", "Kind", "text", nullable=False),
         _field("custom_fields", "Property schema", "bounded_json"),
     ),
-    "pages": (
+    NotionStream.PAGES: (
         _field("title", "Title", "text", nullable=False, writable=True),
         _field("space_external_id", "Data source ID", "reference", writable=True),
         _field("parent_external_id", "Parent page ID", "reference", writable=True),
@@ -327,7 +367,7 @@ _SCHEMA_FIELDS = {
         _field("source_created_at", "Created", "timestamp"),
         _field("source_updated_at", "Updated", "timestamp"),
     ),
-    "blocks": (
+    NotionStream.BLOCKS: (
         _field("document_external_id", "Document ID", "reference", nullable=False),
         _field("parent_external_id", "Parent block ID", "reference"),
         _field("kind", "Kind", "text", nullable=False),
@@ -338,7 +378,7 @@ _SCHEMA_FIELDS = {
         _field("source_created_at", "Created", "timestamp"),
         _field("source_updated_at", "Updated", "timestamp"),
     ),
-    "properties": (
+    NotionStream.PROPERTIES: (
         _field("document_external_id", "Document ID", "reference", nullable=False),
         _field("key", "Property ID", "text", nullable=False),
         _field("label", "Property name", "text", nullable=False),
@@ -346,7 +386,7 @@ _SCHEMA_FIELDS = {
         _field("value", "Value", "bounded_json"),
         _field("source_updated_at", "Updated", "timestamp"),
     ),
-    "attachments": (
+    NotionStream.ATTACHMENTS: (
         _field("document_external_id", "Document ID", "reference", nullable=False),
         _field("name", "Name", "text", nullable=False),
         _field("media_type", "Media type", "text"),
@@ -354,7 +394,7 @@ _SCHEMA_FIELDS = {
         _field("source_url", "Source URL", "link"),
         _field("source_url_expires_at", "URL expires", "timestamp"),
     ),
-    "authors": (
+    NotionStream.AUTHORS: (
         _field("name", "Name", "text", nullable=False),
         _field("primary_email", "Email", "text"),
         _field("kind", "Kind", "text"),
@@ -453,7 +493,7 @@ class NotionKnowledgeAdapter:
     async def discover_schema(self) -> SorDiscoveredSchema:
         if not self._context.selected_objects:
             raise _invalid_operation(
-                "source_selection_empty",
+                SorVendorErrorCode.SOURCE_SELECTION_EMPTY,
                 "The Notion source selects no streams.",
             )
         streams = {stream.key: stream for stream in NOTION_MANIFEST.streams}
@@ -503,7 +543,7 @@ class NotionKnowledgeAdapter:
             vendor_object_key,
             selected=self._context.selected_objects,
         )
-        if stream_key == "data_sources":
+        if stream_key == NotionStream.DATA_SOURCES:
             data_source_id = _notion_id(external_id, field="data source ID")
             response = await self._client.request(
                 f"/v1/data_sources/{_path_id(data_source_id)}"
@@ -511,11 +551,11 @@ class NotionKnowledgeAdapter:
             return self._external_space(
                 _required_response(response, stream_key, data_source_id)
             )
-        if stream_key == "pages":
+        if stream_key == NotionStream.PAGES:
             page_id = _notion_id(external_id, field="page ID")
             page, markdown = await self._fetch_page_with_markdown(page_id)
             return self._external_document(page, markdown)
-        if stream_key == "blocks":
+        if stream_key == NotionStream.BLOCKS:
             block_id = _notion_id(external_id, field="block ID")
             response = await self._client.request(f"/v1/blocks/{_path_id(block_id)}")
             block = _required_response(response, stream_key, block_id)
@@ -527,7 +567,7 @@ class NotionKnowledgeAdapter:
                 row=block,
                 order=0,
             )
-        if stream_key == "properties":
+        if stream_key == NotionStream.PROPERTIES:
             page_id, property_id = _decode_property_external_id(external_id)
             page = await self._fetch_page(page_id)
             label, value = _find_page_property(page, property_id)
@@ -537,7 +577,7 @@ class NotionKnowledgeAdapter:
                 value=value,
                 page=page,
             )
-        if stream_key == "attachments":
+        if stream_key == NotionStream.ATTACHMENTS:
             value = await self._fetch_attachment(external_id)
             return _external_attachment(value)
         author_id = _notion_id(external_id, field="user ID")
@@ -603,10 +643,10 @@ class NotionKnowledgeAdapter:
     async def execute_command(self, command: SorCommandRequest) -> SorCommandResult:
         if command.tool_name not in _WRITE_TOOLS:
             raise _invalid_operation(
-                "vendor_tool_unsupported",
+                SorVendorErrorCode.VENDOR_TOOL_UNSUPPORTED,
                 "This Notion adapter does not execute the requested document action.",
             )
-        if command.tool_name == "docs_create":
+        if command.tool_name == KnowledgeToolName.CREATE:
             return await self._create_page(command)
         target_id = _required_target(command)
         current = await self._fetch_page(target_id)
@@ -615,13 +655,13 @@ class NotionKnowledgeAdapter:
             and command.expected_source_revision != _page_revision(current)
         ):
             raise _invalid_operation(
-                "vendor_source_conflict",
+                SorVendorErrorCode.VENDOR_SOURCE_CONFLICT,
                 "The Notion page changed after the Agent read it.",
             )
-        if command.tool_name == "docs_update":
+        if command.tool_name == KnowledgeToolName.UPDATE:
             response = await self._update_page(target_id, current, command)
             return _target_command_result(target_id, current, response)
-        if command.tool_name == "docs_append":
+        if command.tool_name == KnowledgeToolName.APPEND:
             response = await self._append_page(target_id, command)
             return _target_command_result(target_id, current, response)
         response = await self._comment_page(target_id, command)
@@ -634,7 +674,9 @@ class NotionKnowledgeAdapter:
             name=_required_string(values.get("name"), field="data source name"),
             kind=_required_string(values.get("kind"), field="data source kind"),
             source_url=record.source_url,
-            custom_fields=_mapping(values.get("custom_fields"), field="data source schema"),
+            custom_fields=_mapping(
+                values.get("custom_fields"), field="data source schema"
+            ),
         )
 
     def normalize_document(self, record: SorExternalRecord) -> KnowledgeDocument:
@@ -703,7 +745,9 @@ class NotionKnowledgeAdapter:
             ),
             key=_required_string(values.get("key"), field="property ID"),
             label=_required_string(values.get("label"), field="property name"),
-            value_type=_required_string(values.get("value_type"), field="property type"),
+            value_type=_required_string(
+                values.get("value_type"), field="property type"
+            ),
             value=_json_scalar(values.get("value")),
             source_updated_at=record.source_updated_at,
         )
@@ -753,11 +797,11 @@ class NotionKnowledgeAdapter:
         )
         if limit <= 0:
             raise _invalid_operation(
-                "vendor_page_invalid",
+                SorVendorErrorCode.VENDOR_PAGE_INVALID,
                 "Notion page limit must be positive.",
             )
         page_limit = min(limit, 100)
-        if stream_key == "data_sources":
+        if stream_key == NotionStream.DATA_SOURCES:
             data, next_cursor = await self._search(
                 object_kind="data_source",
                 cursor=cursor,
@@ -768,11 +812,11 @@ class NotionKnowledgeAdapter:
                 next_cursor=next_cursor,
                 has_more=next_cursor is not None,
             )
-        if stream_key == "pages":
+        if stream_key == NotionStream.PAGES:
             return await self._read_documents(cursor=cursor, limit=min(page_limit, 25))
-        if stream_key == "authors":
+        if stream_key == NotionStream.AUTHORS:
             return await self._read_authors(cursor=cursor, limit=page_limit)
-        if stream_key == "properties":
+        if stream_key == NotionStream.PROPERTIES:
             return await self._read_properties(cursor=cursor, limit=page_limit)
         return await self._read_tree(
             stream_key=stream_key,
@@ -794,12 +838,16 @@ class NotionKnowledgeAdapter:
         }
         if cursor is not None:
             payload["start_cursor"] = _vendor_cursor(cursor, stream="search")
-        response = await self._client.request("/v1/search", method="POST", payload=payload)
+        response = await self._client.request(
+            "/v1/search", method="POST", payload=payload
+        )
         data = _object(_expect(response, operation=f"search Notion {object_kind}s"))
         rows = _object_list(data.get("results"), field=f"Notion {object_kind}s")
         for row in rows:
             if row.get("object") != object_kind:
-                raise _invalid_response("Notion search returned an unexpected object type.")
+                raise _invalid_response(
+                    "Notion search returned an unexpected object type."
+                )
         return rows, _next_cursor(data, stream="search")
 
     async def _read_documents(self, *, cursor: str | None, limit: int) -> SorRecordPage:
@@ -822,11 +870,11 @@ class NotionKnowledgeAdapter:
     async def _read_authors(self, *, cursor: str | None, limit: int) -> SorRecordPage:
         query: dict[str, object] = {"page_size": limit}
         if cursor is not None:
-            query["start_cursor"] = _vendor_cursor(cursor, stream="authors")
+            query["start_cursor"] = _vendor_cursor(cursor, stream=NotionStream.AUTHORS)
         response = await self._client.request("/v1/users", query=query)
         data = _object(_expect(response, operation="list Notion users"))
         rows = _object_list(data.get("results"), field="Notion users")
-        next_cursor = _next_cursor(data, stream="authors")
+        next_cursor = _next_cursor(data, stream=NotionStream.AUTHORS)
         return SorRecordPage(
             records=tuple(self._external_author(row) for row in rows),
             next_cursor=next_cursor,
@@ -853,7 +901,7 @@ class NotionKnowledgeAdapter:
             page = await self._fetch_page(checkpoint.current_page_id)
             properties = _page_properties(page)
             if checkpoint.offset > len(properties):
-                raise _invalid_cursor("properties")
+                raise _invalid_cursor(NotionStream.PROPERTIES)
             selected = properties[checkpoint.offset : checkpoint.offset + limit]
             records = tuple(
                 [
@@ -917,12 +965,15 @@ class NotionKnowledgeAdapter:
                     current_page_id=page_id,
                     current_page_is_last=page_is_last,
                     page_attachment_offset=0,
-                    page_attachments_done=stream_key != "attachments",
+                    page_attachments_done=stream_key != NotionStream.ATTACHMENTS,
                     frames=(_TreeFrame(page_id, None, None, 0, 0),),
                 )
             current_page_id = checkpoint.current_page_id
             assert current_page_id is not None
-            if stream_key == "attachments" and not checkpoint.page_attachments_done:
+            if (
+                stream_key == NotionStream.ATTACHMENTS
+                and not checkpoint.page_attachments_done
+            ):
                 page = await self._fetch_page(current_page_id)
                 attachments = _page_attachments(page)
                 if checkpoint.page_attachment_offset > len(attachments):
@@ -943,7 +994,9 @@ class NotionKnowledgeAdapter:
                 )
                 if selected:
                     return SorRecordPage(
-                        records=tuple(_external_attachment(value) for value in selected),
+                        records=tuple(
+                            _external_attachment(value) for value in selected
+                        ),
                         next_cursor=_encode_tree_cursor(
                             next_checkpoint,
                             stream_key=stream_key,
@@ -959,7 +1012,7 @@ class NotionKnowledgeAdapter:
                     None,
                     False,
                     0,
-                    stream_key != "attachments",
+                    stream_key != NotionStream.ATTACHMENTS,
                     (),
                 )
                 scans += 1
@@ -967,13 +1020,15 @@ class NotionKnowledgeAdapter:
             frame = checkpoint.frames[0]
             rows, child_cursor = await self._read_block_children(frame, limit=limit)
             continuation = (
-                (_TreeFrame(
-                    frame.parent_id,
-                    frame.parent_external_id,
-                    child_cursor,
-                    frame.offset + len(rows),
-                    frame.depth,
-                ),)
+                (
+                    _TreeFrame(
+                        frame.parent_id,
+                        frame.parent_external_id,
+                        child_cursor,
+                        frame.offset + len(rows),
+                        frame.depth,
+                    ),
+                )
                 if child_cursor is not None
                 else ()
             )
@@ -992,7 +1047,7 @@ class NotionKnowledgeAdapter:
             if len(frames) > MAX_TREE_FRAMES:
                 raise _invalid_response("Notion block hierarchy is too broad.")
             records: tuple[SorExternalRecord, ...]
-            if stream_key == "blocks":
+            if stream_key == NotionStream.BLOCKS:
                 records = tuple(
                     self._external_block(
                         page_id=current_page_id,
@@ -1021,13 +1076,15 @@ class NotionKnowledgeAdapter:
             )
             if not frames:
                 if checkpoint.current_page_is_last:
-                    return SorRecordPage(records=records, next_cursor=None, has_more=False)
+                    return SorRecordPage(
+                        records=records, next_cursor=None, has_more=False
+                    )
                 next_checkpoint = _TreeCursor(
                     checkpoint.page_cursor,
                     None,
                     False,
                     0,
-                    stream_key != "attachments",
+                    stream_key != NotionStream.ATTACHMENTS,
                     (),
                 )
             if records:
@@ -1083,11 +1140,11 @@ class NotionKnowledgeAdapter:
         )
         data = _object(_expect(response, operation="list Notion block children"))
         rows = _object_list(data.get("results"), field="Notion blocks")
-        return rows, _next_cursor(data, stream="blocks")
+        return rows, _next_cursor(data, stream=NotionStream.BLOCKS)
 
     async def _fetch_page(self, page_id: str) -> dict[str, object]:
         response = await self._client.request(f"/v1/pages/{_path_id(page_id)}")
-        return _required_response(response, "pages", page_id)
+        return _required_response(response, NotionStream.PAGES, page_id)
 
     async def _fetch_markdown(self, page_id: str) -> dict[str, object]:
         response = await self._client.request(
@@ -1099,7 +1156,9 @@ class NotionKnowledgeAdapter:
             raise _invalid_response("Notion returned an invalid Markdown document.")
         if _notion_id(markdown.get("id"), field="Markdown page ID") != page_id:
             raise _invalid_response("Notion Markdown belongs to a different page.")
-        _bounded_string(markdown.get("markdown"), field="Markdown content", allow_empty=True)
+        _bounded_string(
+            markdown.get("markdown"), field="Markdown content", allow_empty=True
+        )
         _required_boolean(markdown.get("truncated"), field="Markdown truncation")
         _id_tuple(markdown.get("unknown_block_ids"), field="unknown block IDs")
         _bounded_json(markdown, field="Markdown source")
@@ -1117,7 +1176,9 @@ class NotionKnowledgeAdapter:
         visited: set[str] = set()
         for _depth in range(MAX_TREE_DEPTH + 1):
             parent = _object(current.get("parent"), field="Notion block parent")
-            parent_type = _required_string(parent.get("type"), field="block parent type")
+            parent_type = _required_string(
+                parent.get("type"), field="block parent type"
+            )
             if parent_type == "page_id":
                 return _notion_id(parent.get("page_id"), field="parent page ID")
             if parent_type != "block_id":
@@ -1127,14 +1188,16 @@ class NotionKnowledgeAdapter:
                 raise _invalid_response("Notion block hierarchy contains a cycle.")
             visited.add(parent_id)
             response = await self._client.request(f"/v1/blocks/{_path_id(parent_id)}")
-            current = _required_response(response, "blocks", parent_id)
+            current = _required_response(response, NotionStream.BLOCKS, parent_id)
         raise _invalid_response("Notion block hierarchy is too deep.")
 
     def _external_space(self, row: Mapping[str, object]) -> SorExternalRecord:
         data_source_id = _notion_id(row.get("id"), field="data source ID")
-        properties = _mapping(row.get("properties"), field="data source properties")
+        properties = _mapping(
+            row.get(NotionStream.PROPERTIES), field="data source properties"
+        )
         return SorExternalRecord(
-            vendor_object_key="data_sources",
+            vendor_object_key=NotionStream.DATA_SOURCES,
             external_id=data_source_id,
             payload={
                 "name": _rich_text(row.get("title")) or "Untitled data source",
@@ -1181,7 +1244,7 @@ class NotionKnowledgeAdapter:
         updated_at = _optional_datetime(row.get("last_edited_time"))
         revision = _page_revision(row)
         return SorExternalRecord(
-            vendor_object_key="pages",
+            vendor_object_key=NotionStream.PAGES,
             external_id=page_id,
             payload={
                 "title": _page_title(row),
@@ -1193,7 +1256,9 @@ class NotionKnowledgeAdapter:
                 "source_body": source_body,
                 "content_hash": _content_hash(normalized_text, source_body),
                 "version": revision,
-                "lifecycle_state": "trashed" if row.get("in_trash") is True else "active",
+                "lifecycle_state": "trashed"
+                if row.get("in_trash") is True
+                else "active",
                 "author_external_id": _user_reference(row.get("last_edited_by")),
                 "label_external_ids": list(_page_option_ids(row)),
                 "unsupported_blocks": unsupported,
@@ -1219,7 +1284,7 @@ class NotionKnowledgeAdapter:
         created_at = _optional_datetime(row.get("created_time"))
         updated_at = _optional_datetime(row.get("last_edited_time"))
         return SorExternalRecord(
-            vendor_object_key="blocks",
+            vendor_object_key=NotionStream.BLOCKS,
             external_id=block_id,
             payload={
                 "document_external_id": page_id,
@@ -1249,13 +1314,17 @@ class NotionKnowledgeAdapter:
         complete_value = await self._complete_property(page_id, value)
         updated_at = _optional_datetime(page.get("last_edited_time"))
         return SorExternalRecord(
-            vendor_object_key="properties",
+            vendor_object_key=NotionStream.PROPERTIES,
             external_id=_property_external_id(page_id, property_id),
             payload={
                 "document_external_id": page_id,
                 "key": property_id,
-                "label": _bounded_string(label, field="property name", allow_empty=False),
-                "value_type": _required_string(value.get("type"), field="property type"),
+                "label": _bounded_string(
+                    label, field="property name", allow_empty=False
+                ),
+                "value_type": _required_string(
+                    value.get("type"), field="property type"
+                ),
                 "value": complete_value,
                 "source_updated_at": updated_at,
             },
@@ -1267,7 +1336,7 @@ class NotionKnowledgeAdapter:
         author_id = _notion_id(row.get("id"), field="user ID")
         person = _optional_mapping(row.get("person"))
         return SorExternalRecord(
-            vendor_object_key="authors",
+            vendor_object_key=NotionStream.AUTHORS,
             external_id=author_id,
             payload={
                 "name": _optional_string(row.get("name")) or "Notion user",
@@ -1319,7 +1388,7 @@ class NotionKnowledgeAdapter:
         kind, owner_id, property_id, index = _decode_attachment_id(external_id)
         if kind == "block":
             response = await self._client.request(f"/v1/blocks/{_path_id(owner_id)}")
-            block = _required_response(response, "attachments", external_id)
+            block = _required_response(response, NotionStream.ATTACHMENTS, external_id)
             page_id = await self._root_page_id(block)
             values = _block_attachments(page_id=page_id, row=block)
         else:
@@ -1333,12 +1402,12 @@ class NotionKnowledgeAdapter:
             value = values[index]
         except IndexError as error:
             raise SorExternalRecordNotFound(
-                vendor_object_key="attachments",
+                vendor_object_key=NotionStream.ATTACHMENTS,
                 external_id=external_id,
             ) from error
         if value.external_id != external_id:
             raise SorExternalRecordNotFound(
-                vendor_object_key="attachments",
+                vendor_object_key=NotionStream.ATTACHMENTS,
                 external_id=external_id,
             )
         return value
@@ -1346,7 +1415,10 @@ class NotionKnowledgeAdapter:
     async def _create_page(self, command: SorCommandRequest) -> SorCommandResult:
         if command.target_external_id is not None:
             raise _invalid_command("Creating a Notion page cannot target a record.")
-        payload = _document_write_payload(command.payload, create=True)
+        payload = _document_write_payload(
+            command.payload,
+            operation=SorMutationOperation.CREATE,
+        )
         parent_page = payload.get("parent_external_id")
         data_source = payload.get("space_external_id")
         if (parent_page is None) == (data_source is None):
@@ -1367,9 +1439,11 @@ class NotionKnowledgeAdapter:
             response = await self._client.request(
                 f"/v1/data_sources/{_path_id(data_source)}"
             )
-            schema = _required_response(response, "data_sources", data_source)
+            schema = _required_response(
+                response, NotionStream.DATA_SOURCES, data_source
+            )
             title_key = _data_source_title_key(schema)
-        request["properties"] = {title_key: _title_property(title)}
+        request[NotionStream.PROPERTIES] = {title_key: _title_property(title)}
         if "normalized_text" in payload:
             request["markdown"] = payload["normalized_text"]
         try:
@@ -1392,7 +1466,10 @@ class NotionKnowledgeAdapter:
         current: Mapping[str, object],
         command: SorCommandRequest,
     ) -> SorJsonResponse:
-        payload = _document_write_payload(command.payload, create=False)
+        payload = _document_write_payload(
+            command.payload,
+            operation=SorMutationOperation.UPDATE,
+        )
         selected = set(payload) & {"title", "normalized_text"}
         if len(selected) != 1 or set(payload) != selected:
             raise _invalid_command(
@@ -1403,7 +1480,11 @@ class NotionKnowledgeAdapter:
             response = await self._client.request(
                 f"/v1/pages/{_path_id(page_id)}",
                 method="PATCH",
-                payload={"properties": {title_key: _title_property(payload["title"])}},
+                payload={
+                    NotionStream.PROPERTIES: {
+                        title_key: _title_property(payload["title"])
+                    }
+                },
                 idempotency_key=command.idempotency_key,
             )
         else:
@@ -1426,9 +1507,14 @@ class NotionKnowledgeAdapter:
         page_id: str,
         command: SorCommandRequest,
     ) -> SorJsonResponse:
-        payload = _document_write_payload(command.payload, create=False)
+        payload = _document_write_payload(
+            command.payload,
+            operation=SorMutationOperation.UPDATE,
+        )
         if set(payload) != {"normalized_text"} or not payload["normalized_text"]:
-            raise _invalid_command("Appending to Notion requires non-empty normalized_text.")
+            raise _invalid_command(
+                "Appending to Notion requires non-empty normalized_text."
+            )
         try:
             response = await self._client.request(
                 f"/v1/pages/{_path_id(page_id)}/markdown",
@@ -1454,7 +1540,9 @@ class NotionKnowledgeAdapter:
         command: SorCommandRequest,
     ) -> SorJsonResponse:
         if set(command.payload) != {"normalized_text"}:
-            raise _invalid_command("Commenting in Notion requires normalized_text only.")
+            raise _invalid_command(
+                "Commenting in Notion requires normalized_text only."
+            )
         text = command.payload.get("normalized_text")
         if (
             not isinstance(text, str)
@@ -1481,8 +1569,10 @@ def create_notion_adapter(context: SorAdapterContext) -> NotionKnowledgeAdapter:
     return NotionKnowledgeAdapter(context)
 
 
-def _page_properties(page: Mapping[str, object]) -> tuple[tuple[str, dict[str, object]], ...]:
-    properties = _mapping(page.get("properties"), field="page properties")
+def _page_properties(
+    page: Mapping[str, object],
+) -> tuple[tuple[str, dict[str, object]], ...]:
+    properties = _mapping(page.get(NotionStream.PROPERTIES), field="page properties")
     rows: list[tuple[str, dict[str, object]]] = []
     for label, value in properties.items():
         if not isinstance(value, Mapping):
@@ -1490,7 +1580,15 @@ def _page_properties(page: Mapping[str, object]) -> tuple[tuple[str, dict[str, o
         row = _object(dict(value), field="Notion page property")
         _source_key(row.get("id"), field="property ID")
         rows.append((label, row))
-    return tuple(sorted(rows, key=lambda item: (_source_key(item[1].get("id"), field="property ID"), item[0])))
+    return tuple(
+        sorted(
+            rows,
+            key=lambda item: (
+                _source_key(item[1].get("id"), field="property ID"),
+                item[0],
+            ),
+        )
+    )
 
 
 def _find_page_property(
@@ -1504,7 +1602,7 @@ def _find_page_property(
     ]
     if len(matches) != 1:
         raise SorExternalRecordNotFound(
-            vendor_object_key="properties",
+            vendor_object_key=NotionStream.PROPERTIES,
             external_id=_property_external_id(
                 _notion_id(page.get("id"), field="page ID"),
                 property_id,
@@ -1536,7 +1634,9 @@ def _page_title_property(
 
 
 def _data_source_title_key(data_source: Mapping[str, object]) -> str:
-    properties = _mapping(data_source.get("properties"), field="data source properties")
+    properties = _mapping(
+        data_source.get(NotionStream.PROPERTIES), field="data source properties"
+    )
     matches = [
         label
         for label, value in properties.items()
@@ -1682,7 +1782,7 @@ def _attachment_value(
 
 def _external_attachment(value: _AttachmentValue) -> SorExternalRecord:
     return SorExternalRecord(
-        vendor_object_key="attachments",
+        vendor_object_key=NotionStream.ATTACHMENTS,
         external_id=value.external_id,
         payload={
             "document_external_id": value.document_external_id,
@@ -1758,7 +1858,7 @@ def _content_hash(normalized_text: str, source_body: object) -> str:
 def _document_write_payload(
     payload: Mapping[str, object],
     *,
-    create: bool,
+    operation: SorMutationOperation,
 ) -> dict[str, object]:
     allowed = {"title", "space_external_id", "parent_external_id", "normalized_text"}
     if not payload or set(payload) - allowed:
@@ -1768,7 +1868,11 @@ def _document_write_payload(
     result: dict[str, object] = {}
     title = payload.get("title")
     if title is not None:
-        if not isinstance(title, str) or not title.strip() or len(title) > MAX_TITLE_CHARS:
+        if (
+            not isinstance(title, str)
+            or not title.strip()
+            or len(title) > MAX_TITLE_CHARS
+        ):
             raise _invalid_command("Notion title is invalid.")
         result["title"] = title.strip()
     for key in ("space_external_id", "parent_external_id"):
@@ -1780,7 +1884,7 @@ def _document_write_payload(
         if not isinstance(content, str) or len(content) > MAX_CANONICAL_TEXT_CHARS:
             raise _invalid_command("Notion normalized_text is invalid.")
         result["normalized_text"] = content
-    if create and "title" not in result:
+    if operation is SorMutationOperation.CREATE and "title" not in result:
         raise _invalid_command("Creating a Notion page requires a title.")
     return result
 
@@ -1799,7 +1903,7 @@ def _created_command_result(
 ) -> SorCommandResult:
     request_ids = response.header_values("x-request-id")
     return SorCommandResult(
-        vendor_object_key="pages",
+        vendor_object_key=NotionStream.PAGES,
         external_id=page_id,
         external_request_id=request_ids[0] if request_ids else None,
         source_revision=_optional_string(page.get("last_edited_time")),
@@ -1815,7 +1919,7 @@ def _target_command_result(
 ) -> SorCommandResult:
     request_ids = response.header_values("x-request-id")
     return SorCommandResult(
-        vendor_object_key="pages",
+        vendor_object_key=NotionStream.PAGES,
         external_id=page_id,
         external_request_id=request_ids[0] if request_ids else None,
         source_url=_safe_url(current.get("url")),
@@ -1824,11 +1928,15 @@ def _target_command_result(
 
 
 def _raise_unknown_mutation(error: SorVendorOperationError, action: str) -> None:
-    if error.code in {"vendor_timeout", "vendor_transport_failed", "vendor_server_failed"}:
+    if error.code in {
+        SorVendorErrorCode.VENDOR_TIMEOUT,
+        SorVendorErrorCode.VENDOR_TRANSPORT_FAILED,
+        SorVendorErrorCode.VENDOR_SERVER_FAILED,
+    }:
         raise SorVendorOperationError(
-            "vendor_mutation_outcome_unknown",
+            SorVendorErrorCode.VENDOR_MUTATION_OUTCOME_UNKNOWN,
             f"Notion may have {action}; reconcile before retrying.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.RECONCILE_REQUIRED,
         ) from error
 
 
@@ -1843,7 +1951,7 @@ def _required_response(
     stream_key: str,
     external_id: str,
 ) -> dict[str, object]:
-    if response.status_code in {404, 410}:
+    if response.status_code in {HTTPStatus.NOT_FOUND, HTTPStatus.GONE}:
         raise SorExternalRecordNotFound(
             vendor_object_key=stream_key,
             external_id=external_id,
@@ -1852,34 +1960,36 @@ def _required_response(
 
 
 def _expect(response: SorJsonResponse, *, operation: str) -> object:
-    if response.status_code in {401, 403}:
+    if response.status_code in {HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN}:
         raise SorVendorOperationError(
-            "vendor_authorization_failed",
+            SorVendorErrorCode.VENDOR_AUTHORIZATION_FAILED,
             f"Notion refused authorization while attempting to {operation}.",
-            retryable=False,
-            requires_reauthorization=True,
-            refreshable_authorization=response.status_code == 401,
+            recovery=(
+                SorRecoveryPolicy.REFRESH_AND_RETRY
+                if response.status_code == HTTPStatus.UNAUTHORIZED
+                else SorRecoveryPolicy.REAUTH_REQUIRED
+            ),
         )
-    if response.status_code == 409:
+    if response.status_code == HTTPStatus.CONFLICT:
         raise _invalid_operation(
-            "vendor_source_conflict",
+            SorVendorErrorCode.VENDOR_SOURCE_CONFLICT,
             "The Notion source changed during the operation.",
         )
-    if response.status_code == 429:
+    if response.status_code == HTTPStatus.TOO_MANY_REQUESTS:
         raise SorVendorOperationError(
-            "vendor_rate_limited",
+            SorVendorErrorCode.VENDOR_RATE_LIMITED,
             "Notion rate limited the operation.",
-            retryable=True,
+            recovery=SorRecoveryPolicy.RETRY,
         )
-    if response.status_code >= 500:
+    if response.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR:
         raise SorVendorOperationError(
-            "vendor_server_failed",
+            SorVendorErrorCode.VENDOR_SERVER_FAILED,
             "Notion could not complete the operation.",
-            retryable=True,
+            recovery=SorRecoveryPolicy.RETRY,
         )
     if not response.ok:
         raise _invalid_operation(
-            "vendor_request_rejected",
+            SorVendorErrorCode.VENDOR_REQUEST_REJECTED,
             f"Notion rejected the request while attempting to {operation}.",
         )
     return response.data
@@ -1887,7 +1997,7 @@ def _expect(response: SorJsonResponse, *, operation: str) -> object:
 
 def _expect_mutation(response: SorJsonResponse, *, operation: str) -> object:
     value = _expect(response, operation=operation)
-    if response.status_code not in {200, 201}:
+    if response.status_code not in {HTTPStatus.OK, HTTPStatus.CREATED}:
         raise _invalid_response("Notion returned an unexpected mutation status.")
     return value
 
@@ -1915,11 +2025,20 @@ def _vendor_cursor(value: str, *, stream: str) -> str:
 def _decode_member_cursor(value: str | None) -> _MemberCursor:
     if value is None:
         return _MemberCursor(None, None, False, 0)
-    payload = _cursor_payload(value, stream_key="properties")
-    expected = {"current_page_id", "current_page_is_last", "offset", "page_cursor", "stream", "v"}
+    payload = _cursor_payload(value, stream_key=NotionStream.PROPERTIES)
+    expected = {
+        "current_page_id",
+        "current_page_is_last",
+        "offset",
+        "page_cursor",
+        "stream",
+        "v",
+    }
     if set(payload) != expected:
-        raise _invalid_cursor("properties")
-    page_cursor = _optional_cursor(payload.get("page_cursor"), stream="properties")
+        raise _invalid_cursor(NotionStream.PROPERTIES)
+    page_cursor = _optional_cursor(
+        payload.get("page_cursor"), stream=NotionStream.PROPERTIES
+    )
     page_id = _optional_notion_id(payload.get("current_page_id"))
     is_last = payload.get("current_page_is_last")
     offset = payload.get("offset")
@@ -1928,9 +2047,10 @@ def _decode_member_cursor(value: str | None) -> _MemberCursor:
         or isinstance(offset, bool)
         or not isinstance(offset, int)
         or offset < 0
-        or page_id is None and (offset != 0 or is_last)
+        or page_id is None
+        and (offset != 0 or is_last)
     ):
-        raise _invalid_cursor("properties")
+        raise _invalid_cursor(NotionStream.PROPERTIES)
     return _MemberCursor(page_cursor, page_id, is_last, offset)
 
 
@@ -1941,16 +2061,18 @@ def _encode_member_cursor(cursor: _MemberCursor) -> str:
             "current_page_is_last": cursor.current_page_is_last,
             "offset": cursor.offset,
             "page_cursor": cursor.page_cursor,
-            "stream": "properties",
+            "stream": NotionStream.PROPERTIES,
             "v": NOTION_CURSOR_VERSION,
         },
-        stream="properties",
+        stream=NotionStream.PROPERTIES,
     )
 
 
 def _decode_tree_cursor(value: str | None, *, stream_key: str) -> _TreeCursor:
     if value is None:
-        return _TreeCursor(None, None, False, 0, stream_key != "attachments", ())
+        return _TreeCursor(
+            None, None, False, 0, stream_key != NotionStream.ATTACHMENTS, ()
+        )
     payload = _cursor_payload(value, stream_key=stream_key)
     expected = {
         "current_page_id",
@@ -1980,9 +2102,14 @@ def _decode_tree_cursor(value: str | None, *, stream_key: str) -> _TreeCursor:
         or len(raw_frames) > MAX_TREE_FRAMES
     ):
         raise _invalid_cursor(stream_key)
-    frames = tuple(_decode_tree_frame(frame, stream_key=stream_key) for frame in raw_frames)
+    frames = tuple(
+        _decode_tree_frame(frame, stream_key=stream_key) for frame in raw_frames
+    )
     if page_id is None and (
-        is_last or attachment_offset != 0 or frames or attachments_done != (stream_key != "attachments")
+        is_last
+        or attachment_offset != 0
+        or frames
+        or attachments_done != (stream_key != NotionStream.ATTACHMENTS)
     ):
         raise _invalid_cursor(stream_key)
     return _TreeCursor(
@@ -2092,7 +2219,7 @@ def _decode_property_external_id(value: str) -> tuple[str, str]:
         property_id = base64.urlsafe_b64decode(f"{encoded}{padding}").decode()
     except (ValueError, UnicodeDecodeError) as error:
         raise _invalid_operation(
-            "vendor_identifier_invalid",
+            SorVendorErrorCode.VENDOR_IDENTIFIER_INVALID,
             "A Notion property identity is invalid.",
         ) from error
     return _notion_id(page_id, field="property page ID"), _source_key(
@@ -2117,7 +2244,12 @@ def _decode_attachment_id(value: str) -> tuple[str, str, str | None, int]:
     parts = value.split(":")
     try:
         if len(parts) == 3 and parts[0] == "b":
-            return "block", _notion_id(parts[1], field="attachment block ID"), None, _index(parts[2])
+            return (
+                "block",
+                _notion_id(parts[1], field="attachment block ID"),
+                None,
+                _index(parts[2]),
+            )
         if len(parts) == 4 and parts[0] == "p":
             padding = "=" * (-len(parts[2]) % 4)
             property_id = base64.urlsafe_b64decode(f"{parts[2]}{padding}").decode()
@@ -2129,11 +2261,11 @@ def _decode_attachment_id(value: str) -> tuple[str, str, str | None, int]:
             )
     except (ValueError, UnicodeDecodeError) as error:
         raise _invalid_operation(
-            "vendor_identifier_invalid",
+            SorVendorErrorCode.VENDOR_IDENTIFIER_INVALID,
             "A Notion attachment identity is invalid.",
         ) from error
     raise _invalid_operation(
-        "vendor_identifier_invalid",
+        SorVendorErrorCode.VENDOR_IDENTIFIER_INVALID,
         "A Notion attachment identity is invalid.",
     )
 
@@ -2318,7 +2450,7 @@ def _credential(credentials: Mapping[str, object], key: str) -> str:
     value = credentials.get(key)
     if not isinstance(value, str) or not value:
         raise _invalid_operation(
-            "vendor_credentials_invalid",
+            SorVendorErrorCode.VENDOR_CREDENTIALS_INVALID,
             "Notion credentials are unavailable.",
         )
     return value
@@ -2327,7 +2459,7 @@ def _credential(credentials: Mapping[str, object], key: str) -> str:
 def _require_stream(value: str, *, selected: tuple[str, ...]) -> str:
     if value not in _STREAM_ENTITY or value not in selected:
         raise _invalid_operation(
-            "vendor_stream_unsupported",
+            SorVendorErrorCode.VENDOR_STREAM_UNSUPPORTED,
             "The requested Notion stream is not selected for this source.",
         )
     return value
@@ -2336,9 +2468,7 @@ def _require_stream(value: str, *, selected: tuple[str, ...]) -> str:
 def _header(headers: Mapping[str, str], name: str) -> str | None:
     expected = name.casefold()
     values = [
-        value.strip()
-        for key, value in headers.items()
-        if key.casefold() == expected
+        value.strip() for key, value in headers.items() if key.casefold() == expected
     ]
     if len(values) != 1 or not values[0] or len(values[0]) > 4_096:
         return None
@@ -2347,21 +2477,24 @@ def _header(headers: Mapping[str, str], name: str) -> str | None:
 
 def _invalid_cursor(stream: str) -> SorVendorOperationError:
     return _invalid_operation(
-        "vendor_cursor_invalid",
+        SorVendorErrorCode.VENDOR_CURSOR_INVALID,
         f"The Notion {stream} cursor is invalid.",
     )
 
 
 def _invalid_command(message: str) -> SorVendorOperationError:
-    return _invalid_operation("vendor_command_invalid", message)
+    return _invalid_operation(SorVendorErrorCode.VENDOR_COMMAND_INVALID, message)
 
 
 def _invalid_response(message: str) -> SorVendorOperationError:
-    return _invalid_operation("vendor_response_invalid", message)
+    return _invalid_operation(SorVendorErrorCode.VENDOR_RESPONSE_INVALID, message)
 
 
-def _invalid_operation(code: str, message: str) -> SorVendorOperationError:
-    return SorVendorOperationError(code, message, retryable=False)
+def _invalid_operation(
+    code: SorVendorErrorCode,
+    message: str,
+) -> SorVendorOperationError:
+    return SorVendorOperationError(code, message, recovery=SorRecoveryPolicy.TERMINAL)
 
 
 __all__ = [

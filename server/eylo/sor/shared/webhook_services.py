@@ -179,8 +179,7 @@ class SorWebhookService:
         if (
             connection is None
             or connection.status is not ExternalConnectionStatus.ACTIVE
-            or connector.webhook_authorized_connection_revision
-            != connection.revision
+            or connector.webhook_authorized_connection_revision != connection.revision
         ):
             raise SorNotFoundError("SOR webhook endpoint not found.")
         sources = tuple(
@@ -262,13 +261,11 @@ class SorWebhookService:
                 "Notion webhook verification is already bound to this connector."
             )
         secret_revision = connector.webhook_signing_secret_revision + 1
-        connector.webhook_signing_secret = (
-            encrypt_connector_webhook_signing_secret(
-                verification_token,
-                organization_id=connector.organization_id,
-                connector_id=connector.id,
-                secret_revision=secret_revision,
-            )
+        connector.webhook_signing_secret = encrypt_connector_webhook_signing_secret(
+            verification_token,
+            organization_id=connector.organization_id,
+            connector_id=connector.id,
+            secret_revision=secret_revision,
         )
         connector.webhook_signing_secret_revision = secret_revision
         connector.webhook_authorized_connection_revision = None
@@ -366,7 +363,10 @@ class SorWebhookService:
             SorWebhookSubscriptionState.RENEWING,
             SorWebhookSubscriptionState.REMOVING,
         }
-        if operation_is_live and source.updated_at > claimed_at - SOR_WEBHOOK_OPERATION_LEASE:
+        if (
+            operation_is_live
+            and source.updated_at > claimed_at - SOR_WEBHOOK_OPERATION_LEASE
+        ):
             raise SorConflictError("A webhook subscription operation is in progress.")
 
         token_hash = _sha256_bytes(endpoint_token.encode("utf-8"))
@@ -443,8 +443,10 @@ class SorWebhookService:
         subscription: SorWebhookSubscription,
     ) -> SorSourceModel:
         """Commit the exact vendor subscription returned by a claimed operation."""
-        if not 1 <= len(subscription.external_id.encode("utf-8")) <= (
-            SOR_WEBHOOK_SUBSCRIPTION_ID_MAX_BYTES
+        if (
+            not 1
+            <= len(subscription.external_id.encode("utf-8"))
+            <= (SOR_WEBHOOK_SUBSCRIPTION_ID_MAX_BYTES)
         ):
             raise SorConfigurationError("Vendor webhook subscription ID is invalid.")
         expires_at = subscription.expires_at
@@ -466,13 +468,11 @@ class SorWebhookService:
         if subscription.signing_secret is not None:
             secret_revision = source.webhook_signing_secret_revision + 1
             try:
-                source.webhook_signing_secret = (
-                    encrypt_source_webhook_signing_secret(
-                        subscription.signing_secret,
-                        organization_id=organization_id,
-                        source_id=source_id,
-                        secret_revision=secret_revision,
-                    )
+                source.webhook_signing_secret = encrypt_source_webhook_signing_secret(
+                    subscription.signing_secret,
+                    organization_id=organization_id,
+                    source_id=source_id,
+                    secret_revision=secret_revision,
                 )
             except SorSecretEnvelopeError as error:
                 raise SorConfigurationError(
@@ -749,9 +749,7 @@ class SorWebhookService:
                 source_id=source.id,
                 vendor_delivery_id=delivery_id,
                 fingerprint=fingerprint,
-                event_type=(
-                    first["event_type"] if len(normalized) == 1 else "batch"
-                ),
+                event_type=(first["event_type"] if len(normalized) == 1 else "batch"),
                 vendor_object_key=first["vendor_object_key"],
                 vendor_external_id=first["external_id"],
                 vendor_event_at=(
@@ -859,9 +857,10 @@ def _normalize_signals(
             raise SorConfigurationError("Webhook event type is invalid.")
         if signal.delivery_id is not None and not 1 <= len(signal.delivery_id) <= 512:
             raise SorConfigurationError("Webhook delivery ID is invalid.")
-        if signal.vendor_object_key is not None and not 1 <= len(
-            signal.vendor_object_key
-        ) <= 160:
+        if (
+            signal.vendor_object_key is not None
+            and not 1 <= len(signal.vendor_object_key) <= 160
+        ):
             raise SorConfigurationError("Webhook object key is invalid.")
         if signal.external_id is not None and not 1 <= len(signal.external_id) <= 512:
             raise SorConfigurationError("Webhook external ID is invalid.")
@@ -927,9 +926,7 @@ def _require_same_delivery(
     signals: list[dict[str, str | None]],
 ) -> None:
     if existing.payload_hash != payload_hash or existing.signals != signals:
-        raise SorConflictError(
-            "Webhook delivery ID was reused for different content."
-        )
+        raise SorConflictError("Webhook delivery ID was reused for different content.")
 
 
 def _sha256_bytes(value: bytes) -> str:

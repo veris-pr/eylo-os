@@ -11,6 +11,8 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from enum import StrEnum
+from http import HTTPStatus
 from urllib.parse import quote, unquote, urlparse
 
 from eylo.modules.connections.domain import ConnectionAuthKind
@@ -32,9 +34,12 @@ from eylo.sor.shared.contracts import (
     SorDiscoveredSchema,
     SorExternalRecord,
     SorExternalRecordNotFound,
+    SorMutationOperation,
     SorOAuthSpec,
     SorProfile,
     SorRecordPage,
+    SorRecoveryPolicy,
+    SorVendorErrorCode,
     SorVendorOperationError,
     SorVendorStreamSpec,
     SorWebhookPayloadError,
@@ -45,11 +50,14 @@ from eylo.sor.shared.contracts import (
 from eylo.sor.ticketing.contracts import (
     TicketingComment,
     TicketingCycle,
+    TicketingEntityKind,
     TicketingIssue,
     TicketingIssueRelation,
     TicketingLabel,
     TicketingProject,
+    TicketingToolName,
     TicketingUser,
+    TicketingWorkState,
     TicketingWorkflowState,
 )
 
@@ -57,9 +65,23 @@ GITHUB_ORIGIN = "https://api.github.com"
 GITHUB_API_VERSION = "2026-03-10"
 GITHUB_CURSOR_VERSION = 2
 GITHUB_RECONCILIATION_OVERLAP = timedelta(minutes=5)
+
+
+class GitHubStream(StrEnum):
+    """Closed vendor stream vocabulary owned by this adapter."""
+
+    REPOSITORIES = "repositories"
+    ISSUES = "issues"
+    WORKFLOW_STATES = "workflow_states"
+    USERS = "users"
+    LABELS = "labels"
+    MILESTONES = "milestones"
+    COMMENTS = "comments"
+
+
 _WEBHOOK_EVENTS = (
-    "issue_comment",
-    "issues",
+    TicketingToolName.COMMENT,
+    GitHubStream.ISSUES,
     "label",
     "milestone",
     "repository",
@@ -70,66 +92,74 @@ REPOSITORY_SCOPE = "repo"
 READ_USER_SCOPE = "read:user"
 
 _REPOSITORY = re.compile(r"^[^/\s]{1,100}/[^/\s]{1,100}$")
+
+
 _STREAM_ENTITY = {
-    "repositories": "project",
-    "issues": "issue",
-    "workflow_states": "workflow_state",
-    "users": "user",
-    "labels": "label",
-    "milestones": "cycle",
-    "comments": "comment",
+    GitHubStream.REPOSITORIES: TicketingEntityKind.PROJECT,
+    GitHubStream.ISSUES: TicketingEntityKind.ISSUE,
+    GitHubStream.WORKFLOW_STATES: TicketingEntityKind.WORKFLOW_STATE,
+    GitHubStream.USERS: TicketingEntityKind.USER,
+    GitHubStream.LABELS: TicketingEntityKind.LABEL,
+    GitHubStream.MILESTONES: TicketingEntityKind.CYCLE,
+    GitHubStream.COMMENTS: TicketingEntityKind.COMMENT,
 }
 _RELATIONSHIP_TARGETS = {
-    "issues": {
-        "project": "repositories",
-        "assignee": "users",
-        "reporter": "users",
-        "label": "labels",
-        "parent": "issues",
-        "cycle": "milestones",
+    GitHubStream.ISSUES: {
+        "project": GitHubStream.REPOSITORIES,
+        "assignee": GitHubStream.USERS,
+        "reporter": GitHubStream.USERS,
+        "label": GitHubStream.LABELS,
+        "parent": GitHubStream.ISSUES,
+        "cycle": GitHubStream.MILESTONES,
     },
-    "labels": {"project": "repositories"},
-    "milestones": {"project": "repositories"},
-    "comments": {"issue": "issues", "author": "users"},
+    GitHubStream.LABELS: {"project": GitHubStream.REPOSITORIES},
+    GitHubStream.MILESTONES: {"project": GitHubStream.REPOSITORIES},
+    GitHubStream.COMMENTS: {"issue": GitHubStream.ISSUES, "author": GitHubStream.USERS},
 }
-_UPDATED_STREAMS = frozenset({"issues", "comments"})
+_UPDATED_STREAMS = frozenset({GitHubStream.ISSUES, GitHubStream.COMMENTS})
 _READ_TOOLS = frozenset(
     {
-        "issue_search",
-        "issue_get",
-        "issue_list_projects",
-        "issue_list_workflow_states",
-        "issue_describe_fields",
+        TicketingToolName.SEARCH,
+        TicketingToolName.GET,
+        TicketingToolName.LIST_PROJECTS,
+        TicketingToolName.LIST_WORKFLOW_STATES,
+        TicketingToolName.DESCRIBE_FIELDS,
     }
 )
 _WRITE_TOOLS = frozenset(
     {
-        "issue_create",
-        "issue_update",
-        "issue_transition",
-        "issue_assign",
-        "issue_add_label",
-        "issue_remove_label",
-        "issue_comment",
+        TicketingToolName.CREATE,
+        TicketingToolName.UPDATE,
+        TicketingToolName.TRANSITION,
+        TicketingToolName.ASSIGN,
+        TicketingToolName.ADD_LABEL,
+        TicketingToolName.REMOVE_LABEL,
+        TicketingToolName.COMMENT,
     }
 )
 _TOOL_STREAMS = {
-    "issue_search": frozenset({"issues"}),
-    "issue_get": frozenset({"issues"}),
-    "issue_list_projects": frozenset({"repositories"}),
-    "issue_list_workflow_states": frozenset({"workflow_states"}),
-    "issue_describe_fields": frozenset({"issues"}),
-    "issue_create": frozenset({"issues", "repositories"}),
-    "issue_update": frozenset({"issues"}),
-    "issue_transition": frozenset({"issues", "workflow_states"}),
-    "issue_assign": frozenset({"issues", "users"}),
-    "issue_add_label": frozenset({"issues", "labels"}),
-    "issue_remove_label": frozenset({"issues", "labels"}),
-    "issue_comment": frozenset({"issues", "comments"}),
+    TicketingToolName.SEARCH: frozenset({GitHubStream.ISSUES}),
+    TicketingToolName.GET: frozenset({GitHubStream.ISSUES}),
+    TicketingToolName.LIST_PROJECTS: frozenset({GitHubStream.REPOSITORIES}),
+    TicketingToolName.LIST_WORKFLOW_STATES: frozenset({GitHubStream.WORKFLOW_STATES}),
+    TicketingToolName.DESCRIBE_FIELDS: frozenset({GitHubStream.ISSUES}),
+    TicketingToolName.CREATE: frozenset(
+        {GitHubStream.ISSUES, GitHubStream.REPOSITORIES}
+    ),
+    TicketingToolName.UPDATE: frozenset({GitHubStream.ISSUES}),
+    TicketingToolName.TRANSITION: frozenset(
+        {GitHubStream.ISSUES, GitHubStream.WORKFLOW_STATES}
+    ),
+    TicketingToolName.ASSIGN: frozenset({GitHubStream.ISSUES, GitHubStream.USERS}),
+    TicketingToolName.ADD_LABEL: frozenset({GitHubStream.ISSUES, GitHubStream.LABELS}),
+    TicketingToolName.REMOVE_LABEL: frozenset(
+        {GitHubStream.ISSUES, GitHubStream.LABELS}
+    ),
+    TicketingToolName.COMMENT: frozenset({GitHubStream.ISSUES, GitHubStream.COMMENTS}),
 }
 _MUTATION_RESULT_STREAMS = {
-    **{tool_name: "issues" for tool_name in _WRITE_TOOLS},
-    "issue_comment": "comments",
+    **{tool_name: GitHubStream.ISSUES for tool_name in _WRITE_TOOLS},
+    TicketingToolName.COMMENT: GitHubStream.COMMENTS,
 }
 
 
@@ -141,22 +171,22 @@ GITHUB_MANIFEST = SorAdapterCapabilityManifest(
         SorVendorStreamSpec(
             key=stream_key,
             label={
-                "repositories": "Repositories",
-                "issues": "Issues",
-                "workflow_states": "Workflow states",
-                "users": "Assignees",
-                "labels": "Labels",
-                "milestones": "Milestones",
-                "comments": "Comments",
+                GitHubStream.REPOSITORIES: "Repositories",
+                GitHubStream.ISSUES: "Issues",
+                GitHubStream.WORKFLOW_STATES: "Workflow states",
+                GitHubStream.USERS: "Assignees",
+                GitHubStream.LABELS: "Labels",
+                GitHubStream.MILESTONES: "Milestones",
+                GitHubStream.COMMENTS: "Comments",
             }[stream_key],
             description={
-                "repositories": "Explicitly selected GitHub repositories used as work containers.",
-                "issues": "Repository issues; pull requests are excluded from this stream.",
-                "workflow_states": "GitHub open, completed, and not-planned issue states.",
-                "users": "Users assignable to issues in the selected repositories.",
-                "labels": "Repository-scoped issue labels.",
-                "milestones": "Repository milestones used to time-box issues.",
-                "comments": "Repository issue comments; pull-request comments are excluded.",
+                GitHubStream.REPOSITORIES: "Explicitly selected GitHub repositories used as work containers.",
+                GitHubStream.ISSUES: "Repository issues; pull requests are excluded from this stream.",
+                GitHubStream.WORKFLOW_STATES: "GitHub open, completed, and not-planned issue states.",
+                GitHubStream.USERS: "Users assignable to issues in the selected repositories.",
+                GitHubStream.LABELS: "Repository-scoped issue labels.",
+                GitHubStream.MILESTONES: "Repository milestones used to time-box issues.",
+                GitHubStream.COMMENTS: "Repository issue comments; pull-request comments are excluded.",
             }[stream_key],
             canonical_entity=entity,
             change_strategies=(
@@ -165,8 +195,7 @@ GITHUB_MANIFEST = SorAdapterCapabilityManifest(
                 else frozenset({SorChangeStrategy.FULL_RECONCILE})
             ),
             depends_on=frozenset(
-                set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values())
-                - {stream_key}
+                set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values()) - {stream_key}
             ),
             relationship_targets=_RELATIONSHIP_TARGETS.get(stream_key, {}),
         )
@@ -181,7 +210,7 @@ GITHUB_MANIFEST = SorAdapterCapabilityManifest(
     ),
     configuration_fields=(
         SorAdapterConfigurationFieldSpec(
-            key="repositories",
+            key=GitHubStream.REPOSITORIES,
             label="Repositories",
             description="Enter one owner/repository per line. Eylo will not sync other repositories available to the OAuth token.",
             kind=SorConfigurationFieldKind.STRING_LIST,
@@ -228,12 +257,12 @@ def _field(
 
 
 _SCHEMA_FIELDS = {
-    "repositories": (
+    GitHubStream.REPOSITORIES: (
         _field("key", "Repository", "text", nullable=False),
         _field("name", "Name", "text", nullable=False),
         _field("description", "Description", "text"),
     ),
-    "issues": (
+    GitHubStream.ISSUES: (
         _field("key", "Key", "text", nullable=False),
         _field("title", "Title", "text", nullable=False, writable=True),
         _field("normalized_description", "Description", "text", writable=True),
@@ -255,13 +284,13 @@ _SCHEMA_FIELDS = {
         _field("completed_at", "Completed at", "timestamp"),
         _field("cancelled_at", "Cancelled at", "timestamp"),
     ),
-    "workflow_states": (
+    GitHubStream.WORKFLOW_STATES: (
         _field("name", "Name", "text", nullable=False),
         _field("native_category", "Source category", "text"),
         _field("normalized_category", "Normalized category", "enum"),
         _field("order", "Order", "integer"),
     ),
-    "users": (
+    GitHubStream.USERS: (
         _field("name", "Login", "text", nullable=False),
         _field("display_name", "Display name", "text"),
         _field("primary_email", "Email", "text"),
@@ -269,7 +298,7 @@ _SCHEMA_FIELDS = {
         _field("assignable", "Assignable", "boolean"),
         _field("avatar_url", "Avatar URL", "link"),
     ),
-    "labels": (
+    GitHubStream.LABELS: (
         _field("name", "Name", "text", nullable=False),
         _field("description", "Description", "text"),
         _field("color", "Color", "text"),
@@ -277,7 +306,7 @@ _SCHEMA_FIELDS = {
         _field("parent_external_id", "Parent label", "reference"),
         _field("is_group", "Group", "boolean", nullable=False),
     ),
-    "milestones": (
+    GitHubStream.MILESTONES: (
         _field("name", "Name", "text", nullable=False),
         _field("number", "Number", "integer", nullable=False),
         _field("project_external_id", "Repository", "reference", nullable=False),
@@ -287,7 +316,7 @@ _SCHEMA_FIELDS = {
         _field("completed_at", "Closed at", "timestamp"),
         _field("active", "Active", "boolean"),
     ),
-    "comments": (
+    GitHubStream.COMMENTS: (
         _field("issue_external_id", "Issue", "reference", nullable=False),
         _field("author_external_id", "Author", "reference"),
         _field("normalized_text", "Comment", "text", nullable=False),
@@ -420,7 +449,7 @@ class GitHubTicketingAdapter:
             vendor_object_key,
             selected=self._context.selected_objects,
         )
-        if stream_key == "workflow_states":
+        if stream_key == GitHubStream.WORKFLOW_STATES:
             row = next(
                 (row for row in _WORKFLOW_ROWS if row["id"] == external_id),
                 None,
@@ -431,27 +460,27 @@ class GitHubTicketingAdapter:
                     external_id=external_id,
                 )
             return self._external_record(stream_key, row)
-        if stream_key == "repositories":
+        if stream_key == GitHubStream.REPOSITORIES:
             repository = self._configured_repository(external_id)
             response = await self._client.request(
                 f"/repos/{_repository_path(repository)}"
             )
-        elif stream_key == "issues":
+        elif stream_key == GitHubStream.ISSUES:
             repository, issue_number = self._issue_identity(external_id)
             response = await self._client.request(
                 f"/repos/{_repository_path(repository)}/issues/{issue_number}"
             )
-        elif stream_key == "comments":
+        elif stream_key == GitHubStream.COMMENTS:
             repository, comment_id = self._comment_identity(external_id)
             response = await self._client.request(
                 f"/repos/{_repository_path(repository)}/issues/comments/{comment_id}"
             )
-        elif stream_key == "labels":
+        elif stream_key == GitHubStream.LABELS:
             repository, label_name = self._label_identity(external_id)
             response = await self._client.request(
                 f"/repos/{_repository_path(repository)}/labels/{_path_segment(label_name)}"
             )
-        elif stream_key == "milestones":
+        elif stream_key == GitHubStream.MILESTONES:
             repository, milestone_number = self._milestone_identity(external_id)
             response = await self._client.request(
                 f"/repos/{_repository_path(repository)}/milestones/{milestone_number}"
@@ -459,13 +488,13 @@ class GitHubTicketingAdapter:
         else:
             login = _required_string(external_id, field="GitHub user login")
             response = await self._client.request(f"/users/{_path_segment(login)}")
-        if response.status_code in {404, 410}:
+        if response.status_code in {HTTPStatus.NOT_FOUND, HTTPStatus.GONE}:
             raise SorExternalRecordNotFound(
                 vendor_object_key=stream_key,
                 external_id=external_id,
             )
         row = _object(_expect(response, operation="read GitHub record"))
-        if stream_key == "issues" and "pull_request" in row:
+        if stream_key == GitHubStream.ISSUES and "pull_request" in row:
             raise SorExternalRecordNotFound(
                 vendor_object_key=stream_key,
                 external_id=external_id,
@@ -534,7 +563,10 @@ class GitHubTicketingAdapter:
                 f"/repos/{_repository_path(repository)}/hooks/{hook_id}",
                 method="DELETE",
             )
-            if response.status_code not in {204, 404}:
+            if response.status_code not in {
+                HTTPStatus.NO_CONTENT,
+                HTTPStatus.NOT_FOUND,
+            }:
                 _expect(response, operation="remove GitHub repository webhook")
                 raise _invalid_response(
                     "GitHub returned an unexpected webhook deletion status."
@@ -566,9 +598,9 @@ class GitHubTicketingAdapter:
                 exact.append(_required_integer(row.get("id"), field="webhook ID"))
         if len(exact) > 1:
             raise SorVendorOperationError(
-                "vendor_webhook_ambiguous",
+                SorVendorErrorCode.VENDOR_WEBHOOK_AMBIGUOUS,
                 "GitHub returned multiple active hooks for the exact Eylo callback.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         return exact[0] if exact else None
 
@@ -637,30 +669,30 @@ class GitHubTicketingAdapter:
     async def execute_command(self, command: SorCommandRequest) -> SorCommandResult:
         if command.tool_name not in _WRITE_TOOLS:
             raise SorVendorOperationError(
-                "vendor_tool_unsupported",
+                SorVendorErrorCode.VENDOR_TOOL_UNSUPPORTED,
                 "This GitHub adapter does not execute the requested issue action.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
-        if command.tool_name == "issue_create":
+        if command.tool_name == TicketingToolName.CREATE:
             return await self._create_issue(command)
         target = _required_target(command)
         repository, issue_number = self._issue_identity(target)
-        if command.tool_name == "issue_update":
+        if command.tool_name == TicketingToolName.UPDATE:
             return await self._update_issue(repository, issue_number, target, command)
-        if command.tool_name == "issue_transition":
+        if command.tool_name == TicketingToolName.TRANSITION:
             return await self._transition_issue(
                 repository, issue_number, target, command
             )
-        if command.tool_name == "issue_assign":
+        if command.tool_name == TicketingToolName.ASSIGN:
             return await self._assign_issue(repository, issue_number, target, command)
-        if command.tool_name == "issue_comment":
+        if command.tool_name == TicketingToolName.COMMENT:
             return await self._comment_issue(repository, issue_number, command)
         return await self._change_label(
             repository,
             issue_number,
             target,
             command,
-            add=command.tool_name == "issue_add_label",
+            add=command.tool_name == TicketingToolName.ADD_LABEL,
         )
 
     def normalize_issue(self, record: SorExternalRecord) -> TicketingIssue:
@@ -675,7 +707,9 @@ class GitHubTicketingAdapter:
             source_description=_json_value(values.get("source_description")),
             issue_type=_optional_string(values.get("issue_type")),
             native_status=_optional_string(values.get("native_status")),
-            normalized_status=_optional_string(values.get("normalized_status")),
+            normalized_status=TicketingWorkState.from_value(
+                _optional_string(values.get("normalized_status"))
+            ),
             priority=None,
             project_external_id=_optional_string(values.get("project_external_id")),
             team_external_id=_optional_string(values.get("team_external_id")),
@@ -716,8 +750,8 @@ class GitHubTicketingAdapter:
                 field="GitHub workflow state name",
             ),
             native_category=_optional_string(record.payload.get("native_category")),
-            normalized_category=_optional_string(
-                record.payload.get("normalized_category")
+            normalized_category=TicketingWorkState.from_value(
+                _optional_string(record.payload.get("normalized_category"))
             ),
             order=_optional_integer(
                 record.payload.get("order"),
@@ -812,27 +846,27 @@ class GitHubTicketingAdapter:
         )
         if limit <= 0:
             raise SorVendorOperationError(
-                "vendor_page_invalid",
+                SorVendorErrorCode.VENDOR_PAGE_INVALID,
                 "GitHub page limit must be positive.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         limit = min(limit, 100)
         checkpoint = _start_cursor(_decode_cursor(cursor))
-        if stream_key == "workflow_states":
+        if stream_key == GitHubStream.WORKFLOW_STATES:
             return self._static_page(
                 stream_key,
                 _WORKFLOW_ROWS,
                 checkpoint=checkpoint,
                 limit=limit,
             )
-        if stream_key == "repositories":
+        if stream_key == GitHubStream.REPOSITORIES:
             selected_repositories = self._repositories[
                 checkpoint.repo_index : checkpoint.repo_index + limit
             ]
             metadata = await self._repository_metadata(selected_repositories)
             rows = tuple(
                 self._external_record(
-                    "repositories",
+                    GitHubStream.REPOSITORIES,
                     metadata[repository.casefold()],
                     repository=repository,
                 )
@@ -844,7 +878,7 @@ class GitHubTicketingAdapter:
                 consumed=len(rows),
                 total=len(self._repositories),
             )
-        if stream_key == "comments":
+        if stream_key == GitHubStream.COMMENTS:
             return await self._read_comment_page(
                 checkpoint=checkpoint,
                 limit=limit,
@@ -856,12 +890,12 @@ class GitHubTicketingAdapter:
             "per_page": limit,
             "page": checkpoint.page,
         }
-        if stream_key == "issues":
+        if stream_key == GitHubStream.ISSUES:
             path = f"/repos/{_repository_path(repository)}/issues"
             query.update({"state": "all", "sort": "updated", "direction": "asc"})
-        elif stream_key == "users":
+        elif stream_key == GitHubStream.USERS:
             path = f"/repos/{_repository_path(repository)}/assignees"
-        elif stream_key == "labels":
+        elif stream_key == GitHubStream.LABELS:
             path = f"/repos/{_repository_path(repository)}/labels"
         else:
             path = f"/repos/{_repository_path(repository)}/milestones"
@@ -878,7 +912,7 @@ class GitHubTicketingAdapter:
         rows = tuple(
             self._external_record(stream_key, row, repository=repository)
             for row in raw_rows
-            if not (stream_key == "issues" and "pull_request" in row)
+            if not (stream_key == GitHubStream.ISSUES and "pull_request" in row)
         )
         return _vendor_page(
             rows,
@@ -924,7 +958,7 @@ class GitHubTicketingAdapter:
             issue_numbers,
         )
         records = tuple(
-            self._external_record("comments", row, repository=repository)
+            self._external_record(GitHubStream.COMMENTS, row, repository=repository)
             for row in rows
             if _issue_number_from_url(row.get("issue_url"), repository)
             not in pull_request_numbers
@@ -1029,11 +1063,7 @@ class GitHubTicketingAdapter:
             "/graphql",
             method="POST",
             payload={
-                "query": (
-                    f"query({', '.join(declarations)}) {{ "
-                    f"{' '.join(fields)}"
-                    " }"
-                ),
+                "query": (f"query({', '.join(declarations)}) {{ {' '.join(fields)} }}"),
                 "variables": variables,
             },
         )
@@ -1075,7 +1105,7 @@ class GitHubTicketingAdapter:
         )
         payload = _github_issue_payload(
             command.payload,
-            create=True,
+            operation=SorMutationOperation.CREATE,
             repository=repository,
         )
         try:
@@ -1103,7 +1133,7 @@ class GitHubTicketingAdapter:
     ) -> SorCommandResult:
         payload = _github_issue_payload(
             command.payload,
-            create=False,
+            operation=SorMutationOperation.UPDATE,
             repository=repository,
         )
         response = await self._client.request(
@@ -1216,7 +1246,7 @@ class GitHubTicketingAdapter:
             response = await self._client.request(
                 path,
                 method="POST",
-                payload={"labels": [label_name]},
+                payload={GitHubStream.LABELS: [label_name]},
                 idempotency_key=command.idempotency_key,
             )
         else:
@@ -1227,7 +1257,7 @@ class GitHubTicketingAdapter:
             )
         _expect(response, operation="change GitHub issue label")
         return SorCommandResult(
-            vendor_object_key="issues",
+            vendor_object_key=GitHubStream.ISSUES,
             external_id=external_id,
             external_request_id=_request_id(response),
             source_url=_issue_url(external_id),
@@ -1266,7 +1296,7 @@ class GitHubTicketingAdapter:
             field="GitHub comment creation time",
         )
         return SorCommandResult(
-            vendor_object_key="comments",
+            vendor_object_key=GitHubStream.COMMENTS,
             external_id=_comment_external_id(repository, comment_id),
             external_request_id=_request_id(response),
             source_revision=_github_datetime(updated_at),
@@ -1337,15 +1367,15 @@ class GitHubTicketingAdapter:
         external_id: str,
         row: Mapping[str, object],
     ) -> str | None:
-        if stream_key == "repositories":
+        if stream_key == GitHubStream.REPOSITORIES:
             return self._configured_repository(external_id)
-        if stream_key == "issues":
+        if stream_key == GitHubStream.ISSUES:
             return self._issue_identity(external_id)[0]
-        if stream_key == "comments":
+        if stream_key == GitHubStream.COMMENTS:
             return self._comment_identity(external_id)[0]
-        if stream_key == "labels":
+        if stream_key == GitHubStream.LABELS:
             return self._label_identity(external_id)[0]
-        if stream_key == "milestones":
+        if stream_key == GitHubStream.MILESTONES:
             return self._milestone_identity(external_id)[0]
         return None
 
@@ -1356,7 +1386,7 @@ def create_github_adapter(context: SorAdapterContext) -> GitHubTicketingAdapter:
 
 
 def _configured_repositories(configuration: Mapping[str, object]) -> tuple[str, ...]:
-    value = configuration.get("repositories")
+    value = configuration.get(GitHubStream.REPOSITORIES)
     if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
         raise _invalid_configuration(
             "GitHub source configuration requires a repository list."
@@ -1379,7 +1409,9 @@ def _encode_webhook_ids(hooks: Sequence[tuple[str, int]]) -> str:
     return json.dumps(
         {
             "v": _WEBHOOK_ID_VERSION,
-            "hooks": [[_repository(repository), hook_id] for repository, hook_id in hooks],
+            "hooks": [
+                [_repository(repository), hook_id] for repository, hook_id in hooks
+            ],
         },
         separators=(",", ":"),
         sort_keys=True,
@@ -1393,10 +1425,7 @@ def _decode_webhook_ids(value: str) -> tuple[tuple[str, int], ...]:
         if not isinstance(payload, Mapping) or payload.get("v") != _WEBHOOK_ID_VERSION:
             raise ValueError
         raw_hooks = payload.get("hooks")
-        if (
-            not isinstance(raw_hooks, list)
-            or not 1 <= len(raw_hooks) <= 50
-        ):
+        if not isinstance(raw_hooks, list) or not 1 <= len(raw_hooks) <= 50:
             raise ValueError
         hooks = tuple(
             (
@@ -1408,9 +1437,7 @@ def _decode_webhook_ids(value: str) -> tuple[tuple[str, int], ...]:
         )
         if len(hooks) != len(raw_hooks):
             raise ValueError
-        if len({repository.casefold() for repository, _hook_id in hooks}) != len(
-            hooks
-        ):
+        if len({repository.casefold() for repository, _hook_id in hooks}) != len(hooks):
             raise ValueError
     except (
         json.JSONDecodeError,
@@ -1419,9 +1446,9 @@ def _decode_webhook_ids(value: str) -> tuple[tuple[str, int], ...]:
         ValueError,
     ) as error:
         raise SorVendorOperationError(
-            "vendor_webhook_identity_invalid",
+            SorVendorErrorCode.VENDOR_WEBHOOK_IDENTITY_INVALID,
             "The stored GitHub webhook identity is invalid.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         ) from error
     return hooks
 
@@ -1513,25 +1540,25 @@ def _record_external_id(
     *,
     repository: str | None,
 ) -> str:
-    if stream_key == "repositories":
+    if stream_key == GitHubStream.REPOSITORIES:
         return _repository(_required_string(row.get("full_name"), field="repository"))
-    if stream_key == "workflow_states":
+    if stream_key == GitHubStream.WORKFLOW_STATES:
         return _required_string(row.get("id"), field="GitHub workflow state ID")
-    if stream_key == "users":
+    if stream_key == GitHubStream.USERS:
         return _required_string(row.get("login"), field="GitHub user login")
     if repository is None:
         raise _invalid_response("GitHub record repository is missing.")
-    if stream_key == "issues":
+    if stream_key == GitHubStream.ISSUES:
         return _issue_external_id(
             repository,
             _required_integer(row.get("number"), field="GitHub issue number"),
         )
-    if stream_key == "comments":
+    if stream_key == GitHubStream.COMMENTS:
         return _comment_external_id(
             repository,
             _required_integer(row.get("id"), field="GitHub comment ID"),
         )
-    if stream_key == "labels":
+    if stream_key == GitHubStream.LABELS:
         return _label_external_id(
             repository,
             _required_string(row.get("name"), field="GitHub label name"),
@@ -1548,7 +1575,7 @@ def _record_payload(
     *,
     repository: str | None,
 ) -> dict[str, object]:
-    if stream_key == "repositories":
+    if stream_key == GitHubStream.REPOSITORIES:
         full_name = _repository(
             _required_string(row.get("full_name"), field="GitHub repository")
         )
@@ -1557,14 +1584,14 @@ def _record_payload(
             "name": full_name,
             "description": _optional_string(row.get("description")),
         }
-    if stream_key == "workflow_states":
+    if stream_key == GitHubStream.WORKFLOW_STATES:
         return {
             "name": row.get("name"),
             "native_category": row.get("native_category"),
             "normalized_category": row.get("normalized_category"),
             "order": row.get("order"),
         }
-    if stream_key == "users":
+    if stream_key == GitHubStream.USERS:
         login = _required_string(row.get("login"), field="GitHub user login")
         return {
             "name": login,
@@ -1576,7 +1603,7 @@ def _record_payload(
         }
     if repository is None:
         raise _invalid_response("GitHub record repository is missing.")
-    if stream_key == "issues":
+    if stream_key == GitHubStream.ISSUES:
         issue_number = _required_integer(
             row.get("number"),
             field="GitHub issue number",
@@ -1586,14 +1613,16 @@ def _record_payload(
         user = _optional_object(row.get("user"))
         assignee = _optional_object(row.get("assignee"))
         milestone = _optional_object(row.get("milestone"))
-        labels = _object_list(row.get("labels") or [], field="GitHub issue labels")
+        labels = _object_list(
+            row.get(GitHubStream.LABELS) or [], field="GitHub issue labels"
+        )
         closed_at = _optional_datetime(row.get("closed_at"))
         normalized = (
-            "UNSTARTED"
+            TicketingWorkState.UNSTARTED
             if state == "open"
-            else "CANCELLED"
+            else TicketingWorkState.CANCELLED
             if state_reason == "not_planned"
-            else "COMPLETED"
+            else TicketingWorkState.COMPLETED
         )
         return {
             "key": _issue_external_id(repository, issue_number),
@@ -1632,10 +1661,14 @@ def _record_payload(
             ),
             "due_date": None,
             "started_at": None,
-            "completed_at": closed_at if normalized == "COMPLETED" else None,
-            "cancelled_at": closed_at if normalized == "CANCELLED" else None,
+            "completed_at": (
+                closed_at if normalized is TicketingWorkState.COMPLETED else None
+            ),
+            "cancelled_at": (
+                closed_at if normalized is TicketingWorkState.CANCELLED else None
+            ),
         }
-    if stream_key == "comments":
+    if stream_key == GitHubStream.COMMENTS:
         issue_number = _issue_number_from_url(row.get("issue_url"), repository)
         user = _optional_object(row.get("user"))
         body = _required_string(row.get("body"), field="GitHub comment body")
@@ -1647,7 +1680,7 @@ def _record_payload(
             "created_at": row.get("created_at"),
             "updated_at": row.get("updated_at"),
         }
-    if stream_key == "labels":
+    if stream_key == GitHubStream.LABELS:
         return {
             "name": row.get("name"),
             "description": _optional_string(row.get("description")),
@@ -1674,17 +1707,17 @@ def _record_url(
     *,
     external_id: str,
 ) -> str | None:
-    if stream_key == "workflow_states":
+    if stream_key == GitHubStream.WORKFLOW_STATES:
         return None
     return _safe_github_url(row.get("html_url")) or (
-        _issue_url(external_id) if stream_key == "issues" else None
+        _issue_url(external_id) if stream_key == GitHubStream.ISSUES else None
     )
 
 
 def _github_issue_payload(
     payload: Mapping[str, object],
     *,
-    create: bool,
+    operation: SorMutationOperation,
     repository: str,
 ) -> dict[str, object]:
     allowed = {
@@ -1702,13 +1735,16 @@ def _github_issue_payload(
             + ", ".join(sorted(unknown))
             + "."
         )
-    if create and not {"title", "project_external_id"}.issubset(payload):
+    if operation is SorMutationOperation.CREATE and not {
+        "title",
+        "project_external_id",
+    }.issubset(payload):
         raise _invalid_command(
             "Creating a GitHub issue requires title and project_external_id."
         )
-    if not create and not payload:
+    if operation is SorMutationOperation.UPDATE and not payload:
         raise _invalid_command("Updating a GitHub issue requires at least one field.")
-    if not create and "project_external_id" in payload:
+    if operation is SorMutationOperation.UPDATE and "project_external_id" in payload:
         raise _invalid_command("A GitHub issue cannot move between repositories.")
     result: dict[str, object] = {}
     if "title" in payload:
@@ -1742,7 +1778,7 @@ def _github_issue_payload(
                 entity="label",
             )
             labels.append(label_name)
-        result["labels"] = labels
+        result[GitHubStream.LABELS] = labels
     if "cycle_external_id" in payload:
         milestone = payload.get("cycle_external_id")
         if milestone is None:
@@ -1792,7 +1828,7 @@ def _issue_command_result(
         raise _invalid_response("GitHub mutation result is missing the issue number.")
     updated_at = _optional_datetime(row.get("updated_at"))
     return SorCommandResult(
-        vendor_object_key="issues",
+        vendor_object_key=GitHubStream.ISSUES,
         external_id=external_id,
         external_request_id=_request_id(response),
         source_revision=(
@@ -1828,25 +1864,25 @@ def _webhook_record_identity(
     *,
     repository: str,
 ) -> tuple[str | None, str | None, datetime | None]:
-    if event_name == "issues":
+    if event_name == GitHubStream.ISSUES:
         row = _object(payload.get("issue"), field="GitHub webhook issue")
         if "pull_request" in row:
             return None, None, None
         return (
-            "issues",
+            GitHubStream.ISSUES,
             _issue_external_id(
                 repository,
                 _required_integer(row.get("number"), field="GitHub issue number"),
             ),
             _optional_datetime(row.get("updated_at")),
         )
-    if event_name == "issue_comment":
+    if event_name == TicketingToolName.COMMENT:
         issue = _object(payload.get("issue"), field="GitHub webhook issue")
         if "pull_request" in issue:
             return None, None, None
         comment = _object(payload.get("comment"), field="GitHub webhook comment")
         return (
-            "comments",
+            GitHubStream.COMMENTS,
             _comment_external_id(
                 repository,
                 _required_integer(comment.get("id"), field="GitHub comment ID"),
@@ -1856,7 +1892,7 @@ def _webhook_record_identity(
     if event_name == "label":
         row = _object(payload.get("label"), field="GitHub webhook label")
         return (
-            "labels",
+            GitHubStream.LABELS,
             _label_external_id(
                 repository,
                 _required_string(row.get("name"), field="GitHub label name"),
@@ -1866,7 +1902,7 @@ def _webhook_record_identity(
     if event_name == "milestone":
         row = _object(payload.get("milestone"), field="GitHub webhook milestone")
         return (
-            "milestones",
+            GitHubStream.MILESTONES,
             _milestone_external_id(
                 repository,
                 _required_integer(
@@ -1877,7 +1913,7 @@ def _webhook_record_identity(
             _optional_datetime(row.get("updated_at")),
         )
     if event_name == "repository":
-        return "repositories", repository, None
+        return GitHubStream.REPOSITORIES, repository, None
     return None, None, None
 
 
@@ -2078,26 +2114,26 @@ def _expect_graphql(
         }
         if "RATE_LIMITED" in error_types:
             raise SorVendorOperationError(
-                "vendor_rate_limited",
+                SorVendorErrorCode.VENDOR_RATE_LIMITED,
                 "GitHub rate-limited the source.",
-                retryable=True,
+                recovery=SorRecoveryPolicy.RETRY,
             )
         if "FORBIDDEN" in error_types:
             raise SorVendorOperationError(
-                "vendor_forbidden",
+                SorVendorErrorCode.VENDOR_FORBIDDEN,
                 f"GitHub refused permission to {operation}.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         if "NOT_FOUND" in error_types:
             raise SorVendorOperationError(
-                "vendor_resource_unavailable",
+                SorVendorErrorCode.VENDOR_RESOURCE_UNAVAILABLE,
                 f"GitHub could not find the resource needed to {operation}.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         raise SorVendorOperationError(
-            "vendor_request_failed",
+            SorVendorErrorCode.VENDOR_REQUEST_FAILED,
             f"GitHub could not {operation}.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return _object(payload.get("data"), field="GitHub GraphQL data")
 
@@ -2105,53 +2141,58 @@ def _expect_graphql(
 def _expect(response: SorJsonResponse, *, operation: str) -> object:
     if response.ok:
         return response.data
-    if response.status_code == 401:
+    if response.status_code == HTTPStatus.UNAUTHORIZED:
         raise SorVendorOperationError(
-            "vendor_authorization_expired",
+            SorVendorErrorCode.VENDOR_AUTHORIZATION_EXPIRED,
             f"GitHub refused authorization while attempting to {operation}.",
-            retryable=False,
-            requires_reauthorization=True,
+            recovery=SorRecoveryPolicy.REAUTH_REQUIRED,
         )
-    if response.status_code in {403, 429}:
+    if response.status_code in {HTTPStatus.FORBIDDEN, HTTPStatus.TOO_MANY_REQUESTS}:
         remaining = response.header_values("x-ratelimit-remaining")
-        rate_limited = response.status_code == 429 or remaining == ("0",)
+        rate_limited = (
+            response.status_code == HTTPStatus.TOO_MANY_REQUESTS or remaining == ("0",)
+        )
         raise SorVendorOperationError(
-            "vendor_rate_limited" if rate_limited else "vendor_forbidden",
+            SorVendorErrorCode.VENDOR_RATE_LIMITED
+            if rate_limited
+            else SorVendorErrorCode.VENDOR_FORBIDDEN,
             (
                 "GitHub rate-limited the source."
                 if rate_limited
                 else f"GitHub refused permission to {operation}."
             ),
-            retryable=rate_limited,
+            recovery=(
+                SorRecoveryPolicy.RETRY if rate_limited else SorRecoveryPolicy.TERMINAL
+            ),
         )
-    if response.status_code == 404:
+    if response.status_code == HTTPStatus.NOT_FOUND:
         raise SorVendorOperationError(
-            "vendor_resource_unavailable",
+            SorVendorErrorCode.VENDOR_RESOURCE_UNAVAILABLE,
             f"GitHub could not find the resource needed to {operation}.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
-    if response.status_code in {409, 412}:
+    if response.status_code in {HTTPStatus.CONFLICT, HTTPStatus.PRECONDITION_FAILED}:
         raise SorVendorOperationError(
-            "vendor_revision_conflict",
+            SorVendorErrorCode.VENDOR_REVISION_CONFLICT,
             f"GitHub rejected stale state while attempting to {operation}.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
-    if response.status_code == 422:
+    if response.status_code == HTTPStatus.UNPROCESSABLE_CONTENT:
         raise SorVendorOperationError(
-            "vendor_command_invalid",
+            SorVendorErrorCode.VENDOR_COMMAND_INVALID,
             f"GitHub rejected the data used to {operation}.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
-    if response.status_code >= 500:
+    if response.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR:
         raise SorVendorOperationError(
-            "vendor_server_failed",
+            SorVendorErrorCode.VENDOR_SERVER_FAILED,
             f"GitHub failed while attempting to {operation}.",
-            retryable=True,
+            recovery=SorRecoveryPolicy.RETRY,
         )
     raise SorVendorOperationError(
-        "vendor_request_failed",
+        SorVendorErrorCode.VENDOR_REQUEST_FAILED,
         f"GitHub refused the request to {operation}.",
-        retryable=False,
+        recovery=SorRecoveryPolicy.TERMINAL,
     )
 
 
@@ -2165,9 +2206,9 @@ def _credential(credentials: Mapping[str, object], key: str) -> str:
 def _require_stream(stream_key: str, *, selected: Sequence[str]) -> str:
     if stream_key not in _STREAM_ENTITY or stream_key not in selected:
         raise SorVendorOperationError(
-            "vendor_stream_unsupported",
+            SorVendorErrorCode.VENDOR_STREAM_UNSUPPORTED,
             "The requested GitHub stream is unavailable for this source.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return stream_key
 
@@ -2192,33 +2233,33 @@ def _nullable_command_string(value: object, *, field: str) -> str | None:
 
 def _invalid_configuration(message: str) -> SorVendorOperationError:
     return SorVendorOperationError(
-        "source_configuration_invalid",
+        SorVendorErrorCode.SOURCE_CONFIGURATION_INVALID,
         message,
-        retryable=False,
+        recovery=SorRecoveryPolicy.TERMINAL,
     )
 
 
 def _invalid_command(message: str) -> SorVendorOperationError:
     return SorVendorOperationError(
-        "vendor_command_invalid",
+        SorVendorErrorCode.VENDOR_COMMAND_INVALID,
         message,
-        retryable=False,
+        recovery=SorRecoveryPolicy.TERMINAL,
     )
 
 
 def _invalid_cursor() -> SorVendorOperationError:
     return SorVendorOperationError(
-        "vendor_cursor_invalid",
+        SorVendorErrorCode.VENDOR_CURSOR_INVALID,
         "GitHub cursor is invalid.",
-        retryable=False,
+        recovery=SorRecoveryPolicy.TERMINAL,
     )
 
 
 def _invalid_response(message: str) -> SorVendorOperationError:
     return SorVendorOperationError(
-        "vendor_response_invalid",
+        SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
         message,
-        retryable=False,
+        recovery=SorRecoveryPolicy.TERMINAL,
     )
 
 
@@ -2365,14 +2406,14 @@ def _request_id(response: SorJsonResponse) -> str | None:
 
 def _raise_unknown_create(error: SorVendorOperationError, message: str) -> None:
     if error.code in {
-        "vendor_timeout",
-        "vendor_transport_failed",
-        "vendor_server_failed",
+        SorVendorErrorCode.VENDOR_TIMEOUT,
+        SorVendorErrorCode.VENDOR_TRANSPORT_FAILED,
+        SorVendorErrorCode.VENDOR_SERVER_FAILED,
     }:
         raise SorVendorOperationError(
-            "vendor_mutation_outcome_unknown",
+            SorVendorErrorCode.VENDOR_MUTATION_OUTCOME_UNKNOWN,
             message,
-            retryable=False,
+            recovery=SorRecoveryPolicy.RECONCILE_REQUIRED,
         ) from error
 
 

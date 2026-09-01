@@ -15,7 +15,11 @@ from eylo.sor.knowledge.contracts import (
     KnowledgeSpace,
     KnowledgeVersion,
 )
-from eylo.sor.shared.contracts import SorRelationIntentDraft
+from eylo.sor.shared.contracts import (
+    SorCanonicalRelationKind,
+    SorRelationIntentDraft,
+    SorRelationshipRole,
+)
 from eylo.sor.shared.relationships import relationship_external_id
 from eylo.sor.support.contracts import (
     SupportAgent,
@@ -88,10 +92,10 @@ def crm_relation_intents(
             origin_record_id=origin_record_id,
             origin_stream=origin_stream,
             origin_external_id=value.external_id,
-            target_key="contact",
+            relationship_role=SorRelationshipRole.CONTACT,
             target_external_ids=value.contact_external_ids,
             targets=targets,
-            canonical_kind="HAS_CONTACT",
+            canonical_kind=SorCanonicalRelationKind.HAS_CONTACT,
             source_revision=source_revision,
         )
         _append_many(
@@ -99,24 +103,36 @@ def crm_relation_intents(
             origin_record_id=origin_record_id,
             origin_stream=origin_stream,
             origin_external_id=value.external_id,
-            target_key="company",
+            relationship_role=SorRelationshipRole.COMPANY,
             target_external_ids=value.company_external_ids,
             targets=targets,
-            canonical_kind="FOR_COMPANY",
+            canonical_kind=SorCanonicalRelationKind.FOR_COMPANY,
             source_revision=source_revision,
         )
     elif isinstance(value, CrmActivity):
-        for target_key, external_ids, relation_kind in (
-            ("contact", value.contact_external_ids, "ACTIVITY_WITH_CONTACT"),
-            ("company", value.company_external_ids, "ACTIVITY_FOR_COMPANY"),
-            ("deal", value.deal_external_ids, "ACTIVITY_FOR_DEAL"),
+        for relationship_role, external_ids, relation_kind in (
+            (
+                SorRelationshipRole.CONTACT,
+                value.contact_external_ids,
+                SorCanonicalRelationKind.ACTIVITY_WITH_CONTACT,
+            ),
+            (
+                SorRelationshipRole.COMPANY,
+                value.company_external_ids,
+                SorCanonicalRelationKind.ACTIVITY_FOR_COMPANY,
+            ),
+            (
+                SorRelationshipRole.DEAL,
+                value.deal_external_ids,
+                SorCanonicalRelationKind.ACTIVITY_FOR_DEAL,
+            ),
         ):
             _append_many(
                 drafts,
                 origin_record_id=origin_record_id,
                 origin_stream=origin_stream,
                 origin_external_id=value.external_id,
-                target_key=target_key,
+                relationship_role=relationship_role,
                 target_external_ids=external_ids,
                 targets=targets,
                 canonical_kind=relation_kind,
@@ -136,20 +152,44 @@ def ticketing_relation_intents(
     """Map ticketing references and explicit issue edges to canonical identities."""
     drafts: list[SorRelationIntentDraft] = []
     if isinstance(value, TicketingIssue):
-        for key, external_id, kind in (
-            ("project", value.project_external_id, "BELONGS_TO_PROJECT"),
-            ("team", value.team_external_id, "BELONGS_TO_TEAM"),
-            ("assignee", value.assignee_external_id, "ASSIGNED_TO"),
-            ("reporter", value.reporter_external_id, "REPORTED_BY"),
-            ("parent", value.parent_external_id, "PARENT"),
-            ("cycle", value.cycle_external_id, "IN_CYCLE"),
+        for role, external_id, kind in (
+            (
+                SorRelationshipRole.PROJECT,
+                value.project_external_id,
+                SorCanonicalRelationKind.BELONGS_TO_PROJECT,
+            ),
+            (
+                SorRelationshipRole.TEAM,
+                value.team_external_id,
+                SorCanonicalRelationKind.BELONGS_TO_TEAM,
+            ),
+            (
+                SorRelationshipRole.ASSIGNEE,
+                value.assignee_external_id,
+                SorCanonicalRelationKind.ASSIGNED_TO,
+            ),
+            (
+                SorRelationshipRole.REPORTER,
+                value.reporter_external_id,
+                SorCanonicalRelationKind.REPORTED_BY,
+            ),
+            (
+                SorRelationshipRole.PARENT,
+                value.parent_external_id,
+                SorCanonicalRelationKind.PARENT,
+            ),
+            (
+                SorRelationshipRole.CYCLE,
+                value.cycle_external_id,
+                SorCanonicalRelationKind.IN_CYCLE,
+            ),
         ):
             _append_one(
                 drafts,
                 origin_record_id=origin_record_id,
                 origin_stream=origin_stream,
                 origin_external_id=value.external_id,
-                target_key=key,
+                relationship_role=role,
                 target_external_id=external_id,
                 targets=targets,
                 canonical_kind=kind,
@@ -160,10 +200,10 @@ def ticketing_relation_intents(
             origin_record_id=origin_record_id,
             origin_stream=origin_stream,
             origin_external_id=value.external_id,
-            target_key="label",
+            relationship_role=SorRelationshipRole.LABEL,
             target_external_ids=value.label_external_ids,
             targets=targets,
-            canonical_kind="HAS_LABEL",
+            canonical_kind=SorCanonicalRelationKind.HAS_LABEL,
             source_revision=source_revision,
         )
     elif isinstance(value, TicketingLabel):
@@ -172,10 +212,10 @@ def ticketing_relation_intents(
             origin_record_id=origin_record_id,
             origin_stream=origin_stream,
             origin_external_id=value.external_id,
-            target_key="project",
+            relationship_role=SorRelationshipRole.PROJECT,
             target_external_id=value.project_external_id,
             targets=targets,
-            canonical_kind="SCOPED_TO_PROJECT",
+            canonical_kind=SorCanonicalRelationKind.SCOPED_TO_PROJECT,
             source_revision=source_revision,
         )
         _append_one(
@@ -183,10 +223,10 @@ def ticketing_relation_intents(
             origin_record_id=origin_record_id,
             origin_stream=origin_stream,
             origin_external_id=value.external_id,
-            target_key="parent",
+            relationship_role=SorRelationshipRole.PARENT,
             target_external_id=value.parent_external_id,
             targets=targets,
-            canonical_kind="PARENT",
+            canonical_kind=SorCanonicalRelationKind.PARENT,
             source_revision=source_revision,
         )
     elif isinstance(value, TicketingCycle):
@@ -195,10 +235,10 @@ def ticketing_relation_intents(
             origin_record_id=origin_record_id,
             origin_stream=origin_stream,
             origin_external_id=value.external_id,
-            target_key="project",
+            relationship_role=SorRelationshipRole.PROJECT,
             target_external_id=value.project_external_id,
             targets=targets,
-            canonical_kind="SCOPED_TO_PROJECT",
+            canonical_kind=SorCanonicalRelationKind.SCOPED_TO_PROJECT,
             source_revision=source_revision,
         )
     elif isinstance(value, TicketingComment):
@@ -207,10 +247,10 @@ def ticketing_relation_intents(
             origin_record_id=origin_record_id,
             origin_stream=origin_stream,
             origin_external_id=value.external_id,
-            target_key="issue",
+            relationship_role=SorRelationshipRole.ISSUE,
             target_external_id=value.issue_external_id,
             targets=targets,
-            canonical_kind="COMMENT_ON",
+            canonical_kind=SorCanonicalRelationKind.COMMENT_ON,
             source_revision=source_revision,
         )
         _append_one(
@@ -218,10 +258,10 @@ def ticketing_relation_intents(
             origin_record_id=origin_record_id,
             origin_stream=origin_stream,
             origin_external_id=value.external_id,
-            target_key="author",
+            relationship_role=SorRelationshipRole.AUTHOR,
             target_external_id=value.author_external_id,
             targets=targets,
-            canonical_kind="AUTHORED_BY",
+            canonical_kind=SorCanonicalRelationKind.AUTHORED_BY,
             source_revision=source_revision,
         )
     elif isinstance(value, TicketingIssueRelation):
@@ -234,8 +274,11 @@ def ticketing_relation_intents(
                     from_vendor_external_id=value.from_issue_external_id,
                     to_vendor_object_key=to_stream,
                     to_vendor_external_id=value.to_issue_external_id,
-                    canonical_relation_kind=value.canonical_kind.value,
-                    native_relation_kind=value.native_kind,
+                    canonical_relation_kind=SorCanonicalRelationKind(
+                        value.canonical_kind.value
+                    ),
+                    relationship_role=SorRelationshipRole.EXPLICIT_ISSUE_RELATION,
+                    vendor_relation_kind=value.native_kind,
                     external_relation_id=relationship_external_id(
                         origin_record_id,
                         "explicit_issue_relation",
@@ -257,18 +300,34 @@ def support_relation_intents(
     """Map support cases, messages, SLA metrics, and attachments."""
     drafts: list[SorRelationIntentDraft] = []
     if isinstance(value, SupportTicket):
-        for key, external_id, kind in (
-            ("requester", value.requester_external_id, "REQUESTED_BY"),
-            ("assignee", value.assignee_external_id, "ASSIGNED_TO"),
-            ("queue", value.group_external_id, "IN_QUEUE"),
-            ("inbox", value.inbox_external_id, "IN_INBOX"),
+        for role, external_id, kind in (
+            (
+                SorRelationshipRole.REQUESTER,
+                value.requester_external_id,
+                SorCanonicalRelationKind.REQUESTED_BY,
+            ),
+            (
+                SorRelationshipRole.ASSIGNEE,
+                value.assignee_external_id,
+                SorCanonicalRelationKind.ASSIGNED_TO,
+            ),
+            (
+                SorRelationshipRole.QUEUE,
+                value.group_external_id,
+                SorCanonicalRelationKind.IN_QUEUE,
+            ),
+            (
+                SorRelationshipRole.INBOX,
+                value.inbox_external_id,
+                SorCanonicalRelationKind.IN_INBOX,
+            ),
         ):
             _append_one(
                 drafts,
                 origin_record_id=origin_record_id,
                 origin_stream=origin_stream,
                 origin_external_id=value.external_id,
-                target_key=key,
+                relationship_role=role,
                 target_external_id=external_id,
                 targets=targets,
                 canonical_kind=kind,
@@ -279,10 +338,10 @@ def support_relation_intents(
             origin_record_id=origin_record_id,
             origin_stream=origin_stream,
             origin_external_id=value.external_id,
-            target_key="tag",
+            relationship_role=SorRelationshipRole.TAG,
             target_external_ids=value.tag_external_ids,
             targets=targets,
-            canonical_kind="HAS_TAG",
+            canonical_kind=SorCanonicalRelationKind.HAS_TAG,
             source_revision=source_revision,
         )
     elif isinstance(value, SupportMessage):
@@ -291,10 +350,10 @@ def support_relation_intents(
             origin_record_id=origin_record_id,
             origin_stream=origin_stream,
             origin_external_id=value.external_id,
-            target_key="ticket",
+            relationship_role=SorRelationshipRole.TICKET,
             target_external_id=value.ticket_external_id,
             targets=targets,
-            canonical_kind="MESSAGE_IN",
+            canonical_kind=SorCanonicalRelationKind.MESSAGE_IN,
             source_revision=source_revision,
         )
     elif isinstance(value, SupportSlaMetric):
@@ -303,10 +362,10 @@ def support_relation_intents(
             origin_record_id=origin_record_id,
             origin_stream=origin_stream,
             origin_external_id=value.external_id,
-            target_key="ticket",
+            relationship_role=SorRelationshipRole.TICKET,
             target_external_id=value.ticket_external_id,
             targets=targets,
-            canonical_kind="MEASURES",
+            canonical_kind=SorCanonicalRelationKind.MEASURES,
             source_revision=source_revision,
         )
     elif isinstance(value, SupportAttachment):
@@ -315,10 +374,10 @@ def support_relation_intents(
             origin_record_id=origin_record_id,
             origin_stream=origin_stream,
             origin_external_id=value.external_id,
-            target_key="ticket",
+            relationship_role=SorRelationshipRole.TICKET,
             target_external_id=value.ticket_external_id,
             targets=targets,
-            canonical_kind="ATTACHED_TO",
+            canonical_kind=SorCanonicalRelationKind.ATTACHED_TO,
             source_revision=source_revision,
         )
         _append_one(
@@ -326,10 +385,10 @@ def support_relation_intents(
             origin_record_id=origin_record_id,
             origin_stream=origin_stream,
             origin_external_id=value.external_id,
-            target_key="message",
+            relationship_role=SorRelationshipRole.MESSAGE,
             target_external_id=value.message_external_id,
             targets=targets,
-            canonical_kind="ATTACHED_TO_MESSAGE",
+            canonical_kind=SorCanonicalRelationKind.ATTACHED_TO_MESSAGE,
             source_revision=source_revision,
         )
     return tuple(drafts)
@@ -346,17 +405,29 @@ def knowledge_relation_intents(
     """Map document hierarchy and document-owned subordinate records."""
     drafts: list[SorRelationIntentDraft] = []
     if isinstance(value, KnowledgeDocument):
-        for key, external_id, kind in (
-            ("space", value.space_external_id, "IN_SPACE"),
-            ("parent", value.parent_external_id, "PARENT"),
-            ("author", value.author_external_id, "AUTHORED_BY"),
+        for role, external_id, kind in (
+            (
+                SorRelationshipRole.SPACE,
+                value.space_external_id,
+                SorCanonicalRelationKind.IN_SPACE,
+            ),
+            (
+                SorRelationshipRole.PARENT,
+                value.parent_external_id,
+                SorCanonicalRelationKind.PARENT,
+            ),
+            (
+                SorRelationshipRole.AUTHOR,
+                value.author_external_id,
+                SorCanonicalRelationKind.AUTHORED_BY,
+            ),
         ):
             _append_one(
                 drafts,
                 origin_record_id=origin_record_id,
                 origin_stream=origin_stream,
                 origin_external_id=value.external_id,
-                target_key=key,
+                relationship_role=role,
                 target_external_id=external_id,
                 targets=targets,
                 canonical_kind=kind,
@@ -368,10 +439,10 @@ def knowledge_relation_intents(
             origin_record_id=origin_record_id,
             origin_stream=origin_stream,
             origin_external_id=value.external_id,
-            target_key="document",
+            relationship_role=SorRelationshipRole.DOCUMENT,
             target_external_id=value.document_external_id,
             targets=targets,
-            canonical_kind="PART_OF_DOCUMENT",
+            canonical_kind=SorCanonicalRelationKind.PART_OF_DOCUMENT,
             source_revision=source_revision,
         )
         _append_one(
@@ -379,10 +450,10 @@ def knowledge_relation_intents(
             origin_record_id=origin_record_id,
             origin_stream=origin_stream,
             origin_external_id=value.external_id,
-            target_key="parent",
+            relationship_role=SorRelationshipRole.PARENT,
             target_external_id=value.parent_external_id,
             targets=targets,
-            canonical_kind="PARENT",
+            canonical_kind=SorCanonicalRelationKind.PARENT,
             source_revision=source_revision,
         )
     elif isinstance(value, KnowledgeVersion):
@@ -391,10 +462,10 @@ def knowledge_relation_intents(
             origin_record_id=origin_record_id,
             origin_stream=origin_stream,
             origin_external_id=value.external_id,
-            target_key="document",
+            relationship_role=SorRelationshipRole.DOCUMENT,
             target_external_id=value.document_external_id,
             targets=targets,
-            canonical_kind="VERSION_OF",
+            canonical_kind=SorCanonicalRelationKind.VERSION_OF,
             source_revision=source_revision,
         )
         _append_one(
@@ -402,10 +473,10 @@ def knowledge_relation_intents(
             origin_record_id=origin_record_id,
             origin_stream=origin_stream,
             origin_external_id=value.external_id,
-            target_key="author",
+            relationship_role=SorRelationshipRole.AUTHOR,
             target_external_id=value.author_external_id,
             targets=targets,
-            canonical_kind="AUTHORED_BY",
+            canonical_kind=SorCanonicalRelationKind.AUTHORED_BY,
             source_revision=source_revision,
         )
     elif isinstance(value, KnowledgeProperty):
@@ -414,10 +485,10 @@ def knowledge_relation_intents(
             origin_record_id=origin_record_id,
             origin_stream=origin_stream,
             origin_external_id=value.external_id,
-            target_key="document",
+            relationship_role=SorRelationshipRole.DOCUMENT,
             target_external_id=value.document_external_id,
             targets=targets,
-            canonical_kind="PROPERTY_OF",
+            canonical_kind=SorCanonicalRelationKind.PROPERTY_OF,
             source_revision=source_revision,
         )
     elif isinstance(value, KnowledgeAttachment):
@@ -426,10 +497,10 @@ def knowledge_relation_intents(
             origin_record_id=origin_record_id,
             origin_stream=origin_stream,
             origin_external_id=value.external_id,
-            target_key="document",
+            relationship_role=SorRelationshipRole.DOCUMENT,
             target_external_id=value.document_external_id,
             targets=targets,
-            canonical_kind="ATTACHED_TO",
+            canonical_kind=SorCanonicalRelationKind.ATTACHED_TO,
             source_revision=source_revision,
         )
     return tuple(drafts)
@@ -441,10 +512,10 @@ def _append_many(
     origin_record_id: UUID,
     origin_stream: str,
     origin_external_id: str,
-    target_key: str,
+    relationship_role: SorRelationshipRole,
     target_external_ids: Sequence[str],
     targets: Mapping[str, str],
-    canonical_kind: str,
+    canonical_kind: SorCanonicalRelationKind,
     source_revision: str | None,
 ) -> None:
     for target_external_id in dict.fromkeys(target_external_ids):
@@ -453,7 +524,7 @@ def _append_many(
             origin_record_id=origin_record_id,
             origin_stream=origin_stream,
             origin_external_id=origin_external_id,
-            target_key=target_key,
+            relationship_role=relationship_role,
             target_external_id=target_external_id,
             targets=targets,
             canonical_kind=canonical_kind,
@@ -467,13 +538,13 @@ def _append_one(
     origin_record_id: UUID,
     origin_stream: str,
     origin_external_id: str,
-    target_key: str,
+    relationship_role: SorRelationshipRole,
     target_external_id: str | None,
     targets: Mapping[str, str],
-    canonical_kind: str,
+    canonical_kind: SorCanonicalRelationKind,
     source_revision: str | None,
 ) -> None:
-    target_stream = targets.get(target_key)
+    target_stream = targets.get(relationship_role.value)
     if target_stream is None or target_external_id is None:
         return
     external_id = target_external_id.strip()
@@ -486,10 +557,11 @@ def _append_one(
             to_vendor_object_key=target_stream,
             to_vendor_external_id=external_id,
             canonical_relation_kind=canonical_kind,
-            native_relation_kind=target_key,
+            relationship_role=relationship_role,
+            vendor_relation_kind=None,
             external_relation_id=relationship_external_id(
                 origin_record_id,
-                target_key,
+                relationship_role.value,
                 target_stream,
                 external_id,
             ),

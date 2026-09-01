@@ -22,6 +22,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from eylo.sor.shared.contracts import SorProfile
 from eylo.sor.shared.models import SorProfileRecordModel
+from eylo.sor.ticketing.contracts import TicketingEntityKind
 
 
 class TicketingIssueModel(SorProfileRecordModel):
@@ -33,7 +34,7 @@ class TicketingIssueModel(SorProfileRecordModel):
         *SorProfileRecordModel.get_record_constraints(
             __tablename__,
             profile=SorProfile.TICKETING,
-            entity_kind="issue",
+            entity_kind=TicketingEntityKind.ISSUE,
         ),
         CheckConstraint(
             "source_description IS NULL OR "
@@ -105,7 +106,7 @@ class TicketingProjectModel(SorProfileRecordModel):
         *SorProfileRecordModel.get_record_constraints(
             __tablename__,
             profile=SorProfile.TICKETING,
-            entity_kind="project",
+            entity_kind=TicketingEntityKind.PROJECT,
         ),
         Index("ix_sor_ticketing_projects_source_name", "source_id", "name"),
     )
@@ -124,7 +125,7 @@ class TicketingWorkflowStateModel(SorProfileRecordModel):
         *SorProfileRecordModel.get_record_constraints(
             __tablename__,
             profile=SorProfile.TICKETING,
-            entity_kind="workflow_state",
+            entity_kind=TicketingEntityKind.WORKFLOW_STATE,
         ),
         Index(
             "ix_sor_ticketing_workflow_states_source_category",
@@ -148,7 +149,7 @@ class TicketingUserModel(SorProfileRecordModel):
         *SorProfileRecordModel.get_record_constraints(
             __tablename__,
             profile=SorProfile.TICKETING,
-            entity_kind="user",
+            entity_kind=TicketingEntityKind.USER,
         ),
         Index("ix_sor_ticketing_users_source_name", "source_id", "name"),
         Index(
@@ -180,7 +181,7 @@ class TicketingLabelModel(SorProfileRecordModel):
         *SorProfileRecordModel.get_record_constraints(
             __tablename__,
             profile=SorProfile.TICKETING,
-            entity_kind="label",
+            entity_kind=TicketingEntityKind.LABEL,
         ),
         Index("ix_sor_ticketing_labels_source_name", "source_id", "name"),
         Index(
@@ -198,9 +199,7 @@ class TicketingLabelModel(SorProfileRecordModel):
     name: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     color: Mapped[str | None] = mapped_column(String(160), nullable=True)
-    project_external_id: Mapped[str | None] = mapped_column(
-        String(512), nullable=True
-    )
+    project_external_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
     parent_external_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
     is_group: Mapped[bool] = mapped_column(nullable=False)
 
@@ -214,7 +213,7 @@ class TicketingCycleModel(SorProfileRecordModel):
         *SorProfileRecordModel.get_record_constraints(
             __tablename__,
             profile=SorProfile.TICKETING,
-            entity_kind="cycle",
+            entity_kind=TicketingEntityKind.CYCLE,
         ),
         Index("ix_sor_ticketing_cycles_source_name", "source_id", "name"),
         Index(
@@ -232,9 +231,7 @@ class TicketingCycleModel(SorProfileRecordModel):
 
     name: Mapped[str] = mapped_column(Text, nullable=False)
     number: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    project_external_id: Mapped[str | None] = mapped_column(
-        String(512), nullable=True
-    )
+    project_external_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     starts_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -257,7 +254,7 @@ class TicketingCommentModel(SorProfileRecordModel):
         *SorProfileRecordModel.get_record_constraints(
             __tablename__,
             profile=SorProfile.TICKETING,
-            entity_kind="comment",
+            entity_kind=TicketingEntityKind.COMMENT,
         ),
         CheckConstraint(
             "source_body IS NULL OR octet_length(source_body::text) <= 1048576",
@@ -294,7 +291,7 @@ class TicketingIssueRelationModel(SorProfileRecordModel):
         *SorProfileRecordModel.get_record_constraints(
             __tablename__,
             profile=SorProfile.TICKETING,
-            entity_kind="relation",
+            entity_kind=TicketingEntityKind.RELATION,
         ),
         CheckConstraint(
             "from_issue_external_id <> to_issue_external_id",

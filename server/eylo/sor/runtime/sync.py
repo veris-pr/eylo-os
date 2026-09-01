@@ -36,6 +36,7 @@ from eylo.sor.shared.contracts import (
     SorLifecycleAdapter,
     SorProjectionDisposition,
     SorRecordPage,
+    SorRecoveryPolicy,
     SorSourceState,
     SorSyncRunKind,
     SorVendorOperationError,
@@ -272,12 +273,13 @@ async def reconcile_unadvanced_sor_sync_generations(
 ) -> dict[str, int]:
     """Repair the commit-to-generation-advance seam without vendor I/O."""
     if isinstance(limit, bool) or not 1 <= limit <= 1_000:
-        raise ValueError("SOR generation reconciliation limit must be between 1 and 1000.")
+        raise ValueError(
+            "SOR generation reconciliation limit must be between 1 and 1000."
+        )
     terminal_run_changed = (
         select(SorSyncRunModel.id)
         .where(
-            SorSyncRunModel.organization_id
-            == SorSyncGenerationModel.organization_id,
+            SorSyncRunModel.organization_id == SorSyncGenerationModel.organization_id,
             SorSyncRunModel.generation_id == SorSyncGenerationModel.id,
             SorSyncRunModel.state.in_(
                 (
@@ -444,9 +446,7 @@ class SorSyncWorkflow:
                         page = _decode_page(page_data)
                         _validate_cursor_progress(page=page, current=cursor)
                         next_cursor = (
-                            page.next_cursor
-                            if page.next_cursor is not None
-                            else cursor
+                            page.next_cursor if page.next_cursor is not None else cursor
                         )
                         checkpoint_after = (
                             encrypt_cursor(
@@ -480,10 +480,10 @@ class SorSyncWorkflow:
                     error=error,
                 )
 
-        if (
-            strategy is SorChangeStrategy.FULL_RECONCILE
-            and kind in {SorSyncRunKind.BOOTSTRAP, SorSyncRunKind.RECONCILIATION}
-        ):
+        if strategy is SorChangeStrategy.FULL_RECONCILE and kind in {
+            SorSyncRunKind.BOOTSTRAP,
+            SorSyncRunKind.RECONCILIATION,
+        }:
             while True:
                 tombstoned = await _tombstone_full_scan_batch(
                     organization_id=organization_id,
@@ -552,8 +552,7 @@ async def _begin_attempt(*, organization_id: UUID, run_id: UUID) -> dict[str, An
             raise SorConfigurationError("SOR sync stream no longer exists.")
         checkpoint = (
             current.checkpoint_after
-            if current.kind
-            in {SorSyncRunKind.BOOTSTRAP, SorSyncRunKind.RECONCILIATION}
+            if current.kind in {SorSyncRunKind.BOOTSTRAP, SorSyncRunKind.RECONCILIATION}
             else stream.checkpoint
         )
         receipt.update(
@@ -744,9 +743,14 @@ def _classify_failure(error: Exception) -> tuple[str, str, bool, bool]:
         )
     if isinstance(error, SorVendorOperationError):
         return (
-            error.code,
+            error.code.value,
             str(error),
-            not error.retryable,
+            error.recovery
+            in {
+                SorRecoveryPolicy.TERMINAL,
+                SorRecoveryPolicy.REAUTH_REQUIRED,
+                SorRecoveryPolicy.RECONCILE_REQUIRED,
+            },
             error.requires_reauthorization,
         )
     if isinstance(error, SorSecretEnvelopeError):
@@ -843,7 +847,9 @@ def _decode_page(value: object) -> SorRecordPage:
             )
         )
     next_cursor = value["next_cursor"]
-    if next_cursor is not None and (not isinstance(next_cursor, str) or not next_cursor):
+    if next_cursor is not None and (
+        not isinstance(next_cursor, str) or not next_cursor
+    ):
         raise SorProjectionError("Durable SOR next cursor is malformed.")
     if not isinstance(value["has_more"], bool):
         raise SorProjectionError("Durable SOR page completion flag is malformed.")
@@ -965,7 +971,9 @@ def _receipt(row: SorSyncRunModel, *, terminal: bool | None = None) -> dict[str,
         "source_id": str(row.source_id),
         "kind": row.kind.value,
         "state": row.state.value,
-        "terminal": row.state in SOR_SYNC_WORK.terminal if terminal is None else terminal,
+        "terminal": row.state in SOR_SYNC_WORK.terminal
+        if terminal is None
+        else terminal,
         **_count_values(
             SorSyncCounts(
                 added=row.records_added,

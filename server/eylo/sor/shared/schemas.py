@@ -13,6 +13,7 @@ from eylo.modules.connections.domain import (
 )
 from eylo.sor.shared.contracts import (
     SorAppWebhookState,
+    SorCanonicalRelationKind,
     SorChangeMode,
     SorChangeStrategy,
     SorConfigurationFieldKind,
@@ -23,6 +24,8 @@ from eylo.sor.shared.contracts import (
     SorImplementationStatus,
     SorMappingState,
     SorProfile,
+    SorRelationshipDirection,
+    SorRelationshipRole,
     SorSchemaDifference,
     SorSensitivity,
     SorSourceAccess,
@@ -435,9 +438,10 @@ class SorFilterOptionsResponse(SorApiModel):
 
 
 class SorRecordRelationResponse(SorApiModel):
-    kind: str
-    native_kind: str
-    direction: str
+    kind: SorCanonicalRelationKind
+    role: SorRelationshipRole
+    vendor_kind: str | None
+    direction: SorRelationshipDirection
     record_id: UUID
     record_entity: str
     record_key: str | None

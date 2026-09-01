@@ -85,7 +85,9 @@ async def recover_fenced_sor_work(*, limit: int = 100) -> SorConnectionStopResul
                         ),
                         SorSyncRunModel.deleted.is_(False),
                     )
-                    .order_by(SorSyncRunModel.created_at.asc(), SorSyncRunModel.id.asc())
+                    .order_by(
+                        SorSyncRunModel.created_at.asc(), SorSyncRunModel.id.asc()
+                    )
                     .limit(limit)
                 )
             ).all()
@@ -144,7 +146,9 @@ async def recover_fenced_sor_work(*, limit: int = 100) -> SorConnectionStopResul
                         ),
                         SorCommandModel.deleted.is_(False),
                     )
-                    .order_by(SorCommandModel.created_at.asc(), SorCommandModel.id.asc())
+                    .order_by(
+                        SorCommandModel.created_at.asc(), SorCommandModel.id.asc()
+                    )
                     .limit(limit)
                 )
             ).all()
@@ -263,7 +267,11 @@ async def prepare_sor_connection_revocation(
                     SorSyncRunModel.organization_id == organization_id,
                     SorSyncRunModel.source_id.in_(source_ids),
                     SorSyncRunModel.state.in_(
-                        (SorWorkState.PENDING, SorWorkState.RUNNING, SorWorkState.WAITING)
+                        (
+                            SorWorkState.PENDING,
+                            SorWorkState.RUNNING,
+                            SorWorkState.WAITING,
+                        )
                     ),
                     SorSyncRunModel.deleted.is_(False),
                 )

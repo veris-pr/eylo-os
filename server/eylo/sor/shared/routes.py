@@ -273,9 +273,7 @@ async def get_sor_connector_app_webhook_verification_token(
     _authorize(organization_id, current_user)
     try:
         async with start_transaction(ro=True) as session:
-            token = await SorWebhookService(
-                session
-            ).reveal_notion_verification_token(
+            token = await SorWebhookService(session).reveal_notion_verification_token(
                 organization_id=organization_id,
                 connector_id=connector_id,
             )
@@ -370,9 +368,7 @@ def _connector_response(view: SorConnectorView) -> SorConnectorResponse:
         app_webhook_state=_app_webhook_state(view),
         app_webhook_url=_app_webhook_url(view),
         has_app_webhook_signing_secret=connector.webhook_signing_secret is not None,
-        app_webhook_signing_secret_revision=(
-            connector.webhook_signing_secret_revision
-        ),
+        app_webhook_signing_secret_revision=(connector.webhook_signing_secret_revision),
         vendor_account_external_id=connector.vendor_account_external_id,
         vendor_account_display_name=connector.vendor_account_display_name,
         config_revision=connector.config_revision,
@@ -581,9 +577,7 @@ async def create_sor_source(
                 configuration=request.configuration,
                 selected_objects=request.selected_objects,
                 freshness_target_seconds=request.freshness_target_seconds,
-                required_sync_interval_seconds=(
-                    request.required_sync_interval_seconds
-                ),
+                required_sync_interval_seconds=(request.required_sync_interval_seconds),
             )
             return SorSourceResponse.model_validate(row)
     except (SorNotFoundError, SorConfigurationError, SorConflictError) as error:
@@ -836,7 +830,9 @@ async def rediscover_sor_source(
         result = await rediscover_source_schema(
             organization_id=organization_id,
             source_id=source_id,
-            selected_objects=(request.selected_objects if request is not None else None),
+            selected_objects=(
+                request.selected_objects if request is not None else None
+            ),
         )
         return await _discovery_response(
             organization_id=organization_id,
@@ -1533,9 +1529,7 @@ async def start_sor_source_run(
                 safe_error_summary=generation.safe_error_summary,
                 created_at=generation.created_at,
                 updated_at=generation.updated_at,
-                runs=tuple(
-                    SorSyncRunResponse.model_validate(run) for run in plan.runs
-                ),
+                runs=tuple(SorSyncRunResponse.model_validate(run) for run in plan.runs),
             )
             ready_run_ids = plan.ready_run_ids
         for run_id in ready_run_ids:

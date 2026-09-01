@@ -123,8 +123,7 @@ class SorRepository:
         """Serialize source creation for one tenant-owned onboarding attempt."""
         await self.session.execute(
             text(
-                "SELECT pg_advisory_xact_lock("
-                "hashtextextended(:attempt_identity, 0))"
+                "SELECT pg_advisory_xact_lock(hashtextextended(:attempt_identity, 0))"
             ),
             {
                 "attempt_identity": (

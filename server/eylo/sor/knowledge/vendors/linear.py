@@ -9,6 +9,8 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from enum import StrEnum
+from http import HTTPStatus
 from urllib.parse import parse_qsl, unquote, urlsplit
 
 from eylo.modules.connections.domain import ConnectionAuthKind
@@ -17,10 +19,14 @@ from eylo.sor.knowledge.contracts import (
     KnowledgeAttachmentContent,
     KnowledgeAuthor,
     KnowledgeBlock,
+    KnowledgeBodyRepresentation,
     KnowledgeDocument,
+    KnowledgeEntityKind,
     KnowledgeProperty,
     KnowledgeSpace,
+    KnowledgeToolName,
     KnowledgeVersion,
+    knowledge_source_body,
 )
 from eylo.sor.runtime.http import SorHttpTransport, SorJsonHttpClient, SorJsonResponse
 from eylo.sor.shared.contracts import (
@@ -41,6 +47,8 @@ from eylo.sor.shared.contracts import (
     SorOAuthSpec,
     SorProfile,
     SorRecordPage,
+    SorRecoveryPolicy,
+    SorVendorErrorCode,
     SorVendorOperationError,
     SorVendorStreamSpec,
     SorWebhookSignal,
@@ -56,19 +64,30 @@ MAX_DOCUMENT_CHARS = 1_000_000
 
 READ_SCOPE = "read"
 
+
+class LinearKnowledgeStream(StrEnum):
+    """Closed vendor stream vocabulary owned by this adapter."""
+
+    DOCUMENTS = "documents"
+    AUTHORS = "authors"
+    ATTACHMENTS = "attachments"
+
+
 _STREAM_ENTITY = {
-    "documents": "document",
-    "authors": "author",
-    "attachments": "attachment",
+    LinearKnowledgeStream.DOCUMENTS: KnowledgeEntityKind.DOCUMENT,
+    LinearKnowledgeStream.AUTHORS: KnowledgeEntityKind.AUTHOR,
+    LinearKnowledgeStream.ATTACHMENTS: KnowledgeEntityKind.ATTACHMENT,
 }
 _RELATIONSHIP_TARGETS = {
-    "documents": {"author": "authors"},
-    "attachments": {"document": "documents"},
+    LinearKnowledgeStream.DOCUMENTS: {"author": LinearKnowledgeStream.AUTHORS},
+    LinearKnowledgeStream.ATTACHMENTS: {"document": LinearKnowledgeStream.DOCUMENTS},
 }
-_READ_TOOLS = frozenset({"docs_search", "docs_get"})
+_READ_TOOLS = frozenset({KnowledgeToolName.SEARCH, KnowledgeToolName.GET})
 _TOOL_STREAMS = {
-    "docs_search": frozenset({"documents"}),
-    "docs_get": frozenset({"documents", "attachments"}),
+    KnowledgeToolName.SEARCH: frozenset({LinearKnowledgeStream.DOCUMENTS}),
+    KnowledgeToolName.GET: frozenset(
+        {LinearKnowledgeStream.DOCUMENTS, LinearKnowledgeStream.ATTACHMENTS}
+    ),
 }
 
 
@@ -80,17 +99,17 @@ LINEAR_KNOWLEDGE_MANIFEST = SorAdapterCapabilityManifest(
         SorVendorStreamSpec(
             key=stream_key,
             label={
-                "documents": "Documents",
-                "authors": "Authors",
-                "attachments": "Document images",
+                LinearKnowledgeStream.DOCUMENTS: "Documents",
+                LinearKnowledgeStream.AUTHORS: "Authors",
+                LinearKnowledgeStream.ATTACHMENTS: "Document images",
             }[stream_key],
             description={
-                "documents": (
+                LinearKnowledgeStream.DOCUMENTS: (
                     "Current Linear documents with Markdown content and source "
                     "provenance. Older revisions remain in Linear."
                 ),
-                "authors": "Workspace users referenced by current documents.",
-                "attachments": (
+                LinearKnowledgeStream.AUTHORS: "Workspace users referenced by current documents.",
+                LinearKnowledgeStream.ATTACHMENTS: (
                     "Images referenced by the latest Linear document content."
                 ),
             }[stream_key],
@@ -144,7 +163,7 @@ def _field(
 
 
 _SCHEMA_FIELDS = {
-    "documents": (
+    LinearKnowledgeStream.DOCUMENTS: (
         _field("title", "Title", "text", nullable=False),
         _field("path", "Location", "string_array", nullable=False),
         _field("normalized_text", "Content", "text", nullable=False),
@@ -158,13 +177,13 @@ _SCHEMA_FIELDS = {
         _field("source_updated_at", "Updated", "timestamp"),
         _field("custom_fields", "Linear context", "bounded_json"),
     ),
-    "authors": (
+    LinearKnowledgeStream.AUTHORS: (
         _field("name", "Name", "text", nullable=False),
         _field("primary_email", "Email", "text"),
         _field("kind", "Kind", "text"),
         _field("avatar_url", "Avatar URL", "link"),
     ),
-    "attachments": (
+    LinearKnowledgeStream.ATTACHMENTS: (
         _field("document_external_id", "Document ID", "reference", nullable=False),
         _field("name", "Name", "text", nullable=False),
         _field("media_type", "Media type", "text"),
@@ -185,7 +204,7 @@ _DOCUMENT_FIELDS = """
   release { id name }
 """
 _PAGE_QUERIES = {
-    "documents": f"""
+    LinearKnowledgeStream.DOCUMENTS: f"""
       query EyloLinearDocuments(
         $first: Int!, $after: String, $filter: DocumentFilter
       ) {{
@@ -195,7 +214,7 @@ _PAGE_QUERIES = {
         }}
       }}
     """,
-    "authors": """
+    LinearKnowledgeStream.AUTHORS: """
       query EyloLinearDocumentAuthors(
         $first: Int!, $after: String, $filter: UserFilter
       ) {
@@ -305,9 +324,9 @@ class LinearKnowledgeAdapter:
         )
         if not objects:
             raise SorVendorOperationError(
-                "source_selection_empty",
+                SorVendorErrorCode.SOURCE_SELECTION_EMPTY,
                 "The Linear Documents source selects no streams.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         return SorDiscoveredSchema(
             objects=objects,
@@ -343,7 +362,7 @@ class LinearKnowledgeAdapter:
             selected=self._context.selected_objects,
         )
         record_id = _required_id(external_id, field="Linear record ID")
-        if stream_key == "attachments":
+        if stream_key == LinearKnowledgeStream.ATTACHMENTS:
             document_id, _separator, _digest = record_id.partition(":")
             if not document_id or not _digest:
                 raise SorExternalRecordNotFound(
@@ -358,10 +377,12 @@ class LinearKnowledgeAdapter:
                 vendor_object_key=stream_key,
                 external_id=record_id,
             )
-        singular = "document" if stream_key == "documents" else "user"
+        singular = (
+            "document" if stream_key == LinearKnowledgeStream.DOCUMENTS else "user"
+        )
         selection = (
             _DOCUMENT_FIELDS
-            if stream_key == "documents"
+            if stream_key == LinearKnowledgeStream.DOCUMENTS
             else (
                 "id name displayName email active avatarUrl url "
                 "createdAt updatedAt archivedAt"
@@ -545,7 +566,7 @@ class LinearKnowledgeAdapter:
         )
         if attachment is None:
             raise SorExternalRecordNotFound(
-                vendor_object_key="attachments",
+                vendor_object_key=LinearKnowledgeStream.ATTACHMENTS,
                 external_id=attachment_id,
             )
         parsed = urlsplit(attachment.source_url)
@@ -554,16 +575,20 @@ class LinearKnowledgeAdapter:
             query=dict(parse_qsl(parsed.query, keep_blank_values=True)),
             response_body_limit=maximum_bytes,
         )
-        if response.status_code in {404, 410}:
+        if response.status_code in {HTTPStatus.NOT_FOUND, HTTPStatus.GONE}:
             raise SorExternalRecordNotFound(
-                vendor_object_key="attachments",
+                vendor_object_key=LinearKnowledgeStream.ATTACHMENTS,
                 external_id=attachment_id,
             )
         if not 200 <= response.status_code < 300:
             raise SorVendorOperationError(
-                "vendor_request_rejected",
+                SorVendorErrorCode.VENDOR_REQUEST_REJECTED,
                 "Linear did not return the requested document image.",
-                retryable=response.status_code >= 500,
+                recovery=(
+                    SorRecoveryPolicy.RETRY
+                    if response.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR
+                    else SorRecoveryPolicy.TERMINAL
+                ),
             )
         media_types = response.header_values("content-type")
         return KnowledgeAttachmentContent(
@@ -588,11 +613,11 @@ class LinearKnowledgeAdapter:
         )
         if not 1 <= limit <= 200:
             raise SorVendorOperationError(
-                "vendor_page_invalid",
+                SorVendorErrorCode.VENDOR_PAGE_INVALID,
                 "Linear page limit must be between 1 and 200.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
-        if stream_key == "attachments":
+        if stream_key == LinearKnowledgeStream.ATTACHMENTS:
             return await self._read_attachment_page(cursor=cursor, limit=limit)
         selected_fields = self._selected_fields(stream_key)
         checkpoint = _decode_cursor(cursor)
@@ -610,7 +635,11 @@ class LinearKnowledgeAdapter:
             variables,
             operation=f"list Linear {stream_key}",
         )
-        connection_name = "documents" if stream_key == "documents" else "users"
+        connection_name = (
+            LinearKnowledgeStream.DOCUMENTS
+            if stream_key == LinearKnowledgeStream.DOCUMENTS
+            else "users"
+        )
         connection = _object(
             data.get(connection_name), field=f"Linear {stream_key} page"
         )
@@ -659,10 +688,10 @@ class LinearKnowledgeAdapter:
         cursor: str | None,
         limit: int,
     ) -> SorRecordPage:
-        selected_fields = self._selected_fields("attachments")
+        selected_fields = self._selected_fields(LinearKnowledgeStream.ATTACHMENTS)
         checkpoint = _decode_attachment_cursor(cursor)
         data, _response = await self._graphql(
-            _PAGE_QUERIES["documents"],
+            _PAGE_QUERIES[LinearKnowledgeStream.DOCUMENTS],
             {
                 "first": min(limit, 25),
                 "after": checkpoint.page_after,
@@ -674,7 +703,9 @@ class LinearKnowledgeAdapter:
             },
             operation="list Linear document images",
         )
-        connection = _object(data.get("documents"), field="Linear document page")
+        connection = _object(
+            data.get(LinearKnowledgeStream.DOCUMENTS), field="Linear document page"
+        )
         documents = _object_list(connection.get("nodes"), field="Linear documents")
         page_info = _object(connection.get("pageInfo"), field="Linear page info")
         page_has_more = page_info.get("hasNextPage")
@@ -778,15 +809,15 @@ class LinearKnowledgeAdapter:
         unknown = set(fields) - allowed
         if unknown:
             raise SorVendorOperationError(
-                "source_mapping_invalid",
+                SorVendorErrorCode.SOURCE_MAPPING_INVALID,
                 f"The Linear mapping selects unknown {stream_key} fields.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         if not fields:
             raise SorVendorOperationError(
-                "source_mapping_empty",
+                SorVendorErrorCode.SOURCE_MAPPING_EMPTY,
                 f"The active mapping selects no {stream_key} fields.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         return fields
 
@@ -821,7 +852,9 @@ class LinearKnowledgeAdapter:
         *,
         selected_fields: tuple[str, ...] | None = None,
     ) -> SorExternalRecord:
-        selected = selected_fields or self._selected_fields("attachments")
+        selected = selected_fields or self._selected_fields(
+            LinearKnowledgeStream.ATTACHMENTS
+        )
         values: dict[str, object | None] = {
             "document_external_id": _required_id(
                 document.get("id"), field="attachment document ID"
@@ -836,7 +869,7 @@ class LinearKnowledgeAdapter:
             document.get("updatedAt"), field="attachment document update time"
         )
         return SorExternalRecord(
-            vendor_object_key="attachments",
+            vendor_object_key=LinearKnowledgeStream.ATTACHMENTS,
             external_id=attachment.external_id,
             payload=payload,
             source_created_at=_optional_datetime(document.get("createdAt")),
@@ -858,7 +891,7 @@ class LinearKnowledgeAdapter:
         row = data.get("document")
         if row is None:
             raise SorExternalRecordNotFound(
-                vendor_object_key="documents",
+                vendor_object_key=LinearKnowledgeStream.DOCUMENTS,
                 external_id=document_id,
             )
         return _object(row, field="Linear document")
@@ -889,7 +922,7 @@ def _linear_payload(
     stream_key: str,
     row: Mapping[str, object],
 ) -> dict[str, object | None]:
-    if stream_key == "authors":
+    if stream_key == LinearKnowledgeStream.AUTHORS:
         return {
             "name": row.get("displayName") or row.get("name"),
             "primary_email": row.get("email"),
@@ -906,7 +939,10 @@ def _linear_payload(
         "title": title,
         "normalized_text": content,
         "source_format": "linear_markdown",
-        "source_body": {"representation": "markdown", "value": content},
+        "source_body": knowledge_source_body(
+            KnowledgeBodyRepresentation.MARKDOWN,
+            content,
+        ),
         "content_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
         "version": row.get("documentContentId"),
         "lifecycle_state": _document_lifecycle(row),
@@ -966,31 +1002,33 @@ def _graphql_data(
     *,
     operation: str,
 ) -> dict[str, object]:
-    if response.status_code in {401, 403}:
+    if response.status_code in {HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN}:
         raise SorVendorOperationError(
-            "vendor_authorization_failed",
+            SorVendorErrorCode.VENDOR_AUTHORIZATION_FAILED,
             f"Linear refused authorization while attempting to {operation}.",
-            retryable=False,
-            requires_reauthorization=True,
-            refreshable_authorization=response.status_code == 401,
+            recovery=(
+                SorRecoveryPolicy.REFRESH_AND_RETRY
+                if response.status_code == HTTPStatus.UNAUTHORIZED
+                else SorRecoveryPolicy.REAUTH_REQUIRED
+            ),
         )
-    if response.status_code == 429:
+    if response.status_code == HTTPStatus.TOO_MANY_REQUESTS:
         raise SorVendorOperationError(
-            "vendor_rate_limited",
+            SorVendorErrorCode.VENDOR_RATE_LIMITED,
             "Linear rate limited the operation.",
-            retryable=True,
+            recovery=SorRecoveryPolicy.RETRY,
         )
-    if response.status_code >= 500:
+    if response.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR:
         raise SorVendorOperationError(
-            "vendor_server_failed",
+            SorVendorErrorCode.VENDOR_SERVER_FAILED,
             "Linear could not complete the operation.",
-            retryable=True,
+            recovery=SorRecoveryPolicy.RETRY,
         )
     if not response.ok:
         raise SorVendorOperationError(
-            "vendor_request_rejected",
+            SorVendorErrorCode.VENDOR_REQUEST_REJECTED,
             f"Linear rejected the request while attempting to {operation}.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     payload = _object(response.data, field="Linear GraphQL response")
     errors = payload.get("errors")
@@ -1001,27 +1039,25 @@ def _graphql_data(
         native_code = str(extensions.get("code") or "").upper()
         if native_code in {"AUTHENTICATION_ERROR", "UNAUTHENTICATED", "FORBIDDEN"}:
             raise SorVendorOperationError(
-                "vendor_authorization_failed",
+                SorVendorErrorCode.VENDOR_AUTHORIZATION_FAILED,
                 "Linear authorization is no longer valid.",
-                retryable=False,
-                requires_reauthorization=True,
-                refreshable_authorization=True,
+                recovery=SorRecoveryPolicy.REFRESH_AND_RETRY,
             )
         if native_code in {"RATELIMITED", "RATE_LIMITED", "INTERNAL_SERVER_ERROR"}:
             raise SorVendorOperationError(
                 (
-                    "vendor_rate_limited"
+                    SorVendorErrorCode.VENDOR_RATE_LIMITED
                     if "RATE" in native_code
-                    else "vendor_server_failed"
+                    else SorVendorErrorCode.VENDOR_SERVER_FAILED
                 ),
                 "Linear could not complete the operation yet.",
-                retryable=True,
+                recovery=SorRecoveryPolicy.RETRY,
             )
         message = _optional_string(first.get("message"))
         raise SorVendorOperationError(
-            "vendor_request_rejected",
+            SorVendorErrorCode.VENDOR_REQUEST_REJECTED,
             (message or "Linear rejected the operation.")[:500],
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return _object(payload.get("data"), field="Linear GraphQL data")
 
@@ -1034,15 +1070,15 @@ def _decode_cursor(value: str | None) -> _LinearCursor:
         payload = json.loads(value)
     except (TypeError, ValueError) as error:
         raise SorVendorOperationError(
-            "vendor_cursor_invalid",
+            SorVendorErrorCode.VENDOR_CURSOR_INVALID,
             "Linear cursor is invalid.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         ) from error
     if not isinstance(payload, dict) or payload.get("version") != LINEAR_CURSOR_VERSION:
         raise SorVendorOperationError(
-            "vendor_cursor_invalid",
+            SorVendorErrorCode.VENDOR_CURSOR_INVALID,
             "Linear cursor version is invalid.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return _LinearCursor(
         floor=_optional_datetime(payload.get("floor")),
@@ -1083,15 +1119,15 @@ def _decode_attachment_cursor(value: str | None) -> _LinearAttachmentCursor:
         payload = json.loads(value)
     except (TypeError, ValueError) as error:
         raise SorVendorOperationError(
-            "vendor_cursor_invalid",
+            SorVendorErrorCode.VENDOR_CURSOR_INVALID,
             "Linear attachment cursor is invalid.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         ) from error
     if not isinstance(payload, dict) or payload.get("version") != LINEAR_CURSOR_VERSION:
         raise SorVendorOperationError(
-            "vendor_cursor_invalid",
+            SorVendorErrorCode.VENDOR_CURSOR_INVALID,
             "Linear attachment cursor version is invalid.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     document_index = payload.get("document_index")
     attachment_index = payload.get("attachment_index")
@@ -1104,9 +1140,9 @@ def _decode_attachment_cursor(value: str | None) -> _LinearAttachmentCursor:
         or attachment_index < 0
     ):
         raise SorVendorOperationError(
-            "vendor_cursor_invalid",
+            SorVendorErrorCode.VENDOR_CURSOR_INVALID,
             "Linear attachment cursor position is invalid.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return _LinearAttachmentCursor(
         floor=_optional_datetime(payload.get("floor")),
@@ -1200,9 +1236,9 @@ def _credential(values: Mapping[str, object], key: str) -> str:
 def _require_stream(value: str, *, selected: tuple[str, ...]) -> str:
     if value not in _STREAM_ENTITY or value not in selected:
         raise SorVendorOperationError(
-            "vendor_stream_unsupported",
+            SorVendorErrorCode.VENDOR_STREAM_UNSUPPORTED,
             "The requested Linear Documents stream is not selected.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return value
 
@@ -1295,7 +1331,9 @@ def _json_value(value: object) -> object | None:
     try:
         return json.loads(json.dumps(value, allow_nan=False))
     except (TypeError, ValueError) as error:
-        raise _invalid_response("Linear returned invalid structured content.") from error
+        raise _invalid_response(
+            "Linear returned invalid structured content."
+        ) from error
 
 
 def _safe_linear_url(value: object) -> str | None:
@@ -1357,9 +1395,9 @@ def _safe_upload_url(value: object) -> str | None:
 
 def _invalid_response(message: str) -> SorVendorOperationError:
     return SorVendorOperationError(
-        "vendor_response_invalid",
+        SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
         message,
-        retryable=False,
+        recovery=SorRecoveryPolicy.TERMINAL,
     )
 
 

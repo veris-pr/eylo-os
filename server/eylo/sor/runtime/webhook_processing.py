@@ -377,9 +377,7 @@ async def _complete_receipt(
                 # Active source work already guarantees eventual reconciliation.
                 pass
             else:
-                filed.extend(
-                    (organization_id, run_id) for run_id in plan.ready_run_ids
-                )
+                filed.extend((organization_id, run_id) for run_id in plan.ready_run_ids)
         await SorBoundWorkService(SOR_WEBHOOK_WORK, session).succeed(
             work_id=receipt_id,
             organization_id=organization_id,
@@ -583,9 +581,7 @@ def _parse_params(params: dict[str, Any]) -> tuple[UUID, UUID]:
     if set(params) != {"organization_id", "receipt_id"}:
         raise ValueError("SOR webhook task params must contain IDs only.")
     try:
-        return UUID(str(params["organization_id"])), UUID(
-            str(params["receipt_id"])
-        )
+        return UUID(str(params["organization_id"])), UUID(str(params["receipt_id"]))
     except (TypeError, ValueError) as error:
         raise ValueError("SOR webhook task params contain an invalid UUID.") from error
 

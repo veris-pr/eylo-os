@@ -124,6 +124,12 @@ rewriting every unresolved intent each second or extending sync finalization.
 Reconciliation tombstones intents and materialized edges when their origin or
 endpoint disappears.
 
+The adapter emits a canonical relation kind, a platform-owned relationship
+role, and an optional vendor-native kind. The role selects the dependency
+target; the canonical kind explains the business meaning; the vendor kind is
+provenance only. Keeping these fields separate prevents a new vendor subtype
+from silently becoming runtime routing policy.
+
 Grid reads keep vendor identifiers for stable audit and Agent semantics, then
 resolve human labels in one bounded batch per page. Resolution is constrained
 to the same organization, source, target entity, and external ID. Missing or

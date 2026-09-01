@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from email.utils import parsedate_to_datetime
+from enum import StrEnum
+from http import HTTPStatus
 from urllib.parse import urlsplit
 
 from eylo.modules.connections.domain import ConnectionAuthKind
@@ -33,6 +35,8 @@ from eylo.sor.shared.contracts import (
     SorOAuthSpec,
     SorProfile,
     SorRecordPage,
+    SorRecoveryPolicy,
+    SorVendorErrorCode,
     SorVendorOperationError,
     SorVendorStreamSpec,
     SorWebhookSignal,
@@ -42,12 +46,18 @@ from eylo.sor.support.contracts import (
     SupportAgent,
     SupportAttachment,
     SupportCustomer,
+    SupportEntityKind,
     SupportInbox,
     SupportMessage,
+    SupportMessageDirection,
+    SupportMessageVisibility,
     SupportQueue,
     SupportSlaMetric,
+    SupportSlaState,
     SupportTag,
     SupportTicket,
+    SupportTicketState,
+    SupportToolName,
 )
 
 ZENDESK_API_VERSION = "ticketing-v2"
@@ -106,71 +116,97 @@ _METRIC_WEBHOOK_EVENTS = (
     "zen:event-type:ticket.status_changed",
 )
 
+
+class ZendeskStream(StrEnum):
+    """Closed vendor stream vocabulary owned by this adapter."""
+
+    TICKETS = "tickets"
+    CUSTOMERS = "customers"
+    AGENTS = "agents"
+    GROUPS = "groups"
+    BRANDS = "brands"
+    COMMENTS = "comments"
+    TAGS = "tags"
+    TICKET_METRICS = "ticket_metrics"
+    ATTACHMENTS = "attachments"
+
+
 _STREAM_ENTITY = {
-    "tickets": "ticket",
-    "customers": "customer",
-    "agents": "agent",
-    "groups": "queue",
-    "brands": "inbox",
-    "comments": "message",
-    "tags": "tag",
-    "ticket_metrics": "sla_metric",
-    "attachments": "attachment",
+    ZendeskStream.TICKETS: SupportEntityKind.TICKET,
+    ZendeskStream.CUSTOMERS: SupportEntityKind.CUSTOMER,
+    ZendeskStream.AGENTS: SupportEntityKind.AGENT,
+    ZendeskStream.GROUPS: SupportEntityKind.QUEUE,
+    ZendeskStream.BRANDS: SupportEntityKind.INBOX,
+    ZendeskStream.COMMENTS: SupportEntityKind.MESSAGE,
+    ZendeskStream.TAGS: SupportEntityKind.TAG,
+    ZendeskStream.TICKET_METRICS: SupportEntityKind.SLA_METRIC,
+    ZendeskStream.ATTACHMENTS: SupportEntityKind.ATTACHMENT,
 }
 _RELATIONSHIP_TARGETS = {
-    "tickets": {
-        "requester": "customers",
-        "assignee": "agents",
-        "queue": "groups",
-        "inbox": "brands",
-        "tag": "tags",
+    ZendeskStream.TICKETS: {
+        "requester": ZendeskStream.CUSTOMERS,
+        "assignee": ZendeskStream.AGENTS,
+        "queue": ZendeskStream.GROUPS,
+        "inbox": ZendeskStream.BRANDS,
+        "tag": ZendeskStream.TAGS,
     },
-    "comments": {"ticket": "tickets"},
-    "ticket_metrics": {"ticket": "tickets"},
-    "attachments": {"ticket": "tickets", "message": "comments"},
+    ZendeskStream.COMMENTS: {"ticket": ZendeskStream.TICKETS},
+    ZendeskStream.TICKET_METRICS: {"ticket": ZendeskStream.TICKETS},
+    ZendeskStream.ATTACHMENTS: {
+        "ticket": ZendeskStream.TICKETS,
+        "message": ZendeskStream.COMMENTS,
+    },
 }
 _READ_TOOLS = frozenset(
     {
-        "support_find_customer",
-        "support_find_ticket",
-        "support_get_ticket",
-        "support_get_customer_history",
-        "support_list_queues",
-        "support_describe_ticket_fields",
+        SupportToolName.FIND_CUSTOMER,
+        SupportToolName.FIND_TICKET,
+        SupportToolName.GET_TICKET,
+        SupportToolName.GET_CUSTOMER_HISTORY,
+        SupportToolName.LIST_QUEUES,
+        SupportToolName.DESCRIBE_TICKET_FIELDS,
     }
 )
 _WRITE_TOOLS = frozenset(
     {
-        "support_open_ticket",
-        "support_update_ticket",
-        "support_assign_ticket",
-        "support_reply",
-        "support_add_note",
-        "support_close_ticket",
-        "support_add_tag",
-        "support_remove_tag",
+        SupportToolName.OPEN_TICKET,
+        SupportToolName.UPDATE_TICKET,
+        SupportToolName.ASSIGN_TICKET,
+        SupportToolName.REPLY,
+        SupportToolName.ADD_NOTE,
+        SupportToolName.CLOSE_TICKET,
+        SupportToolName.ADD_TAG,
+        SupportToolName.REMOVE_TAG,
     }
 )
 _TOOL_STREAMS = {
-    "support_find_customer": frozenset({"customers"}),
-    "support_find_ticket": frozenset({"tickets"}),
-    "support_get_ticket": frozenset({"tickets", "comments"}),
-    "support_get_customer_history": frozenset({"customers", "tickets"}),
-    "support_list_queues": frozenset({"groups"}),
-    "support_describe_ticket_fields": frozenset({"tickets"}),
-    "support_open_ticket": frozenset({"tickets"}),
-    "support_update_ticket": frozenset({"tickets"}),
-    "support_assign_ticket": frozenset({"tickets", "agents"}),
-    "support_reply": frozenset({"tickets", "comments"}),
-    "support_add_note": frozenset({"tickets", "comments"}),
-    "support_close_ticket": frozenset({"tickets"}),
-    "support_add_tag": frozenset({"tickets", "tags"}),
-    "support_remove_tag": frozenset({"tickets", "tags"}),
+    SupportToolName.FIND_CUSTOMER: frozenset({ZendeskStream.CUSTOMERS}),
+    SupportToolName.FIND_TICKET: frozenset({ZendeskStream.TICKETS}),
+    SupportToolName.GET_TICKET: frozenset(
+        {ZendeskStream.TICKETS, ZendeskStream.COMMENTS}
+    ),
+    SupportToolName.GET_CUSTOMER_HISTORY: frozenset(
+        {ZendeskStream.CUSTOMERS, ZendeskStream.TICKETS}
+    ),
+    SupportToolName.LIST_QUEUES: frozenset({ZendeskStream.GROUPS}),
+    SupportToolName.DESCRIBE_TICKET_FIELDS: frozenset({ZendeskStream.TICKETS}),
+    SupportToolName.OPEN_TICKET: frozenset({ZendeskStream.TICKETS}),
+    SupportToolName.UPDATE_TICKET: frozenset({ZendeskStream.TICKETS}),
+    SupportToolName.ASSIGN_TICKET: frozenset(
+        {ZendeskStream.TICKETS, ZendeskStream.AGENTS}
+    ),
+    SupportToolName.REPLY: frozenset({ZendeskStream.TICKETS, ZendeskStream.COMMENTS}),
+    SupportToolName.ADD_NOTE: frozenset(
+        {ZendeskStream.TICKETS, ZendeskStream.COMMENTS}
+    ),
+    SupportToolName.CLOSE_TICKET: frozenset({ZendeskStream.TICKETS}),
+    SupportToolName.ADD_TAG: frozenset({ZendeskStream.TICKETS, ZendeskStream.TAGS}),
+    SupportToolName.REMOVE_TAG: frozenset({ZendeskStream.TICKETS, ZendeskStream.TAGS}),
 }
 _MUTATION_RESULT_STREAMS = {
-    **{name: "tickets" for name in _WRITE_TOOLS},
-    "support_reply": "comments",
-    "support_add_note": "comments",
+    **{name: ZendeskStream.TICKETS for name in _WRITE_TOOLS},
+    SupportToolName.REPLY: ZendeskStream.COMMENTS,
+    SupportToolName.ADD_NOTE: ZendeskStream.COMMENTS,
 }
 
 
@@ -182,38 +218,42 @@ ZENDESK_MANIFEST = SorAdapterCapabilityManifest(
         SorVendorStreamSpec(
             key=stream_key,
             label={
-                "tickets": "Tickets",
-                "customers": "Customers",
-                "agents": "Agents",
-                "groups": "Groups",
-                "brands": "Brands",
-                "comments": "Comments",
-                "tags": "Tags",
-                "ticket_metrics": "Ticket metrics",
-                "attachments": "Attachments",
+                ZendeskStream.TICKETS: "Tickets",
+                ZendeskStream.CUSTOMERS: "Customers",
+                ZendeskStream.AGENTS: "Agents",
+                ZendeskStream.GROUPS: "Groups",
+                ZendeskStream.BRANDS: "Brands",
+                ZendeskStream.COMMENTS: "Comments",
+                ZendeskStream.TAGS: "Tags",
+                ZendeskStream.TICKET_METRICS: "Ticket metrics",
+                ZendeskStream.ATTACHMENTS: "Attachments",
             }[stream_key],
             description={
-                "tickets": "Zendesk tickets, ownership, status, tags, and custom fields.",
-                "customers": "Zendesk end users who request support.",
-                "agents": "Zendesk agents and administrators who may own tickets.",
-                "groups": "Zendesk groups used as support queues.",
-                "brands": "Zendesk brands used as ticket inboxes.",
-                "comments": "Public replies and private internal notes from ticket events.",
-                "tags": "Registered and recently used Zendesk ticket tags.",
-                "ticket_metrics": "Vendor-measured reply, resolution, and wait durations.",
-                "attachments": "Metadata for files attached to ticket comments.",
+                ZendeskStream.TICKETS: "Zendesk tickets, ownership, status, tags, and custom fields.",
+                ZendeskStream.CUSTOMERS: "Zendesk end users who request support.",
+                ZendeskStream.AGENTS: "Zendesk agents and administrators who may own tickets.",
+                ZendeskStream.GROUPS: "Zendesk groups used as support queues.",
+                ZendeskStream.BRANDS: "Zendesk brands used as ticket inboxes.",
+                ZendeskStream.COMMENTS: "Public replies and private internal notes from ticket events.",
+                ZendeskStream.TAGS: "Registered and recently used Zendesk ticket tags.",
+                ZendeskStream.TICKET_METRICS: "Vendor-measured reply, resolution, and wait durations.",
+                ZendeskStream.ATTACHMENTS: "Metadata for files attached to ticket comments.",
             }[stream_key],
             canonical_entity=entity,
             change_strategies=(
                 frozenset({SorChangeStrategy.CURSOR})
-                if stream_key in {"tickets", "customers", "agents"}
+                if stream_key
+                in {
+                    ZendeskStream.TICKETS,
+                    ZendeskStream.CUSTOMERS,
+                    ZendeskStream.AGENTS,
+                }
                 else frozenset({SorChangeStrategy.UPDATED_AT})
-                if stream_key in {"comments", "attachments"}
+                if stream_key in {ZendeskStream.COMMENTS, ZendeskStream.ATTACHMENTS}
                 else frozenset({SorChangeStrategy.FULL_RECONCILE})
             ),
             depends_on=frozenset(
-                set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values())
-                - {stream_key}
+                set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values()) - {stream_key}
             ),
             relationship_targets=_RELATIONSHIP_TARGETS.get(stream_key, {}),
         )
@@ -275,7 +315,7 @@ def _field(
 
 
 _SCHEMA_FIELDS = {
-    "tickets": (
+    ZendeskStream.TICKETS: (
         _field("subject", "Subject", "text", writable=True),
         _field("normalized_description", "Description", "text", writable=True),
         _field("requester_external_id", "Requester ID", "reference", writable=True),
@@ -291,31 +331,31 @@ _SCHEMA_FIELDS = {
         _field("resolved_at", "Solved at", "timestamp"),
         _field("closed_at", "Closed at", "timestamp"),
     ),
-    "customers": (
+    ZendeskStream.CUSTOMERS: (
         _field("name", "Name", "text", nullable=False),
         _field("primary_email", "Email", "text"),
         _field("primary_phone", "Phone", "text"),
         _field("company_external_id", "Organization ID", "reference"),
         _field("active", "Active", "boolean"),
     ),
-    "agents": (
+    ZendeskStream.AGENTS: (
         _field("name", "Name", "text", nullable=False),
         _field("primary_email", "Email", "text"),
         _field("active", "Active", "boolean"),
         _field("assignable", "Assignable", "boolean"),
         _field("avatar_url", "Avatar URL", "link"),
     ),
-    "groups": (
+    ZendeskStream.GROUPS: (
         _field("name", "Name", "text", nullable=False),
         _field("description", "Description", "text"),
         _field("active", "Active", "boolean"),
     ),
-    "brands": (
+    ZendeskStream.BRANDS: (
         _field("name", "Name", "text", nullable=False),
         _field("kind", "Kind", "text"),
         _field("active", "Active", "boolean"),
     ),
-    "comments": (
+    ZendeskStream.COMMENTS: (
         _field("ticket_external_id", "Ticket ID", "reference", nullable=False),
         _field("visibility", "Visibility", "enum", nullable=False),
         _field("direction", "Direction", "enum"),
@@ -327,8 +367,8 @@ _SCHEMA_FIELDS = {
         _field("created_at", "Created at", "timestamp", nullable=False),
         _field("updated_at", "Updated at", "timestamp"),
     ),
-    "tags": (_field("name", "Name", "text", nullable=False),),
-    "ticket_metrics": (
+    ZendeskStream.TAGS: (_field("name", "Name", "text", nullable=False),),
+    ZendeskStream.TICKET_METRICS: (
         _field("ticket_external_id", "Ticket ID", "reference", nullable=False),
         _field("metric", "Metric", "text", nullable=False),
         _field("value", "Value", "decimal"),
@@ -339,7 +379,7 @@ _SCHEMA_FIELDS = {
         _field("achieved_at", "Achieved at", "timestamp"),
         _field("breached_at", "Breached at", "timestamp"),
     ),
-    "attachments": (
+    ZendeskStream.ATTACHMENTS: (
         _field("ticket_external_id", "Ticket ID", "reference", nullable=False),
         _field("message_external_id", "Comment ID", "reference"),
         _field("name", "Name", "text", nullable=False),
@@ -359,15 +399,15 @@ _TICKET_FIELD_MAP = {
     "native_status": "status",
     "priority": "priority",
     "category": "type",
-    "tag_external_ids": "tags",
+    "tag_external_ids": ZendeskStream.TAGS,
 }
 _STATUS_MAP = {
-    "new": "NEW",
-    "open": "OPEN",
-    "pending": "PENDING",
-    "hold": "HOLD",
-    "solved": "RESOLVED",
-    "closed": "CLOSED",
+    "new": SupportTicketState.NEW,
+    "open": SupportTicketState.OPEN,
+    "pending": SupportTicketState.PENDING,
+    "hold": SupportTicketState.HOLD,
+    "solved": SupportTicketState.RESOLVED,
+    "closed": SupportTicketState.CLOSED,
 }
 _METRIC_FIELDS = (
     "agent_wait_time_in_minutes",
@@ -430,12 +470,12 @@ class ZendeskSupportAdapter:
     async def discover_schema(self) -> SorDiscoveredSchema:
         if not self._context.selected_objects:
             raise SorVendorOperationError(
-                "source_selection_empty",
+                SorVendorErrorCode.SOURCE_SELECTION_EMPTY,
                 "The Zendesk source selects no streams.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         custom_fields: tuple[SorDiscoveredField, ...] = ()
-        if "tickets" in self._context.selected_objects:
+        if ZendeskStream.TICKETS in self._context.selected_objects:
             response = await self._client.request("/api/v2/ticket_fields")
             data = _object(_expect(response, operation="list Zendesk ticket fields"))
             rows = _object_list(
@@ -457,7 +497,7 @@ class ZendeskSupportAdapter:
         for stream_key in self._context.selected_objects:
             _require_stream(stream_key, selected=self._context.selected_objects)
             fields = _SCHEMA_FIELDS[stream_key]
-            if stream_key == "tickets":
+            if stream_key == ZendeskStream.TICKETS:
                 fields = (*fields, *custom_fields)
             objects.append(
                 SorDiscoveredObject(
@@ -500,9 +540,9 @@ class ZendeskSupportAdapter:
             selected=self._context.selected_objects,
         )
         record_id = _required_id(external_id, field="Zendesk record ID")
-        if stream_key == "tags":
-            return self._external_record("tags", {"name": record_id})
-        if stream_key == "comments":
+        if stream_key == ZendeskStream.TAGS:
+            return self._external_record(ZendeskStream.TAGS, {"name": record_id})
+        if stream_key == ZendeskStream.COMMENTS:
             ticket_id, comment_id = _split_comment_id(record_id)
             row = await self._fetch_comment(
                 ticket_id=ticket_id,
@@ -510,12 +550,12 @@ class ZendeskSupportAdapter:
             )
             row["_ticket_id"] = ticket_id
             return self._external_record(stream_key, row)
-        if stream_key == "attachments":
+        if stream_key == ZendeskStream.ATTACHMENTS:
             ticket_id, comment_id, attachment_id = _split_attachment_id(record_id)
             response = await self._client.request(
                 f"/api/v2/attachments/{_path_id(attachment_id)}"
             )
-            if response.status_code in {404, 410}:
+            if response.status_code in {HTTPStatus.NOT_FOUND, HTTPStatus.GONE}:
                 raise SorExternalRecordNotFound(
                     vendor_object_key=stream_key,
                     external_id=record_id,
@@ -525,12 +565,12 @@ class ZendeskSupportAdapter:
             row["_ticket_id"] = ticket_id
             row["_comment_id"] = comment_id
             return self._external_record(stream_key, row)
-        if stream_key == "ticket_metrics":
+        if stream_key == ZendeskStream.TICKET_METRICS:
             metric_id, metric_name, basis = _split_metric_id(record_id)
             response = await self._client.request(
                 f"/api/v2/ticket_metrics/{_path_id(metric_id)}"
             )
-            if response.status_code in {404, 410}:
+            if response.status_code in {HTTPStatus.NOT_FOUND, HTTPStatus.GONE}:
                 raise SorExternalRecordNotFound(
                     vendor_object_key=stream_key,
                     external_id=record_id,
@@ -553,14 +593,14 @@ class ZendeskSupportAdapter:
             )
 
         endpoint, response_key = {
-            "tickets": (f"/api/v2/tickets/{_path_id(record_id)}", "ticket"),
-            "customers": (f"/api/v2/users/{_path_id(record_id)}", "user"),
-            "agents": (f"/api/v2/users/{_path_id(record_id)}", "user"),
-            "groups": (f"/api/v2/groups/{_path_id(record_id)}", "group"),
-            "brands": (f"/api/v2/brands/{_path_id(record_id)}", "brand"),
+            ZendeskStream.TICKETS: (f"/api/v2/tickets/{_path_id(record_id)}", "ticket"),
+            ZendeskStream.CUSTOMERS: (f"/api/v2/users/{_path_id(record_id)}", "user"),
+            ZendeskStream.AGENTS: (f"/api/v2/users/{_path_id(record_id)}", "user"),
+            ZendeskStream.GROUPS: (f"/api/v2/groups/{_path_id(record_id)}", "group"),
+            ZendeskStream.BRANDS: (f"/api/v2/brands/{_path_id(record_id)}", "brand"),
         }[stream_key]
         response = await self._client.request(endpoint)
-        if response.status_code in {404, 410}:
+        if response.status_code in {HTTPStatus.NOT_FOUND, HTTPStatus.GONE}:
             raise SorExternalRecordNotFound(
                 vendor_object_key=stream_key,
                 external_id=record_id,
@@ -710,7 +750,7 @@ class ZendeskSupportAdapter:
                 f"/api/v2/webhooks/{_webhook_path_id(webhook_id)}",
                 method="DELETE",
             )
-            if response.status_code == 404:
+            if response.status_code == HTTPStatus.NOT_FOUND:
                 continue
             _expect(response, operation="remove Zendesk webhook")
 
@@ -732,17 +772,17 @@ class ZendeskSupportAdapter:
         )
         if signature is None or timestamp_text is None:
             raise SorVendorOperationError(
-                "vendor_webhook_unsigned",
+                SorVendorErrorCode.VENDOR_WEBHOOK_UNSIGNED,
                 "Zendesk webhook signature headers are missing.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         timestamp = _webhook_timestamp(timestamp_text)
         now = datetime.now(timezone.utc)
         if abs(now - timestamp) > ZENDESK_WEBHOOK_TOLERANCE:
             raise SorVendorOperationError(
-                "vendor_webhook_stale",
+                SorVendorErrorCode.VENDOR_WEBHOOK_STALE,
                 "Zendesk webhook timestamp is outside the replay window.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         expected = base64.b64encode(
             hmac.new(
@@ -753,9 +793,9 @@ class ZendeskSupportAdapter:
         ).decode()
         if not hmac.compare_digest(signature, expected):
             raise SorVendorOperationError(
-                "vendor_webhook_invalid",
+                SorVendorErrorCode.VENDOR_WEBHOOK_INVALID,
                 "Zendesk webhook signature is invalid.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
 
     async def parse_webhook_signal(
@@ -768,9 +808,9 @@ class ZendeskSupportAdapter:
             payload = json.loads(body)
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
             raise SorVendorOperationError(
-                "vendor_webhook_invalid",
+                SorVendorErrorCode.VENDOR_WEBHOOK_INVALID,
                 "Zendesk webhook body is not valid JSON.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             ) from error
         data = _object(payload, field="Zendesk webhook")
         subject = _optional_string(data.get("subject"))
@@ -791,29 +831,33 @@ class ZendeskSupportAdapter:
     async def execute_command(self, command: SorCommandRequest) -> SorCommandResult:
         if command.tool_name not in _WRITE_TOOLS:
             raise SorVendorOperationError(
-                "vendor_tool_unsupported",
+                SorVendorErrorCode.VENDOR_TOOL_UNSUPPORTED,
                 "This Zendesk adapter does not execute the requested support action.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
-        if command.tool_name == "support_open_ticket":
+        if command.tool_name == SupportToolName.OPEN_TICKET:
             return await self._open_ticket(command)
         ticket_id = _required_target(command)
-        if command.tool_name == "support_update_ticket":
+        if command.tool_name == SupportToolName.UPDATE_TICKET:
             return await self._update_ticket(ticket_id, command)
-        if command.tool_name == "support_assign_ticket":
+        if command.tool_name == SupportToolName.ASSIGN_TICKET:
             return await self._assign_ticket(ticket_id, command)
-        if command.tool_name in {"support_reply", "support_add_note"}:
+        if command.tool_name in {SupportToolName.REPLY, SupportToolName.ADD_NOTE}:
             return await self._add_comment(
                 ticket_id,
                 command,
-                public=command.tool_name == "support_reply",
+                visibility=(
+                    SupportMessageVisibility.PUBLIC
+                    if command.tool_name == SupportToolName.REPLY
+                    else SupportMessageVisibility.PRIVATE
+                ),
             )
-        if command.tool_name == "support_close_ticket":
+        if command.tool_name == SupportToolName.CLOSE_TICKET:
             return await self._close_ticket(ticket_id, command)
         return await self._change_tag(
             ticket_id,
             command,
-            add=command.tool_name == "support_add_tag",
+            add=command.tool_name == SupportToolName.ADD_TAG,
         )
 
     def normalize_ticket(self, record: SorExternalRecord) -> SupportTicket:
@@ -829,7 +873,9 @@ class ZendeskSupportAdapter:
             group_external_id=_optional_string(values.get("group_external_id")),
             inbox_external_id=_optional_string(values.get("inbox_external_id")),
             native_status=_optional_string(values.get("native_status")),
-            normalized_status=_optional_string(values.get("normalized_status")),
+            normalized_status=SupportTicketState.from_value(
+                _optional_string(values.get("normalized_status"))
+            ),
             priority=_optional_string(values.get("priority")),
             category=_optional_string(values.get("category")),
             channel=_optional_string(values.get("channel")),
@@ -837,7 +883,9 @@ class ZendeskSupportAdapter:
             first_response_at=_optional_datetime(values.get("first_response_at")),
             resolved_at=_optional_datetime(values.get("resolved_at")),
             closed_at=_optional_datetime(values.get("closed_at")),
-            sla_state=_optional_string(values.get("sla_state")),
+            sla_state=SupportSlaState.from_value(
+                _optional_string(values.get("sla_state"))
+            ),
             source_updated_at=record.source_updated_at,
             source_url=record.source_url,
             custom_fields={
@@ -883,11 +931,15 @@ class ZendeskSupportAdapter:
                 values.get("ticket_external_id"),
                 field="Zendesk comment ticket ID",
             ),
-            visibility=_required_string(
-                values.get("visibility"),
-                field="Zendesk comment visibility",
+            visibility=SupportMessageVisibility(
+                _required_string(
+                    values.get("visibility"),
+                    field="Zendesk comment visibility",
+                ).upper()
             ),
-            direction=_optional_string(values.get("direction")),
+            direction=SupportMessageDirection.from_value(
+                _optional_string(values.get("direction"))
+            ),
             author_external_id=_optional_string(values.get("author_external_id")),
             normalized_text=_required_string(
                 values.get("normalized_text"),
@@ -944,7 +996,9 @@ class ZendeskSupportAdapter:
             value=_optional_decimal(values.get("value")),
             unit=_optional_string(values.get("unit")),
             native_state=_optional_string(values.get("native_state")),
-            normalized_state=_optional_string(values.get("normalized_state")),
+            normalized_state=SupportSlaState.from_value(
+                _optional_string(values.get("normalized_state"))
+            ),
             target_at=_optional_datetime(values.get("target_at")),
             achieved_at=_optional_datetime(values.get("achieved_at")),
             breached_at=_optional_datetime(values.get("breached_at")),
@@ -984,23 +1038,23 @@ class ZendeskSupportAdapter:
         )
         if limit <= 0:
             raise SorVendorOperationError(
-                "vendor_page_invalid",
+                SorVendorErrorCode.VENDOR_PAGE_INVALID,
                 "Zendesk page limit must be positive.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
-        if stream_key == "tickets":
+        if stream_key == ZendeskStream.TICKETS:
             return await self._read_cursor_export(
                 stream_key=stream_key,
                 cursor=cursor,
                 limit=min(limit, 1_000),
             )
-        if stream_key in {"customers", "agents"}:
+        if stream_key in {ZendeskStream.CUSTOMERS, ZendeskStream.AGENTS}:
             return await self._read_cursor_export(
                 stream_key=stream_key,
                 cursor=cursor,
                 limit=min(limit, 1_000),
             )
-        if stream_key in {"comments", "attachments"}:
+        if stream_key in {ZendeskStream.COMMENTS, ZendeskStream.ATTACHMENTS}:
             return await self._read_event_stream(
                 stream_key=stream_key,
                 cursor=cursor,
@@ -1022,7 +1076,7 @@ class ZendeskSupportAdapter:
         vendor_cursor = _decode_vendor_cursor(cursor, stream_key=stream_key)
         path = (
             "/api/v2/incremental/tickets/cursor"
-            if stream_key == "tickets"
+            if stream_key == ZendeskStream.TICKETS
             else "/api/v2/incremental/users/cursor"
         )
         query: dict[str, object] = {"per_page": limit}
@@ -1030,13 +1084,17 @@ class ZendeskSupportAdapter:
             query["start_time"] = ZENDESK_INITIAL_START_TIME
         else:
             query["cursor"] = vendor_cursor
-        if stream_key == "tickets":
+        if stream_key == ZendeskStream.TICKETS:
             query["exclude_deleted"] = True
             query["support_type_scope"] = "all"
         response = await self._client.request(path, query=query)
         data = _object(_expect(response, operation=f"export Zendesk {stream_key}"))
         response_rows = _object_list(
-            data.get("tickets" if stream_key == "tickets" else "users"),
+            data.get(
+                ZendeskStream.TICKETS
+                if stream_key == ZendeskStream.TICKETS
+                else "users"
+            ),
             field=f"Zendesk {stream_key}",
         )
         if len(response_rows) > limit:
@@ -1044,7 +1102,7 @@ class ZendeskSupportAdapter:
                 f"Zendesk returned more {stream_key} than the requested page limit."
             )
         rows = response_rows
-        if stream_key in {"customers", "agents"}:
+        if stream_key in {ZendeskStream.CUSTOMERS, ZendeskStream.AGENTS}:
             rows = [row for row in rows if _user_matches_stream(stream_key, row)]
         end_of_stream = _required_boolean(
             data.get("end_of_stream"),
@@ -1135,13 +1193,16 @@ class ZendeskSupportAdapter:
     ) -> SorRecordPage:
         checkpoint = _decode_expanded_cursor(cursor, stream_key=stream_key)
         vendor_limit = min(limit, 100)
-        if stream_key == "ticket_metrics":
+        if stream_key == ZendeskStream.TICKET_METRICS:
             vendor_limit = max(1, min(100, limit // 14))
         endpoint, response_key = {
-            "groups": ("/api/v2/groups", "groups"),
-            "brands": ("/api/v2/brands", "brands"),
-            "tags": ("/api/v2/tags", "tags"),
-            "ticket_metrics": ("/api/v2/ticket_metrics", "ticket_metrics"),
+            ZendeskStream.GROUPS: ("/api/v2/groups", ZendeskStream.GROUPS),
+            ZendeskStream.BRANDS: ("/api/v2/brands", ZendeskStream.BRANDS),
+            ZendeskStream.TAGS: ("/api/v2/tags", ZendeskStream.TAGS),
+            ZendeskStream.TICKET_METRICS: (
+                "/api/v2/ticket_metrics",
+                ZendeskStream.TICKET_METRICS,
+            ),
         }[stream_key]
         query: dict[str, object] = {"page[size]": vendor_limit}
         if checkpoint.vendor_cursor is not None:
@@ -1149,13 +1210,13 @@ class ZendeskSupportAdapter:
         response = await self._client.request(endpoint, query=query)
         data = _object(_expect(response, operation=f"list Zendesk {stream_key}"))
         raw = data.get(response_key)
-        if stream_key == "tags":
+        if stream_key == ZendeskStream.TAGS:
             rows = _tag_rows(raw)
         else:
             rows = _object_list(raw, field=f"Zendesk {stream_key}")
         expanded = (
             [item for row in rows for item in _expand_metric(row)]
-            if stream_key == "ticket_metrics"
+            if stream_key == ZendeskStream.TICKET_METRICS
             else rows
         )
         if checkpoint.offset > len(expanded):
@@ -1209,10 +1270,12 @@ class ZendeskSupportAdapter:
                 f"/api/v2/tickets/{_path_id(ticket_id)}/comments",
                 query=query,
             )
-            if response.status_code in {404, 410}:
+            if response.status_code in {HTTPStatus.NOT_FOUND, HTTPStatus.GONE}:
                 break
             data = _object(_expect(response, operation="list Zendesk comments"))
-            rows = _object_list(data.get("comments"), field="Zendesk comments")
+            rows = _object_list(
+                data.get(ZendeskStream.COMMENTS), field="Zendesk comments"
+            )
             match = next(
                 (
                     dict(row)
@@ -1231,7 +1294,7 @@ class ZendeskSupportAdapter:
                 raise _invalid_response("Zendesk comment cursor did not advance.")
             after_cursor = next_cursor
         raise SorExternalRecordNotFound(
-            vendor_object_key="comments",
+            vendor_object_key=ZendeskStream.COMMENTS,
             external_id=_comment_external_id(ticket_id, comment_id),
         )
 
@@ -1240,7 +1303,7 @@ class ZendeskSupportAdapter:
         stream_key: str,
         row: Mapping[str, object],
     ) -> SorExternalRecord:
-        if stream_key == "tickets":
+        if stream_key == ZendeskStream.TICKETS:
             record_id = _required_id(row.get("id"), field="Zendesk ticket ID")
             updated_at = _optional_datetime(row.get("updated_at"))
             status = _optional_string(row.get("status"))
@@ -1263,7 +1326,7 @@ class ZendeskSupportAdapter:
                 "category": row.get("type"),
                 "channel": channel,
                 "tag_external_ids": _string_list(
-                    row.get("tags"), field="Zendesk ticket tags"
+                    row.get(ZendeskStream.TAGS), field="Zendesk ticket tags"
                 ),
                 "first_response_at": None,
                 "resolved_at": row.get("solved_at"),
@@ -1280,7 +1343,7 @@ class ZendeskSupportAdapter:
                 source_revision=_revision(updated_at),
                 source_url=f"{self._origin}/agent/tickets/{record_id}",
             )
-        if stream_key in {"customers", "agents"}:
+        if stream_key in {ZendeskStream.CUSTOMERS, ZendeskStream.AGENTS}:
             record_id = _required_id(row.get("id"), field="Zendesk user ID")
             updated_at = _optional_datetime(row.get("updated_at"))
             photo = row.get("photo")
@@ -1318,7 +1381,7 @@ class ZendeskSupportAdapter:
                 source_revision=_revision(updated_at),
                 source_url=f"{self._origin}/agent/users/{record_id}/tickets",
             )
-        if stream_key == "groups":
+        if stream_key == ZendeskStream.GROUPS:
             record_id = _required_id(row.get("id"), field="Zendesk group ID")
             updated_at = _optional_datetime(row.get("updated_at"))
             return SorExternalRecord(
@@ -1334,7 +1397,7 @@ class ZendeskSupportAdapter:
                 source_revision=_revision(updated_at),
                 source_url=_safe_source_url(row.get("url")),
             )
-        if stream_key == "brands":
+        if stream_key == ZendeskStream.BRANDS:
             record_id = _required_id(row.get("id"), field="Zendesk brand ID")
             return SorExternalRecord(
                 vendor_object_key=stream_key,
@@ -1349,7 +1412,7 @@ class ZendeskSupportAdapter:
                 source_revision=_revision(_optional_datetime(row.get("updated_at"))),
                 source_url=_safe_source_url(row.get("url")),
             )
-        if stream_key == "comments":
+        if stream_key == ZendeskStream.COMMENTS:
             ticket_id = _required_id(
                 row.get("_ticket_id") or row.get("ticket_id"),
                 field="Zendesk comment ticket ID",
@@ -1362,7 +1425,7 @@ class ZendeskSupportAdapter:
             attachment_ids = tuple(
                 _attachment_external_id(ticket_id, comment_id, attachment)
                 for attachment in _object_list(
-                    row.get("attachments") or [],
+                    row.get(ZendeskStream.ATTACHMENTS) or [],
                     field="Zendesk comment attachments",
                 )
             )
@@ -1396,14 +1459,14 @@ class ZendeskSupportAdapter:
                 ),
                 source_url=f"{self._origin}/agent/tickets/{ticket_id}",
             )
-        if stream_key == "tags":
+        if stream_key == ZendeskStream.TAGS:
             name = _required_string(row.get("name"), field="Zendesk tag name")
             return SorExternalRecord(
                 vendor_object_key=stream_key,
                 external_id=name,
                 payload={"name": name},
             )
-        if stream_key == "ticket_metrics":
+        if stream_key == ZendeskStream.TICKET_METRICS:
             metric_id = _required_id(row.get("id"), field="Zendesk ticket metric ID")
             metric = _required_string(row.get("_metric"), field="Zendesk metric name")
             basis = _required_string(row.get("_basis"), field="Zendesk metric basis")
@@ -1535,7 +1598,7 @@ class ZendeskSupportAdapter:
         ticket_id: str,
         command: SorCommandRequest,
         *,
-        public: bool,
+        visibility: SupportMessageVisibility,
     ) -> SorCommandResult:
         if set(command.payload) != {"normalized_text"}:
             raise _invalid_command(
@@ -1546,7 +1609,10 @@ class ZendeskSupportAdapter:
             field="Zendesk comment text",
         )
         fields: dict[str, object] = {
-            "comment": {"body": text, "public": public},
+            "comment": {
+                "body": text,
+                "public": visibility is SupportMessageVisibility.PUBLIC,
+            },
         }
         _add_safe_update(fields, command.expected_source_revision)
         response = await self._mutation_request(
@@ -1555,21 +1621,23 @@ class ZendeskSupportAdapter:
             payload={"ticket": fields},
             command=command,
             operation=(
-                "reply to a Zendesk ticket" if public else "add a Zendesk private note"
+                "reply to a Zendesk ticket"
+                if visibility is SupportMessageVisibility.PUBLIC
+                else "add a Zendesk private note"
             ),
         )
         data = _object(_expect(response, operation="add a Zendesk comment"))
         audit = _object(data.get("audit"), field="Zendesk ticket audit")
-        comment = _audit_comment(audit, public=public)
+        comment = _audit_comment(audit, visibility=visibility)
         comment_id = _required_id(comment.get("id"), field="Zendesk comment ID")
         return SorCommandResult(
-            vendor_object_key="comments",
+            vendor_object_key=ZendeskStream.COMMENTS,
             external_id=_comment_external_id(ticket_id, comment_id),
             external_request_id=_request_id(response),
             source_url=f"{self._origin}/agent/tickets/{ticket_id}",
             response={
                 "status": "accepted",
-                "visibility": "PUBLIC" if public else "PRIVATE",
+                "visibility": visibility.value,
             },
         )
 
@@ -1613,7 +1681,7 @@ class ZendeskSupportAdapter:
             command.payload.get("tag_external_id"),
             field="Zendesk tag",
         )
-        payload: dict[str, object] = {"tags": [tag]}
+        payload: dict[str, object] = {ZendeskStream.TAGS: [tag]}
         _add_safe_update(payload, command.expected_source_revision)
         response = await self._mutation_request(
             f"/api/v2/tickets/{_path_id(ticket_id)}/tags",
@@ -1624,7 +1692,7 @@ class ZendeskSupportAdapter:
         )
         _expect(response, operation="change a Zendesk ticket tag")
         return SorCommandResult(
-            vendor_object_key="tickets",
+            vendor_object_key=ZendeskStream.TICKETS,
             external_id=ticket_id,
             external_request_id=_request_id(response),
             source_url=f"{self._origin}/agent/tickets/{ticket_id}",
@@ -1635,16 +1703,16 @@ class ZendeskSupportAdapter:
         writable = {
             field.agent_key: field.vendor_field_key
             for field in self._context.fields
-            if field.vendor_object_key == "tickets" and field.writable
+            if field.vendor_object_key == ZendeskStream.TICKETS and field.writable
         }
         if not payload:
             raise _invalid_command("A Zendesk ticket mutation requires mapped fields.")
         unknown = set(payload) - set(writable)
         if unknown:
             raise SorVendorOperationError(
-                "vendor_field_not_writable",
+                SorVendorErrorCode.VENDOR_FIELD_NOT_WRITABLE,
                 "The Zendesk mutation contains fields absent from the writable mapping.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             )
         fields: dict[str, object] = {}
         custom_fields: list[dict[str, object]] = []
@@ -1664,9 +1732,9 @@ class ZendeskSupportAdapter:
             source_key = _TICKET_FIELD_MAP.get(vendor_key)
             if source_key is None:
                 raise SorVendorOperationError(
-                    "vendor_field_not_writable",
+                    SorVendorErrorCode.VENDOR_FIELD_NOT_WRITABLE,
                     "The mapped Zendesk field is not writable by this adapter.",
-                    retryable=False,
+                    recovery=SorRecoveryPolicy.TERMINAL,
                 )
             fields[source_key] = value
         if custom_fields:
@@ -1689,19 +1757,19 @@ class ZendeskSupportAdapter:
                 payload=payload,
                 idempotency_key=command.idempotency_key,
             )
-            if response.status_code >= 500:
+            if response.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR:
                 _expect(response, operation=operation)
             return response
         except SorVendorOperationError as error:
             if error.code in {
-                "vendor_timeout",
-                "vendor_transport_failed",
-                "vendor_server_failed",
+                SorVendorErrorCode.VENDOR_TIMEOUT,
+                SorVendorErrorCode.VENDOR_TRANSPORT_FAILED,
+                SorVendorErrorCode.VENDOR_SERVER_FAILED,
             }:
                 raise SorVendorOperationError(
-                    "vendor_mutation_outcome_unknown",
+                    SorVendorErrorCode.VENDOR_MUTATION_OUTCOME_UNKNOWN,
                     "Zendesk may have applied the action; reconcile before retrying.",
-                    retryable=False,
+                    recovery=SorRecoveryPolicy.RECONCILE_REQUIRED,
                 ) from error
             raise
 
@@ -1714,7 +1782,7 @@ class ZendeskSupportAdapter:
         ticket_id = _required_id(ticket.get("id"), field="Zendesk ticket ID")
         updated_at = _optional_datetime(ticket.get("updated_at"))
         return SorCommandResult(
-            vendor_object_key="tickets",
+            vendor_object_key=ZendeskStream.TICKETS,
             external_id=ticket_id,
             external_request_id=_request_id(response),
             source_revision=_revision(updated_at),
@@ -1760,10 +1828,9 @@ def _credential(credentials: Mapping[str, object], key: str) -> str:
     value = credentials.get(key)
     if not isinstance(value, str) or not value.strip():
         raise SorVendorOperationError(
-            "vendor_configuration_invalid",
+            SorVendorErrorCode.VENDOR_CONFIGURATION_INVALID,
             "Zendesk access token is missing.",
-            retryable=False,
-            requires_reauthorization=True,
+            recovery=SorRecoveryPolicy.REAUTH_REQUIRED,
         )
     return value.strip()
 
@@ -1771,15 +1838,15 @@ def _credential(credentials: Mapping[str, object], key: str) -> str:
 def _require_stream(stream_key: str, *, selected: Sequence[str]) -> str:
     if stream_key not in _STREAM_ENTITY:
         raise SorVendorOperationError(
-            "vendor_stream_unsupported",
+            SorVendorErrorCode.VENDOR_STREAM_UNSUPPORTED,
             "This Zendesk adapter does not recognize the requested stream.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     if stream_key not in selected:
         raise SorVendorOperationError(
-            "vendor_stream_unavailable",
+            SorVendorErrorCode.VENDOR_STREAM_UNAVAILABLE,
             "The requested Zendesk stream is not selected for this source.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return stream_key
 
@@ -1997,7 +2064,7 @@ def _expand_event_records(
                 continue
             comment = dict(child)
             comment["_ticket_id"] = ticket_id
-            if stream_key == "comments":
+            if stream_key == ZendeskStream.COMMENTS:
                 records.append(comment)
                 continue
             comment_id = _required_id(
@@ -2005,7 +2072,7 @@ def _expand_event_records(
                 field="Zendesk comment ID",
             )
             for attachment in _object_list(
-                child.get("attachments") or [],
+                child.get(ZendeskStream.ATTACHMENTS) or [],
                 field="Zendesk comment attachments",
             ):
                 row = dict(attachment)
@@ -2043,7 +2110,9 @@ def _expand_metric(row: Mapping[str, object]) -> list[dict[str, object]]:
 def _user_matches_stream(stream_key: str, row: Mapping[str, object]) -> bool:
     role = _optional_string(row.get("role"))
     return (
-        role == "end-user" if stream_key == "customers" else role in {"agent", "admin"}
+        role == "end-user"
+        if stream_key == ZendeskStream.CUSTOMERS
+        else role in {"agent", "admin"}
     )
 
 
@@ -2067,8 +2136,7 @@ def _webhook_name(source_id: object) -> str:
 def _webhook_path_id(value: object) -> str:
     webhook_id = _required_id(value, field="Zendesk webhook ID")
     if len(webhook_id) > 128 or any(
-        not (character.isalnum() or character in {"-", "_"})
-        for character in webhook_id
+        not (character.isalnum() or character in {"-", "_"}) for character in webhook_id
     ):
         raise _invalid_response("Zendesk webhook ID is invalid.")
     return webhook_id
@@ -2077,17 +2145,17 @@ def _webhook_path_id(value: object) -> str:
 def _webhook_events(selected_objects: Sequence[str]) -> tuple[str, ...]:
     selected = frozenset(selected_objects)
     events: list[str] = []
-    if "tickets" in selected:
+    if ZendeskStream.TICKETS in selected:
         events.extend(_TICKET_WEBHOOK_EVENTS)
         events.extend(_COMMENT_WEBHOOK_EVENTS)
         events.extend(_ATTACHMENT_WEBHOOK_EVENTS)
-    if "comments" in selected:
+    if ZendeskStream.COMMENTS in selected:
         events.extend(_COMMENT_WEBHOOK_EVENTS)
-    if "attachments" in selected:
+    if ZendeskStream.ATTACHMENTS in selected:
         events.extend(_ATTACHMENT_WEBHOOK_EVENTS)
-    if "tags" in selected:
+    if ZendeskStream.TAGS in selected:
         events.append("zen:event-type:ticket.tags_changed")
-    if "ticket_metrics" in selected:
+    if ZendeskStream.TICKET_METRICS in selected:
         events.extend(_METRIC_WEBHOOK_EVENTS)
     return tuple(dict.fromkeys(events))
 
@@ -2102,24 +2170,23 @@ def _webhook_signals(
     """Translate one Zendesk ticket event into bounded selected-stream hints."""
     selected = frozenset(selected_objects)
     event_type = _optional_string(data.get("type")) or "zendesk.ticket.changed"
-    delivery_id = (
-        _header(headers, "x-zendesk-webhook-invocation-id")
-        or _optional_string(data.get("id"))
-    )
+    delivery_id = _header(
+        headers, "x-zendesk-webhook-invocation-id"
+    ) or _optional_string(data.get("id"))
     occurred_at = _optional_datetime(data.get("time"))
     hints: list[tuple[str | None, str | None]] = []
-    if "tickets" in selected:
-        hints.append(("tickets", ticket_id))
+    if ZendeskStream.TICKETS in selected:
+        hints.append((ZendeskStream.TICKETS, ticket_id))
 
     event = data.get("event")
     event_data = event if isinstance(event, Mapping) else {}
     comment = event_data.get("comment")
     comment_data = comment if isinstance(comment, Mapping) else {}
     comment_id = _optional_id(comment_data.get("id"))
-    if event_type in _COMMENT_WEBHOOK_EVENTS and "comments" in selected:
+    if event_type in _COMMENT_WEBHOOK_EVENTS and ZendeskStream.COMMENTS in selected:
         hints.append(
             (
-                "comments" if comment_id is not None else None,
+                ZendeskStream.COMMENTS if comment_id is not None else None,
                 _comment_external_id(ticket_id, comment_id)
                 if comment_id is not None
                 else None,
@@ -2129,10 +2196,13 @@ def _webhook_signals(
     attachment = comment_data.get("attachment")
     attachment_data = attachment if isinstance(attachment, Mapping) else {}
     attachment_id = _optional_id(attachment_data.get("id"))
-    if event_type in _ATTACHMENT_WEBHOOK_EVENTS and "attachments" in selected:
+    if (
+        event_type in _ATTACHMENT_WEBHOOK_EVENTS
+        and ZendeskStream.ATTACHMENTS in selected
+    ):
         hints.append(
             (
-                "attachments"
+                ZendeskStream.ATTACHMENTS
                 if comment_id is not None and attachment_id is not None
                 else None,
                 _attachment_id(ticket_id, comment_id, attachment_id)
@@ -2141,9 +2211,15 @@ def _webhook_signals(
             )
         )
 
-    if event_type == "zen:event-type:ticket.tags_changed" and "tags" in selected:
+    if (
+        event_type == "zen:event-type:ticket.tags_changed"
+        and ZendeskStream.TAGS in selected
+    ):
         hints.append((None, None))
-    if event_type in _METRIC_WEBHOOK_EVENTS and "ticket_metrics" in selected:
+    if (
+        event_type in _METRIC_WEBHOOK_EVENTS
+        and ZendeskStream.TICKET_METRICS in selected
+    ):
         hints.append((None, None))
 
     unique_hints = tuple(dict.fromkeys(hints))
@@ -2237,15 +2313,15 @@ def _webhook_timestamp(value: str) -> datetime:
             parsed = parsedate_to_datetime(value)
         except (TypeError, ValueError) as error:
             raise SorVendorOperationError(
-                "vendor_webhook_invalid",
+                SorVendorErrorCode.VENDOR_WEBHOOK_INVALID,
                 "Zendesk webhook timestamp is invalid.",
-                retryable=False,
+                recovery=SorRecoveryPolicy.TERMINAL,
             ) from error
     if parsed.tzinfo is None:
         raise SorVendorOperationError(
-            "vendor_webhook_invalid",
+            SorVendorErrorCode.VENDOR_WEBHOOK_INVALID,
             "Zendesk webhook timestamp must include a timezone.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
     return parsed.astimezone(timezone.utc)
 
@@ -2262,13 +2338,14 @@ def _header(headers: Mapping[str, str], name: str) -> str | None:
 def _audit_comment(
     audit: Mapping[str, object],
     *,
-    public: bool,
+    visibility: SupportMessageVisibility,
 ) -> Mapping[str, object]:
     events = _object_list(audit.get("events"), field="Zendesk ticket audit events")
     matches = [
         event
         for event in events
-        if event.get("type") == "Comment" and event.get("public") is public
+        if event.get("type") == "Comment"
+        and event.get("public") is (visibility is SupportMessageVisibility.PUBLIC)
     ]
     if len(matches) != 1:
         raise _invalid_response("Zendesk did not return the exact created comment.")
@@ -2314,53 +2391,52 @@ def _safe_source_url(value: object) -> str | None:
 def _expect(response: SorJsonResponse, *, operation: str) -> object:
     if response.ok:
         return response.data
-    if response.status_code == 401:
+    if response.status_code == HTTPStatus.UNAUTHORIZED:
         raise SorVendorOperationError(
-            "vendor_authorization_expired",
+            SorVendorErrorCode.VENDOR_AUTHORIZATION_EXPIRED,
             f"Zendesk refused authorization while attempting to {operation}.",
-            retryable=False,
-            requires_reauthorization=True,
+            recovery=SorRecoveryPolicy.REAUTH_REQUIRED,
         )
-    if response.status_code == 403:
+    if response.status_code == HTTPStatus.FORBIDDEN:
         raise SorVendorOperationError(
-            "vendor_forbidden",
+            SorVendorErrorCode.VENDOR_FORBIDDEN,
             f"Zendesk refused permission to {operation}.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
-    if response.status_code == 404:
+    if response.status_code == HTTPStatus.NOT_FOUND:
         raise SorVendorOperationError(
-            "vendor_resource_unavailable",
+            SorVendorErrorCode.VENDOR_RESOURCE_UNAVAILABLE,
             f"Zendesk could not find the resource needed to {operation}.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
-    if response.status_code in {409, 412}:
+    if response.status_code in {HTTPStatus.CONFLICT, HTTPStatus.PRECONDITION_FAILED}:
         raise SorVendorOperationError(
-            "vendor_revision_conflict",
+            SorVendorErrorCode.VENDOR_REVISION_CONFLICT,
             f"Zendesk rejected stale state while attempting to {operation}.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
-    if response.status_code == 422:
+    if response.status_code == HTTPStatus.UNPROCESSABLE_CONTENT:
         raise SorVendorOperationError(
-            "vendor_command_invalid",
+            SorVendorErrorCode.VENDOR_COMMAND_INVALID,
             f"Zendesk rejected the data used to {operation}.",
-            retryable=False,
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
-    if response.status_code == 429:
+    if response.status_code == HTTPStatus.TOO_MANY_REQUESTS:
         raise SorVendorOperationError(
-            "vendor_rate_limited",
+            SorVendorErrorCode.VENDOR_RATE_LIMITED,
             "Zendesk rate-limited the source.",
-            retryable=True,
+            recovery=SorRecoveryPolicy.RETRY,
         )
-    if response.status_code >= 500:
+    if response.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR:
         raise SorVendorOperationError(
-            "vendor_server_failed",
+            SorVendorErrorCode.VENDOR_SERVER_FAILED,
             f"Zendesk failed while attempting to {operation}.",
-            retryable=True,
+            recovery=SorRecoveryPolicy.RETRY,
         )
     raise SorVendorOperationError(
-        "vendor_request_failed",
+        SorVendorErrorCode.VENDOR_REQUEST_FAILED,
         f"Zendesk refused the request to {operation}.",
-        retryable=False,
+        recovery=SorRecoveryPolicy.TERMINAL,
     )
 
 
@@ -2493,25 +2569,25 @@ def _json_value(value: object) -> object | None:
 
 def _invalid_command(message: str) -> SorVendorOperationError:
     return SorVendorOperationError(
-        "vendor_command_invalid",
+        SorVendorErrorCode.VENDOR_COMMAND_INVALID,
         message,
-        retryable=False,
+        recovery=SorRecoveryPolicy.TERMINAL,
     )
 
 
 def _invalid_cursor(message: str) -> SorVendorOperationError:
     return SorVendorOperationError(
-        "vendor_cursor_invalid",
+        SorVendorErrorCode.VENDOR_CURSOR_INVALID,
         message,
-        retryable=False,
+        recovery=SorRecoveryPolicy.TERMINAL,
     )
 
 
 def _invalid_response(message: str) -> SorVendorOperationError:
     return SorVendorOperationError(
-        "vendor_response_invalid",
+        SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
         message,
-        retryable=False,
+        recovery=SorRecoveryPolicy.TERMINAL,
     )
 
 
