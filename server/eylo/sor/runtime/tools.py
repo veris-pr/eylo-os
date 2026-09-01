@@ -7,17 +7,11 @@ from functools import lru_cache
 from typing import Any, Callable
 from uuid import UUID
 
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    JsonValue,
-    create_model,
-    model_validator,
-)
+from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
 
 from eylo.sor.knowledge.contracts import KnowledgeToolName
 from eylo.sor.runtime.catalog import get_sor_registry
+from eylo.sor.runtime.command_payloads import command_payload_type
 from eylo.sor.shared.contracts import SorProfile, SorToolEffect, SorToolSpec
 from eylo.sor.shared.query import SorAgentSortField, SorSortDirection
 
@@ -106,7 +100,7 @@ class SorDocumentGetInput(SorReadSelectionInput):
 
 
 class SorMutationToolInput(BaseModel):
-    """Common idempotent command contract for profile-native SOR mutations."""
+    """Common identity fields extended by each tool's typed payload model."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -122,12 +116,6 @@ class SorMutationToolInput(BaseModel):
         description=(
             "Canonical target record ID for updates. Omit only for create actions."
         ),
-    )
-    payload: dict[str, JsonValue] = Field(
-        description=(
-            "Domain fields for the selected action. Use keys returned by the matching "
-            "describe-fields tool for custom data."
-        )
     )
 
 
@@ -150,7 +138,7 @@ def iter_sor_tool_declarations() -> tuple[SorToolDeclaration, ...]:
                 SorToolDeclaration(
                     profile=profile.profile,
                     spec=spec,
-                    function=_declaration_function(spec),
+                    function=_declaration_function(profile.profile, spec),
                 )
             )
     return tuple(declarations)
@@ -164,7 +152,10 @@ def resolve_sor_tool(tool_name: str) -> tuple[SorProfile, SorToolSpec] | None:
     return None
 
 
-def _declaration_function(spec: SorToolSpec) -> Callable[..., Any]:
+def _declaration_function(
+    profile: SorProfile,
+    spec: SorToolSpec,
+) -> Callable[..., Any]:
     async def execute_through_sor_pipeline(**_kwargs: Any) -> dict[str, object]:
         raise RuntimeError("SOR tools require platform SOR dispatch.")
 
@@ -173,7 +164,7 @@ def _declaration_function(spec: SorToolSpec) -> Callable[..., Any]:
     execute_through_sor_pipeline.__eylo_schema_model__ = (  # type: ignore[attr-defined]
         read_tool_input_model(spec)
         if spec.effect is SorToolEffect.READ
-        else SorMutationToolInput
+        else mutation_tool_input_model(profile=profile, spec=spec)
     )
     return execute_through_sor_pipeline
 
@@ -196,6 +187,29 @@ def read_tool_input_model(spec: SorToolSpec) -> type[BaseModel]:
                     f"{', '.join(targets)}."
                 ),
                 json_schema_extra={"enum": list(targets)},
+            ),
+        ),
+    )
+
+
+@lru_cache(maxsize=None)
+def mutation_tool_input_model(
+    *,
+    profile: SorProfile,
+    spec: SorToolSpec,
+) -> type[BaseModel]:
+    """Expose the profile-owned command object instead of an untyped JSON bag."""
+    payload_model = command_payload_type(profile=profile, tool_name=spec.name)
+    return create_model(
+        f"{''.join(part.title() for part in spec.name.split('_'))}Input",
+        __base__=SorMutationToolInput,
+        payload=(
+            payload_model,
+            Field(
+                description=(
+                    "Typed domain data for this action. Mapped create/update fields "
+                    "must use keys returned by the matching describe-fields tool."
+                )
             ),
         ),
     )
@@ -226,6 +240,7 @@ __all__ = [
     "SorReadToolInput",
     "SorToolDeclaration",
     "iter_sor_tool_declarations",
+    "mutation_tool_input_model",
     "read_tool_input_model",
     "resolve_sor_tool",
 ]

@@ -416,7 +416,8 @@ flowchart LR
     worker[Absurd SOR Worker]
     adapter[Profile Vendor Adapter]
     vendor[External System]
-    fetched[Normalized Vendor Page]
+    fetched[Immutable Source Payload]
+    mapped[Typed Profile Payload]
     page_tx["Bounded Page Write Transaction"]
     coordinate_tx["Generation Coordination Transaction"]
     generation_repair["Post-commit Generation Repair"]
@@ -429,6 +430,7 @@ flowchart LR
     model_call["Agent Profile Tool Call"]
     authority["Published Tool and Source Grants"]
     effect{Read or Mutation}
+    typed_command["Typed Profile Command Payload"]
     command[(Command Receipt)]
     wait["Durable Agent Wait"]
     recheck["Live Connection, Source, Run, Tool, and Grant Recheck"]
@@ -440,7 +442,7 @@ flowchart LR
     source --> generation --> commit
     commit --> roots --> worker --> recheck --> adapter --> vendor
     commit --> waiting
-    vendor -->|"No DB transaction"| adapter --> fetched --> page_tx --> projection
+    vendor -->|"No DB transaction"| adapter --> fetched --> mapped --> page_tx --> projection
     projection --> coordinate_tx -->|"parent succeeds"| waiting --> worker
     generation_repair -.-> coordinate_tx
     projection --> intents --> resolver --> grid
@@ -448,7 +450,7 @@ flowchart LR
     projection -. "after commit" .-> local_event
     model_call --> authority --> effect
     effect -->|read| projection
-    effect -->|mutation| command --> commit --> worker
+    effect -->|mutation| typed_command -->|"Encrypted JSON boundary"| command --> commit --> worker
     command --> wait
     worker --> command --> action_event
     command --> wait

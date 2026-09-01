@@ -32,10 +32,14 @@ from eylo.sor.shared.contracts import (
     SorDiscoveredSchema,
     SorExternalRecord,
     SorExternalRecordNotFound,
+    SorFieldDataType,
     SorOAuthSpec,
+    SorOAuthTokenRequestFormat,
     SorProfile,
     SorRecordPage,
     SorRecoveryPolicy,
+    SorRelationshipRole,
+    SorRelationshipTargets,
     SorVendorErrorCode,
     SorVendorOperationError,
     SorVendorStreamSpec,
@@ -44,18 +48,32 @@ from eylo.sor.shared.contracts import (
 )
 from eylo.sor.support.contracts import (
     SupportAgent,
+    SupportAgentPayload,
+    SupportAssignCommandPayload,
     SupportAttachment,
+    SupportAttachmentPayload,
+    SupportCloseCommandPayload,
     SupportCustomer,
+    SupportCustomerPayload,
     SupportEntityKind,
     SupportInbox,
+    SupportInboxPayload,
+    SupportMappedFieldsCommandPayload,
     SupportMessage,
+    SupportMessageCommandPayload,
     SupportMessageDirection,
+    SupportMessagePayload,
     SupportMessageVisibility,
     SupportQueue,
+    SupportQueuePayload,
     SupportSlaMetric,
+    SupportSlaMetricPayload,
     SupportSlaState,
     SupportTag,
+    SupportTagCommandPayload,
+    SupportTagPayload,
     SupportTicket,
+    SupportTicketPayload,
     SupportTicketState,
     SupportToolName,
 )
@@ -144,17 +162,21 @@ _STREAM_ENTITY = {
 }
 _RELATIONSHIP_TARGETS = {
     ZendeskStream.TICKETS: {
-        "requester": ZendeskStream.CUSTOMERS,
-        "assignee": ZendeskStream.AGENTS,
-        "queue": ZendeskStream.GROUPS,
-        "inbox": ZendeskStream.BRANDS,
-        "tag": ZendeskStream.TAGS,
+        SorRelationshipRole.REQUESTER: ZendeskStream.CUSTOMERS,
+        SorRelationshipRole.ASSIGNEE: ZendeskStream.AGENTS,
+        SorRelationshipRole.QUEUE: ZendeskStream.GROUPS,
+        SorRelationshipRole.INBOX: ZendeskStream.BRANDS,
+        SorRelationshipRole.TAG: ZendeskStream.TAGS,
     },
-    ZendeskStream.COMMENTS: {"ticket": ZendeskStream.TICKETS},
-    ZendeskStream.TICKET_METRICS: {"ticket": ZendeskStream.TICKETS},
+    ZendeskStream.COMMENTS: {
+        SorRelationshipRole.TICKET: ZendeskStream.TICKETS
+    },
+    ZendeskStream.TICKET_METRICS: {
+        SorRelationshipRole.TICKET: ZendeskStream.TICKETS
+    },
     ZendeskStream.ATTACHMENTS: {
-        "ticket": ZendeskStream.TICKETS,
-        "message": ZendeskStream.COMMENTS,
+        SorRelationshipRole.TICKET: ZendeskStream.TICKETS,
+        SorRelationshipRole.MESSAGE: ZendeskStream.COMMENTS,
     },
 }
 _READ_TOOLS = frozenset(
@@ -255,7 +277,9 @@ ZENDESK_MANIFEST = SorAdapterCapabilityManifest(
             depends_on=frozenset(
                 set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values()) - {stream_key}
             ),
-            relationship_targets=_RELATIONSHIP_TARGETS.get(stream_key, {}),
+            relationship_targets=SorRelationshipTargets(
+                _RELATIONSHIP_TARGETS.get(stream_key, {})
+            ),
         )
         for stream_key, entity in _STREAM_ENTITY.items()
     ),
@@ -278,7 +302,7 @@ ZENDESK_MANIFEST = SorAdapterCapabilityManifest(
         authorization_path="/oauth/authorizations/new",
         token_path="/oauth/tokens",
         base_scopes=(READ_SCOPE, WRITE_SCOPE),
-        token_request_format="json",
+        token_request_format=SorOAuthTokenRequestFormat.JSON,
         instance_host_suffixes=("zendesk.com",),
         operator_instance_origin=True,
     ),
@@ -295,7 +319,7 @@ ZENDESK_MANIFEST = SorAdapterCapabilityManifest(
 def _field(
     key: str,
     label: str,
-    data_type: str,
+    data_type: SorFieldDataType,
     *,
     nullable: bool = True,
     writable: bool = False,
@@ -316,76 +340,76 @@ def _field(
 
 _SCHEMA_FIELDS = {
     ZendeskStream.TICKETS: (
-        _field("subject", "Subject", "text", writable=True),
-        _field("normalized_description", "Description", "text", writable=True),
-        _field("requester_external_id", "Requester ID", "reference", writable=True),
-        _field("assignee_external_id", "Assignee ID", "reference", writable=True),
-        _field("group_external_id", "Group ID", "reference", writable=True),
-        _field("inbox_external_id", "Brand ID", "reference", writable=True),
-        _field("native_status", "Status", "text", writable=True),
-        _field("normalized_status", "Normalized status", "enum"),
-        _field("priority", "Priority", "text", writable=True),
-        _field("category", "Type", "text", writable=True),
-        _field("channel", "Channel", "text"),
-        _field("tag_external_ids", "Tags", "string_array", writable=True),
-        _field("resolved_at", "Solved at", "timestamp"),
-        _field("closed_at", "Closed at", "timestamp"),
+        _field("subject", "Subject", SorFieldDataType.TEXT, writable=True),
+        _field("normalized_description", "Description", SorFieldDataType.TEXT, writable=True),
+        _field("requester_external_id", "Requester ID", SorFieldDataType.REFERENCE, writable=True),
+        _field("assignee_external_id", "Assignee ID", SorFieldDataType.REFERENCE, writable=True),
+        _field("group_external_id", "Group ID", SorFieldDataType.REFERENCE, writable=True),
+        _field("inbox_external_id", "Brand ID", SorFieldDataType.REFERENCE, writable=True),
+        _field("native_status", "Status", SorFieldDataType.TEXT, writable=True),
+        _field("normalized_status", "Normalized status", SorFieldDataType.ENUM),
+        _field("priority", "Priority", SorFieldDataType.TEXT, writable=True),
+        _field("category", "Type", SorFieldDataType.TEXT, writable=True),
+        _field("channel", "Channel", SorFieldDataType.TEXT),
+        _field("tag_external_ids", "Tags", SorFieldDataType.STRING_ARRAY, writable=True),
+        _field("resolved_at", "Solved at", SorFieldDataType.TIMESTAMP),
+        _field("closed_at", "Closed at", SorFieldDataType.TIMESTAMP),
     ),
     ZendeskStream.CUSTOMERS: (
-        _field("name", "Name", "text", nullable=False),
-        _field("primary_email", "Email", "text"),
-        _field("primary_phone", "Phone", "text"),
-        _field("company_external_id", "Organization ID", "reference"),
-        _field("active", "Active", "boolean"),
+        _field("name", "Name", SorFieldDataType.TEXT, nullable=False),
+        _field("primary_email", "Email", SorFieldDataType.TEXT),
+        _field("primary_phone", "Phone", SorFieldDataType.TEXT),
+        _field("company_external_id", "Organization ID", SorFieldDataType.REFERENCE),
+        _field("active", "Active", SorFieldDataType.BOOLEAN),
     ),
     ZendeskStream.AGENTS: (
-        _field("name", "Name", "text", nullable=False),
-        _field("primary_email", "Email", "text"),
-        _field("active", "Active", "boolean"),
-        _field("assignable", "Assignable", "boolean"),
-        _field("avatar_url", "Avatar URL", "link"),
+        _field("name", "Name", SorFieldDataType.TEXT, nullable=False),
+        _field("primary_email", "Email", SorFieldDataType.TEXT),
+        _field("active", "Active", SorFieldDataType.BOOLEAN),
+        _field("assignable", "Assignable", SorFieldDataType.BOOLEAN),
+        _field("avatar_url", "Avatar URL", SorFieldDataType.LINK),
     ),
     ZendeskStream.GROUPS: (
-        _field("name", "Name", "text", nullable=False),
-        _field("description", "Description", "text"),
-        _field("active", "Active", "boolean"),
+        _field("name", "Name", SorFieldDataType.TEXT, nullable=False),
+        _field("description", "Description", SorFieldDataType.TEXT),
+        _field("active", "Active", SorFieldDataType.BOOLEAN),
     ),
     ZendeskStream.BRANDS: (
-        _field("name", "Name", "text", nullable=False),
-        _field("kind", "Kind", "text"),
-        _field("active", "Active", "boolean"),
+        _field("name", "Name", SorFieldDataType.TEXT, nullable=False),
+        _field("kind", "Kind", SorFieldDataType.TEXT),
+        _field("active", "Active", SorFieldDataType.BOOLEAN),
     ),
     ZendeskStream.COMMENTS: (
-        _field("ticket_external_id", "Ticket ID", "reference", nullable=False),
-        _field("visibility", "Visibility", "enum", nullable=False),
-        _field("direction", "Direction", "enum"),
-        _field("author_external_id", "Author ID", "reference"),
-        _field("normalized_text", "Comment", "text", nullable=False),
-        _field("source_body", "Source body", "bounded_json"),
-        _field("body_format", "Body format", "text"),
-        _field("attachment_external_ids", "Attachment IDs", "string_array"),
-        _field("created_at", "Created at", "timestamp", nullable=False),
-        _field("updated_at", "Updated at", "timestamp"),
+        _field("ticket_external_id", "Ticket ID", SorFieldDataType.REFERENCE, nullable=False),
+        _field("visibility", "Visibility", SorFieldDataType.ENUM, nullable=False),
+        _field("direction", "Direction", SorFieldDataType.ENUM),
+        _field("author_external_id", "Author ID", SorFieldDataType.REFERENCE),
+        _field("normalized_text", "Comment", SorFieldDataType.TEXT, nullable=False),
+        _field("source_body", "Source body", SorFieldDataType.BOUNDED_JSON),
+        _field("body_format", "Body format", SorFieldDataType.TEXT),
+        _field("attachment_external_ids", "Attachment IDs", SorFieldDataType.STRING_ARRAY),
+        _field("created_at", "Created at", SorFieldDataType.TIMESTAMP, nullable=False),
+        _field("updated_at", "Updated at", SorFieldDataType.TIMESTAMP),
     ),
-    ZendeskStream.TAGS: (_field("name", "Name", "text", nullable=False),),
+    ZendeskStream.TAGS: (_field("name", "Name", SorFieldDataType.TEXT, nullable=False),),
     ZendeskStream.TICKET_METRICS: (
-        _field("ticket_external_id", "Ticket ID", "reference", nullable=False),
-        _field("metric", "Metric", "text", nullable=False),
-        _field("value", "Value", "decimal"),
-        _field("unit", "Unit", "text"),
-        _field("native_state", "Source state", "text"),
-        _field("normalized_state", "Normalized state", "enum"),
-        _field("target_at", "Target at", "timestamp"),
-        _field("achieved_at", "Achieved at", "timestamp"),
-        _field("breached_at", "Breached at", "timestamp"),
+        _field("ticket_external_id", "Ticket ID", SorFieldDataType.REFERENCE, nullable=False),
+        _field("metric", "Metric", SorFieldDataType.TEXT, nullable=False),
+        _field("value", "Value", SorFieldDataType.DECIMAL),
+        _field("unit", "Unit", SorFieldDataType.TEXT),
+        _field("native_state", "Source state", SorFieldDataType.TEXT),
+        _field("normalized_state", "Normalized state", SorFieldDataType.ENUM),
+        _field("target_at", "Target at", SorFieldDataType.TIMESTAMP),
+        _field("achieved_at", "Achieved at", SorFieldDataType.TIMESTAMP),
+        _field("breached_at", "Breached at", SorFieldDataType.TIMESTAMP),
     ),
     ZendeskStream.ATTACHMENTS: (
-        _field("ticket_external_id", "Ticket ID", "reference", nullable=False),
-        _field("message_external_id", "Comment ID", "reference"),
-        _field("name", "Name", "text", nullable=False),
-        _field("content_type", "Content type", "text"),
-        _field("size_bytes", "Size", "integer"),
-        _field("source_url", "Content URL", "link"),
+        _field("ticket_external_id", "Ticket ID", SorFieldDataType.REFERENCE, nullable=False),
+        _field("message_external_id", "Comment ID", SorFieldDataType.REFERENCE),
+        _field("name", "Name", SorFieldDataType.TEXT, nullable=False),
+        _field("content_type", "Content type", SorFieldDataType.TEXT),
+        _field("size_bytes", "Size", SorFieldDataType.INTEGER),
+        _field("source_url", "Content URL", SorFieldDataType.LINK),
     ),
 }
 
@@ -860,166 +884,166 @@ class ZendeskSupportAdapter:
             add=command.tool_name == SupportToolName.ADD_TAG,
         )
 
-    def normalize_ticket(self, record: SorExternalRecord) -> SupportTicket:
-        values = record.payload
+    def normalize_ticket(
+        self,
+        record: SorExternalRecord,
+        payload: SupportTicketPayload,
+    ) -> SupportTicket:
         return SupportTicket(
             external_id=record.external_id,
-            subject=_optional_string(values.get("subject")),
-            normalized_description=_optional_string(
-                values.get("normalized_description")
-            ),
-            requester_external_id=_optional_string(values.get("requester_external_id")),
-            assignee_external_id=_optional_string(values.get("assignee_external_id")),
-            group_external_id=_optional_string(values.get("group_external_id")),
-            inbox_external_id=_optional_string(values.get("inbox_external_id")),
-            native_status=_optional_string(values.get("native_status")),
-            normalized_status=SupportTicketState.from_value(
-                _optional_string(values.get("normalized_status"))
-            ),
-            priority=_optional_string(values.get("priority")),
-            category=_optional_string(values.get("category")),
-            channel=_optional_string(values.get("channel")),
-            tag_external_ids=_string_tuple(values.get("tag_external_ids")),
-            first_response_at=_optional_datetime(values.get("first_response_at")),
-            resolved_at=_optional_datetime(values.get("resolved_at")),
-            closed_at=_optional_datetime(values.get("closed_at")),
-            sla_state=SupportSlaState.from_value(
-                _optional_string(values.get("sla_state"))
-            ),
+            subject=_optional_string(payload.subject),
+            normalized_description=_optional_string(payload.normalized_description),
+            requester_external_id=_optional_string(payload.requester_external_id),
+            assignee_external_id=_optional_string(payload.assignee_external_id),
+            group_external_id=_optional_string(payload.group_external_id),
+            inbox_external_id=_optional_string(payload.inbox_external_id),
+            native_status=_optional_string(payload.native_status),
+            normalized_status=payload.normalized_status,
+            priority=_optional_string(payload.priority),
+            category=_optional_string(payload.category),
+            channel=_optional_string(payload.channel),
+            tag_external_ids=payload.tag_external_ids,
+            first_response_at=payload.first_response_at,
+            resolved_at=payload.resolved_at,
+            closed_at=payload.closed_at,
+            sla_state=payload.sla_state,
             source_updated_at=record.source_updated_at,
             source_url=record.source_url,
-            custom_fields={
-                key: value
-                for key, value in values.items()
-                if key.startswith("custom_field_")
-            },
+            custom_fields={},
         )
 
-    def normalize_customer(self, record: SorExternalRecord) -> SupportCustomer:
-        values = record.payload
+    def normalize_customer(
+        self,
+        record: SorExternalRecord,
+        payload: SupportCustomerPayload,
+    ) -> SupportCustomer:
         return SupportCustomer(
             external_id=record.external_id,
-            name=_optional_string(values.get("name")),
-            primary_email=_optional_string(values.get("primary_email")),
-            primary_phone=_optional_string(values.get("primary_phone")),
-            company_external_id=_optional_string(values.get("company_external_id")),
-            active=_optional_boolean(values.get("active")),
+            name=_optional_string(payload.name),
+            primary_email=_optional_string(payload.primary_email),
+            primary_phone=_optional_string(payload.primary_phone),
+            company_external_id=_optional_string(payload.company_external_id),
+            active=payload.active,
             source_url=record.source_url,
-            custom_fields={
-                key: value
-                for key, value in values.items()
-                if key.startswith("user_field_")
-            },
+            custom_fields={},
         )
 
-    def normalize_agent(self, record: SorExternalRecord) -> SupportAgent:
-        values = record.payload
+    def normalize_agent(
+        self,
+        record: SorExternalRecord,
+        payload: SupportAgentPayload,
+    ) -> SupportAgent:
         return SupportAgent(
             external_id=record.external_id,
-            name=_required_string(values.get("name"), field="Zendesk Agent name"),
-            primary_email=_optional_string(values.get("primary_email")),
-            active=_optional_boolean(values.get("active")),
-            assignable=_optional_boolean(values.get("assignable")),
-            avatar_url=_optional_string(values.get("avatar_url")),
+            name=_required_string(payload.name, field="Zendesk Agent name"),
+            primary_email=_optional_string(payload.primary_email),
+            active=payload.active,
+            assignable=payload.assignable,
+            avatar_url=_optional_string(payload.avatar_url),
         )
 
-    def normalize_message(self, record: SorExternalRecord) -> SupportMessage:
-        values = record.payload
+    def normalize_message(
+        self,
+        record: SorExternalRecord,
+        payload: SupportMessagePayload,
+    ) -> SupportMessage:
         return SupportMessage(
             external_id=record.external_id,
             ticket_external_id=_required_string(
-                values.get("ticket_external_id"),
+                payload.ticket_external_id,
                 field="Zendesk comment ticket ID",
             ),
-            visibility=SupportMessageVisibility(
-                _required_string(
-                    values.get("visibility"),
-                    field="Zendesk comment visibility",
-                ).upper()
-            ),
-            direction=SupportMessageDirection.from_value(
-                _optional_string(values.get("direction"))
-            ),
-            author_external_id=_optional_string(values.get("author_external_id")),
+            visibility=payload.visibility,
+            direction=payload.direction,
+            author_external_id=_optional_string(payload.author_external_id),
             normalized_text=_required_string(
-                values.get("normalized_text"),
+                payload.normalized_text,
                 field="Zendesk comment body",
             ),
-            source_body=_json_value(values.get("source_body")),
-            body_format=_optional_string(values.get("body_format")),
-            attachment_external_ids=_string_tuple(
-                values.get("attachment_external_ids")
-            ),
-            created_at=_required_datetime(
-                values.get("created_at"),
-                field="Zendesk comment creation time",
-            ),
-            updated_at=_optional_datetime(values.get("updated_at")),
+            source_body=_json_value(payload.source_body),
+            body_format=_optional_string(payload.body_format),
+            attachment_external_ids=payload.attachment_external_ids,
+            created_at=payload.created_at,
+            updated_at=payload.updated_at,
         )
 
-    def normalize_queue(self, record: SorExternalRecord) -> SupportQueue:
-        values = record.payload
+    def normalize_queue(
+        self,
+        record: SorExternalRecord,
+        payload: SupportQueuePayload,
+    ) -> SupportQueue:
         return SupportQueue(
             external_id=record.external_id,
-            name=_required_string(values.get("name"), field="Zendesk group name"),
-            description=_optional_string(values.get("description")),
-            active=_optional_boolean(values.get("active")),
+            name=_required_string(payload.name, field="Zendesk group name"),
+            description=_optional_string(payload.description),
+            active=payload.active,
         )
 
-    def normalize_inbox(self, record: SorExternalRecord) -> SupportInbox:
-        values = record.payload
+    def normalize_inbox(
+        self,
+        record: SorExternalRecord,
+        payload: SupportInboxPayload,
+    ) -> SupportInbox:
         return SupportInbox(
             external_id=record.external_id,
-            name=_required_string(values.get("name"), field="Zendesk brand name"),
-            kind=_optional_string(values.get("kind")),
-            active=_optional_boolean(values.get("active")),
+            name=_required_string(payload.name, field="Zendesk brand name"),
+            kind=_optional_string(payload.kind),
+            active=payload.active,
         )
 
-    def normalize_tag(self, record: SorExternalRecord) -> SupportTag:
+    def normalize_tag(
+        self,
+        record: SorExternalRecord,
+        payload: SupportTagPayload,
+    ) -> SupportTag:
         return SupportTag(
             external_id=record.external_id,
-            name=_required_string(record.payload.get("name"), field="Zendesk tag name"),
+            name=_required_string(payload.name, field="Zendesk tag name"),
         )
 
-    def normalize_sla_metric(self, record: SorExternalRecord) -> SupportSlaMetric:
-        values = record.payload
+    def normalize_sla_metric(
+        self,
+        record: SorExternalRecord,
+        payload: SupportSlaMetricPayload,
+    ) -> SupportSlaMetric:
         return SupportSlaMetric(
             external_id=record.external_id,
             ticket_external_id=_required_string(
-                values.get("ticket_external_id"),
+                payload.ticket_external_id,
                 field="Zendesk metric ticket ID",
             ),
             metric=_required_string(
-                values.get("metric"),
+                payload.metric,
                 field="Zendesk metric name",
             ),
-            value=_optional_decimal(values.get("value")),
-            unit=_optional_string(values.get("unit")),
-            native_state=_optional_string(values.get("native_state")),
-            normalized_state=SupportSlaState.from_value(
-                _optional_string(values.get("normalized_state"))
-            ),
-            target_at=_optional_datetime(values.get("target_at")),
-            achieved_at=_optional_datetime(values.get("achieved_at")),
-            breached_at=_optional_datetime(values.get("breached_at")),
+            value=payload.value,
+            unit=_optional_string(payload.unit),
+            native_state=_optional_string(payload.native_state),
+            normalized_state=payload.normalized_state,
+            target_at=payload.target_at,
+            achieved_at=payload.achieved_at,
+            breached_at=payload.breached_at,
         )
 
-    def normalize_attachment(self, record: SorExternalRecord) -> SupportAttachment:
-        values = record.payload
+    def normalize_attachment(
+        self,
+        record: SorExternalRecord,
+        payload: SupportAttachmentPayload,
+    ) -> SupportAttachment:
         return SupportAttachment(
             external_id=record.external_id,
             ticket_external_id=_required_string(
-                values.get("ticket_external_id"),
+                payload.ticket_external_id,
                 field="Zendesk attachment ticket ID",
             ),
-            message_external_id=_optional_string(values.get("message_external_id")),
+            message_external_id=_optional_string(payload.message_external_id),
             name=_required_string(
-                values.get("name"),
+                payload.name,
                 field="Zendesk attachment name",
             ),
-            content_type=_optional_string(values.get("content_type")),
-            size_bytes=_optional_integer(values.get("size_bytes")),
-            source_url=_optional_string(values.get("source_url")),
+            content_type=_optional_string(payload.content_type),
+            size_bytes=payload.size_bytes,
+            source_url=_optional_string(payload.source_url),
         )
 
     async def close(self) -> None:
@@ -1519,7 +1543,9 @@ class ZendeskSupportAdapter:
             raise _invalid_command(
                 "Opening a support ticket cannot target an existing ticket."
             )
-        fields = self._ticket_write_values(command.payload)
+        if not isinstance(command.payload, SupportMappedFieldsCommandPayload):
+            raise _invalid_command("Zendesk ticket fields payload is invalid.")
+        fields = self._ticket_write_values(command.payload.fields)
         description = fields.pop("description", None)
         if not isinstance(description, str) or not description.strip():
             raise _invalid_command(
@@ -1542,7 +1568,9 @@ class ZendeskSupportAdapter:
         ticket_id: str,
         command: SorCommandRequest,
     ) -> SorCommandResult:
-        fields = self._ticket_write_values(command.payload)
+        if not isinstance(command.payload, SupportMappedFieldsCommandPayload):
+            raise _invalid_command("Zendesk ticket fields payload is invalid.")
+        fields = self._ticket_write_values(command.payload.fields)
         if not fields:
             raise _invalid_command("Updating a Zendesk ticket requires mapped fields.")
         _add_safe_update(fields, command.expected_source_revision)
@@ -1562,23 +1590,17 @@ class ZendeskSupportAdapter:
         ticket_id: str,
         command: SorCommandRequest,
     ) -> SorCommandResult:
-        if set(command.payload) - {"assignee_external_id", "group_external_id"}:
-            raise _invalid_command(
-                "Assigning a Zendesk ticket accepts only assignee_external_id and group_external_id."
-            )
-        if not command.payload:
-            raise _invalid_command(
-                "Assigning a Zendesk ticket requires an assignee or group."
-            )
+        if not isinstance(command.payload, SupportAssignCommandPayload):
+            raise _invalid_command("Zendesk assignment payload is invalid.")
         fields: dict[str, object] = {}
-        if "assignee_external_id" in command.payload:
+        if command.payload.assignee_external_id is not None:
             fields["assignee_id"] = _required_id(
-                command.payload["assignee_external_id"],
+                command.payload.assignee_external_id,
                 field="Zendesk assignee ID",
             )
-        if "group_external_id" in command.payload:
+        if command.payload.group_external_id is not None:
             fields["group_id"] = _required_id(
-                command.payload["group_external_id"],
+                command.payload.group_external_id,
                 field="Zendesk group ID",
             )
         _add_safe_update(fields, command.expected_source_revision)
@@ -1600,14 +1622,9 @@ class ZendeskSupportAdapter:
         *,
         visibility: SupportMessageVisibility,
     ) -> SorCommandResult:
-        if set(command.payload) != {"normalized_text"}:
-            raise _invalid_command(
-                "A Zendesk reply or note requires only normalized_text."
-            )
-        text = _required_string(
-            command.payload.get("normalized_text"),
-            field="Zendesk comment text",
-        )
+        if not isinstance(command.payload, SupportMessageCommandPayload):
+            raise _invalid_command("Zendesk message payload is invalid.")
+        text = command.payload.normalized_text
         fields: dict[str, object] = {
             "comment": {
                 "body": text,
@@ -1646,11 +1663,12 @@ class ZendeskSupportAdapter:
         ticket_id: str,
         command: SorCommandRequest,
     ) -> SorCommandResult:
-        if set(command.payload) - {"native_status"}:
-            raise _invalid_command(
-                "Closing a Zendesk ticket accepts only native_status."
-            )
-        status = _optional_string(command.payload.get("native_status")) or "solved"
+        if (
+            not isinstance(command.payload, SupportCloseCommandPayload)
+            or command.payload.normalized_text is not None
+        ):
+            raise _invalid_command("Zendesk close payload is invalid.")
+        status = command.payload.native_status or "solved"
         if status not in {"solved", "closed"}:
             raise _invalid_command("Zendesk close status must be solved or closed.")
         fields: dict[str, object] = {"status": status}
@@ -1673,14 +1691,9 @@ class ZendeskSupportAdapter:
         *,
         add: bool,
     ) -> SorCommandResult:
-        if set(command.payload) != {"tag_external_id"}:
-            raise _invalid_command(
-                "Changing a Zendesk tag requires only tag_external_id."
-            )
-        tag = _required_string(
-            command.payload.get("tag_external_id"),
-            field="Zendesk tag",
-        )
+        if not isinstance(command.payload, SupportTagCommandPayload):
+            raise _invalid_command("Zendesk tag payload is invalid.")
+        tag = command.payload.tag_external_id
         payload: dict[str, object] = {ZendeskStream.TAGS: [tag]}
         _add_safe_update(payload, command.expected_source_revision)
         response = await self._mutation_request(
@@ -1877,19 +1890,19 @@ def _custom_ticket_field(row: Mapping[str, object]) -> SorDiscoveredField:
     )
 
 
-def _zendesk_field_type(value: object) -> str:
+def _zendesk_field_type(value: object) -> SorFieldDataType:
     return {
-        "checkbox": "boolean",
-        "date": "date",
-        "decimal": "decimal",
-        "integer": "integer",
-        "lookup": "reference",
-        "multiselect": "string_array",
-        "regexp": "text",
-        "tagger": "enum",
-        "textarea": "text",
-        "text": "text",
-    }.get(_optional_string(value) or "", "json")
+        "checkbox": SorFieldDataType.BOOLEAN,
+        "date": SorFieldDataType.DATE,
+        "decimal": SorFieldDataType.DECIMAL,
+        "integer": SorFieldDataType.INTEGER,
+        "lookup": SorFieldDataType.REFERENCE,
+        "multiselect": SorFieldDataType.STRING_ARRAY,
+        "regexp": SorFieldDataType.TEXT,
+        "tagger": SorFieldDataType.ENUM,
+        "textarea": SorFieldDataType.TEXT,
+        "text": SorFieldDataType.TEXT,
+    }.get(_optional_string(value) or "", SorFieldDataType.JSON)
 
 
 def _custom_field_values(value: object) -> dict[str, object]:

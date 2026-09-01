@@ -18,18 +18,37 @@ from eylo.modules.connections.domain import ConnectionAuthKind
 from eylo.sor.knowledge.contracts import (
     KnowledgeAttachment,
     KnowledgeAttachmentContent,
+    KnowledgeAttachmentPayload,
     KnowledgeAuthor,
+    KnowledgeAuthorPayload,
     KnowledgeBlock,
+    KnowledgeBlockPayload,
     KnowledgeBodyRepresentation,
+    KnowledgeCreateCommandPayload,
     KnowledgeDocument,
+    KnowledgeDocumentPayload,
     KnowledgeEntityKind,
     KnowledgeProperty,
+    KnowledgePropertyPayload,
+    KnowledgeSourceBody,
     KnowledgeSpace,
+    KnowledgeSpacePayload,
+    KnowledgeTextCommandPayload,
     KnowledgeToolName,
+    KnowledgeUpdateCommandPayload,
     KnowledgeVersion,
+    KnowledgeVersionPayload,
     knowledge_source_body,
 )
 from eylo.sor.runtime.http import SorHttpTransport, SorJsonHttpClient, SorJsonResponse
+from eylo.sor.shared.atlassian import (
+    ATLASSIAN_API_ORIGIN,
+    ATLASSIAN_AUTHORIZATION_PARAMS,
+    ATLASSIAN_AUTHORIZATION_URL,
+    ATLASSIAN_INSTANCE_HOST_SUFFIX,
+    ATLASSIAN_INSTANCE_HOST_SUFFIXES,
+    ATLASSIAN_TOKEN_URL,
+)
 from eylo.sor.shared.contracts import (
     SorAdapterCapabilityManifest,
     SorAdapterContext,
@@ -44,11 +63,14 @@ from eylo.sor.shared.contracts import (
     SorDiscoveredSchema,
     SorExternalRecord,
     SorExternalRecordNotFound,
-    SorMutationOperation,
+    SorFieldDataType,
     SorOAuthSpec,
+    SorOAuthTokenRequestFormat,
     SorProfile,
     SorRecordPage,
     SorRecoveryPolicy,
+    SorRelationshipRole,
+    SorRelationshipTargets,
     SorVendorErrorCode,
     SorVendorOperationError,
     SorVendorStreamSpec,
@@ -56,7 +78,7 @@ from eylo.sor.shared.contracts import (
     SorWebhookSubscription,
 )
 
-CONFLUENCE_API_ORIGIN = "https://api.atlassian.com"
+CONFLUENCE_API_ORIGIN = ATLASSIAN_API_ORIGIN
 CONFLUENCE_API_VERSION = "confluence-cloud-rest-v2"
 CONFLUENCE_CURSOR_VERSION = 1
 MAX_CANONICAL_TEXT_CHARS = 1_000_000
@@ -93,20 +115,24 @@ _STREAM_ENTITY = {
 }
 _RELATIONSHIP_TARGETS = {
     ConfluenceStream.PAGES: {
-        "space": ConfluenceStream.SPACES,
-        "parent": ConfluenceStream.PAGES,
-        "author": ConfluenceStream.AUTHORS,
+        SorRelationshipRole.SPACE: ConfluenceStream.SPACES,
+        SorRelationshipRole.PARENT: ConfluenceStream.PAGES,
+        SorRelationshipRole.AUTHOR: ConfluenceStream.AUTHORS,
     },
     ConfluenceStream.PAGE_BODIES: {
-        "document": ConfluenceStream.PAGES,
-        "parent": ConfluenceStream.PAGE_BODIES,
+        SorRelationshipRole.DOCUMENT: ConfluenceStream.PAGES,
+        SorRelationshipRole.PARENT: ConfluenceStream.PAGE_BODIES,
     },
     ConfluenceStream.VERSIONS: {
-        "document": ConfluenceStream.PAGES,
-        "author": ConfluenceStream.AUTHORS,
+        SorRelationshipRole.DOCUMENT: ConfluenceStream.PAGES,
+        SorRelationshipRole.AUTHOR: ConfluenceStream.AUTHORS,
     },
-    ConfluenceStream.PROPERTIES: {"document": ConfluenceStream.PAGES},
-    ConfluenceStream.ATTACHMENTS: {"document": ConfluenceStream.PAGES},
+    ConfluenceStream.PROPERTIES: {
+        SorRelationshipRole.DOCUMENT: ConfluenceStream.PAGES
+    },
+    ConfluenceStream.ATTACHMENTS: {
+        SorRelationshipRole.DOCUMENT: ConfluenceStream.PAGES
+    },
 }
 _READ_TOOLS = frozenset(
     {
@@ -172,7 +198,9 @@ CONFLUENCE_MANIFEST = SorAdapterCapabilityManifest(
             depends_on=frozenset(
                 set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values()) - {stream_key}
             ),
-            relationship_targets=_RELATIONSHIP_TARGETS.get(stream_key, {}),
+            relationship_targets=SorRelationshipTargets(
+                _RELATIONSHIP_TARGETS.get(stream_key, {})
+            ),
         )
         for stream_key, entity in _STREAM_ENTITY.items()
     ),
@@ -196,12 +224,12 @@ CONFLUENCE_MANIFEST = SorAdapterCapabilityManifest(
         tool_name: ConfluenceStream.PAGES for tool_name in _WRITE_TOOLS
     },
     oauth=SorOAuthSpec(
-        authorization_url="https://auth.atlassian.com/authorize",
-        token_url="https://auth.atlassian.com/oauth/token",
+        authorization_url=ATLASSIAN_AUTHORIZATION_URL,
+        token_url=ATLASSIAN_TOKEN_URL,
         base_scopes=(OFFLINE_SCOPE,),
-        authorization_params=(("audience", "api.atlassian.com"), ("prompt", "consent")),
-        token_request_format="json",
-        instance_host_suffixes=("atlassian.net",),
+        authorization_params=ATLASSIAN_AUTHORIZATION_PARAMS,
+        token_request_format=SorOAuthTokenRequestFormat.JSON,
+        instance_host_suffixes=ATLASSIAN_INSTANCE_HOST_SUFFIXES,
         operator_instance_origin=True,
     ),
     fixed_origin=CONFLUENCE_API_ORIGIN,
@@ -215,7 +243,7 @@ CONFLUENCE_MANIFEST = SorAdapterCapabilityManifest(
 def _field(
     key: str,
     label: str,
-    data_type: str,
+    data_type: SorFieldDataType,
     *,
     nullable: bool = True,
     writable: bool = False,
@@ -232,68 +260,68 @@ def _field(
 
 _SCHEMA_FIELDS = {
     ConfluenceStream.SPACES: (
-        _field("name", "Name", "text", nullable=False),
-        _field("kind", "Kind", "text", nullable=False),
+        _field("name", "Name", SorFieldDataType.TEXT, nullable=False),
+        _field("kind", "Kind", SorFieldDataType.TEXT, nullable=False),
     ),
     ConfluenceStream.AUTHORS: (
-        _field("name", "Name", "text", nullable=False),
-        _field("primary_email", "Email", "text"),
-        _field("kind", "Kind", "text"),
-        _field("avatar_url", "Avatar URL", "link"),
+        _field("name", "Name", SorFieldDataType.TEXT, nullable=False),
+        _field("primary_email", "Email", SorFieldDataType.TEXT),
+        _field("kind", "Kind", SorFieldDataType.TEXT),
+        _field("avatar_url", "Avatar URL", SorFieldDataType.LINK),
     ),
     ConfluenceStream.PAGES: (
-        _field("title", "Title", "text", nullable=False, writable=True),
-        _field("space_external_id", "Space ID", "reference", writable=True),
-        _field("parent_external_id", "Parent page ID", "reference", writable=True),
-        _field("path", "Path", "string_array"),
-        _field("source_format", "Source format", "text", nullable=False),
-        _field("normalized_text", "Content", "text", writable=True),
-        _field("source_body", "Source body", "bounded_json"),
-        _field("content_hash", "Content hash", "text", nullable=False),
-        _field("version", "Version", "text"),
-        _field("lifecycle_state", "State", "text"),
-        _field("author_external_id", "Author ID", "reference"),
-        _field("label_external_ids", "Labels", "string_array"),
-        _field("unsupported_blocks", "Unsupported macros", "string_array"),
-        _field("source_created_at", "Created", "timestamp"),
-        _field("source_updated_at", "Updated", "timestamp"),
+        _field("title", "Title", SorFieldDataType.TEXT, nullable=False, writable=True),
+        _field("space_external_id", "Space ID", SorFieldDataType.REFERENCE, writable=True),
+        _field("parent_external_id", "Parent page ID", SorFieldDataType.REFERENCE, writable=True),
+        _field("path", "Path", SorFieldDataType.STRING_ARRAY),
+        _field("source_format", "Source format", SorFieldDataType.TEXT, nullable=False),
+        _field("normalized_text", "Content", SorFieldDataType.TEXT, writable=True),
+        _field("source_body", "Source body", SorFieldDataType.BOUNDED_JSON),
+        _field("content_hash", "Content hash", SorFieldDataType.TEXT, nullable=False),
+        _field("version", "Version", SorFieldDataType.TEXT),
+        _field("lifecycle_state", "State", SorFieldDataType.TEXT),
+        _field("author_external_id", "Author ID", SorFieldDataType.REFERENCE),
+        _field("label_external_ids", "Labels", SorFieldDataType.STRING_ARRAY),
+        _field("unsupported_blocks", "Unsupported macros", SorFieldDataType.STRING_ARRAY),
+        _field("source_created_at", "Created", SorFieldDataType.TIMESTAMP),
+        _field("source_updated_at", "Updated", SorFieldDataType.TIMESTAMP),
     ),
     ConfluenceStream.PAGE_BODIES: (
-        _field("document_external_id", "Document ID", "reference", nullable=False),
-        _field("parent_external_id", "Parent block ID", "reference"),
-        _field("kind", "Kind", "text", nullable=False),
-        _field("order", "Order", "integer", nullable=False),
-        _field("normalized_text", "Content", "text"),
-        _field("source_body", "Source body", "bounded_json"),
-        _field("supported", "Supported", "boolean", nullable=False),
-        _field("source_created_at", "Created", "timestamp"),
-        _field("source_updated_at", "Updated", "timestamp"),
+        _field("document_external_id", "Document ID", SorFieldDataType.REFERENCE, nullable=False),
+        _field("parent_external_id", "Parent block ID", SorFieldDataType.REFERENCE),
+        _field("kind", "Kind", SorFieldDataType.TEXT, nullable=False),
+        _field("order", "Order", SorFieldDataType.INTEGER, nullable=False),
+        _field("normalized_text", "Content", SorFieldDataType.TEXT),
+        _field("source_body", "Source body", SorFieldDataType.BOUNDED_JSON),
+        _field("supported", "Supported", SorFieldDataType.BOOLEAN, nullable=False),
+        _field("source_created_at", "Created", SorFieldDataType.TIMESTAMP),
+        _field("source_updated_at", "Updated", SorFieldDataType.TIMESTAMP),
     ),
     ConfluenceStream.VERSIONS: (
-        _field("document_external_id", "Document ID", "reference", nullable=False),
-        _field("number", "Version", "text", nullable=False),
-        _field("author_external_id", "Author ID", "reference"),
-        _field("message", "Message", "text"),
-        _field("source_format", "Source format", "text"),
-        _field("normalized_text", "Content", "text"),
-        _field("source_body", "Source body", "bounded_json"),
-        _field("source_created_at", "Created", "timestamp", nullable=False),
+        _field("document_external_id", "Document ID", SorFieldDataType.REFERENCE, nullable=False),
+        _field("number", "Version", SorFieldDataType.TEXT, nullable=False),
+        _field("author_external_id", "Author ID", SorFieldDataType.REFERENCE),
+        _field("message", "Message", SorFieldDataType.TEXT),
+        _field("source_format", "Source format", SorFieldDataType.TEXT),
+        _field("normalized_text", "Content", SorFieldDataType.TEXT),
+        _field("source_body", "Source body", SorFieldDataType.BOUNDED_JSON),
+        _field("source_created_at", "Created", SorFieldDataType.TIMESTAMP, nullable=False),
     ),
     ConfluenceStream.PROPERTIES: (
-        _field("document_external_id", "Document ID", "reference", nullable=False),
-        _field("key", "Key", "text", nullable=False),
-        _field("label", "Label", "text", nullable=False),
-        _field("value_type", "Value type", "text", nullable=False),
-        _field("value", "Value", "bounded_json"),
-        _field("source_updated_at", "Updated", "timestamp"),
+        _field("document_external_id", "Document ID", SorFieldDataType.REFERENCE, nullable=False),
+        _field("key", "Key", SorFieldDataType.TEXT, nullable=False),
+        _field("label", "Label", SorFieldDataType.TEXT, nullable=False),
+        _field("value_type", "Value type", SorFieldDataType.TEXT, nullable=False),
+        _field("value", "Value", SorFieldDataType.BOUNDED_JSON),
+        _field("source_updated_at", "Updated", SorFieldDataType.TIMESTAMP),
     ),
     ConfluenceStream.ATTACHMENTS: (
-        _field("document_external_id", "Document ID", "reference", nullable=False),
-        _field("name", "Name", "text", nullable=False),
-        _field("media_type", "Media type", "text"),
-        _field("size_bytes", "Size", "integer"),
-        _field("source_url", "Source URL", "link"),
-        _field("source_url_expires_at", "URL expires", "timestamp"),
+        _field("document_external_id", "Document ID", SorFieldDataType.REFERENCE, nullable=False),
+        _field("name", "Name", SorFieldDataType.TEXT, nullable=False),
+        _field("media_type", "Media type", SorFieldDataType.TEXT),
+        _field("size_bytes", "Size", SorFieldDataType.INTEGER),
+        _field("source_url", "Source URL", SorFieldDataType.LINK),
+        _field("source_url_expires_at", "URL expires", SorFieldDataType.TIMESTAMP),
     ),
 }
 
@@ -304,6 +332,26 @@ class _NestedCursor:
     current_page_id: str | None
     current_page_is_last: bool
     child_cursor: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _ConfluencePageSnapshot:
+    """Validated page values shared by page and body source records."""
+
+    page_id: str
+    title: str
+    space_external_id: str | None
+    parent_external_id: str | None
+    normalized_text: str
+    source_body: KnowledgeSourceBody
+    content_hash: str
+    version: str | None
+    lifecycle_state: str | None
+    author_external_id: str | None
+    unsupported_blocks: tuple[str, ...]
+    source_created_at: datetime | None
+    source_updated_at: datetime | None
+    source_url: str | None
 
 
 class ConfluenceKnowledgeAdapter:
@@ -550,124 +598,120 @@ class ConfluenceKnowledgeAdapter:
             append=command.tool_name == KnowledgeToolName.APPEND,
         )
 
-    def normalize_space(self, record: SorExternalRecord) -> KnowledgeSpace:
+    def normalize_space(
+        self,
+        record: SorExternalRecord,
+        payload: KnowledgeSpacePayload,
+    ) -> KnowledgeSpace:
         return KnowledgeSpace(
             external_id=record.external_id,
-            name=_required_string(record.payload.get("name"), field="space name"),
-            kind=_required_string(record.payload.get("kind"), field="space kind"),
+            name=payload.name,
+            kind=payload.kind,
             source_url=record.source_url,
         )
 
-    def normalize_document(self, record: SorExternalRecord) -> KnowledgeDocument:
-        values = record.payload
+    def normalize_document(
+        self,
+        record: SorExternalRecord,
+        payload: KnowledgeDocumentPayload,
+    ) -> KnowledgeDocument:
         return KnowledgeDocument(
             external_id=record.external_id,
-            title=_required_string(values.get("title"), field="page title"),
-            space_external_id=_optional_string(values.get("space_external_id")),
-            parent_external_id=_optional_string(values.get("parent_external_id")),
-            path=_string_tuple(values.get("path"), field="page path"),
-            source_format=_required_string(
-                values.get("source_format"), field="page source format"
-            ),
-            normalized_text=_bounded_string(
-                values.get("normalized_text"),
-                field="page content",
-                allow_empty=True,
-            ),
-            source_body=_json_value(values.get("source_body")),
-            content_hash=_required_string(
-                values.get("content_hash"), field="page content hash"
-            ),
-            version=_optional_string(values.get("version")),
-            lifecycle_state=_optional_string(values.get("lifecycle_state")),
-            author_external_id=_optional_string(values.get("author_external_id")),
-            label_external_ids=_string_tuple(
-                values.get("label_external_ids"), field="page labels"
-            ),
-            unsupported_blocks=_string_tuple(
-                values.get("unsupported_blocks"), field="page unsupported macros"
-            ),
-            source_created_at=record.source_created_at,
-            source_updated_at=record.source_updated_at,
+            title=payload.title,
+            space_external_id=payload.space_external_id,
+            parent_external_id=payload.parent_external_id,
+            path=payload.path,
+            source_format=payload.source_format,
+            normalized_text=payload.normalized_text,
+            source_body=payload.source_body,
+            content_hash=payload.content_hash,
+            version=payload.version,
+            lifecycle_state=payload.lifecycle_state,
+            author_external_id=payload.author_external_id,
+            label_external_ids=payload.label_external_ids,
+            unsupported_blocks=payload.unsupported_blocks,
+            source_created_at=payload.source_created_at or record.source_created_at,
+            source_updated_at=payload.source_updated_at or record.source_updated_at,
             source_url=record.source_url,
+            custom_fields=payload.custom_fields,
         )
 
-    def normalize_block(self, record: SorExternalRecord) -> KnowledgeBlock:
-        values = record.payload
+    def normalize_block(
+        self,
+        record: SorExternalRecord,
+        payload: KnowledgeBlockPayload,
+    ) -> KnowledgeBlock:
         return KnowledgeBlock(
             external_id=record.external_id,
-            document_external_id=_required_string(
-                values.get("document_external_id"), field="body document ID"
-            ),
-            parent_external_id=None,
-            kind="confluence_storage",
-            order=0,
-            normalized_text=_optional_string(values.get("normalized_text")),
-            source_body=_json_value(values.get("source_body")),
-            supported=_required_boolean(values.get("supported"), field="body support"),
-            source_created_at=record.source_created_at,
-            source_updated_at=record.source_updated_at,
+            document_external_id=payload.document_external_id,
+            parent_external_id=payload.parent_external_id,
+            kind=payload.kind,
+            order=payload.order,
+            normalized_text=payload.normalized_text,
+            source_body=payload.source_body,
+            supported=payload.supported,
+            source_created_at=payload.source_created_at or record.source_created_at,
+            source_updated_at=payload.source_updated_at or record.source_updated_at,
         )
 
-    def normalize_version(self, record: SorExternalRecord) -> KnowledgeVersion:
-        values = record.payload
-        created_at = record.source_created_at
-        if created_at is None:
-            raise _invalid_response("Confluence version creation is invalid.")
+    def normalize_version(
+        self,
+        record: SorExternalRecord,
+        payload: KnowledgeVersionPayload,
+    ) -> KnowledgeVersion:
         return KnowledgeVersion(
             external_id=record.external_id,
-            document_external_id=_required_string(
-                values.get("document_external_id"), field="version document ID"
-            ),
-            number=_required_string(values.get("number"), field="version number"),
-            author_external_id=_optional_string(values.get("author_external_id")),
-            message=_optional_string(values.get("message")),
-            source_format=None,
-            normalized_text=None,
-            source_body=None,
-            created_at=created_at,
+            document_external_id=payload.document_external_id,
+            number=payload.number,
+            author_external_id=payload.author_external_id,
+            message=payload.message,
+            source_format=payload.source_format,
+            normalized_text=payload.normalized_text,
+            source_body=payload.source_body,
+            created_at=payload.source_created_at,
         )
 
-    def normalize_property(self, record: SorExternalRecord) -> KnowledgeProperty:
-        values = record.payload
+    def normalize_property(
+        self,
+        record: SorExternalRecord,
+        payload: KnowledgePropertyPayload,
+    ) -> KnowledgeProperty:
         return KnowledgeProperty(
             external_id=record.external_id,
-            document_external_id=_required_string(
-                values.get("document_external_id"), field="property document ID"
-            ),
-            key=_required_string(values.get("key"), field="property key"),
-            label=_required_string(values.get("label"), field="property label"),
-            value_type=_required_string(
-                values.get("value_type"), field="property value type"
-            ),
-            value=_json_scalar(values.get("value")),
-            source_updated_at=record.source_updated_at,
+            document_external_id=payload.document_external_id,
+            key=payload.key,
+            label=payload.label,
+            value_type=payload.value_type,
+            value=payload.value,
+            source_updated_at=payload.source_updated_at or record.source_updated_at,
         )
 
-    def normalize_attachment(self, record: SorExternalRecord) -> KnowledgeAttachment:
-        values = record.payload
+    def normalize_attachment(
+        self,
+        record: SorExternalRecord,
+        payload: KnowledgeAttachmentPayload,
+    ) -> KnowledgeAttachment:
         return KnowledgeAttachment(
             external_id=record.external_id,
-            document_external_id=_required_string(
-                values.get("document_external_id"), field="attachment document ID"
-            ),
-            name=_required_string(values.get("name"), field="attachment name"),
-            media_type=_optional_string(values.get("media_type")),
-            size_bytes=_optional_integer(
-                values.get("size_bytes"), field="attachment size"
-            ),
-            source_url=record.source_url,
-            source_url_expires_at=None,
+            document_external_id=payload.document_external_id,
+            name=payload.name,
+            media_type=payload.media_type,
+            size_bytes=payload.size_bytes,
+            source_url=payload.source_url or record.source_url,
+            source_url_expires_at=payload.source_url_expires_at,
         )
 
-    def normalize_author(self, record: SorExternalRecord) -> KnowledgeAuthor:
-        values = record.payload
+    def normalize_author(
+        self,
+        record: SorExternalRecord,
+        payload: KnowledgeAuthorPayload,
+    ) -> KnowledgeAuthor:
         return KnowledgeAuthor(
             external_id=record.external_id,
-            name=_required_string(values.get("name"), field="Confluence author name"),
-            primary_email=_optional_string(values.get("primary_email")),
-            kind=_optional_string(values.get("kind")),
-            avatar_url=_optional_string(values.get("avatar_url")),
+            name=payload.name,
+            primary_email=payload.primary_email,
+            kind=payload.kind,
+            avatar_url=payload.avatar_url,
         )
 
     async def close(self) -> None:
@@ -1107,65 +1151,80 @@ class ConfluenceKnowledgeAdapter:
         )
 
     def _external_page(self, row: Mapping[str, object]) -> SorExternalRecord:
-        page_id = _required_id(row.get("id"), field="Confluence page ID")
-        body = _storage_body(row)
-        normalized_text = _storage_text(body)
-        version = _optional_object(row.get("version"))
-        version_number = _optional_integer(version.get("number"), field="page version")
-        source_updated_at = _optional_datetime(version.get("createdAt"))
-        source_created_at = _optional_datetime(row.get("createdAt"))
-        links = _optional_object(row.get("_links"))
-        source_body = _canonical_source_body(body)
+        page = self._page_snapshot(row)
         return SorExternalRecord(
             vendor_object_key=ConfluenceStream.PAGES,
-            external_id=page_id,
+            external_id=page.page_id,
             payload={
-                "title": _required_string(
-                    row.get("title"), field="Confluence page title"
-                ),
-                "space_external_id": _optional_id(row.get("spaceId")),
-                "parent_external_id": _page_parent_external_id(row),
+                "title": page.title,
+                "space_external_id": page.space_external_id,
+                "parent_external_id": page.parent_external_id,
                 "path": [],
                 "source_format": "confluence_storage",
-                "normalized_text": normalized_text,
-                "source_body": source_body,
-                "content_hash": _content_hash(normalized_text, source_body),
-                "version": str(version_number) if version_number is not None else None,
-                "lifecycle_state": _optional_string(row.get("status")),
-                "author_external_id": _optional_id(row.get("authorId")),
+                "normalized_text": page.normalized_text,
+                "source_body": page.source_body,
+                "content_hash": page.content_hash,
+                "version": page.version,
+                "lifecycle_state": page.lifecycle_state,
+                "author_external_id": page.author_external_id,
                 "label_external_ids": [],
-                "unsupported_blocks": list(_unsupported_macros(body)),
-                "source_created_at": source_created_at,
-                "source_updated_at": source_updated_at,
-            },
-            source_created_at=source_created_at,
-            source_updated_at=source_updated_at,
-            source_revision=str(version_number) if version_number is not None else None,
-            source_url=self._source_url(links.get("webui")),
-        )
-
-    def _external_body(self, row: Mapping[str, object]) -> SorExternalRecord:
-        page = self._external_page(row)
-        body = page.payload["source_body"]
-        unsupported = page.payload["unsupported_blocks"]
-        return SorExternalRecord(
-            vendor_object_key=ConfluenceStream.PAGE_BODIES,
-            external_id=f"{page.external_id}:body",
-            payload={
-                "document_external_id": page.external_id,
-                "parent_external_id": None,
-                "kind": "confluence_storage",
-                "order": 0,
-                "normalized_text": page.payload["normalized_text"],
-                "source_body": body,
-                "supported": not bool(unsupported),
+                "unsupported_blocks": list(page.unsupported_blocks),
                 "source_created_at": page.source_created_at,
                 "source_updated_at": page.source_updated_at,
             },
             source_created_at=page.source_created_at,
             source_updated_at=page.source_updated_at,
-            source_revision=page.source_revision,
+            source_revision=page.version,
             source_url=page.source_url,
+        )
+
+    def _external_body(self, row: Mapping[str, object]) -> SorExternalRecord:
+        page = self._page_snapshot(row)
+        return SorExternalRecord(
+            vendor_object_key=ConfluenceStream.PAGE_BODIES,
+            external_id=f"{page.page_id}:body",
+            payload={
+                "document_external_id": page.page_id,
+                "parent_external_id": None,
+                "kind": "confluence_storage",
+                "order": 0,
+                "normalized_text": page.normalized_text,
+                "source_body": page.source_body,
+                "supported": not page.unsupported_blocks,
+                "source_created_at": page.source_created_at,
+                "source_updated_at": page.source_updated_at,
+            },
+            source_created_at=page.source_created_at,
+            source_updated_at=page.source_updated_at,
+            source_revision=page.version,
+            source_url=page.source_url,
+        )
+
+    def _page_snapshot(
+        self,
+        row: Mapping[str, object],
+    ) -> _ConfluencePageSnapshot:
+        body = _storage_body(row)
+        normalized_text = _storage_text(body)
+        source_body = _canonical_source_body(body)
+        version = _optional_object(row.get("version"))
+        version_number = _optional_integer(version.get("number"), field="page version")
+        links = _optional_object(row.get("_links"))
+        return _ConfluencePageSnapshot(
+            page_id=_required_id(row.get("id"), field="Confluence page ID"),
+            title=_required_string(row.get("title"), field="Confluence page title"),
+            space_external_id=_optional_id(row.get("spaceId")),
+            parent_external_id=_page_parent_external_id(row),
+            normalized_text=normalized_text,
+            source_body=source_body,
+            content_hash=_content_hash(normalized_text, source_body),
+            version=str(version_number) if version_number is not None else None,
+            lifecycle_state=_optional_string(row.get("status")),
+            author_external_id=_optional_id(row.get("authorId")),
+            unsupported_blocks=_unsupported_macros(body),
+            source_created_at=_optional_datetime(row.get("createdAt")),
+            source_updated_at=_optional_datetime(version.get("createdAt")),
+            source_url=self._source_url(links.get("webui")),
         )
 
     def _external_current_version(
@@ -1278,18 +1337,20 @@ class ConfluenceKnowledgeAdapter:
     async def _create_page(self, command: SorCommandRequest) -> SorCommandResult:
         if command.target_external_id is not None:
             raise _invalid_command("Creating a Confluence page cannot target a record.")
-        payload = _document_write_payload(
-            command.payload,
-            operation=SorMutationOperation.CREATE,
-        )
+        if not isinstance(command.payload, KnowledgeCreateCommandPayload):
+            raise _invalid_command("Confluence create payload is invalid.")
+        if command.payload.space_external_id is None:
+            raise _invalid_command(
+                "Creating a Confluence page requires space_external_id."
+            )
         request: dict[str, object] = {
-            "spaceId": payload["space_external_id"],
+            "spaceId": _identifier(command.payload.space_external_id),
             "status": "current",
-            "title": payload["title"],
-            "body": _plain_text_body(payload.get("normalized_text")),
+            "title": command.payload.title,
+            "body": _plain_text_body(command.payload.normalized_text).to_wire(),
         }
-        if payload.get("parent_external_id") is not None:
-            request["parentId"] = payload["parent_external_id"]
+        if command.payload.parent_external_id is not None:
+            request["parentId"] = _identifier(command.payload.parent_external_id)
         try:
             response = await self._request(
                 "/pages",
@@ -1338,42 +1399,41 @@ class ConfluenceKnowledgeAdapter:
                 SorVendorErrorCode.VENDOR_SOURCE_CONFLICT,
                 "The Confluence page changed after the Agent read it.",
             )
-        payload = _document_write_payload(
-            command.payload,
-            operation=SorMutationOperation.UPDATE,
-        )
+        if append:
+            if not isinstance(command.payload, KnowledgeTextCommandPayload):
+                raise _invalid_command("Confluence append payload is invalid.")
+            requested_title = None
+            requested_text = command.payload.normalized_text
+        else:
+            if not isinstance(command.payload, KnowledgeUpdateCommandPayload):
+                raise _invalid_command("Confluence update payload is invalid.")
+            requested_title = command.payload.title
+            requested_text = command.payload.normalized_text
         current_body = _storage_body(current)
         current_title = _required_string(
             current.get("title"),
             field="Confluence page title",
         )
-        requested_text = payload.get("normalized_text")
         if append:
-            if not isinstance(requested_text, str) or not requested_text:
-                raise _invalid_command(
-                    "Appending to Confluence requires normalized_text."
-                )
             storage_body = _bounded_storage_body(
                 current_body + _plain_text_storage(requested_text),
                 response=False,
             )
         elif requested_text is None:
             storage_body = current_body
-        elif isinstance(requested_text, str):
-            storage_body = _plain_text_storage(requested_text)
         else:
-            raise _invalid_command("Confluence normalized_text must be text.")
+            storage_body = _plain_text_storage(requested_text)
         response = await self._request(
             f"/pages/{page_id}",
             method="PUT",
             payload={
                 "id": page_id,
                 "status": "current",
-                "title": payload.get("title") or current_title,
+                "title": requested_title or current_title,
                 "body": knowledge_source_body(
                     KnowledgeBodyRepresentation.CONFLUENCE_STORAGE,
                     storage_body,
-                ),
+                ).to_wire(),
                 "version": {"number": version + 1},
             },
             idempotency_key=command.idempotency_key,
@@ -1476,8 +1536,13 @@ def _storage_body(row: Mapping[str, object]) -> str:
 
 
 def _content_hash(normalized_text: str, source_body: object) -> str:
+    source_value = (
+        source_body.to_wire()
+        if isinstance(source_body, KnowledgeSourceBody)
+        else source_body
+    )
     encoded = json.dumps(
-        {"normalized_text": normalized_text, "source_body": source_body},
+        {"normalized_text": normalized_text, "source_body": source_value},
         ensure_ascii=False,
         allow_nan=False,
         separators=(",", ":"),
@@ -1486,13 +1551,13 @@ def _content_hash(normalized_text: str, source_body: object) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _canonical_source_body(value: str) -> dict[str, object]:
-    body: dict[str, object] = knowledge_source_body(
+def _canonical_source_body(value: str) -> KnowledgeSourceBody:
+    body = knowledge_source_body(
         KnowledgeBodyRepresentation.CONFLUENCE_STORAGE,
         value,
     )
     encoded = json.dumps(
-        body,
+        body.to_wire(),
         ensure_ascii=False,
         allow_nan=False,
         separators=(",", ":"),
@@ -1503,7 +1568,7 @@ def _canonical_source_body(value: str) -> dict[str, object]:
     return body
 
 
-def _plain_text_body(value: object) -> dict[str, str]:
+def _plain_text_body(value: object) -> KnowledgeSourceBody:
     text = value if isinstance(value, str) else ""
     return knowledge_source_body(
         KnowledgeBodyRepresentation.CONFLUENCE_STORAGE,
@@ -1529,50 +1594,6 @@ def _bounded_storage_body(value: str, *, response: bool) -> str:
             raise _invalid_response("Confluence storage content is too large.")
         raise _invalid_command("Confluence document content is too large.")
     return value
-
-
-def _document_write_payload(
-    payload: Mapping[str, object],
-    *,
-    operation: SorMutationOperation,
-) -> dict[str, object]:
-    allowed = {"title", "space_external_id", "parent_external_id", "normalized_text"}
-    if not payload or set(payload) - allowed:
-        raise _invalid_command(
-            "Confluence document writes accept only mapped title, space, parent, and content."
-        )
-    result: dict[str, object] = {}
-    title = payload.get("title")
-    if title is not None:
-        if (
-            not isinstance(title, str)
-            or not title.strip()
-            or len(title) > MAX_CANONICAL_TEXT_CHARS
-        ):
-            raise _invalid_command("Confluence title is invalid.")
-        result["title"] = title.strip()
-    for key in ("space_external_id", "parent_external_id"):
-        value = payload.get(key)
-        if value is not None:
-            if not isinstance(value, str):
-                raise _invalid_command(f"Confluence {key} must be text.")
-            result[key] = _identifier(value)
-    normalized_text = payload.get("normalized_text")
-    if normalized_text is not None:
-        if (
-            not isinstance(normalized_text, str)
-            or len(normalized_text) > MAX_CANONICAL_TEXT_CHARS
-        ):
-            raise _invalid_command("Confluence normalized_text is invalid.")
-        result["normalized_text"] = normalized_text
-    if operation is SorMutationOperation.CREATE and (
-        not isinstance(result.get("title"), str)
-        or not isinstance(result.get("space_external_id"), str)
-    ):
-        raise _invalid_command(
-            "Creating a Confluence page requires title and space_external_id."
-        )
-    return result
 
 
 def _cursor_query(cursor: str | None, *, limit: int) -> dict[str, object]:
@@ -1976,7 +1997,7 @@ def _split_composite(value: str, *, label: str) -> tuple[str, str]:
 def _confluence_site_origin(value: str | None) -> str:
     normalized = _normalized_origin(value)
     if normalized is None or not normalized.removeprefix("https://").endswith(
-        ".atlassian.net"
+        f".{ATLASSIAN_INSTANCE_HOST_SUFFIX}"
     ):
         raise _invalid_operation(
             SorVendorErrorCode.VENDOR_SITE_INVALID,

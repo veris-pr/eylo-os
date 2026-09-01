@@ -24,6 +24,7 @@ from .contracts import (
     KnowledgeDocument,
     KnowledgeEntityKind,
     KnowledgeProperty,
+    KnowledgeSourceBody,
     KnowledgeSpace,
     KnowledgeVersion,
 )
@@ -93,7 +94,7 @@ class KnowledgeProjectionService:
                 "path": list(document.path),
                 "source_format": document.source_format,
                 "normalized_text": document.normalized_text,
-                "source_body": document.source_body,
+                "source_body": _source_body_wire(document.source_body),
                 "content_hash": document.content_hash,
                 "version": document.version,
                 "lifecycle_state": document.lifecycle_state,
@@ -134,7 +135,7 @@ class KnowledgeProjectionService:
                 "kind": block.kind,
                 "position": block.order,
                 "normalized_text": block.normalized_text,
-                "source_body": block.source_body,
+                "source_body": _source_body_wire(block.source_body),
                 "supported": block.supported,
                 "source_created_at": block.source_created_at,
                 "source_updated_at": block.source_updated_at,
@@ -165,7 +166,7 @@ class KnowledgeProjectionService:
                 "message": version.message,
                 "source_format": version.source_format,
                 "normalized_text": version.normalized_text,
-                "source_body": version.source_body,
+                "source_body": _source_body_wire(version.source_body),
                 "source_created_at": version.created_at,
             },
             search_values=(version.number, version.message, version.normalized_text),
@@ -343,7 +344,7 @@ def _validate_document(document: KnowledgeDocument) -> None:
     _identities(document.path, maximum_items=128, field="document path")
     _required(document.source_format, maximum=96, field="document source format")
     _bounded_text(document.normalized_text, field="document normalized text")
-    _json_value(document.source_body, field="document source body")
+    _json_value(_source_body_wire(document.source_body), field="document source body")
     if _SHA256_PATTERN.fullmatch(document.content_hash) is None:
         raise SorProjectionError("Document content hash is invalid.")
     _optional(document.version, maximum=160, field="document version")
@@ -378,7 +379,7 @@ def _validate_block(block: KnowledgeBlock) -> None:
     if block.order < 0:
         raise SorProjectionError("Document block order is invalid.")
     _optional(block.normalized_text, maximum=1_000_000, field="block text")
-    _json_value(block.source_body, field="block source body")
+    _json_value(_source_body_wire(block.source_body), field="block source body")
     _aware_optional(block.source_created_at, field="block creation")
     _aware_optional(block.source_updated_at, field="block update")
 
@@ -391,7 +392,7 @@ def _validate_version(version: KnowledgeVersion) -> None:
     _optional(version.message, maximum=1_000_000, field="version message")
     _optional(version.source_format, maximum=96, field="version source format")
     _optional(version.normalized_text, maximum=1_000_000, field="version text")
-    _json_value(version.source_body, field="version source body")
+    _json_value(_source_body_wire(version.source_body), field="version source body")
     _aware(version.created_at, field="version creation")
 
 
@@ -481,6 +482,12 @@ def _mapping(value: Mapping[str, object], *, field: str) -> None:
     if any(not isinstance(key, str) or not key for key in value):
         raise SorProjectionError(f"Document {field} are invalid.")
     _json_size(value, field=field)
+
+
+def _source_body_wire(
+    value: KnowledgeSourceBody | None,
+) -> dict[str, object] | None:
+    return None if value is None else value.to_wire()
 
 
 def _json_value(

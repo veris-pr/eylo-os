@@ -14,7 +14,9 @@ from eylo.sor.shared.contracts import (
     SorAdapterContext,
     SorImplementationStatus,
     SorLifecycleAdapter,
+    SorOAuthClientAuthMethod,
     SorOAuthSpec,
+    SorOAuthTokenRequestFormat,
     SorProfile,
     SorProfileSpec,
     SorToolEffect,
@@ -315,16 +317,16 @@ class SorRegistry:
                     f"SOR vendor stream {stream.key} scope category cannot be blank."
                 )
             blank_relationships = {
-                name
-                for name, target in stream.relationship_targets.items()
-                if not name.strip() or not target.strip()
+                role
+                for role, target in stream.relationship_targets.by_role.items()
+                if not target.strip()
             }
             if blank_relationships:
                 raise ValueError(
                     f"SOR vendor stream {stream.key} has blank relationship keys."
                 )
             unknown_relationship_targets = (
-                set(stream.relationship_targets.values()) - stream_key_set
+                stream.relationship_targets.target_streams() - stream_key_set
             )
             if unknown_relationship_targets:
                 raise ValueError(
@@ -332,7 +334,7 @@ class SorRegistry:
                     f"streams: {sorted(unknown_relationship_targets)}."
                 )
             missing_relationship_dependencies = (
-                set(stream.relationship_targets.values()) - {stream.key}
+                stream.relationship_targets.target_streams() - {stream.key}
             ) - stream.depends_on
             if missing_relationship_dependencies:
                 raise ValueError(
@@ -583,9 +585,9 @@ class SorRegistry:
             raise ValueError("SOR OAuth scope delimiter cannot be empty.")
         if oauth.scope_response_delimiter == "":
             raise ValueError("SOR OAuth response scope delimiter cannot be empty.")
-        if oauth.token_request_format not in {"form", "json"}:
+        if oauth.token_request_format not in set(SorOAuthTokenRequestFormat):
             raise ValueError("SOR OAuth token request format is invalid.")
-        if oauth.token_client_auth_method not in {"body", "basic"}:
+        if oauth.token_client_auth_method not in set(SorOAuthClientAuthMethod):
             raise ValueError("SOR OAuth client authentication method is invalid.")
         for label, value in (
             ("authorization response type", oauth.authorization_response_type),

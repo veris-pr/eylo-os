@@ -29,8 +29,8 @@ from eylo.sor.runtime.commands import (
 )
 from eylo.sor.runtime.tools import (
     SorDocumentGetInput,
-    SorMutationToolInput,
     SorReadSelectionInput,
+    mutation_tool_input_model,
     read_tool_input_model,
     resolve_sor_tool,
 )
@@ -157,7 +157,9 @@ async def execute_sor_mutation_tool(
         return _error_outcome("sor_tool_unavailable")
     profile, spec = resolved
     try:
-        command = SorMutationToolInput.model_validate(dict(tool_input))
+        command = mutation_tool_input_model(profile=profile, spec=spec).model_validate(
+            dict(tool_input)
+        )
         entity = _selected_entity(spec, None)
         agent_id, agent_revision = _agent_identity(conversation_context)
         organization_id = UUID(str(conversation_context.conversation.organization_id))
@@ -187,7 +189,7 @@ async def execute_sor_mutation_tool(
             agent_revision=agent_revision,
             agent_run_id=agent_run_id,
             tool_call_id=tool_call_id,
-            payload=dict(command.payload),
+            payload=command.payload,
             target_record_id=command.target_record_id,
             enforce_target_revision=command.target_record_id is not None,
         )

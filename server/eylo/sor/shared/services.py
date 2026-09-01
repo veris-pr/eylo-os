@@ -11,6 +11,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from uuid import UUID
 
+from pydantic import ValidationError
 from sqlalchemy import delete, func, or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,11 +27,13 @@ from eylo.sor.runtime.registry import SorRegistry
 from .contracts import (
     SorAdapterCapabilityManifest,
     SorCanonicalFieldSpec,
+    SorCanonicalPayload,
     SorConfigurationFieldKind,
     SorCustomFieldType,
     SorDiscoveredField,
     SorDiscoveredSchema,
     SorExternalRecord,
+    SorFieldDataType,
     SorFieldMappingDirection,
     SorFieldMappingDraft,
     SorFieldMappingState,
@@ -49,6 +52,7 @@ from .events import (
     register_schema_changed,
     register_source_transition,
 )
+from .json_values import SorJsonValueError, to_json_value
 from .models import (
     SorCustomFieldDefinitionModel,
     SorCustomFieldValueModel,
@@ -66,7 +70,15 @@ _FIELD_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$")
 _CANONICAL_PATH = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*$")
 _SAFE_ERROR = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
 _EMPTY_AS_NULL_SOURCE_TYPES = frozenset(
-    {"boolean", "bounded_json", "date", "decimal", "enum", "string_array", "timestamp"}
+    {
+        SorFieldDataType.BOOLEAN,
+        SorFieldDataType.BOUNDED_JSON,
+        SorFieldDataType.DATE,
+        SorFieldDataType.DECIMAL,
+        SorFieldDataType.ENUM,
+        SorFieldDataType.STRING_ARRAY,
+        SorFieldDataType.TIMESTAMP,
+    }
 )
 
 
@@ -1383,6 +1395,7 @@ class SorProjectionService:
         source_id: UUID,
         external_record: SorExternalRecord,
         canonical_entity_kind: str,
+        canonical_payload_type: type[SorCanonicalPayload],
         human_external_key: str | None = None,
         sync_run_id: UUID | None = None,
     ) -> SorProjectionOutcome:
@@ -1432,13 +1445,13 @@ class SorProjectionService:
         custom: list[tuple[SorFieldMappingModel, object]] = []
         agent_visible: dict[str, object] = {}
         for field in fields:
-            if field.vendor_field_key not in external_record.payload:
+            if not external_record.payload.has_field(field.vendor_field_key):
                 if field.nullable:
                     continue
                 raise SorProjectionError(
                     f"Required source field is missing: {field.vendor_field_key}."
                 )
-            raw = external_record.payload[field.vendor_field_key]
+            raw = external_record.payload.value(field.vendor_field_key)
             if _mapped_value_is_absent(field, raw):
                 if field.nullable:
                     continue
@@ -1474,6 +1487,12 @@ class SorProjectionService:
             field_name="Agent-visible payload",
             expected_type=dict,
         )
+        try:
+            canonical_payload = canonical_payload_type.model_validate(canonical)
+        except ValidationError as error:
+            raise SorProjectionError(
+                "Mapped canonical payload does not satisfy the profile contract."
+            ) from error
         payload_hash = _sha256(selected)
         search_text = _projection_search_text(canonical, custom)
         agent_search_text = _search_text(agent_visible)
@@ -1567,7 +1586,7 @@ class SorProjectionService:
         return SorProjectionOutcome(
             record_id=record.id,
             disposition=disposition,
-            canonical_values=canonical,
+            canonical_payload=canonical_payload,
             custom_field_keys=keys,
         )
 
@@ -1905,7 +1924,9 @@ def _snapshot_fields(
             field = SorDiscoveredField(
                 key=field_key,
                 label=str(raw_field.get("label") or field_key),
-                data_type=str(raw_field.get("data_type") or "unknown"),
+                data_type=SorFieldDataType(
+                    raw_field.get("data_type") or SorFieldDataType.UNKNOWN
+                ),
                 nullable=bool(raw_field.get("nullable")),
                 writable=bool(raw_field.get("writable")),
                 choices=(
@@ -2033,7 +2054,8 @@ def _mapped_value_is_absent(field: SorFieldMappingModel, value: object) -> bool:
     return (
         value == ""
         and field.nullable
-        and field.source_data_type.casefold() in _EMPTY_AS_NULL_SOURCE_TYPES
+        and SorFieldDataType(field.source_data_type.casefold())
+        in _EMPTY_AS_NULL_SOURCE_TYPES
     )
 
 
@@ -2189,23 +2211,10 @@ def _custom_field_key(definition_id: UUID) -> str:
 
 
 def _json_safe(value: object) -> object:
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    if isinstance(value, Decimal):
-        return str(value)
-    if isinstance(value, datetime):
-        if value.tzinfo is None:
-            raise SorProjectionError("Source datetimes must include a timezone.")
-        return value.astimezone(timezone.utc).isoformat()
-    if isinstance(value, date):
-        return value.isoformat()
-    if isinstance(value, UUID):
-        return str(value)
-    if isinstance(value, Mapping):
-        return {str(key): _json_safe(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_safe(item) for item in value]
-    raise SorProjectionError("Source payload contains a non-JSON value.")
+    try:
+        return to_json_value(value)
+    except SorJsonValueError as error:
+        raise SorProjectionError("Source payload contains a non-JSON value.") from error
 
 
 def _sha256(value: object) -> str:

@@ -33,6 +33,7 @@ from eylo.sor.runtime.adapters import (
     acquire_source_adapter,
 )
 from eylo.sor.runtime.catalog import get_sor_registry
+from eylo.sor.runtime.command_payloads import validate_command_payload
 from eylo.sor.runtime.projection import project_source_record
 from eylo.sor.runtime.registry import SorRegistry
 from eylo.sor.runtime.serialization import json_safe_payload
@@ -45,6 +46,7 @@ from eylo.sor.runtime.work import (
 )
 from eylo.sor.shared.contracts import (
     SorAdapterCapabilityManifest,
+    SorCommandPayload,
     SorCommandRequest,
     SorCommandResult,
     SorCommandRevisionConflict,
@@ -55,6 +57,7 @@ from eylo.sor.shared.contracts import (
     SorProfile,
     SorRecoveryPolicy,
     SorSourceAccess,
+    SorSourcePayload,
     SorSourceState,
     SorToolEffect,
     SorVendorOperationError,
@@ -132,11 +135,11 @@ class _CommandClaim:
     vendor_key: str
     profile_tool: str
     idempotency_key: str
-    payload: dict[str, object]
+    payload: SorCommandPayload
     target_vendor_object_key: str | None
     target_external_id: str | None
     expected_source_revision: str | None
-    target_selected_payload: dict[str, object] | None
+    target_selected_payload: SorSourcePayload | None
     result_vendor_object_key: str
     supports_conditional_writes: bool
     mutation_applied: bool
@@ -160,7 +163,7 @@ async def file_sor_command(
     agent_revision: int,
     agent_run_id: UUID,
     tool_call_id: str,
-    payload: dict[str, object],
+    payload: SorCommandPayload,
     target_record_id: UUID | None = None,
     enforce_target_revision: bool = False,
     registry: SorRegistry | None = None,
@@ -560,7 +563,7 @@ async def _create_command(
     agent_revision: int,
     agent_run_id: UUID,
     tool_call_id: str,
-    payload: dict[str, object],
+    payload: SorCommandPayload,
     target_record_id: UUID | None,
     enforce_target_revision: bool,
     registry: SorRegistry,
@@ -568,7 +571,8 @@ async def _create_command(
     normalized_tool_call_id = tool_call_id.strip()
     if not 1 <= len(normalized_tool_call_id) <= 320:
         raise SorConfigurationError("SOR tool call ID is invalid.")
-    _canonical_json(payload, maximum=SOR_COMMAND_MAX_PAYLOAD_BYTES)
+    wire_payload = payload.to_wire()
+    _canonical_json(wire_payload, maximum=SOR_COMMAND_MAX_PAYLOAD_BYTES)
     idempotency_key = f"sor-command:v1:{agent_run_id}:{normalized_tool_call_id}"
     stable_intent = {
         "organization_id": str(organization_id),
@@ -580,7 +584,7 @@ async def _create_command(
         "tool_call_id": normalized_tool_call_id,
         "target_record_id": str(target_record_id) if target_record_id else None,
         "enforce_target_revision": enforce_target_revision,
-        "payload": payload,
+        "payload": wire_payload,
     }
     request_hash = hashlib.sha256(
         _canonical_json(stable_intent, maximum=SOR_COMMAND_MAX_PAYLOAD_BYTES)
@@ -623,6 +627,12 @@ async def _create_command(
         profile=source.profile,
         name=profile_tool,
     )
+    command_payload = validate_command_payload(
+        profile=source.profile,
+        tool_name=profile_tool,
+        value=payload,
+    )
+    wire_payload = command_payload.to_wire()
     manifest = registry.get_manifest(
         profile=source.profile,
         vendor_key=source.vendor_key,
@@ -706,7 +716,7 @@ async def _create_command(
     command_id = UUID(str(uuid_utils.uuid7()))
     request_payload = encrypt_json_payload(
         {
-            "payload": payload,
+            "payload": wire_payload,
             "target_vendor_object_key": (
                 target.vendor_object_key if target is not None else None
             ),
@@ -958,11 +968,16 @@ async def _load_claim(
             purpose="command-request",
             maximum_bytes=SOR_COMMAND_MAX_PAYLOAD_BYTES,
         )
-        payload = request.get("payload")
-        if not isinstance(payload, dict) or not all(
-            isinstance(key, str) for key in payload
+        payload_wire = request.get("payload")
+        if not isinstance(payload_wire, dict) or not all(
+            isinstance(key, str) for key in payload_wire
         ):
             raise SorSecretEnvelopeError("SOR command payload is malformed.")
+        payload = validate_command_payload(
+            profile=row.profile,
+            tool_name=row.profile_tool,
+            value=payload_wire,
+        )
         object_key = request.get("target_vendor_object_key")
         external_id = request.get("target_external_id")
         if object_key is not None and not isinstance(object_key, str):
@@ -988,7 +1003,9 @@ async def _load_claim(
                 raise SorSecretEnvelopeError(
                     "SOR command target does not match its canonical record."
                 )
-            target_selected_payload = dict(target.selected_raw_payload)
+            target_selected_payload = SorSourcePayload.from_mapping(
+                target.selected_raw_payload
+            )
         mutation_result = (
             _decode_stored_result(row.safe_result)
             if row.mutation_applied_at is not None
@@ -1460,7 +1477,7 @@ def _record_version(record: SorRecordModel | None) -> str | None:
 def _external_record_version(
     record: SorExternalRecord,
     *,
-    selected_payload: dict[str, object] | None,
+    selected_payload: SorSourcePayload | None,
     expected: str,
 ) -> str:
     if not expected.startswith("hash:"):
@@ -1469,7 +1486,10 @@ def _external_record_version(
         return record.source_revision
     if selected_payload is None:
         raise SorProjectionError("Hash-versioned SOR command lost its target fields.")
-    current = {key: record.payload.get(key) for key in selected_payload}
+    current = {
+        key: record.payload.value(key) if record.payload.has_field(key) else None
+        for key in selected_payload.field_names()
+    }
     payload = _canonical_json(current, maximum=SOR_COMMAND_MAX_PAYLOAD_BYTES)
     return f"hash:{hashlib.sha256(payload).hexdigest()}"
 
@@ -1559,7 +1579,7 @@ def _decode_external_record(value: object) -> SorExternalRecord:
     return SorExternalRecord(
         vendor_object_key=value["vendor_object_key"],
         external_id=value["external_id"],
-        payload=value["payload"],
+        payload=SorSourcePayload.from_mapping(value["payload"]),
         source_created_at=_parse_datetime(value["source_created_at"]),
         source_updated_at=_parse_datetime(value["source_updated_at"]),
         source_revision=_optional_string(value["source_revision"]),

@@ -16,11 +16,17 @@ from urllib.parse import urlsplit
 from eylo.modules.connections.domain import ConnectionAuthKind
 from eylo.sor.crm.contracts import (
     CrmActivity,
+    CrmActivityPayload,
     CrmCompany,
+    CrmCompanyPayload,
     CrmContact,
+    CrmContactPayload,
     CrmDeal,
+    CrmDealPayload,
     CrmDealState,
     CrmEntityKind,
+    CrmMappedFieldsCommandPayload,
+    CrmMoveDealCommandPayload,
     CrmToolName,
 )
 from eylo.sor.runtime.http import SorHttpTransport, SorJsonHttpClient, SorJsonResponse
@@ -38,11 +44,14 @@ from eylo.sor.shared.contracts import (
     SorDiscoveredSchema,
     SorExternalRecord,
     SorExternalRecordNotFound,
+    SorFieldDataType,
     SorMutationOperation,
     SorOAuthSpec,
     SorProfile,
     SorRecordPage,
     SorRecoveryPolicy,
+    SorRelationshipRole,
+    SorRelationshipTargets,
     SorVendorErrorCode,
     SorVendorOperationError,
     SorVendorStreamSpec,
@@ -74,8 +83,8 @@ _STREAM_ENTITY = {
 }
 _RELATIONSHIP_TARGETS = {
     SalesforceStream.OPPORTUNITY: {
-        "contact": SalesforceStream.CONTACT,
-        "company": SalesforceStream.ACCOUNT,
+        SorRelationshipRole.CONTACT: SalesforceStream.CONTACT,
+        SorRelationshipRole.COMPANY: SalesforceStream.ACCOUNT,
     },
 }
 _TOOL_STREAM = {
@@ -154,7 +163,9 @@ SALESFORCE_MANIFEST = SorAdapterCapabilityManifest(
             canonical_entity="deal",
             change_strategies=frozenset({SorChangeStrategy.UPDATED_AT}),
             depends_on=frozenset({SalesforceStream.CONTACT, SalesforceStream.ACCOUNT}),
-            relationship_targets=_RELATIONSHIP_TARGETS[SalesforceStream.OPPORTUNITY],
+            relationship_targets=SorRelationshipTargets(
+                _RELATIONSHIP_TARGETS[SalesforceStream.OPPORTUNITY]
+            ),
         ),
         SorVendorStreamSpec(
             key=SalesforceStream.TASK,
@@ -393,15 +404,23 @@ class SalesforceCrmAdapter:
                 "A CRM update action requires an existing record.",
                 recovery=SorRecoveryPolicy.TERMINAL,
             )
-        if command.tool_name == CrmToolName.MOVE_DEAL and set(command.payload) != {
-            "stage_external_id"
-        }:
+        if command.tool_name == CrmToolName.MOVE_DEAL:
+            if not isinstance(command.payload, CrmMoveDealCommandPayload):
+                raise SorVendorOperationError(
+                    SorVendorErrorCode.VENDOR_COMMAND_INVALID,
+                    "Moving a deal requires a typed stage selection.",
+                    recovery=SorRecoveryPolicy.TERMINAL,
+                )
+            field_values: Mapping[str, object] = command.payload.to_wire()
+        elif isinstance(command.payload, CrmMappedFieldsCommandPayload):
+            field_values = command.payload.fields
+        else:
             raise SorVendorOperationError(
                 SorVendorErrorCode.VENDOR_COMMAND_INVALID,
-                "Moving a deal requires only stage_external_id.",
+                "The CRM action has an invalid command payload.",
                 recovery=SorRecoveryPolicy.TERMINAL,
             )
-        values = self._write_fields(stream_key, command.payload)
+        values = self._write_fields(stream_key, field_values)
         path = f"{SALESFORCE_API_PREFIX}/sobjects/{stream_key}"
         method = "POST"
         record_id: str | None = None
@@ -447,16 +466,19 @@ class SalesforceCrmAdapter:
             response={"status": "accepted"},
         )
 
-    def normalize_contact(self, record: SorExternalRecord) -> CrmContact:
-        values = record.payload
-        name = _optional_string(values.get("name"))
+    def normalize_contact(
+        self,
+        record: SorExternalRecord,
+        payload: CrmContactPayload,
+    ) -> CrmContact:
+        name = _optional_string(payload.name)
         if name is None:
             name = (
                 " ".join(
                     value
                     for value in (
-                        _optional_string(values.get("first_name")),
-                        _optional_string(values.get("last_name")),
+                        _optional_string(payload.first_name),
+                        _optional_string(payload.last_name),
                     )
                     if value
                 )
@@ -465,65 +487,70 @@ class SalesforceCrmAdapter:
         return CrmContact(
             external_id=record.external_id,
             name=name,
-            primary_email=_optional_string(values.get("primary_email")),
-            primary_phone=_optional_string(values.get("primary_phone")),
-            job_title=_optional_string(values.get("job_title")),
-            lifecycle_stage=_optional_string(values.get("lifecycle_stage")),
-            owner_external_id=_optional_string(values.get("owner_external_id")),
+            primary_email=_optional_string(payload.primary_email),
+            primary_phone=_optional_string(payload.primary_phone),
+            job_title=_optional_string(payload.job_title),
+            lifecycle_stage=_optional_string(payload.lifecycle_stage),
+            owner_external_id=_optional_string(payload.owner_external_id),
             source_updated_at=record.source_updated_at,
             source_url=record.source_url,
         )
 
-    def normalize_company(self, record: SorExternalRecord) -> CrmCompany:
-        values = record.payload
+    def normalize_company(
+        self,
+        record: SorExternalRecord,
+        payload: CrmCompanyPayload,
+    ) -> CrmCompany:
         return CrmCompany(
             external_id=record.external_id,
-            name=_optional_string(values.get("name")),
-            domain=_optional_string(values.get("domain")),
-            industry=_optional_string(values.get("industry")),
-            owner_external_id=_optional_string(values.get("owner_external_id")),
+            name=_optional_string(payload.name),
+            domain=_optional_string(payload.domain),
+            industry=_optional_string(payload.industry),
+            owner_external_id=_optional_string(payload.owner_external_id),
             source_updated_at=record.source_updated_at,
             source_url=record.source_url,
         )
 
-    def normalize_deal(self, record: SorExternalRecord) -> CrmDeal:
-        values = record.payload
+    def normalize_deal(
+        self,
+        record: SorExternalRecord,
+        payload: CrmDealPayload,
+    ) -> CrmDeal:
         return CrmDeal(
             external_id=record.external_id,
-            title=_required_string(values.get("title"), field="CRM deal title"),
-            pipeline_external_id=_optional_string(values.get("pipeline_external_id")),
-            stage_external_id=_optional_string(values.get("stage_external_id")),
-            native_stage=_optional_string(values.get("native_stage")),
-            normalized_state=CrmDealState.from_value(
-                _optional_string(values.get("normalized_state"))
-            ),
-            amount=_optional_decimal(values.get("amount")),
-            currency=_optional_string(values.get("currency")),
-            probability=_optional_decimal(values.get("probability")),
-            expected_close_date=_optional_date(values.get("expected_close_date")),
-            owner_external_id=_optional_string(values.get("owner_external_id")),
-            contact_external_ids=_string_tuple(values.get("contact_external_ids")),
-            company_external_ids=_string_tuple(values.get("company_external_ids")),
+            title=_required_string(payload.title, field="CRM deal title"),
+            pipeline_external_id=_optional_string(payload.pipeline_external_id),
+            stage_external_id=_optional_string(payload.stage_external_id),
+            native_stage=_optional_string(payload.native_stage),
+            normalized_state=payload.normalized_state,
+            amount=payload.amount,
+            currency=_optional_string(payload.currency),
+            probability=payload.probability,
+            expected_close_date=payload.expected_close_date,
+            owner_external_id=_optional_string(payload.owner_external_id),
+            contact_external_ids=payload.contact_external_ids,
+            company_external_ids=payload.company_external_ids,
             source_updated_at=record.source_updated_at,
             source_url=record.source_url,
         )
 
-    def normalize_activity(self, record: SorExternalRecord) -> CrmActivity:
-        values = record.payload
+    def normalize_activity(
+        self,
+        record: SorExternalRecord,
+        payload: CrmActivityPayload,
+    ) -> CrmActivity:
         return CrmActivity(
             external_id=record.external_id,
-            kind=_optional_string(values.get("kind")) or "task",
-            subject=_optional_string(values.get("subject")),
-            normalized_text=_optional_string(values.get("normalized_text")),
+            kind=_optional_string(payload.kind) or "task",
+            subject=_optional_string(payload.subject),
+            normalized_text=_optional_string(payload.normalized_text),
             occurred_at=_required_datetime(
-                values.get("occurred_at"),
+                payload.occurred_at,
                 field="CRM activity occurred_at",
             ),
-            actor_external_id=_optional_string(values.get("actor_external_id")),
-            participant_external_ids=_string_tuple(
-                values.get("participant_external_ids")
-            ),
-            related_external_ids=_string_tuple(values.get("related_external_ids")),
+            actor_external_id=_optional_string(payload.actor_external_id),
+            participant_external_ids=payload.participant_external_ids,
+            related_external_ids=payload.related_external_ids,
             source_url=record.source_url,
         )
 
@@ -866,20 +893,20 @@ def _discovered_field(row: Mapping[str, object]) -> SorDiscoveredField:
     )
 
 
-def _field_type(value: object) -> str:
+def _field_type(value: object) -> SorFieldDataType:
     field_type = (_optional_string(value) or "").casefold()
     if field_type == "boolean":
-        return "boolean"
+        return SorFieldDataType.BOOLEAN
     if field_type == "date":
-        return "date"
+        return SorFieldDataType.DATE
     if field_type == "datetime":
-        return "timestamp"
+        return SorFieldDataType.TIMESTAMP
     if field_type in {"currency", "double", "int", "long", "percent"}:
-        return "decimal"
+        return SorFieldDataType.DECIMAL
     if field_type == "multipicklist":
-        return "string_array"
+        return SorFieldDataType.STRING_ARRAY
     if field_type in {"combobox", "picklist"}:
-        return "enum"
+        return SorFieldDataType.ENUM
     if field_type in {
         "email",
         "encryptedstring",
@@ -891,8 +918,8 @@ def _field_type(value: object) -> str:
         "time",
         "url",
     }:
-        return "text"
-    return "bounded_json"
+        return SorFieldDataType.TEXT
+    return SorFieldDataType.BOUNDED_JSON
 
 
 def _query_fields(selected_fields: tuple[str, ...]) -> tuple[str, ...]:

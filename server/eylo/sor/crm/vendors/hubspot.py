@@ -21,11 +21,17 @@ from urllib.parse import urlsplit
 from eylo.modules.connections.domain import ConnectionAuthKind
 from eylo.sor.crm.contracts import (
     CrmActivity,
+    CrmActivityPayload,
     CrmCompany,
+    CrmCompanyPayload,
     CrmContact,
+    CrmContactPayload,
     CrmDeal,
+    CrmDealPayload,
     CrmDealState,
     CrmEntityKind,
+    CrmMappedFieldsCommandPayload,
+    CrmMoveDealCommandPayload,
     CrmToolName,
 )
 from eylo.sor.runtime.http import (
@@ -48,11 +54,14 @@ from eylo.sor.shared.contracts import (
     SorDiscoveredSchema,
     SorExternalRecord,
     SorExternalRecordNotFound,
+    SorFieldDataType,
     SorMutationOperation,
     SorOAuthSpec,
     SorProfile,
     SorRecordPage,
     SorRecoveryPolicy,
+    SorRelationshipRole,
+    SorRelationshipTargets,
     SorVendorErrorCode,
     SorVendorOperationError,
     SorVendorStreamSpec,
@@ -91,13 +100,13 @@ _STREAM_ENTITY = {
 }
 _RELATIONSHIP_TARGETS = {
     HubSpotStream.DEALS: {
-        "contact": HubSpotStream.CONTACTS,
-        "company": HubSpotStream.COMPANIES,
+        SorRelationshipRole.CONTACT: HubSpotStream.CONTACTS,
+        SorRelationshipRole.COMPANY: HubSpotStream.COMPANIES,
     },
     HubSpotStream.NOTES: {
-        "contact": HubSpotStream.CONTACTS,
-        "company": HubSpotStream.COMPANIES,
-        "deal": HubSpotStream.DEALS,
+        SorRelationshipRole.CONTACT: HubSpotStream.CONTACTS,
+        SorRelationshipRole.COMPANY: HubSpotStream.COMPANIES,
+        SorRelationshipRole.DEAL: HubSpotStream.DEALS,
     },
 }
 _ASSOCIATION_FIELDS = {
@@ -231,7 +240,9 @@ HUBSPOT_MANIFEST = SorAdapterCapabilityManifest(
             canonical_entity="deal",
             change_strategies=frozenset({SorChangeStrategy.FULL_RECONCILE}),
             depends_on=frozenset({HubSpotStream.CONTACTS, HubSpotStream.COMPANIES}),
-            relationship_targets=_RELATIONSHIP_TARGETS[HubSpotStream.DEALS],
+            relationship_targets=SorRelationshipTargets(
+                _RELATIONSHIP_TARGETS[HubSpotStream.DEALS]
+            ),
         ),
         SorVendorStreamSpec(
             key=HubSpotStream.NOTES,
@@ -242,7 +253,9 @@ HUBSPOT_MANIFEST = SorAdapterCapabilityManifest(
             depends_on=frozenset(
                 {HubSpotStream.CONTACTS, HubSpotStream.COMPANIES, HubSpotStream.DEALS}
             ),
-            relationship_targets=_RELATIONSHIP_TARGETS[HubSpotStream.NOTES],
+            relationship_targets=SorRelationshipTargets(
+                _RELATIONSHIP_TARGETS[HubSpotStream.NOTES]
+            ),
         ),
     ),
     readable_entities=frozenset(_STREAM_ENTITY.values()),
@@ -485,15 +498,23 @@ class HubSpotCrmAdapter:
                 "A CRM update action requires an existing record.",
                 recovery=SorRecoveryPolicy.TERMINAL,
             )
-        if command.tool_name == CrmToolName.MOVE_DEAL and set(command.payload) != {
-            "stage_external_id"
-        }:
+        if command.tool_name == CrmToolName.MOVE_DEAL:
+            if not isinstance(command.payload, CrmMoveDealCommandPayload):
+                raise SorVendorOperationError(
+                    SorVendorErrorCode.VENDOR_COMMAND_INVALID,
+                    "Moving a deal requires a typed stage selection.",
+                    recovery=SorRecoveryPolicy.TERMINAL,
+                )
+            field_values: Mapping[str, object] = command.payload.to_wire()
+        elif isinstance(command.payload, CrmMappedFieldsCommandPayload):
+            field_values = command.payload.fields
+        else:
             raise SorVendorOperationError(
                 SorVendorErrorCode.VENDOR_COMMAND_INVALID,
-                "Moving a deal requires only stage_external_id.",
+                "The CRM action has an invalid command payload.",
                 recovery=SorRecoveryPolicy.TERMINAL,
             )
-        properties = self._write_properties(stream_key, command.payload)
+        properties = self._write_properties(stream_key, field_values)
         path = f"/crm/objects/{HUBSPOT_API_VERSION}/{stream_key}"
         method = "POST"
         if operation is SorMutationOperation.UPDATE:
@@ -534,16 +555,19 @@ class HubSpotCrmAdapter:
             response={"status": "accepted"},
         )
 
-    def normalize_contact(self, record: SorExternalRecord) -> CrmContact:
-        values = record.payload
-        name = _optional_string(values.get("name"))
+    def normalize_contact(
+        self,
+        record: SorExternalRecord,
+        payload: CrmContactPayload,
+    ) -> CrmContact:
+        name = _optional_string(payload.name)
         if name is None:
             name = (
                 " ".join(
                     value
                     for value in (
-                        _optional_string(values.get("first_name")),
-                        _optional_string(values.get("last_name")),
+                        _optional_string(payload.first_name),
+                        _optional_string(payload.last_name),
                     )
                     if value
                 )
@@ -552,66 +576,73 @@ class HubSpotCrmAdapter:
         return CrmContact(
             external_id=record.external_id,
             name=name,
-            primary_email=_optional_string(values.get("primary_email")),
-            primary_phone=_optional_string(values.get("primary_phone")),
-            job_title=_optional_string(values.get("job_title")),
-            lifecycle_stage=_optional_string(values.get("lifecycle_stage")),
-            owner_external_id=_optional_string(values.get("owner_external_id")),
+            primary_email=_optional_string(payload.primary_email),
+            primary_phone=_optional_string(payload.primary_phone),
+            job_title=_optional_string(payload.job_title),
+            lifecycle_stage=_optional_string(payload.lifecycle_stage),
+            owner_external_id=_optional_string(payload.owner_external_id),
             source_updated_at=record.source_updated_at,
             source_url=record.source_url,
         )
 
-    def normalize_company(self, record: SorExternalRecord) -> CrmCompany:
-        values = record.payload
+    def normalize_company(
+        self,
+        record: SorExternalRecord,
+        payload: CrmCompanyPayload,
+    ) -> CrmCompany:
         return CrmCompany(
             external_id=record.external_id,
-            name=_optional_string(values.get("name")),
-            domain=_optional_string(values.get("domain")),
-            industry=_optional_string(values.get("industry")),
-            owner_external_id=_optional_string(values.get("owner_external_id")),
+            name=_optional_string(payload.name),
+            domain=_optional_string(payload.domain),
+            industry=_optional_string(payload.industry),
+            owner_external_id=_optional_string(payload.owner_external_id),
             source_updated_at=record.source_updated_at,
             source_url=record.source_url,
         )
 
-    def normalize_deal(self, record: SorExternalRecord) -> CrmDeal:
-        values = record.payload
+    def normalize_deal(
+        self,
+        record: SorExternalRecord,
+        payload: CrmDealPayload,
+    ) -> CrmDeal:
         return CrmDeal(
             external_id=record.external_id,
-            title=_required_string(values.get("title"), field="CRM deal title"),
-            pipeline_external_id=_optional_string(values.get("pipeline_external_id")),
-            stage_external_id=_optional_string(values.get("stage_external_id")),
-            native_stage=_optional_string(values.get("native_stage")),
-            normalized_state=CrmDealState.from_value(
-                _optional_string(values.get("normalized_state"))
-            ),
-            amount=_optional_decimal(values.get("amount")),
-            currency=_optional_string(values.get("currency")),
-            probability=_optional_decimal(values.get("probability")),
-            expected_close_date=_optional_date(values.get("expected_close_date")),
-            owner_external_id=_optional_string(values.get("owner_external_id")),
-            contact_external_ids=_string_tuple(values.get("contact_external_ids")),
-            company_external_ids=_string_tuple(values.get("company_external_ids")),
+            title=_required_string(payload.title, field="CRM deal title"),
+            pipeline_external_id=_optional_string(payload.pipeline_external_id),
+            stage_external_id=_optional_string(payload.stage_external_id),
+            native_stage=_optional_string(payload.native_stage),
+            normalized_state=payload.normalized_state,
+            amount=payload.amount,
+            currency=_optional_string(payload.currency),
+            probability=payload.probability,
+            expected_close_date=payload.expected_close_date,
+            owner_external_id=_optional_string(payload.owner_external_id),
+            contact_external_ids=payload.contact_external_ids,
+            company_external_ids=payload.company_external_ids,
             source_updated_at=record.source_updated_at,
             source_url=record.source_url,
         )
 
-    def normalize_activity(self, record: SorExternalRecord) -> CrmActivity:
-        values = record.payload
-        contacts = _string_tuple(values.get("contact_external_ids"))
-        companies = _string_tuple(values.get("company_external_ids"))
-        deals = _string_tuple(values.get("deal_external_ids"))
-        participants = _string_tuple(values.get("participant_external_ids"))
-        related = _string_tuple(values.get("related_external_ids"))
+    def normalize_activity(
+        self,
+        record: SorExternalRecord,
+        payload: CrmActivityPayload,
+    ) -> CrmActivity:
+        contacts = payload.contact_external_ids
+        companies = payload.company_external_ids
+        deals = payload.deal_external_ids
+        participants = payload.participant_external_ids
+        related = payload.related_external_ids
         return CrmActivity(
             external_id=record.external_id,
             kind="note",
-            subject=_optional_string(values.get("subject")),
-            normalized_text=_activity_text(values.get("normalized_text")),
+            subject=_optional_string(payload.subject),
+            normalized_text=_activity_text(payload.normalized_text),
             occurred_at=_required_datetime(
-                values.get("occurred_at") or record.source_created_at,
+                payload.occurred_at or record.source_created_at,
                 field="HubSpot note timestamp",
             ),
-            actor_external_id=_optional_string(values.get("actor_external_id")),
+            actor_external_id=_optional_string(payload.actor_external_id),
             participant_external_ids=tuple(dict.fromkeys((*participants, *contacts))),
             related_external_ids=tuple(dict.fromkeys((*related, *companies, *deals))),
             source_url=record.source_url,
@@ -1117,7 +1148,7 @@ def _association_discovered_fields(
         SorDiscoveredField(
             key=field_key,
             label=label,
-            data_type="string_array",
+            data_type=SorFieldDataType.STRING_ARRAY,
             nullable=True,
             writable=False,
             description=(
@@ -1145,19 +1176,22 @@ def _property_fields(
     )
 
 
-def _field_type(row: Mapping[str, object]) -> str:
+def _field_type(row: Mapping[str, object]) -> SorFieldDataType:
     field_type = _optional_string(row.get("fieldType"))
     if field_type in {"checkbox", "multi_checkbox"}:
-        return "string_array"
+        return SorFieldDataType.STRING_ARRAY
     return {
-        "bool": "boolean",
-        "date": "date",
-        "datetime": "timestamp",
-        "enumeration": "enum",
-        "number": "decimal",
-        "phone_number": "text",
-        "string": "text",
-    }.get(_optional_string(row.get("type")) or "", "bounded_json")
+        "bool": SorFieldDataType.BOOLEAN,
+        "date": SorFieldDataType.DATE,
+        "datetime": SorFieldDataType.TIMESTAMP,
+        "enumeration": SorFieldDataType.ENUM,
+        "number": SorFieldDataType.DECIMAL,
+        "phone_number": SorFieldDataType.TEXT,
+        "string": SorFieldDataType.TEXT,
+    }.get(
+        _optional_string(row.get("type")) or "",
+        SorFieldDataType.BOUNDED_JSON,
+    )
 
 
 class _ActivityTextParser(HTMLParser):

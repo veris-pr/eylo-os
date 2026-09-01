@@ -18,14 +18,25 @@ from urllib.parse import quote, quote_from_bytes, unquote_to_bytes, urlsplit
 from eylo.modules.connections.domain import ConnectionAuthKind
 from eylo.sor.knowledge.contracts import (
     KnowledgeAttachment,
+    KnowledgeAttachmentPayload,
     KnowledgeAuthor,
+    KnowledgeAuthorPayload,
     KnowledgeBlock,
+    KnowledgeBlockPayload,
+    KnowledgeCreateCommandPayload,
     KnowledgeDocument,
+    KnowledgeDocumentPayload,
     KnowledgeEntityKind,
     KnowledgeProperty,
+    KnowledgePropertyPayload,
+    KnowledgeSourceBody,
     KnowledgeSpace,
+    KnowledgeSpacePayload,
+    KnowledgeTextCommandPayload,
     KnowledgeToolName,
+    KnowledgeUpdateCommandPayload,
     KnowledgeVersion,
+    KnowledgeVersionPayload,
 )
 from eylo.sor.runtime.http import SorHttpTransport, SorJsonHttpClient, SorJsonResponse
 from eylo.sor.shared.contracts import (
@@ -43,11 +54,15 @@ from eylo.sor.shared.contracts import (
     SorDiscoveredSchema,
     SorExternalRecord,
     SorExternalRecordNotFound,
-    SorMutationOperation,
+    SorFieldDataType,
+    SorOAuthClientAuthMethod,
     SorOAuthSpec,
+    SorOAuthTokenRequestFormat,
     SorProfile,
     SorRecordPage,
     SorRecoveryPolicy,
+    SorRelationshipRole,
+    SorRelationshipTargets,
     SorVendorErrorCode,
     SorVendorOperationError,
     SorVendorStreamSpec,
@@ -90,16 +105,20 @@ _STREAM_ENTITY = {
 }
 _RELATIONSHIP_TARGETS = {
     NotionStream.PAGES: {
-        "space": NotionStream.DATA_SOURCES,
-        "parent": NotionStream.PAGES,
-        "author": NotionStream.AUTHORS,
+        SorRelationshipRole.SPACE: NotionStream.DATA_SOURCES,
+        SorRelationshipRole.PARENT: NotionStream.PAGES,
+        SorRelationshipRole.AUTHOR: NotionStream.AUTHORS,
     },
     NotionStream.BLOCKS: {
-        "document": NotionStream.PAGES,
-        "parent": NotionStream.BLOCKS,
+        SorRelationshipRole.DOCUMENT: NotionStream.PAGES,
+        SorRelationshipRole.PARENT: NotionStream.BLOCKS,
     },
-    NotionStream.PROPERTIES: {"document": NotionStream.PAGES},
-    NotionStream.ATTACHMENTS: {"document": NotionStream.PAGES},
+    NotionStream.PROPERTIES: {
+        SorRelationshipRole.DOCUMENT: NotionStream.PAGES
+    },
+    NotionStream.ATTACHMENTS: {
+        SorRelationshipRole.DOCUMENT: NotionStream.PAGES
+    },
 }
 _READ_TOOLS = frozenset(
     {
@@ -210,7 +229,9 @@ NOTION_MANIFEST = SorAdapterCapabilityManifest(
             depends_on=frozenset(
                 set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values()) - {stream_key}
             ),
-            relationship_targets=_RELATIONSHIP_TARGETS.get(stream_key, {}),
+            relationship_targets=SorRelationshipTargets(
+                _RELATIONSHIP_TARGETS.get(stream_key, {})
+            ),
         )
         for stream_key, entity in _STREAM_ENTITY.items()
     ),
@@ -225,8 +246,8 @@ NOTION_MANIFEST = SorAdapterCapabilityManifest(
         authorization_url="https://api.notion.com/v1/oauth/authorize",
         token_url="https://api.notion.com/v1/oauth/token",
         send_authorization_scope=False,
-        token_request_format="json",
-        token_client_auth_method="basic",
+        token_request_format=SorOAuthTokenRequestFormat.JSON,
+        token_client_auth_method=SorOAuthClientAuthMethod.BASIC,
     ),
     fixed_origin=NOTION_API_ORIGIN,
     change_mode=SorChangeMode.APP_WEBHOOK,
@@ -329,7 +350,7 @@ def parse_notion_app_webhook(*, body: bytes) -> NotionAppWebhookDelivery:
 def _field(
     key: str,
     label: str,
-    data_type: str,
+    data_type: SorFieldDataType,
     *,
     nullable: bool = True,
     writable: bool = False,
@@ -346,59 +367,59 @@ def _field(
 
 _SCHEMA_FIELDS = {
     NotionStream.DATA_SOURCES: (
-        _field("name", "Name", "text", nullable=False),
-        _field("kind", "Kind", "text", nullable=False),
-        _field("custom_fields", "Property schema", "bounded_json"),
+        _field("name", "Name", SorFieldDataType.TEXT, nullable=False),
+        _field("kind", "Kind", SorFieldDataType.TEXT, nullable=False),
+        _field("custom_fields", "Property schema", SorFieldDataType.BOUNDED_JSON),
     ),
     NotionStream.PAGES: (
-        _field("title", "Title", "text", nullable=False, writable=True),
-        _field("space_external_id", "Data source ID", "reference", writable=True),
-        _field("parent_external_id", "Parent page ID", "reference", writable=True),
-        _field("path", "Path", "string_array"),
-        _field("source_format", "Source format", "text", nullable=False),
-        _field("normalized_text", "Content", "text", writable=True),
-        _field("source_body", "Source body", "bounded_json"),
-        _field("content_hash", "Content hash", "text", nullable=False),
-        _field("version", "Source revision", "text"),
-        _field("lifecycle_state", "State", "text"),
-        _field("author_external_id", "Last editor ID", "reference"),
-        _field("label_external_ids", "Select option IDs", "string_array"),
-        _field("unsupported_blocks", "Unsupported content", "string_array"),
-        _field("source_created_at", "Created", "timestamp"),
-        _field("source_updated_at", "Updated", "timestamp"),
+        _field("title", "Title", SorFieldDataType.TEXT, nullable=False, writable=True),
+        _field("space_external_id", "Data source ID", SorFieldDataType.REFERENCE, writable=True),
+        _field("parent_external_id", "Parent page ID", SorFieldDataType.REFERENCE, writable=True),
+        _field("path", "Path", SorFieldDataType.STRING_ARRAY),
+        _field("source_format", "Source format", SorFieldDataType.TEXT, nullable=False),
+        _field("normalized_text", "Content", SorFieldDataType.TEXT, writable=True),
+        _field("source_body", "Source body", SorFieldDataType.BOUNDED_JSON),
+        _field("content_hash", "Content hash", SorFieldDataType.TEXT, nullable=False),
+        _field("version", "Source revision", SorFieldDataType.TEXT),
+        _field("lifecycle_state", "State", SorFieldDataType.TEXT),
+        _field("author_external_id", "Last editor ID", SorFieldDataType.REFERENCE),
+        _field("label_external_ids", "Select option IDs", SorFieldDataType.STRING_ARRAY),
+        _field("unsupported_blocks", "Unsupported content", SorFieldDataType.STRING_ARRAY),
+        _field("source_created_at", "Created", SorFieldDataType.TIMESTAMP),
+        _field("source_updated_at", "Updated", SorFieldDataType.TIMESTAMP),
     ),
     NotionStream.BLOCKS: (
-        _field("document_external_id", "Document ID", "reference", nullable=False),
-        _field("parent_external_id", "Parent block ID", "reference"),
-        _field("kind", "Kind", "text", nullable=False),
-        _field("order", "Order", "integer", nullable=False),
-        _field("normalized_text", "Content", "text"),
-        _field("source_body", "Source body", "bounded_json"),
-        _field("supported", "Supported", "boolean", nullable=False),
-        _field("source_created_at", "Created", "timestamp"),
-        _field("source_updated_at", "Updated", "timestamp"),
+        _field("document_external_id", "Document ID", SorFieldDataType.REFERENCE, nullable=False),
+        _field("parent_external_id", "Parent block ID", SorFieldDataType.REFERENCE),
+        _field("kind", "Kind", SorFieldDataType.TEXT, nullable=False),
+        _field("order", "Order", SorFieldDataType.INTEGER, nullable=False),
+        _field("normalized_text", "Content", SorFieldDataType.TEXT),
+        _field("source_body", "Source body", SorFieldDataType.BOUNDED_JSON),
+        _field("supported", "Supported", SorFieldDataType.BOOLEAN, nullable=False),
+        _field("source_created_at", "Created", SorFieldDataType.TIMESTAMP),
+        _field("source_updated_at", "Updated", SorFieldDataType.TIMESTAMP),
     ),
     NotionStream.PROPERTIES: (
-        _field("document_external_id", "Document ID", "reference", nullable=False),
-        _field("key", "Property ID", "text", nullable=False),
-        _field("label", "Property name", "text", nullable=False),
-        _field("value_type", "Value type", "text", nullable=False),
-        _field("value", "Value", "bounded_json"),
-        _field("source_updated_at", "Updated", "timestamp"),
+        _field("document_external_id", "Document ID", SorFieldDataType.REFERENCE, nullable=False),
+        _field("key", "Property ID", SorFieldDataType.TEXT, nullable=False),
+        _field("label", "Property name", SorFieldDataType.TEXT, nullable=False),
+        _field("value_type", "Value type", SorFieldDataType.TEXT, nullable=False),
+        _field("value", "Value", SorFieldDataType.BOUNDED_JSON),
+        _field("source_updated_at", "Updated", SorFieldDataType.TIMESTAMP),
     ),
     NotionStream.ATTACHMENTS: (
-        _field("document_external_id", "Document ID", "reference", nullable=False),
-        _field("name", "Name", "text", nullable=False),
-        _field("media_type", "Media type", "text"),
-        _field("size_bytes", "Size", "integer"),
-        _field("source_url", "Source URL", "link"),
-        _field("source_url_expires_at", "URL expires", "timestamp"),
+        _field("document_external_id", "Document ID", SorFieldDataType.REFERENCE, nullable=False),
+        _field("name", "Name", SorFieldDataType.TEXT, nullable=False),
+        _field("media_type", "Media type", SorFieldDataType.TEXT),
+        _field("size_bytes", "Size", SorFieldDataType.INTEGER),
+        _field("source_url", "Source URL", SorFieldDataType.LINK),
+        _field("source_url_expires_at", "URL expires", SorFieldDataType.TIMESTAMP),
     ),
     NotionStream.AUTHORS: (
-        _field("name", "Name", "text", nullable=False),
-        _field("primary_email", "Email", "text"),
-        _field("kind", "Kind", "text"),
-        _field("avatar_url", "Avatar URL", "link"),
+        _field("name", "Name", SorFieldDataType.TEXT, nullable=False),
+        _field("primary_email", "Email", SorFieldDataType.TEXT),
+        _field("kind", "Kind", SorFieldDataType.TEXT),
+        _field("avatar_url", "Avatar URL", SorFieldDataType.LINK),
     ),
 }
 
@@ -667,118 +688,112 @@ class NotionKnowledgeAdapter:
         response = await self._comment_page(target_id, command)
         return _target_command_result(target_id, current, response)
 
-    def normalize_space(self, record: SorExternalRecord) -> KnowledgeSpace:
-        values = record.payload
+    def normalize_space(
+        self,
+        record: SorExternalRecord,
+        payload: KnowledgeSpacePayload,
+    ) -> KnowledgeSpace:
         return KnowledgeSpace(
             external_id=record.external_id,
-            name=_required_string(values.get("name"), field="data source name"),
-            kind=_required_string(values.get("kind"), field="data source kind"),
+            name=payload.name,
+            kind=payload.kind,
             source_url=record.source_url,
-            custom_fields=_mapping(
-                values.get("custom_fields"), field="data source schema"
-            ),
         )
 
-    def normalize_document(self, record: SorExternalRecord) -> KnowledgeDocument:
-        values = record.payload
+    def normalize_document(
+        self,
+        record: SorExternalRecord,
+        payload: KnowledgeDocumentPayload,
+    ) -> KnowledgeDocument:
         return KnowledgeDocument(
             external_id=record.external_id,
-            title=_required_string(values.get("title"), field="page title"),
-            space_external_id=_optional_string(values.get("space_external_id")),
-            parent_external_id=_optional_string(values.get("parent_external_id")),
-            path=_string_tuple(values.get("path"), field="page path"),
-            source_format=_required_string(
-                values.get("source_format"), field="page source format"
-            ),
-            normalized_text=_bounded_string(
-                values.get("normalized_text"), field="page content", allow_empty=True
-            ),
-            source_body=_json_value(values.get("source_body")),
-            content_hash=_required_string(
-                values.get("content_hash"), field="page content hash"
-            ),
-            version=_optional_string(values.get("version")),
-            lifecycle_state=_optional_string(values.get("lifecycle_state")),
-            author_external_id=_optional_string(values.get("author_external_id")),
-            label_external_ids=_string_tuple(
-                values.get("label_external_ids"), field="page option IDs"
-            ),
-            unsupported_blocks=_string_tuple(
-                values.get("unsupported_blocks"), field="page unsupported content"
-            ),
-            source_created_at=record.source_created_at,
-            source_updated_at=record.source_updated_at,
+            title=payload.title,
+            space_external_id=payload.space_external_id,
+            parent_external_id=payload.parent_external_id,
+            path=payload.path,
+            source_format=payload.source_format,
+            normalized_text=payload.normalized_text,
+            source_body=payload.source_body,
+            content_hash=payload.content_hash,
+            version=payload.version,
+            lifecycle_state=payload.lifecycle_state,
+            author_external_id=payload.author_external_id,
+            label_external_ids=payload.label_external_ids,
+            unsupported_blocks=payload.unsupported_blocks,
+            source_created_at=payload.source_created_at or record.source_created_at,
+            source_updated_at=payload.source_updated_at or record.source_updated_at,
             source_url=record.source_url,
+            custom_fields=payload.custom_fields,
         )
 
-    def normalize_block(self, record: SorExternalRecord) -> KnowledgeBlock:
-        values = record.payload
-        order = values.get("order")
-        if isinstance(order, bool) or not isinstance(order, int) or order < 0:
-            raise _invalid_response("Notion block order is invalid.")
+    def normalize_block(
+        self,
+        record: SorExternalRecord,
+        payload: KnowledgeBlockPayload,
+    ) -> KnowledgeBlock:
         return KnowledgeBlock(
             external_id=record.external_id,
-            document_external_id=_required_string(
-                values.get("document_external_id"), field="block document ID"
-            ),
-            parent_external_id=_optional_string(values.get("parent_external_id")),
-            kind=_required_string(values.get("kind"), field="block kind"),
-            order=order,
-            normalized_text=_optional_string(values.get("normalized_text")),
-            source_body=_json_value(values.get("source_body")),
-            supported=_required_boolean(values.get("supported"), field="block support"),
-            source_created_at=record.source_created_at,
-            source_updated_at=record.source_updated_at,
+            document_external_id=payload.document_external_id,
+            parent_external_id=payload.parent_external_id,
+            kind=payload.kind,
+            order=payload.order,
+            normalized_text=payload.normalized_text,
+            source_body=payload.source_body,
+            supported=payload.supported,
+            source_created_at=payload.source_created_at or record.source_created_at,
+            source_updated_at=payload.source_updated_at or record.source_updated_at,
         )
 
-    def normalize_version(self, record: SorExternalRecord) -> KnowledgeVersion:
+    def normalize_version(
+        self,
+        record: SorExternalRecord,
+        payload: KnowledgeVersionPayload,
+    ) -> KnowledgeVersion:
         raise SorCapabilityUnavailable(
             "Notion source versions are not available in this adapter revision."
         )
 
-    def normalize_property(self, record: SorExternalRecord) -> KnowledgeProperty:
-        values = record.payload
+    def normalize_property(
+        self,
+        record: SorExternalRecord,
+        payload: KnowledgePropertyPayload,
+    ) -> KnowledgeProperty:
         return KnowledgeProperty(
             external_id=record.external_id,
-            document_external_id=_required_string(
-                values.get("document_external_id"), field="property document ID"
-            ),
-            key=_required_string(values.get("key"), field="property ID"),
-            label=_required_string(values.get("label"), field="property name"),
-            value_type=_required_string(
-                values.get("value_type"), field="property type"
-            ),
-            value=_json_scalar(values.get("value")),
-            source_updated_at=record.source_updated_at,
+            document_external_id=payload.document_external_id,
+            key=payload.key,
+            label=payload.label,
+            value_type=payload.value_type,
+            value=payload.value,
+            source_updated_at=payload.source_updated_at or record.source_updated_at,
         )
 
     def normalize_attachment(
         self,
         record: SorExternalRecord,
+        payload: KnowledgeAttachmentPayload,
     ) -> KnowledgeAttachment:
-        values = record.payload
         return KnowledgeAttachment(
             external_id=record.external_id,
-            document_external_id=_required_string(
-                values.get("document_external_id"), field="attachment document ID"
-            ),
-            name=_required_string(values.get("name"), field="attachment name"),
-            media_type=_optional_string(values.get("media_type")),
-            size_bytes=None,
-            source_url=record.source_url,
-            source_url_expires_at=_optional_datetime(
-                values.get("source_url_expires_at")
-            ),
+            document_external_id=payload.document_external_id,
+            name=payload.name,
+            media_type=payload.media_type,
+            size_bytes=payload.size_bytes,
+            source_url=payload.source_url or record.source_url,
+            source_url_expires_at=payload.source_url_expires_at,
         )
 
-    def normalize_author(self, record: SorExternalRecord) -> KnowledgeAuthor:
-        values = record.payload
+    def normalize_author(
+        self,
+        record: SorExternalRecord,
+        payload: KnowledgeAuthorPayload,
+    ) -> KnowledgeAuthor:
         return KnowledgeAuthor(
             external_id=record.external_id,
-            name=_required_string(values.get("name"), field="user name"),
-            primary_email=_optional_string(values.get("primary_email")),
-            kind=_optional_string(values.get("kind")),
-            avatar_url=record.source_url,
+            name=payload.name,
+            primary_email=payload.primary_email,
+            kind=payload.kind,
+            avatar_url=payload.avatar_url or record.source_url,
         )
 
     async def close(self) -> None:
@@ -1415,23 +1430,23 @@ class NotionKnowledgeAdapter:
     async def _create_page(self, command: SorCommandRequest) -> SorCommandResult:
         if command.target_external_id is not None:
             raise _invalid_command("Creating a Notion page cannot target a record.")
-        payload = _document_write_payload(
-            command.payload,
-            operation=SorMutationOperation.CREATE,
-        )
-        parent_page = payload.get("parent_external_id")
-        data_source = payload.get("space_external_id")
+        if not isinstance(command.payload, KnowledgeCreateCommandPayload):
+            raise _invalid_command("Notion create payload is invalid.")
+        parent_page = command.payload.parent_external_id
+        data_source = command.payload.space_external_id
         if (parent_page is None) == (data_source is None):
             raise _invalid_command(
                 "Creating a Notion page requires exactly one parent page or data source."
             )
-        title = _required_payload_text(payload, "title")
+        title = command.payload.title
         request: dict[str, object] = {}
         if isinstance(parent_page, str):
+            parent_page = _notion_id(parent_page, field="parent page ID")
             request["parent"] = {"type": "page_id", "page_id": parent_page}
             title_key = "title"
         else:
             assert isinstance(data_source, str)
+            data_source = _notion_id(data_source, field="data source ID")
             request["parent"] = {
                 "type": "data_source_id",
                 "data_source_id": data_source,
@@ -1444,8 +1459,8 @@ class NotionKnowledgeAdapter:
             )
             title_key = _data_source_title_key(schema)
         request[NotionStream.PROPERTIES] = {title_key: _title_property(title)}
-        if "normalized_text" in payload:
-            request["markdown"] = payload["normalized_text"]
+        if command.payload.normalized_text is not None:
+            request["markdown"] = command.payload.normalized_text
         try:
             response = await self._client.request(
                 "/v1/pages",
@@ -1466,23 +1481,22 @@ class NotionKnowledgeAdapter:
         current: Mapping[str, object],
         command: SorCommandRequest,
     ) -> SorJsonResponse:
-        payload = _document_write_payload(
-            command.payload,
-            operation=SorMutationOperation.UPDATE,
-        )
-        selected = set(payload) & {"title", "normalized_text"}
-        if len(selected) != 1 or set(payload) != selected:
+        if not isinstance(command.payload, KnowledgeUpdateCommandPayload):
+            raise _invalid_command("Notion update payload is invalid.")
+        if (command.payload.title is None) == (
+            command.payload.normalized_text is None
+        ):
             raise _invalid_command(
                 "A Notion update changes either title or content per command."
             )
-        if "title" in payload:
+        if command.payload.title is not None:
             title_key = _page_title_key(current)
             response = await self._client.request(
                 f"/v1/pages/{_path_id(page_id)}",
                 method="PATCH",
                 payload={
                     NotionStream.PROPERTIES: {
-                        title_key: _title_property(payload["title"])
+                        title_key: _title_property(command.payload.title)
                     }
                 },
                 idempotency_key=command.idempotency_key,
@@ -1494,7 +1508,7 @@ class NotionKnowledgeAdapter:
                 payload={
                     "type": "replace_content",
                     "replace_content": {
-                        "new_str": payload["normalized_text"],
+                        "new_str": command.payload.normalized_text,
                     },
                 },
                 idempotency_key=command.idempotency_key,
@@ -1507,14 +1521,8 @@ class NotionKnowledgeAdapter:
         page_id: str,
         command: SorCommandRequest,
     ) -> SorJsonResponse:
-        payload = _document_write_payload(
-            command.payload,
-            operation=SorMutationOperation.UPDATE,
-        )
-        if set(payload) != {"normalized_text"} or not payload["normalized_text"]:
-            raise _invalid_command(
-                "Appending to Notion requires non-empty normalized_text."
-            )
+        if not isinstance(command.payload, KnowledgeTextCommandPayload):
+            raise _invalid_command("Notion append payload is invalid.")
         try:
             response = await self._client.request(
                 f"/v1/pages/{_path_id(page_id)}/markdown",
@@ -1522,7 +1530,7 @@ class NotionKnowledgeAdapter:
                 payload={
                     "type": "insert_content",
                     "insert_content": {
-                        "content": payload["normalized_text"],
+                        "content": command.payload.normalized_text,
                         "position": {"type": "end"},
                     },
                 },
@@ -1539,16 +1547,10 @@ class NotionKnowledgeAdapter:
         page_id: str,
         command: SorCommandRequest,
     ) -> SorJsonResponse:
-        if set(command.payload) != {"normalized_text"}:
-            raise _invalid_command(
-                "Commenting in Notion requires normalized_text only."
-            )
-        text = command.payload.get("normalized_text")
-        if (
-            not isinstance(text, str)
-            or not text.strip()
-            or len(text) > MAX_COMMENT_CHARS
-        ):
+        if not isinstance(command.payload, KnowledgeTextCommandPayload):
+            raise _invalid_command("Notion comment payload is invalid.")
+        text = command.payload.normalized_text
+        if len(text) > MAX_COMMENT_CHARS:
             raise _invalid_command("Notion comment text is invalid.")
         try:
             response = await self._client.request(
@@ -1845,55 +1847,19 @@ def _rich_text(value: object) -> str:
 
 
 def _content_hash(normalized_text: str, source_body: object) -> str:
+    source_value = (
+        source_body.to_wire()
+        if isinstance(source_body, KnowledgeSourceBody)
+        else source_body
+    )
     encoded = json.dumps(
-        {"normalized_text": normalized_text, "source_body": source_body},
+        {"normalized_text": normalized_text, "source_body": source_value},
         ensure_ascii=False,
         allow_nan=False,
         separators=(",", ":"),
         sort_keys=True,
     ).encode()
     return hashlib.sha256(encoded).hexdigest()
-
-
-def _document_write_payload(
-    payload: Mapping[str, object],
-    *,
-    operation: SorMutationOperation,
-) -> dict[str, object]:
-    allowed = {"title", "space_external_id", "parent_external_id", "normalized_text"}
-    if not payload or set(payload) - allowed:
-        raise _invalid_command(
-            "Notion document writes accept only title, data source, parent, and content."
-        )
-    result: dict[str, object] = {}
-    title = payload.get("title")
-    if title is not None:
-        if (
-            not isinstance(title, str)
-            or not title.strip()
-            or len(title) > MAX_TITLE_CHARS
-        ):
-            raise _invalid_command("Notion title is invalid.")
-        result["title"] = title.strip()
-    for key in ("space_external_id", "parent_external_id"):
-        value = payload.get(key)
-        if value is not None:
-            result[key] = _notion_id(value, field=key)
-    content = payload.get("normalized_text")
-    if content is not None:
-        if not isinstance(content, str) or len(content) > MAX_CANONICAL_TEXT_CHARS:
-            raise _invalid_command("Notion normalized_text is invalid.")
-        result["normalized_text"] = content
-    if operation is SorMutationOperation.CREATE and "title" not in result:
-        raise _invalid_command("Creating a Notion page requires a title.")
-    return result
-
-
-def _required_payload_text(payload: Mapping[str, object], key: str) -> str:
-    value = payload.get(key)
-    if not isinstance(value, str):
-        raise _invalid_command(f"Notion {key} is required.")
-    return value
 
 
 def _created_command_result(

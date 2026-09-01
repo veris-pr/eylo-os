@@ -196,7 +196,7 @@ class SorStreamService:
             )
         else:
             depends_on = sorted(stream_spec.depends_on)
-            relationship_targets = dict(stream_spec.relationship_targets)
+            relationship_targets = stream_spec.relationship_targets.to_wire()
 
         existing = await self.repository.get_stream_by_object(
             organization_id=organization_id,
@@ -250,7 +250,9 @@ class SorStreamService:
         for stream in streams:
             spec = specs.get(stream.vendor_object_key)
             depends_on = sorted(spec.depends_on) if spec is not None else []
-            targets = dict(spec.relationship_targets) if spec is not None else {}
+            targets = (
+                spec.relationship_targets.to_wire() if spec is not None else {}
+            )
             if spec is not None and stream.strategy not in spec.change_strategies:
                 if len(spec.change_strategies) != 1:
                     raise SorConfigurationError(

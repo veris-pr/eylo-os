@@ -37,6 +37,7 @@ from eylo.sor.shared.contracts import (
     SorProjectionDisposition,
     SorRecordPage,
     SorRecoveryPolicy,
+    SorSourcePayload,
     SorSourceState,
     SorSyncRunKind,
     SorVendorOperationError,
@@ -839,7 +840,7 @@ def _decode_page(value: object) -> SorRecordPage:
             SorExternalRecord(
                 vendor_object_key=raw["vendor_object_key"],
                 external_id=raw["external_id"],
-                payload=raw["payload"],
+                payload=SorSourcePayload.from_mapping(raw["payload"]),
                 source_created_at=_parse_datetime(raw["source_created_at"]),
                 source_updated_at=_parse_datetime(raw["source_updated_at"]),
                 source_revision=_optional_string(raw["source_revision"]),

@@ -64,6 +64,34 @@ Each synchronized object has a shared record identity and, when canonical, a
 profile-specific extension. Selected vendor fields are stored as typed custom
 field values instead of being flattened into unbounded JSON.
 
+Projection uses explicit data boundaries:
+
+1. A vendor adapter parses the vendor-owned HTTP body. Its arbitrary and custom
+   keys remain isolated inside the adapter.
+2. `SorExternalRecord` seals the selected source fields in an immutable
+   `SorSourcePayload`. Only the mapping engine may resolve its configured keys.
+3. The published mapping converts those fields into the exact profile/entity
+   payload class, such as `TicketingIssuePayload` or `CrmDealPayload`.
+4. The vendor normalizer receives that typed payload object, not a dictionary,
+   and returns the canonical domain object persisted by the profile service.
+5. Durable tasks and JSONB columns use explicit object-to-wire conversion at
+   their boundaries; the runtime does not pass persistence dictionaries back
+   into domain policy.
+
+The profile catalog and payload classes share the same canonical field names.
+Relationship roles, field types, source formats, and OAuth encoding modes are
+bounded enums. This keeps vendor JSON extensible without making platform-owned
+code remember vendor or dictionary keys.
+
+Agent writes follow the same rule in reverse. Each mutation tool declares a
+profile-owned Pydantic payload, so orchestration and adapters receive objects
+such as `TicketingAssignCommandPayload` rather than inspecting an untyped
+dictionary. Create and update tools retain one deliberate dynamic object: the
+fields published by that source's active mapping. Only the adapter translates
+those mapped field names into vendor request JSON. A command becomes JSON when
+its encrypted durable request is stored, then is validated back into the exact
+tool payload class before a worker may call the vendor.
+
 Vendor-defined objects that do not fit a canonical profile become custom
 datasets. They are visible in operator audit grids, but are not Agent-readable
 or writable in v1. This preserves company-specific data without pretending it

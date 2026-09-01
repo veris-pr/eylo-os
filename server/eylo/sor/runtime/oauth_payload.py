@@ -7,7 +7,11 @@ import json
 from collections.abc import Mapping
 from urllib.parse import urlencode
 
-from eylo.sor.shared.contracts import SorOAuthSpec
+from eylo.sor.shared.contracts import (
+    SorOAuthClientAuthMethod,
+    SorOAuthSpec,
+    SorOAuthTokenRequestFormat,
+)
 
 
 def apply_oauth_client_auth(
@@ -19,11 +23,11 @@ def apply_oauth_client_auth(
 ) -> tuple[dict[str, str], dict[str, str]]:
     """Place client credentials only where the vendor contract requires them."""
     authenticated_values = dict(values)
-    if oauth.token_client_auth_method == "body":
+    if oauth.token_client_auth_method is SorOAuthClientAuthMethod.BODY:
         authenticated_values["client_id"] = client_id
         authenticated_values["client_secret"] = client_secret
         return authenticated_values, {}
-    if oauth.token_client_auth_method == "basic":
+    if oauth.token_client_auth_method is SorOAuthClientAuthMethod.BASIC:
         encoded = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
         return authenticated_values, {"Authorization": f"Basic {encoded}"}
     raise ValueError("Unsupported SOR OAuth client authentication method.")
@@ -34,7 +38,7 @@ def encode_oauth_token_request(
     values: Mapping[str, str],
 ) -> tuple[str, bytes]:
     """Encode secrets only in the body format declared by the adapter manifest."""
-    if oauth.token_request_format == "json":
+    if oauth.token_request_format is SorOAuthTokenRequestFormat.JSON:
         return (
             "application/json",
             json.dumps(dict(values), separators=(",", ":")).encode("utf-8"),

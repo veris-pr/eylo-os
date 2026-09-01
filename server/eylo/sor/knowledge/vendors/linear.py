@@ -17,15 +17,22 @@ from eylo.modules.connections.domain import ConnectionAuthKind
 from eylo.sor.knowledge.contracts import (
     KnowledgeAttachment,
     KnowledgeAttachmentContent,
+    KnowledgeAttachmentPayload,
     KnowledgeAuthor,
+    KnowledgeAuthorPayload,
     KnowledgeBlock,
+    KnowledgeBlockPayload,
     KnowledgeBodyRepresentation,
     KnowledgeDocument,
+    KnowledgeDocumentPayload,
     KnowledgeEntityKind,
     KnowledgeProperty,
+    KnowledgePropertyPayload,
     KnowledgeSpace,
+    KnowledgeSpacePayload,
     KnowledgeToolName,
     KnowledgeVersion,
+    KnowledgeVersionPayload,
     knowledge_source_body,
 )
 from eylo.sor.runtime.http import SorHttpTransport, SorJsonHttpClient, SorJsonResponse
@@ -44,10 +51,13 @@ from eylo.sor.shared.contracts import (
     SorDiscoveredSchema,
     SorExternalRecord,
     SorExternalRecordNotFound,
+    SorFieldDataType,
     SorOAuthSpec,
     SorProfile,
     SorRecordPage,
     SorRecoveryPolicy,
+    SorRelationshipRole,
+    SorRelationshipTargets,
     SorVendorErrorCode,
     SorVendorOperationError,
     SorVendorStreamSpec,
@@ -79,8 +89,12 @@ _STREAM_ENTITY = {
     LinearKnowledgeStream.ATTACHMENTS: KnowledgeEntityKind.ATTACHMENT,
 }
 _RELATIONSHIP_TARGETS = {
-    LinearKnowledgeStream.DOCUMENTS: {"author": LinearKnowledgeStream.AUTHORS},
-    LinearKnowledgeStream.ATTACHMENTS: {"document": LinearKnowledgeStream.DOCUMENTS},
+    LinearKnowledgeStream.DOCUMENTS: {
+        SorRelationshipRole.AUTHOR: LinearKnowledgeStream.AUTHORS
+    },
+    LinearKnowledgeStream.ATTACHMENTS: {
+        SorRelationshipRole.DOCUMENT: LinearKnowledgeStream.DOCUMENTS
+    },
 }
 _READ_TOOLS = frozenset({KnowledgeToolName.SEARCH, KnowledgeToolName.GET})
 _TOOL_STREAMS = {
@@ -118,7 +132,9 @@ LINEAR_KNOWLEDGE_MANIFEST = SorAdapterCapabilityManifest(
             depends_on=frozenset(
                 set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values())
             ),
-            relationship_targets=_RELATIONSHIP_TARGETS.get(stream_key, {}),
+            relationship_targets=SorRelationshipTargets(
+                _RELATIONSHIP_TARGETS.get(stream_key, {})
+            ),
         )
         for stream_key, entity in _STREAM_ENTITY.items()
     ),
@@ -148,7 +164,7 @@ LINEAR_KNOWLEDGE_MANIFEST = SorAdapterCapabilityManifest(
 def _field(
     key: str,
     label: str,
-    data_type: str,
+    data_type: SorFieldDataType,
     *,
     nullable: bool = True,
 ) -> SorDiscoveredField:
@@ -164,31 +180,31 @@ def _field(
 
 _SCHEMA_FIELDS = {
     LinearKnowledgeStream.DOCUMENTS: (
-        _field("title", "Title", "text", nullable=False),
-        _field("path", "Location", "string_array", nullable=False),
-        _field("normalized_text", "Content", "text", nullable=False),
-        _field("source_format", "Source format", "text", nullable=False),
-        _field("source_body", "Source body", "bounded_json"),
-        _field("content_hash", "Content hash", "text", nullable=False),
-        _field("version", "Content revision", "text"),
-        _field("lifecycle_state", "State", "text"),
-        _field("author_external_id", "Creator ID", "reference"),
-        _field("source_created_at", "Created", "timestamp"),
-        _field("source_updated_at", "Updated", "timestamp"),
-        _field("custom_fields", "Linear context", "bounded_json"),
+        _field("title", "Title", SorFieldDataType.TEXT, nullable=False),
+        _field("path", "Location", SorFieldDataType.STRING_ARRAY, nullable=False),
+        _field("normalized_text", "Content", SorFieldDataType.TEXT, nullable=False),
+        _field("source_format", "Source format", SorFieldDataType.TEXT, nullable=False),
+        _field("source_body", "Source body", SorFieldDataType.BOUNDED_JSON),
+        _field("content_hash", "Content hash", SorFieldDataType.TEXT, nullable=False),
+        _field("version", "Content revision", SorFieldDataType.TEXT),
+        _field("lifecycle_state", "State", SorFieldDataType.TEXT),
+        _field("author_external_id", "Creator ID", SorFieldDataType.REFERENCE),
+        _field("source_created_at", "Created", SorFieldDataType.TIMESTAMP),
+        _field("source_updated_at", "Updated", SorFieldDataType.TIMESTAMP),
+        _field("custom_fields", "Linear context", SorFieldDataType.BOUNDED_JSON),
     ),
     LinearKnowledgeStream.AUTHORS: (
-        _field("name", "Name", "text", nullable=False),
-        _field("primary_email", "Email", "text"),
-        _field("kind", "Kind", "text"),
-        _field("avatar_url", "Avatar URL", "link"),
+        _field("name", "Name", SorFieldDataType.TEXT, nullable=False),
+        _field("primary_email", "Email", SorFieldDataType.TEXT),
+        _field("kind", "Kind", SorFieldDataType.TEXT),
+        _field("avatar_url", "Avatar URL", SorFieldDataType.LINK),
     ),
     LinearKnowledgeStream.ATTACHMENTS: (
-        _field("document_external_id", "Document ID", "reference", nullable=False),
-        _field("name", "Name", "text", nullable=False),
-        _field("media_type", "Media type", "text"),
-        _field("size_bytes", "Size", "integer"),
-        _field("source_url", "Source URL", "link", nullable=False),
+        _field("document_external_id", "Document ID", SorFieldDataType.REFERENCE, nullable=False),
+        _field("name", "Name", SorFieldDataType.TEXT, nullable=False),
+        _field("media_type", "Media type", SorFieldDataType.TEXT),
+        _field("size_bytes", "Size", SorFieldDataType.INTEGER),
+        _field("source_url", "Source URL", SorFieldDataType.LINK, nullable=False),
     ),
 }
 
@@ -468,72 +484,86 @@ class LinearKnowledgeAdapter:
             "Linear Documents is read-only in this adapter revision."
         )
 
-    def normalize_space(self, record: SorExternalRecord) -> KnowledgeSpace:
+    def normalize_space(
+        self,
+        record: SorExternalRecord,
+        payload: KnowledgeSpacePayload,
+    ) -> KnowledgeSpace:
         raise _normalization_unavailable("space")
 
-    def normalize_document(self, record: SorExternalRecord) -> KnowledgeDocument:
-        values = record.payload
+    def normalize_document(
+        self,
+        record: SorExternalRecord,
+        payload: KnowledgeDocumentPayload,
+    ) -> KnowledgeDocument:
         return KnowledgeDocument(
             external_id=record.external_id,
-            title=_required_string(values.get("title"), field="document title"),
-            space_external_id=None,
-            parent_external_id=None,
-            path=_string_tuple(values.get("path"), field="document path"),
-            source_format=_required_string(
-                values.get("source_format"), field="document source format"
-            ),
-            normalized_text=_bounded_string(
-                values.get("normalized_text"), field="document content"
-            ),
-            source_body=_json_value(values.get("source_body")),
-            content_hash=_required_string(
-                values.get("content_hash"), field="document content hash"
-            ),
-            version=_optional_string(values.get("version")),
-            lifecycle_state=_optional_string(values.get("lifecycle_state")),
-            author_external_id=_optional_string(values.get("author_external_id")),
-            label_external_ids=(),
-            unsupported_blocks=(),
-            source_created_at=record.source_created_at,
-            source_updated_at=record.source_updated_at,
+            title=payload.title,
+            space_external_id=payload.space_external_id,
+            parent_external_id=payload.parent_external_id,
+            path=payload.path,
+            source_format=payload.source_format,
+            normalized_text=payload.normalized_text,
+            source_body=payload.source_body,
+            content_hash=payload.content_hash,
+            version=payload.version,
+            lifecycle_state=payload.lifecycle_state,
+            author_external_id=payload.author_external_id,
+            label_external_ids=payload.label_external_ids,
+            unsupported_blocks=payload.unsupported_blocks,
+            source_created_at=payload.source_created_at or record.source_created_at,
+            source_updated_at=payload.source_updated_at or record.source_updated_at,
             source_url=record.source_url,
-            custom_fields=_mapping(values.get("custom_fields"), field="Linear context"),
+            custom_fields=payload.custom_fields,
         )
 
-    def normalize_block(self, record: SorExternalRecord) -> KnowledgeBlock:
+    def normalize_block(
+        self,
+        record: SorExternalRecord,
+        payload: KnowledgeBlockPayload,
+    ) -> KnowledgeBlock:
         raise _normalization_unavailable("block")
 
-    def normalize_version(self, record: SorExternalRecord) -> KnowledgeVersion:
+    def normalize_version(
+        self,
+        record: SorExternalRecord,
+        payload: KnowledgeVersionPayload,
+    ) -> KnowledgeVersion:
         raise _normalization_unavailable("version")
 
-    def normalize_property(self, record: SorExternalRecord) -> KnowledgeProperty:
+    def normalize_property(
+        self,
+        record: SorExternalRecord,
+        payload: KnowledgePropertyPayload,
+    ) -> KnowledgeProperty:
         raise _normalization_unavailable("property")
 
     def normalize_attachment(
         self,
         record: SorExternalRecord,
+        payload: KnowledgeAttachmentPayload,
     ) -> KnowledgeAttachment:
-        values = record.payload
         return KnowledgeAttachment(
             external_id=record.external_id,
-            document_external_id=_required_string(
-                values.get("document_external_id"), field="attachment document ID"
-            ),
-            name=_required_string(values.get("name"), field="attachment name"),
-            media_type=_optional_string(values.get("media_type")),
-            size_bytes=None,
-            source_url=_safe_upload_url(values.get("source_url")),
-            source_url_expires_at=None,
+            document_external_id=payload.document_external_id,
+            name=payload.name,
+            media_type=payload.media_type,
+            size_bytes=payload.size_bytes,
+            source_url=_safe_upload_url(payload.source_url),
+            source_url_expires_at=payload.source_url_expires_at,
         )
 
-    def normalize_author(self, record: SorExternalRecord) -> KnowledgeAuthor:
-        values = record.payload
+    def normalize_author(
+        self,
+        record: SorExternalRecord,
+        payload: KnowledgeAuthorPayload,
+    ) -> KnowledgeAuthor:
         return KnowledgeAuthor(
             external_id=record.external_id,
-            name=_required_string(values.get("name"), field="author name"),
-            primary_email=_optional_string(values.get("primary_email")),
-            kind=_optional_string(values.get("kind")),
-            avatar_url=_optional_string(values.get("avatar_url")),
+            name=payload.name,
+            primary_email=payload.primary_email,
+            kind=payload.kind,
+            avatar_url=payload.avatar_url,
         )
 
     async def close(self) -> None:

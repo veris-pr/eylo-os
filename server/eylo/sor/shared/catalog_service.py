@@ -87,7 +87,7 @@ def _vendor_response(vendor: SorVendorRegistration) -> SorVendorCatalogResponse:
                     ),
                     scope_category=stream.scope_category,
                     depends_on=tuple(sorted(stream.depends_on)),
-                    relationship_targets=dict(stream.relationship_targets),
+                    relationship_targets=stream.relationship_targets.to_wire(),
                 )
                 for stream in manifest.streams
             ),

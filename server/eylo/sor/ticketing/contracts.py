@@ -9,7 +9,15 @@ from decimal import Decimal
 from enum import Enum, StrEnum
 from typing import Protocol, runtime_checkable
 
-from eylo.sor.shared.contracts import SorExternalRecord, SorLifecycleAdapter
+from pydantic import Field
+
+from eylo.sor.shared.contracts import (
+    SorCanonicalPayload,
+    SorCommandPayload,
+    SorExternalRecord,
+    SorLifecycleAdapter,
+    SorMappedFieldsCommandPayload,
+)
 
 
 class TicketingWorkState(str, Enum):
@@ -174,6 +182,162 @@ class TicketingRelationKind(str, Enum):
     DUPLICATE = "DUPLICATE"
 
 
+class TicketingMappedFieldsCommandPayload(SorMappedFieldsCommandPayload):
+    """Mapped issue fields for one create or update command."""
+
+
+class TicketingTransitionCommandPayload(SorCommandPayload):
+    """One exact workflow state selected for an issue transition."""
+
+    workflow_state_external_id: str = Field(min_length=1, max_length=320)
+
+
+class TicketingAssignCommandPayload(SorCommandPayload):
+    """One source user assignment; null explicitly unassigns the issue."""
+
+    assignee_external_id: str | None
+
+
+class TicketingCommentCommandPayload(SorCommandPayload):
+    """One plain-text issue comment."""
+
+    text: str = Field(min_length=1, max_length=100_000)
+
+
+class TicketingLinkCommandPayload(SorCommandPayload):
+    """One typed relationship between the target and another issue."""
+
+    related_issue_external_id: str = Field(min_length=1, max_length=320)
+    relation_kind: TicketingRelationKind
+
+
+class TicketingLabelCommandPayload(SorCommandPayload):
+    """One exact source label to add or remove."""
+
+    label_external_id: str = Field(min_length=1, max_length=320)
+
+
+TICKETING_COMMAND_PAYLOAD_TYPES: Mapping[
+    TicketingToolName, type[SorCommandPayload]
+] = {
+    TicketingToolName.CREATE: TicketingMappedFieldsCommandPayload,
+    TicketingToolName.UPDATE: TicketingMappedFieldsCommandPayload,
+    TicketingToolName.TRANSITION: TicketingTransitionCommandPayload,
+    TicketingToolName.ASSIGN: TicketingAssignCommandPayload,
+    TicketingToolName.COMMENT: TicketingCommentCommandPayload,
+    TicketingToolName.LINK: TicketingLinkCommandPayload,
+    TicketingToolName.ADD_LABEL: TicketingLabelCommandPayload,
+    TicketingToolName.REMOVE_LABEL: TicketingLabelCommandPayload,
+}
+
+
+class TicketingIssuePayload(SorCanonicalPayload):
+    """Mapped issue fields before source identity is attached."""
+
+    key: str | None = None
+    title: str
+    normalized_description: str | None = None
+    source_description: object | None = None
+    issue_type: str | None = None
+    native_status: str | None = None
+    normalized_status: TicketingWorkState | None = None
+    priority: str | None = None
+    project_external_id: str | None = None
+    team_external_id: str | None = None
+    assignee_external_id: str | None = None
+    reporter_external_id: str | None = None
+    estimate: Decimal | None = None
+    label_external_ids: tuple[str, ...] = ()
+    parent_external_id: str | None = None
+    cycle_external_id: str | None = None
+    due_date: date | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    cancelled_at: datetime | None = None
+
+
+class TicketingProjectPayload(SorCanonicalPayload):
+    key: str | None = None
+    name: str
+    description: str | None = None
+
+
+class TicketingWorkflowStatePayload(SorCanonicalPayload):
+    name: str
+    native_category: str | None = None
+    normalized_category: TicketingWorkState | None = None
+    order: int | Decimal | None = None
+
+
+class TicketingUserPayload(SorCanonicalPayload):
+    name: str
+    display_name: str | None = None
+    primary_email: str | None = None
+    active: bool
+    assignable: bool | None = None
+    avatar_url: str | None = None
+
+
+class TicketingLabelPayload(SorCanonicalPayload):
+    name: str
+    description: str | None = None
+    color: str | None = None
+    project_external_id: str | None = None
+    parent_external_id: str | None = None
+    is_group: bool
+
+
+class TicketingCyclePayload(SorCanonicalPayload):
+    name: str | None = None
+    number: int | None = None
+    project_external_id: str | None = None
+    description: str | None = None
+    starts_at: datetime | None = None
+    ends_at: datetime | None = None
+    completed_at: datetime | None = None
+    active: bool | None = None
+
+
+class TicketingCommentPayload(SorCanonicalPayload):
+    issue_external_id: str
+    author_external_id: str | None = None
+    normalized_text: str
+    source_body: object | None = None
+    created_at: datetime
+    updated_at: datetime | None = None
+
+
+class TicketingRelationPayload(SorCanonicalPayload):
+    from_issue_external_id: str
+    to_issue_external_id: str
+    canonical_relation_kind: TicketingRelationKind
+    native_relation_kind: str
+
+
+TicketingPayload = (
+    TicketingIssuePayload
+    | TicketingProjectPayload
+    | TicketingWorkflowStatePayload
+    | TicketingUserPayload
+    | TicketingLabelPayload
+    | TicketingCyclePayload
+    | TicketingCommentPayload
+    | TicketingRelationPayload
+)
+
+
+TICKETING_PAYLOAD_TYPES: Mapping[TicketingEntityKind, type[SorCanonicalPayload]] = {
+    TicketingEntityKind.ISSUE: TicketingIssuePayload,
+    TicketingEntityKind.PROJECT: TicketingProjectPayload,
+    TicketingEntityKind.WORKFLOW_STATE: TicketingWorkflowStatePayload,
+    TicketingEntityKind.USER: TicketingUserPayload,
+    TicketingEntityKind.LABEL: TicketingLabelPayload,
+    TicketingEntityKind.CYCLE: TicketingCyclePayload,
+    TicketingEntityKind.COMMENT: TicketingCommentPayload,
+    TicketingEntityKind.RELATION: TicketingRelationPayload,
+}
+
+
 @dataclass(frozen=True, slots=True)
 class TicketingIssueRelation:
     """One vendor relation plus the exact issue stream containing its endpoints."""
@@ -191,41 +355,84 @@ class TicketingIssueRelation:
 class TicketingAdapter(SorLifecycleAdapter, Protocol):
     """Ticketing port with pure, I/O-free synchronous normalization methods."""
 
-    def normalize_issue(self, record: SorExternalRecord) -> TicketingIssue: ...
+    def normalize_issue(
+        self,
+        record: SorExternalRecord,
+        payload: TicketingIssuePayload,
+    ) -> TicketingIssue: ...
 
-    def normalize_project(self, record: SorExternalRecord) -> TicketingProject: ...
+    def normalize_project(
+        self,
+        record: SorExternalRecord,
+        payload: TicketingProjectPayload,
+    ) -> TicketingProject: ...
 
     def normalize_workflow_state(
         self,
         record: SorExternalRecord,
+        payload: TicketingWorkflowStatePayload,
     ) -> TicketingWorkflowState: ...
 
-    def normalize_user(self, record: SorExternalRecord) -> TicketingUser: ...
+    def normalize_user(
+        self,
+        record: SorExternalRecord,
+        payload: TicketingUserPayload,
+    ) -> TicketingUser: ...
 
-    def normalize_label(self, record: SorExternalRecord) -> TicketingLabel: ...
+    def normalize_label(
+        self,
+        record: SorExternalRecord,
+        payload: TicketingLabelPayload,
+    ) -> TicketingLabel: ...
 
-    def normalize_cycle(self, record: SorExternalRecord) -> TicketingCycle: ...
+    def normalize_cycle(
+        self,
+        record: SorExternalRecord,
+        payload: TicketingCyclePayload,
+    ) -> TicketingCycle: ...
 
-    def normalize_comment(self, record: SorExternalRecord) -> TicketingComment: ...
+    def normalize_comment(
+        self,
+        record: SorExternalRecord,
+        payload: TicketingCommentPayload,
+    ) -> TicketingComment: ...
 
     def normalize_relation(
         self,
         record: SorExternalRecord,
+        payload: TicketingRelationPayload,
     ) -> TicketingIssueRelation: ...
 
 
 __all__ = [
+    "TICKETING_COMMAND_PAYLOAD_TYPES",
+    "TICKETING_PAYLOAD_TYPES",
+    "TicketingAssignCommandPayload",
     "TicketingAdapter",
     "TicketingComment",
+    "TicketingCommentCommandPayload",
+    "TicketingCommentPayload",
     "TicketingCycle",
+    "TicketingCyclePayload",
     "TicketingEntityKind",
     "TicketingIssue",
+    "TicketingIssuePayload",
     "TicketingIssueRelation",
     "TicketingLabel",
+    "TicketingLabelCommandPayload",
+    "TicketingLabelPayload",
+    "TicketingPayload",
     "TicketingProject",
+    "TicketingProjectPayload",
+    "TicketingRelationPayload",
     "TicketingRelationKind",
+    "TicketingLinkCommandPayload",
+    "TicketingMappedFieldsCommandPayload",
+    "TicketingTransitionCommandPayload",
     "TicketingToolName",
     "TicketingUser",
+    "TicketingUserPayload",
     "TicketingWorkState",
     "TicketingWorkflowState",
+    "TicketingWorkflowStatePayload",
 ]

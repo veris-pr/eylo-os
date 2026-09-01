@@ -17,6 +17,14 @@ from jwt.exceptions import PyJWTError
 
 from eylo.modules.connections.domain import ConnectionAuthKind
 from eylo.sor.runtime.http import SorHttpTransport, SorJsonHttpClient, SorJsonResponse
+from eylo.sor.shared.atlassian import (
+    ATLASSIAN_API_ORIGIN,
+    ATLASSIAN_AUTHORIZATION_PARAMS,
+    ATLASSIAN_AUTHORIZATION_URL,
+    ATLASSIAN_INSTANCE_HOST_SUFFIX,
+    ATLASSIAN_INSTANCE_HOST_SUFFIXES,
+    ATLASSIAN_TOKEN_URL,
+)
 from eylo.sor.shared.contracts import (
     SorAdapterCapabilityManifest,
     SorAdapterContext,
@@ -32,11 +40,15 @@ from eylo.sor.shared.contracts import (
     SorDiscoveredSchema,
     SorExternalRecord,
     SorExternalRecordNotFound,
+    SorFieldDataType,
     SorMutationOperation,
     SorOAuthSpec,
+    SorOAuthTokenRequestFormat,
     SorProfile,
     SorRecordPage,
     SorRecoveryPolicy,
+    SorRelationshipRole,
+    SorRelationshipTargets,
     SorVendorErrorCode,
     SorVendorOperationError,
     SorVendorStreamSpec,
@@ -46,21 +58,35 @@ from eylo.sor.shared.contracts import (
     SorWebhookVerificationError,
 )
 from eylo.sor.ticketing.contracts import (
+    TicketingAssignCommandPayload,
     TicketingComment,
+    TicketingCommentCommandPayload,
+    TicketingCommentPayload,
     TicketingCycle,
+    TicketingCyclePayload,
     TicketingEntityKind,
     TicketingIssue,
+    TicketingIssuePayload,
     TicketingIssueRelation,
     TicketingLabel,
+    TicketingLabelCommandPayload,
+    TicketingLabelPayload,
+    TicketingLinkCommandPayload,
+    TicketingMappedFieldsCommandPayload,
     TicketingProject,
+    TicketingProjectPayload,
     TicketingRelationKind,
+    TicketingRelationPayload,
     TicketingToolName,
+    TicketingTransitionCommandPayload,
     TicketingUser,
+    TicketingUserPayload,
     TicketingWorkState,
     TicketingWorkflowState,
+    TicketingWorkflowStatePayload,
 )
 
-JIRA_API_ORIGIN = "https://api.atlassian.com"
+JIRA_API_ORIGIN = ATLASSIAN_API_ORIGIN
 JIRA_API_VERSION = "jira-cloud-rest-v3"
 JIRA_CURSOR_VERSION = 1
 JIRA_ISSUE_CURSOR_VERSION = 2
@@ -110,18 +136,24 @@ _STREAM_ENTITY = {
 }
 _RELATIONSHIP_TARGETS = {
     JiraStream.ISSUES: {
-        "project": JiraStream.PROJECTS,
-        "assignee": JiraStream.USERS,
-        "reporter": JiraStream.USERS,
-        "label": JiraStream.LABELS,
-        "parent": JiraStream.ISSUES,
-        "cycle": JiraStream.SPRINTS,
+        SorRelationshipRole.PROJECT: JiraStream.PROJECTS,
+        SorRelationshipRole.ASSIGNEE: JiraStream.USERS,
+        SorRelationshipRole.REPORTER: JiraStream.USERS,
+        SorRelationshipRole.LABEL: JiraStream.LABELS,
+        SorRelationshipRole.PARENT: JiraStream.ISSUES,
+        SorRelationshipRole.CYCLE: JiraStream.SPRINTS,
     },
-    JiraStream.LABELS: {"project": JiraStream.PROJECTS, "parent": JiraStream.LABELS},
-    JiraStream.COMMENTS: {"issue": JiraStream.ISSUES, "author": JiraStream.USERS},
+    JiraStream.LABELS: {
+        SorRelationshipRole.PROJECT: JiraStream.PROJECTS,
+        SorRelationshipRole.PARENT: JiraStream.LABELS,
+    },
+    JiraStream.COMMENTS: {
+        SorRelationshipRole.ISSUE: JiraStream.ISSUES,
+        SorRelationshipRole.AUTHOR: JiraStream.USERS,
+    },
     JiraStream.ISSUE_RELATIONS: {
-        "from_issue": JiraStream.ISSUES,
-        "to_issue": JiraStream.ISSUES,
+        SorRelationshipRole.FROM_ISSUE: JiraStream.ISSUES,
+        SorRelationshipRole.TO_ISSUE: JiraStream.ISSUES,
     },
 }
 _READ_TOOLS = frozenset(
@@ -212,7 +244,9 @@ JIRA_MANIFEST = SorAdapterCapabilityManifest(
             depends_on=frozenset(
                 set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values()) - {stream_key}
             ),
-            relationship_targets=_RELATIONSHIP_TARGETS.get(stream_key, {}),
+            relationship_targets=SorRelationshipTargets(
+                _RELATIONSHIP_TARGETS.get(stream_key, {})
+            ),
         )
         for stream_key, entity in _STREAM_ENTITY.items()
     ),
@@ -237,12 +271,12 @@ JIRA_MANIFEST = SorAdapterCapabilityManifest(
     tool_streams=_TOOL_STREAMS,
     mutation_result_streams=_MUTATION_RESULT_STREAMS,
     oauth=SorOAuthSpec(
-        authorization_url="https://auth.atlassian.com/authorize",
-        token_url="https://auth.atlassian.com/oauth/token",
+        authorization_url=ATLASSIAN_AUTHORIZATION_URL,
+        token_url=ATLASSIAN_TOKEN_URL,
         base_scopes=(OFFLINE_SCOPE, MANAGE_WEBHOOK_SCOPE),
-        authorization_params=(("audience", "api.atlassian.com"), ("prompt", "consent")),
-        token_request_format="json",
-        instance_host_suffixes=("atlassian.net",),
+        authorization_params=ATLASSIAN_AUTHORIZATION_PARAMS,
+        token_request_format=SorOAuthTokenRequestFormat.JSON,
+        instance_host_suffixes=ATLASSIAN_INSTANCE_HOST_SUFFIXES,
         operator_instance_origin=True,
     ),
     fixed_origin=JIRA_API_ORIGIN,
@@ -256,7 +290,7 @@ JIRA_MANIFEST = SorAdapterCapabilityManifest(
 def _field(
     key: str,
     label: str,
-    data_type: str,
+    data_type: SorFieldDataType,
     *,
     nullable: bool = True,
     writable: bool = False,
@@ -278,78 +312,78 @@ def _field(
 
 _SCHEMA_FIELDS = {
     JiraStream.ISSUES: (
-        _field("key", "Key", "text", nullable=False),
-        _field("title", "Title", "text", nullable=False, writable=True),
-        _field("normalized_description", "Description", "text", writable=True),
+        _field("key", "Key", SorFieldDataType.TEXT, nullable=False),
+        _field("title", "Title", SorFieldDataType.TEXT, nullable=False, writable=True),
+        _field("normalized_description", "Description", SorFieldDataType.TEXT, writable=True),
         _field(
             "source_description",
             "Source description",
-            "bounded_json",
+            SorFieldDataType.BOUNDED_JSON,
             description="The original Atlassian Document Format value retained for audit.",
         ),
-        _field("issue_type", "Issue type", "text", nullable=False, writable=True),
-        _field("native_status", "Status", "text"),
-        _field("normalized_status", "Normalized status", "enum"),
-        _field("priority", "Priority", "text", writable=True),
-        _field("project_external_id", "Project ID", "reference", writable=True),
-        _field("assignee_external_id", "Assignee ID", "reference", writable=True),
-        _field("reporter_external_id", "Reporter ID", "reference"),
-        _field("estimate", "Estimate", "decimal", writable=True),
-        _field("label_external_ids", "Labels", "string_array", writable=True),
-        _field("parent_external_id", "Parent issue ID", "reference", writable=True),
-        _field("due_date", "Due date", "date", writable=True),
-        _field("completed_at", "Completed at", "timestamp"),
+        _field("issue_type", "Issue type", SorFieldDataType.TEXT, nullable=False, writable=True),
+        _field("native_status", "Status", SorFieldDataType.TEXT),
+        _field("normalized_status", "Normalized status", SorFieldDataType.ENUM),
+        _field("priority", "Priority", SorFieldDataType.TEXT, writable=True),
+        _field("project_external_id", "Project ID", SorFieldDataType.REFERENCE, writable=True),
+        _field("assignee_external_id", "Assignee ID", SorFieldDataType.REFERENCE, writable=True),
+        _field("reporter_external_id", "Reporter ID", SorFieldDataType.REFERENCE),
+        _field("estimate", "Estimate", SorFieldDataType.DECIMAL, writable=True),
+        _field("label_external_ids", "Labels", SorFieldDataType.STRING_ARRAY, writable=True),
+        _field("parent_external_id", "Parent issue ID", SorFieldDataType.REFERENCE, writable=True),
+        _field("due_date", "Due date", SorFieldDataType.DATE, writable=True),
+        _field("completed_at", "Completed at", SorFieldDataType.TIMESTAMP),
     ),
     JiraStream.PROJECTS: (
-        _field("key", "Key", "text", nullable=False),
-        _field("name", "Name", "text", nullable=False),
-        _field("description", "Description", "text"),
+        _field("key", "Key", SorFieldDataType.TEXT, nullable=False),
+        _field("name", "Name", SorFieldDataType.TEXT, nullable=False),
+        _field("description", "Description", SorFieldDataType.TEXT),
     ),
     JiraStream.WORKFLOW_STATES: (
-        _field("name", "Name", "text", nullable=False),
-        _field("native_category", "Source category", "text"),
-        _field("normalized_category", "Normalized category", "enum"),
-        _field("order", "Order", "integer"),
+        _field("name", "Name", SorFieldDataType.TEXT, nullable=False),
+        _field("native_category", "Source category", SorFieldDataType.TEXT),
+        _field("normalized_category", "Normalized category", SorFieldDataType.ENUM),
+        _field("order", "Order", SorFieldDataType.INTEGER),
     ),
     JiraStream.USERS: (
-        _field("name", "Name", "text", nullable=False),
-        _field("display_name", "Display name", "text"),
-        _field("primary_email", "Email", "text"),
-        _field("active", "Active", "boolean", nullable=False),
-        _field("assignable", "Assignable", "boolean"),
-        _field("avatar_url", "Avatar URL", "link"),
+        _field("name", "Name", SorFieldDataType.TEXT, nullable=False),
+        _field("display_name", "Display name", SorFieldDataType.TEXT),
+        _field("primary_email", "Email", SorFieldDataType.TEXT),
+        _field("active", "Active", SorFieldDataType.BOOLEAN, nullable=False),
+        _field("assignable", "Assignable", SorFieldDataType.BOOLEAN),
+        _field("avatar_url", "Avatar URL", SorFieldDataType.LINK),
     ),
     JiraStream.LABELS: (
-        _field("name", "Name", "text", nullable=False),
-        _field("description", "Description", "text"),
-        _field("color", "Color", "text"),
-        _field("project_external_id", "Project ID", "reference"),
-        _field("parent_external_id", "Parent label ID", "reference"),
-        _field("is_group", "Group", "boolean", nullable=False),
+        _field("name", "Name", SorFieldDataType.TEXT, nullable=False),
+        _field("description", "Description", SorFieldDataType.TEXT),
+        _field("color", "Color", SorFieldDataType.TEXT),
+        _field("project_external_id", "Project ID", SorFieldDataType.REFERENCE),
+        _field("parent_external_id", "Parent label ID", SorFieldDataType.REFERENCE),
+        _field("is_group", "Group", SorFieldDataType.BOOLEAN, nullable=False),
     ),
     JiraStream.SPRINTS: (
-        _field("name", "Name", "text", nullable=False),
-        _field("number", "Number", "integer"),
-        _field("description", "Goal", "text"),
-        _field("starts_at", "Starts at", "timestamp"),
-        _field("ends_at", "Ends at", "timestamp"),
-        _field("completed_at", "Completed at", "timestamp"),
-        _field("active", "Active", "boolean"),
+        _field("name", "Name", SorFieldDataType.TEXT, nullable=False),
+        _field("number", "Number", SorFieldDataType.INTEGER),
+        _field("description", "Goal", SorFieldDataType.TEXT),
+        _field("starts_at", "Starts at", SorFieldDataType.TIMESTAMP),
+        _field("ends_at", "Ends at", SorFieldDataType.TIMESTAMP),
+        _field("completed_at", "Completed at", SorFieldDataType.TIMESTAMP),
+        _field("active", "Active", SorFieldDataType.BOOLEAN),
     ),
     JiraStream.COMMENTS: (
-        _field("issue_external_id", "Issue ID", "reference", nullable=False),
-        _field("author_external_id", "Author ID", "reference"),
-        _field("normalized_text", "Comment", "text", nullable=False),
-        _field("source_body", "Source body", "bounded_json"),
-        _field("created_at", "Created at", "timestamp", nullable=False),
-        _field("updated_at", "Updated at", "timestamp"),
+        _field("issue_external_id", "Issue ID", SorFieldDataType.REFERENCE, nullable=False),
+        _field("author_external_id", "Author ID", SorFieldDataType.REFERENCE),
+        _field("normalized_text", "Comment", SorFieldDataType.TEXT, nullable=False),
+        _field("source_body", "Source body", SorFieldDataType.BOUNDED_JSON),
+        _field("created_at", "Created at", SorFieldDataType.TIMESTAMP, nullable=False),
+        _field("updated_at", "Updated at", SorFieldDataType.TIMESTAMP),
     ),
     JiraStream.ISSUE_RELATIONS: (
-        _field("issue_vendor_object_key", "Issue stream", "text", nullable=False),
-        _field("from_issue_external_id", "From issue ID", "reference", nullable=False),
-        _field("to_issue_external_id", "To issue ID", "reference", nullable=False),
-        _field("canonical_kind", "Normalized relation", "enum", nullable=False),
-        _field("native_kind", "Source relation", "text", nullable=False),
+        _field("issue_vendor_object_key", "Issue stream", SorFieldDataType.TEXT, nullable=False),
+        _field("from_issue_external_id", "From issue ID", SorFieldDataType.REFERENCE, nullable=False),
+        _field("to_issue_external_id", "To issue ID", SorFieldDataType.REFERENCE, nullable=False),
+        _field("canonical_kind", "Normalized relation", SorFieldDataType.ENUM, nullable=False),
+        _field("native_kind", "Source relation", SorFieldDataType.TEXT, nullable=False),
     ),
 }
 
@@ -431,6 +465,17 @@ class _SprintCursor:
     high: datetime | None
     started_at: datetime
     completed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _JiraIssueLinkSnapshot:
+    """Validated Jira link values shared by projection and mutation lookup."""
+
+    relation_id: str
+    from_issue_external_id: str
+    to_issue_external_id: str
+    canonical_kind: TicketingRelationKind
+    native_kind: str
 
 
 class JiraTicketingAdapter:
@@ -848,156 +893,148 @@ class JiraTicketingAdapter:
             add=command.tool_name == TicketingToolName.ADD_LABEL,
         )
 
-    def normalize_issue(self, record: SorExternalRecord) -> TicketingIssue:
-        values = record.payload
+    def normalize_issue(
+        self,
+        record: SorExternalRecord,
+        payload: TicketingIssuePayload,
+    ) -> TicketingIssue:
         return TicketingIssue(
             external_id=record.external_id,
-            key=_optional_string(values.get("key")),
-            title=_required_string(values.get("title"), field="Jira issue title"),
-            normalized_description=_optional_string(
-                values.get("normalized_description")
-            ),
-            source_description=_json_value(values.get("source_description")),
-            issue_type=_optional_string(values.get("issue_type")),
-            native_status=_optional_string(values.get("native_status")),
-            normalized_status=TicketingWorkState.from_value(
-                _optional_string(values.get("normalized_status"))
-            ),
-            priority=_optional_string(values.get("priority")),
-            project_external_id=_optional_string(values.get("project_external_id")),
-            team_external_id=_optional_string(values.get("team_external_id")),
-            assignee_external_id=_optional_string(values.get("assignee_external_id")),
-            reporter_external_id=_optional_string(values.get("reporter_external_id")),
-            estimate=_optional_decimal(values.get("estimate")),
-            label_external_ids=_string_tuple(values.get("label_external_ids")),
-            parent_external_id=_optional_string(values.get("parent_external_id")),
-            cycle_external_id=_optional_string(values.get("cycle_external_id")),
-            due_date=_optional_date(values.get("due_date")),
-            started_at=_optional_datetime(values.get("started_at")),
-            completed_at=_optional_datetime(values.get("completed_at")),
-            cancelled_at=_optional_datetime(values.get("cancelled_at")),
+            key=_optional_string(payload.key),
+            title=_required_string(payload.title, field="Jira issue title"),
+            normalized_description=_optional_string(payload.normalized_description),
+            source_description=_json_value(payload.source_description),
+            issue_type=_optional_string(payload.issue_type),
+            native_status=_optional_string(payload.native_status),
+            normalized_status=payload.normalized_status,
+            priority=_optional_string(payload.priority),
+            project_external_id=_optional_string(payload.project_external_id),
+            team_external_id=_optional_string(payload.team_external_id),
+            assignee_external_id=_optional_string(payload.assignee_external_id),
+            reporter_external_id=_optional_string(payload.reporter_external_id),
+            estimate=payload.estimate,
+            label_external_ids=payload.label_external_ids,
+            parent_external_id=_optional_string(payload.parent_external_id),
+            cycle_external_id=_optional_string(payload.cycle_external_id),
+            due_date=payload.due_date,
+            started_at=payload.started_at,
+            completed_at=payload.completed_at,
+            cancelled_at=payload.cancelled_at,
             source_updated_at=record.source_updated_at,
             source_url=record.source_url,
-            custom_fields={
-                key: value
-                for key, value in values.items()
-                if key.startswith("customfield_")
-            },
+            custom_fields={},
         )
 
-    def normalize_project(self, record: SorExternalRecord) -> TicketingProject:
+    def normalize_project(
+        self,
+        record: SorExternalRecord,
+        payload: TicketingProjectPayload,
+    ) -> TicketingProject:
         return TicketingProject(
             external_id=record.external_id,
-            key=_optional_string(record.payload.get("key")),
-            name=_required_string(
-                record.payload.get("name"), field="Jira project name"
-            ),
-            description=_optional_string(record.payload.get("description")),
+            key=_optional_string(payload.key),
+            name=_required_string(payload.name, field="Jira project name"),
+            description=_optional_string(payload.description),
             source_url=record.source_url,
         )
 
     def normalize_workflow_state(
         self,
         record: SorExternalRecord,
+        payload: TicketingWorkflowStatePayload,
     ) -> TicketingWorkflowState:
         return TicketingWorkflowState(
             external_id=record.external_id,
             name=_required_string(
-                record.payload.get("name"),
+                payload.name,
                 field="Jira workflow state name",
             ),
-            native_category=_optional_string(record.payload.get("native_category")),
-            normalized_category=TicketingWorkState.from_value(
-                _optional_string(record.payload.get("normalized_category"))
-            ),
-            order=_optional_integer(
-                record.payload.get("order"), field="Jira status order"
-            ),
+            native_category=_optional_string(payload.native_category),
+            normalized_category=payload.normalized_category,
+            order=(int(payload.order) if payload.order is not None else None),
         )
 
-    def normalize_user(self, record: SorExternalRecord) -> TicketingUser:
-        values = record.payload
+    def normalize_user(
+        self,
+        record: SorExternalRecord,
+        payload: TicketingUserPayload,
+    ) -> TicketingUser:
         return TicketingUser(
             external_id=record.external_id,
-            name=_required_string(values.get("name"), field="Jira user name"),
-            display_name=_optional_string(values.get("display_name")),
-            primary_email=_optional_string(values.get("primary_email")),
-            active=_required_boolean(values.get("active"), field="Jira user active"),
-            assignable=_optional_boolean(values.get("assignable")),
-            avatar_url=_optional_string(values.get("avatar_url")),
+            name=_required_string(payload.name, field="Jira user name"),
+            display_name=_optional_string(payload.display_name),
+            primary_email=_optional_string(payload.primary_email),
+            active=payload.active,
+            assignable=payload.assignable,
+            avatar_url=_optional_string(payload.avatar_url),
             source_url=record.source_url,
         )
 
-    def normalize_label(self, record: SorExternalRecord) -> TicketingLabel:
-        values = record.payload
+    def normalize_label(
+        self,
+        record: SorExternalRecord,
+        payload: TicketingLabelPayload,
+    ) -> TicketingLabel:
         return TicketingLabel(
             external_id=record.external_id,
-            name=_required_string(values.get("name"), field="Jira label name"),
-            description=_optional_string(values.get("description")),
-            color=_optional_string(values.get("color")),
-            project_external_id=_optional_string(values.get("project_external_id")),
-            parent_external_id=_optional_string(values.get("parent_external_id")),
-            is_group=_required_boolean(
-                values.get("is_group"), field="Jira label group flag"
-            ),
+            name=_required_string(payload.name, field="Jira label name"),
+            description=_optional_string(payload.description),
+            color=_optional_string(payload.color),
+            project_external_id=_optional_string(payload.project_external_id),
+            parent_external_id=_optional_string(payload.parent_external_id),
+            is_group=payload.is_group,
         )
 
-    def normalize_cycle(self, record: SorExternalRecord) -> TicketingCycle:
-        values = record.payload
+    def normalize_cycle(
+        self,
+        record: SorExternalRecord,
+        payload: TicketingCyclePayload,
+    ) -> TicketingCycle:
         return TicketingCycle(
             external_id=record.external_id,
-            name=_required_string(values.get("name"), field="Jira sprint name"),
-            number=_optional_integer(values.get("number"), field="Jira sprint number"),
-            project_external_id=_optional_string(values.get("project_external_id")),
-            description=_optional_string(values.get("description")),
-            starts_at=_optional_datetime(values.get("starts_at")),
-            ends_at=_optional_datetime(values.get("ends_at")),
-            completed_at=_optional_datetime(values.get("completed_at")),
-            active=_optional_boolean(values.get("active")),
+            name=_required_string(payload.name, field="Jira sprint name"),
+            number=payload.number,
+            project_external_id=_optional_string(payload.project_external_id),
+            description=_optional_string(payload.description),
+            starts_at=payload.starts_at,
+            ends_at=payload.ends_at,
+            completed_at=payload.completed_at,
+            active=payload.active,
         )
 
-    def normalize_comment(self, record: SorExternalRecord) -> TicketingComment:
-        values = record.payload
+    def normalize_comment(
+        self,
+        record: SorExternalRecord,
+        payload: TicketingCommentPayload,
+    ) -> TicketingComment:
         return TicketingComment(
             external_id=record.external_id,
             issue_external_id=_required_string(
-                values.get("issue_external_id"),
+                payload.issue_external_id,
                 field="Jira comment issue ID",
             ),
-            author_external_id=_optional_string(values.get("author_external_id")),
+            author_external_id=_optional_string(payload.author_external_id),
             normalized_text=_required_string(
-                values.get("normalized_text"),
+                payload.normalized_text,
                 field="Jira comment body",
             ),
-            source_body=_json_value(values.get("source_body")),
-            created_at=_required_datetime(
-                values.get("created_at"),
-                field="Jira comment creation time",
-            ),
-            updated_at=_optional_datetime(values.get("updated_at")),
+            source_body=_json_value(payload.source_body),
+            created_at=payload.created_at,
+            updated_at=payload.updated_at,
         )
 
-    def normalize_relation(self, record: SorExternalRecord) -> TicketingIssueRelation:
-        values = record.payload
+    def normalize_relation(
+        self,
+        record: SorExternalRecord,
+        payload: TicketingRelationPayload,
+    ) -> TicketingIssueRelation:
         return TicketingIssueRelation(
             external_id=record.external_id,
             issue_vendor_object_key=JiraStream.ISSUES,
-            from_issue_external_id=_required_string(
-                values.get("from_issue_external_id"),
-                field="Jira relation source issue ID",
-            ),
-            to_issue_external_id=_required_string(
-                values.get("to_issue_external_id"),
-                field="Jira relation target issue ID",
-            ),
-            canonical_kind=_jira_relation_kind(
-                values.get("canonical_relation_kind"),
-                error_code=SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
-            ),
-            native_kind=_required_string(
-                values.get("native_relation_kind"),
-                field="Jira relation type",
-            ),
+            from_issue_external_id=payload.from_issue_external_id,
+            to_issue_external_id=payload.to_issue_external_id,
+            canonical_kind=payload.canonical_relation_kind,
+            native_kind=payload.native_relation_kind,
             source_revision=record.source_revision,
         )
 
@@ -1987,38 +2024,20 @@ class JiraTicketingAdapter:
         )
 
     def _external_relation(self, row: Mapping[str, object]) -> SorExternalRecord:
-        relation_id = _required_id(row.get("id"), field="Jira issue-link ID")
-        current_id = _optional_id(row.get("_current_issue_external_id"))
-        inward = _optional_object(row.get("inwardIssue"))
-        outward = _optional_object(row.get("outwardIssue"))
-        inward_id = _optional_id(inward.get("id"))
-        outward_id = _optional_id(outward.get("id"))
-        if inward_id is None and current_id is not None and outward_id is not None:
-            inward_id = current_id
-        if outward_id is None and current_id is not None and inward_id is not None:
-            outward_id = current_id
-        if inward_id is None or outward_id is None:
-            raise _invalid_response("Jira issue-link endpoints are incomplete.")
-        relation_type = _object(row.get("type"), field="Jira issue-link type")
-        native_kind = _required_string(
-            relation_type.get("name"),
-            field="Jira issue-link type name",
-        )
-        canonical_kind = _jira_relation_kind_from_type(relation_type)
-        from_id, to_id = outward_id, inward_id
-        if canonical_kind is TicketingRelationKind.RELATED and from_id > to_id:
-            from_id, to_id = to_id, from_id
+        relation = _jira_issue_link_snapshot(row)
         return SorExternalRecord(
             vendor_object_key=JiraStream.ISSUE_RELATIONS,
-            external_id=relation_id,
+            external_id=relation.relation_id,
             payload={
                 "issue_vendor_object_key": JiraStream.ISSUES,
-                "from_issue_external_id": from_id,
-                "to_issue_external_id": to_id,
-                "canonical_kind": canonical_kind.value,
-                "native_kind": native_kind,
+                "from_issue_external_id": relation.from_issue_external_id,
+                "to_issue_external_id": relation.to_issue_external_id,
+                "canonical_kind": relation.canonical_kind.value,
+                "native_kind": relation.native_kind,
             },
-            source_url=f"{self._site_origin}/browse/{from_id}",
+            source_url=(
+                f"{self._site_origin}/browse/{relation.from_issue_external_id}"
+            ),
         )
 
     async def _create_issue(self, command: SorCommandRequest) -> SorCommandResult:
@@ -2026,13 +2045,14 @@ class JiraTicketingAdapter:
             raise _invalid_command(
                 "Creating a Jira issue cannot target an existing issue."
             )
+        issue_fields = _mapped_issue_fields(command)
         required = {"title", "project_external_id", "issue_type"}
-        if not required.issubset(command.payload):
+        if not required.issubset(issue_fields):
             raise _invalid_command(
                 "Creating a Jira issue requires title, project_external_id, and issue_type."
             )
         fields = self._write_issue_fields(
-            command.payload,
+            issue_fields,
             operation=SorMutationOperation.CREATE,
         )
         try:
@@ -2061,7 +2081,7 @@ class JiraTicketingAdapter:
         command: SorCommandRequest,
     ) -> SorCommandResult:
         fields = self._write_issue_fields(
-            command.payload,
+            _mapped_issue_fields(command),
             operation=SorMutationOperation.UPDATE,
         )
         response = await self._jira_request(
@@ -2078,9 +2098,10 @@ class JiraTicketingAdapter:
         target_id: str,
         command: SorCommandRequest,
     ) -> SorCommandResult:
-        status_id = _single_string_payload(
-            command.payload,
-            key="workflow_state_external_id",
+        if not isinstance(command.payload, TicketingTransitionCommandPayload):
+            raise _invalid_command("Jira transition payload is invalid.")
+        status_id = _required_id(
+            command.payload.workflow_state_external_id,
             field="Jira status ID",
         )
         available = await self._jira_request(
@@ -2117,10 +2138,12 @@ class JiraTicketingAdapter:
         target_id: str,
         command: SorCommandRequest,
     ) -> SorCommandResult:
-        assignee = _single_nullable_string_payload(
-            command.payload,
-            key="assignee_external_id",
-            field="Jira account ID",
+        if not isinstance(command.payload, TicketingAssignCommandPayload):
+            raise _invalid_command("Jira assignment payload is invalid.")
+        assignee = (
+            _required_id(command.payload.assignee_external_id, field="Jira account ID")
+            if command.payload.assignee_external_id is not None
+            else None
         )
         response = await self._jira_request(
             f"/issue/{_path_segment(target_id)}/assignee",
@@ -2136,11 +2159,9 @@ class JiraTicketingAdapter:
         target_id: str,
         command: SorCommandRequest,
     ) -> SorCommandResult:
-        text = _single_string_payload(
-            command.payload,
-            key="text",
-            field="Jira comment",
-        )
+        if not isinstance(command.payload, TicketingCommentCommandPayload):
+            raise _invalid_command("Jira comment payload is invalid.")
+        text = command.payload.text
         try:
             response = await self._jira_request(
                 f"/issue/{_path_segment(target_id)}/comment",
@@ -2176,21 +2197,15 @@ class JiraTicketingAdapter:
         target_id: str,
         command: SorCommandRequest,
     ) -> SorCommandResult:
-        if set(command.payload) != {
-            "related_issue_external_id",
-            "relation_kind",
-        }:
-            raise _invalid_command(
-                "Linking Jira issues requires related_issue_external_id and "
-                "relation_kind only."
-            )
+        if not isinstance(command.payload, TicketingLinkCommandPayload):
+            raise _invalid_command("Jira relationship payload is invalid.")
         related_id = _required_id(
-            command.payload.get("related_issue_external_id"),
+            command.payload.related_issue_external_id,
             field="Jira related issue ID",
         )
         if related_id == target_id:
             raise _invalid_command("A Jira issue cannot link to itself.")
-        requested_kind = _jira_relation_kind(command.payload.get("relation_kind"))
+        requested_kind = command.payload.relation_kind
         if requested_kind not in {
             TicketingRelationKind.BLOCKS,
             TicketingRelationKind.BLOCKED_BY,
@@ -2304,14 +2319,13 @@ class JiraTicketingAdapter:
         rows = _object_list(fields.get("issuelinks"), field="Jira issue links")
         for row in rows:
             row["_current_issue_external_id"] = issue_id
-            relation = self._external_relation(row)
-            values = relation.payload
+            relation = _jira_issue_link_snapshot(row)
             if (
-                values.get("canonical_kind") == canonical_kind.value
-                and values.get("from_issue_external_id") == from_issue_id
-                and values.get("to_issue_external_id") == to_issue_id
+                relation.canonical_kind is canonical_kind
+                and relation.from_issue_external_id == from_issue_id
+                and relation.to_issue_external_id == to_issue_id
             ):
-                return relation.external_id
+                return relation.relation_id
         return None
 
     async def _change_label(
@@ -2321,11 +2335,9 @@ class JiraTicketingAdapter:
         *,
         add: bool,
     ) -> SorCommandResult:
-        label = _single_string_payload(
-            command.payload,
-            key="label_external_id",
-            field="Jira label",
-        )
+        if not isinstance(command.payload, TicketingLabelCommandPayload):
+            raise _invalid_command("Jira label payload is invalid.")
+        label = command.payload.label_external_id
         response = await self._jira_request(
             f"/issue/{_path_segment(target_id)}",
             method="PUT",
@@ -3156,7 +3168,7 @@ def _require_stream(value: str, *, selected: tuple[str, ...]) -> str:
 def _jira_site_origin(value: str | None) -> str:
     normalized = _normalized_origin(value)
     if normalized is None or not normalized.removeprefix("https://").endswith(
-        ".atlassian.net"
+        f".{ATLASSIAN_INSTANCE_HOST_SUFFIX}"
     ):
         raise SorVendorOperationError(
             SorVendorErrorCode.VENDOR_SITE_INVALID,
@@ -3201,25 +3213,35 @@ def _split_comment_external_id(value: str) -> tuple[str, str]:
     return _path_segment(parts[0]), _path_segment(parts[1])
 
 
-def _jira_relation_kind(
-    value: object,
-    *,
-    error_code: SorVendorErrorCode = SorVendorErrorCode.VENDOR_COMMAND_INVALID,
-) -> TicketingRelationKind:
-    if isinstance(value, TicketingRelationKind):
-        return value
-    if not isinstance(value, str):
-        normalized = ""
-    else:
-        normalized = value.strip().upper()
-    try:
-        return TicketingRelationKind(normalized)
-    except ValueError as error:
-        raise SorVendorOperationError(
-            error_code,
-            "The Jira relation kind is invalid.",
-            recovery=SorRecoveryPolicy.TERMINAL,
-        ) from error
+def _jira_issue_link_snapshot(
+    row: Mapping[str, object],
+) -> _JiraIssueLinkSnapshot:
+    current_id = _optional_id(row.get("_current_issue_external_id"))
+    inward = _optional_object(row.get("inwardIssue"))
+    outward = _optional_object(row.get("outwardIssue"))
+    inward_id = _optional_id(inward.get("id"))
+    outward_id = _optional_id(outward.get("id"))
+    if inward_id is None and current_id is not None and outward_id is not None:
+        inward_id = current_id
+    if outward_id is None and current_id is not None and inward_id is not None:
+        outward_id = current_id
+    if inward_id is None or outward_id is None:
+        raise _invalid_response("Jira issue-link endpoints are incomplete.")
+    relation_type = _object(row.get("type"), field="Jira issue-link type")
+    canonical_kind = _jira_relation_kind_from_type(relation_type)
+    from_id, to_id = outward_id, inward_id
+    if canonical_kind is TicketingRelationKind.RELATED and from_id > to_id:
+        from_id, to_id = to_id, from_id
+    return _JiraIssueLinkSnapshot(
+        relation_id=_required_id(row.get("id"), field="Jira issue-link ID"),
+        from_issue_external_id=from_id,
+        to_issue_external_id=to_id,
+        canonical_kind=canonical_kind,
+        native_kind=_required_string(
+            relation_type.get("name"),
+            field="Jira issue-link type name",
+        ),
+    )
 
 
 def _jira_relation_kind_from_type(
@@ -3270,27 +3292,10 @@ def _required_target(command: SorCommandRequest) -> str:
     return _required_id(command.target_external_id, field="Jira issue ID")
 
 
-def _single_string_payload(
-    payload: Mapping[str, object],
-    *,
-    key: str,
-    field: str,
-) -> str:
-    if set(payload) != {key}:
-        raise _invalid_command(f"This Jira action requires only {key}.")
-    return _required_command_string(payload.get(key), field=field)
-
-
-def _single_nullable_string_payload(
-    payload: Mapping[str, object],
-    *,
-    key: str,
-    field: str,
-) -> str | None:
-    if set(payload) != {key}:
-        raise _invalid_command(f"This Jira action requires only {key}.")
-    value = payload.get(key)
-    return None if value is None else _required_command_string(value, field=field)
+def _mapped_issue_fields(command: SorCommandRequest) -> Mapping[str, object]:
+    if not isinstance(command.payload, TicketingMappedFieldsCommandPayload):
+        raise _invalid_command("Jira issue field payload is invalid.")
+    return command.payload.fields
 
 
 def _required_command_string(value: object, *, field: str = "Jira field") -> str:

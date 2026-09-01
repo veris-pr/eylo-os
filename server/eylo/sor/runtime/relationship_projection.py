@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from uuid import UUID
 
 from eylo.sor.crm.contracts import CrmActivity, CrmCompany, CrmContact, CrmDeal
@@ -19,6 +19,7 @@ from eylo.sor.shared.contracts import (
     SorCanonicalRelationKind,
     SorRelationIntentDraft,
     SorRelationshipRole,
+    SorRelationshipTargets,
 )
 from eylo.sor.shared.relationships import relationship_external_id
 from eylo.sor.support.contracts import (
@@ -81,7 +82,7 @@ def crm_relation_intents(
     origin_record_id: UUID,
     origin_stream: str,
     value: CrmValue,
-    targets: Mapping[str, str],
+    targets: SorRelationshipTargets,
     source_revision: str | None,
 ) -> tuple[SorRelationIntentDraft, ...]:
     """Map CRM entity references supported by the exact vendor stream."""
@@ -146,7 +147,7 @@ def ticketing_relation_intents(
     origin_record_id: UUID,
     origin_stream: str,
     value: TicketingValue,
-    targets: Mapping[str, str],
+    targets: SorRelationshipTargets,
     source_revision: str | None,
 ) -> tuple[SorRelationIntentDraft, ...]:
     """Map ticketing references and explicit issue edges to canonical identities."""
@@ -265,8 +266,8 @@ def ticketing_relation_intents(
             source_revision=source_revision,
         )
     elif isinstance(value, TicketingIssueRelation):
-        from_stream = targets.get("from_issue")
-        to_stream = targets.get("to_issue")
+        from_stream = targets.target(SorRelationshipRole.FROM_ISSUE)
+        to_stream = targets.target(SorRelationshipRole.TO_ISSUE)
         if from_stream is not None and to_stream is not None:
             drafts.append(
                 SorRelationIntentDraft(
@@ -294,7 +295,7 @@ def support_relation_intents(
     origin_record_id: UUID,
     origin_stream: str,
     value: SupportValue,
-    targets: Mapping[str, str],
+    targets: SorRelationshipTargets,
     source_revision: str | None,
 ) -> tuple[SorRelationIntentDraft, ...]:
     """Map support cases, messages, SLA metrics, and attachments."""
@@ -399,7 +400,7 @@ def knowledge_relation_intents(
     origin_record_id: UUID,
     origin_stream: str,
     value: KnowledgeValue,
-    targets: Mapping[str, str],
+    targets: SorRelationshipTargets,
     source_revision: str | None,
 ) -> tuple[SorRelationIntentDraft, ...]:
     """Map document hierarchy and document-owned subordinate records."""
@@ -514,7 +515,7 @@ def _append_many(
     origin_external_id: str,
     relationship_role: SorRelationshipRole,
     target_external_ids: Sequence[str],
-    targets: Mapping[str, str],
+    targets: SorRelationshipTargets,
     canonical_kind: SorCanonicalRelationKind,
     source_revision: str | None,
 ) -> None:
@@ -540,11 +541,11 @@ def _append_one(
     origin_external_id: str,
     relationship_role: SorRelationshipRole,
     target_external_id: str | None,
-    targets: Mapping[str, str],
+    targets: SorRelationshipTargets,
     canonical_kind: SorCanonicalRelationKind,
     source_revision: str | None,
 ) -> None:
-    target_stream = targets.get(relationship_role.value)
+    target_stream = targets.target(relationship_role)
     if target_stream is None or target_external_id is None:
         return
     external_id = target_external_id.strip()

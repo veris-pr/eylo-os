@@ -3,14 +3,34 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import replace
+from enum import Enum
+from typing import TypeVar
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from eylo.sor.crm.contracts import CrmAdapter
+from eylo.sor.crm.contracts import (
+    CRM_PAYLOAD_TYPES,
+    CrmActivityPayload,
+    CrmAdapter,
+    CrmCompanyPayload,
+    CrmContactPayload,
+    CrmDealPayload,
+    CrmEntityKind,
+)
 from eylo.sor.crm.services import CrmProjectionService
-from eylo.sor.knowledge.contracts import KnowledgeAdapter
+from eylo.sor.knowledge.contracts import (
+    KNOWLEDGE_PAYLOAD_TYPES,
+    KnowledgeAdapter,
+    KnowledgeAttachmentPayload,
+    KnowledgeAuthorPayload,
+    KnowledgeBlockPayload,
+    KnowledgeDocumentPayload,
+    KnowledgeEntityKind,
+    KnowledgePropertyPayload,
+    KnowledgeSpacePayload,
+    KnowledgeVersionPayload,
+)
 from eylo.sor.knowledge.services import KnowledgeProjectionService
 from eylo.sor.runtime.relationship_projection import (
     crm_relation_intents,
@@ -19,22 +39,76 @@ from eylo.sor.runtime.relationship_projection import (
     ticketing_relation_intents,
 )
 from eylo.sor.shared.contracts import (
+    SorCanonicalPayload,
     SorExternalRecord,
     SorLifecycleAdapter,
     SorProfile,
     SorProjectionDisposition,
     SorProjectionOutcome,
     SorRelationIntentDraft,
+    SorRelationshipTargets,
 )
 from eylo.sor.shared.custom_datasets import CUSTOM_DATASET_ENTITY
 from eylo.sor.shared.events import register_record_projected
 from eylo.sor.shared.models import SorSourceModel, SorSourceStreamModel
 from eylo.sor.shared.relationships import SorRelationshipService
 from eylo.sor.shared.services import SorProjectionError, SorProjectionService
-from eylo.sor.support.contracts import SupportAdapter
+from eylo.sor.support.contracts import (
+    SUPPORT_PAYLOAD_TYPES,
+    SupportAdapter,
+    SupportAgentPayload,
+    SupportAttachmentPayload,
+    SupportCustomerPayload,
+    SupportEntityKind,
+    SupportInboxPayload,
+    SupportMessagePayload,
+    SupportQueuePayload,
+    SupportSlaMetricPayload,
+    SupportTagPayload,
+    SupportTicketPayload,
+)
 from eylo.sor.support.services import SupportProjectionService
-from eylo.sor.ticketing.contracts import TicketingAdapter
+from eylo.sor.ticketing.contracts import (
+    TICKETING_PAYLOAD_TYPES,
+    TicketingAdapter,
+    TicketingCommentPayload,
+    TicketingCyclePayload,
+    TicketingEntityKind,
+    TicketingIssuePayload,
+    TicketingLabelPayload,
+    TicketingProjectPayload,
+    TicketingRelationPayload,
+    TicketingUserPayload,
+    TicketingWorkflowStatePayload,
+)
 from eylo.sor.ticketing.services import TicketingProjectionService
+
+PayloadT = TypeVar("PayloadT", bound=SorCanonicalPayload)
+EntityT = TypeVar("EntityT", bound=Enum)
+
+
+def _entity_kind(
+    enum_type: type[EntityT],
+    value: str,
+    *,
+    profile: str,
+) -> EntityT:
+    try:
+        return enum_type(value)
+    except ValueError as error:
+        raise SorProjectionError(
+            f"{profile} entity projection is not executable yet: {value}."
+        ) from error
+
+
+def _canonical_payload(
+    outcome: SorProjectionOutcome,
+    expected_type: type[PayloadT],
+) -> PayloadT:
+    payload = outcome.canonical_payload
+    if not isinstance(payload, expected_type):
+        raise SorProjectionError("Projected SOR payload has the wrong entity type.")
+    return payload
 
 
 async def project_source_record(
@@ -134,27 +208,38 @@ async def _project_crm(
     record: SorExternalRecord,
     sync_run_id: UUID | None,
 ) -> SorProjectionOutcome:
-    entity = stream.canonical_entity_kind
+    entity_value = stream.canonical_entity_kind
+    if entity_value == CUSTOM_DATASET_ENTITY:
+        entity = None
+        payload_type = SorCanonicalPayload
+    else:
+        entity = _entity_kind(CrmEntityKind, entity_value, profile="CRM")
+        payload_type = CRM_PAYLOAD_TYPES.get(entity)
+        if payload_type is None:
+            raise SorProjectionError(
+                f"CRM entity projection is not executable yet: {entity.value}."
+            )
     projection = SorProjectionService(session)
     outcome = await projection.project(
         organization_id=organization_id,
         source_id=source.id,
         external_record=record,
-        canonical_entity_kind=entity,
+        canonical_entity_kind=entity_value,
+        canonical_payload_type=payload_type,
         human_external_key=(
-            record.external_id if entity == CUSTOM_DATASET_ENTITY else None
+            record.external_id if entity_value == CUSTOM_DATASET_ENTITY else None
         ),
         sync_run_id=sync_run_id,
     )
     if outcome.disposition is SorProjectionDisposition.UNCHANGED:
         return outcome
-    if entity == CUSTOM_DATASET_ENTITY:
+    if entity_value == CUSTOM_DATASET_ENTITY:
         return outcome
-    canonical_record = replace(record, payload=outcome.canonical_values)
     typed_service = CrmProjectionService(session)
     human_key: str | None
-    if entity == "contact":
-        contact = adapter.normalize_contact(canonical_record)
+    if entity is CrmEntityKind.CONTACT:
+        payload = _canonical_payload(outcome, CrmContactPayload)
+        contact = adapter.normalize_contact(record, payload)
         relation_value = contact
         human_key = contact.primary_email or contact.name
         await typed_service.upsert_contact(
@@ -163,8 +248,9 @@ async def _project_crm(
             record_id=outcome.record_id,
             contact=contact,
         )
-    elif entity == "company":
-        company = adapter.normalize_company(canonical_record)
+    elif entity is CrmEntityKind.COMPANY:
+        payload = _canonical_payload(outcome, CrmCompanyPayload)
+        company = adapter.normalize_company(record, payload)
         relation_value = company
         human_key = company.domain or company.name
         await typed_service.upsert_company(
@@ -173,8 +259,9 @@ async def _project_crm(
             record_id=outcome.record_id,
             company=company,
         )
-    elif entity == "deal":
-        deal = adapter.normalize_deal(canonical_record)
+    elif entity is CrmEntityKind.DEAL:
+        payload = _canonical_payload(outcome, CrmDealPayload)
+        deal = adapter.normalize_deal(record, payload)
         relation_value = deal
         human_key = deal.title
         await typed_service.upsert_deal(
@@ -183,8 +270,9 @@ async def _project_crm(
             record_id=outcome.record_id,
             deal=deal,
         )
-    elif entity == "activity":
-        activity = adapter.normalize_activity(canonical_record)
+    elif entity is CrmEntityKind.ACTIVITY:
+        payload = _canonical_payload(outcome, CrmActivityPayload)
+        activity = adapter.normalize_activity(record, payload)
         relation_value = activity
         human_key = activity.subject
         await typed_service.upsert_activity(
@@ -195,13 +283,13 @@ async def _project_crm(
         )
     else:
         raise SorProjectionError(
-            f"CRM entity projection is not executable yet: {entity}."
+            f"CRM entity projection is not executable yet: {entity_value}."
         )
     relation_intents = crm_relation_intents(
         origin_record_id=outcome.record_id,
         origin_stream=stream.vendor_object_key,
         value=relation_value,
-        targets=stream.relationship_targets,
+        targets=SorRelationshipTargets.from_wire(stream.relationship_targets),
         source_revision=record.source_revision,
     )
     await projection.set_human_external_key(
@@ -232,22 +320,32 @@ async def _project_ticketing(
     record: SorExternalRecord,
     sync_run_id: UUID | None,
 ) -> SorProjectionOutcome:
-    entity = stream.canonical_entity_kind
+    entity = _entity_kind(
+        TicketingEntityKind,
+        stream.canonical_entity_kind,
+        profile="Ticketing",
+    )
+    payload_type = TICKETING_PAYLOAD_TYPES.get(entity)
+    if payload_type is None:
+        raise SorProjectionError(
+            f"Ticketing entity projection is not executable yet: {entity.value}."
+        )
     projection = SorProjectionService(session)
     outcome = await projection.project(
         organization_id=organization_id,
         source_id=source.id,
         external_record=record,
-        canonical_entity_kind=entity,
+        canonical_entity_kind=entity.value,
+        canonical_payload_type=payload_type,
         sync_run_id=sync_run_id,
     )
     if outcome.disposition is SorProjectionDisposition.UNCHANGED:
         return outcome
-    canonical_record = replace(record, payload=outcome.canonical_values)
     human_key: str | None = None
     typed_service = TicketingProjectionService(session)
-    if entity == "issue":
-        issue = adapter.normalize_issue(canonical_record)
+    if entity is TicketingEntityKind.ISSUE:
+        payload = _canonical_payload(outcome, TicketingIssuePayload)
+        issue = adapter.normalize_issue(record, payload)
         relation_value = issue
         human_key = issue.key
         await typed_service.upsert_issue(
@@ -256,8 +354,9 @@ async def _project_ticketing(
             record_id=outcome.record_id,
             issue=issue,
         )
-    elif entity == "project":
-        project = adapter.normalize_project(canonical_record)
+    elif entity is TicketingEntityKind.PROJECT:
+        payload = _canonical_payload(outcome, TicketingProjectPayload)
+        project = adapter.normalize_project(record, payload)
         relation_value = project
         human_key = project.key
         await typed_service.upsert_project(
@@ -266,8 +365,9 @@ async def _project_ticketing(
             record_id=outcome.record_id,
             project=project,
         )
-    elif entity == "workflow_state":
-        workflow_state = adapter.normalize_workflow_state(canonical_record)
+    elif entity is TicketingEntityKind.WORKFLOW_STATE:
+        payload = _canonical_payload(outcome, TicketingWorkflowStatePayload)
+        workflow_state = adapter.normalize_workflow_state(record, payload)
         relation_value = workflow_state
         await typed_service.upsert_workflow_state(
             organization_id=organization_id,
@@ -275,8 +375,9 @@ async def _project_ticketing(
             record_id=outcome.record_id,
             workflow_state=workflow_state,
         )
-    elif entity == "user":
-        user = adapter.normalize_user(canonical_record)
+    elif entity is TicketingEntityKind.USER:
+        payload = _canonical_payload(outcome, TicketingUserPayload)
+        user = adapter.normalize_user(record, payload)
         relation_value = user
         human_key = user.display_name or user.name
         await typed_service.upsert_user(
@@ -285,8 +386,9 @@ async def _project_ticketing(
             record_id=outcome.record_id,
             user=user,
         )
-    elif entity == "label":
-        label = adapter.normalize_label(canonical_record)
+    elif entity is TicketingEntityKind.LABEL:
+        payload = _canonical_payload(outcome, TicketingLabelPayload)
+        label = adapter.normalize_label(record, payload)
         relation_value = label
         human_key = label.name
         await typed_service.upsert_label(
@@ -295,8 +397,9 @@ async def _project_ticketing(
             record_id=outcome.record_id,
             label=label,
         )
-    elif entity == "cycle":
-        cycle = adapter.normalize_cycle(canonical_record)
+    elif entity is TicketingEntityKind.CYCLE:
+        payload = _canonical_payload(outcome, TicketingCyclePayload)
+        cycle = adapter.normalize_cycle(record, payload)
         relation_value = cycle
         human_key = cycle.name
         await typed_service.upsert_cycle(
@@ -305,8 +408,9 @@ async def _project_ticketing(
             record_id=outcome.record_id,
             cycle=cycle,
         )
-    elif entity == "comment":
-        comment = adapter.normalize_comment(canonical_record)
+    elif entity is TicketingEntityKind.COMMENT:
+        payload = _canonical_payload(outcome, TicketingCommentPayload)
+        comment = adapter.normalize_comment(record, payload)
         relation_value = comment
         human_key = _human_preview(comment.normalized_text)
         await typed_service.upsert_comment(
@@ -315,8 +419,9 @@ async def _project_ticketing(
             record_id=outcome.record_id,
             comment=comment,
         )
-    elif entity == "relation":
-        relation = adapter.normalize_relation(canonical_record)
+    elif entity is TicketingEntityKind.RELATION:
+        payload = _canonical_payload(outcome, TicketingRelationPayload)
+        relation = adapter.normalize_relation(record, payload)
         relation_value = relation
         await typed_service.upsert_relation(
             organization_id=organization_id,
@@ -326,13 +431,13 @@ async def _project_ticketing(
         )
     else:
         raise SorProjectionError(
-            f"Ticketing entity projection is not executable yet: {entity}."
+            f"Ticketing entity projection is not executable yet: {entity.value}."
         )
     relation_intents = ticketing_relation_intents(
         origin_record_id=outcome.record_id,
         origin_stream=stream.vendor_object_key,
         value=relation_value,
-        targets=stream.relationship_targets,
+        targets=SorRelationshipTargets.from_wire(stream.relationship_targets),
         source_revision=record.source_revision,
     )
     await projection.set_human_external_key(
@@ -373,27 +478,38 @@ async def _project_support(
     record: SorExternalRecord,
     sync_run_id: UUID | None,
 ) -> SorProjectionOutcome:
-    entity = stream.canonical_entity_kind
+    entity_value = stream.canonical_entity_kind
+    if entity_value == CUSTOM_DATASET_ENTITY:
+        entity = None
+        payload_type = SorCanonicalPayload
+    else:
+        entity = _entity_kind(SupportEntityKind, entity_value, profile="Support")
+        payload_type = SUPPORT_PAYLOAD_TYPES.get(entity)
+        if payload_type is None:
+            raise SorProjectionError(
+                f"Support entity projection is not executable yet: {entity.value}."
+            )
     projection = SorProjectionService(session)
     outcome = await projection.project(
         organization_id=organization_id,
         source_id=source.id,
         external_record=record,
-        canonical_entity_kind=entity,
+        canonical_entity_kind=entity_value,
+        canonical_payload_type=payload_type,
         human_external_key=(
-            record.external_id if entity == CUSTOM_DATASET_ENTITY else None
+            record.external_id if entity_value == CUSTOM_DATASET_ENTITY else None
         ),
         sync_run_id=sync_run_id,
     )
     if outcome.disposition is SorProjectionDisposition.UNCHANGED:
         return outcome
-    if entity == CUSTOM_DATASET_ENTITY:
+    if entity_value == CUSTOM_DATASET_ENTITY:
         return outcome
-    canonical_record = replace(record, payload=outcome.canonical_values)
     typed_service = SupportProjectionService(session)
     human_key: str | None = None
-    if entity == "ticket":
-        ticket = adapter.normalize_ticket(canonical_record)
+    if entity is SupportEntityKind.TICKET:
+        payload = _canonical_payload(outcome, SupportTicketPayload)
+        ticket = adapter.normalize_ticket(record, payload)
         relation_value = ticket
         human_key = ticket.subject
         await typed_service.upsert_ticket(
@@ -402,8 +518,9 @@ async def _project_support(
             record_id=outcome.record_id,
             ticket=ticket,
         )
-    elif entity == "customer":
-        customer = adapter.normalize_customer(canonical_record)
+    elif entity is SupportEntityKind.CUSTOMER:
+        payload = _canonical_payload(outcome, SupportCustomerPayload)
+        customer = adapter.normalize_customer(record, payload)
         relation_value = customer
         human_key = customer.primary_email or customer.name
         await typed_service.upsert_customer(
@@ -412,8 +529,9 @@ async def _project_support(
             record_id=outcome.record_id,
             customer=customer,
         )
-    elif entity == "agent":
-        agent = adapter.normalize_agent(canonical_record)
+    elif entity is SupportEntityKind.AGENT:
+        payload = _canonical_payload(outcome, SupportAgentPayload)
+        agent = adapter.normalize_agent(record, payload)
         relation_value = agent
         human_key = agent.primary_email or agent.name
         await typed_service.upsert_agent(
@@ -422,8 +540,9 @@ async def _project_support(
             record_id=outcome.record_id,
             agent=agent,
         )
-    elif entity == "queue":
-        queue = adapter.normalize_queue(canonical_record)
+    elif entity is SupportEntityKind.QUEUE:
+        payload = _canonical_payload(outcome, SupportQueuePayload)
+        queue = adapter.normalize_queue(record, payload)
         relation_value = queue
         human_key = queue.name
         await typed_service.upsert_queue(
@@ -432,8 +551,9 @@ async def _project_support(
             record_id=outcome.record_id,
             queue=queue,
         )
-    elif entity == "inbox":
-        inbox = adapter.normalize_inbox(canonical_record)
+    elif entity is SupportEntityKind.INBOX:
+        payload = _canonical_payload(outcome, SupportInboxPayload)
+        inbox = adapter.normalize_inbox(record, payload)
         relation_value = inbox
         human_key = inbox.name
         await typed_service.upsert_inbox(
@@ -442,8 +562,9 @@ async def _project_support(
             record_id=outcome.record_id,
             inbox=inbox,
         )
-    elif entity == "message":
-        message = adapter.normalize_message(canonical_record)
+    elif entity is SupportEntityKind.MESSAGE:
+        payload = _canonical_payload(outcome, SupportMessagePayload)
+        message = adapter.normalize_message(record, payload)
         relation_value = message
         await typed_service.upsert_message(
             organization_id=organization_id,
@@ -451,8 +572,9 @@ async def _project_support(
             record_id=outcome.record_id,
             message=message,
         )
-    elif entity == "tag":
-        tag = adapter.normalize_tag(canonical_record)
+    elif entity is SupportEntityKind.TAG:
+        payload = _canonical_payload(outcome, SupportTagPayload)
+        tag = adapter.normalize_tag(record, payload)
         relation_value = tag
         human_key = tag.name
         await typed_service.upsert_tag(
@@ -461,8 +583,9 @@ async def _project_support(
             record_id=outcome.record_id,
             tag=tag,
         )
-    elif entity == "sla_metric":
-        metric = adapter.normalize_sla_metric(canonical_record)
+    elif entity is SupportEntityKind.SLA_METRIC:
+        payload = _canonical_payload(outcome, SupportSlaMetricPayload)
+        metric = adapter.normalize_sla_metric(record, payload)
         relation_value = metric
         human_key = metric.metric
         await typed_service.upsert_sla_metric(
@@ -471,8 +594,9 @@ async def _project_support(
             record_id=outcome.record_id,
             metric=metric,
         )
-    elif entity == "attachment":
-        attachment = adapter.normalize_attachment(canonical_record)
+    elif entity is SupportEntityKind.ATTACHMENT:
+        payload = _canonical_payload(outcome, SupportAttachmentPayload)
+        attachment = adapter.normalize_attachment(record, payload)
         relation_value = attachment
         human_key = attachment.name
         await typed_service.upsert_attachment(
@@ -483,13 +607,13 @@ async def _project_support(
         )
     else:
         raise SorProjectionError(
-            f"Support entity projection is not executable yet: {entity}."
+            f"Support entity projection is not executable yet: {entity_value}."
         )
     relation_intents = support_relation_intents(
         origin_record_id=outcome.record_id,
         origin_stream=stream.vendor_object_key,
         value=relation_value,
-        targets=stream.relationship_targets,
+        targets=SorRelationshipTargets.from_wire(stream.relationship_targets),
         source_revision=record.source_revision,
     )
     await projection.set_human_external_key(
@@ -520,22 +644,32 @@ async def _project_knowledge(
     record: SorExternalRecord,
     sync_run_id: UUID | None,
 ) -> SorProjectionOutcome:
-    entity = stream.canonical_entity_kind
+    entity = _entity_kind(
+        KnowledgeEntityKind,
+        stream.canonical_entity_kind,
+        profile="Knowledge",
+    )
+    payload_type = KNOWLEDGE_PAYLOAD_TYPES.get(entity)
+    if payload_type is None:
+        raise SorProjectionError(
+            f"Knowledge entity projection is not executable yet: {entity.value}."
+        )
     projection = SorProjectionService(session)
     outcome = await projection.project(
         organization_id=organization_id,
         source_id=source.id,
         external_record=record,
-        canonical_entity_kind=entity,
+        canonical_entity_kind=entity.value,
+        canonical_payload_type=payload_type,
         sync_run_id=sync_run_id,
     )
     if outcome.disposition is SorProjectionDisposition.UNCHANGED:
         return outcome
-    canonical_record = replace(record, payload=outcome.canonical_values)
     typed_service = KnowledgeProjectionService(session)
     human_key: str | None = None
-    if entity == "space":
-        space = adapter.normalize_space(canonical_record)
+    if entity is KnowledgeEntityKind.SPACE:
+        payload = _canonical_payload(outcome, KnowledgeSpacePayload)
+        space = adapter.normalize_space(record, payload)
         relation_value = space
         human_key = space.name
         await typed_service.upsert_space(
@@ -544,8 +678,9 @@ async def _project_knowledge(
             record_id=outcome.record_id,
             space=space,
         )
-    elif entity == "document":
-        document = adapter.normalize_document(canonical_record)
+    elif entity is KnowledgeEntityKind.DOCUMENT:
+        payload = _canonical_payload(outcome, KnowledgeDocumentPayload)
+        document = adapter.normalize_document(record, payload)
         relation_value = document
         human_key = document.title
         await typed_service.upsert_document(
@@ -554,8 +689,9 @@ async def _project_knowledge(
             record_id=outcome.record_id,
             document=document,
         )
-    elif entity == "block":
-        block = adapter.normalize_block(canonical_record)
+    elif entity is KnowledgeEntityKind.BLOCK:
+        payload = _canonical_payload(outcome, KnowledgeBlockPayload)
+        block = adapter.normalize_block(record, payload)
         relation_value = block
         await typed_service.upsert_block(
             organization_id=organization_id,
@@ -563,8 +699,9 @@ async def _project_knowledge(
             record_id=outcome.record_id,
             block=block,
         )
-    elif entity == "version":
-        version = adapter.normalize_version(canonical_record)
+    elif entity is KnowledgeEntityKind.VERSION:
+        payload = _canonical_payload(outcome, KnowledgeVersionPayload)
+        version = adapter.normalize_version(record, payload)
         relation_value = version
         human_key = version.number
         await typed_service.upsert_version(
@@ -573,8 +710,9 @@ async def _project_knowledge(
             record_id=outcome.record_id,
             version=version,
         )
-    elif entity == "property":
-        property_value = adapter.normalize_property(canonical_record)
+    elif entity is KnowledgeEntityKind.PROPERTY:
+        payload = _canonical_payload(outcome, KnowledgePropertyPayload)
+        property_value = adapter.normalize_property(record, payload)
         relation_value = property_value
         human_key = property_value.key
         await typed_service.upsert_property(
@@ -583,8 +721,9 @@ async def _project_knowledge(
             record_id=outcome.record_id,
             property_value=property_value,
         )
-    elif entity == "attachment":
-        attachment = adapter.normalize_attachment(canonical_record)
+    elif entity is KnowledgeEntityKind.ATTACHMENT:
+        payload = _canonical_payload(outcome, KnowledgeAttachmentPayload)
+        attachment = adapter.normalize_attachment(record, payload)
         relation_value = attachment
         human_key = attachment.name
         await typed_service.upsert_attachment(
@@ -593,8 +732,9 @@ async def _project_knowledge(
             record_id=outcome.record_id,
             attachment=attachment,
         )
-    elif entity == "author":
-        author = adapter.normalize_author(canonical_record)
+    elif entity is KnowledgeEntityKind.AUTHOR:
+        payload = _canonical_payload(outcome, KnowledgeAuthorPayload)
+        author = adapter.normalize_author(record, payload)
         relation_value = author
         human_key = author.primary_email or author.name
         await typed_service.upsert_author(
@@ -605,13 +745,13 @@ async def _project_knowledge(
         )
     else:
         raise SorProjectionError(
-            f"Knowledge entity projection is not executable yet: {entity}."
+            f"Knowledge entity projection is not executable yet: {entity.value}."
         )
     relation_intents = knowledge_relation_intents(
         origin_record_id=outcome.record_id,
         origin_stream=stream.vendor_object_key,
         value=relation_value,
-        targets=stream.relationship_targets,
+        targets=SorRelationshipTargets.from_wire(stream.relationship_targets),
         source_revision=record.source_revision,
     )
     await projection.set_human_external_key(

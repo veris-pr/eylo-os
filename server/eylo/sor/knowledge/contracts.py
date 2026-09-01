@@ -6,9 +6,16 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, StrEnum
-from typing import Protocol, TypedDict, runtime_checkable
+from typing import Protocol, runtime_checkable
 
-from eylo.sor.shared.contracts import SorExternalRecord, SorLifecycleAdapter
+from pydantic import Field, model_validator
+
+from eylo.sor.shared.contracts import (
+    SorCanonicalPayload,
+    SorCommandPayload,
+    SorExternalRecord,
+    SorLifecycleAdapter,
+)
 
 
 class KnowledgeBodyRepresentation(str, Enum):
@@ -16,6 +23,14 @@ class KnowledgeBodyRepresentation(str, Enum):
 
     MARKDOWN = "markdown"
     CONFLUENCE_STORAGE = "storage"
+
+
+class KnowledgeSourceFormat(str, Enum):
+    """Exact source formats currently normalized by executable adapters."""
+
+    CONFLUENCE_STORAGE = "confluence_storage"
+    LINEAR_MARKDOWN = "linear_markdown"
+    NOTION_MARKDOWN = "notion_markdown"
 
 
 class KnowledgeEntityKind(StrEnum):
@@ -44,19 +59,155 @@ class KnowledgeToolName(StrEnum):
     COMMENT = "docs_comment"
 
 
-class KnowledgeSourceBody(TypedDict):
+class KnowledgeCreateCommandPayload(SorCommandPayload):
+    """One document creation request before vendor parent validation."""
+
+    title: str = Field(min_length=1, max_length=10_000)
+    normalized_text: str | None = Field(default=None, max_length=1_000_000)
+    space_external_id: str | None = Field(default=None, min_length=1, max_length=320)
+    parent_external_id: str | None = Field(default=None, min_length=1, max_length=320)
+
+
+class KnowledgeUpdateCommandPayload(SorCommandPayload):
+    """Current document title/content fields supported by executable adapters."""
+
+    title: str | None = Field(default=None, min_length=1, max_length=10_000)
+    normalized_text: str | None = Field(default=None, max_length=1_000_000)
+
+    @model_validator(mode="after")
+    def require_change(self) -> "KnowledgeUpdateCommandPayload":
+        if self.title is None and self.normalized_text is None:
+            raise ValueError("A document update requires title or content.")
+        return self
+
+
+class KnowledgeTextCommandPayload(SorCommandPayload):
+    """One non-empty append or comment body."""
+
+    normalized_text: str = Field(min_length=1, max_length=1_000_000)
+
+
+KNOWLEDGE_COMMAND_PAYLOAD_TYPES: Mapping[
+    KnowledgeToolName, type[SorCommandPayload]
+] = {
+    KnowledgeToolName.CREATE: KnowledgeCreateCommandPayload,
+    KnowledgeToolName.UPDATE: KnowledgeUpdateCommandPayload,
+    KnowledgeToolName.APPEND: KnowledgeTextCommandPayload,
+    KnowledgeToolName.COMMENT: KnowledgeTextCommandPayload,
+}
+
+
+class KnowledgeSourceBody(SorCanonicalPayload):
     """Discriminated source body retained for specialized human rendering."""
 
-    representation: str
+    representation: KnowledgeBodyRepresentation
     value: str
+
+    def to_wire(self) -> dict[str, object]:
+        """Convert the typed renderer contract at a JSON persistence boundary."""
+        return self.model_dump(mode="json")
 
 
 def knowledge_source_body(
     representation: KnowledgeBodyRepresentation,
     value: str,
 ) -> KnowledgeSourceBody:
-    """Build the persisted wire shape from one bounded representation."""
-    return {"representation": representation.value, "value": value}
+    """Build the typed source body from one bounded representation."""
+    return KnowledgeSourceBody(representation=representation, value=value)
+
+
+class KnowledgeSpacePayload(SorCanonicalPayload):
+    name: str
+    kind: str
+
+
+class KnowledgeDocumentPayload(SorCanonicalPayload):
+    title: str
+    space_external_id: str | None = None
+    parent_external_id: str | None = None
+    path: tuple[str, ...] = ()
+    source_format: KnowledgeSourceFormat
+    normalized_text: str
+    source_body: KnowledgeSourceBody | None = None
+    content_hash: str
+    version: str | None = None
+    lifecycle_state: str | None = None
+    author_external_id: str | None = None
+    label_external_ids: tuple[str, ...] = ()
+    unsupported_blocks: tuple[str, ...] = ()
+    source_created_at: datetime | None = None
+    source_updated_at: datetime | None = None
+    custom_fields: Mapping[str, object] = field(default_factory=dict)
+
+
+class KnowledgeBlockPayload(SorCanonicalPayload):
+    document_external_id: str
+    parent_external_id: str | None = None
+    kind: str
+    order: int
+    normalized_text: str | None = None
+    source_body: KnowledgeSourceBody | None = None
+    supported: bool
+    source_created_at: datetime | None = None
+    source_updated_at: datetime | None = None
+
+
+class KnowledgeVersionPayload(SorCanonicalPayload):
+    document_external_id: str
+    number: str
+    author_external_id: str | None = None
+    message: str | None = None
+    source_format: KnowledgeSourceFormat | None = None
+    normalized_text: str | None = None
+    source_body: KnowledgeSourceBody | None = None
+    source_created_at: datetime
+
+
+class KnowledgePropertyPayload(SorCanonicalPayload):
+    document_external_id: str
+    key: str
+    label: str
+    value_type: str
+    value: object | None = None
+    source_updated_at: datetime | None = None
+
+
+class KnowledgeAttachmentPayload(SorCanonicalPayload):
+    document_external_id: str
+    name: str
+    media_type: str | None = None
+    size_bytes: int | None = None
+    source_url: str | None = None
+    source_url_expires_at: datetime | None = None
+
+
+class KnowledgeAuthorPayload(SorCanonicalPayload):
+    name: str
+    primary_email: str | None = None
+    kind: str | None = None
+    avatar_url: str | None = None
+
+
+KnowledgePayload = (
+    KnowledgeSpacePayload
+    | KnowledgeDocumentPayload
+    | KnowledgeBlockPayload
+    | KnowledgeVersionPayload
+    | KnowledgePropertyPayload
+    | KnowledgeAttachmentPayload
+    | KnowledgeAuthorPayload
+)
+
+
+KNOWLEDGE_PAYLOAD_TYPES: Mapping[KnowledgeEntityKind, type[SorCanonicalPayload]] = {
+    KnowledgeEntityKind.SPACE: KnowledgeSpacePayload,
+    KnowledgeEntityKind.DOCUMENT: KnowledgeDocumentPayload,
+    KnowledgeEntityKind.BLOCK: KnowledgeBlockPayload,
+    KnowledgeEntityKind.VERSION: KnowledgeVersionPayload,
+    KnowledgeEntityKind.PROPERTY: KnowledgePropertyPayload,
+    KnowledgeEntityKind.ATTACHMENT: KnowledgeAttachmentPayload,
+    KnowledgeEntityKind.AUTHOR: KnowledgeAuthorPayload,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,9 +226,9 @@ class KnowledgeDocument:
     space_external_id: str | None
     parent_external_id: str | None
     path: tuple[str, ...]
-    source_format: str
+    source_format: KnowledgeSourceFormat
     normalized_text: str
-    source_body: object | None
+    source_body: KnowledgeSourceBody | None
     content_hash: str
     version: str | None
     lifecycle_state: str | None
@@ -98,7 +249,7 @@ class KnowledgeBlock:
     kind: str
     order: int
     normalized_text: str | None
-    source_body: object | None
+    source_body: KnowledgeSourceBody | None
     supported: bool
     source_created_at: datetime | None
     source_updated_at: datetime | None
@@ -111,9 +262,9 @@ class KnowledgeVersion:
     number: str
     author_external_id: str | None
     message: str | None
-    source_format: str | None
+    source_format: KnowledgeSourceFormat | None
     normalized_text: str | None
-    source_body: object | None
+    source_body: KnowledgeSourceBody | None
     created_at: datetime
 
 
@@ -160,22 +311,47 @@ class KnowledgeAuthor:
 class KnowledgeAdapter(SorLifecycleAdapter, Protocol):
     """External-knowledge port with pure, I/O-free record normalization."""
 
-    def normalize_space(self, record: SorExternalRecord) -> KnowledgeSpace: ...
+    def normalize_space(
+        self,
+        record: SorExternalRecord,
+        payload: KnowledgeSpacePayload,
+    ) -> KnowledgeSpace: ...
 
-    def normalize_document(self, record: SorExternalRecord) -> KnowledgeDocument: ...
+    def normalize_document(
+        self,
+        record: SorExternalRecord,
+        payload: KnowledgeDocumentPayload,
+    ) -> KnowledgeDocument: ...
 
-    def normalize_block(self, record: SorExternalRecord) -> KnowledgeBlock: ...
+    def normalize_block(
+        self,
+        record: SorExternalRecord,
+        payload: KnowledgeBlockPayload,
+    ) -> KnowledgeBlock: ...
 
-    def normalize_version(self, record: SorExternalRecord) -> KnowledgeVersion: ...
+    def normalize_version(
+        self,
+        record: SorExternalRecord,
+        payload: KnowledgeVersionPayload,
+    ) -> KnowledgeVersion: ...
 
-    def normalize_property(self, record: SorExternalRecord) -> KnowledgeProperty: ...
+    def normalize_property(
+        self,
+        record: SorExternalRecord,
+        payload: KnowledgePropertyPayload,
+    ) -> KnowledgeProperty: ...
 
     def normalize_attachment(
         self,
         record: SorExternalRecord,
+        payload: KnowledgeAttachmentPayload,
     ) -> KnowledgeAttachment: ...
 
-    def normalize_author(self, record: SorExternalRecord) -> KnowledgeAuthor: ...
+    def normalize_author(
+        self,
+        record: SorExternalRecord,
+        payload: KnowledgeAuthorPayload,
+    ) -> KnowledgeAuthor: ...
 
 
 @runtime_checkable
@@ -192,19 +368,33 @@ class KnowledgeAttachmentReader(Protocol):
 
 
 __all__ = [
+    "KNOWLEDGE_COMMAND_PAYLOAD_TYPES",
+    "KNOWLEDGE_PAYLOAD_TYPES",
     "KnowledgeAdapter",
     "KnowledgeAttachment",
+    "KnowledgeAttachmentPayload",
     "KnowledgeAttachmentContent",
     "KnowledgeAttachmentReader",
     "KnowledgeAuthor",
+    "KnowledgeAuthorPayload",
     "KnowledgeBlock",
+    "KnowledgeBlockPayload",
     "KnowledgeBodyRepresentation",
+    "KnowledgeCreateCommandPayload",
     "KnowledgeDocument",
+    "KnowledgeDocumentPayload",
     "KnowledgeEntityKind",
+    "KnowledgePayload",
     "KnowledgeProperty",
+    "KnowledgePropertyPayload",
     "KnowledgeSourceBody",
+    "KnowledgeSourceFormat",
     "KnowledgeSpace",
+    "KnowledgeSpacePayload",
     "KnowledgeVersion",
+    "KnowledgeVersionPayload",
     "KnowledgeToolName",
+    "KnowledgeTextCommandPayload",
+    "KnowledgeUpdateCommandPayload",
     "knowledge_source_body",
 ]

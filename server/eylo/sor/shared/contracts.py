@@ -6,10 +6,21 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Literal, Protocol, runtime_checkable
+from types import MappingProxyType
+from typing import Protocol, runtime_checkable
 from uuid import UUID
 
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    TypeAdapter,
+    model_validator,
+)
+
 from eylo.modules.connections.domain import ConnectionAuthKind
+from eylo.sor.shared.json_values import to_json_value
 
 
 class SorProfile(str, Enum):
@@ -173,6 +184,7 @@ class SorRelationshipRole(str, Enum):
     DEAL = "deal"
     DOCUMENT = "document"
     EXPLICIT_ISSUE_RELATION = "explicit_issue_relation"
+    FROM_ISSUE = "from_issue"
     INBOX = "inbox"
     ISSUE = "issue"
     LABEL = "label"
@@ -186,6 +198,21 @@ class SorRelationshipRole(str, Enum):
     TAG = "tag"
     TEAM = "team"
     TICKET = "ticket"
+    TO_ISSUE = "to_issue"
+
+
+class SorOAuthTokenRequestFormat(str, Enum):
+    """Wire encoding used for an OAuth token request."""
+
+    FORM = "form"
+    JSON = "json"
+
+
+class SorOAuthClientAuthMethod(str, Enum):
+    """Placement of OAuth client credentials in token requests."""
+
+    BODY = "body"
+    BASIC = "basic"
 
 
 class SorRelationshipDirection(str, Enum):
@@ -193,6 +220,37 @@ class SorRelationshipDirection(str, Enum):
 
     OUTGOING = "outgoing"
     INCOMING = "incoming"
+
+
+@dataclass(frozen=True, slots=True)
+class SorRelationshipTargets:
+    """Typed relationship-role routing with explicit JSON conversion."""
+
+    by_role: Mapping[SorRelationshipRole, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        normalized = {
+            SorRelationshipRole(role): target
+            for role, target in self.by_role.items()
+        }
+        if not all(isinstance(target, str) and target for target in normalized.values()):
+            raise TypeError("SOR relationship targets must be non-empty strings.")
+        object.__setattr__(self, "by_role", MappingProxyType(normalized))
+
+    @classmethod
+    def from_wire(cls, values: Mapping[str, str]) -> "SorRelationshipTargets":
+        return cls(
+            by_role={SorRelationshipRole(role): target for role, target in values.items()}
+        )
+
+    def target(self, role: SorRelationshipRole) -> str | None:
+        return self.by_role.get(role)
+
+    def target_streams(self) -> frozenset[str]:
+        return frozenset(self.by_role.values())
+
+    def to_wire(self) -> dict[str, str]:
+        return {role.value: target for role, target in self.by_role.items()}
 
 
 class SorSourceState(str, Enum):
@@ -611,7 +669,15 @@ class SorVendorStreamSpec:
     change_strategies: frozenset[SorChangeStrategy]
     scope_category: str | None = None
     depends_on: frozenset[str] = frozenset()
-    relationship_targets: Mapping[str, str] = field(default_factory=dict)
+    relationship_targets: SorRelationshipTargets = field(
+        default_factory=SorRelationshipTargets
+    )
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.relationship_targets, SorRelationshipTargets):
+            raise TypeError(
+                "SOR vendor streams require typed relationship targets."
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -652,8 +718,12 @@ class SorOAuthSpec:
     authorization_params: tuple[tuple[str, str], ...] = ()
     authorization_response_type: str | None = "code"
     send_authorization_scope: bool = True
-    token_request_format: Literal["form", "json"] = "form"
-    token_client_auth_method: Literal["body", "basic"] = "body"
+    token_request_format: SorOAuthTokenRequestFormat = (
+        SorOAuthTokenRequestFormat.FORM
+    )
+    token_client_auth_method: SorOAuthClientAuthMethod = (
+        SorOAuthClientAuthMethod.BODY
+    )
     token_grant_type: str | None = "authorization_code"
     send_token_redirect_uri: bool = True
     pkce: bool = False
@@ -661,6 +731,18 @@ class SorOAuthSpec:
     instance_host_suffixes: tuple[str, ...] = ()
     instance_origin_options: tuple[SorOAuthOriginOption, ...] = ()
     operator_instance_origin: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "token_request_format",
+            SorOAuthTokenRequestFormat(self.token_request_format),
+        )
+        object.__setattr__(
+            self,
+            "token_client_auth_method",
+            SorOAuthClientAuthMethod(self.token_client_auth_method),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -789,16 +871,140 @@ class SorDiscoveredSchema:
 
 
 @dataclass(frozen=True, slots=True)
+class SorSourcePayload:
+    """Immutable dynamic source fields at the vendor-to-mapping boundary.
+
+    Vendor and custom fields are runtime data, so they cannot be represented by
+    one closed schema. Domain code must not inspect this object; only the mapping
+    engine resolves its configured field names before producing a typed canonical
+    payload.
+    """
+
+    values: Mapping[str, object] = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if not all(isinstance(key, str) and key for key in self.values):
+            raise TypeError("SOR source payload keys must be non-empty strings.")
+        object.__setattr__(self, "values", MappingProxyType(dict(self.values)))
+
+    @classmethod
+    def from_mapping(cls, values: Mapping[str, object]) -> "SorSourcePayload":
+        """Copy a vendor-owned field mapping into the immutable boundary object."""
+        return cls(values=values)
+
+    def has_field(self, key: str) -> bool:
+        return key in self.values
+
+    def field_names(self) -> tuple[str, ...]:
+        """Return the sealed source-field vocabulary without exposing its mapping."""
+        return tuple(self.values)
+
+    def value(self, key: str) -> object:
+        return self.values[key]
+
+    def to_wire(self) -> dict[str, object]:
+        """Return a detached mapping for durable and persistence serialization."""
+        return dict(self.values)
+
+
+class SorCanonicalPayload(BaseModel):
+    """Base for closed, profile-owned payloads after field mapping."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class SorCommandPayload(BaseModel):
+    """Closed Agent command data after validation at the tool boundary."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    def to_wire(self) -> dict[str, object]:
+        """Convert a typed command only at an encrypted durable boundary."""
+        return self.model_dump(mode="json")
+
+
+_MAPPED_COMMAND_FIELDS = TypeAdapter(
+    dict[str, JsonValue],
+    config=ConfigDict(strict=True),
+)
+
+
+class SorMappedFieldsCommandPayload(SorCommandPayload):
+    """Dynamic mapped fields for create/update commands.
+
+    The active source mapping owns these keys, so their vocabulary cannot be a
+    static Python model. The wrapper still validates JSON values, freezes the
+    command as an object, and keeps mapping access at the vendor translation
+    edge instead of throughout orchestration code.
+    """
+
+    model_config = ConfigDict(extra="allow", frozen=True)
+    __pydantic_extra__: dict[str, object] = Field(init=False)
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_json_fields(cls, value: object) -> dict[str, JsonValue]:
+        if not isinstance(value, Mapping):
+            raise ValueError("Mapped command fields must be an object.")
+        validated = _MAPPED_COMMAND_FIELDS.validate_python(dict(value))
+        normalized = to_json_value(validated)
+        if not isinstance(normalized, dict):
+            raise ValueError("Mapped command fields must be a JSON object.")
+        return normalized
+
+    @model_validator(mode="after")
+    def require_fields(self) -> "SorMappedFieldsCommandPayload":
+        if not self.__pydantic_extra__:
+            raise ValueError("A mapped-field command requires at least one field.")
+        return self
+
+    @property
+    def fields(self) -> Mapping[str, object]:
+        """Expose immutable mapped values only to a vendor field translator."""
+        return MappingProxyType(dict(self.__pydantic_extra__ or {}))
+
+
+@dataclass(frozen=True, slots=True, init=False)
 class SorExternalRecord:
     """One source record before profile normalization and projection."""
 
     vendor_object_key: str
     external_id: str
-    payload: Mapping[str, object]
+    payload: SorSourcePayload
     source_created_at: datetime | None = None
     source_updated_at: datetime | None = None
     source_revision: str | None = None
     source_url: str | None = None
+
+    def __init__(
+        self,
+        vendor_object_key: str,
+        external_id: str,
+        payload: SorSourcePayload | Mapping[str, object],
+        source_created_at: datetime | None = None,
+        source_updated_at: datetime | None = None,
+        source_revision: str | None = None,
+        source_url: str | None = None,
+    ) -> None:
+        """Seal a vendor mapping while exposing only the typed payload object."""
+        if not isinstance(payload, (SorSourcePayload, Mapping)):
+            raise TypeError("SOR external record payload must be a field mapping.")
+        sealed_payload = (
+            payload
+            if isinstance(payload, SorSourcePayload)
+            else SorSourcePayload.from_mapping(payload)
+        )
+        object.__setattr__(self, "vendor_object_key", vendor_object_key)
+        object.__setattr__(self, "external_id", external_id)
+        object.__setattr__(self, "payload", sealed_payload)
+        object.__setattr__(self, "source_created_at", source_created_at)
+        object.__setattr__(self, "source_updated_at", source_updated_at)
+        object.__setattr__(self, "source_revision", source_revision)
+        object.__setattr__(
+            self,
+            "source_url",
+            source_url,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -846,7 +1052,7 @@ class SorCommandRequest:
 
     tool_name: str
     idempotency_key: str
-    payload: Mapping[str, object]
+    payload: SorCommandPayload
     target_external_id: str | None = None
     expected_source_revision: str | None = None
 
@@ -910,7 +1116,7 @@ class SorProjectionOutcome:
 
     record_id: UUID
     disposition: SorProjectionDisposition
-    canonical_values: Mapping[str, object]
+    canonical_payload: SorCanonicalPayload
     custom_field_keys: tuple[str, ...]
 
 
@@ -1062,11 +1268,13 @@ __all__ = [
     "SorAdapterFieldSelection",
     "SorAppWebhookState",
     "SorCanonicalFieldSpec",
+    "SorCanonicalPayload",
     "SorCanonicalRelationKind",
     "SorCapabilityUnavailable",
     "SorChangeMode",
     "SorChangeStrategy",
     "SorCommandRevisionConflict",
+    "SorCommandPayload",
     "SorCommandState",
     "SorCommandRequest",
     "SorCommandResult",
@@ -1087,9 +1295,12 @@ __all__ = [
     "SorImplementationStatus",
     "SorLifecycleAdapter",
     "SorMappingState",
+    "SorMappedFieldsCommandPayload",
     "SorMutationOperation",
     "SorOAuthOriginOption",
+    "SorOAuthClientAuthMethod",
     "SorOAuthSpec",
+    "SorOAuthTokenRequestFormat",
     "SorProfile",
     "SorProfileSpec",
     "SorProjectionDisposition",
@@ -1100,9 +1311,11 @@ __all__ = [
     "SorRelationIntentState",
     "SorRelationshipDirection",
     "SorRelationshipRole",
+    "SorRelationshipTargets",
     "SorSchemaDifference",
     "SorSensitivity",
     "SorSourceAccess",
+    "SorSourcePayload",
     "SorSourceState",
     "SorSourceTransition",
     "SorSourceTransitionError",

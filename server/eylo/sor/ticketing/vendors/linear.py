@@ -29,11 +29,14 @@ from eylo.sor.shared.contracts import (
     SorDiscoveredSchema,
     SorExternalRecord,
     SorExternalRecordNotFound,
+    SorFieldDataType,
     SorMutationOperation,
     SorOAuthSpec,
     SorProfile,
     SorRecordPage,
     SorRecoveryPolicy,
+    SorRelationshipRole,
+    SorRelationshipTargets,
     SorVendorErrorCode,
     SorVendorOperationError,
     SorVendorStreamSpec,
@@ -43,18 +46,32 @@ from eylo.sor.shared.contracts import (
     SorWebhookVerificationError,
 )
 from eylo.sor.ticketing.contracts import (
+    TicketingAssignCommandPayload,
     TicketingComment,
+    TicketingCommentCommandPayload,
+    TicketingCommentPayload,
     TicketingCycle,
+    TicketingCyclePayload,
     TicketingEntityKind,
     TicketingIssue,
+    TicketingIssuePayload,
     TicketingIssueRelation,
     TicketingLabel,
+    TicketingLabelCommandPayload,
+    TicketingLabelPayload,
+    TicketingLinkCommandPayload,
+    TicketingMappedFieldsCommandPayload,
     TicketingProject,
+    TicketingProjectPayload,
     TicketingRelationKind,
+    TicketingRelationPayload,
     TicketingToolName,
+    TicketingTransitionCommandPayload,
     TicketingUser,
+    TicketingUserPayload,
     TicketingWorkState,
     TicketingWorkflowState,
+    TicketingWorkflowStatePayload,
 )
 
 LINEAR_ORIGIN = "https://api.linear.app"
@@ -96,26 +113,28 @@ _STREAM_ENTITY = {
 }
 _RELATIONSHIP_TARGETS = {
     LinearTicketingStream.ISSUES: {
-        "project": LinearTicketingStream.PROJECTS,
-        "team": LinearTicketingStream.TEAMS,
-        "assignee": LinearTicketingStream.USERS,
-        "reporter": LinearTicketingStream.USERS,
-        "label": LinearTicketingStream.ISSUE_LABELS,
-        "parent": LinearTicketingStream.ISSUES,
-        "cycle": LinearTicketingStream.CYCLES,
+        SorRelationshipRole.PROJECT: LinearTicketingStream.PROJECTS,
+        SorRelationshipRole.TEAM: LinearTicketingStream.TEAMS,
+        SorRelationshipRole.ASSIGNEE: LinearTicketingStream.USERS,
+        SorRelationshipRole.REPORTER: LinearTicketingStream.USERS,
+        SorRelationshipRole.LABEL: LinearTicketingStream.ISSUE_LABELS,
+        SorRelationshipRole.PARENT: LinearTicketingStream.ISSUES,
+        SorRelationshipRole.CYCLE: LinearTicketingStream.CYCLES,
     },
     LinearTicketingStream.ISSUE_LABELS: {
-        "project": LinearTicketingStream.TEAMS,
-        "parent": LinearTicketingStream.ISSUE_LABELS,
+        SorRelationshipRole.PROJECT: LinearTicketingStream.TEAMS,
+        SorRelationshipRole.PARENT: LinearTicketingStream.ISSUE_LABELS,
     },
-    LinearTicketingStream.CYCLES: {"project": LinearTicketingStream.TEAMS},
+    LinearTicketingStream.CYCLES: {
+        SorRelationshipRole.PROJECT: LinearTicketingStream.TEAMS
+    },
     LinearTicketingStream.COMMENTS: {
-        "issue": LinearTicketingStream.ISSUES,
-        "author": LinearTicketingStream.USERS,
+        SorRelationshipRole.ISSUE: LinearTicketingStream.ISSUES,
+        SorRelationshipRole.AUTHOR: LinearTicketingStream.USERS,
     },
     LinearTicketingStream.ISSUE_RELATIONS: {
-        "from_issue": LinearTicketingStream.ISSUES,
-        "to_issue": LinearTicketingStream.ISSUES,
+        SorRelationshipRole.FROM_ISSUE: LinearTicketingStream.ISSUES,
+        SorRelationshipRole.TO_ISSUE: LinearTicketingStream.ISSUES,
     },
 }
 _READ_TOOLS = frozenset(
@@ -234,7 +253,9 @@ LINEAR_MANIFEST = SorAdapterCapabilityManifest(
             depends_on=frozenset(
                 set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values()) - {stream_key}
             ),
-            relationship_targets=_RELATIONSHIP_TARGETS.get(stream_key, {}),
+            relationship_targets=SorRelationshipTargets(
+                _RELATIONSHIP_TARGETS.get(stream_key, {})
+            ),
         )
         for stream_key, entity in _STREAM_ENTITY.items()
     ),
@@ -275,7 +296,7 @@ LINEAR_MANIFEST = SorAdapterCapabilityManifest(
 def _field(
     key: str,
     label: str,
-    data_type: str,
+    data_type: SorFieldDataType,
     *,
     nullable: bool = True,
     writable: bool = False,
@@ -294,99 +315,99 @@ def _field(
 
 _SCHEMA_FIELDS = {
     LinearTicketingStream.ISSUES: (
-        _field("identifier", "Identifier", "text", nullable=False),
-        _field("title", "Title", "text", nullable=False, writable=True),
-        _field("description", "Description", "text", writable=True),
+        _field("identifier", "Identifier", SorFieldDataType.TEXT, nullable=False),
+        _field("title", "Title", SorFieldDataType.TEXT, nullable=False, writable=True),
+        _field("description", "Description", SorFieldDataType.TEXT, writable=True),
         _field(
             "description_source",
             "Source description",
-            "bounded_json",
+            SorFieldDataType.BOUNDED_JSON,
             description="The original Linear Markdown string retained for audit.",
         ),
-        _field("state_name", "Status", "text"),
-        _field("normalized_status", "Normalized status", "enum"),
-        _field("priority_label", "Priority", "text", writable=True),
-        _field("project_id", "Project ID", "reference", writable=True),
-        _field("team_id", "Team ID", "reference", nullable=False, writable=True),
-        _field("assignee_id", "Assignee ID", "reference", writable=True),
-        _field("creator_id", "Creator ID", "reference"),
-        _field("estimate", "Estimate", "decimal", writable=True),
-        _field("label_ids", "Label IDs", "string_array", writable=True),
-        _field("parent_id", "Parent issue ID", "reference", writable=True),
-        _field("cycle_id", "Cycle ID", "reference", writable=True),
-        _field("due_date", "Due date", "date", writable=True),
-        _field("started_at", "Started at", "timestamp"),
-        _field("completed_at", "Completed at", "timestamp"),
-        _field("cancelled_at", "Cancelled at", "timestamp"),
+        _field("state_name", "Status", SorFieldDataType.TEXT),
+        _field("normalized_status", "Normalized status", SorFieldDataType.ENUM),
+        _field("priority_label", "Priority", SorFieldDataType.TEXT, writable=True),
+        _field("project_id", "Project ID", SorFieldDataType.REFERENCE, writable=True),
+        _field("team_id", "Team ID", SorFieldDataType.REFERENCE, nullable=False, writable=True),
+        _field("assignee_id", "Assignee ID", SorFieldDataType.REFERENCE, writable=True),
+        _field("creator_id", "Creator ID", SorFieldDataType.REFERENCE),
+        _field("estimate", "Estimate", SorFieldDataType.DECIMAL, writable=True),
+        _field("label_ids", "Label IDs", SorFieldDataType.STRING_ARRAY, writable=True),
+        _field("parent_id", "Parent issue ID", SorFieldDataType.REFERENCE, writable=True),
+        _field("cycle_id", "Cycle ID", SorFieldDataType.REFERENCE, writable=True),
+        _field("due_date", "Due date", SorFieldDataType.DATE, writable=True),
+        _field("started_at", "Started at", SorFieldDataType.TIMESTAMP),
+        _field("completed_at", "Completed at", SorFieldDataType.TIMESTAMP),
+        _field("cancelled_at", "Cancelled at", SorFieldDataType.TIMESTAMP),
     ),
     LinearTicketingStream.TEAMS: (
-        _field("key", "Key", "text", nullable=False),
-        _field("name", "Name", "text", nullable=False),
-        _field("description", "Description", "text"),
+        _field("key", "Key", SorFieldDataType.TEXT, nullable=False),
+        _field("name", "Name", SorFieldDataType.TEXT, nullable=False),
+        _field("description", "Description", SorFieldDataType.TEXT),
     ),
     LinearTicketingStream.PROJECTS: (
-        _field("key", "Slug", "text"),
-        _field("name", "Name", "text", nullable=False),
-        _field("description", "Description", "text"),
+        _field("key", "Slug", SorFieldDataType.TEXT),
+        _field("name", "Name", SorFieldDataType.TEXT, nullable=False),
+        _field("description", "Description", SorFieldDataType.TEXT),
     ),
     LinearTicketingStream.WORKFLOW_STATES: (
-        _field("name", "Name", "text", nullable=False),
-        _field("native_category", "Source category", "text"),
-        _field("normalized_category", "Normalized category", "enum"),
-        _field("position", "Position", "decimal"),
+        _field("name", "Name", SorFieldDataType.TEXT, nullable=False),
+        _field("native_category", "Source category", SorFieldDataType.TEXT),
+        _field("normalized_category", "Normalized category", SorFieldDataType.ENUM),
+        _field("position", "Position", SorFieldDataType.DECIMAL),
     ),
     LinearTicketingStream.USERS: (
-        _field("name", "Name", "text", nullable=False),
-        _field("display_name", "Display name", "text"),
-        _field("primary_email", "Email", "text"),
-        _field("active", "Active", "boolean", nullable=False),
-        _field("assignable", "Assignable", "boolean"),
-        _field("avatar_url", "Avatar URL", "link"),
+        _field("name", "Name", SorFieldDataType.TEXT, nullable=False),
+        _field("display_name", "Display name", SorFieldDataType.TEXT),
+        _field("primary_email", "Email", SorFieldDataType.TEXT),
+        _field("active", "Active", SorFieldDataType.BOOLEAN, nullable=False),
+        _field("assignable", "Assignable", SorFieldDataType.BOOLEAN),
+        _field("avatar_url", "Avatar URL", SorFieldDataType.LINK),
     ),
     LinearTicketingStream.ISSUE_LABELS: (
-        _field("name", "Name", "text", nullable=False),
-        _field("description", "Description", "text"),
-        _field("color", "Color", "text"),
-        _field("project_external_id", "Team ID", "reference"),
-        _field("parent_external_id", "Parent label ID", "reference"),
-        _field("is_group", "Group", "boolean", nullable=False),
+        _field("name", "Name", SorFieldDataType.TEXT, nullable=False),
+        _field("description", "Description", SorFieldDataType.TEXT),
+        _field("color", "Color", SorFieldDataType.TEXT),
+        _field("project_external_id", "Team ID", SorFieldDataType.REFERENCE),
+        _field("parent_external_id", "Parent label ID", SorFieldDataType.REFERENCE),
+        _field("is_group", "Group", SorFieldDataType.BOOLEAN, nullable=False),
     ),
     LinearTicketingStream.CYCLES: (
-        _field("name", "Name", "text"),
-        _field("number", "Number", "integer", nullable=False),
-        _field("project_external_id", "Team ID", "reference", nullable=False),
-        _field("description", "Description", "text"),
-        _field("starts_at", "Starts at", "timestamp", nullable=False),
-        _field("ends_at", "Ends at", "timestamp", nullable=False),
-        _field("completed_at", "Completed at", "timestamp"),
-        _field("active", "Active", "boolean", nullable=False),
+        _field("name", "Name", SorFieldDataType.TEXT),
+        _field("number", "Number", SorFieldDataType.INTEGER, nullable=False),
+        _field("project_external_id", "Team ID", SorFieldDataType.REFERENCE, nullable=False),
+        _field("description", "Description", SorFieldDataType.TEXT),
+        _field("starts_at", "Starts at", SorFieldDataType.TIMESTAMP, nullable=False),
+        _field("ends_at", "Ends at", SorFieldDataType.TIMESTAMP, nullable=False),
+        _field("completed_at", "Completed at", SorFieldDataType.TIMESTAMP),
+        _field("active", "Active", SorFieldDataType.BOOLEAN, nullable=False),
     ),
     LinearTicketingStream.COMMENTS: (
-        _field("issue_id", "Issue ID", "reference", nullable=False),
-        _field("author_id", "Author ID", "reference"),
-        _field("body", "Comment", "text", nullable=False),
+        _field("issue_id", "Issue ID", SorFieldDataType.REFERENCE, nullable=False),
+        _field("author_id", "Author ID", SorFieldDataType.REFERENCE),
+        _field("body", "Comment", SorFieldDataType.TEXT, nullable=False),
         _field(
             "body_source",
             "Source body",
-            "bounded_json",
+            SorFieldDataType.BOUNDED_JSON,
             description="The original Linear Markdown string retained for audit.",
         ),
-        _field("created_at", "Created at", "timestamp", nullable=False),
-        _field("updated_at", "Updated at", "timestamp"),
+        _field("created_at", "Created at", SorFieldDataType.TIMESTAMP, nullable=False),
+        _field("updated_at", "Updated at", SorFieldDataType.TIMESTAMP),
     ),
     LinearTicketingStream.ISSUE_RELATIONS: (
-        _field("issue_id", "From issue ID", "reference", nullable=False),
+        _field("issue_id", "From issue ID", SorFieldDataType.REFERENCE, nullable=False),
         _field(
             "related_issue_id",
             "To issue ID",
-            "reference",
+            SorFieldDataType.REFERENCE,
             nullable=False,
         ),
-        _field("native_type", "Source relation", "text", nullable=False),
+        _field("native_type", "Source relation", SorFieldDataType.TEXT, nullable=False),
         _field(
             "canonical_type",
             "Normalized relation",
-            "enum",
+            SorFieldDataType.ENUM,
             nullable=False,
         ),
     ),
@@ -750,7 +771,7 @@ class LinearTicketingAdapter:
         target_id = _required_target(command)
         if command.tool_name == TicketingToolName.UPDATE:
             payload = _linear_issue_input(
-                command.payload,
+                _mapped_issue_fields(command),
                 operation=SorMutationOperation.UPDATE,
             )
             return await self._update_issue(
@@ -759,9 +780,10 @@ class LinearTicketingAdapter:
                 command=command,
             )
         if command.tool_name == TicketingToolName.TRANSITION:
-            state_id = _single_id_payload(
-                command.payload,
-                key="workflow_state_external_id",
+            if not isinstance(command.payload, TicketingTransitionCommandPayload):
+                raise _invalid_command("Linear transition payload is invalid.")
+            state_id = _required_id(
+                command.payload.workflow_state_external_id,
                 field="Linear workflow state ID",
             )
             return await self._update_issue(
@@ -770,9 +792,10 @@ class LinearTicketingAdapter:
                 command=command,
             )
         if command.tool_name == TicketingToolName.ASSIGN:
-            assignee = _nullable_id_payload(
-                command.payload,
-                key="assignee_external_id",
+            if not isinstance(command.payload, TicketingAssignCommandPayload):
+                raise _invalid_command("Linear assignment payload is invalid.")
+            assignee = _nullable_id(
+                command.payload.assignee_external_id,
                 field="Linear assignee ID",
             )
             return await self._update_issue(
@@ -784,10 +807,10 @@ class LinearTicketingAdapter:
             return await self._comment_issue(target_id=target_id, command=command)
         if command.tool_name == TicketingToolName.LINK:
             return await self._link_issue(target_id=target_id, command=command)
-        label_id = _single_id_payload(
-            command.payload,
-            key="label_external_id",
-            field="Linear label ID",
+        if not isinstance(command.payload, TicketingLabelCommandPayload):
+            raise _invalid_command("Linear label payload is invalid.")
+        label_id = _required_id(
+            command.payload.label_external_id, field="Linear label ID"
         )
         return await self._change_label(
             target_id=target_id,
@@ -796,55 +819,56 @@ class LinearTicketingAdapter:
             command=command,
         )
 
-    def normalize_issue(self, record: SorExternalRecord) -> TicketingIssue:
-        values = record.payload
+    def normalize_issue(
+        self,
+        record: SorExternalRecord,
+        payload: TicketingIssuePayload,
+    ) -> TicketingIssue:
         return TicketingIssue(
             external_id=record.external_id,
-            key=_optional_string(values.get("key")),
-            title=_required_string(values.get("title"), field="Linear issue title"),
-            normalized_description=_optional_string(
-                values.get("normalized_description")
-            ),
-            source_description=_json_value(values.get("source_description")),
-            issue_type=_optional_string(values.get("issue_type")),
-            native_status=_optional_string(values.get("native_status")),
-            normalized_status=TicketingWorkState.from_value(
-                _optional_string(values.get("normalized_status"))
-            ),
-            priority=_optional_string(values.get("priority")),
-            project_external_id=_optional_string(values.get("project_external_id")),
-            team_external_id=_optional_string(values.get("team_external_id")),
-            assignee_external_id=_optional_string(values.get("assignee_external_id")),
-            reporter_external_id=_optional_string(values.get("reporter_external_id")),
-            estimate=_optional_decimal(values.get("estimate")),
-            label_external_ids=_string_tuple(values.get("label_external_ids")),
-            parent_external_id=_optional_string(values.get("parent_external_id")),
-            cycle_external_id=_optional_string(values.get("cycle_external_id")),
-            due_date=_optional_date(values.get("due_date")),
-            started_at=_optional_datetime(values.get("started_at")),
-            completed_at=_optional_datetime(values.get("completed_at")),
-            cancelled_at=_optional_datetime(values.get("cancelled_at")),
+            key=_optional_string(payload.key),
+            title=_required_string(payload.title, field="Linear issue title"),
+            normalized_description=_optional_string(payload.normalized_description),
+            source_description=_json_value(payload.source_description),
+            issue_type=_optional_string(payload.issue_type),
+            native_status=_optional_string(payload.native_status),
+            normalized_status=payload.normalized_status,
+            priority=_optional_string(payload.priority),
+            project_external_id=_optional_string(payload.project_external_id),
+            team_external_id=_optional_string(payload.team_external_id),
+            assignee_external_id=_optional_string(payload.assignee_external_id),
+            reporter_external_id=_optional_string(payload.reporter_external_id),
+            estimate=payload.estimate,
+            label_external_ids=payload.label_external_ids,
+            parent_external_id=_optional_string(payload.parent_external_id),
+            cycle_external_id=_optional_string(payload.cycle_external_id),
+            due_date=payload.due_date,
+            started_at=payload.started_at,
+            completed_at=payload.completed_at,
+            cancelled_at=payload.cancelled_at,
             source_updated_at=record.source_updated_at,
             source_url=record.source_url,
         )
 
-    def normalize_project(self, record: SorExternalRecord) -> TicketingProject:
+    def normalize_project(
+        self,
+        record: SorExternalRecord,
+        payload: TicketingProjectPayload,
+    ) -> TicketingProject:
         return TicketingProject(
             external_id=record.external_id,
-            key=_optional_string(record.payload.get("key")),
-            name=_required_string(
-                record.payload.get("name"),
-                field="Linear project name",
-            ),
-            description=_optional_string(record.payload.get("description")),
+            key=_optional_string(payload.key),
+            name=_required_string(payload.name, field="Linear project name"),
+            description=_optional_string(payload.description),
             source_url=record.source_url,
         )
 
     def normalize_workflow_state(
         self,
         record: SorExternalRecord,
+        payload: TicketingWorkflowStatePayload,
     ) -> TicketingWorkflowState:
-        order = _optional_decimal(record.payload.get("order"))
+        order = payload.order
         if order is not None and order != order.to_integral_value():
             raise SorVendorOperationError(
                 SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
@@ -854,48 +878,52 @@ class LinearTicketingAdapter:
         return TicketingWorkflowState(
             external_id=record.external_id,
             name=_required_string(
-                record.payload.get("name"),
+                payload.name,
                 field="Linear workflow state name",
             ),
-            native_category=_optional_string(record.payload.get("native_category")),
-            normalized_category=TicketingWorkState.from_value(
-                _optional_string(record.payload.get("normalized_category"))
-            ),
+            native_category=_optional_string(payload.native_category),
+            normalized_category=payload.normalized_category,
             order=int(order) if order is not None else None,
         )
 
-    def normalize_user(self, record: SorExternalRecord) -> TicketingUser:
-        values = record.payload
+    def normalize_user(
+        self,
+        record: SorExternalRecord,
+        payload: TicketingUserPayload,
+    ) -> TicketingUser:
         return TicketingUser(
             external_id=record.external_id,
-            name=_required_string(values.get("name"), field="Linear user name"),
-            display_name=_optional_string(values.get("display_name")),
-            primary_email=_optional_string(values.get("primary_email")),
-            active=_required_boolean(values.get("active"), field="Linear user active"),
-            assignable=_optional_boolean(values.get("assignable")),
-            avatar_url=_optional_string(values.get("avatar_url")),
+            name=_required_string(payload.name, field="Linear user name"),
+            display_name=_optional_string(payload.display_name),
+            primary_email=_optional_string(payload.primary_email),
+            active=payload.active,
+            assignable=payload.assignable,
+            avatar_url=_optional_string(payload.avatar_url),
             source_url=record.source_url,
         )
 
-    def normalize_label(self, record: SorExternalRecord) -> TicketingLabel:
-        values = record.payload
+    def normalize_label(
+        self,
+        record: SorExternalRecord,
+        payload: TicketingLabelPayload,
+    ) -> TicketingLabel:
         return TicketingLabel(
             external_id=record.external_id,
-            name=_required_string(values.get("name"), field="Linear label name"),
-            description=_optional_string(values.get("description")),
-            color=_optional_string(values.get("color")),
-            project_external_id=_optional_string(values.get("project_external_id")),
-            parent_external_id=_optional_string(values.get("parent_external_id")),
-            is_group=_required_boolean(
-                values.get("is_group"),
-                field="Linear label group flag",
-            ),
+            name=_required_string(payload.name, field="Linear label name"),
+            description=_optional_string(payload.description),
+            color=_optional_string(payload.color),
+            project_external_id=_optional_string(payload.project_external_id),
+            parent_external_id=_optional_string(payload.parent_external_id),
+            is_group=payload.is_group,
         )
 
-    def normalize_cycle(self, record: SorExternalRecord) -> TicketingCycle:
-        values = record.payload
-        number = _optional_integer(values.get("number"), field="Linear cycle number")
-        name = _optional_string(values.get("name"))
+    def normalize_cycle(
+        self,
+        record: SorExternalRecord,
+        payload: TicketingCyclePayload,
+    ) -> TicketingCycle:
+        number = payload.number
+        name = _optional_string(payload.name)
         if name is None:
             if number is None:
                 raise _invalid_response("Linear cycle name and number are missing.")
@@ -904,59 +932,49 @@ class LinearTicketingAdapter:
             external_id=record.external_id,
             name=name,
             number=number,
-            project_external_id=_optional_string(values.get("project_external_id")),
-            description=_optional_string(values.get("description")),
-            starts_at=_optional_datetime(values.get("starts_at")),
-            ends_at=_optional_datetime(values.get("ends_at")),
-            completed_at=_optional_datetime(values.get("completed_at")),
-            active=_optional_boolean(values.get("active")),
+            project_external_id=_optional_string(payload.project_external_id),
+            description=_optional_string(payload.description),
+            starts_at=payload.starts_at,
+            ends_at=payload.ends_at,
+            completed_at=payload.completed_at,
+            active=payload.active,
         )
 
-    def normalize_comment(self, record: SorExternalRecord) -> TicketingComment:
+    def normalize_comment(
+        self,
+        record: SorExternalRecord,
+        payload: TicketingCommentPayload,
+    ) -> TicketingComment:
         return TicketingComment(
             external_id=record.external_id,
             issue_external_id=_required_string(
-                record.payload.get("issue_external_id"),
+                payload.issue_external_id,
                 field="Linear comment issue ID",
             ),
             author_external_id=_optional_string(
-                record.payload.get("author_external_id")
+                payload.author_external_id
             ),
             normalized_text=_required_string(
-                record.payload.get("normalized_text"),
+                payload.normalized_text,
                 field="Linear comment body",
             ),
-            source_body=_json_value(record.payload.get("source_body")),
-            created_at=_required_datetime(
-                record.payload.get("created_at"),
-                field="Linear comment creation time",
-            ),
-            updated_at=_optional_datetime(record.payload.get("updated_at")),
+            source_body=_json_value(payload.source_body),
+            created_at=payload.created_at,
+            updated_at=payload.updated_at,
         )
 
     def normalize_relation(
         self,
         record: SorExternalRecord,
+        payload: TicketingRelationPayload,
     ) -> TicketingIssueRelation:
         return TicketingIssueRelation(
             external_id=record.external_id,
             issue_vendor_object_key=LinearTicketingStream.ISSUES,
-            from_issue_external_id=_required_string(
-                record.payload.get("from_issue_external_id"),
-                field="Linear relation source issue ID",
-            ),
-            to_issue_external_id=_required_string(
-                record.payload.get("to_issue_external_id"),
-                field="Linear relation target issue ID",
-            ),
-            canonical_kind=_linear_relation_kind(
-                record.payload.get("canonical_relation_kind"),
-                error_code=SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
-            ),
-            native_kind=_required_string(
-                record.payload.get("native_relation_kind"),
-                field="Linear relation type",
-            ),
+            from_issue_external_id=payload.from_issue_external_id,
+            to_issue_external_id=payload.to_issue_external_id,
+            canonical_kind=payload.canonical_relation_kind,
+            native_kind=payload.native_relation_kind,
             source_revision=record.source_revision,
         )
 
@@ -1122,7 +1140,7 @@ class LinearTicketingAdapter:
                 recovery=SorRecoveryPolicy.TERMINAL,
             )
         payload = _linear_issue_input(
-            command.payload,
+            _mapped_issue_fields(command),
             operation=SorMutationOperation.CREATE,
         )
         try:
@@ -1185,13 +1203,9 @@ class LinearTicketingAdapter:
         target_id: str,
         command: SorCommandRequest,
     ) -> SorCommandResult:
-        if set(command.payload) != {"text"}:
-            raise SorVendorOperationError(
-                SorVendorErrorCode.VENDOR_COMMAND_INVALID,
-                "Commenting on a Linear issue requires only text.",
-                recovery=SorRecoveryPolicy.TERMINAL,
-            )
-        body = _required_string(command.payload.get("text"), field="Linear comment")
+        if not isinstance(command.payload, TicketingCommentCommandPayload):
+            raise _invalid_command("Linear comment payload is invalid.")
+        body = command.payload.text
         try:
             data, response = await self._graphql(
                 """
@@ -1243,18 +1257,10 @@ class LinearTicketingAdapter:
         target_id: str,
         command: SorCommandRequest,
     ) -> SorCommandResult:
-        if set(command.payload) != {
-            "related_issue_external_id",
-            "relation_kind",
-        }:
-            raise SorVendorOperationError(
-                SorVendorErrorCode.VENDOR_COMMAND_INVALID,
-                "Linking Linear issues requires related_issue_external_id and "
-                "relation_kind only.",
-                recovery=SorRecoveryPolicy.TERMINAL,
-            )
+        if not isinstance(command.payload, TicketingLinkCommandPayload):
+            raise _invalid_command("Linear relationship payload is invalid.")
         related_id = _required_id(
-            command.payload.get("related_issue_external_id"),
+            command.payload.related_issue_external_id,
             field="Linear related issue ID",
         )
         if related_id == target_id:
@@ -1263,7 +1269,7 @@ class LinearTicketingAdapter:
                 "A Linear issue cannot link to itself.",
                 recovery=SorRecoveryPolicy.TERMINAL,
             )
-        relation_kind = _linear_relation_kind(command.payload.get("relation_kind"))
+        relation_kind = command.payload.relation_kind
         native_type = {
             TicketingRelationKind.BLOCKS: "blocks",
             TicketingRelationKind.BLOCKED_BY: "blocks",
@@ -1500,6 +1506,12 @@ def _linear_payload(
         "The requested Linear stream is unsupported.",
         recovery=SorRecoveryPolicy.TERMINAL,
     )
+
+
+def _mapped_issue_fields(command: SorCommandRequest) -> Mapping[str, object]:
+    if not isinstance(command.payload, TicketingMappedFieldsCommandPayload):
+        raise _invalid_command("Linear issue field payload is invalid.")
+    return command.payload.fields
 
 
 def _linear_issue_input(
@@ -1971,36 +1983,6 @@ def _required_target(command: SorCommandRequest) -> str:
     return _required_id(command.target_external_id, field="Linear issue ID")
 
 
-def _single_id_payload(
-    payload: Mapping[str, object],
-    *,
-    key: str,
-    field: str,
-) -> str:
-    if set(payload) != {key}:
-        raise SorVendorOperationError(
-            SorVendorErrorCode.VENDOR_COMMAND_INVALID,
-            f"This Linear action requires only {key}.",
-            recovery=SorRecoveryPolicy.TERMINAL,
-        )
-    return _required_id(payload.get(key), field=field)
-
-
-def _nullable_id_payload(
-    payload: Mapping[str, object],
-    *,
-    key: str,
-    field: str,
-) -> str | None:
-    if set(payload) != {key}:
-        raise SorVendorOperationError(
-            SorVendorErrorCode.VENDOR_COMMAND_INVALID,
-            f"This Linear action requires only {key}.",
-            recovery=SorRecoveryPolicy.TERMINAL,
-        )
-    return _nullable_id(payload.get(key), field=field)
-
-
 def _linear_priority(value: object) -> int | None:
     if value is None:
         return None
@@ -2275,6 +2257,14 @@ def _json_value(value: object) -> object | None:
 def _invalid_response(message: str) -> SorVendorOperationError:
     return SorVendorOperationError(
         SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
+        message,
+        recovery=SorRecoveryPolicy.TERMINAL,
+    )
+
+
+def _invalid_command(message: str) -> SorVendorOperationError:
+    return SorVendorOperationError(
+        SorVendorErrorCode.VENDOR_REQUEST_REJECTED,
         message,
         recovery=SorRecoveryPolicy.TERMINAL,
     )

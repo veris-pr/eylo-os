@@ -34,11 +34,14 @@ from eylo.sor.shared.contracts import (
     SorDiscoveredSchema,
     SorExternalRecord,
     SorExternalRecordNotFound,
+    SorFieldDataType,
     SorMutationOperation,
     SorOAuthSpec,
     SorProfile,
     SorRecordPage,
     SorRecoveryPolicy,
+    SorRelationshipRole,
+    SorRelationshipTargets,
     SorVendorErrorCode,
     SorVendorOperationError,
     SorVendorStreamSpec,
@@ -48,17 +51,30 @@ from eylo.sor.shared.contracts import (
     SorWebhookVerificationError,
 )
 from eylo.sor.ticketing.contracts import (
+    TicketingAssignCommandPayload,
     TicketingComment,
+    TicketingCommentCommandPayload,
+    TicketingCommentPayload,
     TicketingCycle,
+    TicketingCyclePayload,
     TicketingEntityKind,
     TicketingIssue,
+    TicketingIssuePayload,
     TicketingIssueRelation,
     TicketingLabel,
+    TicketingLabelCommandPayload,
+    TicketingLabelPayload,
+    TicketingMappedFieldsCommandPayload,
     TicketingProject,
+    TicketingProjectPayload,
+    TicketingRelationPayload,
     TicketingToolName,
+    TicketingTransitionCommandPayload,
     TicketingUser,
+    TicketingUserPayload,
     TicketingWorkState,
     TicketingWorkflowState,
+    TicketingWorkflowStatePayload,
 )
 
 GITHUB_ORIGIN = "https://api.github.com"
@@ -105,16 +121,23 @@ _STREAM_ENTITY = {
 }
 _RELATIONSHIP_TARGETS = {
     GitHubStream.ISSUES: {
-        "project": GitHubStream.REPOSITORIES,
-        "assignee": GitHubStream.USERS,
-        "reporter": GitHubStream.USERS,
-        "label": GitHubStream.LABELS,
-        "parent": GitHubStream.ISSUES,
-        "cycle": GitHubStream.MILESTONES,
+        SorRelationshipRole.PROJECT: GitHubStream.REPOSITORIES,
+        SorRelationshipRole.ASSIGNEE: GitHubStream.USERS,
+        SorRelationshipRole.REPORTER: GitHubStream.USERS,
+        SorRelationshipRole.LABEL: GitHubStream.LABELS,
+        SorRelationshipRole.PARENT: GitHubStream.ISSUES,
+        SorRelationshipRole.CYCLE: GitHubStream.MILESTONES,
     },
-    GitHubStream.LABELS: {"project": GitHubStream.REPOSITORIES},
-    GitHubStream.MILESTONES: {"project": GitHubStream.REPOSITORIES},
-    GitHubStream.COMMENTS: {"issue": GitHubStream.ISSUES, "author": GitHubStream.USERS},
+    GitHubStream.LABELS: {
+        SorRelationshipRole.PROJECT: GitHubStream.REPOSITORIES
+    },
+    GitHubStream.MILESTONES: {
+        SorRelationshipRole.PROJECT: GitHubStream.REPOSITORIES
+    },
+    GitHubStream.COMMENTS: {
+        SorRelationshipRole.ISSUE: GitHubStream.ISSUES,
+        SorRelationshipRole.AUTHOR: GitHubStream.USERS,
+    },
 }
 _UPDATED_STREAMS = frozenset({GitHubStream.ISSUES, GitHubStream.COMMENTS})
 _READ_TOOLS = frozenset(
@@ -197,7 +220,9 @@ GITHUB_MANIFEST = SorAdapterCapabilityManifest(
             depends_on=frozenset(
                 set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values()) - {stream_key}
             ),
-            relationship_targets=_RELATIONSHIP_TARGETS.get(stream_key, {}),
+            relationship_targets=SorRelationshipTargets(
+                _RELATIONSHIP_TARGETS.get(stream_key, {})
+            ),
         )
         for stream_key, entity in _STREAM_ENTITY.items()
     ),
@@ -239,7 +264,7 @@ GITHUB_MANIFEST = SorAdapterCapabilityManifest(
 def _field(
     key: str,
     label: str,
-    data_type: str,
+    data_type: SorFieldDataType,
     *,
     nullable: bool = True,
     writable: bool = False,
@@ -258,71 +283,71 @@ def _field(
 
 _SCHEMA_FIELDS = {
     GitHubStream.REPOSITORIES: (
-        _field("key", "Repository", "text", nullable=False),
-        _field("name", "Name", "text", nullable=False),
-        _field("description", "Description", "text"),
+        _field("key", "Repository", SorFieldDataType.TEXT, nullable=False),
+        _field("name", "Name", SorFieldDataType.TEXT, nullable=False),
+        _field("description", "Description", SorFieldDataType.TEXT),
     ),
     GitHubStream.ISSUES: (
-        _field("key", "Key", "text", nullable=False),
-        _field("title", "Title", "text", nullable=False, writable=True),
-        _field("normalized_description", "Description", "text", writable=True),
-        _field("source_description", "Source description", "bounded_json"),
-        _field("issue_type", "Type", "text"),
-        _field("native_status", "Source status", "text"),
-        _field("normalized_status", "Normalized status", "enum"),
-        _field("priority", "Priority", "text"),
-        _field("project_external_id", "Repository", "reference", nullable=False),
-        _field("team_external_id", "Owner", "reference"),
-        _field("assignee_external_id", "Assignee", "reference", writable=True),
-        _field("reporter_external_id", "Reporter", "reference"),
-        _field("estimate", "Estimate", "decimal"),
-        _field("label_external_ids", "Labels", "string_array", writable=True),
-        _field("parent_external_id", "Parent issue", "reference"),
-        _field("cycle_external_id", "Milestone", "reference", writable=True),
-        _field("due_date", "Due date", "date"),
-        _field("started_at", "Started at", "timestamp"),
-        _field("completed_at", "Completed at", "timestamp"),
-        _field("cancelled_at", "Cancelled at", "timestamp"),
+        _field("key", "Key", SorFieldDataType.TEXT, nullable=False),
+        _field("title", "Title", SorFieldDataType.TEXT, nullable=False, writable=True),
+        _field("normalized_description", "Description", SorFieldDataType.TEXT, writable=True),
+        _field("source_description", "Source description", SorFieldDataType.BOUNDED_JSON),
+        _field("issue_type", "Type", SorFieldDataType.TEXT),
+        _field("native_status", "Source status", SorFieldDataType.TEXT),
+        _field("normalized_status", "Normalized status", SorFieldDataType.ENUM),
+        _field("priority", "Priority", SorFieldDataType.TEXT),
+        _field("project_external_id", "Repository", SorFieldDataType.REFERENCE, nullable=False),
+        _field("team_external_id", "Owner", SorFieldDataType.REFERENCE),
+        _field("assignee_external_id", "Assignee", SorFieldDataType.REFERENCE, writable=True),
+        _field("reporter_external_id", "Reporter", SorFieldDataType.REFERENCE),
+        _field("estimate", "Estimate", SorFieldDataType.DECIMAL),
+        _field("label_external_ids", "Labels", SorFieldDataType.STRING_ARRAY, writable=True),
+        _field("parent_external_id", "Parent issue", SorFieldDataType.REFERENCE),
+        _field("cycle_external_id", "Milestone", SorFieldDataType.REFERENCE, writable=True),
+        _field("due_date", "Due date", SorFieldDataType.DATE),
+        _field("started_at", "Started at", SorFieldDataType.TIMESTAMP),
+        _field("completed_at", "Completed at", SorFieldDataType.TIMESTAMP),
+        _field("cancelled_at", "Cancelled at", SorFieldDataType.TIMESTAMP),
     ),
     GitHubStream.WORKFLOW_STATES: (
-        _field("name", "Name", "text", nullable=False),
-        _field("native_category", "Source category", "text"),
-        _field("normalized_category", "Normalized category", "enum"),
-        _field("order", "Order", "integer"),
+        _field("name", "Name", SorFieldDataType.TEXT, nullable=False),
+        _field("native_category", "Source category", SorFieldDataType.TEXT),
+        _field("normalized_category", "Normalized category", SorFieldDataType.ENUM),
+        _field("order", "Order", SorFieldDataType.INTEGER),
     ),
     GitHubStream.USERS: (
-        _field("name", "Login", "text", nullable=False),
-        _field("display_name", "Display name", "text"),
-        _field("primary_email", "Email", "text"),
-        _field("active", "Active", "boolean", nullable=False),
-        _field("assignable", "Assignable", "boolean"),
-        _field("avatar_url", "Avatar URL", "link"),
+        _field("name", "Login", SorFieldDataType.TEXT, nullable=False),
+        _field("display_name", "Display name", SorFieldDataType.TEXT),
+        _field("primary_email", "Email", SorFieldDataType.TEXT),
+        _field("active", "Active", SorFieldDataType.BOOLEAN, nullable=False),
+        _field("assignable", "Assignable", SorFieldDataType.BOOLEAN),
+        _field("avatar_url", "Avatar URL", SorFieldDataType.LINK),
     ),
     GitHubStream.LABELS: (
-        _field("name", "Name", "text", nullable=False),
-        _field("description", "Description", "text"),
-        _field("color", "Color", "text"),
-        _field("project_external_id", "Repository", "reference", nullable=False),
-        _field("parent_external_id", "Parent label", "reference"),
-        _field("is_group", "Group", "boolean", nullable=False),
+        _field("name", "Name", SorFieldDataType.TEXT, nullable=False),
+        _field("description", "Description", SorFieldDataType.TEXT),
+        _field("color", "Color", SorFieldDataType.TEXT),
+        _field("project_external_id", "Repository", SorFieldDataType.REFERENCE, nullable=False),
+        _field("parent_external_id", "Parent label", SorFieldDataType.REFERENCE),
+        _field("is_group", "Group", SorFieldDataType.BOOLEAN, nullable=False),
     ),
     GitHubStream.MILESTONES: (
-        _field("name", "Name", "text", nullable=False),
-        _field("number", "Number", "integer", nullable=False),
-        _field("project_external_id", "Repository", "reference", nullable=False),
-        _field("description", "Description", "text"),
-        _field("starts_at", "Starts at", "timestamp"),
-        _field("ends_at", "Due at", "timestamp"),
-        _field("completed_at", "Closed at", "timestamp"),
-        _field("active", "Active", "boolean"),
+        _field("name", "Name", SorFieldDataType.TEXT, nullable=False),
+        _field("number", "Number", SorFieldDataType.INTEGER, nullable=False),
+        _field("project_external_id", "Repository", SorFieldDataType.REFERENCE, nullable=False),
+        _field("description", "Description", SorFieldDataType.TEXT),
+        _field("starts_at", "Starts at", SorFieldDataType.TIMESTAMP),
+        _field("ends_at", "Due at", SorFieldDataType.TIMESTAMP),
+        _field("completed_at", "Closed at", SorFieldDataType.TIMESTAMP),
+        _field("active", "Active", SorFieldDataType.BOOLEAN),
     ),
     GitHubStream.COMMENTS: (
-        _field("issue_external_id", "Issue", "reference", nullable=False),
-        _field("author_external_id", "Author", "reference"),
-        _field("normalized_text", "Comment", "text", nullable=False),
-        _field("source_body", "Source body", "bounded_json"),
-        _field("created_at", "Created at", "timestamp", nullable=False),
-        _field("updated_at", "Updated at", "timestamp"),
+        _field("issue_external_id", "Issue", SorFieldDataType.REFERENCE, nullable=False),
+        _field("author_external_id", "Author", SorFieldDataType.REFERENCE),
+        _field("normalized_text", "Comment", SorFieldDataType.TEXT, nullable=False),
+        _field("source_body", "Source body", SorFieldDataType.BOUNDED_JSON),
+        _field("created_at", "Created at", SorFieldDataType.TIMESTAMP, nullable=False),
+        _field("updated_at", "Updated at", SorFieldDataType.TIMESTAMP),
     ),
 }
 
@@ -695,136 +720,139 @@ class GitHubTicketingAdapter:
             add=command.tool_name == TicketingToolName.ADD_LABEL,
         )
 
-    def normalize_issue(self, record: SorExternalRecord) -> TicketingIssue:
-        values = record.payload
+    def normalize_issue(
+        self,
+        record: SorExternalRecord,
+        payload: TicketingIssuePayload,
+    ) -> TicketingIssue:
         return TicketingIssue(
             external_id=record.external_id,
-            key=_optional_string(values.get("key")),
-            title=_required_string(values.get("title"), field="GitHub issue title"),
-            normalized_description=_optional_string(
-                values.get("normalized_description")
-            ),
-            source_description=_json_value(values.get("source_description")),
-            issue_type=_optional_string(values.get("issue_type")),
-            native_status=_optional_string(values.get("native_status")),
-            normalized_status=TicketingWorkState.from_value(
-                _optional_string(values.get("normalized_status"))
-            ),
-            priority=None,
-            project_external_id=_optional_string(values.get("project_external_id")),
-            team_external_id=_optional_string(values.get("team_external_id")),
-            assignee_external_id=_optional_string(values.get("assignee_external_id")),
-            reporter_external_id=_optional_string(values.get("reporter_external_id")),
-            estimate=None,
-            label_external_ids=_string_tuple(values.get("label_external_ids")),
-            parent_external_id=None,
-            cycle_external_id=_optional_string(values.get("cycle_external_id")),
-            due_date=None,
-            started_at=None,
-            completed_at=_optional_datetime(values.get("completed_at")),
-            cancelled_at=_optional_datetime(values.get("cancelled_at")),
+            key=_optional_string(payload.key),
+            title=_required_string(payload.title, field="GitHub issue title"),
+            normalized_description=_optional_string(payload.normalized_description),
+            source_description=_json_value(payload.source_description),
+            issue_type=_optional_string(payload.issue_type),
+            native_status=_optional_string(payload.native_status),
+            normalized_status=payload.normalized_status,
+            priority=_optional_string(payload.priority),
+            project_external_id=_optional_string(payload.project_external_id),
+            team_external_id=_optional_string(payload.team_external_id),
+            assignee_external_id=_optional_string(payload.assignee_external_id),
+            reporter_external_id=_optional_string(payload.reporter_external_id),
+            estimate=payload.estimate,
+            label_external_ids=payload.label_external_ids,
+            parent_external_id=_optional_string(payload.parent_external_id),
+            cycle_external_id=_optional_string(payload.cycle_external_id),
+            due_date=payload.due_date,
+            started_at=payload.started_at,
+            completed_at=payload.completed_at,
+            cancelled_at=payload.cancelled_at,
             source_updated_at=record.source_updated_at,
             source_url=record.source_url,
         )
 
-    def normalize_project(self, record: SorExternalRecord) -> TicketingProject:
+    def normalize_project(
+        self,
+        record: SorExternalRecord,
+        payload: TicketingProjectPayload,
+    ) -> TicketingProject:
         return TicketingProject(
             external_id=record.external_id,
-            key=_optional_string(record.payload.get("key")),
-            name=_required_string(
-                record.payload.get("name"),
-                field="GitHub repository name",
-            ),
-            description=_optional_string(record.payload.get("description")),
+            key=_optional_string(payload.key),
+            name=_required_string(payload.name, field="GitHub repository name"),
+            description=_optional_string(payload.description),
             source_url=record.source_url,
         )
 
     def normalize_workflow_state(
         self,
         record: SorExternalRecord,
+        payload: TicketingWorkflowStatePayload,
     ) -> TicketingWorkflowState:
         return TicketingWorkflowState(
             external_id=record.external_id,
             name=_required_string(
-                record.payload.get("name"),
+                payload.name,
                 field="GitHub workflow state name",
             ),
-            native_category=_optional_string(record.payload.get("native_category")),
-            normalized_category=TicketingWorkState.from_value(
-                _optional_string(record.payload.get("normalized_category"))
-            ),
-            order=_optional_integer(
-                record.payload.get("order"),
-                field="GitHub workflow state order",
-            ),
+            native_category=_optional_string(payload.native_category),
+            normalized_category=payload.normalized_category,
+            order=(int(payload.order) if payload.order is not None else None),
         )
 
-    def normalize_user(self, record: SorExternalRecord) -> TicketingUser:
-        values = record.payload
+    def normalize_user(
+        self,
+        record: SorExternalRecord,
+        payload: TicketingUserPayload,
+    ) -> TicketingUser:
         return TicketingUser(
             external_id=record.external_id,
-            name=_required_string(values.get("name"), field="GitHub user login"),
-            display_name=_optional_string(values.get("display_name")),
-            primary_email=_optional_string(values.get("primary_email")),
-            active=_required_boolean(values.get("active"), field="GitHub user active"),
-            assignable=_optional_boolean(values.get("assignable")),
-            avatar_url=_optional_string(values.get("avatar_url")),
+            name=_required_string(payload.name, field="GitHub user login"),
+            display_name=_optional_string(payload.display_name),
+            primary_email=_optional_string(payload.primary_email),
+            active=payload.active,
+            assignable=payload.assignable,
+            avatar_url=_optional_string(payload.avatar_url),
             source_url=record.source_url,
         )
 
-    def normalize_label(self, record: SorExternalRecord) -> TicketingLabel:
-        values = record.payload
+    def normalize_label(
+        self,
+        record: SorExternalRecord,
+        payload: TicketingLabelPayload,
+    ) -> TicketingLabel:
         return TicketingLabel(
             external_id=record.external_id,
-            name=_required_string(values.get("name"), field="GitHub label name"),
-            description=_optional_string(values.get("description")),
-            color=_optional_string(values.get("color")),
-            project_external_id=_optional_string(values.get("project_external_id")),
-            parent_external_id=None,
-            is_group=False,
+            name=_required_string(payload.name, field="GitHub label name"),
+            description=_optional_string(payload.description),
+            color=_optional_string(payload.color),
+            project_external_id=_optional_string(payload.project_external_id),
+            parent_external_id=_optional_string(payload.parent_external_id),
+            is_group=payload.is_group,
         )
 
-    def normalize_cycle(self, record: SorExternalRecord) -> TicketingCycle:
-        values = record.payload
+    def normalize_cycle(
+        self,
+        record: SorExternalRecord,
+        payload: TicketingCyclePayload,
+    ) -> TicketingCycle:
         return TicketingCycle(
             external_id=record.external_id,
-            name=_required_string(values.get("name"), field="GitHub milestone name"),
-            number=_optional_integer(
-                values.get("number"),
-                field="GitHub milestone number",
-            ),
-            project_external_id=_optional_string(values.get("project_external_id")),
-            description=_optional_string(values.get("description")),
-            starts_at=None,
-            ends_at=_optional_datetime(values.get("ends_at")),
-            completed_at=_optional_datetime(values.get("completed_at")),
-            active=_optional_boolean(values.get("active")),
+            name=_required_string(payload.name, field="GitHub milestone name"),
+            number=payload.number,
+            project_external_id=_optional_string(payload.project_external_id),
+            description=_optional_string(payload.description),
+            starts_at=payload.starts_at,
+            ends_at=payload.ends_at,
+            completed_at=payload.completed_at,
+            active=payload.active,
         )
 
-    def normalize_comment(self, record: SorExternalRecord) -> TicketingComment:
-        values = record.payload
+    def normalize_comment(
+        self,
+        record: SorExternalRecord,
+        payload: TicketingCommentPayload,
+    ) -> TicketingComment:
         return TicketingComment(
             external_id=record.external_id,
             issue_external_id=_required_string(
-                values.get("issue_external_id"),
+                payload.issue_external_id,
                 field="GitHub comment issue",
             ),
-            author_external_id=_optional_string(values.get("author_external_id")),
+            author_external_id=_optional_string(payload.author_external_id),
             normalized_text=_required_string(
-                values.get("normalized_text"),
+                payload.normalized_text,
                 field="GitHub comment body",
             ),
-            source_body=_json_value(values.get("source_body")),
-            created_at=_required_datetime(
-                values.get("created_at"),
-                field="GitHub comment creation time",
-            ),
-            updated_at=_optional_datetime(values.get("updated_at")),
+            source_body=_json_value(payload.source_body),
+            created_at=payload.created_at,
+            updated_at=payload.updated_at,
         )
 
     def normalize_relation(
         self,
         record: SorExternalRecord,
+        payload: TicketingRelationPayload,
     ) -> TicketingIssueRelation:
         raise SorCapabilityUnavailable(
             "GitHub issue relations are not available in this adapter revision."
@@ -1097,14 +1125,15 @@ class GitHubTicketingAdapter:
             raise _invalid_command(
                 "Creating a GitHub issue cannot target an existing issue."
             )
+        fields = _mapped_issue_fields(command)
         repository = self._configured_repository(
             _required_command_string(
-                command.payload.get("project_external_id"),
+                fields.get("project_external_id"),
                 field="GitHub repository",
             )
         )
         payload = _github_issue_payload(
-            command.payload,
+            fields,
             operation=SorMutationOperation.CREATE,
             repository=repository,
         )
@@ -1132,7 +1161,7 @@ class GitHubTicketingAdapter:
         command: SorCommandRequest,
     ) -> SorCommandResult:
         payload = _github_issue_payload(
-            command.payload,
+            _mapped_issue_fields(command),
             operation=SorMutationOperation.UPDATE,
             repository=repository,
         )
@@ -1157,14 +1186,9 @@ class GitHubTicketingAdapter:
         external_id: str,
         command: SorCommandRequest,
     ) -> SorCommandResult:
-        if set(command.payload) != {"workflow_state_external_id"}:
-            raise _invalid_command(
-                "Transitioning a GitHub issue requires only workflow_state_external_id."
-            )
-        workflow = _required_command_string(
-            command.payload.get("workflow_state_external_id"),
-            field="GitHub workflow state",
-        )
+        if not isinstance(command.payload, TicketingTransitionCommandPayload):
+            raise _invalid_command("GitHub transition payload is invalid.")
+        workflow = command.payload.workflow_state_external_id
         payload = {
             "open": {"state": "open", "state_reason": "reopened"},
             "closed:completed": {"state": "closed", "state_reason": "completed"},
@@ -1196,14 +1220,9 @@ class GitHubTicketingAdapter:
         external_id: str,
         command: SorCommandRequest,
     ) -> SorCommandResult:
-        if set(command.payload) != {"assignee_external_id"}:
-            raise _invalid_command(
-                "Assigning a GitHub issue requires only assignee_external_id."
-            )
-        assignee = _nullable_command_string(
-            command.payload.get("assignee_external_id"),
-            field="GitHub assignee",
-        )
+        if not isinstance(command.payload, TicketingAssignCommandPayload):
+            raise _invalid_command("GitHub assignment payload is invalid.")
+        assignee = command.payload.assignee_external_id
         response = await self._client.request(
             f"/repos/{_repository_path(repository)}/issues/{issue_number}",
             method="PATCH",
@@ -1227,15 +1246,10 @@ class GitHubTicketingAdapter:
         *,
         add: bool,
     ) -> SorCommandResult:
-        if set(command.payload) != {"label_external_id"}:
-            raise _invalid_command(
-                "Changing a GitHub issue label requires only label_external_id."
-            )
+        if not isinstance(command.payload, TicketingLabelCommandPayload):
+            raise _invalid_command("GitHub label payload is invalid.")
         label_repository, label_name = self._label_identity(
-            _required_command_string(
-                command.payload.get("label_external_id"),
-                field="GitHub label ID",
-            )
+            command.payload.label_external_id
         )
         if label_repository.casefold() != repository.casefold():
             raise _invalid_command(
@@ -1270,12 +1284,9 @@ class GitHubTicketingAdapter:
         issue_number: int,
         command: SorCommandRequest,
     ) -> SorCommandResult:
-        if set(command.payload) != {"text"}:
-            raise _invalid_command("Commenting on a GitHub issue requires only text.")
-        text = _required_command_string(
-            command.payload.get("text"),
-            field="GitHub comment",
-        )
+        if not isinstance(command.payload, TicketingCommentCommandPayload):
+            raise _invalid_command("GitHub comment payload is invalid.")
+        text = command.payload.text
         try:
             response = await self._client.request(
                 f"/repos/{_repository_path(repository)}/issues/{issue_number}/comments",
@@ -1712,6 +1723,12 @@ def _record_url(
     return _safe_github_url(row.get("html_url")) or (
         _issue_url(external_id) if stream_key == GitHubStream.ISSUES else None
     )
+
+
+def _mapped_issue_fields(command: SorCommandRequest) -> Mapping[str, object]:
+    if not isinstance(command.payload, TicketingMappedFieldsCommandPayload):
+        raise _invalid_command("GitHub issue field payload is invalid.")
+    return command.payload.fields
 
 
 def _github_issue_payload(
