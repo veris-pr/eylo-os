@@ -118,6 +118,195 @@ class SorOnboardingService:
             discovered_objects=discovered_objects,
         )
 
+        return await self._publish_selection(
+            organization_id=organization_id,
+            source=source,
+            fields=fields,
+            stream_drafts=stream_drafts,
+            actor_id=actor_id,
+            projection_version=projection_version,
+            discovered_objects=discovered_objects,
+        )
+
+    async def expand_selection(
+        self,
+        *,
+        organization_id: UUID,
+        source_id: UUID,
+        expected_config_revision: int,
+        selected_objects: Sequence[str],
+        fields: Sequence[SorFieldMappingDraft],
+        stream_drafts: Sequence[SorStreamDraft],
+        actor_id: UUID | None,
+    ) -> SorActivationResult:
+        """Atomically add discovered objects and bootstrap a complete replacement."""
+        source = await self.sources.get(
+            organization_id=organization_id,
+            source_id=source_id,
+            for_update=True,
+        )
+        if source.config_revision != expected_config_revision:
+            raise SorConflictError("SOR source configuration changed.")
+        if source.state not in {SorSourceState.ACTIVE, SorSourceState.DEGRADED}:
+            raise SorConflictError(
+                "Only an active source can enable additional objects."
+            )
+        if source.active_mapping_revision_id is None:
+            raise SorConflictError("Activate the source before expanding it.")
+        if await self.repository.get_active_source_sync_run(
+            organization_id=organization_id,
+            source_id=source_id,
+            for_update=True,
+        ) is not None:
+            raise SorConflictError(
+                "Wait for active source synchronization to finish before "
+                "enabling objects."
+            )
+
+        objects = await self.sources.validate_discovered_selection(
+            organization_id=organization_id,
+            source=source,
+            selected_objects=selected_objects,
+        )
+        current = set(source.selected_objects or ())
+        requested = set(objects)
+        if not current < requested:
+            raise SorConfigurationError(
+                "Source expansion must retain every enabled object and add at least one."
+            )
+        added = requested - current
+        field_objects = {field.vendor_object_key for field in fields}
+        stream_objects = {stream.vendor_object_key for stream in stream_drafts}
+        if field_objects != added or stream_objects != added:
+            raise SorConfigurationError(
+                "Source expansion fields and streams must describe every newly "
+                "enabled object exactly once."
+            )
+        schema = await self.repository.get_schema_revision(
+            organization_id=organization_id,
+            source_id=source.id,
+            schema_revision_id=source.active_schema_revision_id,
+        )
+        if schema is None:
+            raise SorConflictError("Active source schema no longer exists.")
+        discovered_objects = snapshot_objects(schema.schema_snapshot)
+        active_mapping = await self.repository.get_mapping_revision(
+            organization_id=organization_id,
+            source_id=source.id,
+            mapping_revision_id=source.active_mapping_revision_id,
+            for_update=True,
+        )
+        if active_mapping is None:
+            raise SorConflictError("Active source mapping no longer exists.")
+        current_fields = await self._active_field_drafts(
+            organization_id=organization_id,
+            source=source,
+        )
+        current_streams = await self.repository.list_streams(
+            organization_id=organization_id,
+            source_id=source.id,
+        )
+        if {stream.vendor_object_key for stream in current_streams} != current:
+            raise SorConflictError(
+                "Active source streams do not match its selected objects."
+            )
+        complete_streams = tuple(
+            SorStreamDraft(
+                vendor_object_key=stream.vendor_object_key,
+                canonical_entity_kind=stream.canonical_entity_kind,
+                strategy=stream.strategy,
+                lookback_seconds=stream.lookback_seconds,
+                schedule=stream.schedule,
+            )
+            for stream in current_streams
+        ) + tuple(stream_drafts)
+        complete_fields = current_fields + tuple(fields)
+        source.selected_objects = list(objects)
+        source.config_revision += 1
+        self._validate_selection(
+            source=source,
+            fields=complete_fields,
+            streams=complete_streams,
+            discovered_objects=discovered_objects,
+        )
+        return await self._publish_selection(
+            organization_id=organization_id,
+            source=source,
+            fields=complete_fields,
+            stream_drafts=complete_streams,
+            actor_id=actor_id,
+            projection_version=active_mapping.projection_version,
+            discovered_objects=discovered_objects,
+        )
+
+    async def _active_field_drafts(
+        self,
+        *,
+        organization_id: UUID,
+        source: SorSourceModel,
+    ) -> tuple[SorFieldMappingDraft, ...]:
+        """Rehydrate the active mapping without weakening its public projection."""
+        mapping_id = source.active_mapping_revision_id
+        if mapping_id is None:
+            raise SorConflictError("Active source mapping no longer exists.")
+        rows = await self.repository.list_field_mappings(
+            organization_id=organization_id,
+            source_id=source.id,
+            mapping_revision_id=mapping_id,
+        )
+        definition_ids = tuple(
+            row.custom_field_definition_id
+            for row in rows
+            if row.custom_field_definition_id is not None
+        )
+        definitions = {
+            definition.id: definition
+            for definition in await self.repository.list_custom_field_definitions(
+                organization_id=organization_id,
+                source_id=source.id,
+                definition_ids=definition_ids,
+            )
+        }
+        drafts: list[SorFieldMappingDraft] = []
+        for row in rows:
+            custom_type = None
+            if row.custom_field_definition_id is not None:
+                definition = definitions.get(row.custom_field_definition_id)
+                if definition is None:
+                    raise SorConflictError(
+                        "Active mapping custom-field authority is unavailable."
+                    )
+                custom_type = definition.data_type
+            drafts.append(
+                SorFieldMappingDraft(
+                    vendor_object_key=row.vendor_object_key,
+                    vendor_field_key=row.vendor_field_key,
+                    canonical_target_path=row.canonical_target_path,
+                    custom_type=custom_type,
+                    transform_kind=row.transform_kind,
+                    transform_config=dict(row.transform_config),
+                    direction=row.direction,
+                    agent_visible=row.agent_visible,
+                    ui_default_column=row.ui_default_column,
+                    sensitivity=row.sensitivity,
+                )
+            )
+        return tuple(drafts)
+
+    async def _publish_selection(
+        self,
+        *,
+        organization_id: UUID,
+        source: SorSourceModel,
+        fields: Sequence[SorFieldMappingDraft],
+        stream_drafts: Sequence[SorStreamDraft],
+        actor_id: UUID | None,
+        projection_version: int,
+        discovered_objects: dict[str, tuple[str, bool]],
+    ) -> SorActivationResult:
+        """Publish one validated selection and persist its entire bootstrap DAG."""
+        source_id = source.id
+
         mapping = await self.mappings.create_draft(
             organization_id=organization_id,
             source_id=source_id,

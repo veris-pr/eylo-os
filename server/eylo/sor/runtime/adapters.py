@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from types import MappingProxyType
@@ -70,6 +70,7 @@ async def acquire_source_adapter(
     organization_id: UUID,
     source_id: UUID,
     invocation_budget_seconds: float = 30.0,
+    selected_objects: Sequence[str] | None = None,
     registry: SorRegistry | None = None,
     session_factory: Callable[[], AsyncSession] = async_session_factory,
 ) -> AsyncIterator[SorLifecycleAdapter]:
@@ -99,6 +100,7 @@ async def acquire_source_adapter(
             organization_id=organization_id,
             source_id=source_id,
             invocation_budget_seconds=invocation_budget_seconds,
+            selected_objects=selected_objects,
             registry=active_registry,
         )
     try:
@@ -184,6 +186,7 @@ async def _resolve_source_adapter(
     organization_id: UUID,
     source_id: UUID,
     invocation_budget_seconds: float,
+    selected_objects: Sequence[str] | None,
     registry: SorRegistry,
 ) -> SorLifecycleAdapter:
     repository = SorRepository(session)
@@ -264,9 +267,14 @@ async def _resolve_source_adapter(
             requires_reauthorization=True,
         )
 
+    effective_objects = _effective_selected_objects(
+        source=source,
+        manifest=manifest,
+        selected_objects=selected_objects,
+    )
     required_scopes = {
         scope
-        for object_key in source.selected_objects
+        for object_key in effective_objects
         for scope in manifest.required_scopes.get(str(object_key), ())
     }
     if not required_scopes.issubset(set(connection.granted_scopes or [])):
@@ -302,7 +310,7 @@ async def _resolve_source_adapter(
         auth_kind=auth_kind,
         instance_origin=connection.instance_origin or manifest.fixed_origin,
         granted_scopes=frozenset(connection.granted_scopes or ()),
-        selected_objects=tuple(str(value) for value in source.selected_objects),
+        selected_objects=effective_objects,
         mapping_revision_id=source.active_mapping_revision_id,
         fields=field_selections,
         credentials=MappingProxyType(credentials),
@@ -321,6 +329,33 @@ async def _resolve_source_adapter(
         vendor_key=source.vendor_key,
         context=context,
     )
+
+
+def _effective_selected_objects(
+    *,
+    source: SorSourceModel,
+    manifest: SorAdapterCapabilityManifest,
+    selected_objects: Sequence[str] | None,
+) -> tuple[str, ...]:
+    """Resolve a bounded discovery override without changing source authority."""
+    current = tuple(str(value) for value in source.selected_objects)
+    if selected_objects is None:
+        return current
+    normalized = tuple(dict.fromkeys(value.strip() for value in selected_objects))
+    if not normalized or any(not value or len(value) > 160 for value in normalized):
+        raise SorAdapterUnavailableError(
+            "SOURCE_SELECTION_INVALID",
+            "The requested source object selection is invalid.",
+        )
+    manifest_objects = {stream.key for stream in manifest.streams}
+    allowed = manifest_objects | set(current)
+    unknown = set(normalized) - allowed
+    if unknown:
+        raise SorAdapterUnavailableError(
+            "SOURCE_SELECTION_UNSUPPORTED",
+            "The adapter does not support the requested source objects.",
+        )
+    return normalized
 
 
 async def _webhook_signing_secret(

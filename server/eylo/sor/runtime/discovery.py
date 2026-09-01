@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import UUID
@@ -158,6 +159,7 @@ async def rediscover_source_schema(
     *,
     organization_id: UUID,
     source_id: UUID,
+    selected_objects: Sequence[str] | None = None,
     registry: SorRegistry | None = None,
     verification_timeout_seconds: float = 20.0,
     discovery_timeout_seconds: float = 120.0,
@@ -177,6 +179,7 @@ async def rediscover_source_schema(
             invocation_budget_seconds=(
                 verification_timeout_seconds + discovery_timeout_seconds
             ),
+            selected_objects=selected_objects,
             registry=registry,
         ) as adapter:
             async with asyncio.timeout(verification_timeout_seconds):

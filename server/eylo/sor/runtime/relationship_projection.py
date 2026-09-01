@@ -81,31 +81,47 @@ def crm_relation_intents(
     source_revision: str | None,
 ) -> tuple[SorRelationIntentDraft, ...]:
     """Map CRM entity references supported by the exact vendor stream."""
-    if not isinstance(value, CrmDeal):
-        return ()
     drafts: list[SorRelationIntentDraft] = []
-    _append_many(
-        drafts,
-        origin_record_id=origin_record_id,
-        origin_stream=origin_stream,
-        origin_external_id=value.external_id,
-        target_key="contact",
-        target_external_ids=value.contact_external_ids,
-        targets=targets,
-        canonical_kind="HAS_CONTACT",
-        source_revision=source_revision,
-    )
-    _append_many(
-        drafts,
-        origin_record_id=origin_record_id,
-        origin_stream=origin_stream,
-        origin_external_id=value.external_id,
-        target_key="company",
-        target_external_ids=value.company_external_ids,
-        targets=targets,
-        canonical_kind="FOR_COMPANY",
-        source_revision=source_revision,
-    )
+    if isinstance(value, CrmDeal):
+        _append_many(
+            drafts,
+            origin_record_id=origin_record_id,
+            origin_stream=origin_stream,
+            origin_external_id=value.external_id,
+            target_key="contact",
+            target_external_ids=value.contact_external_ids,
+            targets=targets,
+            canonical_kind="HAS_CONTACT",
+            source_revision=source_revision,
+        )
+        _append_many(
+            drafts,
+            origin_record_id=origin_record_id,
+            origin_stream=origin_stream,
+            origin_external_id=value.external_id,
+            target_key="company",
+            target_external_ids=value.company_external_ids,
+            targets=targets,
+            canonical_kind="FOR_COMPANY",
+            source_revision=source_revision,
+        )
+    elif isinstance(value, CrmActivity):
+        for target_key, external_ids, relation_kind in (
+            ("contact", value.contact_external_ids, "ACTIVITY_WITH_CONTACT"),
+            ("company", value.company_external_ids, "ACTIVITY_FOR_COMPANY"),
+            ("deal", value.deal_external_ids, "ACTIVITY_FOR_DEAL"),
+        ):
+            _append_many(
+                drafts,
+                origin_record_id=origin_record_id,
+                origin_stream=origin_stream,
+                origin_external_id=value.external_id,
+                target_key=target_key,
+                target_external_ids=external_ids,
+                targets=targets,
+                canonical_kind=relation_kind,
+                source_revision=source_revision,
+            )
     return tuple(drafts)
 
 

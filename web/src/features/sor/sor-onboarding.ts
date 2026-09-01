@@ -16,13 +16,25 @@ type CustomFieldType = NonNullable<SorFieldMappingDraftInput["custom_type"]>;
 
 const FIELD_ALIASES: Record<string, Record<string, readonly string[]>> = {
   activity: {
-    actor_external_id: ["actorid", "createdbyid", "ownerid"],
+    actor_external_id: [
+      "actorid",
+      "createdbyid",
+      "hubspotownerid",
+      "ownerid",
+    ],
     kind: ["kind", "type", "tasksubtype"],
-    normalized_text: ["body", "comments", "description", "text"],
+    normalized_text: [
+      "body",
+      "comments",
+      "description",
+      "hsnotebody",
+      "text",
+    ],
     occurred_at: [
       "activitydatetime",
       "createdat",
       "createddate",
+      "hstimestamp",
       "occurredat",
       "systemmodstamp",
     ],
@@ -77,6 +89,11 @@ const VENDOR_FIELD_TARGETS: Record<
   Record<string, Record<string, string>>
 > = {
   hubspot: {
+    activity: {
+      "hubspot.association.companies": "company_external_ids",
+      "hubspot.association.contacts": "contact_external_ids",
+      "hubspot.association.deals": "deal_external_ids",
+    },
     deal: {
       "hubspot.association.companies": "company_external_ids",
       "hubspot.association.contacts": "contact_external_ids",
@@ -92,6 +109,7 @@ const VENDOR_FIELD_TARGETS: Record<
 const SECONDARY_RELATION_FIELD_TYPES = new Set([
   "hubspot.association.companies",
   "hubspot.association.contacts",
+  "hubspot.association.deals",
 ]);
 
 function emptySorOnboardingDraft(

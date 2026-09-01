@@ -304,6 +304,9 @@ def _validate_activity(activity: CrmActivity) -> None:
         raise SorProjectionError("CRM activity timestamp must be timezone-aware.")
     _identities(activity.participant_external_ids, field="activity participants")
     _identities(activity.related_external_ids, field="activity relations")
+    _identities(activity.contact_external_ids, field="activity contacts")
+    _identities(activity.company_external_ids, field="activity companies")
+    _identities(activity.deal_external_ids, field="activity deals")
 
 
 def _required(value: str, *, maximum: int, field: str) -> None:

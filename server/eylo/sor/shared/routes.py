@@ -104,10 +104,12 @@ from eylo.sor.shared.schemas import (
     SorOAuthConfigurationResponse,
     SorRecordDetailResponse,
     SorSchemaDifferenceResponse,
+    SorSchemaRediscoveryRequest,
     SorSchemaRevisionResponse,
     SorSourceActivationRequest,
     SorSourceActivationResponse,
     SorSourceCreateRequest,
+    SorSourceExpansionRequest,
     SorSourceGrantListResponse,
     SorSourceGrantRequest,
     SorSourceGrantResponse,
@@ -516,7 +518,7 @@ def _mapping_drafts(
 
 
 def _stream_drafts(
-    request: SorSourceActivationRequest,
+    request: SorSourceActivationRequest | SorSourceExpansionRequest,
 ) -> tuple[SorStreamDraft, ...]:
     return tuple(SorStreamDraft(**stream.model_dump()) for stream in request.streams)
 
@@ -825,6 +827,7 @@ async def verify_sor_source(
 async def rediscover_sor_source(
     organization_id: UUID,
     source_id: UUID,
+    request: SorSchemaRediscoveryRequest | None = None,
     current_user: CurrentUserSchema = Depends(get_current_user),
 ) -> SorDiscoveryResponse:
     """Refresh an active source schema without hiding its current projection."""
@@ -833,6 +836,7 @@ async def rediscover_sor_source(
         result = await rediscover_source_schema(
             organization_id=organization_id,
             source_id=source_id,
+            selected_objects=(request.selected_objects if request is not None else None),
         )
         return await _discovery_response(
             organization_id=organization_id,
@@ -1048,6 +1052,70 @@ async def activate_sor_source(
             except Exception as error:  # noqa: BLE001 - recovery scans committed rows
                 logger.error(
                     "SOR activation committed; spawn recovery remains pending "
+                    "run_id=%s error_type=%s",
+                    run_id,
+                    type(error).__name__,
+                )
+        return response
+    except (SorConfigurationError, SorConflictError, SorNotFoundError) as error:
+        raise _configuration_error(error) from None
+
+
+@router.post(
+    "/sources/{source_id}/expand",
+    response_model=SorSourceActivationResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def expand_sor_source(
+    organization_id: UUID,
+    source_id: UUID,
+    request: SorSourceExpansionRequest,
+    current_user: CurrentUserSchema = Depends(get_current_user),
+) -> SorSourceActivationResponse:
+    """Atomically enable discovered objects and persist replacement bootstrap work."""
+    _authorize(organization_id, current_user)
+    try:
+        async with start_transaction() as session:
+            result = await SorOnboardingService(session).expand_selection(
+                organization_id=organization_id,
+                source_id=source_id,
+                expected_config_revision=request.expected_config_revision,
+                selected_objects=request.selected_objects,
+                fields=tuple(
+                    SorFieldMappingDraft(**field.model_dump())
+                    for field in request.fields
+                ),
+                stream_drafts=_stream_drafts(request),
+                actor_id=current_user.member_id,
+            )
+            response = SorSourceActivationResponse(
+                source=SorSourceResponse.model_validate(result.source),
+                mapping=await _mapping_response(
+                    SorRepository(session),
+                    organization_id=organization_id,
+                    source_id=source_id,
+                    mapping=result.mapping,
+                ),
+                streams=tuple(
+                    SorStreamResponse.model_validate(stream)
+                    for stream in result.streams
+                ),
+                runs=tuple(
+                    SorSyncRunResponse.model_validate(run) for run in result.runs
+                ),
+            )
+            run_ids = tuple(
+                run.id for run in result.runs if run.state is SorWorkState.PENDING
+            )
+        for run_id in run_ids:
+            try:
+                await spawn_sor_sync_run(
+                    organization_id=organization_id,
+                    run_id=run_id,
+                )
+            except Exception as error:  # noqa: BLE001 - recovery scans committed rows
+                logger.error(
+                    "SOR expansion committed; spawn recovery remains pending "
                     "run_id=%s error_type=%s",
                     run_id,
                     type(error).__name__,

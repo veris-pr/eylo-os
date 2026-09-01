@@ -80,6 +80,12 @@ class SorSourceSelectionUpdateRequest(SorApiModel):
     expected_config_revision: int = Field(gt=0)
 
 
+class SorSchemaRediscoveryRequest(SorApiModel):
+    """Discover a candidate object selection without changing source authority."""
+
+    selected_objects: tuple[str, ...] = Field(min_length=1, max_length=100)
+
+
 class SorSourceReconnectRequest(SorApiModel):
     """Rebind an unactivated source to a newly authorized connection."""
 
@@ -662,6 +668,15 @@ class SorSourceActivationRequest(SorApiModel):
     streams: tuple[SorStreamCreateRequest, ...] = Field(min_length=1)
 
 
+class SorSourceExpansionRequest(SorApiModel):
+    """New-object mapping and streams appended to active source authority."""
+
+    expected_config_revision: int = Field(gt=0)
+    selected_objects: tuple[str, ...] = Field(min_length=1, max_length=100)
+    fields: tuple[SorFieldMappingDraftRequest, ...] = Field(min_length=1)
+    streams: tuple[SorStreamCreateRequest, ...] = Field(min_length=1)
+
+
 class SorSourceActivationResponse(SorApiModel):
     source: SorSourceResponse
     mapping: SorMappingRevisionResponse
@@ -849,8 +864,10 @@ __all__ = [
     "SorRecordDetailResponse",
     "SorRecordRelationResponse",
     "SorSchemaDifferenceResponse",
+    "SorSchemaRediscoveryRequest",
     "SorSchemaRevisionResponse",
     "SorSourceCreateRequest",
+    "SorSourceExpansionRequest",
     "SorSourceActivationRequest",
     "SorSourceActivationResponse",
     "SorSourceGrantListResponse",

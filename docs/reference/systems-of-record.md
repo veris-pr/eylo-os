@@ -20,7 +20,7 @@ only through a registered adapter and an active source.
 
 | Profile | Vendor | Status | Auth | Objects | Sync and capabilities |
 | --- | --- | --- | --- | --- | --- |
-| CRM | HubSpot | Implemented; live acceptance pending | OAuth 2.0 | contacts, companies, deals | full reconciliation; signed app webhooks with exact refetch; paginated deal-contact and deal-company relationships; custom fields; reads and mapped writes |
+| CRM | HubSpot | Live read acceptance complete; webhook/write acceptance pending | OAuth 2.0 | contacts, companies, deals, notes | full reconciliation; signed app webhooks with exact refetch for contacts, companies, and deals; paginated deal and note relationships; custom fields; reads and mapped writes for contacts, companies, and deals |
 | CRM | Salesforce | Implemented; live acceptance pending | OAuth 2.0 with PKCE | Contact, Account, Opportunity, Task | updated-at cursor; custom fields and objects; conditional writes |
 | CRM | Microsoft Dataverse | Planned | — | — | no registered adapter |
 | Issues | Jira Cloud | Implemented; webhook live acceptance pending | OAuth 2.0 | issues, projects, workflow states, users, labels, sprints, comments, relations | enhanced-JQL issue sync; managed dynamic webhooks; 30-day renewal; Sprint-field cycle discovery; full reconciliation; custom fields; mapped writes |
@@ -55,6 +55,16 @@ HubSpot deal relationships are read through the vendor's batch-association API,
 not one request per deal. Eylo follows each deal's association cursor, projects
 the resulting contact and company IDs into canonical relationships, and fails
 the stream rather than silently truncating an incomplete relationship set.
+HubSpot notes use the same bounded batch path for contacts, companies, and
+deals. Notes project as canonical CRM activities during bootstrap and scheduled
+reconciliation. Eylo's current HubSpot app webhook subscribes only to contacts,
+companies, and deals, so reconciliation remains the note freshness path.
+
+An active source can add newly supported objects without deleting its OAuth
+connection. Rediscovery may inspect an explicit candidate selection without
+changing runtime authority. Expansion then validates a strict superset,
+publishes a complete replacement mapping, creates missing streams, and persists
+one source-wide bootstrap DAG in a single DB transaction.
 
 ## Change notification modes
 

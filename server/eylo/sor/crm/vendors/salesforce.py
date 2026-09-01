@@ -997,17 +997,22 @@ def _required_datetime(value: object, *, field: str) -> datetime:
 
 
 def _optional_datetime(value: object) -> datetime | None:
-    normalized = _optional_string(value)
-    if normalized is None:
+    if value is None:
         return None
-    try:
-        parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
-    except ValueError as error:
-        raise SorVendorOperationError(
-            "vendor_response_invalid",
-            "Salesforce returned an invalid timestamp.",
-            retryable=False,
-        ) from error
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        normalized = _optional_string(value)
+        if normalized is None:
+            return None
+        try:
+            parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise SorVendorOperationError(
+                "vendor_response_invalid",
+                "Salesforce returned an invalid timestamp.",
+                retryable=False,
+            ) from error
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise SorVendorOperationError(
             "vendor_response_invalid",

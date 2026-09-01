@@ -493,12 +493,35 @@ class SorSourceService:
             raise SorConflictError(
                 "Object selection can change only after discovery and before mapping."
             )
+        objects = await self.validate_discovered_selection(
+            organization_id=organization_id,
+            source=source,
+            selected_objects=selected_objects,
+        )
+        if tuple(source.selected_objects or ()) != objects:
+            source.selected_objects = list(objects)
+            source.config_revision += 1
+            await self.session.flush()
+        return source
+
+    async def validate_discovered_selection(
+        self,
+        *,
+        organization_id: UUID,
+        source: SorSourceModel,
+        selected_objects: Sequence[str],
+    ) -> tuple[str, ...]:
+        """Validate source objects against discovery, adapter, and live authority."""
         objects = _unique_keys(selected_objects, field_name="selected object")
         if not objects:
             raise SorConfigurationError("Select at least one source object.")
+        if source.organization_id != organization_id:
+            raise SorNotFoundError("SOR source not found.")
+        if source.active_schema_revision_id is None:
+            raise SorConflictError("Discover a source schema before selecting objects.")
         schema = await self.repository.get_schema_revision(
             organization_id=organization_id,
-            source_id=source_id,
+            source_id=source.id,
             schema_revision_id=source.active_schema_revision_id,
         )
         if schema is None:
@@ -548,11 +571,7 @@ class SorSourceService:
                 "The source connection is unavailable. Reconnect before continuing."
             ),
         )
-        if tuple(source.selected_objects or ()) != objects:
-            source.selected_objects = list(objects)
-            source.config_revision += 1
-            await self.session.flush()
-        return source
+        return objects
 
     async def transition(
         self,

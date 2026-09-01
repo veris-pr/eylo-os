@@ -68,6 +68,9 @@ class CrmActivity:
     participant_external_ids: tuple[str, ...]
     related_external_ids: tuple[str, ...]
     source_url: str | None
+    contact_external_ids: tuple[str, ...] = ()
+    company_external_ids: tuple[str, ...] = ()
+    deal_external_ids: tuple[str, ...] = ()
 
 
 @runtime_checkable

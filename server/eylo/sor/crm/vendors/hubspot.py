@@ -57,26 +57,52 @@ COMPANIES_READ = "crm.objects.companies.read"
 COMPANIES_WRITE = "crm.objects.companies.write"
 DEALS_READ = "crm.objects.deals.read"
 DEALS_WRITE = "crm.objects.deals.write"
+NOTES_READ = CONTACTS_READ
 
 _STREAM_ENTITY = {
     "contacts": "contact",
     "companies": "company",
     "deals": "deal",
+    "notes": "activity",
 }
 _RELATIONSHIP_TARGETS = {
     "deals": {"contact": "contacts", "company": "companies"},
+    "notes": {
+        "contact": "contacts",
+        "company": "companies",
+        "deal": "deals",
+    },
 }
 _ASSOCIATION_FIELDS = {
-    "eylo_associated_contact_ids": (
-        "contacts",
-        "hubspot.association.contacts",
-        "Associated contacts",
-    ),
-    "eylo_associated_company_ids": (
-        "companies",
-        "hubspot.association.companies",
-        "Associated companies",
-    ),
+    "deals": {
+        "eylo_associated_contact_ids": (
+            "contacts",
+            "hubspot.association.contacts",
+            "Associated contacts",
+        ),
+        "eylo_associated_company_ids": (
+            "companies",
+            "hubspot.association.companies",
+            "Associated companies",
+        ),
+    },
+    "notes": {
+        "eylo_associated_contact_ids": (
+            "contacts",
+            "hubspot.association.contacts",
+            "Associated contacts",
+        ),
+        "eylo_associated_company_ids": (
+            "companies",
+            "hubspot.association.companies",
+            "Associated companies",
+        ),
+        "eylo_associated_deal_ids": (
+            "deals",
+            "hubspot.association.deals",
+            "Associated deals",
+        ),
+    },
 }
 _MAX_ASSOCIATIONS_PER_RECORD = 10_000
 _MAX_ASSOCIATION_PAGES = 100
@@ -174,9 +200,20 @@ HUBSPOT_MANIFEST = SorAdapterCapabilityManifest(
             depends_on=frozenset({"contacts", "companies"}),
             relationship_targets=_RELATIONSHIP_TARGETS["deals"],
         ),
+        SorVendorStreamSpec(
+            key="notes",
+            label="Notes",
+            description="CRM timeline notes and their record associations.",
+            canonical_entity="activity",
+            change_strategies=frozenset({SorChangeStrategy.FULL_RECONCILE}),
+            depends_on=frozenset({"contacts", "companies", "deals"}),
+            relationship_targets=_RELATIONSHIP_TARGETS["notes"],
+        ),
     ),
     readable_entities=frozenset(_STREAM_ENTITY.values()),
-    writable_entities=frozenset(_STREAM_ENTITY.values()),
+    writable_entities=frozenset(
+        _STREAM_ENTITY[stream_key] for stream_key, _creates in _TOOL_STREAM.values()
+    ),
     readable_tools=_READ_TOOLS,
     writable_tools=frozenset(_TOOL_STREAM),
     change_strategies=frozenset({SorChangeStrategy.FULL_RECONCILE}),
@@ -184,6 +221,7 @@ HUBSPOT_MANIFEST = SorAdapterCapabilityManifest(
         "contacts": (CONTACTS_READ,),
         "companies": (COMPANIES_READ,),
         "deals": (DEALS_READ,),
+        "notes": (NOTES_READ,),
     },
     tool_required_scopes=_WRITE_SCOPES,
     tool_streams=_TOOL_STREAMS,
@@ -257,8 +295,7 @@ class HubSpotCrmAdapter:
             payload = _object(_expect(response, operation="discover HubSpot schema"))
             rows = _object_list(payload.get("results"), field="HubSpot properties")
             fields = [_discovered_field(row) for row in rows if not row.get("archived")]
-            if stream_key == "deals":
-                fields.extend(_association_discovered_fields())
+            fields.extend(_association_discovered_fields(stream_key))
             fields = tuple(
                 sorted(
                     fields,
@@ -310,7 +347,7 @@ class HubSpotCrmAdapter:
         _require_stream(vendor_object_key, selected=self._context.selected_objects)
         record_id = _required_id(external_id, field="HubSpot record ID")
         fields = self._selected_fields(vendor_object_key)
-        property_fields = _property_fields(fields)
+        property_fields = _property_fields(vendor_object_key, fields)
         query: dict[str, object] = {"archived": False}
         if property_fields:
             query["properties"] = ",".join(property_fields)
@@ -516,8 +553,30 @@ class HubSpotCrmAdapter:
         )
 
     def normalize_activity(self, record: SorExternalRecord) -> CrmActivity:
-        raise SorCapabilityUnavailable(
-            "HubSpot activities are not available in this adapter revision."
+        values = record.payload
+        contacts = _string_tuple(values.get("contact_external_ids"))
+        companies = _string_tuple(values.get("company_external_ids"))
+        deals = _string_tuple(values.get("deal_external_ids"))
+        participants = _string_tuple(values.get("participant_external_ids"))
+        related = _string_tuple(values.get("related_external_ids"))
+        return CrmActivity(
+            external_id=record.external_id,
+            kind="note",
+            subject=_optional_string(values.get("subject")),
+            normalized_text=_optional_string(values.get("normalized_text")),
+            occurred_at=_required_datetime(
+                values.get("occurred_at") or record.source_created_at,
+                field="HubSpot note timestamp",
+            ),
+            actor_external_id=_optional_string(values.get("actor_external_id")),
+            participant_external_ids=tuple(dict.fromkeys((*participants, *contacts))),
+            related_external_ids=tuple(
+                dict.fromkeys((*related, *companies, *deals))
+            ),
+            source_url=record.source_url,
+            contact_external_ids=contacts,
+            company_external_ids=companies,
+            deal_external_ids=deals,
         )
 
     async def close(self) -> None:
@@ -538,7 +597,7 @@ class HubSpotCrmAdapter:
                 retryable=False,
             )
         fields = self._selected_fields(stream_key)
-        property_fields = _property_fields(fields)
+        property_fields = _property_fields(stream_key, fields)
         query: dict[str, object] = {
             "limit": min(limit, 100),
             "archived": False,
@@ -608,10 +667,11 @@ class HubSpotCrmAdapter:
         record_ids: tuple[str, ...],
     ) -> dict[str, dict[str, tuple[str, ...]]]:
         values = {record_id: {} for record_id in record_ids}
-        if stream_key != "deals" or not record_ids:
+        association_fields = _ASSOCIATION_FIELDS.get(stream_key, {})
+        if not association_fields or not record_ids:
             return values
         for field_key in selected_fields:
-            association = _ASSOCIATION_FIELDS.get(field_key)
+            association = association_fields.get(field_key)
             if association is None:
                 continue
             target_stream, _vendor_type, _label = association
@@ -650,12 +710,12 @@ class HubSpotCrmAdapter:
             data = _object(
                 _expect(response, operation="read HubSpot record associations")
             )
-            if data.get("errors"):
-                raise SorVendorOperationError(
-                    "vendor_batch_partial",
-                    "HubSpot returned an incomplete association batch.",
-                    retryable=False,
-                )
+            no_association_ids = _no_association_ids(
+                data.get("errors"),
+                pending_ids=frozenset(pending),
+                from_stream=from_stream,
+                to_stream=to_stream,
+            )
             rows = _object_list(
                 data.get("results"), field="HubSpot association results"
             )
@@ -692,7 +752,7 @@ class HubSpotCrmAdapter:
                 after = _next_cursor(row.get("paging"))
                 if after is not None:
                     next_pending[source_id] = after
-            if seen != set(pending):
+            if seen & no_association_ids or seen | no_association_ids != set(pending):
                 raise SorVendorOperationError(
                     "vendor_response_invalid",
                     "HubSpot omitted records from an association batch.",
@@ -1005,7 +1065,10 @@ def _discovered_field(row: dict[str, Any]) -> SorDiscoveredField:
     )
 
 
-def _association_discovered_fields() -> tuple[SorDiscoveredField, ...]:
+def _association_discovered_fields(
+    stream_key: str,
+) -> tuple[SorDiscoveredField, ...]:
+    associations = _ASSOCIATION_FIELDS.get(stream_key, {})
     return tuple(
         SorDiscoveredField(
             key=field_key,
@@ -1014,7 +1077,7 @@ def _association_discovered_fields() -> tuple[SorDiscoveredField, ...]:
             nullable=True,
             writable=False,
             description=(
-                f"HubSpot {target_stream} associated with this deal. "
+                f"HubSpot {target_stream} associated with this {stream_key.rstrip('s')}. "
                 "Eylo resolves these IDs into canonical CRM relationships."
             ),
             group="Associations",
@@ -1024,15 +1087,19 @@ def _association_discovered_fields() -> tuple[SorDiscoveredField, ...]:
             target_stream,
             vendor_type,
             label,
-        ) in _ASSOCIATION_FIELDS.items()
+        ) in associations.items()
     )
 
 
-def _property_fields(selected_fields: tuple[str, ...]) -> tuple[str, ...]:
+def _property_fields(
+    stream_key: str,
+    selected_fields: tuple[str, ...],
+) -> tuple[str, ...]:
+    associations = _ASSOCIATION_FIELDS.get(stream_key, {})
     return tuple(
         field_key
         for field_key in selected_fields
-        if field_key not in _ASSOCIATION_FIELDS
+        if field_key not in associations
     )
 
 
@@ -1078,7 +1145,7 @@ def _external_record(
     selected = {
         key: (
             tuple((association_values or {}).get(key, ()))
-            if key in _ASSOCIATION_FIELDS
+            if key in _ASSOCIATION_FIELDS.get(stream_key, {})
             else properties.get(key)
         )
         for key in selected_fields
@@ -1124,6 +1191,80 @@ def _object_list(value: object, *, field: str) -> list[dict[str, Any]]:
     return [_object(item) for item in value]
 
 
+def _no_association_ids(
+    value: object,
+    *,
+    pending_ids: frozenset[str],
+    from_stream: str,
+    to_stream: str,
+) -> set[str]:
+    """Accept only HubSpot's explicit, identity-matched empty-association result."""
+    if value is None:
+        return set()
+    rows = _object_list(value, field="HubSpot association errors")
+    result: set[str] = set()
+    for row in rows:
+        if (
+            row.get("category") != "OBJECT_NOT_FOUND"
+            or row.get("subCategory") != "crm.associations.NO_ASSOCIATIONS_FOUND"
+        ):
+            raise SorVendorOperationError(
+                "vendor_batch_partial",
+                "HubSpot returned an incomplete association batch.",
+                retryable=False,
+            )
+        context = _object(row.get("context"))
+        source_ids = _context_values(
+            context.get("fromObjectId"),
+            field="HubSpot association error source IDs",
+        )
+        from_types = _context_values(
+            context.get("fromObjectType"),
+            field="HubSpot association error source types",
+        )
+        to_types = _context_values(
+            context.get("toObjectType"),
+            field="HubSpot association error target types",
+        )
+        if (
+            not source_ids
+            or not source_ids.issubset(pending_ids)
+            or not _object_types_match(from_types, from_stream)
+            or not _object_types_match(to_types, to_stream)
+            or result & source_ids
+        ):
+            raise SorVendorOperationError(
+                "vendor_response_invalid",
+                "HubSpot returned mismatched association error context.",
+                retryable=False,
+            )
+        result.update(source_ids)
+    return result
+
+
+def _context_values(value: object, *, field: str) -> frozenset[str]:
+    if not isinstance(value, list) or not value:
+        raise SorVendorOperationError(
+            "vendor_response_invalid",
+            f"{field} are invalid.",
+            retryable=False,
+        )
+    values = frozenset(_required_id(item, field=field) for item in value)
+    if len(values) != len(value):
+        raise SorVendorOperationError(
+            "vendor_response_invalid",
+            f"{field} contain duplicates.",
+            retryable=False,
+        )
+    return values
+
+
+def _object_types_match(values: frozenset[str], stream: str) -> bool:
+    singular = stream.removesuffix("s").casefold()
+    normalized = frozenset(value.casefold() for value in values)
+    return normalized in {frozenset({singular}), frozenset({stream.casefold()})}
+
+
 def _required_id(value: object, *, field: str) -> str:
     normalized = _required_string(value, field=field)
     if len(normalized) > 320 or any(character in normalized for character in "/?#"):
@@ -1155,18 +1296,34 @@ def _optional_string(value: object) -> str | None:
     return normalized[:1_000_000] if normalized else None
 
 
-def _optional_datetime(value: object) -> datetime | None:
-    normalized = _optional_string(value)
-    if normalized is None:
-        return None
-    try:
-        parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
-    except ValueError as error:
+def _required_datetime(value: object, *, field: str) -> datetime:
+    parsed = _optional_datetime(value)
+    if parsed is None:
         raise SorVendorOperationError(
             "vendor_response_invalid",
-            "HubSpot returned an invalid timestamp.",
+            f"{field} is unavailable.",
             retryable=False,
-        ) from error
+        )
+    return parsed
+
+
+def _optional_datetime(value: object) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        normalized = _optional_string(value)
+        if normalized is None:
+            return None
+        try:
+            parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise SorVendorOperationError(
+                "vendor_response_invalid",
+                "HubSpot returned an invalid timestamp.",
+                retryable=False,
+            ) from error
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise SorVendorOperationError(
             "vendor_response_invalid",

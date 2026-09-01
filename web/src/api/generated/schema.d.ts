@@ -4156,6 +4156,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/{organization_id}/sor/sources/{source_id}/expand": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Expand Sor Source
+         * @description Atomically enable discovered objects and persist replacement bootstrap work.
+         */
+        post: operations["expand_sor_source_api__organization_id__sor_sources__source_id__expand_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/{organization_id}/sor/agents/{agent_id}/source-grants": {
         parameters: {
             query?: never;
@@ -12052,6 +12072,14 @@ export interface components {
              */
             type_changed: string[];
         };
+        /**
+         * SorSchemaRediscoveryRequest
+         * @description Discover a candidate object selection without changing source authority.
+         */
+        SorSchemaRediscoveryRequest: {
+            /** Selected Objects */
+            selected_objects: string[];
+        };
         /** SorSchemaRevisionResponse */
         SorSchemaRevisionResponse: {
             /**
@@ -12152,6 +12180,20 @@ export interface components {
              * @default 900
              */
             required_sync_interval_seconds: number;
+        };
+        /**
+         * SorSourceExpansionRequest
+         * @description New-object mapping and streams appended to active source authority.
+         */
+        SorSourceExpansionRequest: {
+            /** Expected Config Revision */
+            expected_config_revision: number;
+            /** Selected Objects */
+            selected_objects: string[];
+            /** Fields */
+            fields: components["schemas"]["SorFieldMappingDraftRequest"][];
+            /** Streams */
+            streams: components["schemas"]["SorStreamCreateRequest"][];
         };
         /** SorSourceGrantListResponse */
         SorSourceGrantListResponse: {
@@ -25015,7 +25057,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["SorSchemaRediscoveryRequest"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -25199,6 +25245,45 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["SorSourceActivationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorSourceActivationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    expand_sor_source_api__organization_id__sor_sources__source_id__expand_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SorSourceExpansionRequest"];
             };
         };
         responses: {
