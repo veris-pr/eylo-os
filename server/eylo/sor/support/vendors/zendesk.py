@@ -54,9 +54,57 @@ ZENDESK_API_VERSION = "ticketing-v2"
 ZENDESK_CURSOR_VERSION = 1
 ZENDESK_WEBHOOK_TOLERANCE = timedelta(minutes=5)
 ZENDESK_INITIAL_START_TIME = 1
+ZENDESK_COMMENT_PAGE_SIZE = 100
+ZENDESK_COMMENT_PAGE_LIMIT = 50
+ZENDESK_WEBHOOK_PAGE_SIZE = 100
 
 READ_SCOPE = "read"
 WRITE_SCOPE = "write"
+
+_TICKET_WEBHOOK_EVENTS = (
+    "zen:event-type:ticket.agent_assignment_changed",
+    "zen:event-type:ticket.brand_changed",
+    "zen:event-type:ticket.created",
+    "zen:event-type:ticket.custom_field_changed",
+    "zen:event-type:ticket.custom_status_changed",
+    "zen:event-type:ticket.description_changed",
+    "zen:event-type:ticket.external_id_changed",
+    "zen:event-type:ticket.form_changed",
+    "zen:event-type:ticket.group_assignment_changed",
+    "zen:event-type:ticket.marked_as_spam",
+    "zen:event-type:ticket.merged",
+    "zen:event-type:ticket.organization_changed",
+    "zen:event-type:ticket.permanently_deleted",
+    "zen:event-type:ticket.priority_changed",
+    "zen:event-type:ticket.problem_link_changed",
+    "zen:event-type:ticket.requester_changed",
+    "zen:event-type:ticket.soft_deleted",
+    "zen:event-type:ticket.status_changed",
+    "zen:event-type:ticket.subject_changed",
+    "zen:event-type:ticket.submitter_changed",
+    "zen:event-type:ticket.tags_changed",
+    "zen:event-type:ticket.task_due_at_changed",
+    "zen:event-type:ticket.type_changed",
+    "zen:event-type:ticket.undeleted",
+)
+_COMMENT_WEBHOOK_EVENTS = (
+    "zen:event-type:ticket.comment_added",
+    "zen:event-type:ticket.comment_made_private",
+    "zen:event-type:ticket.comment_redacted",
+)
+_ATTACHMENT_WEBHOOK_EVENTS = (
+    "zen:event-type:ticket.attachment_linked_to_comment",
+    "zen:event-type:ticket.attachment_redacted_from_comment",
+)
+_METRIC_WEBHOOK_EVENTS = (
+    "zen:event-type:ticket.agent_assignment_changed",
+    "zen:event-type:ticket.comment_added",
+    "zen:event-type:ticket.group_assignment_changed",
+    "zen:event-type:ticket.next_sla_breach_changed",
+    "zen:event-type:ticket.schedule_changed",
+    "zen:event-type:ticket.sla_policy_changed",
+    "zen:event-type:ticket.status_changed",
+)
 
 _STREAM_ENTITY = {
     "tickets": "ticket",
@@ -189,13 +237,13 @@ ZENDESK_MANIFEST = SorAdapterCapabilityManifest(
     oauth=SorOAuthSpec(
         authorization_path="/oauth/authorizations/new",
         token_path="/oauth/tokens",
-        base_scopes=(READ_SCOPE,),
+        base_scopes=(READ_SCOPE, WRITE_SCOPE),
         token_request_format="json",
         instance_host_suffixes=("zendesk.com",),
         operator_instance_origin=True,
     ),
     requires_instance_origin=True,
-    change_mode=SorChangeMode.OPERATOR_WEBHOOK,
+    change_mode=SorChangeMode.MANAGED_WEBHOOK,
     supports_custom_fields=True,
     supports_conditional_writes=True,
     supports_history=True,
@@ -456,16 +504,10 @@ class ZendeskSupportAdapter:
             return self._external_record("tags", {"name": record_id})
         if stream_key == "comments":
             ticket_id, comment_id = _split_comment_id(record_id)
-            response = await self._client.request(
-                f"/api/v2/tickets/{_path_id(ticket_id)}/comments/{_path_id(comment_id)}"
+            row = await self._fetch_comment(
+                ticket_id=ticket_id,
+                comment_id=comment_id,
             )
-            if response.status_code in {404, 410}:
-                raise SorExternalRecordNotFound(
-                    vendor_object_key=stream_key,
-                    external_id=record_id,
-                )
-            data = _object(_expect(response, operation="read Zendesk comment"))
-            row = _object(data.get("comment"), field="Zendesk comment")
             row["_ticket_id"] = ticket_id
             return self._external_record(stream_key, row)
         if stream_key == "attachments":
@@ -540,22 +582,137 @@ class ZendeskSupportAdapter:
         )
 
     async def subscribe_webhook(self, callback_url: str) -> SorWebhookSubscription:
-        raise SorCapabilityUnavailable(
-            "Configure the signed Zendesk webhook and trigger in Zendesk Admin Center."
+        events = _webhook_events(self._context.selected_objects)
+        if not events:
+            raise SorCapabilityUnavailable(
+                "The selected Zendesk objects have no exact webhook event surface."
+            )
+        existing = await self._recover_webhook(
+            callback_url=callback_url,
+            events=events,
+        )
+        if existing is not None:
+            return existing
+        response = await self._client.request(
+            "/api/v2/webhooks",
+            method="POST",
+            payload={
+                "webhook": {
+                    "endpoint": callback_url,
+                    "http_method": "POST",
+                    "name": _webhook_name(self._context.source_id),
+                    "request_format": "json",
+                    "status": "active",
+                    "subscriptions": list(events),
+                }
+            },
+        )
+        data = _object(_expect(response, operation="register Zendesk webhook"))
+        webhook = _object(data.get("webhook"), field="Zendesk webhook")
+        webhook_id = _required_id(webhook.get("id"), field="Zendesk webhook ID")
+        return await self._webhook_subscription(webhook_id)
+
+    async def _recover_webhook(
+        self,
+        *,
+        callback_url: str,
+        events: tuple[str, ...],
+    ) -> SorWebhookSubscription | None:
+        """Recover one exact source webhook after a post-vendor crash."""
+        name = _webhook_name(self._context.source_id)
+        response = await self._client.request(
+            "/api/v2/webhooks",
+            query={
+                "filter[name_contains]": name,
+                "page[size]": ZENDESK_WEBHOOK_PAGE_SIZE,
+            },
+        )
+        data = _object(_expect(response, operation="list Zendesk webhooks"))
+        meta = _object(data.get("meta"), field="Zendesk webhook pagination")
+        if meta.get("has_more") is True:
+            raise _invalid_response(
+                "Zendesk webhook recovery exceeded one bounded page."
+            )
+        expected_events = frozenset(events)
+        exact_ids: list[str] = []
+        stale_ids: list[str] = []
+        for webhook in _object_list(data.get("webhooks"), field="Zendesk webhooks"):
+            if _optional_string(webhook.get("name")) != name:
+                continue
+            webhook_id = _required_id(webhook.get("id"), field="Zendesk webhook ID")
+            subscriptions = frozenset(
+                _string_list(
+                    webhook.get("subscriptions"),
+                    field="Zendesk webhook subscriptions",
+                )
+            )
+            if (
+                _optional_string(webhook.get("endpoint")) == callback_url
+                and _optional_string(webhook.get("http_method")) == "POST"
+                and _optional_string(webhook.get("request_format")) == "json"
+                and _optional_string(webhook.get("status")) == "active"
+                and subscriptions == expected_events
+            ):
+                exact_ids.append(webhook_id)
+            else:
+                stale_ids.append(webhook_id)
+        exact_ids.sort()
+        if len(exact_ids) > 1:
+            stale_ids.extend(exact_ids[1:])
+        if stale_ids:
+            await self._remove_webhook_ids(stale_ids)
+        if not exact_ids:
+            return None
+        return await self._webhook_subscription(exact_ids[0])
+
+    async def _webhook_subscription(
+        self,
+        webhook_id: str,
+    ) -> SorWebhookSubscription:
+        response = await self._client.request(
+            f"/api/v2/webhooks/{_webhook_path_id(webhook_id)}/signing_secret"
+        )
+        data = _object(
+            _expect(response, operation="read Zendesk webhook signing secret")
+        )
+        signing = _object(
+            data.get("signing_secret"),
+            field="Zendesk webhook signing secret",
+        )
+        algorithm = _required_string(
+            signing.get("algorithm"),
+            field="Zendesk webhook signing algorithm",
+        )
+        if algorithm.upper() != "SHA256":
+            raise _invalid_response(
+                "Zendesk returned an unsupported webhook signing algorithm."
+            )
+        return SorWebhookSubscription(
+            external_id=webhook_id,
+            signing_secret=_required_string(
+                signing.get("secret"),
+                field="Zendesk webhook signing secret",
+            ),
         )
 
     async def renew_webhook(
         self,
         subscription: SorWebhookSubscription,
     ) -> SorWebhookSubscription:
-        raise SorCapabilityUnavailable(
-            "Operator-configured Zendesk webhooks do not have an Eylo renewal flow."
-        )
+        return await self._webhook_subscription(subscription.external_id)
 
     async def remove_webhook(self, subscription: SorWebhookSubscription) -> None:
-        raise SorCapabilityUnavailable(
-            "Remove the operator-configured webhook in Zendesk Admin Center."
-        )
+        await self._remove_webhook_ids((subscription.external_id,))
+
+    async def _remove_webhook_ids(self, webhook_ids: Sequence[str]) -> None:
+        for webhook_id in webhook_ids:
+            response = await self._client.request(
+                f"/api/v2/webhooks/{_webhook_path_id(webhook_id)}",
+                method="DELETE",
+            )
+            if response.status_code == 404:
+                continue
+            _expect(response, operation="remove Zendesk webhook")
 
     async def verify_webhook(
         self,
@@ -624,18 +781,11 @@ class ZendeskSupportAdapter:
                 ticket_id = _optional_id(detail.get("id"))
         if ticket_id is None:
             return ()
-        return (
-            SorWebhookSignal(
-                delivery_id=(
-                    _header(headers, "x-zendesk-webhook-invocation-id")
-                    or _optional_string(data.get("id"))
-                ),
-                event_type=_optional_string(data.get("type"))
-                or "zendesk.ticket.changed",
-                vendor_object_key="tickets",
-                external_id=ticket_id,
-                occurred_at=_optional_datetime(data.get("time")),
-            ),
+        return _webhook_signals(
+            data=data,
+            headers=headers,
+            selected_objects=self._context.selected_objects,
+            ticket_id=ticket_id,
         )
 
     async def execute_command(self, command: SorCommandRequest) -> SorCommandResult:
@@ -885,24 +1035,34 @@ class ZendeskSupportAdapter:
             query["support_type_scope"] = "all"
         response = await self._client.request(path, query=query)
         data = _object(_expect(response, operation=f"export Zendesk {stream_key}"))
-        rows = _object_list(
+        response_rows = _object_list(
             data.get("tickets" if stream_key == "tickets" else "users"),
             field=f"Zendesk {stream_key}",
         )
-        if len(rows) > limit:
+        if len(response_rows) > limit:
             raise _invalid_response(
                 f"Zendesk returned more {stream_key} than the requested page limit."
             )
+        rows = response_rows
         if stream_key in {"customers", "agents"}:
             rows = [row for row in rows if _user_matches_stream(stream_key, row)]
         end_of_stream = _required_boolean(
             data.get("end_of_stream"),
             field=f"Zendesk {stream_key} end_of_stream",
         )
-        after_cursor = _required_string(
-            data.get("after_cursor"),
-            field=f"Zendesk {stream_key} after_cursor",
-        )
+        raw_after_cursor = data.get("after_cursor")
+        if (
+            raw_after_cursor is None
+            and end_of_stream
+            and not response_rows
+            and vendor_cursor is not None
+        ):
+            after_cursor = vendor_cursor
+        else:
+            after_cursor = _required_string(
+                raw_after_cursor,
+                field=f"Zendesk {stream_key} after_cursor",
+            )
         return SorRecordPage(
             records=tuple(self._external_record(stream_key, row) for row in rows),
             next_cursor=_encode_vendor_cursor(
@@ -1028,6 +1188,51 @@ class ZendeskSupportAdapter:
                 else None
             ),
             has_more=has_more,
+        )
+
+    async def _fetch_comment(
+        self,
+        *,
+        ticket_id: str,
+        comment_id: str,
+    ) -> dict[str, object]:
+        """Find one comment through Zendesk's list-only ticket comment API."""
+        after_cursor: str | None = None
+        for _page_number in range(ZENDESK_COMMENT_PAGE_LIMIT):
+            query: dict[str, object] = {
+                "page[size]": ZENDESK_COMMENT_PAGE_SIZE,
+                "sort": "-created_at",
+            }
+            if after_cursor is not None:
+                query["page[after]"] = after_cursor
+            response = await self._client.request(
+                f"/api/v2/tickets/{_path_id(ticket_id)}/comments",
+                query=query,
+            )
+            if response.status_code in {404, 410}:
+                break
+            data = _object(_expect(response, operation="list Zendesk comments"))
+            rows = _object_list(data.get("comments"), field="Zendesk comments")
+            match = next(
+                (
+                    dict(row)
+                    for row in rows
+                    if _required_id(row.get("id"), field="Zendesk comment ID")
+                    == comment_id
+                ),
+                None,
+            )
+            if match is not None:
+                return match
+            has_more, next_cursor = _cursor_page(data)
+            if not has_more:
+                break
+            if next_cursor is None or next_cursor == after_cursor:
+                raise _invalid_response("Zendesk comment cursor did not advance.")
+            after_cursor = next_cursor
+        raise SorExternalRecordNotFound(
+            vendor_object_key="comments",
+            external_id=_comment_external_id(ticket_id, comment_id),
         )
 
     def _external_record(
@@ -1162,14 +1367,21 @@ class ZendeskSupportAdapter:
                 )
             )
             source_body = row.get("html_body") or row.get("body")
+            author_external_id = _optional_id(row.get("author_id"))
             return SorExternalRecord(
                 vendor_object_key=stream_key,
                 external_id=_comment_external_id(ticket_id, comment_id),
                 payload={
                     "ticket_external_id": ticket_id,
                     "visibility": "PUBLIC" if row.get("public") is True else "PRIVATE",
-                    "direction": "UNKNOWN",
-                    "author_external_id": _optional_id(row.get("author_id")),
+                    # Zendesk reserves -1 for its system actor, including
+                    # automation actions. All person direction remains unknown
+                    # until it can be resolved from canonical Support records.
+                    # https://developer.zendesk.com/api-reference/ticketing/tickets/activity_stream/#json-format
+                    "direction": (
+                        "SYSTEM" if author_external_id == "-1" else "UNKNOWN"
+                    ),
+                    "author_external_id": author_external_id,
                     "normalized_text": row.get("plain_body") or row.get("body"),
                     "source_body": _json_value(source_body),
                     "body_format": "html" if row.get("html_body") else "text",
@@ -1846,6 +2058,105 @@ def _require_user_role(stream_key: str, row: Mapping[str, object]) -> None:
 
 def _comment_external_id(ticket_id: str, comment_id: str) -> str:
     return f"{ticket_id}:{comment_id}"
+
+
+def _webhook_name(source_id: object) -> str:
+    return f"Eylo Zendesk source {source_id}"
+
+
+def _webhook_path_id(value: object) -> str:
+    webhook_id = _required_id(value, field="Zendesk webhook ID")
+    if len(webhook_id) > 128 or any(
+        not (character.isalnum() or character in {"-", "_"})
+        for character in webhook_id
+    ):
+        raise _invalid_response("Zendesk webhook ID is invalid.")
+    return webhook_id
+
+
+def _webhook_events(selected_objects: Sequence[str]) -> tuple[str, ...]:
+    selected = frozenset(selected_objects)
+    events: list[str] = []
+    if "tickets" in selected:
+        events.extend(_TICKET_WEBHOOK_EVENTS)
+        events.extend(_COMMENT_WEBHOOK_EVENTS)
+        events.extend(_ATTACHMENT_WEBHOOK_EVENTS)
+    if "comments" in selected:
+        events.extend(_COMMENT_WEBHOOK_EVENTS)
+    if "attachments" in selected:
+        events.extend(_ATTACHMENT_WEBHOOK_EVENTS)
+    if "tags" in selected:
+        events.append("zen:event-type:ticket.tags_changed")
+    if "ticket_metrics" in selected:
+        events.extend(_METRIC_WEBHOOK_EVENTS)
+    return tuple(dict.fromkeys(events))
+
+
+def _webhook_signals(
+    *,
+    data: Mapping[str, object],
+    headers: Mapping[str, str],
+    selected_objects: Sequence[str],
+    ticket_id: str,
+) -> tuple[SorWebhookSignal, ...]:
+    """Translate one Zendesk ticket event into bounded selected-stream hints."""
+    selected = frozenset(selected_objects)
+    event_type = _optional_string(data.get("type")) or "zendesk.ticket.changed"
+    delivery_id = (
+        _header(headers, "x-zendesk-webhook-invocation-id")
+        or _optional_string(data.get("id"))
+    )
+    occurred_at = _optional_datetime(data.get("time"))
+    hints: list[tuple[str | None, str | None]] = []
+    if "tickets" in selected:
+        hints.append(("tickets", ticket_id))
+
+    event = data.get("event")
+    event_data = event if isinstance(event, Mapping) else {}
+    comment = event_data.get("comment")
+    comment_data = comment if isinstance(comment, Mapping) else {}
+    comment_id = _optional_id(comment_data.get("id"))
+    if event_type in _COMMENT_WEBHOOK_EVENTS and "comments" in selected:
+        hints.append(
+            (
+                "comments" if comment_id is not None else None,
+                _comment_external_id(ticket_id, comment_id)
+                if comment_id is not None
+                else None,
+            )
+        )
+
+    attachment = comment_data.get("attachment")
+    attachment_data = attachment if isinstance(attachment, Mapping) else {}
+    attachment_id = _optional_id(attachment_data.get("id"))
+    if event_type in _ATTACHMENT_WEBHOOK_EVENTS and "attachments" in selected:
+        hints.append(
+            (
+                "attachments"
+                if comment_id is not None and attachment_id is not None
+                else None,
+                _attachment_id(ticket_id, comment_id, attachment_id)
+                if comment_id is not None and attachment_id is not None
+                else None,
+            )
+        )
+
+    if event_type == "zen:event-type:ticket.tags_changed" and "tags" in selected:
+        hints.append((None, None))
+    if event_type in _METRIC_WEBHOOK_EVENTS and "ticket_metrics" in selected:
+        hints.append((None, None))
+
+    unique_hints = tuple(dict.fromkeys(hints))
+    return tuple(
+        SorWebhookSignal(
+            delivery_id=delivery_id,
+            event_type=event_type,
+            vendor_object_key=vendor_object_key,
+            external_id=external_id,
+            occurred_at=occurred_at,
+        )
+        for vendor_object_key, external_id in unique_hints
+    )
 
 
 def _split_comment_id(value: str) -> tuple[str, str]:

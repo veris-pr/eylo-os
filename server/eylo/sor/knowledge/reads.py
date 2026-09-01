@@ -60,6 +60,7 @@ def _field(
         groupable=groupable,
         wraps=wraps,
         reference_entity=reference_entity,
+        value_key=attribute,
     )
 
 

@@ -26,7 +26,7 @@ only through a registered adapter and an active source.
 | Issues | Jira Cloud | Implemented; webhook live acceptance pending | OAuth 2.0 | issues, projects, workflow states, users, labels, sprints, comments, relations | enhanced-JQL issue sync; managed dynamic webhooks; 30-day renewal; Sprint-field cycle discovery; full reconciliation; custom fields; mapped writes |
 | Issues | Linear | Implemented; live acceptance pending | OAuth 2.0 with PKCE | issues, teams, projects, workflow states, users, labels, cycles, comments, relations | updated-at sync; signed app-managed webhooks; mapped writes |
 | Issues | GitHub Issues | Implemented; live acceptance pending | OAuth 2.0 | repositories, issues, workflow states, users, labels, milestones, comments | REST updated-at sync with bounded GraphQL PR classification; full reconciliation; managed signed repository webhooks; mapped writes; pull requests and issue relations excluded |
-| Support | Zendesk | Implemented; live acceptance pending | OAuth 2.0 | tickets, customers, agents, groups, brands, comments, tags, ticket metrics, attachments | cursor incremental export; signed webhook refetch; custom ticket fields; public replies/private notes; safe mapped writes |
+| Support | Zendesk | Live read acceptance complete; mutation and webhook acceptance pending | OAuth 2.0 | tickets, customers, agents, groups, brands, comments, tags, ticket metrics, attachments | cursor incremental export; managed signed ticket-event webhooks with exact ticket, comment, and attachment refetch; custom ticket fields; public replies/private notes; safe mapped writes |
 | Support | Intercom | Implemented; live acceptance pending | OAuth 2.0 | conversations, contacts, admins, teams, conversation parts, tags, attachments | updated-at search plus full reconciliation; regional API pinning; signed app webhooks; conversation attributes; public replies/private notes; mapped writes |
 | Support | Freshdesk | Implemented; live acceptance pending | API key | tickets, contacts, agents, groups, email inboxes, conversations, tags, SLA targets, attachments; companies and Freshdesk custom objects as custom datasets | updated-at polling plus full reconciliation; custom fields and objects; public replies/private notes; mapped writes; no API-key webhook support |
 | Documents | Confluence Cloud | Implemented; live acceptance pending | OAuth 2.0 with REST v2 granular scopes | spaces, pages, page bodies, current revisions, properties, attachments, authors | full reconciliation; loss-aware HTML normalization; current revision and author reads; authenticated current-image previews; mapped create/update/append |
@@ -82,12 +82,19 @@ encode delivery behavior through booleans:
 | `CHANGE_STREAM` | The adapter consumes a vendor-native change stream rather than HTTP deliveries. |
 | `POLL_ONLY` | Scheduled incremental sync and reconciliation are the only change paths. |
 
-Jira and GitHub use `MANAGED_WEBHOOK`; Zendesk uses `OPERATOR_WEBHOOK`; HubSpot,
-Linear, Intercom, and Notion use `APP_WEBHOOK`. Every other current adapter
+Jira, GitHub, and Zendesk use `MANAGED_WEBHOOK`; HubSpot, Linear, Intercom, and
+Notion use `APP_WEBHOOK`. Every other current adapter
 declares `POLL_ONLY`. A delivery is only a hint to refetch authoritative vendor
 data.
 Periodic reconciliation remains the correctness path, so no separate freshness
 state is persisted.
+
+Zendesk source authorization requests `read write`: reads power synchronization;
+write access powers Agent mutations and source-owned webhook management. After
+activation, Eylo idempotently creates the selected ticket-event subscription,
+retrieves its SHA-256 signing secret, and stores that secret encrypted under the
+source. Scheduled reconciliation remains the recovery path for objects without
+an exact Zendesk event surface.
 
 Linear's webhook belongs to the source-owned OAuth app connector. Eylo
 generates one stable connector callback, stores the Linear signing secret

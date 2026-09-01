@@ -1027,7 +1027,11 @@ function supportMessageTimelineEntry(
   audit: SorSupportTicketAudit,
 ): ConversationTimelineEntry {
   const created = formatSorDate(message.created_at);
-  const actor = supportMessageActor(message.direction, message.visibility);
+  const actor = supportMessageActor(
+    message.direction,
+    message.visibility,
+    message.author_name,
+  );
   const attachments = audit.attachments.filter(
     (attachment) =>
       attachment.message_external_id === message.external_id ||
@@ -1080,10 +1084,16 @@ function supportMessageTimelineEntry(
 function supportMessageActor(
   direction: string | null,
   visibility: string,
+  authorName: string | null,
 ): { kind: ConversationActorKind; label: string } {
   if (direction === "SYSTEM") return { kind: "system", label: "System" };
-  if (direction === "INBOUND") return { kind: "human", label: "Customer" };
-  if (direction === "OUTBOUND") return { kind: "agent", label: "Support" };
+  if (direction === "INBOUND") {
+    return { kind: "human", label: authorName ?? "Customer" };
+  }
+  if (direction === "OUTBOUND") {
+    return { kind: "agent", label: authorName ?? "Support" };
+  }
+  if (authorName !== null) return { kind: "human", label: authorName };
   if (visibility === "PRIVATE") {
     return { kind: "human", label: "Support member" };
   }

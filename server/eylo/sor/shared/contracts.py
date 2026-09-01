@@ -638,6 +638,7 @@ class SorWebhookSubscription:
 
     external_id: str
     expires_at: datetime | None = None
+    signing_secret: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)

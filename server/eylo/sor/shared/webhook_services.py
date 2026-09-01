@@ -463,6 +463,23 @@ class SorWebhookService:
         if source is None:
             raise SorNotFoundError("SOR source not found.")
         self._require_claim(source=source, plan=plan)
+        if subscription.signing_secret is not None:
+            secret_revision = source.webhook_signing_secret_revision + 1
+            try:
+                source.webhook_signing_secret = (
+                    encrypt_source_webhook_signing_secret(
+                        subscription.signing_secret,
+                        organization_id=organization_id,
+                        source_id=source_id,
+                        secret_revision=secret_revision,
+                    )
+                )
+            except SorSecretEnvelopeError as error:
+                raise SorConfigurationError(
+                    "Vendor webhook signing secret is invalid."
+                ) from error
+            source.webhook_signing_secret_revision = secret_revision
+            source.config_revision += 1
         source.webhook_subscription_id = subscription.external_id
         source.webhook_subscription_status = SorWebhookSubscriptionState.ACTIVE.value
         source.webhook_subscription_expires_at = expires_at

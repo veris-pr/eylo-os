@@ -31,6 +31,7 @@ from eylo.sor.runtime.work import (
     spawn_unbound_sor_work,
 )
 from eylo.sor.shared.contracts import (
+    SorChangeStrategy,
     SorExternalRecord,
     SorLifecycleAdapter,
     SorProjectionDisposition,
@@ -397,6 +398,7 @@ class SorSyncWorkflow:
         source_id = UUID(attempt["source_id"])
         stream_id = UUID(attempt["stream_id"])
         kind = SorSyncRunKind(attempt["kind"])
+        strategy = SorChangeStrategy(attempt["strategy"])
         cursor_version = int(attempt["cursor_version"])
         expected_checkpoint = attempt["checkpoint"]
         try:
@@ -478,7 +480,10 @@ class SorSyncWorkflow:
                     error=error,
                 )
 
-        if kind in {SorSyncRunKind.BOOTSTRAP, SorSyncRunKind.RECONCILIATION}:
+        if (
+            strategy is SorChangeStrategy.FULL_RECONCILE
+            and kind in {SorSyncRunKind.BOOTSTRAP, SorSyncRunKind.RECONCILIATION}
+        ):
             while True:
                 tombstoned = await _tombstone_full_scan_batch(
                     organization_id=organization_id,
@@ -555,6 +560,7 @@ async def _begin_attempt(*, organization_id: UUID, run_id: UUID) -> dict[str, An
             {
                 "stream_id": str(stream.id),
                 "stream_key": stream.vendor_object_key,
+                "strategy": stream.strategy.value,
                 "cursor_version": stream.cursor_version,
                 "checkpoint": checkpoint,
                 "scan_complete": current.scan_complete,

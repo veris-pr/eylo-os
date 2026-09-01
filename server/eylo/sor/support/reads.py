@@ -47,6 +47,7 @@ def _field(
     sortable: bool = True,
     groupable: bool = False,
     wraps: bool = False,
+    reference_entity: str | None = None,
 ) -> SorReadFieldSpec:
     return SorReadFieldSpec(
         key=key,
@@ -60,6 +61,8 @@ def _field(
         sortable=sortable,
         groupable=groupable,
         wraps=wraps,
+        reference_entity=reference_entity,
+        value_key=attribute,
     )
 
 
@@ -94,6 +97,7 @@ SUPPORT_TICKET_READ_SPEC = SorEntityReadSpec(
             expression=SupportTicketModel.requester_external_id,
             attribute="requester_external_id",
             groupable=True,
+            reference_entity="customer",
         ),
         _field(
             key="priority",
@@ -112,6 +116,7 @@ SUPPORT_TICKET_READ_SPEC = SorEntityReadSpec(
             expression=SupportTicketModel.assignee_external_id,
             attribute="assignee_external_id",
             groupable=True,
+            reference_entity="agent",
         ),
         _field(
             key="queue",
@@ -121,6 +126,7 @@ SUPPORT_TICKET_READ_SPEC = SorEntityReadSpec(
             expression=SupportTicketModel.group_external_id,
             attribute="group_external_id",
             groupable=True,
+            reference_entity="queue",
         ),
         _field(
             key="inbox",
@@ -131,6 +137,7 @@ SUPPORT_TICKET_READ_SPEC = SorEntityReadSpec(
             attribute="inbox_external_id",
             default_visible=False,
             groupable=True,
+            reference_entity="inbox",
         ),
         _field(
             key="category",
@@ -161,6 +168,7 @@ SUPPORT_TICKET_READ_SPEC = SorEntityReadSpec(
             attribute="tag_external_ids",
             sortable=False,
             wraps=True,
+            reference_entity="tag",
         ),
         _field(
             key="sla_state",
@@ -405,6 +413,7 @@ SUPPORT_MESSAGE_READ_SPEC = SorEntityReadSpec(
             expression=SupportMessageModel.ticket_external_id,
             attribute="ticket_external_id",
             groupable=True,
+            reference_entity="ticket",
         ),
         _field(
             key="text",
@@ -452,6 +461,7 @@ SUPPORT_MESSAGE_READ_SPEC = SorEntityReadSpec(
             default_visible=False,
             sortable=False,
             wraps=True,
+            reference_entity="attachment",
         ),
         _field(
             key="created_at",
@@ -512,6 +522,7 @@ SUPPORT_SLA_METRIC_READ_SPEC = SorEntityReadSpec(
             expression=SupportSlaMetricModel.ticket_external_id,
             attribute="ticket_external_id",
             groupable=True,
+            reference_entity="ticket",
         ),
         _field(
             key="metric",
@@ -608,6 +619,7 @@ SUPPORT_ATTACHMENT_READ_SPEC = SorEntityReadSpec(
             expression=SupportAttachmentModel.ticket_external_id,
             attribute="ticket_external_id",
             groupable=True,
+            reference_entity="ticket",
         ),
         _field(
             key="message",
@@ -617,6 +629,7 @@ SUPPORT_ATTACHMENT_READ_SPEC = SorEntityReadSpec(
             expression=SupportAttachmentModel.message_external_id,
             attribute="message_external_id",
             groupable=True,
+            reference_entity="message",
         ),
         _field(
             key="content_type",

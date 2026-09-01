@@ -800,6 +800,8 @@ class SorSyncRunService:
             SorSyncRunKind.RECONCILIATION,
         }:
             return 0
+        if context.stream.strategy is not SorChangeStrategy.FULL_RECONCILE:
+            return 0
         if isinstance(limit, bool) or not 1 <= limit <= 1_000:
             raise ValueError("SOR tombstone batch limit must be between 1 and 1000.")
         scan_started_at = context.run.started_at

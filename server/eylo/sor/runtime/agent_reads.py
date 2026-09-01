@@ -8,6 +8,7 @@ import hashlib
 import json
 from collections.abc import Sequence
 from datetime import datetime, timezone
+from typing import cast
 from uuid import UUID
 
 from sqlalchemy import and_, asc, desc, func, or_, select
@@ -24,6 +25,7 @@ from eylo.sor.runtime.authority import (
     resolve_profile_tool,
 )
 from eylo.sor.runtime.catalog import get_sor_registry
+from eylo.sor.runtime.read_registry import get_sor_read_spec
 from eylo.sor.runtime.registry import SorRegistry
 from eylo.sor.shared.contracts import (
     SorFieldMappingDirection,
@@ -39,7 +41,12 @@ from eylo.sor.shared.models import (
     SorSourceStreamModel,
 )
 from eylo.sor.shared.query import SorAgentSortField, SorSortDirection
-from eylo.sor.shared.reads import read_record_relations
+from eylo.sor.shared.reads import (
+    read_record_relations,
+    reference_display_value,
+    reference_external_ids,
+    resolve_reference_labels,
+)
 from eylo.sor.shared.schemas import (
     SorAgentRecordResponse,
     SorAgentRelatedAvailability,
@@ -197,10 +204,18 @@ async def read_agent_view(
         if include_relations
         else {}
     )
+    display_values_by_record = await _reference_display_values(
+        session,
+        organization_id=organization_id,
+        profile=profile,
+        entity=entity,
+        records=page,
+    )
     items = tuple(
         _record_response(
             row,
             source_map[row.source_id],
+            display_values=display_values_by_record.get(row.id, {}),
             relations=relations_by_record.get(row.id, ()),
         )
         for row in page
@@ -340,6 +355,16 @@ async def _related_collection(
     else:
         return ()
     rows_by_parent = {row.parent_record_id: row for row in related_rows}
+    related_records = tuple(
+        record for related in related_rows for record in related.records
+    )
+    display_values_by_record = await _reference_display_values(
+        session,
+        organization_id=organization_id,
+        profile=profile,
+        entity=related_entity,
+        records=related_records,
+    )
     responses: list[SorAgentRelatedCollectionResponse] = []
     for parent in primary_records:
         if parent.source_id not in selected_source_ids:
@@ -357,7 +382,11 @@ async def _related_collection(
                 availability=availability,
                 fields=tuple(fields_by_source.get(parent.source_id, ())),
                 items=tuple(
-                    _record_response(record, source_map[record.source_id])
+                    _record_response(
+                        record,
+                        source_map[record.source_id],
+                        display_values=display_values_by_record.get(record.id, {}),
+                    )
                     for record in related_records
                 ),
                 truncated=related.truncated if related is not None else False,
@@ -462,8 +491,7 @@ async def _visible_fields(
             .join(
                 SorSourceStreamModel,
                 and_(
-                    SorSourceStreamModel.source_id
-                    == SorFieldMappingModel.source_id,
+                    SorSourceStreamModel.source_id == SorFieldMappingModel.source_id,
                     SorSourceStreamModel.organization_id
                     == SorFieldMappingModel.organization_id,
                     SorSourceStreamModel.vendor_object_key
@@ -522,6 +550,7 @@ def _record_response(
     record: SorRecordModel,
     source: AuthorizedSorSource,
     *,
+    display_values: dict[str, object] | None = None,
     relations: tuple[SorRecordRelationResponse, ...] = (),
 ) -> SorAgentRecordResponse:
     as_of = source.last_successful_sync_at or record.projected_at
@@ -537,6 +566,7 @@ def _record_response(
         entity=record.canonical_entity_kind,
         human_external_key=record.human_external_key,
         values=dict(record.agent_visible_payload),
+        display_values=dict(display_values or {}),
         source_url=record.source_url,
         source_updated_at=record.source_updated_at,
         source_revision=record.source_revision,
@@ -549,6 +579,65 @@ def _record_response(
         ),
         relations=relations,
     )
+
+
+async def _reference_display_values(
+    session: AsyncSession,
+    *,
+    organization_id: UUID,
+    profile: SorProfile,
+    entity: str,
+    records: Sequence[SorRecordModel],
+) -> dict[UUID, dict[str, object]]:
+    """Resolve page references in one query while preserving raw identities."""
+    if not records:
+        return {}
+    try:
+        spec = get_sor_read_spec(profile=profile, entity=entity)
+    except KeyError:
+        return {}
+    references = tuple(
+        (
+            cast(str, field.value_key),
+            cast(str, field.reference_entity),
+        )
+        for field in spec.fields
+        if field.reference_entity is not None and field.value_key is not None
+    )
+    if not references:
+        return {}
+
+    raw_by_record: dict[UUID, dict[str, object]] = {}
+    reference_keys: set[tuple[UUID, str, str]] = set()
+    for record in records:
+        values: dict[str, object] = {}
+        for value_key, reference_entity in references:
+            raw = record.agent_visible_payload.get(value_key)
+            values[value_key] = raw
+            for external_id in reference_external_ids(raw):
+                reference_keys.add((record.source_id, reference_entity, external_id))
+        raw_by_record[record.id] = values
+
+    labels = await resolve_reference_labels(
+        session,
+        organization_id=organization_id,
+        reference_keys=tuple(reference_keys),
+    )
+    result: dict[UUID, dict[str, object]] = {}
+    for record in records:
+        display_values: dict[str, object] = {}
+        for value_key, reference_entity in references:
+            display = reference_display_value(
+                raw_by_record[record.id][value_key],
+                source_id=record.source_id,
+                entity=reference_entity,
+                labels=labels,
+            )
+            if display is not None:
+                display_values[value_key] = display
+        if display_values:
+            result[record.id] = display_values
+    return result
 
 
 def _fingerprint(
@@ -629,7 +718,14 @@ def _decode_cursor(
         if raw_sort_value is not None and sort_value is None:
             raise ValueError
         record_id = UUID(value["record_id"])
-    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+    except (
+        binascii.Error,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ):
         raise SorAgentReadError("Agent view cursor is invalid.") from None
     if sort_value is not None and (
         sort_value.tzinfo is None or sort_value.utcoffset() is None

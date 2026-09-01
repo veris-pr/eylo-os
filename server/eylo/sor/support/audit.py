@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.sor.shared.contracts import SorProfile
 from eylo.sor.shared.models import SorRecordModel, SorSourceModel
-from eylo.sor.shared.reads import SorReadNotFoundError
+from eylo.sor.shared.reads import SorReadNotFoundError, resolve_reference_labels
 from eylo.sor.shared.repositories import SorRepository
 from eylo.sor.support.models import (
     SupportAttachmentModel,
@@ -35,6 +35,7 @@ class SupportTicketMessageAudit:
     visibility: str
     direction: str | None
     author_external_id: str | None
+    author_name: str | None
     text: str
     body_format: str | None
     attachment_external_ids: tuple[str, ...]
@@ -204,6 +205,20 @@ class SupportTicketAuditService:
         ).all()
         truncated = len(rows) > SUPPORT_TICKET_MESSAGE_LIMIT
         selected_rows = rows[:SUPPORT_TICKET_MESSAGE_LIMIT]
+        author_external_ids = tuple(
+            message.author_external_id
+            for message, _record in selected_rows
+            if message.author_external_id is not None
+        )
+        author_labels = await resolve_reference_labels(
+            self.session,
+            organization_id=organization_id,
+            reference_keys=tuple(
+                (source_id, entity, author_external_id)
+                for author_external_id in author_external_ids
+                for entity in ("agent", "customer")
+            ),
+        )
         return truncated, tuple(
             SupportTicketMessageAudit(
                 record_id=record.id,
@@ -211,6 +226,16 @@ class SupportTicketAuditService:
                 visibility=message.visibility,
                 direction=message.direction,
                 author_external_id=message.author_external_id,
+                author_name=(
+                    author_labels.get(
+                        (source_id, "agent", message.author_external_id)
+                    )
+                    or author_labels.get(
+                        (source_id, "customer", message.author_external_id)
+                    )
+                    if message.author_external_id is not None
+                    else None
+                ),
                 text=message.normalized_text,
                 body_format=message.body_format,
                 attachment_external_ids=tuple(message.attachment_external_ids),

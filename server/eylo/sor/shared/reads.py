@@ -73,9 +73,7 @@ from eylo.sor.shared.schemas import (
 )
 
 _CURSOR_VERSION = 1
-_COMMON_GRID_COLUMN_KEYS = frozenset(
-    {"source", "source_updated_at", "projected_at"}
-)
+_COMMON_GRID_COLUMN_KEYS = frozenset({"source", "source_updated_at", "projected_at"})
 _FILTER_OPTION_KINDS = frozenset(
     {
         SorGridColumnKind.ENUM,
@@ -147,8 +145,7 @@ async def read_record_relations(
                 and_(
                     to_record.id == SorRecordRelationModel.to_record_id,
                     to_record.source_id == SorRecordRelationModel.source_id,
-                    to_record.organization_id
-                    == SorRecordRelationModel.organization_id,
+                    to_record.organization_id == SorRecordRelationModel.organization_id,
                 ),
             )
             .where(
@@ -210,9 +207,7 @@ async def read_record_relations(
                     source_url=from_url,
                 )
             )
-    return {
-        record_id: tuple(relations) for record_id, relations in grouped.items()
-    }
+    return {record_id: tuple(relations) for record_id, relations in grouped.items()}
 
 
 def _custom_field_key(definition_id: UUID) -> str:
@@ -256,7 +251,9 @@ def _custom_column_labels(
         if labels[normalized] > 1:
             if labels_by_source[(normalized, source.id)] > 1:
                 qualifier = f"{source.name} · {definition.vendor_field_key}"
-            elif labels_by_source_name[(normalized, source.name.strip().casefold())] == 1:
+            elif (
+                labels_by_source_name[(normalized, source.name.strip().casefold())] == 1
+            ):
                 qualifier = source.name
             elif (
                 labels_by_vendor[
@@ -316,6 +313,7 @@ class SorReadFieldSpec:
     groupable: bool = False
     wraps: bool = False
     reference_entity: str | None = None
+    value_key: str | None = None
 
     def __post_init__(self) -> None:
         """Keep human-reference metadata attached only to reference-shaped fields."""
@@ -330,6 +328,8 @@ class SorReadFieldSpec:
             )
         if not self.reference_entity.strip():
             raise ValueError(f"SOR field '{self.key}' reference entity is empty.")
+        if self.value_key is None or not self.value_key.strip():
+            raise ValueError(f"SOR field '{self.key}' reference value key is empty.")
 
     def grid_column(self) -> SorGridColumn:
         return SorGridColumn(
@@ -463,7 +463,7 @@ async def resolve_reference_labels(
     return labels
 
 
-def _reference_external_ids(value: object) -> tuple[str, ...]:
+def reference_external_ids(value: object) -> tuple[str, ...]:
     """Return stable scalar or list identities from one reference-shaped value."""
     if isinstance(value, str):
         return (value,) if value else ()
@@ -472,7 +472,7 @@ def _reference_external_ids(value: object) -> tuple[str, ...]:
     return ()
 
 
-def _reference_display_value(
+def reference_display_value(
     value: object,
     *,
     source_id: UUID,
@@ -600,9 +600,7 @@ class SorCollectionReadService:
         selected: list[Any] = [SorRecordModel]
         if spec.model is not None:
             selected.append(spec.model)
-        selected.extend(
-            [SorSourceModel, *(term.expression for term in order_terms)]
-        )
+        selected.extend([SorSourceModel, *(term.expression for term in order_terms)])
         statement = select(*selected)
         if spec.model is not None:
             statement = statement.join(
@@ -657,8 +655,7 @@ class SorCollectionReadService:
         raw_rows = (await self.session.execute(statement)).all()
         has_more = len(raw_rows) > query.limit
         page_rows = tuple(
-            self._read_row(spec=spec, row=row)
-            for row in raw_rows[: query.limit]
+            self._read_row(spec=spec, row=row) for row in raw_rows[: query.limit]
         )
         record_ids = [row.record.id for row in page_rows]
         selected_custom_definition_ids = (
@@ -741,12 +738,10 @@ class SorCollectionReadService:
             predicates.append(
                 SorRecordModel.vendor_object_key == spec.vendor_object_key
             )
-        statement = (
-            statement.join(
-                SorSourceModel,
-                SorSourceModel.id == SorRecordModel.source_id,
-            ).where(*predicates)
-        )
+        statement = statement.join(
+            SorSourceModel,
+            SorSourceModel.id == SorRecordModel.source_id,
+        ).where(*predicates)
         raw_row = (await self.session.execute(statement)).one_or_none()
         if raw_row is None:
             raise SorReadNotFoundError("SOR record not found.")
@@ -1120,9 +1115,7 @@ class SorCollectionReadService:
         ]
         if field_definition_ids is not None:
             predicates.append(
-                SorCustomFieldValueModel.field_definition_id.in_(
-                    field_definition_ids
-                )
+                SorCustomFieldValueModel.field_definition_id.in_(field_definition_ids)
             )
         rows = (
             await self.session.execute(
@@ -1253,9 +1246,13 @@ class SorCollectionReadService:
             for field in fields:
                 raw = field.read_value(row.record, row.extension, row.source)
                 values[field.key] = raw
-                for external_id in _reference_external_ids(raw):
+                for external_id in reference_external_ids(raw):
                     reference_keys.add(
-                        (row.record.source_id, field.reference_entity or "", external_id)
+                        (
+                            row.record.source_id,
+                            field.reference_entity or "",
+                            external_id,
+                        )
                     )
             raw_by_record[row.record.id] = values
 
@@ -1269,7 +1266,7 @@ class SorCollectionReadService:
             projected: dict[str, object] = {}
             for field in fields:
                 raw = raw_by_record[row.record.id][field.key]
-                display = _reference_display_value(
+                display = reference_display_value(
                     raw,
                     source_id=row.record.source_id,
                     entity=field.reference_entity or "",
@@ -1428,8 +1425,7 @@ class SorCollectionReadService:
             human_external_key=record.human_external_key,
             values=values,
             display_values={
-                key: _json_value(value)
-                for key, value in (display_values or {}).items()
+                key: _json_value(value) for key, value in (display_values or {}).items()
             },
             custom_fields=tuple(custom_values),
             source_url=record.source_url,
@@ -1565,9 +1561,7 @@ def _compile_custom_condition(
         if non_null:
             alternatives.append(
                 SorRecordModel.id.in_(
-                    _custom_value_record_ids(
-                        definition, value_column.in_(non_null)
-                    )
+                    _custom_value_record_ids(definition, value_column.in_(non_null))
                 )
             )
         if None in values:
@@ -1576,23 +1570,17 @@ def _compile_custom_condition(
     if operator is SorFilterOperator.INCLUDES_ANY:
         _reject_null_filter_values(values, operator=operator)
         return SorRecordModel.id.in_(
-            _custom_value_record_ids(
-                definition, value_column.op("&&")(list(values))
-            )
+            _custom_value_record_ids(definition, value_column.op("&&")(list(values)))
         )
     if operator is SorFilterOperator.INCLUDES_ALL:
         _reject_null_filter_values(values, operator=operator)
         return SorRecordModel.id.in_(
-            _custom_value_record_ids(
-                definition, value_column.op("@>")(list(values))
-            )
+            _custom_value_record_ids(definition, value_column.op("@>")(list(values)))
         )
     if operator is SorFilterOperator.INCLUDES_NONE:
         _reject_null_filter_values(values, operator=operator)
         return SorRecordModel.id.not_in(
-            _custom_value_record_ids(
-                definition, value_column.op("&&")(list(values))
-            )
+            _custom_value_record_ids(definition, value_column.op("&&")(list(values)))
         )
     if operator is SorFilterOperator.BEFORE:
         _reject_null_filter_values(values, operator=operator)
@@ -1972,5 +1960,8 @@ __all__ = [
     "SorReadNotFoundError",
     "SorReadQueryError",
     "SorSourceReadService",
+    "reference_display_value",
+    "reference_external_ids",
     "read_record_relations",
+    "resolve_reference_labels",
 ]

@@ -24,6 +24,7 @@ class SupportTicketMessageResponse(SorApiModel):
     visibility: str
     direction: str | None
     author_external_id: str | None
+    author_name: str | None
     text: str
     body_format: str | None
     attachment_external_ids: tuple[str, ...]

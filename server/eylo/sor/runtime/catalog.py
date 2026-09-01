@@ -1600,6 +1600,12 @@ VENDOR_CANDIDATES = (
         "Tickets, customers, comments, groups, fields, and metrics.",
         (ConnectionAuthKind.OAUTH2, ConnectionAuthKind.API_KEY),
         requires_instance_origin=True,
+        setup_notes=(
+            "Create a confidential OAuth client in Zendesk Admin Center and register the exact Eylo callback URL shown below.",
+            "Use the OAuth client Identifier as the client ID, and enter the exact Zendesk site address such as https://company.zendesk.com.",
+            "Authorize both read and write access. Read powers synchronization; write powers Agent mutations and source-owned webhook registration.",
+            "Eylo registers the selected Zendesk ticket-event webhook after activation and stores its signing secret encrypted under the source.",
+        ),
     ),
     SorVendorCandidate(
         SorProfile.SUPPORT,

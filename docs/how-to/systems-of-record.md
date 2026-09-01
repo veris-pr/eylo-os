@@ -91,6 +91,11 @@ adapter. Do not mix the classic and granular lists. See Atlassian's REST v2
      repository explicitly as `owner/repository`. The authorizing account must
      administer webhooks on those repositories. Eylo creates its exact signed
      hooks after activation; scheduled reconciliation remains the recovery path.
+   - For Zendesk, create a confidential OAuth client, register the exact callback,
+     and enter the exact `https://<subdomain>.zendesk.com` site origin. Authorize
+     both `read` and `write`: Eylo uses write access for Agent mutations and to
+     create the source-owned signed webhook after activation. No manual Zendesk
+     trigger or signing-secret copy is required.
 5. Complete any vendor-specific, non-secret source settings. GitHub requires
    one or more explicit `owner/repository` entries and will not infer every
    repository visible to the OAuth token. Intercom requires the workspace data

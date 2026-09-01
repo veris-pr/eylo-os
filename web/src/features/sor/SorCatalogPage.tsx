@@ -179,7 +179,9 @@ function ProfileSection({
                   </p>
                 </TableCell>
                 <TableCell className="whitespace-normal text-muted-foreground">
-                  {vendor.plannedAuthKinds.map(authLabel).join(", ")}
+                  {(vendor.capabilities?.authKinds ?? vendor.plannedAuthKinds)
+                    .map(authLabel)
+                    .join(", ")}
                   {vendor.requiresInstanceOrigin ? (
                     <span className="block text-xs">Site address required</span>
                   ) : null}

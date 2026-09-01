@@ -476,6 +476,7 @@ class SorAgentRecordResponse(SorApiModel):
     entity: str
     human_external_key: str | None
     values: dict[str, JsonValue]
+    display_values: dict[str, JsonValue] = Field(default_factory=dict)
     source_url: str | None
     source_updated_at: datetime | None
     source_revision: str | None
