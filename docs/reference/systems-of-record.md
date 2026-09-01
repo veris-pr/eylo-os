@@ -56,9 +56,12 @@ not one request per deal. Eylo follows each deal's association cursor, projects
 the resulting contact and company IDs into canonical relationships, and fails
 the stream rather than silently truncating an incomplete relationship set.
 HubSpot notes use the same bounded batch path for contacts, companies, and
-deals. Notes project as canonical CRM activities during bootstrap and scheduled
-reconciliation. Eylo's current HubSpot app webhook subscribes only to contacts,
-companies, and deals, so reconciliation remains the note freshness path.
+deals. Notes project as canonical CRM activities with `kind` set to `note` and
+their HTML body reduced to human-readable plain text; the selected source markup
+remains available in technical provenance. Projection happens during bootstrap
+and scheduled reconciliation. Eylo's current HubSpot app webhook subscribes
+only to contacts, companies, and deals, so reconciliation remains the note
+freshness path.
 
 An active source can add newly supported objects without deleting its OAuth
 connection. Rediscovery may inspect an explicit candidate selection without

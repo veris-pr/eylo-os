@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
+from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -563,16 +564,14 @@ class HubSpotCrmAdapter:
             external_id=record.external_id,
             kind="note",
             subject=_optional_string(values.get("subject")),
-            normalized_text=_optional_string(values.get("normalized_text")),
+            normalized_text=_activity_text(values.get("normalized_text")),
             occurred_at=_required_datetime(
                 values.get("occurred_at") or record.source_created_at,
                 field="HubSpot note timestamp",
             ),
             actor_external_id=_optional_string(values.get("actor_external_id")),
             participant_external_ids=tuple(dict.fromkeys((*participants, *contacts))),
-            related_external_ids=tuple(
-                dict.fromkeys((*related, *companies, *deals))
-            ),
+            related_external_ids=tuple(dict.fromkeys((*related, *companies, *deals))),
             source_url=record.source_url,
             contact_external_ids=contacts,
             company_external_ids=companies,
@@ -1097,9 +1096,7 @@ def _property_fields(
 ) -> tuple[str, ...]:
     associations = _ASSOCIATION_FIELDS.get(stream_key, {})
     return tuple(
-        field_key
-        for field_key in selected_fields
-        if field_key not in associations
+        field_key for field_key in selected_fields if field_key not in associations
     )
 
 
@@ -1116,6 +1113,63 @@ def _field_type(row: Mapping[str, object]) -> str:
         "phone_number": "text",
         "string": "text",
     }.get(_optional_string(row.get("type")) or "", "bounded_json")
+
+
+class _ActivityTextParser(HTMLParser):
+    """Project HubSpot activity markup into readable canonical text."""
+
+    _BLOCK_TAGS = frozenset(
+        {"blockquote", "br", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "p"}
+    )
+    _IGNORED_TAGS = frozenset({"script", "style"})
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self._ignored_depth = 0
+
+    def handle_starttag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> None:
+        normalized_tag = tag.casefold()
+        if normalized_tag in self._IGNORED_TAGS:
+            self._ignored_depth += 1
+        elif self._ignored_depth == 0 and normalized_tag in self._BLOCK_TAGS:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        normalized_tag = tag.casefold()
+        if normalized_tag in self._IGNORED_TAGS:
+            self._ignored_depth = max(0, self._ignored_depth - 1)
+        elif self._ignored_depth == 0 and normalized_tag in self._BLOCK_TAGS:
+            self.parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if self._ignored_depth == 0:
+            self.parts.append(data)
+
+
+def _activity_text(value: object) -> str | None:
+    source = _optional_string(value)
+    if source is None:
+        return None
+    parser = _ActivityTextParser()
+    try:
+        parser.feed(source)
+        parser.close()
+    except Exception as error:
+        raise SorVendorOperationError(
+            "vendor_response_invalid",
+            "HubSpot returned unreadable activity content.",
+            retryable=False,
+        ) from error
+    lines = (
+        re.sub(r"\s+", " ", line).strip() for line in "".join(parser.parts).splitlines()
+    )
+    normalized = "\n".join(line for line in lines if line)
+    return normalized or None
 
 
 def _external_record(
