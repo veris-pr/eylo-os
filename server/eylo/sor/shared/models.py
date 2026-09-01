@@ -338,7 +338,7 @@ class SorSourceModel(EyloOrganizationModel):
         server_default="0",
     )
     webhook_subscription_id: Mapped[str | None] = mapped_column(
-        String(512), nullable=True
+        Text, nullable=True
     )
     webhook_subscription_status: Mapped[str | None] = mapped_column(
         String(64), nullable=True

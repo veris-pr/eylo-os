@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import json
 import mimetypes
 import re
@@ -27,6 +28,7 @@ from eylo.sor.shared.contracts import (
     SorAdapterCapabilityManifest,
     SorAdapterContext,
     SorCapabilityUnavailable,
+    SorChangeMode,
     SorChangeStrategy,
     SorCommandRequest,
     SorCommandResult,
@@ -42,8 +44,10 @@ from eylo.sor.shared.contracts import (
     SorRecordPage,
     SorVendorOperationError,
     SorVendorStreamSpec,
+    SorWebhookPayloadError,
     SorWebhookSignal,
     SorWebhookSubscription,
+    SorWebhookVerificationError,
 )
 
 NOTION_API_ORIGIN = "https://api.notion.com"
@@ -143,7 +147,7 @@ _FILE_BLOCK_TYPES = frozenset({"audio", "file", "image", "pdf", "video"})
 NOTION_MANIFEST = SorAdapterCapabilityManifest(
     profile=SorProfile.KNOWLEDGE,
     vendor_key="notion",
-    auth_kinds=(ConnectionAuthKind.OAUTH2, ConnectionAuthKind.API_KEY),
+    auth_kinds=(ConnectionAuthKind.OAUTH2,),
     streams=tuple(
         SorVendorStreamSpec(
             key=stream_key,
@@ -188,11 +192,98 @@ NOTION_MANIFEST = SorAdapterCapabilityManifest(
         token_client_auth_method="basic",
     ),
     fixed_origin=NOTION_API_ORIGIN,
+    change_mode=SorChangeMode.APP_WEBHOOK,
     supports_custom_fields=True,
     supports_comments=True,
     supports_attachments=True,
     supports_structured_documents=True,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class NotionAppWebhookDelivery:
+    """One signed workspace event before source-selection filtering."""
+
+    organization_external_id: str
+    signal: SorWebhookSignal
+
+
+def notion_verification_token(*, body: bytes) -> str | None:
+    """Return Notion's initial endpoint challenge without accepting an event."""
+    try:
+        payload = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+    token = payload.get("verification_token")
+    if not isinstance(token, str) or not 1 <= len(token.encode("utf-8")) <= 4096:
+        return None
+    return token
+
+
+def verify_notion_app_webhook(
+    *,
+    headers: Mapping[str, str],
+    body: bytes,
+    verification_token: str,
+) -> None:
+    """Authenticate one Notion delivery against the saved verification token."""
+    signature = _header(headers, "x-notion-signature")
+    if signature is None or not signature.startswith("sha256="):
+        raise SorWebhookVerificationError("Notion webhook signature is missing.")
+    expected = "sha256=" + hmac.new(
+        verification_token.encode("utf-8"),
+        body,
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        raise SorWebhookVerificationError("Notion webhook signature is invalid.")
+
+
+def parse_notion_app_webhook(*, body: bytes) -> NotionAppWebhookDelivery:
+    """Extract the workspace boundary and one current-record refetch signal."""
+    try:
+        payload = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise SorWebhookPayloadError(
+            "Notion webhook body is not valid JSON."
+        ) from error
+    try:
+        data = _object(payload, field="Notion webhook")
+        event_type = _required_string(data.get("type"), field="webhook event type")
+        workspace_id = _notion_id(
+            data.get("workspace_id"),
+            field="webhook workspace ID",
+        )
+        entity = _object(data.get("entity"), field="Notion webhook entity")
+        entity_type = _required_string(
+            entity.get("type"),
+            field="webhook entity type",
+        )
+        entity_id = _notion_id(
+            entity.get("id"),
+            field="webhook entity ID",
+        )
+        stream_key = {
+            "page": "pages",
+            "data_source": "data_sources",
+            "database": "data_sources",
+            "block": "blocks",
+        }.get(entity_type)
+        signal = SorWebhookSignal(
+            delivery_id=_optional_string(data.get("id")),
+            event_type=event_type,
+            vendor_object_key=stream_key,
+            external_id=entity_id if stream_key is not None else None,
+            occurred_at=_optional_datetime(data.get("timestamp")),
+        )
+    except SorVendorOperationError as error:
+        raise SorWebhookPayloadError(str(error)) from error
+    return NotionAppWebhookDelivery(
+        organization_external_id=workspace_id,
+        signal=signal,
+    )
 
 
 def _field(
@@ -344,9 +435,17 @@ class NotionKnowledgeAdapter:
     async def verify_connection(self) -> SorConnectionVerification:
         response = await self._client.request("/v1/users/me")
         user = _object(_expect(response, operation="identify the Notion connection"))
+        bot = _object(user.get("bot"), field="Notion bot workspace")
         return SorConnectionVerification(
-            account_external_id=_notion_id(user.get("id"), field="connection ID"),
-            account_display_name=_optional_string(user.get("name")) or "Notion connection",
+            account_external_id=_notion_id(
+                bot.get("workspace_id"),
+                field="workspace ID",
+            ),
+            account_display_name=(
+                _optional_string(bot.get("workspace_name"))
+                or _optional_string(user.get("name"))
+                or "Notion workspace"
+            ),
             granted_scopes=tuple(sorted(self._context.granted_scopes)),
             vendor_api_version=NOTION_API_VERSION,
         )
@@ -482,8 +581,15 @@ class NotionKnowledgeAdapter:
         headers: Mapping[str, str],
         body: bytes,
     ) -> None:
-        raise SorCapabilityUnavailable(
-            "Notion webhooks are not available in this adapter revision."
+        token = self._context.webhook_signing_secret
+        if token is None:
+            raise SorCapabilityUnavailable(
+                "Notion webhook verification token is unavailable."
+            )
+        verify_notion_app_webhook(
+            headers=headers,
+            body=body,
+            verification_token=token,
         )
 
     async def parse_webhook_signal(
@@ -492,9 +598,7 @@ class NotionKnowledgeAdapter:
         headers: Mapping[str, str],
         body: bytes,
     ) -> tuple[SorWebhookSignal, ...]:
-        raise SorCapabilityUnavailable(
-            "Notion webhooks are not available in this adapter revision."
-        )
+        return (parse_notion_app_webhook(body=body).signal,)
 
     async def execute_command(self, command: SorCommandRequest) -> SorCommandResult:
         if command.tool_name not in _WRITE_TOOLS:
@@ -2229,6 +2333,18 @@ def _require_stream(value: str, *, selected: tuple[str, ...]) -> str:
     return value
 
 
+def _header(headers: Mapping[str, str], name: str) -> str | None:
+    expected = name.casefold()
+    values = [
+        value.strip()
+        for key, value in headers.items()
+        if key.casefold() == expected
+    ]
+    if len(values) != 1 or not values[0] or len(values[0]) > 4_096:
+        return None
+    return values[0]
+
+
 def _invalid_cursor(stream: str) -> SorVendorOperationError:
     return _invalid_operation(
         "vendor_cursor_invalid",
@@ -2250,6 +2366,10 @@ def _invalid_operation(code: str, message: str) -> SorVendorOperationError:
 
 __all__ = [
     "NOTION_MANIFEST",
+    "NotionAppWebhookDelivery",
     "NotionKnowledgeAdapter",
     "create_notion_adapter",
+    "notion_verification_token",
+    "parse_notion_app_webhook",
+    "verify_notion_app_webhook",
 ]

@@ -57,6 +57,14 @@ GITHUB_ORIGIN = "https://api.github.com"
 GITHUB_API_VERSION = "2026-03-10"
 GITHUB_CURSOR_VERSION = 2
 GITHUB_RECONCILIATION_OVERLAP = timedelta(minutes=5)
+_WEBHOOK_EVENTS = (
+    "issue_comment",
+    "issues",
+    "label",
+    "milestone",
+    "repository",
+)
+_WEBHOOK_ID_VERSION = 1
 
 REPOSITORY_SCOPE = "repo"
 READ_USER_SCOPE = "read:user"
@@ -194,7 +202,7 @@ GITHUB_MANIFEST = SorAdapterCapabilityManifest(
         scope_response_delimiter=",",
     ),
     fixed_origin=GITHUB_ORIGIN,
-    change_mode=SorChangeMode.OPERATOR_WEBHOOK,
+    change_mode=SorChangeMode.MANAGED_WEBHOOK,
     supports_comments=True,
 )
 
@@ -478,22 +486,91 @@ class GitHubTicketingAdapter:
         )
 
     async def subscribe_webhook(self, callback_url: str) -> SorWebhookSubscription:
-        raise SorCapabilityUnavailable(
-            "GitHub webhooks require operator-owned repository webhook configuration."
-        )
+        secret = self._context.webhook_signing_secret
+        if secret is None:
+            raise SorWebhookVerificationError(
+                "GitHub webhook signing secret is not configured."
+            )
+        hooks: list[tuple[str, int]] = []
+        for repository in self._repositories:
+            existing = await self._find_webhook(
+                repository=repository,
+                callback_url=callback_url,
+            )
+            if existing is None:
+                response = await self._client.request(
+                    f"/repos/{_repository_path(repository)}/hooks",
+                    method="POST",
+                    payload={
+                        "name": "web",
+                        "active": True,
+                        "events": list(_WEBHOOK_EVENTS),
+                        "config": {
+                            "url": callback_url,
+                            "content_type": "json",
+                            "insecure_ssl": "0",
+                            "secret": secret,
+                        },
+                    },
+                )
+                row = _object(
+                    _expect(response, operation="create GitHub repository webhook"),
+                    field="GitHub webhook",
+                )
+                existing = _required_integer(row.get("id"), field="webhook ID")
+            hooks.append((repository, existing))
+        return SorWebhookSubscription(external_id=_encode_webhook_ids(hooks))
 
     async def renew_webhook(
         self,
         subscription: SorWebhookSubscription,
     ) -> SorWebhookSubscription:
-        raise SorCapabilityUnavailable(
-            "GitHub repository webhooks do not use Eylo-managed leases."
-        )
+        _decode_webhook_ids(subscription.external_id)
+        return subscription
 
     async def remove_webhook(self, subscription: SorWebhookSubscription) -> None:
-        raise SorCapabilityUnavailable(
-            "GitHub webhooks require operator-owned repository webhook configuration."
+        for repository, hook_id in _decode_webhook_ids(subscription.external_id):
+            response = await self._client.request(
+                f"/repos/{_repository_path(repository)}/hooks/{hook_id}",
+                method="DELETE",
+            )
+            if response.status_code not in {204, 404}:
+                _expect(response, operation="remove GitHub repository webhook")
+                raise _invalid_response(
+                    "GitHub returned an unexpected webhook deletion status."
+                )
+
+    async def _find_webhook(
+        self,
+        *,
+        repository: str,
+        callback_url: str,
+    ) -> int | None:
+        """Recover only an exact Eylo callback after an interrupted registration."""
+        response = await self._client.request(
+            f"/repos/{_repository_path(repository)}/hooks",
+            query={"per_page": 100},
         )
+        rows = _object_list(
+            _expect(response, operation="list GitHub repository webhooks"),
+            field="GitHub webhooks",
+        )
+        exact: list[int] = []
+        expected_events = frozenset(_WEBHOOK_EVENTS)
+        for row in rows:
+            config = _optional_object(row.get("config"))
+            if _optional_string(config.get("url")) != callback_url:
+                continue
+            events = frozenset(_string_tuple(row.get("events")))
+            if events == expected_events and row.get("active") is True:
+                exact.append(_required_integer(row.get("id"), field="webhook ID"))
+        if len(exact) > 1:
+            raise SorVendorOperationError(
+                "vendor_webhook_ambiguous",
+                "GitHub returned multiple active hooks for the exact Eylo callback.",
+                retryable=False,
+            )
+        return exact[0] if exact else None
 
     async def verify_webhook(
         self,
@@ -1293,6 +1370,66 @@ def _configured_repositories(configuration: Mapping[str, object]) -> tuple[str, 
     if len(folded) != len(set(folded)):
         raise _invalid_configuration("GitHub repositories must be unique.")
     return repositories
+
+
+def _encode_webhook_ids(hooks: Sequence[tuple[str, int]]) -> str:
+    """Encode the exact repository/hook pairs owned by one SOR source."""
+    if not hooks:
+        raise _invalid_response("GitHub did not return any repository webhooks.")
+    return json.dumps(
+        {
+            "v": _WEBHOOK_ID_VERSION,
+            "hooks": [[_repository(repository), hook_id] for repository, hook_id in hooks],
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _decode_webhook_ids(value: str) -> tuple[tuple[str, int], ...]:
+    """Validate a persisted composite identity before vendor deletion or renewal."""
+    try:
+        payload = json.loads(value)
+        if not isinstance(payload, Mapping) or payload.get("v") != _WEBHOOK_ID_VERSION:
+            raise ValueError
+        raw_hooks = payload.get("hooks")
+        if (
+            not isinstance(raw_hooks, list)
+            or not 1 <= len(raw_hooks) <= 50
+        ):
+            raise ValueError
+        hooks = tuple(
+            (
+                _repository(row[0]),
+                _positive_webhook_id(row[1]),
+            )
+            for row in raw_hooks
+            if isinstance(row, list) and len(row) == 2
+        )
+        if len(hooks) != len(raw_hooks):
+            raise ValueError
+        if len({repository.casefold() for repository, _hook_id in hooks}) != len(
+            hooks
+        ):
+            raise ValueError
+    except (
+        json.JSONDecodeError,
+        SorVendorOperationError,
+        TypeError,
+        ValueError,
+    ) as error:
+        raise SorVendorOperationError(
+            "vendor_webhook_identity_invalid",
+            "The stored GitHub webhook identity is invalid.",
+            retryable=False,
+        ) from error
+    return hooks
+
+
+def _positive_webhook_id(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError
+    return value
 
 
 def _repository(value: object) -> str:

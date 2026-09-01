@@ -809,7 +809,7 @@ async def _activate_connection(
         )
         if context.change_mode is SorChangeMode.APP_WEBHOOK:
             if (
-                context.vendor_key == "linear"
+                context.vendor_key in {"linear", "notion"}
                 and connector.webhook_signing_secret is None
             ):
                 raise SorOAuthError(
@@ -832,7 +832,8 @@ def _require_app_webhook_authorization_ready(
     if manifest.change_mode is not SorChangeMode.APP_WEBHOOK:
         return
     if connector.webhook_endpoint_key is None or (
-        connector.vendor_key == "linear" and connector.webhook_signing_secret is None
+        connector.vendor_key in {"linear", "notion"}
+        and connector.webhook_signing_secret is None
     ):
         raise SorOAuthError(
             "app_webhook_not_configured",

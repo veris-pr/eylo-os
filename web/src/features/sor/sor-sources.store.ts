@@ -331,6 +331,17 @@ class SorSourcesStore {
     }
   }
 
+  async loadAppWebhookVerificationToken(
+    organizationId: string,
+  ): Promise<string | null> {
+    const connector = this.selectedConnector;
+    if (connector === null) return null;
+    return this.service.loadAppWebhookVerificationToken(
+      organizationId,
+      connector.id,
+    );
+  }
+
   async startSync(organizationId: string, sourceId: string): Promise<boolean> {
     if (this.isStartingSync) return false;
     this.isStartingSync = true;

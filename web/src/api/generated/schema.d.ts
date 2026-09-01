@@ -3784,6 +3784,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/{organization_id}/sor/connectors/{connector_id}/app-webhook-verification-token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Sor Connector App Webhook Verification Token
+         * @description Reveal Notion's endpoint challenge to the configuring organization.
+         */
+        get: operations["get_sor_connector_app_webhook_verification_token_api__organization_id__sor_connectors__connector_id__app_webhook_verification_token_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/{organization_id}/sor/connectors/{connector_id}/authorize": {
         parameters: {
             query?: never;
@@ -4824,26 +4844,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/sor/webhooks/{vendor_key}/{endpoint_token}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Receive Sor Webhook
-         * @description Verify raw bytes before recording a deduplicated durable receipt.
-         */
-        post: operations["receive_sor_webhook_api_sor_webhooks__vendor_key___endpoint_token__post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/sor/webhooks/{vendor_key}/apps/{endpoint_key}": {
         parameters: {
             query?: never;
@@ -4858,6 +4858,30 @@ export interface paths {
          * @description Verify one connector app delivery, then persist source-specific receipts.
          */
         post: operations["receive_sor_app_webhook_api_sor_webhooks__vendor_key__apps__endpoint_key__post"];
+        delete?: never;
+        options?: never;
+        /**
+         * Validate Sor App Webhook Endpoint
+         * @description Validate an opaque app callback without exposing connector metadata.
+         */
+        head: operations["validate_sor_app_webhook_endpoint_api_sor_webhooks__vendor_key__apps__endpoint_key__head"];
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sor/webhooks/{vendor_key}/{endpoint_token}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Receive Sor Webhook
+         * @description Verify raw bytes before recording a deduplicated durable receipt.
+         */
+        post: operations["receive_sor_webhook_api_sor_webhooks__vendor_key___endpoint_token__post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -11153,6 +11177,14 @@ export interface components {
          * @enum {string}
          */
         SorAppWebhookState: "NOT_APPLICABLE" | "PUBLIC_ENDPOINT_REQUIRED" | "SIGNING_SECRET_REQUIRED" | "AUTHORIZATION_REQUIRED" | "REINSTALLATION_REQUIRED" | "ACTIVE";
+        /**
+         * SorAppWebhookVerificationTokenResponse
+         * @description One Notion challenge returned only to the configuring organization.
+         */
+        SorAppWebhookVerificationTokenResponse: {
+            /** Verification Token */
+            verification_token: string;
+        };
         /** SorAuthorizationRedirectResponse */
         SorAuthorizationRedirectResponse: {
             /** Authorization Url */
@@ -24427,6 +24459,41 @@ export interface operations {
             };
         };
     };
+    get_sor_connector_app_webhook_verification_token_api__organization_id__sor_connectors__connector_id__app_webhook_verification_token_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-API-Key"?: string | null;
+                "X-Session-ID"?: string | null;
+            };
+            path: {
+                organization_id: string;
+                connector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorAppWebhookVerificationTokenResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     authorize_sor_connector_api__organization_id__sor_connectors__connector_id__authorize_post: {
         parameters: {
             query?: never;
@@ -26429,38 +26496,6 @@ export interface operations {
             };
         };
     };
-    receive_sor_webhook_api_sor_webhooks__vendor_key___endpoint_token__post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                vendor_key: string;
-                endpoint_token: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SorWebhookAcceptedResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     receive_sor_app_webhook_api_sor_webhooks__vendor_key__apps__endpoint_key__post: {
         parameters: {
             query?: never;
@@ -26480,6 +26515,70 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SorAppWebhookAcceptedResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    validate_sor_app_webhook_endpoint_api_sor_webhooks__vendor_key__apps__endpoint_key__head: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                vendor_key: string;
+                endpoint_key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    receive_sor_webhook_api_sor_webhooks__vendor_key___endpoint_token__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                vendor_key: string;
+                endpoint_token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SorWebhookAcceptedResponse"];
                 };
             };
             /** @description Validation Error */

@@ -200,9 +200,10 @@ Jira lists and recovers an exact prior callback before registering. A process
 crash after vendor acceptance therefore does not blindly consume another
 dynamic-webhook slot. Renewal rechecks the exact callback first, so a
 vendor-deleted subscription is recreated rather than silently treated as
-extended. Jira uses this path because OAuth apps can manage dynamic webhooks.
-Confluence 3LO cannot; its adapter truthfully remains polling plus reconciliation
-until an installed Atlassian app delivery contract exists.
+extended. Jira uses this path for its dynamic subscription; GitHub uses the
+same three-phase boundary for one hook per selected repository. Confluence 3LO
+cannot; its adapter truthfully remains polling plus reconciliation until an
+installed Atlassian app delivery contract exists.
 
 ## Revocation and durable recovery
 

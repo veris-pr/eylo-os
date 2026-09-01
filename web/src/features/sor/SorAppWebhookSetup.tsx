@@ -9,11 +9,13 @@ import type { SorConnector } from "@/features/sor/sor.types";
 function SorAppWebhookSetup({
   connector,
   isSaving,
+  onLoadVerificationToken,
   onSaveSecret,
   vendorName,
 }: {
   connector: SorConnector;
   isSaving: boolean;
+  onLoadVerificationToken: () => Promise<string | null>;
   onSaveSecret: (secret: string) => Promise<boolean>;
   vendorName: string;
 }) {
@@ -21,6 +23,14 @@ function SorAppWebhookSetup({
     "idle",
   );
   const [signingSecret, setSigningSecret] = useState("");
+  const [verificationToken, setVerificationToken] = useState<string | null>(
+    null,
+  );
+  const [verificationMessage, setVerificationMessage] = useState<string | null>(
+    null,
+  );
+  const [isLoadingVerificationToken, setIsLoadingVerificationToken] =
+    useState(false);
   const state = connector.app_webhook_state;
   const requiresSigningSecret = connector.vendor_key === "linear";
 
@@ -38,6 +48,32 @@ function SorAppWebhookSetup({
     const secret = signingSecret.trim();
     if (secret === "") return;
     if (await onSaveSecret(secret)) setSigningSecret("");
+  }
+
+  async function loadVerificationToken(): Promise<void> {
+    setIsLoadingVerificationToken(true);
+    setVerificationMessage(null);
+    try {
+      const token = await onLoadVerificationToken();
+      setVerificationToken(token);
+      if (token === null) {
+        setVerificationMessage(
+          "Token not received yet. Save the webhook URL in Notion, then try again.",
+        );
+      }
+    } finally {
+      setIsLoadingVerificationToken(false);
+    }
+  }
+
+  async function copyVerificationToken(): Promise<void> {
+    if (verificationToken === null) return;
+    try {
+      await navigator.clipboard.writeText(verificationToken);
+      setVerificationMessage("Verification token copied.");
+    } catch {
+      setVerificationMessage("Copy failed. Select the token and copy it manually.");
+    }
   }
 
   return (
@@ -80,12 +116,53 @@ function SorAppWebhookSetup({
             </p>
           ) : null}
           <p className="text-xs leading-5 text-muted-foreground">
-            {connector.vendor_key === "hubspot"
-              ? "Enable Contact, Company, and Deal creation, deletion, restore, merge, association, and required property-change subscriptions. Eylo verifies deliveries with the OAuth client secret already saved."
-              : "Enable app webhooks for Comments, Cycles, Issue Labels, Issues, Projects, and Users."}
+            {webhookSetupGuidance(connector.vendor_key)}
           </p>
         </div>
       )}
+
+      {connector.vendor_key === "notion" &&
+      state !== "PUBLIC_ENDPOINT_REQUIRED" ? (
+        <div className="space-y-2">
+          <p className="text-sm font-medium">Verify the Notion endpoint</p>
+          <p className="text-xs leading-5 text-muted-foreground">
+            Save the URL in Notion first. Then load the verification token here
+            and paste it into Notion.
+          </p>
+          <Button
+            disabled={isLoadingVerificationToken}
+            type="button"
+            variant="outline"
+            onClick={() => void loadVerificationToken()}
+          >
+            {isLoadingVerificationToken
+              ? "Checking…"
+              : verificationToken === null
+                ? "Load verification token"
+                : "Refresh token"}
+          </Button>
+          {verificationToken === null ? null : (
+            <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-start">
+              <code className="min-w-0 flex-1 break-all bg-muted/50 p-3 text-xs leading-5">
+                {verificationToken}
+              </code>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => void copyVerificationToken()}
+              >
+                <Copy aria-hidden="true" />
+                Copy token
+              </Button>
+            </div>
+          )}
+          {verificationMessage === null ? null : (
+            <p className="text-xs leading-5 text-muted-foreground" role="status">
+              {verificationMessage}
+            </p>
+          )}
+        </div>
+      ) : null}
 
       {state === "PUBLIC_ENDPOINT_REQUIRED" || !requiresSigningSecret ? null : (
         <div className="space-y-2">
@@ -120,6 +197,19 @@ function SorAppWebhookSetup({
       )}
     </div>
   );
+}
+
+function webhookSetupGuidance(vendorKey: string): string {
+  if (vendorKey === "hubspot") {
+    return "Enable Contact, Company, and Deal creation, deletion, restore, merge, association, and required property-change subscriptions. Eylo verifies deliveries with the OAuth app client secret.";
+  }
+  if (vendorKey === "intercom") {
+    return "Enable the contact and conversation topics needed by this source. Eylo verifies deliveries with the Intercom app client secret.";
+  }
+  if (vendorKey === "notion") {
+    return "Notion sends a verification token to this URL before it accepts events. Complete that handshake below.";
+  }
+  return "Enable app webhooks for Comments, Cycles, Issue Labels, Issues, Projects, and Users.";
 }
 
 export { SorAppWebhookSetup };

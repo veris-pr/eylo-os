@@ -201,6 +201,9 @@ const SorSourceDetailsPage = observer(function SorSourceDetailsPage({
           onLoadEarlierSyncRuns={() =>
             void sources.loadEarlierSyncRuns(organizationId, sourceId)
           }
+          onLoadAppWebhookVerificationToken={() =>
+            sources.loadAppWebhookVerificationToken(organizationId)
+          }
           onIssueWebhookEndpoint={() =>
             sources.issueWebhookEndpoint(organizationId, sourceId)
           }
@@ -328,6 +331,7 @@ function SourceDetails({
   isStartingSync,
   onDelete,
   onIssueWebhookEndpoint,
+  onLoadAppWebhookVerificationToken,
   onLoadEarlierSyncRuns,
   onSaveWebhookSigningSecret,
   onSaveAppWebhookSigningSecret,
@@ -354,6 +358,7 @@ function SourceDetails({
   isStartingSync: boolean;
   onDelete: (source: SorSource) => void;
   onIssueWebhookEndpoint: () => Promise<boolean>;
+  onLoadAppWebhookVerificationToken: () => Promise<string | null>;
   onLoadEarlierSyncRuns: () => void;
   onSaveWebhookSigningSecret: (secret: string) => Promise<boolean>;
   onSaveAppWebhookSigningSecret: (secret: string) => Promise<boolean>;
@@ -568,6 +573,9 @@ function SourceDetails({
             connector={connector}
             isSaving={isSavingAppWebhookSigningSecret}
             vendorName={formatSorIdentifier(source.vendor_key)}
+            onLoadVerificationToken={() =>
+              onLoadAppWebhookVerificationToken()
+            }
             onSaveSecret={onSaveAppWebhookSigningSecret}
           />
         )}

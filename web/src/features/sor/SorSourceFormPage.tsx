@@ -415,6 +415,11 @@ const SorSourceFormPage = observer(function SorSourceFormPage() {
               }}
               onConnectApiKey={() => void connectApiKey()}
               onCreate={() => void createConnector()}
+              onLoadAppWebhookVerificationToken={() =>
+                onboarding.loadAppWebhookVerificationToken(
+                  activeOrganizationId,
+                )
+              }
               onSaveAppWebhookSecret={(secret) =>
                 onboarding.saveAppWebhookSigningSecret(
                   activeOrganizationId,
@@ -543,6 +548,7 @@ function ConnectionSection({
   onCopy,
   onConnectApiKey,
   onCreate,
+  onLoadAppWebhookVerificationToken,
   onSaveAppWebhookSecret,
   profile,
   vendor,
@@ -567,6 +573,7 @@ function ConnectionSection({
   onCopy: () => void;
   onConnectApiKey: () => void;
   onCreate: () => void;
+  onLoadAppWebhookVerificationToken: () => Promise<string | null>;
   onSaveAppWebhookSecret: (secret: string) => Promise<boolean>;
   profile: SorProfileDefinition | null;
   vendor: SorVendorDefinition | null;
@@ -843,6 +850,7 @@ function ConnectionSection({
               connector={onboarding.connector}
               isSaving={isSavingAppWebhookSecret}
               vendorName={vendor.displayName}
+              onLoadVerificationToken={onLoadAppWebhookVerificationToken}
               onSaveSecret={onSaveAppWebhookSecret}
             />
           ) : null}

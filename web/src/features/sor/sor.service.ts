@@ -174,6 +174,27 @@ class SorService {
     );
   }
 
+  async loadAppWebhookVerificationToken(
+    organizationId: string,
+    connectorId: string,
+  ): Promise<string> {
+    const result = await this.api.GET(
+      "/api/{organization_id}/sor/connectors/{connector_id}/app-webhook-verification-token",
+      {
+        params: {
+          path: {
+            organization_id: organizationId,
+            connector_id: connectorId,
+          },
+        },
+      },
+    );
+    return requireData(
+      result,
+      "Notion has not sent its webhook verification token yet.",
+    ).verification_token;
+  }
+
   async authorizeConnector(
     organizationId: string,
     connectorId: string,

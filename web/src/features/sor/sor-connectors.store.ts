@@ -13,6 +13,7 @@ class SorConnectorsStore {
   isLoading = false;
   isSaving = false;
   isSavingAppWebhookSecret = false;
+  isLoadingAppWebhookVerificationToken = false;
   saveErrorMessage: string | null = null;
 
   private collectionOrganizationId: string | null = null;
@@ -177,6 +178,35 @@ class SorConnectorsStore {
     } finally {
       runInAction(() => {
         this.isSavingAppWebhookSecret = false;
+      });
+    }
+  }
+
+  async loadAppWebhookVerificationToken(
+    organizationId: string,
+    connectorId: string,
+  ): Promise<string | null> {
+    if (this.isLoadingAppWebhookVerificationToken) return null;
+    this.isLoadingAppWebhookVerificationToken = true;
+    this.saveErrorMessage = null;
+    try {
+      const token = await this.service.loadAppWebhookVerificationToken(
+        organizationId,
+        connectorId,
+      );
+      await this.refresh(organizationId, connectorId);
+      return token;
+    } catch (error) {
+      runInAction(() => {
+        this.saveErrorMessage = messageFrom(
+          error,
+          "Notion has not sent its webhook verification token yet.",
+        );
+      });
+      return null;
+    } finally {
+      runInAction(() => {
+        this.isLoadingAppWebhookVerificationToken = false;
       });
     }
   }

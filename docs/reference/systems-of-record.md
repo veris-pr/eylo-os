@@ -25,12 +25,12 @@ only through a registered adapter and an active source.
 | CRM | Microsoft Dataverse | Planned | — | — | no registered adapter |
 | Issues | Jira Cloud | Implemented; webhook live acceptance pending | OAuth 2.0 | issues, projects, workflow states, users, labels, sprints, comments, relations | enhanced-JQL issue sync; managed dynamic webhooks; 30-day renewal; Sprint-field cycle discovery; full reconciliation; custom fields; mapped writes |
 | Issues | Linear | Implemented; live acceptance pending | OAuth 2.0 with PKCE | issues, teams, projects, workflow states, users, labels, cycles, comments, relations | updated-at sync; signed app-managed webhooks; mapped writes |
-| Issues | GitHub Issues | Implemented; live acceptance pending | OAuth 2.0 | repositories, issues, workflow states, users, labels, milestones, comments | REST updated-at sync with bounded GraphQL PR classification; full reconciliation; signed operator-managed webhooks; mapped writes; pull requests and issue relations excluded |
+| Issues | GitHub Issues | Implemented; live acceptance pending | OAuth 2.0 | repositories, issues, workflow states, users, labels, milestones, comments | REST updated-at sync with bounded GraphQL PR classification; full reconciliation; managed signed repository webhooks; mapped writes; pull requests and issue relations excluded |
 | Support | Zendesk | Implemented; live acceptance pending | OAuth 2.0 | tickets, customers, agents, groups, brands, comments, tags, ticket metrics, attachments | cursor incremental export; signed webhook refetch; custom ticket fields; public replies/private notes; safe mapped writes |
-| Support | Intercom | Implemented; live acceptance pending | OAuth 2.0 | conversations, contacts, admins, teams, conversation parts, tags, attachments | updated-at search plus full reconciliation; regional API pinning; signed operator-configured webhooks; conversation attributes; public replies/private notes; mapped writes |
+| Support | Intercom | Implemented; live acceptance pending | OAuth 2.0 | conversations, contacts, admins, teams, conversation parts, tags, attachments | updated-at search plus full reconciliation; regional API pinning; signed app webhooks; conversation attributes; public replies/private notes; mapped writes |
 | Support | Freshdesk | Implemented; live acceptance pending | API key | tickets, contacts, agents, groups, email inboxes, conversations, tags, SLA targets, attachments; companies and Freshdesk custom objects as custom datasets | updated-at polling plus full reconciliation; custom fields and objects; public replies/private notes; mapped writes; no API-key webhook support |
 | Documents | Confluence Cloud | Implemented; live acceptance pending | OAuth 2.0 with REST v2 granular scopes | spaces, pages, page bodies, current revisions, properties, attachments, authors | full reconciliation; loss-aware HTML normalization; current revision and author reads; authenticated current-image previews; mapped create/update/append |
-| Documents | Notion | Implemented; live acceptance pending | OAuth 2.0 or API key | data sources, pages, recursive blocks, properties, attachments, authors | full reconciliation; completed paginated relation/rollup properties; unsupported-block disclosure; mapped create/update/append/comment |
+| Documents | Notion | Implemented; live acceptance pending | OAuth 2.0 | data sources, pages, recursive blocks, properties, attachments, authors | signed app webhooks plus full reconciliation; completed paginated relation/rollup properties; unsupported-block disclosure; mapped create/update/append/comment |
 | Documents | Linear Documents | Implemented; live read acceptance complete; live image acceptance pending | OAuth 2.0 with PKCE; may reuse the active Linear connector | documents, authors, document images | updated-at sync; signed connector webhook; latest Markdown content; authenticated current-image previews; read-only |
 | Documents | SharePoint | Planned | — | — | no registered adapter |
 
@@ -69,10 +69,10 @@ encode delivery behavior through booleans:
 | `CHANGE_STREAM` | The adapter consumes a vendor-native change stream rather than HTTP deliveries. |
 | `POLL_ONLY` | Scheduled incremental sync and reconciliation are the only change paths. |
 
-Jira uses `MANAGED_WEBHOOK`; GitHub, Zendesk, and Intercom use
-`OPERATOR_WEBHOOK`; HubSpot and Linear use `APP_WEBHOOK`. Every other current
-adapter declares `POLL_ONLY`. A delivery is only a hint to refetch authoritative
-vendor data.
+Jira and GitHub use `MANAGED_WEBHOOK`; Zendesk uses `OPERATOR_WEBHOOK`; HubSpot,
+Linear, Intercom, and Notion use `APP_WEBHOOK`. Every other current adapter
+declares `POLL_ONLY`. A delivery is only a hint to refetch authoritative vendor
+data.
 Periodic reconciliation remains the correctness path, so no separate freshness
 state is persisted.
 
@@ -81,7 +81,21 @@ source or profile. Eylo generates one stable connector callback, stores the
 Linear signing secret encrypted, and fans each verified workspace event out
 only to Issues and Documents sources whose selected objects include that event
 type. The Linear app webhook must be enabled before workspace authorization.
-Intercom retains its current Developer Hub, source-configured callback flow.
+Intercom's callback belongs to the saved OAuth app connector. Developer Hub
+validates the endpoint with `HEAD`, then signs workspace events with the app
+client secret. Eylo pins the event's `app_id` to the workspace identity proven
+during OAuth before fanning the event out to selected sources.
+
+Notion's callback also belongs to the saved OAuth app connector. Notion first
+sends an unsigned one-time verification token to the opaque endpoint. Eylo
+stores it encrypted and reveals it only through the authenticated connector
+setup route so the operator can finish verification in Notion. Later deliveries
+must carry a valid `X-Notion-Signature`, match the OAuth-proven workspace, and
+trigger a current-record refetch.
+
+Existing Notion integration-token sources remain readable through scheduled
+reconciliation. New Notion sources use OAuth because an integration token does
+not identify the app-level webhook authority needed for verified fan-out.
 
 HubSpot's callback belongs to the saved OAuth app connector. Eylo verifies its
 v3 HMAC signature against the exact public request URI and the already-stored
@@ -106,6 +120,13 @@ Registration requires the **classic** `read:jira-work` and
 labelled **granular Jira Software** scopes shown by the catalog. These scope
 families are not presented as interchangeable.
 
+GitHub managed webhooks use the repository webhook REST resources. One source
+owns one generated HMAC secret and an exact hook in each explicitly selected
+repository. Registration lists and recovers only the exact callback and event
+set; deletion uses the persisted repository/hook pairs instead of the source's
+current form values. The authorizing account must have repository webhook admin
+access.
+
 Managed callbacks require a public HTTPS `API_BASE_URL`; localhost cannot
 receive Atlassian delivery. Confluence's current OAuth 2.0 (3LO) API does not
 provide Jira-style dynamic webhook registration. Confluence therefore remains
@@ -116,7 +137,10 @@ Vendor authorities: Atlassian's [Jira dynamic webhook REST
 API](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-webhooks/),
 [Jira webhook delivery guide](https://developer.atlassian.com/cloud/jira/software/webhooks/),
 [Confluence webhook guide](https://developer.atlassian.com/cloud/confluence/using-webhooks/),
-and HubSpot's [webhook guide](https://developers.hubspot.com/docs/api-reference/latest/webhooks/guide)
+HubSpot's [webhook guide](https://developers.hubspot.com/docs/api-reference/latest/webhooks/guide),
+GitHub's [repository webhook API](https://docs.github.com/en/rest/repos/webhooks),
+Intercom's [webhook setup contract](https://developers.intercom.com/docs/webhooks/setting-up-webhooks),
+Notion's [webhook setup contract](https://developers.notion.com/reference/webhooks),
 and [request-validation contract](https://developers.hubspot.com/docs/apps/developer-platform/build-apps/authentication/request-validation).
 
 ## Executable CRM tools
@@ -242,8 +266,10 @@ Eylo rejects a conversation whose complete history cannot be proven instead of
 silently presenting a partial transcript. Attachment-only parts remain visible
 as messages and preserve their attachment metadata.
 
-Intercom webhooks are configured and removed by the operator in Developer Hub.
-Eylo verifies `X-Hub-Signature` with the app client secret, then treats the
+Intercom webhook topics are configured and removed by the operator in Developer
+Hub because Intercom does not expose subscription management through its API.
+The callback is connector-level rather than source-level. Eylo verifies
+`X-Hub-Signature` with the app client secret, pins `app_id`, then treats the
 event as a refetch signal. Programmatic subscription and renewal are not
 claimed. Intercom Tickets, companies, inboxes, per-metric SLA history, and
 custom objects are outside this adapter revision.

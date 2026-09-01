@@ -421,6 +421,17 @@ class SorOnboardingStore {
     );
   }
 
+  async loadAppWebhookVerificationToken(
+    organizationId: string,
+  ): Promise<string | null> {
+    const connector = this.connector;
+    if (connector === null) return null;
+    return this.connectors.loadAppWebhookVerificationToken(
+      organizationId,
+      connector.id,
+    );
+  }
+
   async beginAuthorization(
     organizationId: string,
     selectedObjects: readonly string[] = this.draft.selectedObjects,

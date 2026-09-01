@@ -113,6 +113,12 @@ class SorConnectorWebhookSigningSecretUpdateRequest(SorApiModel):
     expected_secret_revision: int = Field(ge=0)
 
 
+class SorAppWebhookVerificationTokenResponse(SorApiModel):
+    """One Notion challenge returned only to the configuring organization."""
+
+    verification_token: str
+
+
 class SorConnectorConnectionResponse(SorApiModel):
     id: UUID
     status: ExternalConnectionStatus

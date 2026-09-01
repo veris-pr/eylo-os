@@ -10,6 +10,11 @@ from eylo.sor.crm.vendors.hubspot import (
     parse_hubspot_app_webhook,
     verify_hubspot_app_webhook,
 )
+from eylo.sor.knowledge.vendors.notion import (
+    notion_verification_token,
+    parse_notion_app_webhook,
+    verify_notion_app_webhook,
+)
 from eylo.sor.runtime.adapters import acquire_source_adapter
 from eylo.sor.runtime.registry import SorRegistry
 from eylo.sor.runtime.webhook_processing import spawn_sor_webhook_receipt
@@ -17,6 +22,10 @@ from eylo.sor.shared.services import SorConfigurationError
 from eylo.sor.shared.webhook_services import (
     SOR_WEBHOOK_MAX_BODY_BYTES,
     SorWebhookService,
+)
+from eylo.sor.support.vendors.intercom import (
+    parse_intercom_app_webhook,
+    verify_intercom_app_webhook,
 )
 from eylo.sor.ticketing.vendors.linear import (
     parse_linear_app_webhook,
@@ -94,6 +103,18 @@ async def accept_sor_app_webhook(
     """Verify one connector-level delivery and fan it out to selected sources."""
     if len(body) > SOR_WEBHOOK_MAX_BODY_BYTES:
         raise SorConfigurationError("SOR webhook body is too large.")
+    if vendor_key == "notion" and (
+        verification_token := notion_verification_token(body=body)
+    ) is not None:
+        async with start_transaction() as session:
+            await SorWebhookService(
+                session,
+                registry=registry,
+            ).record_notion_verification_token(
+                endpoint_key=endpoint_key,
+                verification_token=verification_token,
+            )
+        return (), 0
     async with start_transaction(ro=True) as session:
         authority = await SorWebhookService(
             session,
@@ -121,6 +142,24 @@ async def accept_sor_app_webhook(
         hubspot_delivery = parse_hubspot_app_webhook(body=body)
         organization_external_id = hubspot_delivery.organization_external_id
         signals = hubspot_delivery.signals
+    elif vendor_key == "intercom":
+        verify_intercom_app_webhook(
+            headers=headers,
+            body=body,
+            client_secret=authority.signing_secret,
+        )
+        intercom_delivery = parse_intercom_app_webhook(body=body)
+        organization_external_id = intercom_delivery.organization_external_id
+        signals = (intercom_delivery.signal,)
+    elif vendor_key == "notion":
+        verify_notion_app_webhook(
+            headers=headers,
+            body=body,
+            verification_token=authority.signing_secret,
+        )
+        notion_delivery = parse_notion_app_webhook(body=body)
+        organization_external_id = notion_delivery.organization_external_id
+        signals = (notion_delivery.signal,)
     else:
         raise SorConfigurationError("This app webhook vendor is not supported.")
     if (

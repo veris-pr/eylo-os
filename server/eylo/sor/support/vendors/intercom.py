@@ -36,8 +36,10 @@ from eylo.sor.shared.contracts import (
     SorRecordPage,
     SorVendorOperationError,
     SorVendorStreamSpec,
+    SorWebhookPayloadError,
     SorWebhookSignal,
     SorWebhookSubscription,
+    SorWebhookVerificationError,
 )
 from eylo.sor.support.contracts import (
     SupportAgent,
@@ -236,12 +238,80 @@ INTERCOM_MANIFEST = SorAdapterCapabilityManifest(
         operator_instance_origin=True,
     ),
     requires_instance_origin=True,
-    change_mode=SorChangeMode.OPERATOR_WEBHOOK,
+    change_mode=SorChangeMode.APP_WEBHOOK,
     supports_custom_fields=True,
     supports_history=False,
     supports_comments=True,
     supports_attachments=True,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class IntercomAppWebhookDelivery:
+    """One signed workspace event before source-selection filtering."""
+
+    organization_external_id: str
+    signal: SorWebhookSignal
+
+
+def verify_intercom_app_webhook(
+    *,
+    headers: Mapping[str, str],
+    body: bytes,
+    client_secret: str,
+) -> None:
+    """Authenticate one Intercom app delivery against its raw request bytes."""
+    signature = _header(headers, "x-hub-signature")
+    if signature is None or not signature.startswith("sha1="):
+        raise SorWebhookVerificationError(
+            "Intercom webhook signature is missing."
+        )
+    expected = "sha1=" + hmac.new(
+        client_secret.encode("utf-8"),
+        body,
+        hashlib.sha1,
+    ).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        raise SorWebhookVerificationError(
+            "Intercom webhook signature is invalid."
+        )
+
+
+def parse_intercom_app_webhook(*, body: bytes) -> IntercomAppWebhookDelivery:
+    """Extract the workspace boundary and one refetch signal from a delivery."""
+    try:
+        payload = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise SorWebhookPayloadError(
+            "Intercom webhook body is not valid JSON."
+        ) from error
+    try:
+        data = _object(payload, field="Intercom webhook")
+        topic = _required_string(data.get("topic"), field="Intercom webhook topic")
+        workspace_id = _required_id(
+            data.get("app_id"),
+            field="Intercom webhook workspace ID",
+        )
+        envelope = data.get("data")
+        item = (
+            _object(envelope.get("item"), field="Intercom webhook item")
+            if isinstance(envelope, Mapping) and envelope.get("item") is not None
+            else {}
+        )
+        object_key, external_id = _webhook_identity(topic, item)
+        signal = SorWebhookSignal(
+            delivery_id=_optional_id(data.get("id")),
+            event_type=topic,
+            vendor_object_key=object_key,
+            external_id=external_id,
+            occurred_at=_optional_datetime(data.get("created_at")),
+        )
+    except SorVendorOperationError as error:
+        raise SorWebhookPayloadError(str(error)) from error
+    return IntercomAppWebhookDelivery(
+        organization_external_id=workspace_id,
+        signal=signal,
+    )
 
 
 def _field(
@@ -564,24 +634,11 @@ class IntercomSupportAdapter:
             raise SorCapabilityUnavailable(
                 "Intercom webhook verification requires the app client secret."
             )
-        signature = _header(headers, "x-hub-signature")
-        if signature is None or not signature.startswith("sha1="):
-            raise SorVendorOperationError(
-                "vendor_webhook_unsigned",
-                "Intercom webhook signature is missing.",
-                retryable=False,
-            )
-        expected = "sha1=" + hmac.new(
-            secret.encode(),
-            body,
-            hashlib.sha1,
-        ).hexdigest()
-        if not hmac.compare_digest(signature, expected):
-            raise SorVendorOperationError(
-                "vendor_webhook_invalid",
-                "Intercom webhook signature is invalid.",
-                retryable=False,
-            )
+        verify_intercom_app_webhook(
+            headers=headers,
+            body=body,
+            client_secret=secret,
+        )
 
     async def parse_webhook_signal(
         self,
@@ -589,32 +646,7 @@ class IntercomSupportAdapter:
         headers: Mapping[str, str],
         body: bytes,
     ) -> tuple[SorWebhookSignal, ...]:
-        try:
-            payload = json.loads(body)
-        except (UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise SorVendorOperationError(
-                "vendor_webhook_invalid",
-                "Intercom webhook body is not valid JSON.",
-                retryable=False,
-            ) from error
-        data = _object(payload, field="Intercom webhook")
-        topic = _required_string(data.get("topic"), field="Intercom webhook topic")
-        envelope = data.get("data")
-        item = (
-            _object(envelope.get("item"), field="Intercom webhook item")
-            if isinstance(envelope, Mapping) and envelope.get("item") is not None
-            else {}
-        )
-        object_key, external_id = _webhook_identity(topic, item)
-        return (
-            SorWebhookSignal(
-                delivery_id=_optional_id(data.get("id")),
-                event_type=topic,
-                vendor_object_key=object_key,
-                external_id=external_id,
-                occurred_at=_optional_datetime(data.get("created_at")),
-            ),
-        )
+        return (parse_intercom_app_webhook(body=body).signal,)
 
     async def execute_command(self, command: SorCommandRequest) -> SorCommandResult:
         if command.tool_name not in _WRITE_TOOLS:
@@ -2302,6 +2334,9 @@ def _invalid_command(message: str) -> SorVendorOperationError:
 __all__ = [
     "INTERCOM_API_VERSION",
     "INTERCOM_MANIFEST",
+    "IntercomAppWebhookDelivery",
     "IntercomSupportAdapter",
     "create_intercom_adapter",
+    "parse_intercom_app_webhook",
+    "verify_intercom_app_webhook",
 ]

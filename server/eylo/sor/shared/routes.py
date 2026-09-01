@@ -78,6 +78,7 @@ from eylo.sor.shared.repositories import SorRepository
 from eylo.sor.shared.schemas import (
     SorAgentViewResponse,
     SorApiKeySourceCreateRequest,
+    SorAppWebhookVerificationTokenResponse,
     SorAuthorizationRedirectResponse,
     SorCatalogResponse,
     SorCollectionPageResponse,
@@ -231,6 +232,30 @@ async def update_sor_connector_app_webhook_signing_secret(
         raise _configuration_error(error) from None
 
 
+@router.get(
+    "/connectors/{connector_id}/app-webhook-verification-token",
+    response_model=SorAppWebhookVerificationTokenResponse,
+)
+async def get_sor_connector_app_webhook_verification_token(
+    organization_id: UUID,
+    connector_id: UUID,
+    current_user: CurrentUserSchema = Depends(get_current_user),
+) -> SorAppWebhookVerificationTokenResponse:
+    """Reveal Notion's endpoint challenge to the configuring organization."""
+    _authorize(organization_id, current_user)
+    try:
+        async with start_transaction(ro=True) as session:
+            token = await SorWebhookService(
+                session
+            ).reveal_notion_verification_token(
+                organization_id=organization_id,
+                connector_id=connector_id,
+            )
+    except (SorConfigurationError, SorNotFoundError) as error:
+        raise _configuration_error(error) from None
+    return SorAppWebhookVerificationTokenResponse(verification_token=token)
+
+
 @router.post(
     "/connectors/{connector_id}/authorize",
     response_model=SorAuthorizationRedirectResponse,
@@ -352,7 +377,7 @@ def _app_webhook_state(view: SorConnectorView) -> SorAppWebhookState:
     if _app_webhook_url(view) is None:
         return SorAppWebhookState.PUBLIC_ENDPOINT_REQUIRED
     if (
-        connector.vendor_key == "linear"
+        connector.vendor_key in {"linear", "notion"}
         and connector.webhook_signing_secret is None
     ):
         return SorAppWebhookState.SIGNING_SECRET_REQUIRED

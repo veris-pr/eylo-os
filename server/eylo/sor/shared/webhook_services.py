@@ -35,6 +35,7 @@ from .secrets import (
     decrypt_connector_client_secret,
     decrypt_connector_webhook_signing_secret,
     encrypt_bytes,
+    encrypt_connector_webhook_signing_secret,
     encrypt_source_webhook_signing_secret,
 )
 from .services import SorConfigurationError, SorConflictError, SorNotFoundError
@@ -43,6 +44,7 @@ SOR_WEBHOOK_MAX_BODY_BYTES = 1_048_576
 SOR_WEBHOOK_RAW_RETENTION_HOURS = 24
 SOR_WEBHOOK_OPERATION_LEASE = timedelta(minutes=5)
 SOR_WEBHOOK_RENEWAL_MARGIN = timedelta(days=7)
+SOR_WEBHOOK_SUBSCRIPTION_ID_MAX_BYTES = 32_768
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,7 +140,7 @@ class SorWebhookService:
         if connector.external_connection_id is None:
             raise SorNotFoundError("SOR webhook endpoint not found.")
         try:
-            if connector.vendor_key == "linear":
+            if connector.vendor_key in {"linear", "notion"}:
                 if connector.webhook_signing_secret is None:
                     raise SorNotFoundError("SOR webhook endpoint not found.")
                 signing_secret = decrypt_connector_webhook_signing_secret(
@@ -148,7 +150,7 @@ class SorWebhookService:
                     secret_revision=connector.webhook_signing_secret_revision,
                 )
                 secret_revision = connector.webhook_signing_secret_revision
-            elif connector.vendor_key == "hubspot":
+            elif connector.vendor_key in {"hubspot", "intercom"}:
                 if connector.oauth_client_secret is None:
                     raise SorNotFoundError("SOR webhook endpoint not found.")
                 signing_secret = decrypt_connector_client_secret(
@@ -203,6 +205,103 @@ class SorWebhookService:
             signing_secret_revision=secret_revision,
             sources=sources,
         )
+
+    async def require_app_endpoint(
+        self,
+        *,
+        vendor_key: str,
+        endpoint_key: UUID,
+    ) -> None:
+        """Confirm one opaque app endpoint without opening connection authority."""
+        connector = await self.repository.get_connector_by_webhook_endpoint_key(
+            endpoint_key=endpoint_key,
+        )
+        if connector is None or connector.vendor_key != vendor_key:
+            raise SorNotFoundError("SOR webhook endpoint not found.")
+        manifest = self.registry.get_manifest(
+            profile=connector.profile,
+            vendor_key=connector.vendor_key,
+        )
+        if manifest.change_mode is not SorChangeMode.APP_WEBHOOK:
+            raise SorNotFoundError("SOR webhook endpoint not found.")
+
+    async def record_notion_verification_token(
+        self,
+        *,
+        endpoint_key: UUID,
+        verification_token: str,
+    ) -> None:
+        """Persist Notion's one-time endpoint challenge before OAuth consent."""
+        connector = await self.repository.get_connector_by_webhook_endpoint_key(
+            endpoint_key=endpoint_key,
+            for_update=True,
+        )
+        if connector is None or connector.vendor_key != "notion":
+            raise SorNotFoundError("SOR webhook endpoint not found.")
+        manifest = self.registry.get_manifest(
+            profile=connector.profile,
+            vendor_key=connector.vendor_key,
+        )
+        if manifest.change_mode is not SorChangeMode.APP_WEBHOOK:
+            raise SorNotFoundError("SOR webhook endpoint not found.")
+        if connector.webhook_signing_secret is not None:
+            try:
+                current = decrypt_connector_webhook_signing_secret(
+                    connector.webhook_signing_secret,
+                    organization_id=connector.organization_id,
+                    connector_id=connector.id,
+                    secret_revision=connector.webhook_signing_secret_revision,
+                )
+            except SorSecretEnvelopeError as error:
+                raise SorConfigurationError(
+                    "SOR webhook verification token could not be authenticated."
+                ) from error
+            if secrets.compare_digest(current, verification_token):
+                return
+            raise SorConflictError(
+                "Notion webhook verification is already bound to this connector."
+            )
+        secret_revision = connector.webhook_signing_secret_revision + 1
+        connector.webhook_signing_secret = (
+            encrypt_connector_webhook_signing_secret(
+                verification_token,
+                organization_id=connector.organization_id,
+                connector_id=connector.id,
+                secret_revision=secret_revision,
+            )
+        )
+        connector.webhook_signing_secret_revision = secret_revision
+        connector.webhook_authorized_connection_revision = None
+        await self.session.flush()
+
+    async def reveal_notion_verification_token(
+        self,
+        *,
+        organization_id: UUID,
+        connector_id: UUID,
+    ) -> str:
+        """Reveal the Notion challenge only through an authenticated org route."""
+        connector = await self.repository.get_connector(
+            organization_id=organization_id,
+            connector_id=connector_id,
+        )
+        if (
+            connector is None
+            or connector.vendor_key != "notion"
+            or connector.webhook_signing_secret is None
+        ):
+            raise SorNotFoundError("Notion webhook verification token not found.")
+        try:
+            return decrypt_connector_webhook_signing_secret(
+                connector.webhook_signing_secret,
+                organization_id=connector.organization_id,
+                connector_id=connector.id,
+                secret_revision=connector.webhook_signing_secret_revision,
+            )
+        except SorSecretEnvelopeError as error:
+            raise SorConfigurationError(
+                "Notion webhook verification token could not be authenticated."
+            ) from error
 
     async def bind_app_webhook_account(
         self,
@@ -272,6 +371,26 @@ class SorWebhookService:
 
         token_hash = _sha256_bytes(endpoint_token.encode("utf-8"))
         endpoint_changed = source.webhook_endpoint_token_hash != token_hash
+        configuration_changed = endpoint_changed
+
+        # GitHub creates one hook per selected repository. The platform owns one
+        # source-bound secret shared by those hooks so every delivery can be
+        # authenticated before its payload is accepted.
+        if source.vendor_key == "github" and source.webhook_signing_secret is None:
+            secret_revision = source.webhook_signing_secret_revision + 1
+            source.webhook_signing_secret = encrypt_source_webhook_signing_secret(
+                secrets.token_urlsafe(32),
+                organization_id=organization_id,
+                source_id=source_id,
+                secret_revision=secret_revision,
+            )
+            source.webhook_signing_secret_revision = secret_revision
+            configuration_changed = True
+
+        if endpoint_changed:
+            source.webhook_endpoint_token_hash = token_hash
+        if configuration_changed:
+            source.config_revision += 1
 
         if source.webhook_subscription_id is not None:
             expires_at = source.webhook_subscription_expires_at
@@ -284,9 +403,6 @@ class SorWebhookService:
                 )
             ):
                 return None
-            if endpoint_changed:
-                source.webhook_endpoint_token_hash = token_hash
-                source.config_revision += 1
             source.webhook_subscription_status = (
                 SorWebhookSubscriptionState.RENEWING.value
             )
@@ -303,9 +419,6 @@ class SorWebhookService:
                 endpoint_token=endpoint_token,
             )
 
-        if endpoint_changed:
-            source.webhook_endpoint_token_hash = token_hash
-            source.config_revision += 1
         source.webhook_subscription_status = (
             SorWebhookSubscriptionState.REGISTERING.value
         )
@@ -330,7 +443,9 @@ class SorWebhookService:
         subscription: SorWebhookSubscription,
     ) -> SorSourceModel:
         """Commit the exact vendor subscription returned by a claimed operation."""
-        if not 1 <= len(subscription.external_id) <= 512:
+        if not 1 <= len(subscription.external_id.encode("utf-8")) <= (
+            SOR_WEBHOOK_SUBSCRIPTION_ID_MAX_BYTES
+        ):
             raise SorConfigurationError("Vendor webhook subscription ID is invalid.")
         expires_at = subscription.expires_at
         if expires_at is not None:

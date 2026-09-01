@@ -68,12 +68,11 @@ adapter. Do not mix the classic and granular lists. See Atlassian's REST v2
      OAuth application.
    - For Freshdesk, enter the exact `https://<site>.freshdesk.com` site URL and
      the API key from the account profile.
-   - For a Notion API-key connection, enable read content and update content in
-     the Creator dashboard. Enable read comments and insert comments when
-     Agents may use `docs_comment`; Notion leaves comment capabilities off by
-     default. Enter the internal integration token, then add the connection to
-     only the intended pages or databases. The console repeats these
-     prerequisites beside the credential field.
+   - For Notion, create a public OAuth integration and register the exact callback
+     shown by Eylo. Add Eylo's app webhook URL in the Creator dashboard, save it,
+     then load the verification token in Eylo and paste it back into Notion.
+     Enable read/update content and the comment capabilities required by the
+     selected Agent tools. Share only the intended pages or data sources.
    - For Jira or Confluence, create an Atlassian OAuth 2.0 (3LO) app, register
      the exact callback shown by Eylo, and enter the exact
      `https://<site>.atlassian.net` origin. The authorizing account must be able
@@ -89,9 +88,9 @@ adapter. Do not mix the classic and granular lists. See Atlassian's REST v2
      before authorizing the workspace. The webhook requires a public HTTPS
      `API_BASE_URL`.
    - For GitHub, create an OAuth App and register the exact callback. Enter each
-     repository explicitly as `owner/repository`. After activation, an optional
-     repository webhook can use the source-provided URL and secret for real-time
-     updates; scheduled reconciliation remains available without it.
+     repository explicitly as `owner/repository`. The authorizing account must
+     administer webhooks on those repositories. Eylo creates its exact signed
+     hooks after activation; scheduled reconciliation remains the recovery path.
 5. Complete any vendor-specific, non-secret source settings. GitHub requires
    one or more explicit `owner/repository` entries and will not infer every
    repository visible to the OAuth token. Intercom requires the workspace data
@@ -100,7 +99,7 @@ adapter. Do not mix the classic and granular lists. See Atlassian's REST v2
    required Notion pages or data sources with the chosen integration.
 6. Select only the objects and read or read-write access the source needs.
 7. For OAuth, enter the client ID and secret, save the app, authorize the
-   vendor account, and return to Eylo. For Freshdesk or Notion API-key auth,
+   vendor account, and return to Eylo. For Freshdesk API-key auth,
    select **Connect and verify**; Eylo makes one bounded authenticated request
    before storing the encrypted credential and source draft.
    The callback commits the provider connection before notifying the browser.

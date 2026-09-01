@@ -5,9 +5,10 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Path, Request, status
+from fastapi import APIRouter, HTTPException, Path, Request, Response, status
 from pydantic import BaseModel
 
+from eylo.common.database import start_transaction
 from eylo.sor.runtime.adapters import SorAdapterUnavailableError
 from eylo.sor.runtime.webhooks import accept_sor_app_webhook, accept_sor_webhook
 from eylo.sor.shared.contracts import (
@@ -19,7 +20,10 @@ from eylo.sor.shared.services import (
     SorConflictError,
     SorNotFoundError,
 )
-from eylo.sor.shared.webhook_services import SOR_WEBHOOK_MAX_BODY_BYTES
+from eylo.sor.shared.webhook_services import (
+    SOR_WEBHOOK_MAX_BODY_BYTES,
+    SorWebhookService,
+)
 from eylo.sor.shared.webhook_urls import public_app_webhook_url
 
 router = APIRouter(prefix="/sor/webhooks", tags=["systems-of-record-webhooks"])
@@ -43,6 +47,29 @@ class SorAppWebhookAcceptedResponse(BaseModel):
 
     receipt_ids: tuple[UUID, ...]
     duplicate_count: int
+
+
+@router.head(
+    "/{vendor_key}/apps/{endpoint_key}",
+    status_code=status.HTTP_200_OK,
+)
+async def validate_sor_app_webhook_endpoint(
+    vendor_key: Annotated[
+        str,
+        Path(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_-]*$"),
+    ],
+    endpoint_key: UUID,
+) -> Response:
+    """Validate an opaque app callback without exposing connector metadata."""
+    try:
+        async with start_transaction(ro=True) as session:
+            await SorWebhookService(session).require_app_endpoint(
+                vendor_key=vendor_key,
+                endpoint_key=endpoint_key,
+            )
+    except (KeyError, SorNotFoundError):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
+    return Response(status_code=status.HTTP_200_OK)
 
 
 @router.post(

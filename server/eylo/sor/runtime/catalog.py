@@ -1571,7 +1571,8 @@ VENDOR_CANDIDATES = (
         setup_notes=(
             "Create a GitHub OAuth App and register the exact Eylo callback URL shown below.",
             "List every repository as owner/repository. Eylo never expands the source to every repository visible to the token.",
-            "For real-time updates, add the source's webhook URL and secret to each selected repository after activation; scheduled reconciliation works without it.",
+            "The authorizing account must be able to administer webhooks on every selected repository. Eylo creates and removes only its exact callback hooks after activation.",
+            "Scheduled reconciliation remains the recovery path when a webhook is delayed or unavailable.",
         ),
     ),
     SorVendorCandidate(
@@ -1589,6 +1590,11 @@ VENDOR_CANDIDATES = (
         "Conversations, contacts, admins, teams, messages, tags, and attachments.",
         (ConnectionAuthKind.OAUTH2,),
         requires_instance_origin=True,
+        setup_notes=(
+            "Create an Intercom app, register the exact Eylo OAuth callback URL, and add the Eylo app webhook URL before installing the app.",
+            "Enable the contact and conversation webhook topics needed by the selected source objects. Intercom app webhooks apply across installed workspaces.",
+            "Eylo validates Intercom's endpoint check and verifies deliveries with the app client secret.",
+        ),
     ),
     SorVendorCandidate(
         SorProfile.SUPPORT,
@@ -1619,10 +1625,11 @@ VENDOR_CANDIDATES = (
         "notion",
         "Notion",
         "Pages, blocks, data sources, properties, and comments.",
-        (ConnectionAuthKind.OAUTH2, ConnectionAuthKind.API_KEY),
+        (ConnectionAuthKind.OAUTH2,),
         setup_notes=(
             "In Notion's Creator dashboard, enable read content and update content capabilities for this connection.",
             "Enable read comments and insert comments if Agents will use docs_comment; comment capabilities are off by default in Notion.",
+            "Add the Eylo app webhook URL in Notion before authorization. Notion sends a verification token to Eylo; copy the token shown by Eylo back into Notion to complete endpoint verification.",
             "Add the connection to every page or database Eylo should synchronize. Unshared content is intentionally invisible to the Notion API.",
         ),
     ),
