@@ -6742,6 +6742,242 @@ acceptance and human voice QA remain unverified; the development services still
 run the previous successfully tested build. Smallest/Murf and the rest of the
 platform-wide F0–F10 work remain open.
 
+### Local event registration and dispatch contracts
+
+2026-09-09: the current full-project baseline was 551 Pyrefly errors. Forty-one
+listener bindings declared every callback as accepting any `BaseModel`, erasing
+the relationship between the registered event class and its handler. The emitter
+also used an untyped attribute-forwarding proxy with an unused callable path,
+although installed Pyventus 0.7.2 exposes `EventEmitter.emit`, not a callable
+emitter. This was a static contract defect; no observed production emitter outage
+is attributed to the unused callable path.
+
+- `ListenerRegistration[Event]` and `ListenerManifestHealth` are now immutable
+  Pydantic models. Registration construction checks metadata; `_entry` statically
+  binds the event class to the callback's argument type. No broad callback cast
+  or suppressed diagnostic is used.
+- The heterogeneous manifest exposes a `LocalRegistration` protocol with checked
+  `dispatch`. Because Pyventus routes by class name, dispatch refuses an unrelated
+  model, including same-name collisions, before invoking the callback. Exceptions
+  and cancellation pass to the existing subscriber failure boundary.
+- Duplicate binding checks compare the original callable, preserving bound-method
+  equality. The comparison-only `HandlerIdentity` accepts `Never`; callers cannot
+  use that erased view to invoke a handler with an arbitrary event.
+- Emission calls the typed PID-aware factory directly. Payload limits, best-effort
+  failure returns, unordered concurrent delivery and per-process setup remain
+  unchanged. No new event, persistence authority or vendor behavior is introduced.
+
+Evidence: installed Pyventus 0.7.2 method signatures/source, checked against the
+[official event workflow](https://mdapena.github.io/pyventus/latest/), and Pydantic
+2.11.10. A temporary negative typing probe accepted the valid binding and rejected
+an unrelated event/handler pairing. The probe was removed after execution.
+
+Executed **53 function/runtime assertions** using real Pyventus: all 41 manifest
+registrations and health projection, repeated setup, wrong-model/same-name
+refusal, duplicate functions and bound methods, concurrent callbacks, exception
+and cancellation propagation, PID-change recreation, oversized/unserializable
+payload refusal and scheduling failure. A real Knowledgebase lifecycle event
+passed through the full manifest/emitter/dispatch path to its existing bounded
+logging projection. Synthetic callbacks covered concurrency; no product DB
+listener or live WebSocket broadcast was invoked in this slice.
+
+Focused review, in order: listener composition remains outside modules/sockets;
+the existing emitter and manifest stay authoritative; class-to-handler dispatch
+is checked without changing payloads; Pydantic conversion and proxy removal match
+the typing plan; callable equality and PID recovery retain their existing
+semantics. No remaining issue found in the exercised contract scope.
+
+Full-project Pyrefly now reports **509 errors**, four existing suppressions,
+down 42. The new local pre-commit/pre-push event-contract gate passes. Remaining
+platform errors and native provider work are not complete. No deployment,
+migration, provider reconfiguration, database mutation or commit in this slice.
+
+### Browser voice session boundary contracts
+
+2026-09-09: browser voice had 131 type errors, primarily because it accessed
+pipeline resources through the deliberately narrow module-owned
+`WebSocketSessionStatePort`. The runtime producer already supplies concrete
+`WSSessionState`; extending the common port with every provider field would
+erase the ownership boundary instead of correcting the consumer.
+
+- Pipeline-owned resolution checks the concrete holder and preserves object
+  identity. Optional cleanup remains a no-op without state; required startup
+  reports the existing initialization error. An incompatible port is rejected
+  before resource access, with no cast or type suppression.
+- Cleanup, termination, silence policy and initialization retain that checked
+  holder. A missing STT transcript queue now fails initialization through its
+  rollback path instead of starting a detached consumer with `None`.
+- Provider-failure dispatch captures a non-null callback before asynchronous
+  event reporting. Ready signals use the context's transport identity. Voice
+  state task callbacks now match the sender's boolean result type.
+- The interaction-config protocol acknowledges that background-audio mappings
+  are absent before configuration. It still writes the same canonical values;
+  conversion of those remaining mappings into model objects is separate work.
+
+Executed 48 function/runtime assertions: real `SessionContext`/`WSSessionState`
+identity, narrow-port refusal, missing-state startup/cleanup, duplicate audio
+initialization, config projection, real queue draining and child cancellation,
+repeat cleanup, concurrent termination ownership, shielded caller cancellation,
+provider-failure callback capture and ready-signal routing. External signaling
+and event persistence were substituted. These checks do not prove native voice,
+recording upload, or the full DB-backed startup path.
+
+The expanded voice pre-commit/pre-push gate and backend Ruff pass. Full-project
+Pyrefly is **377 errors**, four existing suppressions, down 132 from 509; the
+browser file and interaction-config file are clean. The extra resolved error
+was the shared interaction-config protocol at its telephony call site.
+
+Both running UIs returned HTTP 200. Existing Eylo Development login and
+conversation details remained usable; the widget navigated to its 15-entry
+conversation list and reopened the existing mixed-agent exchange. The admin
+still displayed its 28 persisted messages and actual completed tool results.
+This is a navigation check of the previous build, not deployment or live proof
+of this slice. No new agent turn, DB reset, migration, provider reconfiguration,
+or commit. Remaining platform types and native provider work stay open.
+
+### Browser audio ingestion and playback contracts
+
+2026-09-09: followed browser binary ingestion through WebRTC media,
+downsampling, STT forwarding, recording and outgoing playback. The shared
+WebSocket pipeline resolver now serves browser lifecycle and audio ingestion;
+the module-owned session port remains narrow. Session queues carry bytes and
+the recorder field holds `AudioRecorder` explicitly.
+
+- `AudioDownsampler` uses `DownsamplingMethod`, PCM16 arrays and immutable
+  Pydantic buffer diagnostics. Its CPU JIT boundary validates native output;
+  the SciPy bridge describes only the consumed public functions. No private SDK
+  imports, unchecked casts or new suppressions were added.
+- Reproduced a baseline division by zero when non-integer resampling produces
+  one output sample. Mono and stereo kernels now select the first input
+  position for that case.
+- Reproduced incorrect planar stereo flattening before channel mixing. Media
+  ingestion now interleaves planar PCM16 and validates frames/formats before
+  recorder or provider effects. Packed PCM retains its previous result.
+- Typed outgoing frames, queue access and buffer results preserve padding,
+  interruption and playback-completion timing. Invalid ambient amplitude
+  values, including infinity, use the existing bounded fallback.
+
+Executed **150 function/runtime assertions**, including numerical parity for
+24 method/rate/channel combinations, baseline regression reproduction, real
+PyAV frames, real session holders/queues, exact recorder PCM bytes, actual STT
+forwarder acknowledgement, rejected frame types, playback padding/timestamps,
+interruption and a single post-drain completion callback. Only external
+provider sending was substituted. The existing drop-oldest STT queue behavior
+was exercised, not redesigned. The browser lifecycle probe remains separate.
+
+A warmed local 5,000-iteration check measured approximately 1.12 microseconds
+per 20 ms input frame before the JIT wrapper and 1.45 after; this is bounded
+local overhead evidence, not a latency benchmark or speech-quality evaluation.
+Installed numerical/media versions inspected: Numba 0.62.1, SciPy 1.16.3,
+NumPy 2.3.4, PyAV 16.0.1 and aiortc 1.15.0.
+
+The affected files have zero Pyrefly errors. Full-project errors are **328**,
+four existing suppressions, down 49 from 377. Platform-wide hardening is still
+open. This slice does not prove native microphone/ICE/vendor sessions,
+recording upload or DB-backed startup; it has not been deployed. Chunk-boundary
+resampler behavior and remaining loose interaction settings are follow-up work.
+
+Post-slice checks: 48 browser-session assertions passed again; the expanded
+voice type hook, backend Ruff, formatting and documentation/link/diagram checks
+passed. Both existing UI servers returned HTTP 200. Browser navigation could
+not run because the Mac was locked and automatic unlock failed. No fresh live
+agent/provider result is claimed for this slice.
+
+### WebRTC peer and negotiation ownership contracts
+
+2026-09-09: followed audio tracks back through peer acquisition, signaling,
+cached-answer replay and termination. Eight peer type errors came from resource
+fields inferred as `None` and an awaitable callback passed to `create_task`.
+
+- Reproduced `TypeError: a coroutine was expected` with a permitted Future-returning
+  terminal callback. A retained coroutine now awaits the callback; completion
+  observes failures and releases the reference without self-await during cleanup.
+- The additional-track path passed a raw string to cleanup that reads
+  `reason.value`. Added `BrowserVoiceTerminationReason.ADDITIONAL_AUDIO_TRACK`,
+  retaining its existing wire value, and stopped the extra native track.
+- Inspected installed aiortc 1.15.0: it emits track/state events, not the
+  registered browser-style `icecandidate` / `icecandidateerror` callbacks;
+  `RTCIceCandidate` has no `.candidate` field. Removed the dead callbacks and
+  retained gathering/completed-SDP delivery. Native states, SDP kinds and Eylo
+  commands remain separate enums. Close callbacks capture their original peer.
+- Replaced negotiation/key dataclasses with Pydantic objects. Task handles are
+  `Task[None]`; resource fields validate instances and are excluded from dumps.
+  Immutable typed answers replace cached dictionaries; replay serializes a new
+  projection. The manager supplies a validated `WebRTCOffer`, not arbitrary JSON.
+- Normal owned ICE shutdown no longer logs a misleading relay failure warning.
+
+Function/runtime QA: **46 peer assertions** and **50 negotiation assertions**.
+Two actual local aiortc peers exchanged offers/answers and audio without any
+external STUN/TURN server. Checked gathered candidate SDP, received Opus/PCM
+frames, extra-track termination, task/track/peer cleanup and absence of late
+callback errors. Manager checks covered simultaneous prepare, one config
+resolution, tenant keys, preserved live identity, validated assignments,
+resource-excluding serialization, immutable answer replay, no second peer,
+candidate deduplication and one concurrent cleanup owner. External provider/DB
+resolution, timeline writes and WebSocket delivery were substituted. This is
+not native-vendor, microphone or UI proof.
+
+Full-project Pyrefly is **320 errors**, four existing suppressions, down eight.
+Peer, session models and signaling manager pass the expanded voice type hook.
+Two inspected errors remain in WebRTC config/verification: the dataclass declares
+`provider: str` but replaces it with an enum in `__post_init__`. This is static
+contract drift, not proof that current provider verification fails. Next slice:
+type the complete config-resolution/verification path and its remaining value
+objects; keep provider HTTP outside the DB transaction. Full platform hardening,
+deployment and operator browser QA remain open.
+
+Final reruns passed: 46 peer + 50 negotiation + 48 browser-session + 150 media
+assertions. Backend Ruff, formatting, hook configuration and documentation
+validation passed. Focused review followed boundaries, architectural ownership,
+source-to-sink flow, plan adherence and readability in that order: no module
+imports SDK/pipeline types, candidate policy still precedes peer acquisition,
+cached replay remains tenant-bound, live resources retain identity and no new
+DB/network work enters the audio hot path. Public request/candidate/cleanup
+envelopes still contain older dictionary/string contracts; their hardening is
+not implied by the typed answer or zero-error peer files. No deployment or
+operator configuration change in this slice.
+
+### F5 next slice: Smallest protocol evidence gap
+
+2026-09-09: source tracing found the Smallest adapter hardwired to Lightning v2,
+regardless of configured model, with loose JSON parsing, a dropping audio queue
+and no turn-completion override. These are inspected findings, not reproduced
+native-provider failures. No Smallest implementation or operator config changed.
+
+The current [native WebSocket reference](https://docs.smallest.ai/models/api-reference/text-to-speech/tts)
+defines `/waves/v1/tts/live`, explicit v3.1 model selection and nested
+`status`/`data.audio` events. The [vendor deprecation notice](https://docs.smallest.ai/models/changelog/lightning-v-3-1/2026/5/2)
+marks v2 as legacy; its old Markdown schema now returns Page Not Found. Do not
+infer v2 compatibility from the current schema or silently replace operator
+models. Next: establish the legacy compatibility contract or a deliberate model
+migration, then implement typed messages and prove completion, backpressure,
+interruption, and cleanup through the actual TTS manager.
+
+### Live browser recheck after the terminal-artifact fix
+
+2026-09-09, 22:02–22:04 local time: both existing UI servers returned HTTP 200;
+the existing authenticated Eylo Development session was reused. No restart,
+provider reconfiguration or organization switch was needed. API and all three
+workers remained up; Postgres and Redis remained healthy.
+
+In conversation `01a086e4-f8ce-7883-8cad-1eee68c5e15e`:
+
+- Reopened the submitted form: its value remained visible and read-only.
+- Sent a new read-only request through the widget. `memory_recall` returned the
+  same conversation memory ID `1bd73f8f-9eaa-4213-ba5e-05d1e5aa1454` and fact,
+  with Bedrock reranking applied. Admin showed the actual call/result Completed.
+- Requested `kb_query` with `top_k=1`. Admin confirmed one result, Bedrock
+  reranking applied, and citation K1. The assistant correctly distinguished
+  the incident escalation phrase from the release codename using source data.
+- The admin transcript reached 28 persisted messages; new user, tool,
+  assistant and background-result messages were Completed. Background results
+  alone still do not prove background-agent tool execution.
+- Widget Load older conversations expanded the list from 12 to 15 entries.
+  Admin Refresh still briefly clears the transcript; this known UI issue remains.
+
+These checks exercise the running build, not the undeployed Rime slice or a
+native Smallest connection. No external mutation, migration or DB reset.
+
 ### Live QA correction: committed widget terminal artifacts
 
 2026-09-09: rebuilt API/workers with the typed TTS changes, preserving the

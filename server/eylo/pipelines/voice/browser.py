@@ -92,6 +92,10 @@ from eylo.pipelines.websocket.schemas import (
     WsRequestEvent,
     WsResponse,
 )
+from eylo.pipelines.websocket.session_state import (
+    require_websocket_state,
+    resolve_websocket_state,
+)
 from eylo.pipelines.websocket.singleton import S_ws_manager
 from eylo.sockets.tts.schemas import TTSConfig, normalize_tts_config
 
@@ -154,7 +158,7 @@ def _schedule_browser_voice_state(
     task.add_done_callback(_consume_voice_state_result)
 
 
-def _consume_voice_state_result(task: asyncio.Task[None]) -> None:
+def _consume_voice_state_result(task: asyncio.Task[bool]) -> None:
     try:
         task.result()
     except asyncio.CancelledError:
@@ -249,13 +253,13 @@ async def _send_realtime_ready_signals(
     try:
         await S_ws_manager.send_response(
             {"kind": WsEventAction.STT_READY, "data": payload},
-            ctx.ws.organization_id,
-            ctx.ws.session_id,
+            ctx.organization_id,
+            ctx.session_id,
         )
         await S_ws_manager.send_response(
             {"kind": WsEventAction.TTS_READY, "data": payload},
-            ctx.ws.organization_id,
-            ctx.ws.session_id,
+            ctx.organization_id,
+            ctx.session_id,
         )
         logger.info("Sent stt:ready and tts:ready signals for realtime mode")
     except Exception as error:
@@ -491,11 +495,12 @@ def _build_recorder(
 async def cleanup_audio_services(ctx: SessionContext) -> None:
     from eylo.runtime.tasks import teardown_long_running_tasks, teardown_queues
 
-    if not ctx.ws:
+    session_state = resolve_websocket_state(ctx)
+    if session_state is None:
         return
-    was_realtime_mode = ctx.ws.realtime_mode
+    was_realtime_mode = session_state.realtime_mode
     try:
-        audio_metrics = _collect_audio_metrics(ctx.ws)
+        audio_metrics = _collect_audio_metrics(session_state)
     except Exception as error:
         audio_metrics = {}
         logger.error(
@@ -504,17 +509,17 @@ async def cleanup_audio_services(ctx: SessionContext) -> None:
             type(error).__name__,
         )
     ended_reason = (
-        ctx.ws.voice_termination_reason
+        session_state.voice_termination_reason
         or BrowserVoiceTerminationReason.VOICE_CLEANUP_WITHOUT_REASON
     )
     audio_metrics["termination_reason"] = ended_reason.value
-    voice_transcript_session_started = ctx.ws.voice_transcript_session_started
-    voice_session_id = ctx.ws.voice_session_id
-    voice_transcript_runtime_mode = ctx.ws.voice_transcript_runtime_mode
-    if ctx.ws.live_voice_buffer is not None:
+    voice_transcript_session_started = session_state.voice_transcript_session_started
+    voice_session_id = session_state.voice_session_id
+    voice_transcript_runtime_mode = session_state.voice_transcript_runtime_mode
+    if session_state.live_voice_buffer is not None:
         try:
             FillerPhraseManager.cancel_filler(
-                ctx.ws.live_voice_buffer.identity.conversation_id
+                session_state.live_voice_buffer.identity.conversation_id
             )
         except Exception as error:
             logger.error(
@@ -522,16 +527,16 @@ async def cleanup_audio_services(ctx: SessionContext) -> None:
                 ctx.organization_id,
                 type(error).__name__,
             )
-    ctx.ws.is_agent_thinking = False
+    session_state.is_agent_thinking = False
 
     await _run_voice_cleanup_step(
         ctx.organization_id,
         "policy_tasks",
-        teardown_long_running_tasks(ctx.ws.voice_policy_tasks),
+        teardown_long_running_tasks(session_state.voice_policy_tasks),
     )
-    ctx.ws.voice_policy_tasks.clear()
+    session_state.voice_policy_tasks.clear()
 
-    realtime_manager = ctx.ws.realtime_manager
+    realtime_manager = session_state.realtime_manager
     if realtime_manager:
         await _run_voice_cleanup_step(
             ctx.organization_id,
@@ -543,32 +548,34 @@ async def cleanup_audio_services(ctx: SessionContext) -> None:
             ctx.organization_id,
         )
         await _record_voice_provider_fact(
-            ctx.ws,
+            session_state,
             provider_kind="realtime",
             state="disconnected",
         )
-    ctx.ws.realtime_manager = None
+    session_state.realtime_manager = None
 
     if was_realtime_mode:
-        ctx.ws.realtime_mode = False
-        if ctx.ws.tts_response_queue is not None:
-            while not ctx.ws.tts_response_queue.empty():
+        session_state.realtime_mode = False
+        if session_state.tts_response_queue is not None:
+            while not session_state.tts_response_queue.empty():
                 try:
-                    ctx.ws.tts_response_queue.get_nowait()
-                    ctx.ws.tts_response_queue.task_done()
+                    session_state.tts_response_queue.get_nowait()
+                    session_state.tts_response_queue.task_done()
                 except asyncio.QueueEmpty:
                     break
-            ctx.ws.tts_response_queue = None
+            session_state.tts_response_queue = None
 
-    if ctx.ws.stt_started:
-        if ctx.ws.stt_socket:
+    if session_state.stt_started:
+        if session_state.stt_socket:
             await _run_voice_cleanup_step(
                 ctx.organization_id,
                 "stt_socket",
-                ctx.ws.stt_socket.disconnect(),
+                session_state.stt_socket.disconnect(),
             )
         stt_queues_to_tear_down = [
-            q for q in [ctx.ws.stt_response_queue, ctx.ws.stt_request_queue] if q
+            q
+            for q in [session_state.stt_response_queue, session_state.stt_request_queue]
+            if q
         ]
         if stt_queues_to_tear_down:
             await _run_voice_cleanup_step(
@@ -582,32 +589,34 @@ async def cleanup_audio_services(ctx: SessionContext) -> None:
             audio_metrics.get("stt", {}),
         )
         await _record_voice_provider_fact(
-            ctx.ws,
+            session_state,
             provider_kind="stt",
             state="disconnected",
         )
-    ctx.ws.stt_started = False
-    ctx.ws.stt_socket = None
-    ctx.ws.stt_response_queue = None
-    ctx.ws.stt_request_queue = None
+    session_state.stt_started = False
+    session_state.stt_socket = None
+    session_state.stt_response_queue = None
+    session_state.stt_request_queue = None
     await _run_voice_cleanup_step(
         ctx.organization_id,
         "stt_tasks",
-        teardown_long_running_tasks(ctx.ws.stt_session_tasks),
+        teardown_long_running_tasks(session_state.stt_session_tasks),
     )
-    ctx.ws.stt_session_tasks.clear()
+    session_state.stt_session_tasks.clear()
 
-    if ctx.ws.live_voice_turn_runner is not None:
+    if session_state.live_voice_turn_runner is not None:
         await _run_voice_cleanup_step(
             ctx.organization_id,
             "live_turns",
-            ctx.ws.live_voice_turn_runner.drain(),
+            session_state.live_voice_turn_runner.drain(),
         )
-        ctx.ws.live_voice_turn_runner = None
+        session_state.live_voice_turn_runner = None
 
-    if ctx.ws.tts_manager or ctx.ws.tts_started:
+    if session_state.tts_manager or session_state.tts_started:
         tts_queues_to_tear_down = [
-            q for q in [ctx.ws.tts_response_queue, ctx.ws.tts_request_queue] if q
+            q
+            for q in [session_state.tts_response_queue, session_state.tts_request_queue]
+            if q
         ]
         if tts_queues_to_tear_down:
             await _run_voice_cleanup_step(
@@ -615,11 +624,11 @@ async def cleanup_audio_services(ctx: SessionContext) -> None:
                 "tts_queues",
                 teardown_queues(tts_queues_to_tear_down, join_timeout=5),
             )
-        if ctx.ws.tts_socket:
+        if session_state.tts_socket:
             await _run_voice_cleanup_step(
                 ctx.organization_id,
                 "tts_socket",
-                ctx.ws.tts_socket.disconnect(),
+                session_state.tts_socket.disconnect(),
             )
         logger.info(
             "TTS services cleaned up organization_id=%s metrics=%s",
@@ -627,36 +636,36 @@ async def cleanup_audio_services(ctx: SessionContext) -> None:
             audio_metrics.get("tts", {}),
         )
         await _record_voice_provider_fact(
-            ctx.ws,
+            session_state,
             provider_kind="tts",
             state="disconnected",
         )
-    ctx.ws.tts_started = False
-    ctx.ws.tts_socket = None
-    ctx.ws.tts_manager = None
-    ctx.ws.tts_response_queue = None
-    ctx.ws.tts_request_queue = None
+    session_state.tts_started = False
+    session_state.tts_socket = None
+    session_state.tts_manager = None
+    session_state.tts_response_queue = None
+    session_state.tts_request_queue = None
     await _run_voice_cleanup_step(
         ctx.organization_id,
         "tts_tasks",
-        teardown_long_running_tasks(ctx.ws.tts_session_tasks),
+        teardown_long_running_tasks(session_state.tts_session_tasks),
     )
-    ctx.ws.tts_session_tasks.clear()
+    session_state.tts_session_tasks.clear()
 
-    if ctx.ws.audio_recorder:
+    if session_state.audio_recorder:
         await _run_voice_cleanup_step(
             ctx.organization_id,
             "recorder",
-            ctx.ws.audio_recorder.finalize(),
+            session_state.audio_recorder.finalize(),
         )
-        ctx.ws.audio_recorder = None
+        session_state.audio_recorder = None
 
     ended_at = arrow.utcnow().datetime
-    if ctx.ws.live_voice_buffer is not None:
+    if session_state.live_voice_buffer is not None:
         await _run_voice_cleanup_step(
             ctx.organization_id,
             "canonical_history",
-            finalize_live_voice_history(ctx.ws.live_voice_buffer),
+            finalize_live_voice_history(session_state.live_voice_buffer),
         )
 
     if voice_transcript_session_started and voice_session_id is not None:
@@ -673,7 +682,7 @@ async def cleanup_audio_services(ctx: SessionContext) -> None:
             ctx.organization_id,
             "session_completion",
             record_voice_session_ended(
-                organization_id=ctx.ws.organization_id,
+                organization_id=session_state.organization_id,
                 voice_session_id=voice_session_id,
                 runtime_mode=runtime_mode,
                 ended_at=ended_at,
@@ -682,28 +691,28 @@ async def cleanup_audio_services(ctx: SessionContext) -> None:
                 metrics=audio_metrics or None,
             ),
         )
-    ctx.ws.voice_transcript_session_started = False
-    ctx.ws.voice_transcript_runtime_mode = None
-    if ctx.ws.live_voice_buffer is not None:
+    session_state.voice_transcript_session_started = False
+    session_state.voice_transcript_runtime_mode = None
+    if session_state.live_voice_buffer is not None:
         await _run_voice_cleanup_step(
             ctx.organization_id,
             "live_buffer",
-            ctx.ws.live_voice_buffer.discard(),
+            session_state.live_voice_buffer.discard(),
         )
-        ctx.ws.live_voice_buffer = None
-    ctx.ws.voice_call_id = None
-    ctx.ws.voice_interaction_sequence = 0
-    ctx.ws.voice_interaction_started_at = None
-    ctx.ws.voice_interaction_callback = None
-    ctx.ws.voice_session_id = None
-    ctx.ws.is_voice_mode = False
-    ctx.ws.voice_requests.clear()
-    ctx.ws.current_voice_request_id = None
-    ctx.ws.voice_activity_gate.reset()
-    ctx.ws.transport_playback_gate.reset()
-    ctx.ws.voice_output_drained_callback = None
-    ctx.ws.voice_terminal_callback = None
-    ctx.ws.voice_termination_complete = True
+        session_state.live_voice_buffer = None
+    session_state.voice_call_id = None
+    session_state.voice_interaction_sequence = 0
+    session_state.voice_interaction_started_at = None
+    session_state.voice_interaction_callback = None
+    session_state.voice_session_id = None
+    session_state.is_voice_mode = False
+    session_state.voice_requests.clear()
+    session_state.current_voice_request_id = None
+    session_state.voice_activity_gate.reset()
+    session_state.transport_playback_gate.reset()
+    session_state.voice_output_drained_callback = None
+    session_state.voice_terminal_callback = None
+    session_state.voice_termination_complete = True
 
 
 async def _play_browser_policy_speech(
@@ -806,19 +815,20 @@ async def _ensure_browser_voice_termination(
     request_id: UUID | None,
 ) -> tuple[bool, asyncio.Task[bool] | None]:
     """Create the one session-owned termination task and return it."""
-    if ctx.ws is None:
+    session_state = resolve_websocket_state(ctx)
+    if session_state is None:
         return False, None
 
-    async with ctx.ws.voice_termination_lock:
-        if ctx.ws.voice_termination_complete:
+    async with session_state.voice_termination_lock:
+        if session_state.voice_termination_complete:
             return False, None
-        task = ctx.ws.voice_termination_task
+        task = session_state.voice_termination_task
         started = task is None or (
-            task.done() and not ctx.ws.voice_termination_complete
+            task.done() and not session_state.voice_termination_complete
         )
         if started:
-            terminal_reason = ctx.ws.voice_termination_reason or reason
-            ctx.ws.voice_termination_reason = terminal_reason
+            terminal_reason = session_state.voice_termination_reason or reason
+            session_state.voice_termination_reason = terminal_reason
             task = asyncio.create_task(
                 _run_browser_voice_termination(
                     ctx,
@@ -831,7 +841,7 @@ async def _ensure_browser_voice_termination(
                 name="browser-voice-termination",
             )
             task.add_done_callback(_consume_browser_voice_termination_result)
-            ctx.ws.voice_termination_task = task
+            session_state.voice_termination_task = task
 
     return started, task
 
@@ -846,14 +856,18 @@ async def _run_browser_voice_termination(
     request_id: UUID | None,
 ) -> bool:
     """Own provider, signaling, projection, and state cleanup exactly once."""
-    if ctx.ws is None:
+    session_state = resolve_websocket_state(ctx)
+    if session_state is None:
         return False
 
     if final_message and source is not None:
-        if ctx.ws.tts_manager is not None or ctx.ws.realtime_manager is not None:
+        if (
+            session_state.tts_manager is not None
+            or session_state.realtime_manager is not None
+        ):
             try:
                 await _play_browser_policy_speech(
-                    ctx.ws,
+                    session_state,
                     text=final_message,
                     source=source,
                     request_id=request_id,
@@ -897,7 +911,7 @@ async def _run_browser_voice_termination(
             type(error).__name__,
         )
 
-    ctx.ws.voice_termination_complete = not ctx.ws.is_voice_mode
+    session_state.voice_termination_complete = not session_state.is_voice_mode
     return True
 
 
@@ -1262,6 +1276,10 @@ def _watch_voice_provider_task(
             )
             return
 
+        terminal_callback: Callable[
+            [BrowserVoiceTerminationReason], Awaitable[None]
+        ] = callback
+
         async def record_and_terminate() -> None:
             await _record_voice_provider_fact(
                 session_state,
@@ -1269,7 +1287,7 @@ def _watch_voice_provider_task(
                 state="failed",
                 vendor=vendor,
             )
-            await callback(_VOICE_PROVIDER_FAILURE_REASONS[provider_kind])
+            await terminal_callback(_VOICE_PROVIDER_FAILURE_REASONS[provider_kind])
 
         termination = asyncio.create_task(
             record_and_terminate(),
@@ -1382,9 +1400,10 @@ async def _monitor_silence(
     silence_config: SilenceConfig,
     end_call_message: str | None,
 ) -> None:
-    if ctx.ws is None:
+    state = resolve_websocket_state(ctx)
+    if state is None:
         return
-    session_state = ctx.ws
+    session_state: WSSessionState = state
 
     async def play_reminder(message: str) -> None:
         if session_state.tts_manager is None and session_state.realtime_manager is None:
@@ -1436,10 +1455,7 @@ async def _start_browser_interaction_policies(
     voice_config: VoiceConfig,
 ) -> None:
     """Start provider-neutral disclosure, greeting, and timing policies."""
-    session_state = ctx.ws
-    assert session_state is not None, (
-        "Browser voice policies require a WebSocket session."
-    )
+    session_state = require_websocket_state(ctx)
 
     if consent.is_pending(session_state):
 
@@ -1493,8 +1509,10 @@ async def handle_audio_config(
     ctx: SessionContext,
 ) -> WsResponse | None:
     """Initialize browser voice pipeline services from an audio config event."""
+    session_state: WSSessionState | None = None
     try:
-        if ctx.ws.stt_started or ctx.ws.realtime_mode:
+        session_state = require_websocket_state(ctx)
+        if session_state.stt_started or session_state.realtime_mode:
             logger.warning(
                 "audio:config already initialized organization_id=%s; "
                 "ignoring duplicate request",
@@ -1608,10 +1626,12 @@ async def handle_audio_config(
             )
             agent = executable.agent
             await AgentLLMReadinessService().ensure_ready(agent)
-        ctx.ws.agent_id = agent_id
-        ctx.ws.agent_revision = agent_revision
-        ctx.ws.webrtc_provider_config_id = agent.webrtc_provider_config_id
-        ctx.ws.webrtc_provider_config_revision = agent.webrtc_provider_config_revision
+        session_state.agent_id = agent_id
+        session_state.agent_revision = agent_revision
+        session_state.webrtc_provider_config_id = agent.webrtc_provider_config_id
+        session_state.webrtc_provider_config_revision = (
+            agent.webrtc_provider_config_revision
+        )
 
         contacts = ConversationParticipantService().filter_primary_contact_participant(
             participants
@@ -1633,9 +1653,9 @@ async def handle_audio_config(
                 message="Conversation not found",
                 status_code=status.HTTP_404_NOT_FOUND,
             )
-        ctx.ws.contact_id = contact_id
+        session_state.contact_id = contact_id
 
-        ctx.ws.stt_encoding_info = STTEncodingInfo.model_validate(
+        session_state.stt_encoding_info = STTEncodingInfo.model_validate(
             {
                 "sample_rate": event.data.get("sample_rate", _DEFAULT_SAMPLE_RATE),
                 "channels": event.data.get("channels", 1),
@@ -1720,22 +1740,22 @@ async def handle_audio_config(
             # Resolve observability once, here, where the config is already
             # loaded; teardown then needs no lookup.
             observability = voice_config.observability
-            ctx.ws.metrics_enabled = observability.metrics_enabled
-            ctx.ws.vendor_latency_tracking_enabled = (
+            session_state.metrics_enabled = observability.metrics_enabled
+            session_state.vendor_latency_tracking_enabled = (
                 observability.vendor_latency_tracking_enabled
             )
 
-            apply_voice_interaction_config(ctx.ws, voice_config)
+            apply_voice_interaction_config(session_state, voice_config)
 
         voice_call_id = str(uuid4())
         _maybe_initialize_recorder(
-            ctx.ws,
+            session_state,
             conversation_uuid,
             voice_config,
             recording_session_id=voice_call_id,
         )
         ctx.voice_session_id = await _start_browser_voice_session(
-            ctx.ws,
+            session_state,
             conversation_uuid,
             voice_config,
             contact_id=contact_id,
@@ -1746,7 +1766,7 @@ async def handle_audio_config(
             decomposed_identity=decomposed_identity,
         )
 
-        ctx.ws.voice_terminal_callback = partial(
+        session_state.voice_terminal_callback = partial(
             _terminate_browser_from_transport,
             ctx,
         )
@@ -1754,7 +1774,7 @@ async def handle_audio_config(
         if resolved_realtime is not None:
             await _initialize_realtime_mode(
                 ctx,
-                ctx.ws,
+                session_state,
                 conversation_uuid,
                 resolved_realtime,
                 voice_config.conversation_control,
@@ -1775,35 +1795,40 @@ async def handle_audio_config(
                 )
 
             await _initialize_stt_service(
-                ctx.ws,
+                session_state,
                 stt_config,
             )
 
             await _initialize_tts_service(
-                ctx.ws,
+                session_state,
                 tts_config,
             )
 
-            live_buffer = ctx.ws.live_voice_buffer
+            live_buffer = session_state.live_voice_buffer
             if live_buffer is None:
                 raise RuntimeError("Decomposed voice buffer is not initialized.")
             live_turn_runner = LiveVoiceTurnRunner(
                 live_buffer,
-                session_state=ctx.ws,
+                session_state=session_state,
             )
-            ctx.ws.live_voice_turn_runner = live_turn_runner
-            if ctx.ws.tts_manager is not None:
-                ctx.ws.tts_manager.set_turn_outcome_callback(
+            session_state.live_voice_turn_runner = live_turn_runner
+            if session_state.tts_manager is not None:
+                session_state.tts_manager.set_turn_outcome_callback(
                     live_turn_runner.record_speech_outcome
                 )
 
+            stt_response_queue = session_state.stt_response_queue
+            if stt_response_queue is None:
+                raise RuntimeError(
+                    "Decomposed voice transcript queue is not initialized."
+                )
             user_transcript_task = asyncio.create_task(
                 write_user_transcript(
-                    ctx.ws.stt_response_queue,
+                    stt_response_queue,
                     conversation_uuid,
-                    ctx.ws.tts_manager,
-                    ctx.ws.tts_interrupt_event,
-                    ctx.ws.speech_activity_event,
+                    session_state.tts_manager,
+                    session_state.tts_interrupt_event,
+                    session_state.speech_activity_event,
                     on_interrupt=live_turn_runner.interrupt,
                     on_end_call=partial(
                         _terminate_browser_from_end_call_phrase,
@@ -1811,14 +1836,16 @@ async def handle_audio_config(
                     ),
                     on_final_transcript=live_turn_runner.submit,
                     voice_config=voice_config,
-                    session_state=ctx.ws,
-                    voice_session_id=ctx.ws.voice_call_id,
-                    voice_session_row_id=ctx.ws.voice_session_id,
+                    session_state=session_state,
+                    voice_session_id=session_state.voice_call_id,
+                    voice_session_row_id=session_state.voice_session_id,
                     voice_runtime_mode=VoiceRuntimeMode.BROWSER_DECOMPOSED,
                     live_buffer=live_buffer,
                 )
             )
-            ctx.ws.stt_session_tasks["user_transcript_writer"] = user_transcript_task
+            session_state.stt_session_tasks["user_transcript_writer"] = (
+                user_transcript_task
+            )
 
         # Recording delivery remains secondary: failure stays pending and never
         # prevents the call. Greeting/timing behavior is shared by both runtime
@@ -1846,7 +1873,7 @@ async def handle_audio_config(
         )
 
     except NotConfiguredError as error:
-        if ctx.ws and ctx.ws.is_voice_mode:
+        if session_state and session_state.is_voice_mode:
             try:
                 await terminate_browser_voice(
                     ctx,
@@ -1869,14 +1896,14 @@ async def handle_audio_config(
             "Audio configuration failed error_type=%s",
             type(error).__name__,
         )
-        if ctx.ws and ctx.ws.voice_interaction_callback:
-            ctx.ws.voice_interaction_callback(VoiceInteractionState.ERROR)
-        if ctx.ws and (
-            ctx.ws.is_voice_mode
-            or ctx.ws.audio_recorder is not None
-            or ctx.ws.realtime_manager is not None
-            or ctx.ws.stt_started
-            or ctx.ws.tts_started
+        if session_state and session_state.voice_interaction_callback:
+            session_state.voice_interaction_callback(VoiceInteractionState.ERROR)
+        if session_state and (
+            session_state.is_voice_mode
+            or session_state.audio_recorder is not None
+            or session_state.realtime_manager is not None
+            or session_state.stt_started
+            or session_state.tts_started
         ):
             try:
                 await terminate_browser_voice(

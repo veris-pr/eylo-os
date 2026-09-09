@@ -113,6 +113,41 @@ Stored-only settings retain their experimental description and schema marker.
 `experimental()` supplies typed field metadata; defaults and factories remain
 on the field declarations so static tooling can understand constructor inputs.
 
+## Browser audio boundary
+
+The signaling manager owns a Pydantic negotiation aggregate keyed by organization
+and session. The key is immutable; live peer, queue-task, lock and session
+references retain identity and are excluded from serialization. Accepted SDP
+answers are immutable values, serialized afresh when an identical offer is
+replayed. Replaying does not allocate another peer or resolve credentials again.
+Only an offer enters peer acquisition; candidate policy runs before the sanitized
+SDP becomes a `WebRTCOffer`.
+
+Native aiortc state enums stay separate from Eylo event names and termination
+reasons. The pinned aiortc 1.15.0 implementation gathers local ICE candidates
+during `setLocalDescription`; the completed SDP answer carries those candidates.
+Browser-only `icecandidate` callbacks are not registered on the Python peer.
+See the [aiortc peer API](https://aiortc.readthedocs.io/en/latest/api.html#aiortc.RTCPeerConnection).
+
+Incoming WebRTC tracks validate `AudioFrame` output before using audio fields.
+Signed 16-bit planar samples are interleaved before stereo-to-mono conversion;
+packed PCM follows the same downsampling path. Other sample formats are refused
+rather than silently truncated. The resulting mono PCM16 bytes feed recording
+and the configured STT/realtime path. The STT request queue carries bytes, and
+the session holds the actual recorder instance rather than an untyped resource.
+
+Downsampling methods are an enum; buffer diagnostics are immutable Pydantic
+models. CPU JIT kernels retain their numerical implementation behind a checked
+PCM-array boundary. A non-integer conversion producing exactly one sample uses
+the first input position instead of dividing by zero. This does not redesign
+the resampler into a continuous streaming filter: chunk-boundary decimation and
+the existing bounded STT queue's drop-oldest policy remain unchanged.
+
+Outgoing frames retain the transport playback gate: generating text or draining
+the provider alone does not mean the final PCM frame has played. Buffering,
+partial-frame padding, interruption and transport-drain reporting remain owned
+by the outgoing track.
+
 ## Turn and interruption handling
 
 Assistant playback completion, not merely model text completion, determines
@@ -143,6 +178,24 @@ organization → owning conversation/call/session → artifact. Callers never
 provide a final object path.
 
 ## Resource cleanup
+
+The module-owned `SessionContext` carries a narrow session port, not provider
+clients. Browser voice and WebSocket audio ingestion share a pipeline-owned
+resolver for `WSSessionState` before accessing live resources. Resolution
+preserves the original object;
+serializing or rebuilding it would detach cleanup from the actual tasks and
+queues. Missing state is allowed during teardown, but startup requires it.
+An incompatible holder is a wiring error rather than an unchecked cast.
+
+Peer terminal callbacks accept awaitables, including Futures. A retained
+coroutine task awaits that callback; its completion callback observes failures.
+Cleanup never waits on the terminal task that invoked it. Extra incoming audio
+tracks are stopped and route through the same typed terminal reason as other
+peer failures. Registered native event callbacks retain their original peer
+reference, so late close events do not resolve a cleared resource property.
+Normal ICE close during owned teardown is not logged as relay failure. Python's
+[task contract](https://docs.python.org/3.13/library/asyncio-task.html#asyncio.create_task)
+requires a coroutine at `create_task`, rather than any arbitrary awaitable.
 
 Each child session owns its tasks, streams, media tracks, provider clients,
 timers, and queues. Normal completion, timeout, cancellation, WebSocket loss,

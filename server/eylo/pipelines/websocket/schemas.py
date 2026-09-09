@@ -54,6 +54,7 @@ from eylo.pipelines.voice.activity_gate import (
     VoiceActivityGate,
 )
 from eylo.pipelines.voice.live_buffer import LiveVoiceBuffer
+from eylo.pipelines.voice.recording import AudioRecorder
 from eylo.pipelines.voice.request_state import (
     VoiceRequestSource,
     VoiceRequestState,
@@ -127,7 +128,7 @@ class WSSessionState(BaseModel):
     stream_sid: str | None = None
     stt_socket: Optional[STTRealtime] = None
     stt_response_queue: Optional[asyncio.Queue[VoiceTranscriptInput]] = None
-    stt_request_queue: Optional[asyncio.Queue] = None
+    stt_request_queue: Optional[asyncio.Queue[bytes]] = None
     client_info: dict | None = None
     stt_started: bool = False
     stt_encoding_info: STTEncodingInfo = STTEncodingInfo()
@@ -180,7 +181,7 @@ class WSSessionState(BaseModel):
     recording_consent_state: RecordingDisclosureState = (
         RecordingDisclosureState.NOT_REQUIRED
     )
-    audio_recorder: Optional[Any] = None
+    audio_recorder: Optional[AudioRecorder] = None
     # Fresh identity for one call on a potentially long-lived WebSocket.
     # ``session_id`` identifies the transport connection and must not be reused
     # as the voice runtime identity when a caller starts another call.

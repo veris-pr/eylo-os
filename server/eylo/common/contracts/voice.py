@@ -52,6 +52,7 @@ class BrowserVoiceTerminationReason(StrEnum):
     its separate CallEndedReason vocabulary; matching values do not alias it.
     """
 
+    ADDITIONAL_AUDIO_TRACK = "additional_audio_track"
     AGENT_ENDED_CALL = "agent_ended_call"
     CANDIDATE_DELIVERY_FAILED = "candidate_delivery_failed"
     CLIENT_HANGUP = "client_hangup"

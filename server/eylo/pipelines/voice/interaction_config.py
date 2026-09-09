@@ -8,8 +8,8 @@ from eylo.modules.voice.schemas.api import BackgroundAudioConfig, VoiceConfig
 
 
 class VoiceInteractionState(Protocol):
-    ambient_noise_config: dict[str, Any]
-    filler_config: dict[str, Any]
+    ambient_noise_config: dict[str, Any] | None
+    filler_config: dict[str, Any] | None
 
 
 def apply_voice_interaction_config(

@@ -5,10 +5,10 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 from enum import StrEnum
+from typing import Never, Protocol, Self
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pyventus.events import EventSubscriber
 
 from eylo.events.py_events.emitter import EyloLinker, _get_event_emitter
@@ -109,7 +109,9 @@ from eylo.listeners.schema import ConversationUpdatedEvent
 LOCAL_LISTENER_MANIFEST_VERSION = 1
 _HANDLER_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_.-]{2,127}$")
 
-LocalHandler = Callable[[BaseModel], Awaitable[None]]
+MAX_LOCAL_EVENT_VERSION = 32_767
+# Comparison-only view of heterogeneous callables; dispatch owns invocation.
+type HandlerIdentity = Callable[[Never], Awaitable[None]]
 
 
 class ListenerManifestError(Exception):
@@ -135,45 +137,80 @@ class ListenerDeliveryClass(StrEnum):
 ALL_PROCESS_ROLES = frozenset(ListenerProcessRole)
 
 
-@dataclass(frozen=True, slots=True)
-class ListenerRegistration:
-    """One stable local handler contract."""
+class ListenerRegistration[Event: BaseModel](BaseModel):
+    """Bind one event class to its handler; only dispatch erases that type.
+
+    Pyventus routes by class name. Check the actual instance before invoking
+    the handler, including when another model has the same class name.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
     handler_id: str
-    event_type: type[BaseModel]
+    event_type: type[Event] = Field(exclude=True, repr=False)
     event_version: int
     role: ListenerRole
     delivery_class: ListenerDeliveryClass
     process_roles: frozenset[ListenerProcessRole]
-    handler: LocalHandler
+    handler: Callable[[Event], Awaitable[None]] = Field(exclude=True, repr=False)
 
-    def __post_init__(self) -> None:
+    @model_validator(mode="after")
+    def validate_contract(self) -> Self:
         if not _HANDLER_ID_PATTERN.fullmatch(self.handler_id):
             raise ListenerManifestError(
                 f"Invalid local listener handler ID {self.handler_id!r}."
             )
-        if not 1 <= self.event_version <= 32_767:
+        if not 1 <= self.event_version <= MAX_LOCAL_EVENT_VERSION:
             raise ListenerManifestError("Local event version must be 1-32767.")
         if not self.process_roles:
             raise ListenerManifestError(
                 "Local listener has no applicable process role."
             )
-        if not isinstance(self.event_type, type) or not issubclass(
-            self.event_type,
-            BaseModel,
-        ):
-            raise ListenerManifestError("Local listener event type must be a model.")
-        if not callable(self.handler):
-            raise ListenerManifestError("Local listener handler must be callable.")
+        return self
 
     @property
     def event_name(self) -> str:
-        return self.event_type.__name__
+        event_type: type[BaseModel] = self.event_type
+        return event_type.__name__
+
+    @property
+    def binding_key(self) -> tuple[type[BaseModel], HandlerIdentity]:
+        """Detect duplicate bindings using the original callable, not a wrapper."""
+        return self.event_type, self.handler
+
+    async def dispatch(self, event: BaseModel) -> None:
+        if not isinstance(event, self.event_type):
+            raise ListenerManifestError(
+                f"Local listener {self.handler_id} received the wrong event type."
+            )
+        await self.handler(event)
 
 
-@dataclass(frozen=True, slots=True)
-class ListenerManifestHealth:
+class LocalRegistration(Protocol):
+    """Heterogeneous registry view; handlers are callable only through dispatch."""
+
+    @property
+    def handler_id(self) -> str: ...
+
+    @property
+    def event_type(self) -> type[BaseModel]: ...
+
+    @property
+    def event_name(self) -> str: ...
+
+    @property
+    def process_roles(self) -> frozenset[ListenerProcessRole]: ...
+
+    @property
+    def binding_key(self) -> tuple[type[BaseModel], HandlerIdentity]: ...
+
+    async def dispatch(self, event: BaseModel) -> None: ...
+
+
+class ListenerManifestHealth(BaseModel):
     """Safe process-visible projection of exact local registrations."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
     manifest_version: int
     process_role: ListenerProcessRole
@@ -184,13 +221,13 @@ class ListenerManifestHealth:
     handler_ids: tuple[str, ...]
 
 
-def _entry(
+def _entry[Event: BaseModel](
     handler_id: str,
-    event_type: type[BaseModel],
-    handler: LocalHandler,
+    event_type: type[Event],
+    handler: Callable[[Event], Awaitable[None]],
     role: ListenerRole,
-) -> ListenerRegistration:
-    return ListenerRegistration(
+) -> LocalRegistration:
+    return ListenerRegistration[Event](
         handler_id=handler_id,
         event_type=event_type,
         event_version=1,
@@ -468,7 +505,7 @@ def setup_listener_manifest(
         _subscribers = {
             entry.handler_id: EyloLinker.subscribe(
                 entry.event_type,
-                event_callback=entry.handler,
+                event_callback=entry.dispatch,
             )
             for entry in entries
         }
@@ -494,23 +531,23 @@ def listener_manifest_health() -> ListenerManifestHealth | None:
 
 def _applicable_entries(
     process_role: ListenerProcessRole,
-) -> tuple[ListenerRegistration, ...]:
+) -> tuple[LocalRegistration, ...]:
     return tuple(
         entry for entry in LISTENER_MANIFEST if process_role in entry.process_roles
     )
 
 
-def _validate_entries(entries: tuple[ListenerRegistration, ...]) -> None:
+def _validate_entries(entries: tuple[LocalRegistration, ...]) -> None:
     handler_ids = tuple(entry.handler_id for entry in entries)
     if len(handler_ids) != len(set(handler_ids)):
         raise ListenerManifestError("Local listener handler IDs are duplicated.")
-    bindings = tuple((entry.event_type, entry.handler) for entry in entries)
+    bindings = tuple(entry.binding_key for entry in entries)
     if len(bindings) != len(set(bindings)):
         raise ListenerManifestError("Local event/handler bindings are duplicated.")
 
 
 def _validate_registry(
-    entries: tuple[ListenerRegistration, ...],
+    entries: tuple[LocalRegistration, ...],
     subscribers: dict[str, EventSubscriber],
 ) -> None:
     expected_ids = {entry.handler_id for entry in entries}

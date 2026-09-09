@@ -1,13 +1,80 @@
 """PCM audio downsampling helpers."""
 
 import logging
-from typing import Union
+from collections.abc import Callable
+from enum import StrEnum
+from functools import wraps
+from typing import Literal, Protocol, runtime_checkable
 
 import numba
 import numpy as np
+from numpy.typing import NDArray
+from pydantic import BaseModel, ConfigDict
 from scipy import signal
 
 logger = logging.getLogger(__name__)
+
+type Pcm16Samples = NDArray[np.int16]
+type PcmKernel = Callable[[Pcm16Samples, int], Pcm16Samples]
+PCM_SAMPLE_BYTES = 2
+MIN_BUFFER_SAMPLES = 100
+BUFFER_DURATION_SECONDS = 0.1
+
+
+class DownsamplingMethod(StrEnum):
+    FAST = "fast"
+    IIR = "iir"
+    BUFFERED = "buffered"
+
+
+class DownsamplerBufferStatus(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    byte_buffer_size: int
+    sample_buffer_size: int
+    bytes_needed_for_sample: int
+
+
+@runtime_checkable
+class _ScipySignal(Protocol):
+    """Public SciPy functions used here; its lazy exports lack bundled types."""
+
+    def decimate(
+        self, x: Pcm16Samples, q: int, *, ftype: Literal["iir"]
+    ) -> NDArray[np.float64]: ...
+
+    def resample(self, x: Pcm16Samples, num: int) -> NDArray[np.float64]: ...
+
+
+def _scipy_signal() -> _ScipySignal:
+    if not isinstance(signal, _ScipySignal):
+        raise TypeError("SciPy signal resampling functions are unavailable.")
+    return signal
+
+
+def _run_pcm_kernel(kernel: object, samples: Pcm16Samples, factor: int) -> Pcm16Samples:
+    """Numba's native dispatcher is callable at runtime but lacks a typed call."""
+    if not callable(kernel):
+        raise TypeError("Audio kernel must be callable.")
+    result: object = kernel(samples, factor)
+    if (
+        not isinstance(result, np.ndarray)
+        or result.dtype != np.dtype(np.int16)
+        or result.ndim != 1
+    ):
+        raise TypeError("Audio kernel must return a one-dimensional PCM16 array.")
+    return result
+
+
+def _compile_pcm_kernel(function: PcmKernel) -> PcmKernel:
+    """Keep CPU JIT execution while checking its untyped dispatcher output."""
+    compiled = numba.njit(cache=True, fastmath=True)(function)
+
+    @wraps(function)
+    def process(samples: Pcm16Samples, factor: int) -> Pcm16Samples:
+        return _run_pcm_kernel(compiled, samples, factor)
+
+    return process
 
 
 class AudioDownsampler:
@@ -19,25 +86,21 @@ class AudioDownsampler:
         target_sample_rate: int = 8000,
         source_channels: int = 2,
         target_channels: int = 1,
-        method: str = "fast",
-    ):
-        """Initialize audio downsampler.
-
-        Args:
-            source_sample_rate: Input sample rate (e.g., 48000)
-            target_sample_rate: Output sample rate (e.g., 8000)
-            source_channels: Input channels (1=mono, 2=stereo)
-            target_channels: Output channels (1=mono, 2=stereo)
-            method: "fast" (simple decimation), "iir" (scipy IIR), "buffered" (for small chunks)
-
-        """
+        method: DownsamplingMethod = DownsamplingMethod.FAST,
+    ) -> None:
+        """Accept positive rates and mono/stereo PCM input; output is always mono."""
+        if source_sample_rate <= 0 or target_sample_rate <= 0:
+            raise ValueError("Audio sample rates must be positive.")
+        if source_channels not in (1, 2) or target_channels != 1:
+            raise ValueError("Downsampling requires mono/stereo input and mono output.")
         self.source_sr = source_sample_rate
         self.target_sr = target_sample_rate
         self.source_channels = source_channels
         self.target_channels = target_channels
-        self.method = method
+        self.method = DownsamplingMethod(method)
 
         # Calculate decimation factor
+        self.decimation_factor: float
         if source_sample_rate % target_sample_rate == 0:
             self.decimation_factor = source_sample_rate // target_sample_rate
             self.is_integer_decimation = True
@@ -47,7 +110,9 @@ class AudioDownsampler:
 
         # Buffer for handling small chunks (used with "buffered" method)
         self.buffer = np.array([], dtype=np.int16)
-        self.min_buffer_size = max(100, int(source_sample_rate * 0.1))  # 100ms buffer
+        self.min_buffer_size = max(
+            MIN_BUFFER_SAMPLES, int(source_sample_rate * BUFFER_DURATION_SECONDS)
+        )
 
         # NEW: Byte-level buffer for handling incomplete int16 samples
         self.byte_buffer = b""
@@ -57,7 +122,7 @@ class AudioDownsampler:
             f"{source_channels}ch -> {target_channels}ch, method={method}"
         )
 
-    def process(self, audio_data: Union[np.ndarray, bytes]) -> np.ndarray:
+    def process(self, audio_data: Pcm16Samples | bytes) -> Pcm16Samples:
         """Process audio data with downsampling and channel conversion.
 
         Args:
@@ -73,7 +138,7 @@ class AudioDownsampler:
             self.byte_buffer += audio_data
 
             # Only process complete int16 samples (2 bytes each)
-            samples_available = len(self.byte_buffer) // 2
+            samples_available = len(self.byte_buffer) // PCM_SAMPLE_BYTES
             if samples_available == 0:
                 # Not enough data for even one sample
                 logger.debug(
@@ -82,7 +147,7 @@ class AudioDownsampler:
                 return np.array([], dtype=np.int16)
 
             # Extract complete samples
-            bytes_to_process = samples_available * 2
+            bytes_to_process = samples_available * PCM_SAMPLE_BYTES
             try:
                 audio_np = np.frombuffer(
                     self.byte_buffer[:bytes_to_process], dtype=np.int16
@@ -114,33 +179,34 @@ class AudioDownsampler:
             return np.array([], dtype=np.int16)
 
         # Choose processing method
-        if self.method == "fast" and self.is_integer_decimation:
+        if self.method is DownsamplingMethod.FAST and self.is_integer_decimation:
             return self._process_fast(audio_np)
-        elif self.method == "iir":
+        elif self.method is DownsamplingMethod.IIR:
             return self._process_iir(audio_np)
-        elif self.method == "buffered":
+        elif self.method is DownsamplingMethod.BUFFERED:
             return self._process_buffered(audio_np)
         else:
             # Fallback to fast method
             return self._process_fast(audio_np)
 
-    def clear_buffers(self):
+    def clear_buffers(self) -> None:
         """Clear all internal buffers. Useful for resetting state between sessions."""
         self.buffer = np.array([], dtype=np.int16)
         self.byte_buffer = b""
         logger.debug("Cleared all audio buffers")
 
-    def get_buffer_status(self) -> dict:
+    def get_buffer_status(self) -> DownsamplerBufferStatus:
         """Get current buffer status for debugging."""
-        return {
-            "byte_buffer_size": len(self.byte_buffer),
-            "sample_buffer_size": len(self.buffer),
-            "bytes_needed_for_sample": 2 - (len(self.byte_buffer) % 2)
+        return DownsamplerBufferStatus(
+            byte_buffer_size=len(self.byte_buffer),
+            sample_buffer_size=len(self.buffer),
+            bytes_needed_for_sample=PCM_SAMPLE_BYTES
+            - (len(self.byte_buffer) % PCM_SAMPLE_BYTES)
             if len(self.byte_buffer) % 2 != 0
             else 0,
-        }
+        )
 
-    def _process_fast(self, audio_np: np.ndarray) -> np.ndarray:
+    def _process_fast(self, audio_np: Pcm16Samples) -> Pcm16Samples:
         """Fast processing using JIT-compiled functions."""
         if self.source_channels == 2 and self.target_channels == 1:
             # Stereo to mono + resampling
@@ -166,7 +232,7 @@ class AudioDownsampler:
                 f"Channel conversion {self.source_channels}->{self.target_channels} not implemented"
             )
 
-    def _process_iir(self, audio_np: np.ndarray) -> np.ndarray:
+    def _process_iir(self, audio_np: Pcm16Samples) -> Pcm16Samples:
         """Process using scipy IIR filtering (higher quality, slower)."""
         try:
             # Convert to mono if needed
@@ -177,15 +243,13 @@ class AudioDownsampler:
 
             # Apply IIR decimation
             if self.is_integer_decimation:
-                downsampled = signal.decimate(
+                downsampled = _scipy_signal().decimate(
                     mono, int(self.decimation_factor), ftype="iir"
                 )
             else:
                 # Use resampling for non-integer ratios
-                from scipy.signal import resample
-
                 target_length = int(len(mono) * self.target_sr / self.source_sr)
-                downsampled = resample(mono, target_length)
+                downsampled = _scipy_signal().resample(mono, target_length)
 
             return downsampled.astype(np.int16)
 
@@ -196,7 +260,7 @@ class AudioDownsampler:
             )
             return self._process_fast(audio_np)
 
-    def _process_buffered(self, audio_np: np.ndarray) -> np.ndarray:
+    def _process_buffered(self, audio_np: Pcm16Samples) -> Pcm16Samples:
         """Buffer small chunks for more stable processing."""
         # Add to buffer
         self.buffer = np.concatenate([self.buffer, audio_np])
@@ -215,16 +279,16 @@ class AudioDownsampler:
         # Return empty array if not enough data
         return np.array([], dtype=np.int16)
 
-    def _convert_stereo_to_mono(self, stereo_audio: np.ndarray) -> np.ndarray:
+    def _convert_stereo_to_mono(self, stereo_audio: Pcm16Samples) -> Pcm16Samples:
         """Convert stereo audio to mono by averaging channels."""
         stereo_pairs = stereo_audio.reshape(-1, 2)
         return np.mean(stereo_pairs, axis=1).astype(np.int16)
 
     @staticmethod
-    @numba.jit(nopython=True, cache=True, fastmath=True)
+    @_compile_pcm_kernel
     def _stereo_to_mono_decimate_jit(
-        audio_data: np.ndarray, decimation_factor: int
-    ) -> np.ndarray:
+        audio_data: Pcm16Samples, decimation_factor: int
+    ) -> Pcm16Samples:
         """JIT-compiled stereo to mono with integer decimation."""
         input_samples = len(audio_data) // 2  # Number of stereo pairs
         output_samples = input_samples // decimation_factor
@@ -240,17 +304,21 @@ class AudioDownsampler:
         return output
 
     @staticmethod
-    @numba.jit(nopython=True, cache=True, fastmath=True)
+    @_compile_pcm_kernel
     def _stereo_to_mono_resample_jit(
-        audio_data: np.ndarray, target_length: int
-    ) -> np.ndarray:
+        audio_data: Pcm16Samples, target_length: int
+    ) -> Pcm16Samples:
         """JIT-compiled stereo to mono with resampling for non-integer ratios."""
         input_samples = len(audio_data) // 2  # Number of stereo pairs
         output = np.empty(target_length, dtype=np.int16)
 
         for i in range(target_length):
             # Linear interpolation between samples
-            src_pos = i * (input_samples - 1) / (target_length - 1)
+            src_pos = (
+                i * (input_samples - 1) / (target_length - 1)
+                if target_length > 1
+                else 0.0
+            )
             src_idx = int(src_pos)
             frac = src_pos - src_idx
 
@@ -276,10 +344,10 @@ class AudioDownsampler:
         return output
 
     @staticmethod
-    @numba.jit(nopython=True, cache=True, fastmath=True)
+    @_compile_pcm_kernel
     def _mono_decimate_jit(
-        audio_data: np.ndarray, decimation_factor: int
-    ) -> np.ndarray:
+        audio_data: Pcm16Samples, decimation_factor: int
+    ) -> Pcm16Samples:
         """JIT-compiled mono decimation for integer factors."""
         output_samples = len(audio_data) // decimation_factor
         output = np.empty(output_samples, dtype=np.int16)
@@ -290,15 +358,21 @@ class AudioDownsampler:
         return output
 
     @staticmethod
-    @numba.jit(nopython=True, cache=True, fastmath=True)
-    def _mono_resample_jit(audio_data: np.ndarray, target_length: int) -> np.ndarray:
+    @_compile_pcm_kernel
+    def _mono_resample_jit(
+        audio_data: Pcm16Samples, target_length: int
+    ) -> Pcm16Samples:
         """JIT-compiled mono resampling for non-integer ratios."""
         input_length = len(audio_data)
         output = np.empty(target_length, dtype=np.int16)
 
         for i in range(target_length):
             # Linear interpolation
-            src_pos = i * (input_length - 1) / (target_length - 1)
+            src_pos = (
+                i * (input_length - 1) / (target_length - 1)
+                if target_length > 1
+                else 0.0
+            )
             src_idx = int(src_pos)
             frac = src_pos - src_idx
 

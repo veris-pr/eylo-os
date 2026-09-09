@@ -11,14 +11,14 @@ from __future__ import annotations
 import asyncio
 import fractions
 import logging
-from typing import Optional
 
 import arrow
 import numpy as np
 from aiortc import AudioStreamTrack, MediaStreamTrack
 from av import AudioFrame
+from pydantic import BaseModel, ConfigDict
 
-from eylo.audio.downsampler import AudioDownsampler
+from eylo.audio.downsampler import AudioDownsampler, DownsamplingMethod, Pcm16Samples
 from eylo.audio.ops import (
     SILENCE_FRAME_16K_20MS,
     AudioChunkBuffer,
@@ -31,6 +31,29 @@ logger = logging.getLogger(__name__)
 
 WEBRTC_STT_SAMPLE_RATE = 16000
 WEBRTC_PCM_ENCODING = "pcm_s16le"
+PCM_SAMPLE_BYTES = 2
+INCOMING_CHUNK_DURATION_MS = 50
+OUTGOING_FRAME_DURATION_MS = 20
+
+
+class AudioTrackBufferStatus(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    buffer_bytes: int
+    buffer_samples: int
+    buffer_seconds: float
+    frames_sent: int
+    started: bool
+    sample_rate: int
+
+
+def _pcm16_frame_samples(frame: AudioFrame) -> Pcm16Samples:
+    """Interleave planar PCM; reject other formats instead of truncating floats."""
+    samples = frame.to_ndarray()
+    if samples.dtype != np.dtype(np.int16):
+        raise ValueError("Incoming browser media must be PCM16 audio.")
+    pcm = samples.astype(np.int16, copy=False)
+    return pcm.T.reshape(-1) if frame.format.is_planar else pcm.reshape(-1)
 
 
 class IncomingAudioTrack(MediaStreamTrack):
@@ -38,7 +61,7 @@ class IncomingAudioTrack(MediaStreamTrack):
 
     kind = "audio"
 
-    def __init__(self, track: MediaStreamTrack, session_state: WSSessionState):
+    def __init__(self, track: MediaStreamTrack, session_state: WSSessionState) -> None:
         super().__init__()
         self.track = track
         self.session_state = session_state
@@ -48,32 +71,39 @@ class IncomingAudioTrack(MediaStreamTrack):
         self.target_sample_rate = WEBRTC_STT_SAMPLE_RATE
         self.source_channels = 2
         self.target_channels = 1
-        self.downsampler: Optional[AudioDownsampler] = None
+        self.downsampler: AudioDownsampler | None = None
 
         self.audio_buffer = bytearray()
         self._buffer_has_signal = False
-        self.buffer_duration_ms = 50
+        self.buffer_duration_ms = INCOMING_CHUNK_DURATION_MS
         self.samples_accumulated = 0
 
-        self._last_stt_send_time = None
+        self._last_stt_send_time: float | None = None
         self._stt_send_interval = self.buffer_duration_ms / 1000.0
 
-    async def recv(self):
+    async def recv(self) -> AudioFrame:
         """Receive browser frames, downsample them, and forward STT-ready chunks."""
         frame = await self.track.recv()
+        if not isinstance(frame, AudioFrame):
+            raise TypeError(
+                "Incoming browser media track did not return an audio frame."
+            )
+        samples = _pcm16_frame_samples(frame)
 
-        if not self._started:
-            self._started = True
+        downsampler = self.downsampler
+        if downsampler is None:
             self.source_sample_rate = frame.sample_rate
             self.source_channels = len(frame.layout.channels)
 
-            self.downsampler = AudioDownsampler(
+            downsampler = AudioDownsampler(
                 source_sample_rate=self.source_sample_rate,
                 target_sample_rate=self.target_sample_rate,
                 source_channels=self.source_channels,
                 target_channels=self.target_channels,
-                method="fast",
+                method=DownsamplingMethod.FAST,
             )
+            self.downsampler = downsampler
+            self._started = True
 
             logger.info("IncomingAudioTrack.recv started receiving frames")
             logger.info("=== Incoming Audio Format ===")
@@ -91,7 +121,7 @@ class IncomingAudioTrack(MediaStreamTrack):
             self._configure_user_recording_format()
 
         try:
-            downsampled_audio = self.downsampler.process(frame.to_ndarray())
+            downsampled_audio = downsampler.process(samples)
 
             if len(downsampled_audio) == 0:
                 return frame
@@ -127,7 +157,7 @@ class IncomingAudioTrack(MediaStreamTrack):
 
         return frame
 
-    async def _send_audio_to_stt(self):
+    async def _send_audio_to_stt(self) -> None:
         """Send accumulated audio buffer to STT or realtime vendor."""
         if len(self.audio_buffer) > 0:
             audio_chunk = bytes(self.audio_buffer)
@@ -147,7 +177,7 @@ class IncomingAudioTrack(MediaStreamTrack):
                 self.samples_accumulated = 0
                 return
 
-            request_queue = getattr(self.session_state, "stt_request_queue", None)
+            request_queue = self.session_state.stt_request_queue
             if request_queue is not None:
                 try:
                     request_queue.put_nowait(audio_chunk)
@@ -206,22 +236,21 @@ class IncomingAudioTrack(MediaStreamTrack):
             self.session_state.last_activity_at = arrow.utcnow().timestamp()
 
     def _record_user_audio(self, audio_bytes: bytes) -> None:
-        audio_recorder = getattr(self.session_state, "audio_recorder", None)
+        audio_recorder = self.session_state.audio_recorder
         if audio_recorder:
             audio_recorder.record_user(audio_bytes)
 
     def _configure_user_recording_format(self) -> None:
-        audio_recorder = getattr(self.session_state, "audio_recorder", None)
+        audio_recorder = self.session_state.audio_recorder
         if audio_recorder:
             audio_recorder.set_user_audio_format(
                 sample_rate=self.target_sample_rate,
                 encoding=WEBRTC_PCM_ENCODING,
             )
 
-    def stop(self):
+    def stop(self) -> None:
         super().stop()
-        if hasattr(self, "track"):
-            self.track.stop()
+        self.track.stop()
 
 
 class OutgoingAudioTrack(AudioStreamTrack):
@@ -233,13 +262,13 @@ class OutgoingAudioTrack(AudioStreamTrack):
     _MIN_AMBIENT_AMPLITUDE = 0
     _MAX_AMBIENT_AMPLITUDE = 500
 
-    def __init__(self, session_state):
+    def __init__(self, session_state: WSSessionState) -> None:
         super().__init__()
         self.session_state = session_state
 
         self.sample_rate = BROWSER_OUTPUT_AUDIO_FORMAT.sample_rate
         self.channels = BROWSER_OUTPUT_AUDIO_FORMAT.channels
-        self.frame_duration_ms = 20
+        self.frame_duration_ms = OUTGOING_FRAME_DURATION_MS
         self.samples_per_frame = int(self.sample_rate * self.frame_duration_ms / 1000)
 
         self.audio_buffer = AudioChunkBuffer()
@@ -249,10 +278,10 @@ class OutgoingAudioTrack(AudioStreamTrack):
         self._time_base = fractions.Fraction(1, self.sample_rate)
         self._started = False
         self._frame_count = 0
-        self._last_frame_time = None
+        self._last_frame_time: float | None = None
         self._frame_interval = self.frame_duration_ms / 1000.0
 
-        ambient_cfg = getattr(session_state, "ambient_noise_config", None) or {}
+        ambient_cfg = session_state.ambient_noise_config or {}
         self._ambient_enabled = bool(ambient_cfg.get("enabled", True))
         self._ambient_amplitude = self._coerce_ambient_amplitude(
             ambient_cfg.get("amplitude", self._DEFAULT_AMBIENT_AMPLITUDE)
@@ -275,7 +304,7 @@ class OutgoingAudioTrack(AudioStreamTrack):
             self._ambient_amplitude,
         )
 
-    async def recv(self):
+    async def recv(self) -> AudioFrame:
         """Generate audio frames from TTS output with proper rate limiting."""
         if self.session_state.tts_interrupt_event.is_set():
             self.session_state.transport_playback_gate.cancel()
@@ -321,17 +350,15 @@ class OutgoingAudioTrack(AudioStreamTrack):
             )
             return self._create_silence_frame()
 
-    async def _process_tts_queue(self):
+    async def _process_tts_queue(self) -> None:
         """Process TTS audio from queue with minimal overhead."""
-        if (
-            not hasattr(self.session_state, "tts_response_queue")
-            or self.session_state.tts_response_queue is None
-        ):
+        queue = self.session_state.tts_response_queue
+        if queue is None:
             return
 
-        while not self.session_state.tts_response_queue.empty():
+        while not queue.empty():
             try:
-                tts_response = self.session_state.tts_response_queue.get_nowait()
+                tts_response = queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
             except Exception as error:
@@ -359,7 +386,7 @@ class OutgoingAudioTrack(AudioStreamTrack):
                 )
 
             try:
-                self.session_state.tts_response_queue.task_done()
+                queue.task_done()
             except ValueError:
                 logger.debug(
                     "OutgoingAudioTrack: task_done called without matching get"
@@ -367,7 +394,7 @@ class OutgoingAudioTrack(AudioStreamTrack):
 
     async def _complete_transport_playback_if_drained(self) -> None:
         """Publish audible completion after the final PCM frame was consumed."""
-        response_queue = getattr(self.session_state, "tts_response_queue", None)
+        response_queue = self.session_state.tts_response_queue
         if response_queue is not None and not response_queue.empty():
             return
         async with self.buffer_lock:
@@ -379,7 +406,7 @@ class OutgoingAudioTrack(AudioStreamTrack):
         if callback is not None:
             callback()
 
-    async def _get_next_frame(self) -> np.ndarray:
+    async def _get_next_frame(self) -> Pcm16Samples:
         """Extract next frame of int16 samples with minimal processing."""
         async with self.buffer_lock:
             bytes_needed = self.samples_per_frame * 2
@@ -387,11 +414,15 @@ class OutgoingAudioTrack(AudioStreamTrack):
 
             if avail >= bytes_needed:
                 frame_bytes = self.audio_buffer.read(bytes_needed)
+                if frame_bytes is None:
+                    raise RuntimeError("Audio buffer changed while its lock was held.")
                 return np.frombuffer(frame_bytes, dtype=np.int16)
 
             if avail >= 2:
                 available_even = (avail // 2) * 2
                 frame_bytes = self.audio_buffer.read(available_even)
+                if frame_bytes is None:
+                    raise RuntimeError("Audio buffer changed while its lock was held.")
                 partial_samples = np.frombuffer(frame_bytes, dtype=np.int16)
 
                 frame_samples = SILENCE_FRAME_16K_20MS.copy()
@@ -401,23 +432,25 @@ class OutgoingAudioTrack(AudioStreamTrack):
             if (
                 self._ambient_enabled
                 and self._ambient_amplitude > 0
-                and getattr(self.session_state, "is_agent_thinking", False)
+                and self.session_state.is_agent_thinking
             ):
                 return self._next_ambient_frame()
             return SILENCE_FRAME_16K_20MS.copy()
 
     @classmethod
     def _coerce_ambient_amplitude(cls, amplitude: object) -> int:
+        if not isinstance(amplitude, (int, float, str, bytes, bytearray)):
+            return cls._DEFAULT_AMBIENT_AMPLITUDE
         try:
             normalized = int(amplitude)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             normalized = cls._DEFAULT_AMBIENT_AMPLITUDE
         return max(
             cls._MIN_AMBIENT_AMPLITUDE,
             min(cls._MAX_AMBIENT_AMPLITUDE, normalized),
         )
 
-    def _next_ambient_frame(self) -> np.ndarray:
+    def _next_ambient_frame(self) -> Pcm16Samples:
         n = self.samples_per_frame
         total = len(self._ambient_noise)
         start = self._ambient_offset % total
@@ -436,7 +469,7 @@ class OutgoingAudioTrack(AudioStreamTrack):
         self._ambient_offset = end % total
         return frame
 
-    def _create_audio_frame(self, samples: np.ndarray) -> AudioFrame:
+    def _create_audio_frame(self, samples: Pcm16Samples) -> AudioFrame:
         try:
             if len(samples) != self.samples_per_frame:
                 logger.warning(
@@ -479,30 +512,30 @@ class OutgoingAudioTrack(AudioStreamTrack):
         self._pts += self.samples_per_frame
         return frame
 
-    async def add_tts_audio(self, audio_data: bytes):
+    async def add_tts_audio(self, audio_data: bytes) -> None:
         if not audio_data or len(audio_data) == 0:
             return
 
         async with self.buffer_lock:
             self.audio_buffer.write(audio_data)
 
-    def get_buffer_stats(self) -> dict:
+    def get_buffer_stats(self) -> AudioTrackBufferStatus:
         avail = self.audio_buffer.available
-        return {
-            "buffer_bytes": avail,
-            "buffer_samples": avail // 2,
-            "buffer_seconds": (avail // 2) / self.sample_rate,
-            "frames_sent": self._frame_count,
-            "started": self._started,
-            "sample_rate": self.sample_rate,
-        }
+        return AudioTrackBufferStatus(
+            buffer_bytes=avail,
+            buffer_samples=avail // PCM_SAMPLE_BYTES,
+            buffer_seconds=(avail // PCM_SAMPLE_BYTES) / self.sample_rate,
+            frames_sent=self._frame_count,
+            started=self._started,
+            sample_rate=self.sample_rate,
+        )
 
-    async def clear_buffers(self):
+    async def clear_buffers(self) -> None:
         self.session_state.transport_playback_gate.cancel()
         async with self.buffer_lock:
             self.audio_buffer.clear()
             logger.debug("Cleared audio buffers")
 
-    def stop(self):
+    def stop(self) -> None:
         self.session_state.transport_playback_gate.cancel()
         super().stop()

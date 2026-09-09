@@ -7,6 +7,13 @@ Eylo has two event mechanisms with different guarantees.
 Pyventus listeners are registered from one explicit manifest in API and worker
 processes.
 
+Each immutable Pydantic registration binds an event class to a handler accepting
+that class. A checked dispatch method is the registry's common interface: it
+rejects a different model before invoking the handler, even if its class name
+collides. Duplicate checks retain the original callable identity/equality,
+including bound methods. Process-local emitter initialization is lazy and resets
+on PID changes; registration health validates exact subscriber membership.
+
 - Delivery: concurrent, unordered, best effort, in process.
 - Storage: none.
 - Use: live UI deltas, transport/call state broadcasts, and module

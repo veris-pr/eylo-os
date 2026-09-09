@@ -217,7 +217,15 @@ repos:
           eylo/pipelines/voice/session_tts.py
           eylo/pipelines/voice/tts.py
           eylo/pipelines/voice/audio_transport.py
+          eylo/audio/downsampler.py
           eylo/audio/ops.py
+          eylo/pipelines/webrtc/media.py
+          eylo/pipelines/webrtc/agent_peer.py
+          eylo/pipelines/webrtc/schemas.py
+          eylo/pipelines/webrtc/signaling_manager.py
+          eylo/pipelines/websocket/session_state.py
+          eylo/pipelines/websocket/handlers/audio.py
+          eylo/pipelines/websocket/schemas.py
           eylo/pipelines/voice/filler.py
           eylo/common/contracts/session_state.py
           eylo/modules/conversations/message_facts.py
@@ -228,6 +236,8 @@ repos:
           eylo/modules/voice_transcripts/services/indb.py
           eylo/pipelines/voice/live_buffer.py
           eylo/pipelines/voice/live_runner.py
+          eylo/pipelines/voice/browser.py
+          eylo/pipelines/voice/interaction_config.py
           eylo/pipelines/voice/realtime.py
           eylo/pipelines/voice/realtime_tool_dispatcher.py
           eylo/sockets/realtime/events.py
@@ -350,6 +360,18 @@ repos:
           eylo/pipelines/integrations_v2/vendors/intercom/tools.py'
         language: system
         files: ^server/(pyproject\.toml|eylo/(common/contracts/tool_platform\.py|modules/(integrations_v2|tools)/|pipelines/(integrations_v2/|conversation/domain\.py)))
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+
+      - id: python-typed-local-event-contracts
+        name: Python local event registration and dispatch contracts
+        entry: >-
+          bash -c 'cd server && .venv/bin/pyrefly check
+          eylo/events/py_events/emitter.py
+          eylo/listeners/py_events/manifest.py
+          eylo/listeners/py_events/__init__.py'
+        language: system
+        files: ^server/(pyproject\.toml|eylo/(events/(py_events/|schema/py_events/)|listeners/))
         pass_filenames: false
         stages: [pre-commit, pre-push]
 
