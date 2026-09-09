@@ -7,14 +7,14 @@ from pydantic import BaseModel, Field
 
 from eylo.common.schemas import (
     EyloBaseModelSchema,
-    EyloBaseOrganizationModelSchema,
     EyloBaseSchema,
+    EyloOrganizationModelSchema,
 )
 from eylo.modules.agents.models import AgentKind, AgentStatus
 from eylo.modules.llm_configs.schemas import LLMOverridesSchema
 
 
-class AgentBase(EyloBaseOrganizationModelSchema):
+class AgentBase(EyloOrganizationModelSchema):
     name: str = Field(..., max_length=100)
     slug: str = Field(..., max_length=100)
     llm_provider_config_id: UUID | None = None

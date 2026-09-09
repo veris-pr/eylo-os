@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import uuid
 
+from pydantic import JsonValue, ValidationError
 from sqlalchemy import (
     CheckConstraint,
     ForeignKeyConstraint,
@@ -31,7 +32,11 @@ from eylo.absurd_work import (
     AbsurdBoundWorkMixin,
     DurableState,
 )
-from eylo.common.contracts.storage import StorageAuthority, StorageLocator
+from eylo.common.contracts.storage import (
+    InvalidStorageLocator,
+    StorageAuthority,
+    StorageLocator,
+)
 from eylo.common.models import EyloOrganizationModel
 
 # Content is stored on the job row rather than in object storage. That is a
@@ -199,7 +204,7 @@ class KnowledgeIngestionJobModel(EyloOrganizationModel, AbsurdBoundWorkMixin):
         nullable=True,
     )
     storage_provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    storage_authority: Mapped[dict | None] = mapped_column(
+    storage_authority: Mapped[dict[str, str] | None] = mapped_column(
         JSONB(none_as_null=True), nullable=True
     )
     embedding_provider_config_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -212,7 +217,7 @@ class KnowledgeIngestionJobModel(EyloOrganizationModel, AbsurdBoundWorkMixin):
     embedding_endpoint: Mapped[str | None] = mapped_column(Text, nullable=True)
     embedding_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
     embedding_dimensions: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    embedding_semantic_options: Mapped[dict | None] = mapped_column(
+    embedding_semantic_options: Mapped[dict[str, JsonValue] | None] = mapped_column(
         JSONB(none_as_null=True), nullable=True
     )
     embedding_space_id: Mapped[str | None] = mapped_column(
@@ -322,7 +327,7 @@ class KnowledgeCorpusImportModel(EyloOrganizationModel, AbsurdBoundWorkMixin):
         nullable=False,
     )
     storage_provider: Mapped[str] = mapped_column(String(64), nullable=False)
-    storage_authority: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    storage_authority: Mapped[dict[str, str]] = mapped_column(JSONB, nullable=False)
 
     # What the sweep found and what it filed. Two numbers rather than one,
     # because they differ whenever an object was skipped — unreadable, too
@@ -334,7 +339,7 @@ class KnowledgeCorpusImportModel(EyloOrganizationModel, AbsurdBoundWorkMixin):
     queued_count: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default=text("0")
     )
-    skipped: Mapped[dict | None] = mapped_column(
+    skipped: Mapped[dict[str, JsonValue] | None] = mapped_column(
         JSONB, nullable=True, doc="Objects that were not queued, and why."
     )
 
@@ -423,7 +428,7 @@ class KnowledgeReindexJobModel(EyloOrganizationModel, AbsurdBoundWorkMixin):
         String(255), nullable=False
     )
     source_embedding_dimensions: Mapped[int] = mapped_column(Integer, nullable=False)
-    source_embedding_semantic_options: Mapped[dict] = mapped_column(
+    source_embedding_semantic_options: Mapped[dict[str, JsonValue]] = mapped_column(
         JSONB, nullable=False
     )
     source_embedding_space_id: Mapped[str] = mapped_column(
@@ -441,7 +446,7 @@ class KnowledgeReindexJobModel(EyloOrganizationModel, AbsurdBoundWorkMixin):
         String(255), nullable=False
     )
     target_embedding_dimensions: Mapped[int] = mapped_column(Integer, nullable=False)
-    target_embedding_semantic_options: Mapped[dict] = mapped_column(
+    target_embedding_semantic_options: Mapped[dict[str, JsonValue]] = mapped_column(
         JSONB, nullable=False
     )
     target_embedding_space_id: Mapped[str] = mapped_column(
@@ -458,14 +463,23 @@ class KnowledgeReindexJobModel(EyloOrganizationModel, AbsurdBoundWorkMixin):
 def storage_authority_from_record(
     record: KnowledgeCorpusImportModel | KnowledgeIngestionJobModel,
 ) -> StorageAuthority:
-    """Rebuild the immutable authority captured on a corpus or job row."""
-    return StorageAuthority(
-        organization_id=record.organization_id,
-        provider_config_id=record.storage_provider_config_id,
-        provider_config_revision=record.storage_provider_config_revision,
-        provider=record.storage_provider,
-        location=record.storage_authority,
-    )
+    """Restore pinned authority; inline text jobs have none and are refused."""
+    config_id = record.storage_provider_config_id
+    revision = record.storage_provider_config_revision
+    provider = record.storage_provider
+    location = record.storage_authority
+    if config_id is None or revision is None or provider is None or location is None:
+        raise InvalidStorageLocator("Storage authority is incomplete.")
+    try:
+        return StorageAuthority(
+            organization_id=record.organization_id,
+            provider_config_id=config_id,
+            provider_config_revision=revision,
+            provider=provider,
+            location=location,
+        )
+    except ValidationError:
+        raise InvalidStorageLocator("Storage authority is incomplete.") from None
 
 
 def storage_locator_from_job(job: KnowledgeIngestionJobModel) -> StorageLocator:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
+from pydantic import JsonValue
 from sqlalchemy import (
     CheckConstraint,
     DateTime,
@@ -158,7 +159,7 @@ class MemoryModel(EyloOrganizationModel):
 
     content: Mapped[str] = mapped_column(Text, nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    meta: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    meta: Mapped[dict[str, JsonValue] | None] = mapped_column(JSONB, nullable=True)
     provenance: Mapped[dict] = mapped_column(JSONB, nullable=False)
     state_revision: Mapped[int] = mapped_column(
         Integer,
@@ -200,7 +201,9 @@ class MemoryModel(EyloOrganizationModel):
     embedding_endpoint: Mapped[str] = mapped_column(Text, nullable=False)
     embedding_model: Mapped[str] = mapped_column(String(255), nullable=False)
     embedding_dimensions: Mapped[int] = mapped_column(Integer, nullable=False)
-    embedding_semantic_options: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    embedding_semantic_options: Mapped[dict[str, JsonValue]] = mapped_column(
+        JSONB, nullable=False
+    )
     embedding: Mapped[str | None] = mapped_column(VectorType(), nullable=True)
     embedding_space_id: Mapped[str] = mapped_column(
         String(64), nullable=False, index=True
@@ -306,7 +309,9 @@ class MemoryIndexModel(EyloOrganizationModel):
     embedding_endpoint: Mapped[str] = mapped_column(Text, nullable=False)
     embedding_model: Mapped[str] = mapped_column(String(255), nullable=False)
     embedding_dimensions: Mapped[int] = mapped_column(Integer, nullable=False)
-    embedding_semantic_options: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    embedding_semantic_options: Mapped[dict[str, JsonValue]] = mapped_column(
+        JSONB, nullable=False
+    )
     embedding_space_id: Mapped[str] = mapped_column(
         String(64), nullable=False, index=True
     )
@@ -336,8 +341,8 @@ class MemoryIndexModel(EyloOrganizationModel):
     target_embedding_dimensions: Mapped[int | None] = mapped_column(
         Integer, nullable=True
     )
-    target_embedding_semantic_options: Mapped[dict | None] = mapped_column(
-        JSONB(none_as_null=True), nullable=True
+    target_embedding_semantic_options: Mapped[dict[str, JsonValue] | None] = (
+        mapped_column(JSONB(none_as_null=True), nullable=True)
     )
     target_embedding_space_id: Mapped[str | None] = mapped_column(
         String(64), nullable=True, index=True
@@ -427,7 +432,7 @@ class MemoryReindexJobModel(EyloOrganizationModel, AbsurdBoundWorkMixin):
     source_embedding_endpoint: Mapped[str] = mapped_column(Text, nullable=False)
     source_embedding_model: Mapped[str] = mapped_column(String(255), nullable=False)
     source_embedding_dimensions: Mapped[int] = mapped_column(Integer, nullable=False)
-    source_embedding_semantic_options: Mapped[dict] = mapped_column(
+    source_embedding_semantic_options: Mapped[dict[str, JsonValue]] = mapped_column(
         JSONB, nullable=False
     )
     source_embedding_space_id: Mapped[str] = mapped_column(
@@ -443,7 +448,7 @@ class MemoryReindexJobModel(EyloOrganizationModel, AbsurdBoundWorkMixin):
     target_embedding_endpoint: Mapped[str] = mapped_column(Text, nullable=False)
     target_embedding_model: Mapped[str] = mapped_column(String(255), nullable=False)
     target_embedding_dimensions: Mapped[int] = mapped_column(Integer, nullable=False)
-    target_embedding_semantic_options: Mapped[dict] = mapped_column(
+    target_embedding_semantic_options: Mapped[dict[str, JsonValue]] = mapped_column(
         JSONB, nullable=False
     )
     target_embedding_space_id: Mapped[str] = mapped_column(
@@ -679,7 +684,9 @@ class MemoryChangeModel(EyloBaseModel):
     embedding_endpoint: Mapped[str] = mapped_column(Text, nullable=False)
     embedding_model: Mapped[str] = mapped_column(String(255), nullable=False)
     embedding_dimensions: Mapped[int] = mapped_column(Integer, nullable=False)
-    embedding_semantic_options: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    embedding_semantic_options: Mapped[dict[str, JsonValue]] = mapped_column(
+        JSONB, nullable=False
+    )
     embedding_space_id: Mapped[str] = mapped_column(
         String(64), nullable=False, index=True
     )
@@ -689,12 +696,8 @@ class MemoryChangeModel(EyloBaseModel):
     reconciliation_llm_provider_config_revision: Mapped[int] = mapped_column(
         Integer, nullable=False
     )
-    reconciliation_llm_provider: Mapped[str] = mapped_column(
-        String(64), nullable=False
-    )
-    reconciliation_llm_model: Mapped[str] = mapped_column(
-        String(255), nullable=False
-    )
+    reconciliation_llm_provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    reconciliation_llm_model: Mapped[str] = mapped_column(String(255), nullable=False)
     reconciliation_prompt_revision: Mapped[str] = mapped_column(
         String(64), nullable=False
     )
@@ -900,7 +903,9 @@ class MemoryReconciliationJobModel(EyloOrganizationModel, AbsurdBoundWorkMixin):
     embedding_endpoint: Mapped[str] = mapped_column(Text, nullable=False)
     embedding_model: Mapped[str] = mapped_column(String(255), nullable=False)
     embedding_dimensions: Mapped[int] = mapped_column(Integer, nullable=False)
-    embedding_semantic_options: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    embedding_semantic_options: Mapped[dict[str, JsonValue]] = mapped_column(
+        JSONB, nullable=False
+    )
     embedding_space_id: Mapped[str] = mapped_column(
         String(64), nullable=False, index=True
     )
@@ -910,12 +915,8 @@ class MemoryReconciliationJobModel(EyloOrganizationModel, AbsurdBoundWorkMixin):
     reconciliation_llm_provider_config_revision: Mapped[int] = mapped_column(
         Integer, nullable=False
     )
-    reconciliation_llm_provider: Mapped[str] = mapped_column(
-        String(64), nullable=False
-    )
-    reconciliation_llm_model: Mapped[str] = mapped_column(
-        String(255), nullable=False
-    )
+    reconciliation_llm_provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    reconciliation_llm_model: Mapped[str] = mapped_column(String(255), nullable=False)
     reconciliation_prompt_revision: Mapped[str] = mapped_column(
         String(64), nullable=False
     )
@@ -1103,7 +1104,9 @@ class MemoryReconciliationCursorModel(EyloOrganizationModel):
     embedding_endpoint: Mapped[str] = mapped_column(Text, nullable=False)
     embedding_model: Mapped[str] = mapped_column(String(255), nullable=False)
     embedding_dimensions: Mapped[int] = mapped_column(Integer, nullable=False)
-    embedding_semantic_options: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    embedding_semantic_options: Mapped[dict[str, JsonValue]] = mapped_column(
+        JSONB, nullable=False
+    )
     embedding_space_id: Mapped[str] = mapped_column(
         String(64), nullable=False, index=True
     )
@@ -1113,12 +1116,8 @@ class MemoryReconciliationCursorModel(EyloOrganizationModel):
     reconciliation_llm_provider_config_revision: Mapped[int] = mapped_column(
         Integer, nullable=False
     )
-    reconciliation_llm_provider: Mapped[str] = mapped_column(
-        String(64), nullable=False
-    )
-    reconciliation_llm_model: Mapped[str] = mapped_column(
-        String(255), nullable=False
-    )
+    reconciliation_llm_provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    reconciliation_llm_model: Mapped[str] = mapped_column(String(255), nullable=False)
     reconciliation_prompt_revision: Mapped[str] = mapped_column(
         String(64), nullable=False
     )
@@ -1476,7 +1475,9 @@ class MemoryFormationJobModel(EyloOrganizationModel, AbsurdBoundWorkMixin):
     embedding_endpoint: Mapped[str] = mapped_column(Text, nullable=False)
     embedding_model: Mapped[str] = mapped_column(String(255), nullable=False)
     embedding_dimensions: Mapped[int] = mapped_column(Integer, nullable=False)
-    embedding_semantic_options: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    embedding_semantic_options: Mapped[dict[str, JsonValue]] = mapped_column(
+        JSONB, nullable=False
+    )
     embedding_space_id: Mapped[str] = mapped_column(
         String(64), nullable=False, index=True
     )
@@ -1643,7 +1644,9 @@ class MemoryFormationEffectModel(EyloOrganizationModel):
     formation_job_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), nullable=False, index=True
     )
-    operations: Mapped[list[dict]] = mapped_column(JSONB, nullable=False)
+    operations: Mapped[list[dict[str, JsonValue]]] = mapped_column(
+        JSONB, nullable=False
+    )
     applied_flags: Mapped[list[bool]] = mapped_column(
         JSONB,
         nullable=False,
@@ -1659,4 +1662,4 @@ class MemoryFormationEffectModel(EyloOrganizationModel):
         DateTime(timezone=True),
         nullable=True,
     )
-    outcomes: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    outcomes: Mapped[dict[str, JsonValue] | None] = mapped_column(JSONB, nullable=True)

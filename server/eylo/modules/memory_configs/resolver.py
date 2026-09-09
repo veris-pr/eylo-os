@@ -7,6 +7,7 @@ from uuid import UUID
 from eylo.modules.memory_configs.domain import InvalidMemoryConfig, ResolvedMemory
 from eylo.modules.memory_configs.service import MemoryConfigService
 from eylo.modules.provider_configs.constants import Capability
+from eylo.modules.provider_configs.domain import EffectiveProviderConfig
 from eylo.modules.provider_configs.errors import NotConfiguredError
 
 __all__ = ["MemoryConfigResolver"]
@@ -47,7 +48,7 @@ class MemoryConfigResolver:
         return self._to_resolved(effective)
 
     @staticmethod
-    def _to_resolved(effective) -> ResolvedMemory:
+    def _to_resolved(effective: EffectiveProviderConfig) -> ResolvedMemory:
         try:
             return ResolvedMemory.from_effective(effective)
         except InvalidMemoryConfig:

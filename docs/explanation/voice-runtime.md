@@ -25,6 +25,94 @@ swarm handoff.
 Provider capability projection tells operators which features are native. A
 pipeline may implement a platform feature even when the provider does not.
 
+The compatibility API exposes a `kind`-discriminated union of STT, TTS and
+realtime capability models. Each pairs a provider identity with its own typed
+native fields. Sockets own adapter declarations; the pipeline explicitly
+translates them into console-owned models rather than exposing SDK objects or
+an untyped dictionary. Support remains boolean in JSON for the existing console,
+with explicit support enums in Python. Reading this projection constructs the
+selected adapter but does not connect to the vendor; it is not verification or
+proof of a successful voice session.
+
+Polly translates the shared synthesis carrier into a private, frozen native
+config and an explicit request model before opening its SDK client. Its PCM
+request remains mono signed 16-bit audio at 8 or 16 kHz; encoding conversion is
+still owned by the pipeline. The adapter validates response bodies and binary
+chunks, closes each body after draining or interruption, and releases the client
+when verification fails or is cancelled. The SDK's proxied streaming body is
+wrapped locally; no SDK resource enters the platform model.
+
+Sarvam's WebSocket adapter sends typed configuration, text and control messages.
+It explicitly requests `linear16` PCM at the resolved sample rate and translates
+the platform language into the streaming API's `language_code`. It recognizes
+the documented `event` / `final` completion message, not a receive timeout.
+Malformed output and vendor errors fail the turn without exposing raw error
+payloads. Completed or interrupted streams are retired; the next reply opens a
+new configured stream so late output cannot enter another turn. Cancellation
+during setup closes the acquired socket, while receive-poll cancellation leaves
+the connection intact. These choices follow Sarvam's
+[streaming contract](https://docs.sarvam.ai/api-reference/text-to-speech/stream)
+and [audio-format guide](https://docs.sarvam.ai/api/api-guides-tutorials/text-to-speech/how-to/set-audio-format-for-output).
+
+Deepgram Aura v1 also receives through the manager rather than a hidden adapter
+task/queue. Typed `Flushed` control ends synthesis; metadata, warnings and polling
+do not. A premature EOF fails the turn. Interruption sends `Clear` and retires
+the connection; subsequent speech opens a fresh stream so untagged old binary
+audio cannot cross turns. Completed streams are retired too. This trades another
+handshake per turn for explicit stream ownership. Native WebSocket ping/pong
+handles transport liveness; keepalive never sends synthesis `Flush` messages.
+Codec/rate combinations are validated before connecting, query values are encoded,
+and credential-bearing handshakes refuse redirects. See Deepgram's
+[Aura streaming reference](https://developers.deepgram.com/reference/text-to-speech/speak-streaming)
+and [media combinations](https://developers.deepgram.com/docs/tts-media-output-settings).
+
+Groq Orpheus synthesis uses a typed request and one ordered HTTP worker. Long
+text is split without discarding characters at the native request boundary.
+The adapter parses RIFF chunks and their padding rather than assuming a 44-byte
+WAV header. It accepts only audio matching its declared mono PCM16/48 kHz
+contract; malformed, truncated or unsupported audio fails the turn. Bounded
+queues apply backpressure instead of dropping speech. Completion requires final
+input, completed requests and drained audio; HTTP failures cannot become empty
+successful turns. Interruption cancels the active body and queued generation.
+Verification cancellation closes its unpublished session, and reconnect waits
+for any outstanding cleanup. The adapter does not advertise speed control because
+it does not send a speed option. See the
+[Orpheus speech contract](https://console.groq.com/docs/text-to-speech/orpheus)
+and [RIFF chunk layout](https://learn.microsoft.com/en-us/windows/win32/xaudio2/resource-interchange-file-format--riff-).
+
+OpenAI and Groq share the socket-owned ordered HTTP lifecycle, not vendor wire
+schemas. OpenAI requests retain the operator's model/voice IDs, validate speed
+within 0.25–4, and use the same request builder for verification and synthesis.
+Text is partitioned at 4,096 characters without truncation. OpenAI's headerless
+24 kHz PCM16 response is frame-aligned across arbitrary HTTP chunks; empty,
+incomplete, or oversized responses fail. These checks validate framing, not
+speech intelligibility. Native rates are exposed to the pipeline's existing
+resampler, so playback and recording consume the same converted audio. See the
+[speech endpoint contract](https://developers.openai.com/api/reference/resources/audio/subresources/speech/methods/create)
+and [PCM output format](https://developers.openai.com/api/docs/guides/text-to-speech#supported-output-formats).
+
+Rime uses typed JSON requests/events on the documented `/ws3` endpoint. Audio
+comes from base64 `chunk.data`; timestamp and batch `done` events are not EOF.
+Final input sends EOS, then completion waits for a normal code-1000 close after
+valid audio. Empty/truncated audio, malformed events and provider errors fail
+the turn. Interruption retires the connection; the next turn cannot consume its
+late frames. The manager pulls audio directly with transport backpressure, and
+the pipeline converts raw PCM or mu-law for playback/recording. Credentials stay
+in the handshake header and redirects are refused. Speed control and timestamp
+projection are not advertised because this adapter does not implement them.
+See Rime's [WebSocket overview](https://docs.rime.ai/docs/websockets) and
+[native event contract](https://docs.rime.ai/api-reference/mistv2/websockets-json).
+
+Section edits use the `VoiceConfigSection` enum and the section's existing
+Pydantic model. An edit replaces that section, including its omitted-field
+defaults; it is not a recursive merge. The complete reconstructed config is
+validated before the optimistic revision update. Bound Agent drafts advance,
+but published Agent revisions remain unchanged until republished.
+
+Stored-only settings retain their experimental description and schema marker.
+`experimental()` supplies typed field metadata; defaults and factories remain
+on the field declarations so static tooling can understand constructor inputs.
+
 ## Turn and interruption handling
 
 Assistant playback completion, not merely model text completion, determines

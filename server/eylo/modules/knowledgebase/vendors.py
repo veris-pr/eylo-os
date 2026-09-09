@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -17,40 +17,38 @@ from eylo.common.contracts.knowledgebase import (
 )
 
 
-@dataclass(frozen=True)
-class VendorSpec:
-    """A vendor, and the metadata keys it cannot run without."""
+class KnowledgeVendor(StrEnum):
+    """Persisted index kinds; socket provider identifiers remain adapter-owned."""
 
-    name: str
-    # Keys that must be present in the knowledgebase's metadata. Empty for a
-    # vendor that needs nothing beyond a database connection.
-    required_metadata: tuple[str, ...] = field(default_factory=tuple)
-
-    # Whether this vendor needs an embedding provider to function. Checked
-    # against the organization's configured capabilities at creation, because
-    # the embedding model itself now lives there rather than in this
-    # knowledgebase's metadata.
-    needs_embeddings: bool = False
-    description: str = ""
+    POSTGRES_FTS = "postgres_fts"
+    PGVECTOR = "pgvector"
 
 
-# The key a pgvector knowledgebase carries in its metadata. Required, with no
-# default: the dimension of everything already stored depends on it, so a
-# knowledgebase whose embedding model silently changed would return nonsense
-# rather than an error.
+class VendorSpec(BaseModel):
+    """Executable index requirements checked before a KB is created."""
+
+    model_config = ConfigDict(
+        strict=True, frozen=True, extra="forbid", revalidate_instances="always"
+    )
+
+    name: KnowledgeVendor
+    needs_embeddings: bool
+    description: str
+
+
+# Legacy metadata is rejected: embedding authority lives on the provider binding.
 EMBEDDING_MODEL_KEY = "embedding_model"
-
-# Which chunking strategy a knowledgebase uses. Optional — paragraph packing is
-# the stated default — but validated when present, because a typo here is a
-# knowledgebase that fails its first ingestion rather than one that chunks
-# slightly differently.
-CHUNKING_KEY = "chunking"
 
 
 class KnowledgebaseMetadata(BaseModel):
     """Complete, executable knowledgebase behavior configuration."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+    )
 
     chunking: KnowledgeChunkingStrategy = DEFAULT_KNOWLEDGE_CHUNKING
     chunk_size: int = Field(
@@ -73,28 +71,32 @@ class KnowledgebaseMetadata(BaseModel):
         return self
 
 
-VENDORS: dict[str, VendorSpec] = {
-    "postgres_fts": VendorSpec(
-        name="postgres_fts",
+VENDORS: dict[KnowledgeVendor, VendorSpec] = {
+    KnowledgeVendor.POSTGRES_FTS: VendorSpec(
+        name=KnowledgeVendor.POSTGRES_FTS,
+        needs_embeddings=False,
         description="Keyword search over Postgres full-text indexes.",
     ),
-    "pgvector": VendorSpec(
-        name="pgvector",
-        # No longer required here. The model lives on the embedding capability;
-        # naming one in metadata is an override for a knowledgebase that has
-        # already stored vectors from a particular model and must keep using
-        # it.
+    KnowledgeVendor.PGVECTOR: VendorSpec(
+        name=KnowledgeVendor.PGVECTOR,
         needs_embeddings=True,
         description="Semantic search over pgvector embeddings.",
     ),
 }
 
-KNOWN_VENDORS: tuple[str, ...] = tuple(sorted(VENDORS))
+KNOWN_VENDORS: tuple[str, ...] = tuple(sorted(vendor.value for vendor in VENDORS))
+
+
+def _vendor_spec(vendor: str) -> VendorSpec | None:
+    try:
+        return VENDORS.get(KnowledgeVendor(vendor))
+    except ValueError:
+        return None
 
 
 def needs_embeddings(vendor: str) -> bool:
     """Whether this vendor cannot function without an embedding provider."""
-    spec = VENDORS.get(vendor)
+    spec = _vendor_spec(vendor)
     return bool(spec and spec.needs_embeddings)
 
 
@@ -102,15 +104,22 @@ def normalize_metadata(
     metadata: KnowledgebaseMetadata | dict[str, Any] | None,
 ) -> dict[str, Any]:
     """Return the full persisted config or one stable operator-facing error."""
+    return parse_metadata(metadata).model_dump(mode="json")
+
+
+def parse_metadata(metadata: object) -> KnowledgebaseMetadata:
+    """Keep executable settings typed until the persistence boundary."""
     try:
-        parsed = KnowledgebaseMetadata.model_validate(metadata or {})
+        parsed = KnowledgebaseMetadata.model_validate(
+            {} if metadata is None else metadata
+        )
     except ValidationError as error:
         first = error.errors(include_url=False)[0]
         location = ".".join(str(part) for part in first["loc"]) or "metadata"
         raise ValueError(
             f"Invalid knowledgebase metadata at {location}: {first['msg']}."
         ) from None
-    return parsed.model_dump(mode="json")
+    return parsed
 
 
 def configuration_problem(
@@ -126,7 +135,7 @@ def configuration_problem(
     This is the check that turns a permanent silent failure into an error an
     operator sees while they still have the form open.
     """
-    spec = VENDORS.get(vendor)
+    spec = _vendor_spec(vendor)
     if spec is None:
         return (
             f"Unknown knowledgebase vendor '{vendor}'. "
@@ -143,13 +152,6 @@ def configuration_problem(
             "embedding_model metadata is unsupported. Select an explicit verified "
             "embedding_provider_config_id when creating a pgvector knowledgebase."
         )
-    missing = [key for key in spec.required_metadata if not present.get(key)]
-    if missing:
-        return (
-            f"The '{vendor}' vendor requires {', '.join(missing)} in metadata. "
-            f"{spec.description}"
-        )
-
     try:
         normalize_metadata(metadata)
     except ValueError as error:

@@ -1,280 +1,288 @@
-"""Memory provider policy and immutable resolved authority."""
+"""Memory settings and verified dependency authority, detached from persistence."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
 from types import MappingProxyType
+from typing import Self
 from uuid import UUID
 
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    ModelWrapValidatorHandler,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
+
 from eylo.modules.memory_configs.catalog import MemoryProviders
+from eylo.modules.provider_configs.constants import Capability
 from eylo.modules.provider_configs.domain import (
     EffectiveProviderConfig,
     InvalidProviderConfig,
 )
 
-__all__ = ["InvalidMemoryConfig", "MemoryProviderConfig", "ResolvedMemory"]
-
 EMBEDDING_PROVIDER_CONFIG_ID_KEY = "embedding_provider_config_id"
 LLM_PROVIDER_CONFIG_ID_KEY = "llm_provider_config_id"
 
-_DEPENDENCY_CONFIG_FIELDS = frozenset(
-    {EMBEDDING_PROVIDER_CONFIG_ID_KEY, LLM_PROVIDER_CONFIG_ID_KEY}
-)
-_ALLOWED_CONFIG_FIELDS = {
-    MemoryProviders.PGVECTOR: _DEPENDENCY_CONFIG_FIELDS,
-}
-_REQUIRED_CONFIG_FIELDS = {
-    MemoryProviders.PGVECTOR: tuple(sorted(_DEPENDENCY_CONFIG_FIELDS)),
-}
-
 
 class InvalidMemoryConfig(InvalidProviderConfig):
-    """A memory provider config violates policy."""
+    """A memory provider config violates policy; diagnostics omit supplied values."""
 
 
-@dataclass(frozen=True)
-class MemoryProviderConfig:
-    """Configured memory backend plus explicit embedding and LLM dependencies."""
+class MemoryConfigValue(BaseModel):
+    """Frozen fields with validated, copied JSON; nested JSON is not deeply frozen."""
 
-    provider: MemoryProviders | str
-    config: Mapping[str, object]
-    secrets: Mapping[str, str] = field(repr=False)
+    model_config = ConfigDict(
+        frozen=True,
+        strict=True,
+        extra="forbid",
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+        allow_inf_nan=False,
+        populate_by_name=True,
+    )
 
-    def __post_init__(self) -> None:
-        provider = _provider(self.provider)
-        object.__setattr__(self, "provider", provider)
-        object.__setattr__(
-            self,
-            "config",
-            MappingProxyType(_validate_config(provider, self.config)),
-        )
-        object.__setattr__(
-            self,
-            "secrets",
-            MappingProxyType(_validate_secrets(provider, self.secrets)),
-        )
+    @model_validator(mode="wrap")
+    @classmethod
+    def _safe_validation(
+        cls, value: object, handler: ModelWrapValidatorHandler[Self]
+    ) -> Self:
+        try:
+            return handler(value)
+        except ValidationError:
+            raise InvalidMemoryConfig(
+                "Memory configuration contains invalid fields or types."
+            ) from None
+
+
+def parse_memory_provider(value: object) -> MemoryProviders:
+    """Normalize only a configured backend, never infer one from settings."""
+    if not isinstance(value, str):
+        raise InvalidMemoryConfig("Memory provider must be a string.")
+    try:
+        return MemoryProviders(value.strip().lower())
+    except ValueError:
+        raise InvalidMemoryConfig("Unknown memory provider.") from None
+
+
+def _dependency_id(value: object) -> UUID:
+    if not isinstance(value, (str, UUID)):
+        raise InvalidMemoryConfig("Memory dependency identity must be a UUID.")
+    try:
+        return UUID(str(value))
+    except ValueError:
+        raise InvalidMemoryConfig(
+            "Memory dependency identity must be a UUID."
+        ) from None
+
+
+class MemorySettings(MemoryConfigValue):
+    """Explicit dependencies; each referenced config owns its vendor credentials."""
+
+    embedding_provider_config_id: UUID
+    llm_provider_config_id: UUID
+
+    @field_validator(
+        "embedding_provider_config_id", "llm_provider_config_id", mode="before"
+    )
+    @classmethod
+    def _identity(cls, value: object) -> UUID:
+        return _dependency_id(value)
+
+
+class MemoryCredentials(MemoryConfigValue):
+    """Memory itself accepts no secrets; embedding and LLM configs own them."""
+
+
+class MemoryProviderConfig(MemoryConfigValue):
+    """Typed material with explicit mapping projections for the shared config store."""
+
+    provider: MemoryProviders
+    settings: MemorySettings = Field(validation_alias="config")
+    credentials: MemoryCredentials = Field(
+        validation_alias="secrets", repr=False, exclude=True
+    )
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def _provider(cls, value: object) -> MemoryProviders:
+        return parse_memory_provider(value)
+
+    @field_validator("settings", "credentials", mode="before")
+    @classmethod
+    def _mapping(cls, value: object) -> object:
+        return dict(value) if isinstance(value, Mapping) else value
 
     @classmethod
-    def validate(
+    def from_input(
         cls,
         *,
-        provider: MemoryProviders | str,
+        provider: str,
         config: Mapping[str, object] | None = None,
         secrets: Mapping[str, str] | None = None,
-    ) -> MemoryProviderConfig:
-        return cls(
-            provider=provider,
-            config={} if config is None else config,
-            secrets={} if secrets is None else secrets,
+    ) -> Self:
+        return cls.model_validate(
+            {
+                "provider": provider,
+                "config": {} if config is None else config,
+                "secrets": {} if secrets is None else secrets,
+            }
         )
+
+    @property
+    def config(self) -> Mapping[str, JsonValue]:
+        return MappingProxyType(self.settings.model_dump(mode="json"))
+
+    @property
+    def secrets(self) -> Mapping[str, str]:
+        return MappingProxyType({})
 
     @property
     def embedding_provider_config_id(self) -> UUID:
-        return UUID(str(self.config[EMBEDDING_PROVIDER_CONFIG_ID_KEY]))
+        return self.settings.embedding_provider_config_id
 
     @property
     def llm_provider_config_id(self) -> UUID:
-        return UUID(str(self.config[LLM_PROVIDER_CONFIG_ID_KEY]))
+        return self.settings.llm_provider_config_id
 
 
-@dataclass(frozen=True)
-class ResolvedMemory:
-    """One ready memory config revision and its verified dependency authority."""
+class MemoryDependencyAuthority(MemoryConfigValue):
+    """Verified facts, shared by the writer and readback; extension metadata survives.
 
-    provider_config_id: UUID
-    provider_config_revision: int
-    organization_id: UUID
-    provider: MemoryProviders
-    config: Mapping[str, object]
-    verification_metadata: Mapping[str, object]
-    configured: bool
-    verified: bool
-    ready: bool
-    granted: bool
+    Provider/model strings are recorded dependency observations, not selectors.
+    Executable provider selection belongs to each dependency's owning resolver.
+    """
 
-    def __post_init__(self) -> None:
-        if (
-            not isinstance(self.provider_config_id, UUID)
-            or not isinstance(self.organization_id, UUID)
-        ):
-            raise InvalidMemoryConfig("Resolved memory identifiers must be UUIDs.")
-        if (
-            isinstance(self.provider_config_revision, bool)
-            or not isinstance(self.provider_config_revision, int)
-            or self.provider_config_revision < 1
-        ):
-            raise InvalidMemoryConfig(
-                "Resolved memory revision must be a positive integer."
-            )
-        if not all(
-            isinstance(value, bool)
-            for value in (self.configured, self.verified, self.ready, self.granted)
-        ):
-            raise InvalidMemoryConfig("Resolved memory flags must be booleans.")
-        metadata = _validate_verification_metadata(
-            self.verification_metadata,
-            embedding_config_id=self.embedding_provider_config_id,
-            llm_config_id=self.llm_provider_config_id,
-        )
-        object.__setattr__(
-            self,
-            "verification_metadata",
-            MappingProxyType(metadata),
-        )
+    extensions: dict[str, JsonValue] = Field(default_factory=dict, repr=False)
 
+    embedding_provider_config_id: UUID
+    embedding_provider_config_revision: int = Field(gt=0)
+    embedding_provider: str
+    embedding_endpoint: str
+    embedding_model: str
+    embedding_dimensions: int = Field(gt=0)
+    embedding_semantic_options: dict[str, JsonValue]
+    embedding_space_id: str
+    llm_provider_config_id: UUID
+    llm_provider_config_revision: int = Field(gt=0)
+    llm_provider: str
+    llm_model: str
+
+    @field_validator(
+        "embedding_provider_config_id", "llm_provider_config_id", mode="before"
+    )
     @classmethod
-    def from_effective(
-        cls,
-        effective: EffectiveProviderConfig,
-    ) -> ResolvedMemory:
-        validated = MemoryProviderConfig.validate(
-            provider=effective.provider,
-            config=effective.settings,
-            secrets=effective.secrets,
-        )
-        return cls(
-            provider_config_id=effective.provider_config_id,
-            provider_config_revision=effective.revision,
-            organization_id=effective.organization_id,
-            provider=validated.provider,
-            config=validated.config,
-            verification_metadata=effective.verification_metadata,
-            configured=effective.configured,
-            verified=effective.verified,
-            ready=effective.ready,
-            granted=effective.granted,
-        )
+    def _identity(cls, value: object) -> UUID:
+        return _dependency_id(value)
 
-    @property
-    def embedding_provider_config_id(self) -> UUID:
-        return UUID(str(self.config[EMBEDDING_PROVIDER_CONFIG_ID_KEY]))
+    @field_validator("embedding_semantic_options", mode="before")
+    @classmethod
+    def _options(cls, value: object) -> object:
+        return dict(value) if isinstance(value, Mapping) else value
 
-    @property
-    def llm_provider_config_id(self) -> UUID:
-        return UUID(str(self.config[LLM_PROVIDER_CONFIG_ID_KEY]))
-
-    @property
-    def embedding_provider_config_revision(self) -> int:
-        return _metadata_revision(
-            self.verification_metadata,
-            "embedding_provider_config_revision",
-        )
-
-    @property
-    def llm_provider_config_revision(self) -> int:
-        return _metadata_revision(
-            self.verification_metadata,
-            "llm_provider_config_revision",
-        )
-
-
-def _provider(value: MemoryProviders | str) -> MemoryProviders:
-    try:
-        return value if isinstance(value, MemoryProviders) else MemoryProviders(value.strip().lower())
-    except (AttributeError, ValueError):
-        raise InvalidMemoryConfig(
-            f"Unknown memory provider: {value}. "
-            f"Available: {', '.join(provider.value for provider in MemoryProviders)}."
-        ) from None
-
-
-def _validate_config(
-    provider: MemoryProviders,
-    config: Mapping[str, object],
-) -> dict[str, object]:
-    if not isinstance(config, Mapping):
-        raise InvalidMemoryConfig("Config must be a mapping.")
-    unknown = set(config) - _ALLOWED_CONFIG_FIELDS[provider]
-    if unknown:
-        raise InvalidMemoryConfig(
-            f"Unknown config fields for {provider.value}: {sorted(unknown)}"
-        )
-    missing = [field for field in _REQUIRED_CONFIG_FIELDS[provider] if field not in config]
-    if missing:
-        raise InvalidMemoryConfig(
-            f"{provider.value} memory requires {missing} in config."
-        )
-    return {
-        field: _uuid_string(config[field], field)
-        for field in _REQUIRED_CONFIG_FIELDS[provider]
-    }
-
-
-def _uuid_string(value: object, field_name: str) -> str:
-    try:
-        return str(UUID(str(value)))
-    except (TypeError, ValueError, AttributeError):
-        raise InvalidMemoryConfig(f"{field_name} must be a UUID.") from None
-
-
-def _validate_secrets(
-    provider: MemoryProviders,
-    secrets: Mapping[str, str],
-) -> dict[str, str]:
-    if not isinstance(secrets, Mapping):
-        raise InvalidMemoryConfig("Secrets must be a mapping.")
-    if secrets:
-        raise InvalidMemoryConfig(
-            f"{provider.value} memory takes no secrets; its explicit embedding "
-            "and LLM configs own their credentials."
-        )
-    return {}
-
-
-def _metadata_revision(metadata: Mapping[str, object], field_name: str) -> int:
-    value = metadata.get(field_name)
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise InvalidMemoryConfig(
-            f"Verified memory authority is missing {field_name}."
-        )
-    return value
-
-
-def _validate_verification_metadata(
-    metadata: Mapping[str, object],
-    *,
-    embedding_config_id: UUID,
-    llm_config_id: UUID,
-) -> dict[str, object]:
-    if not isinstance(metadata, Mapping):
-        raise InvalidMemoryConfig("Memory verification metadata must be a mapping.")
-    values = dict(metadata)
-    try:
-        recorded_embedding_id = UUID(str(values["embedding_provider_config_id"]))
-        recorded_llm_id = UUID(str(values["llm_provider_config_id"]))
-    except (KeyError, TypeError, ValueError, AttributeError):
-        raise InvalidMemoryConfig(
-            "Verified memory authority is missing dependency identity."
-        ) from None
-    if recorded_embedding_id != embedding_config_id or recorded_llm_id != llm_config_id:
-        raise InvalidMemoryConfig(
-            "Verified memory dependency identity does not match its config."
-        )
-    _metadata_revision(values, "embedding_provider_config_revision")
-    _metadata_revision(values, "llm_provider_config_revision")
-    dimensions = values.get("embedding_dimensions")
-    if isinstance(dimensions, bool) or not isinstance(dimensions, int) or dimensions < 1:
-        raise InvalidMemoryConfig(
-            "Verified memory authority has invalid embedding dimensions."
-        )
-    semantic_options = values.get("embedding_semantic_options")
-    if not isinstance(semantic_options, Mapping):
-        raise InvalidMemoryConfig(
-            "Verified memory authority has invalid embedding semantic options."
-        )
-    values["embedding_semantic_options"] = dict(semantic_options)
-    for field_name in (
+    @field_validator(
         "embedding_provider",
         "embedding_endpoint",
         "embedding_model",
         "embedding_space_id",
         "llm_provider",
         "llm_model",
-    ):
-        value = values.get(field_name)
-        if not isinstance(value, str) or not value.strip():
+    )
+    @classmethod
+    def _observation(cls, value: str) -> str:
+        if not value.strip():
             raise InvalidMemoryConfig(
-                f"Verified memory authority is missing {field_name}."
+                "Verified memory dependency observation is missing."
             )
-    return values
+        return value
+
+    @classmethod
+    def from_metadata(cls, value: Mapping[str, object]) -> Self:
+        """Preserve unconsumed JSON without mixing it into the typed authority."""
+        fields = cls.model_fields.keys() - {"extensions"}
+        return cls.model_validate(
+            {
+                **{key: item for key, item in value.items() if key in fields},
+                "extensions": {
+                    key: item for key, item in value.items() if key not in fields
+                },
+            }
+        )
+
+    def to_metadata(self) -> dict[str, JsonValue]:
+        value = type(self).model_validate(self)
+        return value.extensions | value.model_dump(mode="json", exclude={"extensions"})
+
+
+class ResolvedMemory(MemoryProviderConfig):
+    """One memory revision and matching verified dependency identities."""
+
+    provider_config_id: UUID
+    provider_config_revision: int = Field(gt=0)
+    organization_id: UUID
+    dependency_authority: MemoryDependencyAuthority = Field(
+        validation_alias="verification_metadata"
+    )
+    configured: bool
+    verified: bool
+    ready: bool
+    granted: bool
+
+    @field_validator("dependency_authority", mode="before")
+    @classmethod
+    def _metadata(cls, value: object) -> MemoryDependencyAuthority:
+        if isinstance(value, Mapping):
+            return MemoryDependencyAuthority.from_metadata(value)
+        return MemoryDependencyAuthority.model_validate(value)
+
+    @model_validator(mode="after")
+    def _matching_dependencies(self) -> Self:
+        if (
+            self.dependency_authority.embedding_provider_config_id
+            != self.embedding_provider_config_id
+            or self.dependency_authority.llm_provider_config_id
+            != self.llm_provider_config_id
+        ):
+            raise InvalidMemoryConfig(
+                "Verified memory dependency identity does not match its config."
+            )
+        return self
+
+    @classmethod
+    def from_effective(cls, effective: EffectiveProviderConfig) -> ResolvedMemory:
+        effective = EffectiveProviderConfig.model_validate(effective)
+        if effective.capability is not Capability.MEMORY:
+            raise InvalidMemoryConfig(
+                "Resolved configuration is not a memory capability."
+            )
+        return cls.model_validate(
+            {
+                "provider_config_id": effective.provider_config_id,
+                "provider_config_revision": effective.revision,
+                "organization_id": effective.organization_id,
+                "provider": effective.provider,
+                "config": effective.settings,
+                "secrets": effective.secrets,
+                "verification_metadata": effective.verification_metadata,
+                "configured": effective.configured,
+                "verified": effective.verified,
+                "ready": effective.ready,
+                "granted": effective.granted,
+            }
+        )
+
+    @property
+    def verification_metadata(self) -> Mapping[str, JsonValue]:
+        return MappingProxyType(self.dependency_authority.to_metadata())
+
+    @property
+    def embedding_provider_config_revision(self) -> int:
+        return self.dependency_authority.embedding_provider_config_revision
+
+    @property
+    def llm_provider_config_revision(self) -> int:
+        return self.dependency_authority.llm_provider_config_revision

@@ -205,7 +205,7 @@ class EmbeddingConfigService:
         config: Mapping[str, object] | None,
         secrets: Mapping[str, str] | None,
     ) -> EmbeddingProviderConfig:
-        return EmbeddingProviderConfig.validate(
+        return EmbeddingProviderConfig.from_input(
             provider=provider,
             config=config,
             secrets=secrets,

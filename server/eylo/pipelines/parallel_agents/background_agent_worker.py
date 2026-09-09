@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
 from eylo.common.contracts.background_task import BackgroundTaskOutcome
+from eylo.common.contracts.tool_availability import ToolRuntimeFact
 from eylo.common.database import start_transaction
 from eylo.framework.agents.common import FrameworkMetadata
 from eylo.framework.agents.config import RunConfig
@@ -17,7 +18,11 @@ from eylo.modules.conversations.schemas.conversations import ConversationContext
 from eylo.modules.llm_configs.wiring import resolve_pinned_llm
 from eylo.modules.parallel_agents.schemas import TaskContent, WorkerResult
 from eylo.pipelines.outbound.durable_execution import DurableStepContext
-from eylo.pipelines.parallel_agents.context import build_task_conversation_context
+from eylo.pipelines.parallel_agents.context import (
+    AgentTaskConversationContext,
+    build_task_conversation_context,
+)
+from eylo.pipelines.system_tools.availability import refresh_context_tool_availability
 
 if TYPE_CHECKING:
     from eylo.framework.agents.agent import AgentSpec
@@ -153,7 +158,14 @@ class BackgroundAgentWorker:
             executable=resolved,
         )
         run_config = background_run_config()
-        spec = self._agent_spec(resolved)
+        await refresh_context_tool_availability(
+            context,
+            runtime_facts=(
+                ToolRuntimeFact.AGENT_RUN,
+                ToolRuntimeFact.DURABLE_EXECUTION,
+            ),
+        )
+        spec = self._agent_spec(context)
 
         from eylo.pipelines.agent_run_transcript import (
             AgentRunTranscript,
@@ -233,15 +245,18 @@ class BackgroundAgentWorker:
             return await ConversationContextService().build(conversation)
 
     @staticmethod
-    def _agent_spec(resolved: ResolvedExecutableAgent) -> AgentSpec:
-        """Expose the exact revision's tools; background runs never hand off."""
+    def _agent_spec(context: AgentTaskConversationContext) -> AgentSpec:
+        """Advertise the same gated, named tools dispatch resolves for this actor."""
         from eylo.pipelines.conversation.domain import (
             agent_spec_from_indb,
             tool_spec_from_indb,
         )
 
-        tools = tuple(tool_spec_from_indb(tool) for tool in resolved.tools)
-        return agent_spec_from_indb(resolved.agent, tools=tools, handoffs=())
+        agent = context.primary_agent
+        if agent is None:
+            raise ValueError("Background execution requires its published agent.")
+        tools = tuple(tool_spec_from_indb(tool) for tool in context.get_tools())
+        return agent_spec_from_indb(agent, tools=tools, handoffs=())
 
     def _build_run_input(
         self,

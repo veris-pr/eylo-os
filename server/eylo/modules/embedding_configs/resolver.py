@@ -10,6 +10,7 @@ from eylo.modules.embedding_configs.domain import (
 )
 from eylo.modules.embedding_configs.service import EmbeddingConfigService
 from eylo.modules.provider_configs.constants import Capability
+from eylo.modules.provider_configs.domain import EffectiveProviderConfig
 from eylo.modules.provider_configs.errors import NotConfiguredError
 
 __all__ = ["EmbeddingConfigResolver"]
@@ -49,7 +50,9 @@ class EmbeddingConfigResolver:
         )
         return self._to_resolved(effective, organization_id)
 
-    def _to_resolved(self, effective, organization_id: UUID) -> ResolvedEmbedding:
+    def _to_resolved(
+        self, effective: EffectiveProviderConfig, organization_id: UUID
+    ) -> ResolvedEmbedding:
         try:
             return ResolvedEmbedding.from_provider_config(
                 provider_config_id=effective.provider_config_id,

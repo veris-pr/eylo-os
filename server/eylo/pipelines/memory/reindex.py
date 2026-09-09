@@ -70,7 +70,7 @@ async def inspect_memory_reindex(
 
         available_space = None
         try:
-            config = MemoryProviderConfig.validate(
+            config = MemoryProviderConfig.from_input(
                 provider=stored.provider,
                 config=stored.config,
                 secrets=stored.secrets,
@@ -121,7 +121,7 @@ async def request_memory_reindex(
             organization_id=organization_id,
             config_id=memory_provider_config_id,
         )
-        config = MemoryProviderConfig.validate(
+        config = MemoryProviderConfig.from_input(
             provider=stored.provider,
             config=stored.config,
             secrets=stored.secrets,

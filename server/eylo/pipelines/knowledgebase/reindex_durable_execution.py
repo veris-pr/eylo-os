@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from typing import Any
 from uuid import UUID
 
 from absurd_sdk import AsyncTaskContext, CancelledTask
+from pydantic import JsonValue, ValidationError
 
 from eylo.absurd_work import (
     AbsurdBoundWorkService,
@@ -20,6 +20,7 @@ from eylo.common.contracts.embedding import (
     EmbeddingError,
     target_embedding_space_from_record,
 )
+from eylo.common.contracts.embedding_vectors import EmbeddingVectorBatch
 from eylo.common.database import start_transaction
 from eylo.durable_runtime import PlatformDurableRuntime, run_with_durable_heartbeat
 from eylo.modules.embedding_configs.domain import InvalidEmbeddingConfig
@@ -28,6 +29,11 @@ from eylo.modules.knowledgebase.services.knowledgebases import KnowledgebaseErro
 from eylo.modules.knowledgebase.services.reindex import KnowledgeReindexService
 from eylo.modules.provider_configs.errors import NotConfiguredError
 from eylo.pipelines.embedding.resolver import resolve_pinned_embedding_runtime
+from eylo.pipelines.knowledgebase.work_contracts import (
+    KnowledgeJobFailureReceipt,
+    KnowledgeJobParams,
+    KnowledgeReindexReceipt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -85,9 +91,9 @@ class KnowledgeReindexWorkflow:
 
     async def execute(
         self,
-        params: dict[str, Any],
+        params: object,
         task_context: AsyncTaskContext,
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         organization_id, job_id = _parse_params(params)
         try:
             return await self._execute(
@@ -109,7 +115,7 @@ class KnowledgeReindexWorkflow:
         organization_id: UUID,
         job_id: UUID,
         task_context: AsyncTaskContext,
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         try:
             async with start_transaction() as session:
                 job = await KnowledgeReindexService(session).begin_attempt(
@@ -184,10 +190,21 @@ class KnowledgeReindexWorkflow:
                         [chunk.content for chunk in chunks]
                     )
 
-                vectors = await task_context.step(
+                checkpoint = await task_context.step(
                     _step_name(job_id, [chunk.id for chunk in chunks]),
                     lambda: run_with_durable_heartbeat(task_context, embed_batch),
                 )
+                try:
+                    vectors = EmbeddingVectorBatch.validate_result(
+                        checkpoint,
+                        expected_count=len(chunks),
+                        dimensions=target.dimensions,
+                        vendor=target.provider,
+                    ).root
+                except EmbeddingError:
+                    raise KnowledgebaseError(
+                        "Knowledge reindex checkpoint vectors are invalid."
+                    ) from None
                 async with start_transaction() as session:
                     await KnowledgeReindexService(session).store_vectors(
                         organization_id=organization_id,
@@ -213,7 +230,7 @@ async def _handle_failure(
     job_id: UUID,
     error: Exception,
     permanent: bool,
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     async with start_transaction() as session:
         state = await KnowledgeReindexService(session).record_failure(
             organization_id=organization_id,
@@ -228,7 +245,7 @@ async def _handle_failure(
         job_id,
         type(error).__name__,
     )
-    return {"job_id": str(job_id), "state": state.value}
+    return KnowledgeJobFailureReceipt(job_id=job_id, state=state).to_payload()
 
 
 def _is_permanent(error: Exception) -> bool:
@@ -241,13 +258,21 @@ def _is_permanent(error: Exception) -> bool:
     return isinstance(error, KnowledgebaseError)
 
 
-def _parse_params(params: dict[str, Any]) -> tuple[UUID, UUID]:
-    if set(params) != {"organization_id", "job_id"}:
-        raise ValueError("Knowledge reindex task params must contain IDs only.")
+def _parse_params(params: object) -> tuple[UUID, UUID]:
     try:
-        return UUID(str(params["organization_id"])), UUID(str(params["job_id"]))
-    except (TypeError, ValueError) as error:
-        raise ValueError("Knowledge reindex task params contain an invalid UUID.") from error
+        parsed = KnowledgeJobParams.model_validate(params)
+    except ValidationError as error:
+        if any(
+            item["type"] in {"missing", "extra_forbidden", "model_type"}
+            for item in error.errors(include_input=False)
+        ):
+            raise ValueError(
+                "Knowledge reindex task params must contain IDs only."
+            ) from None
+        raise ValueError(
+            "Knowledge reindex task params contain an invalid UUID."
+        ) from None
+    return parsed.organization_id, parsed.job_id
 
 
 def _step_name(job_id: UUID, chunk_ids: list[UUID]) -> str:
@@ -257,14 +282,14 @@ def _step_name(job_id: UUID, chunk_ids: list[UUID]) -> str:
     return f"knowledge-reindex:{job_id}:chunks:{digest}:v1"
 
 
-def _receipt(job: KnowledgeReindexJobModel) -> dict[str, Any]:
-    return {
-        "organization_id": str(job.organization_id),
-        "job_id": str(job.id),
-        "state": job.state.value,
-        "source_chunk_count": job.source_chunk_count,
-        "indexed_chunk_count": job.indexed_chunk_count,
-    }
+def _receipt(job: KnowledgeReindexJobModel) -> dict[str, JsonValue]:
+    return KnowledgeReindexReceipt(
+        organization_id=job.organization_id,
+        job_id=job.id,
+        state=job.state,
+        source_chunk_count=job.source_chunk_count,
+        indexed_chunk_count=job.indexed_chunk_count,
+    ).to_payload()
 
 
 __all__ = [

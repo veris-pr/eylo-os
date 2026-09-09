@@ -19,6 +19,8 @@ from eylo.modules.voice.recording.model import VoiceRecordingModel
 
 
 class StorageConfigReferenceLookup:
+    """Read one non-null EXISTS result per owner; missing results are not absence."""
+
     def __init__(self, db: AsyncSession) -> None:
         self._db = db
 
@@ -35,7 +37,7 @@ class StorageConfigReferenceLookup:
             KnowledgeCorpusImportModel,
             KnowledgeIngestionJobModel,
         ):
-            referenced = await self._db.scalar(
+            result = await self._db.execute(
                 select(
                     exists().where(
                         model.organization_id == organization_id,
@@ -44,7 +46,7 @@ class StorageConfigReferenceLookup:
                     )
                 )
             )
-            if referenced:
+            if result.scalar_one():
                 return True
         return False
 

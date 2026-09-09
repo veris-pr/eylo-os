@@ -13,7 +13,7 @@ from eylo.modules.connections.schemas.oauth import OAuthStateCreateSchema
 
 
 class ExpiredOAuthState(BaseModel):
-    """Unconsumed state whose initiated connection must also be revoked."""
+    """Expired attempt whose matching initiated connection may need cleanup."""
 
     model_config = ConfigDict(
         frozen=True, strict=True, extra="forbid", revalidate_instances="always"
@@ -92,45 +92,33 @@ class OAuthStateRepository(EyloBaseRepository[OAuthStateModel]):
     async def delete_expired_states(
         self, current_time: datetime
     ) -> list[ExpiredOAuthState]:
-        """Delete OAuth states that have expired.
+        """Delete expired attempts and return exactly the removed ownership receipts.
 
-        Deletes OAuth state records where:
-        - expires_at is before current_time
-        - Returns list of deleted state IDs
-
-        Args:
-            current_time: Delete states expired before this time
-
-        Returns:
-            List of deleted OAuth state IDs
-
+        Include consumed states: a failed/cancelled exchange spends its state but
+        may leave an initiated connection. The service's revision/status guard
+        decides whether that connection still belongs to this abandoned attempt.
         """
-        active_result = await self.db_session.execute(
-            select(
+        result = await self.db_session.execute(
+            delete(OAuthStateModel)
+            .where(OAuthStateModel.expires_at < current_time)
+            .returning(
                 OAuthStateModel.id,
                 OAuthStateModel.organization_id,
                 OAuthStateModel.external_connection_id,
                 OAuthStateModel.expected_connection_revision,
-            ).where(
-                OAuthStateModel.expires_at < current_time,
-                OAuthStateModel.deleted.is_(False),
             )
         )
-        active_states = [
+        expired_states = [
             ExpiredOAuthState(
                 id=state_id,
                 organization_id=organization_id,
                 external_connection_id=connection_id,
                 expected_connection_revision=revision,
             )
-            for state_id, organization_id, connection_id, revision in active_result.all()
+            for state_id, organization_id, connection_id, revision in result.all()
         ]
-
-        await self.db_session.execute(
-            delete(OAuthStateModel).where(OAuthStateModel.expires_at < current_time)
-        )
         await self.db_session.flush()
-        return active_states
+        return expired_states
 
     async def invalidate_for_connection_revision(
         self,

@@ -8,11 +8,10 @@ instruction becomes the user message.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, replace
 from typing import Final
 from uuid import UUID, uuid4
 
-from pydantic import JsonValue, TypeAdapter
+from pydantic import BaseModel, ConfigDict, JsonValue, TypeAdapter
 
 from eylo.common.contracts.llm_runtime import LLMInferenceConfig
 from eylo.common.database import start_transaction
@@ -53,9 +52,16 @@ type SwarmToolResult = str | dict[str, JsonValue] | list[JsonValue]
 _TOOL_RESULT = TypeAdapter(SwarmToolResult)
 
 
-@dataclass(frozen=True, slots=True)
-class SwarmWorkerRuntime:
+class SwarmWorkerRuntime(BaseModel):
     """One exact topology member and its resolved model authority."""
+
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        strict=True,
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+    )
 
     executable: ResolvedExecutableAgent
     llm: ResolvedLLM
@@ -216,7 +222,7 @@ class SwarmAgentWorker:
         if not executable.system_prompt:
             raise ValueError("Swarm agent revision has no authored instructions.")
         return SwarmWorkerRuntime(
-            executable=replace(executable, tools=tuple(tools)), llm=resolved
+            executable=executable.with_tools(tuple(tools)), llm=resolved
         )
 
     async def _execute_tool(

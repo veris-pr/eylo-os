@@ -5,6 +5,7 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.services import EyloBaseService
+from eylo.modules.conversations.models.conversations import ConversationsModel
 from eylo.modules.conversations.repositories.aggregates import (
     ConversationAggregateRepository,
 )
@@ -18,7 +19,9 @@ from eylo.modules.conversations.schemas.aggregates import (
 from eylo.modules.conversations.schemas.messages import MessageKind
 
 
-class ConversationAggregateService(EyloBaseService[ConversationAggregateResponse]):
+class ConversationAggregateService(
+    EyloBaseService[ConversationAggregateResponse, ConversationsModel]
+):
     """Service for conversation aggregate operations.
 
     Provides methods to fetch conversations with all related data (contacts,

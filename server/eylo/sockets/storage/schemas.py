@@ -18,15 +18,22 @@ from eylo.sockets.storage.base import StorageOperationError, validate_key
 
 
 class S3StorageConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+    model_config = ConfigDict(
+        strict=True,
+        extra="forbid",
+        frozen=True,
+        str_strip_whitespace=True,
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+    )
 
     vendor: Literal["s3"] = "s3"
     bucket: str = Field(min_length=3, max_length=63)
     region: str = Field(min_length=5, max_length=64)
     key_prefix: str = Field(min_length=1, max_length=512)
-    access_key_id: SecretStr
-    secret_access_key: SecretStr
-    session_token: SecretStr | None = None
+    access_key_id: SecretStr = Field(repr=False, exclude=True)
+    secret_access_key: SecretStr = Field(repr=False, exclude=True)
+    session_token: SecretStr | None = Field(default=None, repr=False, exclude=True)
 
     @field_validator("key_prefix")
     @classmethod
@@ -38,7 +45,13 @@ class S3StorageConfig(BaseModel):
 
 
 class FilesystemStorageConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(
+        strict=True,
+        extra="forbid",
+        frozen=True,
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+    )
 
     vendor: Literal["filesystem"] = "filesystem"
     root: Path

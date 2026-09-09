@@ -6,12 +6,16 @@ from collections.abc import Sequence
 from uuid import UUID
 
 from sqlalchemy import func, update
+from sqlalchemy.engine import CursorResult
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from eylo.common.contracts.memory import MemoryError, MemoryResult
+from eylo.common.contracts.memory import MemoryError, MemoryLevel, MemoryResult
 from eylo.modules.memory.models import MemoryModel
 
 
-async def record_recalled_memories(session, memories: Sequence[MemoryResult]) -> None:
+async def record_recalled_memories(
+    session: AsyncSession, memories: Sequence[MemoryResult]
+) -> None:
     """Atomically count one real Agent-facing recall for every returned fact."""
     if not memories:
         return
@@ -27,27 +31,24 @@ async def record_recalled_memories(session, memories: Sequence[MemoryResult]) ->
             MemoryModel.id.in_(memory_ids),
             MemoryModel.organization_id == organization_id,
             MemoryModel.deleted.is_(False),
-            (
-                MemoryModel.expires_at.is_(None)
-                | (MemoryModel.expires_at > func.now())
-            ),
+            (MemoryModel.expires_at.is_(None) | (MemoryModel.expires_at > func.now())),
         )
         .values(
             recall_count=MemoryModel.recall_count + 1,
             last_recalled_at=func.now(),
         )
     )
-    if result.rowcount != len(memory_ids):
+    if not isinstance(result, CursorResult) or result.rowcount != len(memory_ids):
         raise MemoryError("Memory recall audit lost an active fact.")
 
 
 def memory_owner_id(model: MemoryModel) -> UUID:
     """Return the single owner guaranteed by the DB scope constraint."""
     owner = {
-        "agent": model.agent_id,
-        "user": model.contact_id,
-        "conversation": model.conversation_id,
-    }[model.scope_level.value]
+        MemoryLevel.AGENT: model.agent_id,
+        MemoryLevel.USER: model.contact_id,
+        MemoryLevel.CONVERSATION: model.conversation_id,
+    }[model.scope_level]
     if owner is None:
         raise MemoryError("Stored memory scope is incomplete.")
     return owner

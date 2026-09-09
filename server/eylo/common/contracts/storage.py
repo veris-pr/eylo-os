@@ -4,62 +4,64 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from collections.abc import Mapping
-from dataclasses import dataclass
 from types import MappingProxyType
+from typing import Annotated
 from urllib.parse import quote
 from uuid import UUID
 
-_PROVIDER_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*$")
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    ValidationError,
+    field_serializer,
+    field_validator,
+)
+
+LocationText = Annotated[str, Field(min_length=1)]
 
 
 class InvalidStorageLocator(ValueError):
     """A persisted storage authority or key is incomplete or malformed."""
 
 
-@dataclass(frozen=True)
-class StorageAuthority:
+class StorageAuthority(BaseModel):
+    """Pinned organization/config identity with an immutable location snapshot."""
+
+    model_config = ConfigDict(
+        strict=True,
+        frozen=True,
+        extra="forbid",
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+    )
+
     organization_id: UUID
     provider_config_id: UUID
-    provider_config_revision: int
-    provider: str
-    location: Mapping[str, str]
+    provider_config_revision: int = Field(gt=0)
+    provider: str = Field(pattern=r"^[a-z][a-z0-9_-]*$")
+    location: Mapping[LocationText, LocationText] = Field(min_length=1, repr=False)
 
-    def __post_init__(self) -> None:
-        try:
-            organization_id = UUID(str(self.organization_id))
-            provider_config_id = UUID(str(self.provider_config_id))
-        except ValueError:
-            raise InvalidStorageLocator(
-                "Storage authority identifiers must be UUIDs."
-            ) from None
-        revision = self.provider_config_revision
-        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
-            raise InvalidStorageLocator(
-                "Storage provider config revision must be a positive integer."
-            )
-        provider = self.provider.strip().lower() if isinstance(self.provider, str) else ""
-        if not _PROVIDER_PATTERN.fullmatch(provider):
-            raise InvalidStorageLocator("Storage provider is invalid.")
-        if not isinstance(self.location, Mapping) or not self.location:
-            raise InvalidStorageLocator("Storage authority location is required.")
-        location = {}
-        for name, value in self.location.items():
-            if (
-                not isinstance(name, str)
-                or not name
-                or not isinstance(value, str)
-                or not value
-            ):
-                raise InvalidStorageLocator(
-                    "Storage authority location must contain non-empty strings."
-                )
-            location[name] = value
-        object.__setattr__(self, "organization_id", organization_id)
-        object.__setattr__(self, "provider_config_id", provider_config_id)
-        object.__setattr__(self, "provider", provider)
-        object.__setattr__(self, "location", MappingProxyType(location))
+    @field_validator("organization_id", "provider_config_id", mode="before")
+    @classmethod
+    def decode_uuid(cls, value: object) -> object:
+        return UUID(value) if isinstance(value, str) else value
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def normalize_provider(cls, value: object) -> object:
+        return value.strip().lower() if isinstance(value, str) else value
+
+    @field_validator("location", mode="after")
+    @classmethod
+    def freeze_location(cls, value: Mapping[str, str]) -> Mapping[str, str]:
+        return MappingProxyType(dict(value))
+
+    @field_serializer("location")
+    def serialize_location(self, value: Mapping[str, str]) -> dict[str, str]:
+        return dict(value)
 
     @property
     def fingerprint(self) -> str:
@@ -71,47 +73,48 @@ class StorageAuthority:
         return hashlib.sha256(encoded).hexdigest()[:16]
 
     def locate(self, key: str) -> StorageLocator:
-        return StorageLocator(authority=self, key=key)
+        try:
+            return StorageLocator(authority=self, key=key)
+        except ValidationError:
+            raise InvalidStorageLocator("Storage object locator is invalid.") from None
 
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "organization_id": str(self.organization_id),
-            "provider_config_id": str(self.provider_config_id),
-            "provider_config_revision": self.provider_config_revision,
-            "provider": self.provider,
-            "location": dict(self.location),
-        }
+    def to_dict(self) -> dict[str, JsonValue]:
+        return type(self).model_validate(self).model_dump(mode="json")
 
     @classmethod
     def from_dict(cls, value: Mapping[str, object]) -> StorageAuthority:
+        """Restore the flat persisted shape, including a locator's extra key."""
         try:
-            return cls(
-                organization_id=UUID(str(value["organization_id"])),
-                provider_config_id=UUID(str(value["provider_config_id"])),
-                provider_config_revision=int(value["provider_config_revision"]),
-                provider=str(value["provider"]),
-                location=value["location"],
-            )
+            return cls.model_validate({name: value[name] for name in cls.model_fields})
         except (KeyError, TypeError, ValueError):
             raise InvalidStorageLocator("Storage authority is incomplete.") from None
 
 
-@dataclass(frozen=True)
-class StorageLocator:
+class StorageLocator(BaseModel):
+    """An exact key below a validated authority; never a caller-chosen root."""
+
+    model_config = ConfigDict(
+        strict=True,
+        frozen=True,
+        extra="forbid",
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+    )
+
     authority: StorageAuthority
     key: str
 
-    def __post_init__(self) -> None:
-        if not isinstance(self.authority, StorageAuthority):
-            raise InvalidStorageLocator("Storage locator authority is invalid.")
+    @field_validator("key")
+    @classmethod
+    def validate_key(cls, key: str) -> str:
         if (
-            not isinstance(self.key, str)
-            or not self.key
-            or self.key.startswith("/")
-            or "\x00" in self.key
-            or any(part in {".", ".."} for part in self.key.replace("\\", "/").split("/"))
+            not key
+            or key.startswith("/")
+            or "\x00" in key
+            or any(part in {".", ".."} for part in key.replace("\\", "/").split("/"))
         ):
             raise InvalidStorageLocator("Storage object key is invalid.")
+        return key
 
     @property
     def uri(self) -> str:
@@ -122,13 +125,15 @@ class StorageLocator:
             f"{authority.fingerprint}/{quote(self.key, safe='/')}"
         )
 
-    def to_dict(self) -> dict[str, object]:
-        return {**self.authority.to_dict(), "key": self.key}
+    def to_dict(self) -> dict[str, JsonValue]:
+        locator = type(self).model_validate(self)
+        return {**locator.authority.to_dict(), "key": locator.key}
 
     @classmethod
     def from_dict(cls, value: Mapping[str, object]) -> StorageLocator:
         try:
-            key = str(value["key"])
-        except (KeyError, TypeError, ValueError):
+            return cls.model_validate(
+                {"authority": StorageAuthority.from_dict(value), "key": value["key"]}
+            )
+        except (KeyError, TypeError, ValidationError):
             raise InvalidStorageLocator("Storage object key is missing.") from None
-        return cls(authority=StorageAuthority.from_dict(value), key=key)

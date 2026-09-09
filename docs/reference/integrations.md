@@ -168,6 +168,9 @@ be activated by that old attempt.
 Expired and rejected attempts discard only the matching, still-initiated connection
 revision. They never revoke an already-active or newer connection. The callback
 controller closes its installation lookup transaction before token exchange.
+Expiry cleanup includes consumed attempts: a failed or cancelled exchange may
+leave an initiated connection even though its state was already spent. Ownership
+receipts come from `DELETE RETURNING`, not a separate pre-delete snapshot.
 
 ## OAuth credential refresh
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.database import get_transaction
@@ -57,20 +58,29 @@ class ExecutableSwarmResolver:
                 raise InvalidSwarmDefinitionError(
                     "A topology member is not a conversational agent."
                 )
-            members.append(
-                ResolvedSwarmMember(
+            try:
+                member = ResolvedSwarmMember(
                     executable_agent=executable,
                     description=member_row.agent_description,
                 )
+            except ValidationError:
+                raise InvalidSwarmDefinitionError(
+                    "An exact swarm revision contains invalid member data."
+                ) from None
+            members.append(member)
+        try:
+            return ResolvedSwarmTopology(
+                ref=DefinitionRef(definition_id=swarm_id, revision=revision),
+                organization_id=organization_id,
+                name=topology.name,
+                slug=topology.slug,
+                description=topology.description,
+                members=tuple(members),
             )
-        return ResolvedSwarmTopology(
-            ref=DefinitionRef(definition_id=swarm_id, revision=revision),
-            organization_id=organization_id,
-            name=topology.name,
-            slug=topology.slug,
-            description=topology.description,
-            members=tuple(members),
-        )
+        except ValidationError:
+            raise InvalidSwarmDefinitionError(
+                "An exact swarm revision contains invalid topology data."
+            ) from None
 
     async def resolve_for_new_work(
         self,

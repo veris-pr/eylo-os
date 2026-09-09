@@ -36,7 +36,7 @@ from eylo.pipelines.outbound.models import OutboundAttemptModel
 from eylo.pipelines.outbound.service import OutboundAttemptService
 from eylo.pipelines.storage.runtime import StorageRuntime
 from eylo.pipelines.voice.recording_storage import upload_recording_path
-from eylo.sockets.storage.base import StorageOperationError
+from eylo.sockets.storage.base import StorageOperationError, StorageRecovery
 
 _TRACKS = frozenset({"user", "agent"})
 _OBJECT_CONFLICT = "storage_object_conflict"
@@ -122,7 +122,10 @@ async def execute_recording_track_upload(
                     content_sha256=digest,
                 )
         except StorageOperationError as error:
-            if error.retryable and storage.adapter.capabilities.stable_key_put:
+            if (
+                error.recovery is StorageRecovery.RETRY
+                and storage.adapter.capabilities.stable_key_put
+            ):
                 return OutboundSendRetryable(failure_code="storage_retryable")
             return OutboundSendTerminal(failure_code="storage_rejected")
         return OutboundSendSucceeded()

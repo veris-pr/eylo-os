@@ -1,268 +1,313 @@
-"""Deepgram TTS adapter for the production TTS manager.
-
-Bridges Deepgram's Aura TTS WebSocket streaming API to the interface
-expected by TTSRealtime/TTSFactory.
-
-Deepgram TTS supports native WebSocket streaming, making this a natural
-fit for the streaming pipeline without the HTTP→chunking workaround.
-"""
+"""Own Deepgram Aura streams and translate native output into TTS turn state."""
 
 import asyncio
-import json
 import logging
-from typing import Optional
+from typing import Self
+from urllib.parse import urlencode
 
-import aiohttp
-from pydantic import Field, StrictInt, field_validator
+from websockets.asyncio.client import ClientConnection, connect
+from websockets.exceptions import ConnectionClosed
 
-from eylo.common.contracts.speech_runtime import SpeechText
-from eylo.sockets.tts.adapters.config import TTSAdapterConfig
+from eylo.sockets.tts.adapters.deepgram_tts_wire import (
+    DEEPGRAM_AUTH_HEADER,
+    DeepgramClear,
+    DeepgramCleared,
+    DeepgramFlush,
+    DeepgramFlushed,
+    DeepgramSpeak,
+    DeepgramTTSConfig,
+    DeepgramTTSOutputError,
+    DeepgramTTSState,
+    DeepgramTTSWarning,
+    parse_control,
+)
 from eylo.sockets.tts.base import TTSVendorAdapter
-from eylo.sockets.tts.exceptions import TTSConnectionFailed
+from eylo.sockets.tts.exceptions import TTSConnectionClosed, TTSConnectionFailed
 from eylo.sockets.tts.schemas import TTSCapabilities, TTSConfig, TTSProvider
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_SAMPLE_RATE = 24000
-_WS_URL = "wss://api.deepgram.com/v1/speak"
 
+class _DeepgramConnect(connect):
+    """Keep the API key on its configured endpoint; never follow redirects.
 
-class DeepgramTTSConfig(TTSAdapterConfig):
-    """Configuration for Deepgram TTS adapter."""
+    websockets 15.0.1 forwards additional headers on redirected handshakes.
+    Its redirect hook returns the original error to refuse that extra request.
+    """
 
-    provider = TTSProvider.DEEPGRAM
-    model: SpeechText
-    sample_rate: StrictInt = Field(default=_DEFAULT_SAMPLE_RATE, gt=0)
-    encoding: SpeechText = "linear16"
-    container: SpeechText = "none"
-    ws_url: SpeechText = _WS_URL
-
-    @field_validator("encoding")
-    @classmethod
-    def native_encoding(cls, encoding: str) -> str:
-        return {
-            "pcm_s16le": "linear16",
-            "pcm_mulaw": "mulaw",
-            "pcm_alaw": "alaw",
-        }.get(encoding, encoding)
+    def process_redirect(self, exc: Exception) -> Exception:
+        return exc
 
 
 class DeepgramTTSAdapter(TTSVendorAdapter):
-    """Adapter bridging Deepgram WebSocket TTS to the TTSFactory interface.
+    """The manager owns receiving; no detached queue can hide EOF or failure."""
 
-    Maintains a persistent WebSocket connection to Deepgram's TTS endpoint
-    and translates between the Eylo streaming interface and Deepgram's
-    Speak/Flush protocol.
-    """
-
-    def __init__(self, config: DeepgramTTSConfig):
-        config = DeepgramTTSConfig.model_validate(config)
-        if config.container not in {"none", "raw"}:
-            raise ValueError("Deepgram TTS must emit raw audio for realtime voice.")
+    def __init__(self, config: DeepgramTTSConfig) -> None:
+        self._config = DeepgramTTSConfig.model_validate(config)
         super().__init__(
             TTSConfig(
                 vendor=TTSProvider.DEEPGRAM,
-                model=config.model,
-                sample_rate=config.sample_rate,
-                encoding=config.encoding,
+                model=self._config.model,
+                sample_rate=self._config.sample_rate.value,
+                encoding=self._config.encoding.value,
             )
         )
-        self._config = config
-        self._response_queue: asyncio.Queue = asyncio.Queue(maxsize=500)
-        self._session: Optional[aiohttp.ClientSession] = None
-        self._ws: Optional[aiohttp.ClientWebSocketResponse] = None
-        self._connected = False
-        self._recv_task: Optional[asyncio.Task] = None
+        self._ws: ClientConnection | None = None
+        self._state = DeepgramTTSState.DISCONNECTED
+        self._turn_complete = False
+        self._completion_error: TTSConnectionFailed | None = None
+        self._stream_available = asyncio.Event()
+        self._lifecycle_lock = asyncio.Lock()
+        self._closing_tasks: set[asyncio.Task[None]] = set()
 
     def _build_ws_url(self) -> str:
-        """Build WebSocket URL with query parameters."""
-        params = {
-            "model": self._config.model,
-            "encoding": self._config.encoding,
-            "container": self._config.container,
-            "sample_rate": self._config.sample_rate,
-        }
-        url = self._config.ws_url
-        separator = "&" if "?" in url else "?"
-        return url + separator + "&".join(f"{k}={v}" for k, v in params.items())
+        query = urlencode(
+            {
+                "model": self._config.model,
+                "encoding": self._config.encoding.value,
+                "container": "none",
+                "sample_rate": self._config.sample_rate.value,
+            }
+        )
+        separator = "&" if "?" in self._config.ws_url else "?"
+        return f"{self._config.ws_url}{separator}{query}"
 
-    async def connect(self):
-        """Connect to Deepgram TTS WebSocket."""
-        self._session = aiohttp.ClientSession()
-
-        try:
-            url = self._build_ws_url()
-            self._ws = await asyncio.wait_for(
-                self._session.ws_connect(
-                    url,
-                    headers={"Authorization": f"Token {self._config.api_key}"},
-                ),
-                timeout=10.0,
-            )
-            self._connected = True
-            # Start background receive loop
-            self._recv_task = asyncio.create_task(self._receive_loop())
-            logger.info("Deepgram TTS adapter connected (model=%s)", self._config.model)
+    async def connect(self) -> Self:
+        async with self._lifecycle_lock:
+            if self._ws is not None:
+                return self
+            await self._open_stream()
+            self._state = DeepgramTTSState.READY
+            self._completion_error = None
+            self._turn_complete = False
             return self
-        except Exception as error:
-            if self._session:
-                await self._session.close()
-                self._session = None
-            raise TTSConnectionFailed("Failed to connect Deepgram TTS.") from error
 
-    async def _receive_loop(self):
-        """Background loop reading audio frames from Deepgram WebSocket."""
+    async def _open_stream(self) -> None:
+        """The WebSocket library owns cleanup until acquisition returns."""
         try:
-            while self._connected and self._ws and not self._ws.closed:
-                msg = await self._ws.receive()
-
-                if msg.type in (
-                    aiohttp.WSMsgType.CLOSED,
-                    aiohttp.WSMsgType.CLOSE,
-                    aiohttp.WSMsgType.CLOSING,
-                    aiohttp.WSMsgType.ERROR,
-                ):
-                    logger.info("Deepgram TTS WebSocket closed")
-                    break
-
-                if msg.type == aiohttp.WSMsgType.BINARY:
-                    try:
-                        self._response_queue.put_nowait(msg.data)
-                    except asyncio.QueueFull:
-                        logger.warning(
-                            "Deepgram TTS response queue full, dropping chunk"
-                        )
-                elif msg.type == aiohttp.WSMsgType.TEXT:
-                    # Control messages (Flushed, Warning, etc.)
-                    try:
-                        data = json.loads(msg.data)
-                        msg_type = data.get("type", "")
-                        if msg_type == "Flushed":
-                            logger.debug("Deepgram TTS: Flushed signal received")
-                        elif msg_type == "Warning":
-                            logger.warning("Deepgram TTS provider warning")
-                    except json.JSONDecodeError:
-                        pass
-        except asyncio.CancelledError:
-            raise
-        except Exception as error:
-            logger.error(
-                "Deepgram TTS receive loop failed error_type=%s",
-                type(error).__name__,
+            ws = await _DeepgramConnect(
+                self._build_ws_url(),
+                additional_headers={
+                    DEEPGRAM_AUTH_HEADER: f"Token {self._config.api_key}"
+                },
+                open_timeout=self._retry_options.timeout_seconds,
+                close_timeout=self._retry_options.timeout_seconds,
             )
+        except asyncio.CancelledError:
+            self._state = DeepgramTTSState.DISCONNECTED
+            self._stream_available.set()
+            raise
+        except Exception:
+            error = TTSConnectionFailed("Deepgram TTS connection failed.")
+            self._completion_error = error
+            self._state = DeepgramTTSState.FAILED
+            self._stream_available.set()
+            raise error from None
+        self._ws = ws
+        self._stream_available.set()
 
-    async def disconnect(self):
-        """Close WebSocket and HTTP session."""
-        self._connected = False
+    def _start_close(self, ws: ClientConnection) -> asyncio.Task[None]:
+        task = asyncio.create_task(ws.close())
+        self._closing_tasks.add(task)
+        task.add_done_callback(self._closed)
+        return task
 
-        if self._recv_task and not self._recv_task.done():
-            self._recv_task.cancel()
-            try:
-                await self._recv_task
-            except asyncio.CancelledError:
-                pass
+    def _closed(self, task: asyncio.Task[None]) -> None:
+        self._closing_tasks.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            logger.warning("Deepgram TTS close failed")
 
-        if self._ws and not self._ws.closed:
-            # Send close message per Deepgram protocol
-            try:
-                await self._ws.send_str(json.dumps({"type": "Close"}))
-            except Exception:
-                pass
-            await self._ws.close()
+    async def _close(self, ws: ClientConnection) -> None:
+        # close_timeout bounds native teardown, which survives caller cancellation.
+        task = self._start_close(ws)
+        try:
+            await asyncio.shield(task)
+        except Exception:
+            pass
+
+    async def disconnect(self) -> None:
+        async with self._lifecycle_lock:
+            self._state = DeepgramTTSState.DISCONNECTED
+            self._stream_available.set()
+            ws, self._ws = self._ws, None
+            if ws is not None:
+                # A protocol close does not request more synthesis via Flush/Close.
+                await self._close(ws)
+            if self._closing_tasks:
+                closing = asyncio.gather(*self._closing_tasks, return_exceptions=True)
+                await asyncio.shield(closing)
+
+    async def _fail(self, ws: ClientConnection, error: TTSConnectionFailed) -> None:
+        if self._ws is ws:
             self._ws = None
+            self._completion_error = error
+            self._turn_complete = False
+            self._state = DeepgramTTSState.FAILED
+            self._stream_available.set()
+        await self._close(ws)
 
-        if self._session:
-            await self._session.close()
-            self._session = None
-
-        logger.info("Deepgram TTS adapter disconnected")
+    async def _send(
+        self, message: DeepgramSpeak | DeepgramFlush | DeepgramClear
+    ) -> None:
+        ws = self._ws
+        if ws is None:
+            raise TTSConnectionClosed("Deepgram TTS is not connected.")
+        try:
+            await ws.send(message.model_dump_json())
+        except asyncio.CancelledError:
+            await self._fail(ws, TTSConnectionFailed("Deepgram TTS send cancelled."))
+            raise
+        except Exception:
+            error = TTSConnectionFailed("Deepgram TTS send failed.")
+            await self._fail(ws, error)
+            raise error from None
 
     async def send_text(self, text: str) -> None:
-        """Send text for synthesis via WebSocket.
-
-        Args:
-            text: Text to synthesize.
-
-        """
-        if not self._connected or not self._ws or self._ws.closed:
-            raise TTSConnectionFailed("Not connected. Call connect() first.")
-        if not text or not text.strip():
+        message = DeepgramSpeak(text=text)
+        if not text.strip():
             return
-
-        await self._ws.send_str(json.dumps({"type": "Speak", "text": text}))
-
-    async def receive_audio(self) -> Optional[bytes]:
-        """Get next audio chunk from the response queue.
-
-        Returns:
-            Audio bytes (linear16 PCM) or None if queue empty.
-
-        """
-        try:
-            chunk = await asyncio.wait_for(self._response_queue.get(), timeout=0.1)
-            return chunk
-        except asyncio.TimeoutError:
-            return None
+        async with self._lifecycle_lock:
+            if self._completion_error is not None:
+                raise self._completion_error
+            if self._state is DeepgramTTSState.DISCONNECTED:
+                raise TTSConnectionClosed("Deepgram TTS is not connected.")
+            if self._state is DeepgramTTSState.DRAINING:
+                raise TTSConnectionFailed(
+                    "Deepgram TTS previous turn is still draining."
+                )
+            if self._ws is None:
+                await self._open_stream()
+            self._state = DeepgramTTSState.STREAMING
+            self._turn_complete = False
+            await self._send(message)
 
     async def flush(self) -> None:
-        """Send Flush signal to Deepgram to finalize current synthesis."""
-        if self._ws and not self._ws.closed:
-            try:
-                await self._ws.send_str(json.dumps({"type": "Flush"}))
-            except Exception as error:
-                logger.error(
-                    "Deepgram TTS flush failed error_type=%s",
-                    type(error).__name__,
+        async with self._lifecycle_lock:
+            if self._state is DeepgramTTSState.STREAMING:
+                self._state = DeepgramTTSState.DRAINING
+                await self._send(DeepgramFlush())
+
+    async def keepalive(self) -> None:
+        """WebSocket ping/pong owns liveness; Flush spends synthesis quota."""
+
+    async def receive_audio(self) -> bytes | None:
+        """Only Flushed completes a turn; polling, warnings and EOF do not."""
+        if self._state is DeepgramTTSState.DISCONNECTED:
+            return None
+        await self._stream_available.wait()
+        ws = self._ws
+        if ws is None:
+            if self._completion_error is not None:
+                raise self._completion_error
+            return None
+        try:
+            raw = await ws.recv()
+            if self._ws is not ws:
+                return None
+            if isinstance(raw, bytes):
+                if self._state not in (
+                    DeepgramTTSState.STREAMING,
+                    DeepgramTTSState.DRAINING,
+                ):
+                    raise DeepgramTTSOutputError(
+                        "Deepgram TTS audio has no active turn."
+                    )
+                return raw
+            message = parse_control(raw)
+            if isinstance(message, DeepgramFlushed):
+                if self._state is not DeepgramTTSState.DRAINING:
+                    raise DeepgramTTSOutputError(
+                        "Deepgram TTS completed before input was finalized."
+                    )
+                self._turn_complete = True
+                self._state = DeepgramTTSState.READY
+                self._ws = None
+                self._stream_available.clear()
+                self._start_close(ws)
+            elif isinstance(message, DeepgramCleared):
+                # Clear is sent only while retiring a stream, never a new turn.
+                raise DeepgramTTSOutputError(
+                    "Unexpected Deepgram TTS clear acknowledgement."
                 )
+            elif isinstance(message, DeepgramTTSWarning):
+                logger.warning("Deepgram TTS provider warning")
+            return None
+        except ConnectionClosed:
+            if self._ws is not ws:
+                return None
+            error = TTSConnectionFailed("Deepgram TTS stream ended before completion.")
+            await self._fail(ws, error)
+            raise error from None
+        except DeepgramTTSOutputError as error:
+            await self._fail(ws, error)
+            raise
+        except Exception:
+            if self._ws is not ws:
+                return None
+            error = TTSConnectionFailed("Deepgram TTS receive failed.")
+            await self._fail(ws, error)
+            raise error from None
+        # Cancelled recv is safe in websockets 15; polling retains stream ownership.
 
-    async def handle_interruption(self):
-        """Handle user interruption — flush synthesis and clear queue."""
-        # Send flush to stop current synthesis
-        await self.flush()
-
-        # Drain response queue
-        while not self._response_queue.empty():
-            try:
-                self._response_queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
-
-    async def keepalive(self):
-        """Send keepalive to maintain WebSocket connection.
-
-        Deepgram WebSocket connections can timeout after inactivity.
-        Sending a Flush on an empty buffer acts as a no-op keepalive.
-        """
-        if self._ws and not self._ws.closed:
-            try:
-                await self._ws.send_str(json.dumps({"type": "Flush"}))
-            except Exception:
-                pass
+    async def handle_interruption(self) -> None:
+        """Clear native work and retire its untagged audio before accepting input."""
+        async with self._lifecycle_lock:
+            if not self.is_connected:
+                return
+            ws = self._ws
+            if ws is not None:
+                # Detach before sending Clear: receive may wake on a late frame
+                # while send awaits I/O. That frame has already lost authority.
+                self._ws = None
+                self._stream_available.clear()
+                self._state = DeepgramTTSState.READY
+                self._turn_complete = True
+                try:
+                    await ws.send(DeepgramClear().model_dump_json())
+                except asyncio.CancelledError:
+                    self._state = DeepgramTTSState.DISCONNECTED
+                    self._stream_available.set()
+                    raise
+                except Exception:
+                    error = TTSConnectionFailed("Deepgram TTS interruption failed.")
+                    self._completion_error = error
+                    self._state = DeepgramTTSState.FAILED
+                    self._turn_complete = False
+                    self._stream_available.set()
+                    raise error from None
+                finally:
+                    await self._close(ws)
 
     @property
     def sample_rate(self) -> int:
-        """Audio sample rate."""
-        return self._config.sample_rate
+        return self._config.sample_rate.value
 
     @property
     def provider(self) -> str:
-        return "deepgram"
+        return TTSProvider.DEEPGRAM.value
 
     @property
     def is_connected(self) -> bool:
-        return bool(getattr(self, "_connected", False))
+        return self._state not in (
+            DeepgramTTSState.DISCONNECTED,
+            DeepgramTTSState.FAILED,
+        )
+
+    @property
+    def is_turn_complete(self) -> bool:
+        return self._turn_complete
+
+    @property
+    def turn_completion_error(self) -> TTSConnectionFailed | None:
+        return self._completion_error
 
     @property
     def model(self) -> str:
-        return str(getattr(self._config, "model", "") or "")
+        return self._config.model
 
     @property
     def capabilities(self) -> TTSCapabilities:
-        """Derived from this adapter's own behaviour, not from memory.
-
-        Confirm a False against vendor documentation before relying on it —
-        under-claiming makes a caller skip a feature, over-claiming breaks it.
-        """
+        """Interruption is transport-isolated, not persistent native context reuse."""
         return TTSCapabilities(
             streaming=True,
             batch_synthesize=False,

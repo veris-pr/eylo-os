@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -20,6 +19,8 @@ from eylo.modules.voice.schemas.api import (
     OrganizationVoiceConfigUpdate,
     VoiceConfigCompatibilityRead,
     VoiceConfigRead,
+    VoiceConfigSection,
+    VoiceConfigSectionInput,
 )
 from eylo.pipelines.voice.capabilities import VoiceCapabilityService
 from eylo.pipelines.voice.configuration import VoiceConfigurationService
@@ -118,8 +119,8 @@ class VoiceConfigController:
         *,
         organization_id: UUID,
         voice_config_id: UUID,
-        section: str,
-        data: Any,
+        section: VoiceConfigSection,
+        data: VoiceConfigSectionInput,
         expected_revision: int,
     ) -> VoiceConfigRead:
         try:

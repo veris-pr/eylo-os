@@ -14,6 +14,7 @@ from eylo.common.revisions import (
     DefinitionHeaderState,
     DefinitionLifecycle,
     PublishedRevisionState,
+    RevisionAvailability,
 )
 from eylo.common.services import EyloBaseService
 from eylo.modules.agents.domain import (
@@ -40,7 +41,7 @@ MAX_SWARM_DESCRIPTION_LENGTH = 2_000
 MAX_SWARM_MEMBERS = 32
 
 
-class AgentSwarmService(EyloBaseService[AgentSwarmInDb]):
+class AgentSwarmService(EyloBaseService[AgentSwarmInDb, AgentSwarmModel]):
     """Own stable swarm identity and mutable draft metadata."""
 
     @property
@@ -74,12 +75,11 @@ class AgentSwarmService(EyloBaseService[AgentSwarmInDb]):
         *,
         for_update: bool = False,
     ) -> AgentSwarmInDb | None:
-        row = await _get_header(
+        row = await _find_header(
             self.repository.db_session,
             organization_id=organization_id,
             swarm_id=pk,
             for_update=for_update,
-            required=False,
         )
         return self.orm_to_schema(row) if row else None
 
@@ -142,7 +142,9 @@ class AgentSwarmService(EyloBaseService[AgentSwarmInDb]):
         await self.repository.db_session.flush()
 
 
-class AgentSwarmMappingService(EyloBaseService[AgentSwarmMappingInDb]):
+class AgentSwarmMappingService(
+    EyloBaseService[AgentSwarmMappingInDb, AgentSwarmMappingModel]
+):
     """Mutate draft membership while advancing the header draft version."""
 
     @property
@@ -184,7 +186,7 @@ class AgentSwarmMappingService(EyloBaseService[AgentSwarmMappingInDb]):
         )
         if agent is None:
             raise SwarmMemberNotFoundError("Agent not found.")
-        if _enum_value(agent.kind) != AgentKind.CONVERSATIONAL.value:
+        if agent.kind != AgentKind.CONVERSATIONAL:
             raise InvalidSwarmDefinitionError(
                 "Only conversational agents may join a swarm."
             )
@@ -499,7 +501,24 @@ async def _get_header(
     organization_id: UUID,
     swarm_id: UUID,
     for_update: bool = False,
-    required: bool = True,
+) -> AgentSwarmModel:
+    row = await _find_header(
+        db,
+        organization_id=organization_id,
+        swarm_id=swarm_id,
+        for_update=for_update,
+    )
+    if row is None:
+        raise SwarmNotFoundError("Swarm not found.")
+    return row
+
+
+async def _find_header(
+    db: AsyncSession,
+    *,
+    organization_id: UUID,
+    swarm_id: UUID,
+    for_update: bool = False,
 ) -> AgentSwarmModel | None:
     query = select(AgentSwarmModel).where(
         AgentSwarmModel.organization_id == organization_id,
@@ -508,10 +527,7 @@ async def _get_header(
     )
     if for_update:
         query = query.with_for_update()
-    row = await db.scalar(query)
-    if row is None and required:
-        raise SwarmNotFoundError("Swarm not found.")
-    return row
+    return await db.scalar(query)
 
 
 def _header_state(row: AgentSwarmModel) -> DefinitionHeaderState:
@@ -525,7 +541,7 @@ def _header_state(row: AgentSwarmModel) -> DefinitionHeaderState:
 
 def _revision_state(row: AgentSwarmRevisionModel) -> PublishedRevisionState:
     return PublishedRevisionState(
-        availability=row.availability,
+        availability=RevisionAvailability(row.availability),
         published_at=row.published_at,
         revoked_at=row.revoked_at,
         revoked_by=row.revoked_by,
@@ -555,10 +571,6 @@ def _description(value: str | None) -> str | None:
             f"Swarm descriptions cannot exceed {MAX_SWARM_DESCRIPTION_LENGTH} characters."
         )
     return normalized
-
-
-def _enum_value(value: object) -> str:
-    return value.value if hasattr(value, "value") else str(value)
 
 
 __all__ = [

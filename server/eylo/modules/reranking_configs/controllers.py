@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from eylo.modules.provider_configs.domain import ProviderConfig
 from eylo.modules.provider_configs.masking import mask_secrets
+from eylo.modules.reranking_configs.domain import (
+    parse_reranking_provider,
+    parse_reranking_settings,
+)
 from eylo.modules.reranking_configs.schemas import (
     RerankingConfigCreate,
     RerankingConfigResponse,
@@ -28,7 +33,7 @@ class RerankingConfigController:
             organization_id=organization_id,
             provider=request.provider,
             name=request.name,
-            config=request.config,
+            config=request.config.model_dump(mode="json", exclude_none=True),
             secrets=request.secrets,
         )
         return self._to_response(config)
@@ -58,7 +63,11 @@ class RerankingConfigController:
             organization_id=organization_id,
             config_id=config_id,
             name=request.name if "name" in request.model_fields_set else None,
-            config=request.config if "config" in request.model_fields_set else None,
+            config=(
+                request.config.model_dump(mode="json", exclude_unset=True)
+                if request.config is not None
+                else None
+            ),
             secret_patch=(
                 request.secrets if "secrets" in request.model_fields_set else None
             ),
@@ -75,10 +84,11 @@ class RerankingConfigController:
         )
 
     @staticmethod
-    def _to_response(config) -> RerankingConfigResponse:
+    def _to_response(config: ProviderConfig) -> RerankingConfigResponse:
+        provider = parse_reranking_provider(config.provider)
         return RerankingConfigResponse(
             id=config.id,
-            provider=config.provider,
+            provider=provider,
             name=config.name,
             revision=config.revision,
             enabled=config.enabled,
@@ -86,6 +96,6 @@ class RerankingConfigController:
             verified=config.verified,
             ready=config.ready,
             verified_at=config.verified_at,
-            config=dict(config.config),
+            config=parse_reranking_settings(provider, config.config),
             secrets=mask_secrets(config.secrets),
         )

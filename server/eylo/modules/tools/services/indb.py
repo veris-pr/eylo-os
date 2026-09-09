@@ -30,7 +30,7 @@ from eylo.modules.tools.schemas.platform import PlatformTool
 logger = logging.getLogger(__name__)
 
 
-class ToolService(EyloBaseService[ToolInDb]):
+class ToolService(EyloBaseService[ToolInDb, ToolModel]):
     """Own mutable org tool drafts and immutable exact dispatch payloads."""
 
     @property

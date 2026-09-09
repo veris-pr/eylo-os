@@ -6,6 +6,7 @@ DOCUMENT_NAMESPACE = knowledgebase_contracts.DOCUMENT_NAMESPACE
 KnowledgeAccess = knowledgebase_contracts.KnowledgeAccess
 KnowledgeDocument = knowledgebase_contracts.KnowledgeDocument
 KnowledgeResult = knowledgebase_contracts.KnowledgeResult
+KnowledgeRecovery = knowledgebase_contracts.KnowledgeRecovery
 KnowledgeScope = knowledgebase_contracts.KnowledgeScope
 KnowledgebaseCapabilities = knowledgebase_contracts.KnowledgebaseCapabilities
 KnowledgebaseError = knowledgebase_contracts.KnowledgebaseError

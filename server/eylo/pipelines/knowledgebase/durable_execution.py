@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 from uuid import UUID
 
 from absurd_sdk import AsyncTaskContext, CancelledTask
+from pydantic import JsonValue, ValidationError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.absurd_work import (
     AbsurdBoundWorkService,
@@ -43,8 +44,16 @@ from eylo.modules.knowledgebase.services.ingestion import (
 from eylo.modules.knowledgebase.services.knowledgebases import KnowledgebaseService
 from eylo.modules.provider_configs.errors import NotConfiguredError
 from eylo.modules.user_sessions.events import file_user_session_fact
+from eylo.pipelines.knowledgebase.ingestion_contracts import (
+    KNOWLEDGE_INGESTION_SUBJECT,
+    KnowledgeIngestionEvent,
+    KnowledgeIngestionFact,
+    KnowledgeIngestionFailure,
+    KnowledgeIngestionReceipt,
+)
 from eylo.pipelines.knowledgebase.lifecycle import notify_cancelled_tasks
 from eylo.pipelines.knowledgebase.resolver import resolve_adapter
+from eylo.pipelines.knowledgebase.work_contracts import KnowledgeJobParams
 from eylo.pipelines.storage.runtime import resolve_storage_runtime_for_authority
 
 logger = logging.getLogger(__name__)
@@ -121,7 +130,7 @@ async def cancel_knowledge_ingestion(
             await _file_ingestion_fact(
                 session,
                 job,
-                "knowledge.ingestion.cancelled",
+                KnowledgeIngestionEvent.CANCELLED,
             )
     if cancelled and task_id is not None:
         await notify_cancelled_tasks(
@@ -137,9 +146,9 @@ class KnowledgeIngestionWorkflow:
 
     async def execute(
         self,
-        params: dict[str, Any],
+        params: object,
         task_context: AsyncTaskContext,
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         organization_id, job_id = _parse_params(params)
         try:
             return await self._execute(
@@ -170,7 +179,7 @@ class KnowledgeIngestionWorkflow:
                     await _file_ingestion_fact(
                         session,
                         job,
-                        "knowledge.ingestion.cancelled",
+                        KnowledgeIngestionEvent.CANCELLED,
                     )
             raise
 
@@ -180,7 +189,7 @@ class KnowledgeIngestionWorkflow:
         organization_id: UUID,
         job_id: UUID,
         task_context: AsyncTaskContext,
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         try:
             async with start_transaction() as session:
                 job = await AbsurdBoundWorkService(
@@ -203,7 +212,7 @@ class KnowledgeIngestionWorkflow:
                 await _file_ingestion_fact(
                     session,
                     job,
-                    "knowledge.ingestion.started",
+                    KnowledgeIngestionEvent.STARTED,
                 )
                 knowledgebase = await KnowledgebaseService(session).get(
                     job.knowledgebase_id,
@@ -277,20 +286,26 @@ class KnowledgeIngestionWorkflow:
                 await _file_ingestion_fact(
                     session,
                     row,
-                    "knowledge.ingestion.completed",
+                    KnowledgeIngestionEvent.COMPLETED,
                 )
         return _receipt(row, document_id=document_id)
 
 
-def _parse_params(params: dict[str, Any]) -> tuple[UUID, UUID]:
-    if set(params) != {"organization_id", "job_id"}:
-        raise ValueError("Knowledge ingestion task params must contain IDs only.")
+def _parse_params(params: object) -> tuple[UUID, UUID]:
     try:
-        return UUID(str(params["organization_id"])), UUID(str(params["job_id"]))
-    except (TypeError, ValueError) as error:
+        parsed = KnowledgeJobParams.model_validate(params)
+    except ValidationError as error:
+        if any(
+            item["type"] in {"missing", "extra_forbidden", "model_type"}
+            for item in error.errors(include_input=False)
+        ):
+            raise ValueError(
+                "Knowledge ingestion task params must contain IDs only."
+            ) from None
         raise ValueError(
             "Knowledge ingestion task params contain an invalid UUID."
-        ) from error
+        ) from None
+    return parsed.organization_id, parsed.job_id
 
 
 async def _fetch_document(job: KnowledgeIngestionJobModel) -> KnowledgeDocument:
@@ -301,17 +316,17 @@ async def _fetch_document(job: KnowledgeIngestionJobModel) -> KnowledgeDocument:
             db=session,
         )
     raw = await storage.adapter.download_object(
-        job.storage_key,
+        locator.key,
         max_bytes=MAX_STORAGE_OBJECT_BYTES,
     )
     if raw is None:
         raise IngestionError(
-            f"Object '{job.storage_key}' is not in storage; it may have been "
+            f"Object '{locator.key}' is not in storage; it may have been "
             "moved or deleted since the import enumerated it."
         )
     return document_from_job(
         job,
-        content=extract_text(job.storage_key, raw),
+        content=extract_text(locator.key, raw),
     )
 
 
@@ -321,7 +336,7 @@ async def _handle_failure(
     job_id: UUID,
     error: Exception,
     permanent: bool,
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     summary = _failure_code(error)
     async with start_transaction() as session:
         work = AbsurdBoundWorkService(
@@ -354,21 +369,21 @@ async def _handle_failure(
                 await _file_ingestion_fact(
                     session,
                     job,
-                    "knowledge.ingestion.failed",
-                    payload={"failure_code": summary},
+                    KnowledgeIngestionEvent.FAILED,
+                    failure_code=summary,
                 )
     if state is DurableState.PENDING:
         raise error
     logger.warning("Knowledge ingestion failed id=%s code=%s", job_id, summary)
-    return {"job_id": str(job_id), "state": state.value}
+    return KnowledgeIngestionReceipt(job_id=job_id, state=state).to_payload()
 
 
 async def _file_ingestion_fact(
-    session,
+    session: AsyncSession,
     job: KnowledgeIngestionJobModel,
-    event_type: str,
+    event_type: KnowledgeIngestionEvent,
     *,
-    payload: dict[str, str] | None = None,
+    failure_code: KnowledgeIngestionFailure | None = None,
 ) -> None:
     if job.user_session_id is None:
         return
@@ -376,50 +391,48 @@ async def _file_ingestion_fact(
         session,
         organization_id=job.organization_id,
         user_session_id=job.user_session_id,
-        subject_type="knowledge.ingestion",
+        subject_type=KNOWLEDGE_INGESTION_SUBJECT,
         subject_id=job.id,
         event_type=event_type,
-        payload={
-            "knowledgebase_id": str(job.knowledgebase_id),
-            "document_id": str(job.document_id),
-            **(payload or {}),
-        },
+        payload=KnowledgeIngestionFact(
+            knowledgebase_id=job.knowledgebase_id,
+            document_id=job.document_id,
+            failure_code=failure_code,
+        ).to_payload(),
     )
 
 
 def _is_permanent(error: Exception) -> bool:
     return (
-        isinstance(error, (DocumentExtractionError, NotConfiguredError))
+        isinstance(error, (DocumentExtractionError, NotConfiguredError, IngestionError))
         or isinstance(error, KnowledgebaseError)
         and not error.retryable
     )
 
 
-def _failure_code(error: Exception) -> str:
+def _failure_code(error: Exception) -> KnowledgeIngestionFailure:
     if isinstance(error, NotConfiguredError):
-        return "knowledge_provider_not_configured"
+        return KnowledgeIngestionFailure.NOT_CONFIGURED
     if isinstance(error, DocumentExtractionError):
-        return "knowledge_document_extraction_failed"
+        return KnowledgeIngestionFailure.EXTRACTION
     if isinstance(error, IngestionError):
-        return "knowledge_ingestion_invalid"
+        return KnowledgeIngestionFailure.INVALID
     if isinstance(error, KnowledgebaseError):
-        return "knowledge_provider_failed"
-    return "knowledge_ingestion_failed"
+        return KnowledgeIngestionFailure.PROVIDER
+    return KnowledgeIngestionFailure.INGESTION
 
 
 def _receipt(
     job: KnowledgeIngestionJobModel,
     *,
     document_id: str | None = None,
-) -> dict[str, Any]:
-    receipt: dict[str, Any] = {
-        "organization_id": str(job.organization_id),
-        "job_id": str(job.id),
-        "state": job.state.value,
-    }
-    if document_id is not None:
-        receipt["document_id"] = document_id
-    return receipt
+) -> dict[str, JsonValue]:
+    return KnowledgeIngestionReceipt(
+        organization_id=job.organization_id,
+        job_id=job.id,
+        state=job.state,
+        document_id=UUID(document_id) if document_id is not None else None,
+    ).to_payload()
 
 
 __all__ = [

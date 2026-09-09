@@ -32,7 +32,12 @@ def _build_controller() -> RerankingConfigController:
     return RerankingConfigController(build_reranking_config_service())
 
 
-@router.post("", response_model=RerankingConfigResponse, status_code=201)
+@router.post(
+    "",
+    response_model=RerankingConfigResponse,
+    status_code=201,
+    response_model_exclude_unset=True,
+)
 async def create_reranking_config(
     request: RerankingConfigCreate,
     current_user: Annotated[CurrentUserSchema, Depends(get_current_user)],
@@ -41,7 +46,9 @@ async def create_reranking_config(
         return await _build_controller().create(current_user.organization_id, request)
 
 
-@router.get("", response_model=list[RerankingConfigResponse])
+@router.get(
+    "", response_model=list[RerankingConfigResponse], response_model_exclude_unset=True
+)
 async def list_reranking_configs(
     current_user: Annotated[CurrentUserSchema, Depends(get_current_user)],
 ) -> list[RerankingConfigResponse]:
@@ -49,7 +56,11 @@ async def list_reranking_configs(
         return await _build_controller().list(current_user.organization_id)
 
 
-@router.get("/{config_id}", response_model=RerankingConfigResponse)
+@router.get(
+    "/{config_id}",
+    response_model=RerankingConfigResponse,
+    response_model_exclude_unset=True,
+)
 async def get_reranking_config(
     config_id: UUID,
     current_user: Annotated[CurrentUserSchema, Depends(get_current_user)],
@@ -58,7 +69,11 @@ async def get_reranking_config(
         return await _build_controller().get(current_user.organization_id, config_id)
 
 
-@router.patch("/{config_id}", response_model=RerankingConfigResponse)
+@router.patch(
+    "/{config_id}",
+    response_model=RerankingConfigResponse,
+    response_model_exclude_unset=True,
+)
 async def update_reranking_config(
     config_id: UUID,
     request: RerankingConfigUpdate,

@@ -19,6 +19,7 @@ from eylo.modules.agents.domain import (
 )
 from eylo.modules.agents.schemas.indb import AgentInDb
 from eylo.modules.conversations.exceptions import ConversationNotFound
+from eylo.modules.conversations.models.conversations import ConversationsModel
 from eylo.modules.conversations.repositories.conversations import (
     ConversationRepository,
 )
@@ -60,7 +61,7 @@ class ConversationResult(TypedDict):
     message: MessageInDb
 
 
-class ConversationBaseService(EyloBaseService[ConversationInDb]):
+class ConversationBaseService(EyloBaseService[ConversationInDb, ConversationsModel]):
     """ConversationBaseService behavior for the "conversations" domain."""
 
     @property

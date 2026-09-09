@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from eylo.absurd_work import DurableState
 from eylo.common.contracts.memory import (
@@ -107,7 +107,9 @@ class MemoryReconciliationJobRead(BaseModel):
 
 
 class MemoryDetailRead(MemoryRead):
-    metadata: dict
+    model_config = ConfigDict(allow_inf_nan=False, hide_input_in_errors=True)
+
+    metadata: dict[str, JsonValue] = Field(repr=False)
     provenance: MemoryProvenance
     history: list[MemoryChangeRead]
     relationships: list[MemoryRelationshipRead]
@@ -135,7 +137,12 @@ class MemoryEmbeddingSpaceRead(BaseModel):
 
 
 class MemoryReindexJobRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True, extra="forbid")
+    model_config = ConfigDict(
+        from_attributes=True,
+        extra="forbid",
+        allow_inf_nan=False,
+        hide_input_in_errors=True,
+    )
 
     id: UUID
     memory_provider_config_id: UUID
@@ -146,7 +153,7 @@ class MemoryReindexJobRead(BaseModel):
     target_embedding_provider: str
     target_embedding_model: str
     target_embedding_dimensions: int = Field(gt=0)
-    target_embedding_semantic_options: dict
+    target_embedding_semantic_options: dict[str, JsonValue]
     target_embedding_space_id: str
     source_fact_count: int = Field(ge=0)
     indexed_fact_count: int = Field(ge=0)

@@ -3,15 +3,28 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from enum import StrEnum
+from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    field_validator,
+    model_validator,
+)
+from pydantic.fields import FieldInfo
 
 from eylo.common.contracts.voice import InterruptionType as InterruptionType
+from eylo.modules.voice.schemas.capabilities import VoicePlatformFeature
+from eylo.modules.voice.schemas.capabilities import (
+    VoiceProviderCapabilityRead as VoiceProviderCapabilityRead,
+)
 
 
-def experimental(default: object, **kwargs: object) -> Any:
+def experimental(*, ge: float | None = None, le: float | None = None) -> FieldInfo:
     """Mark a field as stored but not yet acted on at runtime.
 
     Setting one of these has no effect. The marker is deliberately visible in
@@ -26,17 +39,11 @@ def experimental(default: object, **kwargs: object) -> Any:
         "EXPERIMENTAL — stored but not yet enforced. Setting this has no "
         "effect on behaviour."
     )
-    if "default_factory" in kwargs:
-        # Pydantic rejects default and default_factory together; the factory
-        # wins and `default` is ignored, so it must not be passed on.
-        return Field(
-            description=description, json_schema_extra={"experimental": True}, **kwargs
-        )
     return Field(
-        default=default,
         description=description,
         json_schema_extra={"experimental": True},
-        **kwargs,
+        ge=ge,
+        le=le,
     )
 
 
@@ -51,11 +58,7 @@ class StopSpeakingPlan(BaseModel):
         le=50,
         description="Minimum word count before allowing interruption. 0 = interrupt on any speech.",
     )
-    voice_seconds: float = experimental(
-        0.0,
-        ge=0.0,
-        le=10.0,
-    )
+    voice_seconds: Annotated[float, experimental(ge=0.0, le=10.0)] = 0.0
     backoff_seconds: float = Field(
         default=0.0,
         ge=0.0,
@@ -80,7 +83,7 @@ class StartSpeakingPlan(BaseModel):
         le=5000,
     )
     responsiveness: float = Field(default=0.5, ge=0.0, le=1.0)
-    begin_message_delay_ms: int = experimental(0, ge=0, le=30000)
+    begin_message_delay_ms: Annotated[int, experimental(ge=0, le=30000)] = 0
 
 
 class AmbientNoiseConfig(BaseModel):
@@ -132,7 +135,7 @@ class ConversationControl(BaseModel):
         default="assistant-speaks-first",
         description="Whether the agent speaks first or waits for the user.",
     )
-    first_message_interruptible: bool = experimental(False)
+    first_message_interruptible: Annotated[bool, experimental()] = False
     max_duration_seconds: int = Field(
         default=0,
         ge=0,
@@ -181,16 +184,15 @@ class BackgroundAudioConfig(BaseModel):
     filler: FillerConfig = Field(default_factory=FillerConfig)
     # Stored parity contract. Wire denoising into the voice pipeline or vendor
     # socket adapter when a runtime can actually request noise cancellation.
-    denoising_mode: Literal["off", "noise-cancellation"] = experimental("off")
+    denoising_mode: Annotated[Literal["off", "noise-cancellation"], experimental()] = "off"
 
 
 class BackchannelConfig(BaseModel):
     # Backchannels acknowledge a caller while the caller is still speaking.
     # They are not filler phrases, which occupy an Agent thinking gap.
-    enabled: bool = experimental(False)
-    frequency: float = experimental(0.2, ge=0.0, le=1.0)
-    words: list[str] = experimental(
-        None,
+    enabled: Annotated[bool, experimental()] = False
+    frequency: Annotated[float, experimental(ge=0.0, le=1.0)] = 0.2
+    words: Annotated[list[str], experimental()] = Field(
         default_factory=lambda: ["uh-huh", "I see", "right"],
     )
 
@@ -236,51 +238,51 @@ class ObservabilityPlan(BaseModel):
     # is not: there is no debug event stream to gate, and inventing one to
     # satisfy the field would be the wrong way round.
     metrics_enabled: bool = True
-    debug_events_enabled: bool = experimental(False)
+    debug_events_enabled: Annotated[bool, experimental()] = False
     vendor_latency_tracking_enabled: bool = True
 
 
 class KeypadInputPlan(BaseModel):
     """Per-agent keypad behaviour."""
 
-    enabled: bool = experimental(False)
-    digit_limit: int = experimental(6, ge=1, le=32)
-    termination_key: str = experimental("#")
-    timeout_ms: int = experimental(5000, ge=1000, le=60000)
+    enabled: Annotated[bool, experimental()] = False
+    digit_limit: Annotated[int, experimental(ge=1, le=32)] = 6
+    termination_key: Annotated[str, experimental()] = "#"
+    timeout_ms: Annotated[int, experimental(ge=1000, le=60000)] = 5000
 
 
 class TransportConfig(BaseModel):
-    browser_transport: Literal["webrtc", "websocket"] = experimental("webrtc")
-    telephony_provider: str | None = experimental(None)
-    ring_duration_ms: int = experimental(30000, ge=1000, le=300000)
+    browser_transport: Annotated[Literal["webrtc", "websocket"], experimental()] = "webrtc"
+    telephony_provider: Annotated[str | None, experimental()] = None
+    ring_duration_ms: Annotated[int, experimental(ge=1000, le=300000)] = 30000
     keypad_input: KeypadInputPlan = Field(default_factory=KeypadInputPlan)
 
 
 class HookConfig(BaseModel):
     # Lifecycle hooks are persisted but not run by the voice config module. A
     # voice lifecycle hook runner should consume this section from pipeline events.
-    name: str = experimental(...)
-    enabled: bool = experimental(True)
-    event: str = experimental(...)
-    url: str | None = experimental(None)
-    headers: dict[str, str] = experimental(None, default_factory=dict)
+    name: Annotated[str, experimental()]
+    enabled: Annotated[bool, experimental()] = True
+    event: Annotated[str, experimental()]
+    url: Annotated[str | None, experimental()] = None
+    headers: Annotated[dict[str, str], experimental()] = Field(default_factory=dict)
 
 
 class ServerConfig(BaseModel):
     # Webhook callback settings are stored ahead of runtime use. Delivery should
     # be owned by a voice lifecycle webhook publisher/listener.
-    webhook_url: str | None = experimental(None)
-    webhook_events: list[str] = experimental(None, default_factory=list)
-    webhook_timeout_ms: int = experimental(30000, ge=1000, le=120000)
-    headers: dict[str, str] = experimental(None, default_factory=dict)
+    webhook_url: Annotated[str | None, experimental()] = None
+    webhook_events: Annotated[list[str], experimental()] = Field(default_factory=list)
+    webhook_timeout_ms: Annotated[int, experimental(ge=1000, le=120000)] = 30000
+    headers: Annotated[dict[str, str], experimental()] = Field(default_factory=dict)
 
 
 class FallbackChainsConfig(BaseModel):
     # Fallback enablement is a runtime factory/pipeline concern. The config
     # service only validates and stores the contract.
-    stt_enabled: bool = experimental(False)
-    tts_enabled: bool = experimental(False)
-    realtime_enabled: bool = experimental(False)
+    stt_enabled: Annotated[bool, experimental()] = False
+    tts_enabled: Annotated[bool, experimental()] = False
+    realtime_enabled: Annotated[bool, experimental()] = False
 
 
 class CapabilityWarning(BaseModel):
@@ -296,21 +298,11 @@ class VoiceRuntimeCapabilities(BaseModel):
 class VoicePlatformFeatureRead(BaseModel):
     """One provider-independent behavior implemented by Eylo's voice pipeline."""
 
-    key: str
+    key: VoicePlatformFeature
     label: str
     enabled: bool
     description: str
     provider_independent: Literal[True] = True
-
-
-class VoiceProviderCapabilityRead(BaseModel):
-    """Native behavior declared by one selected provider adapter."""
-
-    kind: Literal["stt", "tts", "realtime"]
-    provider_config_id: UUID
-    provider: str
-    ready: bool
-    native_capabilities: dict[str, Any]
 
 
 class VoiceConfigCompatibilityRead(BaseModel):
@@ -415,27 +407,53 @@ class VoiceConfigRead(BaseModel):
     updated_at: datetime
 
 
-VOICE_CONFIG_SECTION_SCHEMAS: dict[str, type[BaseModel] | type[list[HookConfig]]] = {
-    "conversation_control": ConversationControl,
-    "start_speaking_plan": StartSpeakingPlan,
-    "stop_speaking_plan": StopSpeakingPlan,
-    "silence": SilenceConfig,
-    "backchannel": BackchannelConfig,
-    "compliance": CompliancePlan,
-    "artifacts": ArtifactPlan,
-    "observability": ObservabilityPlan,
-    "background_audio": BackgroundAudioConfig,
-    "transport": TransportConfig,
-    "server": ServerConfig,
-    "fallback_chains": FallbackChainsConfig,
+class VoiceConfigSection(StrEnum):
+    """Editable policy sections; provider references are not section patches."""
+
+    CONVERSATION_CONTROL = "conversation_control"
+    START_SPEAKING_PLAN = "start_speaking_plan"
+    STOP_SPEAKING_PLAN = "stop_speaking_plan"
+    SILENCE = "silence"
+    BACKCHANNEL = "backchannel"
+    COMPLIANCE = "compliance"
+    ARTIFACTS = "artifacts"
+    OBSERVABILITY = "observability"
+    BACKGROUND_AUDIO = "background_audio"
+    TRANSPORT = "transport"
+    SERVER = "server"
+    FALLBACK_CHAINS = "fallback_chains"
+    HOOKS = "hooks"
+
+
+type VoiceConfigSectionInput = dict[str, JsonValue] | list[dict[str, JsonValue]]
+type VoiceConfigSectionModel = (
+    ConversationControl | StartSpeakingPlan | StopSpeakingPlan | SilenceConfig
+    | BackchannelConfig | CompliancePlan | ArtifactPlan | ObservabilityPlan
+    | BackgroundAudioConfig | TransportConfig | ServerConfig | FallbackChainsConfig
+)
+type VoiceConfigSectionValue = VoiceConfigSectionModel | list[HookConfig]
+
+
+VOICE_CONFIG_SECTION_SCHEMAS: dict[VoiceConfigSection, type[VoiceConfigSectionModel]] = {
+    VoiceConfigSection.CONVERSATION_CONTROL: ConversationControl,
+    VoiceConfigSection.START_SPEAKING_PLAN: StartSpeakingPlan,
+    VoiceConfigSection.STOP_SPEAKING_PLAN: StopSpeakingPlan,
+    VoiceConfigSection.SILENCE: SilenceConfig,
+    VoiceConfigSection.BACKCHANNEL: BackchannelConfig,
+    VoiceConfigSection.COMPLIANCE: CompliancePlan,
+    VoiceConfigSection.ARTIFACTS: ArtifactPlan,
+    VoiceConfigSection.OBSERVABILITY: ObservabilityPlan,
+    VoiceConfigSection.BACKGROUND_AUDIO: BackgroundAudioConfig,
+    VoiceConfigSection.TRANSPORT: TransportConfig,
+    VoiceConfigSection.SERVER: ServerConfig,
+    VoiceConfigSection.FALLBACK_CHAINS: FallbackChainsConfig,
 }
 
-VOICE_CONFIG_LIST_SECTIONS = {"hooks"}
-
-
-def validate_voice_config_section(section: str, data: Any) -> Any:
+def validate_voice_config_section(
+    section: VoiceConfigSection, data: object
+) -> VoiceConfigSectionValue:
     """Validate a section payload and return the typed section value."""
-    if section in VOICE_CONFIG_LIST_SECTIONS:
+    if section == VoiceConfigSection.HOOKS:
         if not isinstance(data, list):
             raise ValueError(f"Voice config section '{section}' must be a list.")
         return [HookConfig.model_validate(item) for item in data]
@@ -443,7 +461,7 @@ def validate_voice_config_section(section: str, data: Any) -> Any:
     schema = VOICE_CONFIG_SECTION_SCHEMAS.get(section)
     if schema is None:
         valid_sections = sorted(
-            [*VOICE_CONFIG_SECTION_SCHEMAS.keys(), *VOICE_CONFIG_LIST_SECTIONS]
+            item.value for item in VoiceConfigSection
         )
         raise ValueError(
             f"Unknown voice config section '{section}'. Expected one of: {', '.join(valid_sections)}."

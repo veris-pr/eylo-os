@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import httpx
+from pydantic import ValidationError
 
 from eylo.sockets.reranking.base import RerankingVendorAdapter
 from eylo.sockets.reranking.schemas import (
@@ -10,22 +11,29 @@ from eylo.sockets.reranking.schemas import (
     RerankingCapabilities,
     RerankingConfig,
     RerankingError,
+    RerankingErrorCode,
+    RerankingRecovery,
+    RerankingTruncation,
 )
 from eylo.sockets.reranking.validation import (
     raise_for_status,
     validate_rerank_request,
     validate_rerank_results,
 )
+from eylo.sockets.reranking.vendors.voyage_wire import (
+    MAX_DOCUMENTS,
+    VoyageRerankRequest,
+    VoyageRerankResponse,
+)
 
 PROVIDER = "voyage"
 API_URL = "https://api.voyageai.com/v1/rerank"
-MAX_DOCUMENTS = 1000
 TIMEOUT_SECONDS = 10
 
 
 class VoyageRerankAdapter(RerankingVendorAdapter):
     def __init__(self, config: RerankingConfig) -> None:
-        self._config = config
+        self._config = RerankingConfig.model_validate(config)
 
     @property
     def provider(self) -> str:
@@ -33,7 +41,9 @@ class VoyageRerankAdapter(RerankingVendorAdapter):
 
     @property
     def capabilities(self) -> RerankingCapabilities:
-        return RerankingCapabilities(max_documents=MAX_DOCUMENTS, truncates=False)
+        return RerankingCapabilities(
+            max_documents=MAX_DOCUMENTS, truncation=RerankingTruncation.DISABLED
+        )
 
     async def rerank(
         self,
@@ -52,6 +62,19 @@ class VoyageRerankAdapter(RerankingVendorAdapter):
             vendor=PROVIDER,
         )
         try:
+            request = VoyageRerankRequest(
+                model=self._config.model,
+                query=query,
+                documents=tuple(documents),
+                top_k=expected_count,
+            )
+        except ValidationError:
+            raise RerankingError(
+                "Voyage reranking request is invalid.",
+                vendor=PROVIDER,
+                code=RerankingErrorCode.INVALID_REQUEST,
+            ) from None
+        try:
             async with httpx.AsyncClient(
                 timeout=TIMEOUT_SECONDS,
                 follow_redirects=False,
@@ -59,19 +82,15 @@ class VoyageRerankAdapter(RerankingVendorAdapter):
                 response = await client.post(
                     API_URL,
                     headers={"Authorization": f"Bearer {self._config.api_key}"},
-                    json={
-                        "model": self._config.model,
-                        "query": query,
-                        "documents": documents,
-                        "top_k": expected_count,
-                        "truncation": False,
-                    },
+                    json=request.to_payload(),
                 )
             raise_for_status(response, vendor=PROVIDER)
-            payload = response.json()
-            entries = payload.get("data") if isinstance(payload, dict) else None
+            payload = VoyageRerankResponse.model_validate(response.json())
             return validate_rerank_results(
-                entries,
+                [
+                    RerankResult(index=item.index, score=item.relevance_score)
+                    for item in payload.data
+                ],
                 expected_count=expected_count,
                 candidate_count=len(documents),
                 vendor=PROVIDER,
@@ -82,13 +101,13 @@ class VoyageRerankAdapter(RerankingVendorAdapter):
             raise RerankingError(
                 "Voyage reranking transport failed.",
                 vendor=PROVIDER,
-                code="transport",
-                retryable=True,
+                code=RerankingErrorCode.TRANSPORT,
+                recovery=RerankingRecovery.RETRY,
             ) from None
         except (TypeError, ValueError):
             raise RerankingError(
                 "Voyage returned invalid JSON.",
                 vendor=PROVIDER,
-                code="invalid_response",
-                retryable=True,
+                code=RerankingErrorCode.INVALID_RESPONSE,
+                recovery=RerankingRecovery.RETRY,
             ) from None

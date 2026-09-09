@@ -6319,6 +6319,24 @@ export interface components {
              */
             denoising_mode: "off" | "noise-cancellation";
         };
+        /** BedrockEmbeddingSettings */
+        BedrockEmbeddingSettings: {
+            /** Model */
+            model: string;
+            /** Region */
+            region: string;
+            /** Dimensions */
+            dimensions: number;
+            /** Normalize */
+            normalize: boolean;
+        };
+        /** BedrockRerankingSettings */
+        BedrockRerankingSettings: {
+            /** Model */
+            model: string;
+            /** Region */
+            region: string;
+        };
         /**
          * BeginAuthorizationRequestSchema
          * @description Start an OAuth flow for an installed vendor.
@@ -6791,6 +6809,13 @@ export interface components {
             field: string;
             /** Message */
             message: string;
+        };
+        /** CohereRerankingSettings */
+        CohereRerankingSettings: {
+            /** Model */
+            model: string;
+            /** Base Url */
+            base_url?: string | null;
         };
         /** CompliancePlan */
         CompliancePlan: {
@@ -8084,14 +8109,10 @@ export interface components {
         };
         /** EmbeddingConfigCreate */
         EmbeddingConfigCreate: {
-            /** Provider */
-            provider: string;
+            provider: components["schemas"]["EmbeddingProviders"];
+            config: components["schemas"]["EmbeddingSettings"];
             /** Name */
             name: string;
-            /** Config */
-            config: {
-                [key: string]: unknown;
-            };
             /** Secrets */
             secrets?: {
                 [key: string]: string;
@@ -8099,13 +8120,13 @@ export interface components {
         };
         /** EmbeddingConfigResponse */
         EmbeddingConfigResponse: {
+            provider: components["schemas"]["EmbeddingProviders"];
+            config: components["schemas"]["EmbeddingSettings"];
             /**
              * Id
              * Format: uuid
              */
             id: string;
-            /** Provider */
-            provider: string;
             /** Name */
             name: string;
             /** Revision */
@@ -8122,10 +8143,6 @@ export interface components {
             verifiedAt: string | null;
             /** Dimensions */
             dimensions: number | null;
-            /** Config */
-            config: {
-                [key: string]: unknown;
-            };
             /** Secrets */
             secrets: {
                 [key: string]: string;
@@ -8135,10 +8152,7 @@ export interface components {
         EmbeddingConfigUpdate: {
             /** Name */
             name?: string | null;
-            /** Config */
-            config?: {
-                [key: string]: unknown;
-            } | null;
+            config?: components["schemas"]["EmbeddingSettingsUpdate"] | null;
             /** Secrets */
             secrets?: {
                 [key: string]: string | null;
@@ -8148,13 +8162,12 @@ export interface components {
         };
         /** EmbeddingConfigVerificationResponse */
         EmbeddingConfigVerificationResponse: {
+            provider: components["schemas"]["EmbeddingProviders"];
             /**
              * Verified
              * @default true
              */
             verified: boolean;
-            /** Provider */
-            provider: string;
             /** Revision */
             revision: number;
             /** Dimensions */
@@ -8164,6 +8177,36 @@ export interface components {
              * Format: date-time
              */
             verifiedAt: string;
+        };
+        /**
+         * EmbeddingModelSettings
+         * @description Model-only settings, currently used by Voyage.
+         */
+        EmbeddingModelSettings: {
+            /** Model */
+            model: string;
+        };
+        /**
+         * EmbeddingProviders
+         * @enum {string}
+         */
+        EmbeddingProviders: "bedrock" | "openai" | "voyage";
+        EmbeddingSettings: components["schemas"]["BedrockEmbeddingSettings"] | components["schemas"]["OpenAIEmbeddingSettings"] | components["schemas"]["EmbeddingModelSettings"];
+        /**
+         * EmbeddingSettingsUpdate
+         * @description Known update fields; the service applies the stored provider's full rules.
+         */
+        EmbeddingSettingsUpdate: {
+            /** Model */
+            model: string;
+            /** Base Url */
+            base_url?: string | null;
+            /** Region */
+            region?: string | null;
+            /** Dimensions */
+            dimensions?: number | null;
+            /** Normalize */
+            normalize?: boolean | null;
         };
         /** EventHealthResponse */
         EventHealthResponse: {
@@ -8202,6 +8245,14 @@ export interface components {
              * @default false
              */
             realtime_enabled: boolean;
+        };
+        /**
+         * FilesystemStorageSettings
+         * @description Only a namespace is operator-configurable, never a final disk path.
+         */
+        FilesystemStorageSettings: {
+            /** Namespace */
+            namespace: string;
         };
         /**
          * FillerConfig
@@ -9306,14 +9357,10 @@ export interface components {
         };
         /** MemoryConfigCreate */
         MemoryConfigCreate: {
-            /** Provider */
-            provider: string;
+            provider: components["schemas"]["MemoryProviders"];
             /** Name */
             name: string;
-            /** Config */
-            config: {
-                [key: string]: unknown;
-            };
+            config: components["schemas"]["MemorySettings"];
             /** Secrets */
             secrets?: {
                 [key: string]: string;
@@ -9321,13 +9368,12 @@ export interface components {
         };
         /** MemoryConfigResponse */
         MemoryConfigResponse: {
+            provider: components["schemas"]["MemoryProviders"];
             /**
              * Id
              * Format: uuid
              */
             id: string;
-            /** Provider */
-            provider: string;
             /** Name */
             name: string;
             /** Revision */
@@ -9342,10 +9388,7 @@ export interface components {
             ready: boolean;
             /** Verifiedat */
             verifiedAt: string | null;
-            /** Config */
-            config: {
-                [key: string]: unknown;
-            };
+            config: components["schemas"]["MemorySettings"];
             /** Secrets */
             secrets: {
                 [key: string]: string;
@@ -9355,10 +9398,7 @@ export interface components {
         MemoryConfigUpdate: {
             /** Name */
             name?: string | null;
-            /** Config */
-            config?: {
-                [key: string]: unknown;
-            } | null;
+            config?: components["schemas"]["MemorySettings"] | null;
             /** Secrets */
             secrets?: {
                 [key: string]: string | null;
@@ -9368,13 +9408,12 @@ export interface components {
         };
         /** MemoryConfigVerificationResponse */
         MemoryConfigVerificationResponse: {
+            provider: components["schemas"]["MemoryProviders"];
             /**
              * Verified
              * @default true
              */
             verified: boolean;
-            /** Provider */
-            provider: string;
             /** Revision */
             revision: number;
             /**
@@ -9425,7 +9464,7 @@ export interface components {
             updated_at: string;
             /** Metadata */
             metadata: {
-                [key: string]: unknown;
+                [key: string]: components["schemas"]["JsonValue"];
             };
             provenance: components["schemas"]["MemoryProvenance"];
             /** History */
@@ -9522,6 +9561,11 @@ export interface components {
             reconciliation_job_id?: string | null;
             extraction: components["schemas"]["MemoryExtractionAuthority"] | null;
         };
+        /**
+         * MemoryProviders
+         * @enum {string}
+         */
+        MemoryProviders: "pgvector";
         /** MemoryRead */
         MemoryRead: {
             /**
@@ -9631,7 +9675,7 @@ export interface components {
             target_embedding_dimensions: number;
             /** Target Embedding Semantic Options */
             target_embedding_semantic_options: {
-                [key: string]: unknown;
+                [key: string]: components["schemas"]["JsonValue"];
             };
             /** Target Embedding Space Id */
             target_embedding_space_id: string;
@@ -9712,6 +9756,22 @@ export interface components {
          * @enum {string}
          */
         MemoryRelationshipRole: "source" | "target";
+        /**
+         * MemorySettings
+         * @description Explicit dependencies; each referenced config owns its vendor credentials.
+         */
+        MemorySettings: {
+            /**
+             * Embedding Provider Config Id
+             * Format: uuid
+             */
+            embedding_provider_config_id: string;
+            /**
+             * Llm Provider Config Id
+             * Format: uuid
+             */
+            llm_provider_config_id: string;
+        };
         /**
          * MemorySort
          * @enum {string}
@@ -9963,6 +10023,13 @@ export interface components {
              * @default true
              */
             vendor_latency_tracking_enabled: boolean;
+        };
+        /** OpenAIEmbeddingSettings */
+        OpenAIEmbeddingSettings: {
+            /** Model */
+            model: string;
+            /** Base Url */
+            base_url?: string | null;
         };
         /** OrganizationExecutionBudgetRead */
         OrganizationExecutionBudgetRead: {
@@ -10536,6 +10603,52 @@ export interface components {
             /** Capabilities */
             capabilities: components["schemas"]["CapabilityDefinition"][];
         };
+        /**
+         * RealtimeNativeCapabilitiesRead
+         * @description Realtime session facts without transport instances or SDK values.
+         */
+        RealtimeNativeCapabilitiesRead: {
+            full_duplex_audio: components["schemas"]["VoiceSupport"];
+            input_transcription: components["schemas"]["VoiceSupport"];
+            output_transcription: components["schemas"]["VoiceSupport"];
+            native_turn_detection: components["schemas"]["VoiceSupport"];
+            native_interruption: components["schemas"]["VoiceSupport"];
+            tool_calling: components["schemas"]["VoiceSupport"];
+            platform_message_speech: components["schemas"]["VoiceSupport"];
+            session_update_mode: components["schemas"]["VoiceSessionUpdateMode"];
+            voice_selection: components["schemas"]["VoiceSupport"];
+            session_resumption: components["schemas"]["VoiceSupport"];
+            context_compression: components["schemas"]["VoiceSupport"];
+            /** Input Sample Rates */
+            input_sample_rates: components["schemas"]["VoiceSampleRate"][];
+            /** Output Sample Rates */
+            output_sample_rates: components["schemas"]["VoiceSampleRate"][];
+        };
+        /**
+         * RealtimeProviderCapabilityRead
+         * @description Realtime identity and its session projection.
+         */
+        RealtimeProviderCapabilityRead: {
+            /**
+             * Provider Config Id
+             * Format: uuid
+             */
+            provider_config_id: string;
+            /** Ready */
+            ready: boolean;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "realtime";
+            provider: components["schemas"]["RealtimeProviders"];
+            native_capabilities: components["schemas"]["RealtimeNativeCapabilitiesRead"];
+        };
+        /**
+         * RealtimeProviders
+         * @enum {string}
+         */
+        RealtimeProviders: "amazon-nova-sonic" | "gemini-live" | "openai-realtime";
         /** RecordingListResponse */
         RecordingListResponse: {
             /** Recordings */
@@ -10585,14 +10698,10 @@ export interface components {
         RequestStatus: "PENDING" | "PROCESSING" | "AWAITING_TOOL_RESULTS" | "COMPLETED" | "FAILED" | "INTERRUPTED" | "SKIPPED";
         /** RerankingConfigCreate */
         RerankingConfigCreate: {
-            /** Provider */
-            provider: string;
+            provider: components["schemas"]["RerankingProviders"];
+            config: components["schemas"]["RerankingSettings"];
             /** Name */
             name: string;
-            /** Config */
-            config: {
-                [key: string]: unknown;
-            };
             /** Secrets */
             secrets?: {
                 [key: string]: string;
@@ -10600,13 +10709,13 @@ export interface components {
         };
         /** RerankingConfigResponse */
         RerankingConfigResponse: {
+            provider: components["schemas"]["RerankingProviders"];
+            config: components["schemas"]["RerankingSettings"];
             /**
              * Id
              * Format: uuid
              */
             id: string;
-            /** Provider */
-            provider: string;
             /** Name */
             name: string;
             /** Revision */
@@ -10621,10 +10730,6 @@ export interface components {
             ready: boolean;
             /** Verifiedat */
             verifiedAt: string | null;
-            /** Config */
-            config: {
-                [key: string]: unknown;
-            };
             /** Secrets */
             secrets: {
                 [key: string]: string;
@@ -10634,10 +10739,7 @@ export interface components {
         RerankingConfigUpdate: {
             /** Name */
             name?: string | null;
-            /** Config */
-            config?: {
-                [key: string]: unknown;
-            } | null;
+            config?: components["schemas"]["RerankingSettingsUpdate"] | null;
             /** Secrets */
             secrets?: {
                 [key: string]: string | null;
@@ -10647,13 +10749,12 @@ export interface components {
         };
         /** RerankingConfigVerificationResponse */
         RerankingConfigVerificationResponse: {
+            provider: components["schemas"]["RerankingProviders"];
             /**
              * Verified
              * @default true
              */
             verified: boolean;
-            /** Provider */
-            provider: string;
             /** Revision */
             revision: number;
             /**
@@ -10661,6 +10762,32 @@ export interface components {
              * Format: date-time
              */
             verifiedAt: string;
+        };
+        /**
+         * RerankingModelSettings
+         * @description Model-only settings, currently used by Voyage.
+         */
+        RerankingModelSettings: {
+            /** Model */
+            model: string;
+        };
+        /**
+         * RerankingProviders
+         * @enum {string}
+         */
+        RerankingProviders: "bedrock" | "cohere" | "voyage";
+        RerankingSettings: components["schemas"]["BedrockRerankingSettings"] | components["schemas"]["CohereRerankingSettings"] | components["schemas"]["RerankingModelSettings"];
+        /**
+         * RerankingSettingsUpdate
+         * @description Known update fields; the service applies the stored provider's full rules.
+         */
+        RerankingSettingsUpdate: {
+            /** Model */
+            model: string;
+            /** Base Url */
+            base_url?: string | null;
+            /** Region */
+            region?: string | null;
         };
         /**
          * ResetPasswordRequestSchema
@@ -10688,6 +10815,69 @@ export interface components {
          * @enum {string}
          */
         RevisionAvailability: "published" | "revoked";
+        /**
+         * S3CredentialMode
+         * @enum {string}
+         */
+        S3CredentialMode: "static" | "session";
+        /**
+         * S3StorageSettings
+         * @description Bucket and region are explicit; the platform builds the deeper namespace.
+         */
+        S3StorageSettings: {
+            /** Bucket */
+            bucket: string;
+            /** Region */
+            region: string;
+            credential_mode: components["schemas"]["S3CredentialMode"];
+        };
+        /**
+         * STTNativeCapabilitiesRead
+         * @description Recognition facts available for human inspection, not runtime policy.
+         */
+        STTNativeCapabilitiesRead: {
+            streaming: components["schemas"]["VoiceSupport"];
+            batch_recognize: components["schemas"]["VoiceSupport"];
+            interim_results: components["schemas"]["VoiceSupport"];
+            vad_events: components["schemas"]["VoiceSupport"];
+            turn_detection: components["schemas"]["VoiceSupport"];
+            word_timestamps: components["schemas"]["VoiceSupport"];
+            speaker_labels: components["schemas"]["VoiceSupport"];
+            language_detection: components["schemas"]["VoiceSupport"];
+            custom_vocabulary: components["schemas"]["VoiceSupport"];
+            punctuation: components["schemas"]["VoiceSupport"];
+            profanity_filter: components["schemas"]["VoiceSupport"];
+            aligned_transcript: components["schemas"]["VoiceSupport"];
+            /** Supported Encodings */
+            supported_encodings: components["schemas"]["VoiceNativeEncoding"][];
+            /** Supported Sample Rates */
+            supported_sample_rates: components["schemas"]["VoiceSampleRate"][];
+        };
+        /**
+         * STTProviderCapabilityRead
+         * @description STT identity and recognition capabilities cannot be paired with TTS facts.
+         */
+        STTProviderCapabilityRead: {
+            /**
+             * Provider Config Id
+             * Format: uuid
+             */
+            provider_config_id: string;
+            /** Ready */
+            ready: boolean;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "stt";
+            provider: components["schemas"]["STTProviders"];
+            native_capabilities: components["schemas"]["STTNativeCapabilitiesRead"];
+        };
+        /**
+         * STTProviders
+         * @enum {string}
+         */
+        STTProviders: "amazon-transcribe" | "deepgram" | "deepgram-flux" | "sarvam" | "assemblyai" | "cartesia" | "google" | "gladia" | "revai" | "speechmatics";
         /**
          * SandboxAccess
          * @description What an agent may do with a sandbox.
@@ -13111,14 +13301,11 @@ export interface components {
         };
         /** StorageConfigCreate */
         StorageConfigCreate: {
-            /** Provider */
-            provider: string;
+            provider: components["schemas"]["StorageProviders"];
+            /** Config */
+            config: components["schemas"]["S3StorageSettings"] | components["schemas"]["FilesystemStorageSettings"];
             /** Name */
             name: string;
-            /** Config */
-            config: {
-                [key: string]: unknown;
-            };
             /** Secrets */
             secrets?: {
                 [key: string]: string;
@@ -13126,13 +13313,14 @@ export interface components {
         };
         /** StorageConfigResponse */
         StorageConfigResponse: {
+            provider: components["schemas"]["StorageProviders"];
+            /** Config */
+            config: components["schemas"]["S3StorageSettings"] | components["schemas"]["FilesystemStorageSettings"];
             /**
              * Id
              * Format: uuid
              */
             id: string;
-            /** Provider */
-            provider: string;
             /** Name */
             name: string;
             /** Revision */
@@ -13147,10 +13335,6 @@ export interface components {
             ready: boolean;
             /** Verifiedat */
             verifiedAt: string | null;
-            /** Config */
-            config: {
-                [key: string]: unknown;
-            };
             /** Secrets */
             secrets: {
                 [key: string]: string;
@@ -13162,9 +13346,7 @@ export interface components {
             /** Name */
             name?: string | null;
             /** Config */
-            config?: {
-                [key: string]: unknown;
-            } | null;
+            config?: components["schemas"]["S3StorageSettings"] | components["schemas"]["FilesystemStorageSettings"] | null;
             /** Secrets */
             secrets?: {
                 [key: string]: string | null;
@@ -13174,13 +13356,12 @@ export interface components {
         };
         /** StorageConfigVerificationResponse */
         StorageConfigVerificationResponse: {
+            provider: components["schemas"]["StorageProviders"];
             /**
              * Verified
              * @default true
              */
             verified: boolean;
-            /** Provider */
-            provider: string;
             /** Revision */
             revision: number;
             /**
@@ -13190,6 +13371,11 @@ export interface components {
             verifiedAt: string;
             capabilities: components["schemas"]["StorageCapabilitiesResponse"];
         };
+        /**
+         * StorageProviders
+         * @enum {string}
+         */
+        StorageProviders: "s3" | "filesystem";
         /**
          * SupportAuditAvailability
          * @description Why one optional Support audit surface is or is not populated.
@@ -13305,6 +13491,50 @@ export interface components {
              */
             content: (components["schemas"]["TextContent"] | components["schemas"]["ImageUrlContent"])[];
         };
+        /**
+         * TTSNativeCapabilitiesRead
+         * @description Synthesis facts intentionally exposed by the console API.
+         */
+        TTSNativeCapabilitiesRead: {
+            streaming: components["schemas"]["VoiceSupport"];
+            batch_synthesize: components["schemas"]["VoiceSupport"];
+            native_interruption: components["schemas"]["VoiceSupport"];
+            aligned_transcript: components["schemas"]["VoiceSupport"];
+            emotion_control: components["schemas"]["VoiceSupport"];
+            speed_control: components["schemas"]["VoiceSupport"];
+            voice_cloning: components["schemas"]["VoiceSupport"];
+            context_continuity: components["schemas"]["VoiceSupport"];
+            word_timestamps: components["schemas"]["VoiceSupport"];
+            /** Sample Rates */
+            sample_rates: components["schemas"]["VoiceSampleRate"][];
+            /** Languages Count */
+            languages_count: number;
+        };
+        /**
+         * TTSProviderCapabilityRead
+         * @description TTS identity and its synthesis projection.
+         */
+        TTSProviderCapabilityRead: {
+            /**
+             * Provider Config Id
+             * Format: uuid
+             */
+            provider_config_id: string;
+            /** Ready */
+            ready: boolean;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "tts";
+            provider: components["schemas"]["TTSProviders"];
+            native_capabilities: components["schemas"]["TTSNativeCapabilitiesRead"];
+        };
+        /**
+         * TTSProviders
+         * @enum {string}
+         */
+        TTSProviders: "amazon-polly" | "elevenlabs" | "cartesia" | "sarvam" | "openai" | "deepgram" | "groq" | "rime" | "smallest" | "hume" | "murf";
         /**
          * TelephonyCallApiResponseSchema
          * @description Minimal public projection backed by canonical call writers.
@@ -14481,6 +14711,12 @@ export interface components {
                 [key: string]: string;
             };
         };
+        /**
+         * VoiceConfigSection
+         * @description Editable policy sections; provider references are not section patches.
+         * @enum {string}
+         */
+        VoiceConfigSection: "conversation_control" | "start_speaking_plan" | "stop_speaking_plan" | "silence" | "backchannel" | "compliance" | "artifacts" | "observability" | "background_audio" | "transport" | "server" | "fallback_chains" | "hooks";
         /** VoiceConfigUpdate */
         VoiceConfigUpdate: {
             /** Name */
@@ -14516,12 +14752,29 @@ export interface components {
             verifiedAt: string;
         };
         /**
+         * VoiceFeatureSupport
+         * @description Explicit support claim; preserve the console's boolean wire format.
+         * @enum {boolean}
+         */
+        VoiceFeatureSupport: false | true;
+        /**
+         * VoiceNativeEncoding
+         * @description Recognition encodings exposed by the console contract.
+         * @enum {string}
+         */
+        VoiceNativeEncoding: "linear16" | "pcm_s16le" | "mulaw" | "alaw";
+        /**
+         * VoicePlatformFeature
+         * @description Stable identifiers for the existing Eylo-owned policy projection.
+         * @enum {string}
+         */
+        VoicePlatformFeature: "interruption_handling" | "silence_policy" | "duration_limit" | "recording_capture_and_upload" | "recording_notification" | "transcript_persistence" | "post_call_pii_processing" | "session_observability" | "primary_agent_voice_pinning";
+        /**
          * VoicePlatformFeatureRead
          * @description One provider-independent behavior implemented by Eylo's voice pipeline.
          */
         VoicePlatformFeatureRead: {
-            /** Key */
-            key: string;
+            key: components["schemas"]["VoicePlatformFeature"];
             /** Label */
             label: string;
             /** Enabled */
@@ -14535,30 +14788,7 @@ export interface components {
              */
             provider_independent: true;
         };
-        /**
-         * VoiceProviderCapabilityRead
-         * @description Native behavior declared by one selected provider adapter.
-         */
-        VoiceProviderCapabilityRead: {
-            /**
-             * Kind
-             * @enum {string}
-             */
-            kind: "stt" | "tts" | "realtime";
-            /**
-             * Provider Config Id
-             * Format: uuid
-             */
-            provider_config_id: string;
-            /** Provider */
-            provider: string;
-            /** Ready */
-            ready: boolean;
-            /** Native Capabilities */
-            native_capabilities: {
-                [key: string]: unknown;
-            };
-        };
+        VoiceProviderCapabilityRead: components["schemas"]["STTProviderCapabilityRead"] | components["schemas"]["TTSProviderCapabilityRead"] | components["schemas"]["RealtimeProviderCapabilityRead"];
         /** VoiceRecordingResponse */
         VoiceRecordingResponse: {
             /**
@@ -14610,6 +14840,7 @@ export interface components {
          * @enum {string}
          */
         VoiceRuntimeMode: "browser_decomposed" | "browser_realtime" | "telephony";
+        VoiceSampleRate: number;
         /** VoiceSegmentResponse */
         VoiceSegmentResponse: {
             /**
@@ -14928,11 +15159,18 @@ export interface components {
             createdAt: string;
         };
         /**
+         * VoiceSessionUpdateMode
+         * @description Console vocabulary for how a realtime adapter applies updates.
+         * @enum {string}
+         */
+        VoiceSessionUpdateMode: "in_place" | "reconnect" | "unsupported";
+        /**
          * VoiceSpeechOutcome
          * @description Eylo-owned terminal result for one assistant speech turn.
          * @enum {string}
          */
         VoiceSpeechOutcome: "drained" | "interrupted" | "failed" | "cancelled";
+        VoiceSupport: components["schemas"]["VoiceFeatureSupport"];
         /** VoiceTranscriptAudioUrls */
         VoiceTranscriptAudioUrls: {
             /** User */
@@ -22639,16 +22877,16 @@ export interface operations {
             path: {
                 organization_id: string;
                 voice_config_id: string;
-                section: string;
+                section: components["schemas"]["VoiceConfigSection"];
             };
             cookie?: never;
         };
         requestBody: {
             content: {
                 "application/json": {
-                    [key: string]: unknown;
+                    [key: string]: components["schemas"]["JsonValue"];
                 } | {
-                    [key: string]: unknown;
+                    [key: string]: components["schemas"]["JsonValue"];
                 }[];
             };
         };

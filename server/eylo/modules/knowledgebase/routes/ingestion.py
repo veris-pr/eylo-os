@@ -16,6 +16,7 @@ import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import ValidationError
 
 from eylo.common.contracts.knowledgebase import KnowledgeDocument, KnowledgeScope
 from eylo.common.database import get_transaction, start_transaction
@@ -92,18 +93,16 @@ async def submit_ingestion(
             organization_id,
         )
 
-        document = KnowledgeDocument(
-            content=request.content,
-            # From the knowledgebase, never from the request. A caller who
-            # could name a scope could file a document somewhere it would be
-            # read by agents that were never meant to see it.
-            scope=KnowledgeScope(knowledgebase.scope),
-            scope_id=knowledgebase.scope_id,
-            title=request.title,
-            source_uri=request.source_uri,
-            metadata=request.metadata or {},
-        )
         try:
+            document = KnowledgeDocument(
+                content=request.content,
+                # Scope comes from the authorized knowledgebase, never model/user input.
+                scope=KnowledgeScope(knowledgebase.scope),
+                scope_id=knowledgebase.scope_id,
+                title=request.title,
+                source_uri=request.source_uri,
+                metadata=request.metadata or {},
+            )
             job = await IngestionService(session).enqueue(
                 organization_id=organization_id,
                 knowledgebase_id=knowledgebase_id,
@@ -111,6 +110,10 @@ async def submit_ingestion(
             )
         except IngestionError as error:
             raise HTTPException(status_code=400, detail=str(error))
+        except ValidationError:
+            raise HTTPException(
+                status_code=400, detail="Knowledge document is invalid."
+            ) from None
         response = IngestionJobRead.model_validate(job)
 
     # After the commit, deliberately. A nudge for a job that no longer exists

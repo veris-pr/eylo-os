@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any
 from uuid import UUID
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,8 +27,11 @@ from eylo.modules.voice.schemas.api import (
     OrganizationVoiceConfigUpdate,
     VoiceConfig,
     VoiceConfigRead,
+    VoiceConfigSection,
+    VoiceConfigSectionInput,
     validate_voice_config_section,
 )
+from eylo.modules.voice.schemas.runtime import VoiceConfigSnapshot
 from eylo.modules.voice_configs.catalog import VoiceKind
 from eylo.modules.voice_configs.wiring import build_voice_config_resolver
 from eylo.modules.voice_configs.wiring import (
@@ -49,13 +50,20 @@ NON_DEFINITION_FIELDS = {
 }
 
 
-@dataclass(frozen=True, slots=True)
-class VoiceConfigPublication:
+class VoiceConfigPublication(BaseModel):
     """Exact Voice Config authority copied into one Agent revision."""
 
+    model_config = ConfigDict(
+        frozen=True,
+        strict=True,
+        extra="forbid",
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+    )
+
     voice_config_id: UUID
-    voice_config_revision: int
-    config: VoiceConfig
+    voice_config_revision: int = Field(gt=0)
+    config: VoiceConfigSnapshot
 
 
 class VoiceConfigService:
@@ -157,8 +165,8 @@ class VoiceConfigService:
         *,
         organization_id: UUID,
         voice_config_id: UUID,
-        section: str,
-        data: Any,
+        section: VoiceConfigSection,
+        data: VoiceConfigSectionInput,
         expected_revision: int,
     ) -> VoiceConfigRead:
         try:
@@ -170,8 +178,9 @@ class VoiceConfigService:
             organization_id=organization_id,
             voice_config_id=voice_config_id,
         )
-        config = current.config.model_copy(deep=True)
-        setattr(config, section, section_value)
+        config = VoiceConfig.model_validate(
+            {**current.config.model_dump(), section.value: section_value}
+        )
         return await self.update(
             organization_id=organization_id,
             voice_config_id=voice_config_id,
@@ -269,7 +278,7 @@ class VoiceConfigService:
         return VoiceConfigPublication(
             voice_config_id=row.id,
             voice_config_revision=row.revision,
-            config=config,
+            config=VoiceConfigSnapshot.model_validate(config.model_dump()),
         )
 
     async def _get_model(

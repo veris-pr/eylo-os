@@ -2,34 +2,39 @@
 
 from __future__ import annotations
 
-import math
-from numbers import Real
-
 import httpx
+from pydantic import TypeAdapter, ValidationError
 
-from eylo.sockets.reranking.schemas import RerankResult, RerankingError
+from eylo.sockets.reranking.schemas import (
+    RerankResult,
+    RerankingError,
+    RerankingErrorCode,
+    RerankingRecovery,
+)
+
+_RESULTS = TypeAdapter(list[RerankResult])
 
 
 def raise_for_status(response: httpx.Response, *, vendor: str) -> None:
     if response.status_code < 400:
         return
     if response.status_code in {401, 403, 498}:
-        code = "authentication"
-        retryable = False
+        code = RerankingErrorCode.AUTHENTICATION
+        recovery = RerankingRecovery.TERMINAL
     elif response.status_code == 429:
-        code = "rate_limited"
-        retryable = True
+        code = RerankingErrorCode.RATE_LIMITED
+        recovery = RerankingRecovery.RETRY
     elif response.status_code >= 500:
-        code = "provider_unavailable"
-        retryable = True
+        code = RerankingErrorCode.PROVIDER_UNAVAILABLE
+        recovery = RerankingRecovery.RETRY
     else:
-        code = "invalid_request"
-        retryable = False
+        code = RerankingErrorCode.INVALID_REQUEST
+        recovery = RerankingRecovery.TERMINAL
     raise _error(
         "Reranking provider rejected the request.",
         vendor,
         code,
-        retryable=retryable,
+        recovery=recovery,
     )
 
 
@@ -42,20 +47,30 @@ def validate_rerank_request(
     vendor: str,
 ) -> int:
     if not isinstance(query, str) or not query.strip():
-        raise _error("Reranking query must be non-empty.", vendor, "invalid_request")
+        raise _error(
+            "Reranking query must be non-empty.",
+            vendor,
+            RerankingErrorCode.INVALID_REQUEST,
+        )
     if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k < 1:
-        raise _error("top_k must be a positive integer.", vendor, "invalid_request")
+        raise _error(
+            "top_k must be a positive integer.",
+            vendor,
+            RerankingErrorCode.INVALID_REQUEST,
+        )
     if len(documents) > max_documents:
         raise _error(
             "Reranking candidate limit exceeded.",
             vendor,
-            "candidate_limit",
+            RerankingErrorCode.CANDIDATE_LIMIT,
         )
-    if any(not isinstance(document, str) or not document.strip() for document in documents):
+    if any(
+        not isinstance(document, str) or not document.strip() for document in documents
+    ):
         raise _error(
             "Reranking documents must be non-empty strings.",
             vendor,
-            "invalid_request",
+            RerankingErrorCode.INVALID_REQUEST,
         )
     return min(top_k, len(documents))
 
@@ -67,28 +82,18 @@ def validate_rerank_results(
     candidate_count: int,
     vendor: str,
 ) -> list[RerankResult]:
-    if not isinstance(entries, list) or len(entries) != expected_count:
+    try:
+        results = _RESULTS.validate_python(entries, strict=True)
+    except ValidationError:
+        raise _invalid_response(vendor) from None
+    if len(results) != expected_count:
         raise _invalid_response(vendor)
 
-    results: list[RerankResult] = []
     seen: set[int] = set()
-    for entry in entries:
-        if not isinstance(entry, dict):
+    for entry in results:
+        if entry.index >= candidate_count or entry.index in seen:
             raise _invalid_response(vendor)
-        index = entry.get("index")
-        score = entry.get("relevance_score")
-        if (
-            isinstance(index, bool)
-            or not isinstance(index, int)
-            or not 0 <= index < candidate_count
-            or index in seen
-            or isinstance(score, bool)
-            or not isinstance(score, Real)
-            or not math.isfinite(float(score))
-        ):
-            raise _invalid_response(vendor)
-        seen.add(index)
-        results.append(RerankResult(index=index, score=float(score)))
+        seen.add(entry.index)
 
     return sorted(results, key=lambda result: (-result.score, result.index))
 
@@ -97,21 +102,21 @@ def _invalid_response(vendor: str) -> RerankingError:
     return _error(
         "Reranking provider returned an invalid response.",
         vendor,
-        "invalid_response",
-        retryable=True,
+        RerankingErrorCode.INVALID_RESPONSE,
+        recovery=RerankingRecovery.RETRY,
     )
 
 
 def _error(
     message: str,
     vendor: str,
-    code: str,
+    code: RerankingErrorCode,
     *,
-    retryable: bool = False,
+    recovery: RerankingRecovery = RerankingRecovery.TERMINAL,
 ) -> RerankingError:
     return RerankingError(
         message,
         vendor=vendor,
         code=code,
-        retryable=retryable,
+        recovery=recovery,
     )

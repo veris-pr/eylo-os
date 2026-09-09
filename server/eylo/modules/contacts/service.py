@@ -77,7 +77,7 @@ class ContactResolution:
         )
 
 
-class ContactService(EyloBaseService[ContactInDb]):
+class ContactService(EyloBaseService[ContactInDb, ContactsModel]):
     """ContactService behavior for the "contacts" domain."""
 
     @property

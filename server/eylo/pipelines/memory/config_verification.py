@@ -11,7 +11,10 @@ from eylo.modules.llm_configs.domain import ResolvedLLM
 from eylo.modules.llm_configs.wiring import build_llm_config_resolver
 from eylo.modules.memory.reindex_service import MemoryReindexService
 from eylo.modules.memory_configs.catalog import MemoryProviders
-from eylo.modules.memory_configs.domain import MemoryProviderConfig
+from eylo.modules.memory_configs.domain import (
+    MemoryProviderConfig,
+    parse_memory_provider,
+)
 from eylo.modules.memory_configs.verification import (
     MemoryDependencyAuthority,
     MemoryEmbeddingRuntime,
@@ -104,7 +107,7 @@ class MemoryConfigVerificationUseCase:
                 organization_id=organization_id,
                 config_id=config_id,
             )
-            config = MemoryProviderConfig.validate(
+            config = MemoryProviderConfig.from_input(
                 provider=stored.provider,
                 config=stored.config,
                 secrets=stored.secrets,
@@ -162,7 +165,7 @@ class MemoryConfigVerificationUseCase:
                 organization_id=organization_id,
                 config_id=config_id,
                 expected_revision=expected_revision,
-                verification_metadata=authority.to_metadata(),
+                verification_metadata=authority,
             )
             await MemoryReindexService(db).record_verified_space(
                 organization_id=organization_id,
@@ -171,7 +174,7 @@ class MemoryConfigVerificationUseCase:
             )
         assert verified.verified_at is not None
         return MemoryVerificationResult(
-            provider=verified.provider,
+            provider=parse_memory_provider(verified.provider),
             revision=verified.revision,
             verified_at=verified.verified_at,
         )

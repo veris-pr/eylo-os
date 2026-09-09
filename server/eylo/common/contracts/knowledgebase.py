@@ -5,9 +5,8 @@ from __future__ import annotations
 import hashlib
 import uuid
 from enum import StrEnum
-from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, JsonValue
 
 
 class KnowledgeScope(StrEnum):
@@ -31,6 +30,13 @@ class KnowledgeChunkingStrategy(StrEnum):
     FIXED = "fixed"
     MARKDOWN = "markdown"
     PARAGRAPH = "paragraph"
+
+
+class KnowledgeRecovery(StrEnum):
+    """Whether the existing durable owner may retry a failed operation."""
+
+    TERMINAL = "terminal"
+    RETRY = "retry"
 
 
 DEFAULT_KNOWLEDGE_CHUNKING = KnowledgeChunkingStrategy.PARAGRAPH
@@ -57,14 +63,21 @@ DOCUMENT_NAMESPACE = uuid.UUID("6f1c3f7a-2d9b-5e64-9c2a-4f0d8b7e1a35")
 class KnowledgeDocument(BaseModel):
     """A document going in. The vendor decides how to store it."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        strict=True,
+        frozen=True,
+        extra="forbid",
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+        allow_inf_nan=False,
+    )
 
-    content: str
+    content: str = Field(repr=False)
     scope: KnowledgeScope
     scope_id: str
     title: str | None = None
     source_uri: str | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, JsonValue] = Field(default_factory=dict, repr=False)
 
     @property
     def identity(self) -> str:
@@ -95,7 +108,9 @@ def derive_identity(
     elif content is not None:
         tail = hashlib.sha256(content.encode("utf-8")).hexdigest()
     else:
-        raise ValueError("A document needs a source_uri or content to have an identity.")
+        raise ValueError(
+            "A document needs a source_uri or content to have an identity."
+        )
     return f"{scope.value}:{scope_id}:{tail}"
 
 
@@ -107,22 +122,31 @@ def derive_document_id(identity: str) -> str:
 class KnowledgeResult(BaseModel):
     """One retrieved document."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        strict=True,
+        frozen=True,
+        extra="forbid",
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+        allow_inf_nan=False,
+    )
 
     document_id: str
-    content: str
-    score: float
+    content: str = Field(repr=False)
+    score: FiniteFloat
     scope: KnowledgeScope
     scope_id: str
     title: str | None = None
     source_uri: str | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, JsonValue] = Field(default_factory=dict, repr=False)
 
 
 class KnowledgebaseCapabilities(BaseModel):
     """What a vendor actually does, stated rather than discovered."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(
+        strict=True, frozen=True, extra="forbid", revalidate_instances="always"
+    )
 
     semantic_search: bool = False
     keyword_search: bool = False
@@ -139,8 +163,14 @@ class KnowledgebaseError(Exception):
         message: str,
         *,
         vendor: str | None = None,
-        retryable: bool = False,
+        recovery: KnowledgeRecovery = KnowledgeRecovery.TERMINAL,
     ) -> None:
+        if not isinstance(recovery, KnowledgeRecovery):
+            raise TypeError("Knowledge failure requires a KnowledgeRecovery policy.")
         super().__init__(message)
         self.vendor = vendor
-        self.retryable = retryable
+        self.recovery = recovery
+
+    @property
+    def retryable(self) -> bool:
+        return self.recovery is KnowledgeRecovery.RETRY

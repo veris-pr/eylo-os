@@ -11,6 +11,10 @@ from eylo.modules.provider_configs.repository import ProviderConfigRepository
 from eylo.modules.provider_configs.service import ProviderConfigService
 from eylo.modules.reranking_configs.domain import RerankingEndpointPolicy
 from eylo.modules.reranking_configs.resolver import RerankingConfigResolver
+from eylo.modules.reranking_configs.service import (
+    RerankingConfigReferences,
+    RerankingConfigService,
+)
 
 
 def _provider_config_service(db: AsyncSession | None = None) -> ProviderConfigService:
@@ -27,10 +31,8 @@ def build_reranking_config_resolver(
 def build_reranking_config_service(
     db: AsyncSession | None = None,
     *,
-    references=None,
-):
-    from eylo.modules.reranking_configs.service import RerankingConfigService
-
+    references: RerankingConfigReferences | None = None,
+) -> RerankingConfigService:
     return RerankingConfigService(
         _provider_config_service(db),
         endpoint_policy=build_reranking_endpoint_policy(),
@@ -41,7 +43,7 @@ def build_reranking_config_service(
 def build_reranking_endpoint_policy() -> RerankingEndpointPolicy:
     raw = settings.RERANKING_BASE_URL_ALLOWLIST or ""
     return RerankingEndpointPolicy(
-        allowed_base_urls=tuple(
+        allowed_base_urls=frozenset(
             value.strip() for value in raw.split(",") if value.strip()
         )
     )

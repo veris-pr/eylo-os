@@ -16,6 +16,8 @@ from __future__ import annotations
 import csv
 import io
 import logging
+from collections.abc import Iterable, Iterator
+from typing import Protocol, runtime_checkable
 
 from eylo.modules.knowledgebase.extraction.base import (
     MAX_PDF_PAGES,
@@ -27,6 +29,16 @@ from eylo.modules.knowledgebase.extraction.base import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@runtime_checkable
+class _ValueWorksheet(Protocol):
+    """Public value projection shared by OpenPyXL's unrelated worksheet classes."""
+
+    title: str
+
+    @property
+    def values(self) -> Iterable[Iterable[object]]: ...
 
 
 def extract_plain(raw: bytes, *, key: str) -> str:
@@ -233,11 +245,16 @@ def extract_xlsx(raw: bytes, *, key: str) -> str:
             f"{key} is not a readable Excel workbook: {error}"
         ) from error
 
+    def sheets(
+        worksheets: Iterable[object],
+    ) -> Iterator[tuple[str, Iterable[Iterable[object]]]]:
+        for sheet in worksheets:
+            if not isinstance(sheet, _ValueWorksheet):
+                raise DocumentExtractionError(f"{key} contains an unreadable worksheet.")
+            yield sheet.title, sheet.values
+
     try:
-        return _render_sheets(
-            ((sheet.title, sheet.iter_rows(values_only=True)) for sheet in workbook),
-            key=key,
-        )
+        return _render_sheets(sheets(workbook), key=key)
     finally:
         # read_only mode holds the archive open; without this the file handle
         # survives the function on some platforms.
@@ -324,7 +341,9 @@ def extract_legacy_doc(raw: bytes, *, key: str) -> str:
     )
 
 
-def _render_sheets(sheets, *, key: str) -> str:
+def _render_sheets(
+    sheets: Iterable[tuple[str, Iterable[Iterable[object]]]], *, key: str
+) -> str:
     """Rows from any spreadsheet, labelled with the first row's headers.
 
     Shared by both Excel extractors because the *output* should not depend on

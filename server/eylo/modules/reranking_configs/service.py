@@ -189,7 +189,7 @@ class RerankingConfigService:
         config: Mapping[str, object] | None,
         secrets: Mapping[str, str] | None,
     ) -> RerankingProviderConfig:
-        return RerankingProviderConfig.validate(
+        return RerankingProviderConfig.from_input(
             provider=provider,
             config=config,
             secrets=secrets,

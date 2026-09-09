@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from http import HTTPStatus
+
 import aioboto3
 from botocore.exceptions import BotoCoreError, ClientError
+from pydantic import ValidationError
 
 from eylo.sockets.reranking.base import RerankingVendorAdapter
 from eylo.sockets.reranking.schemas import (
@@ -11,20 +14,32 @@ from eylo.sockets.reranking.schemas import (
     RerankResult,
     RerankingCapabilities,
     RerankingError,
+    RerankingErrorCode,
+    RerankingRecovery,
+    RerankingTruncation,
 )
 from eylo.sockets.reranking.validation import (
     validate_rerank_request,
     validate_rerank_results,
 )
+from eylo.sockets.reranking.vendors.bedrock_wire import (
+    BEDROCK_AGENT_RUNTIME_SERVICE,
+    MAX_DOCUMENTS,
+    MAX_RESPONSE_PAGES,
+    BedrockErrorResponse,
+    BedrockFailureCode,
+    BedrockRerankRequest,
+    BedrockRerankResponse,
+)
 
 PROVIDER = "bedrock"
-MAX_DOCUMENTS = 1000
 
 
 class BedrockRerankAdapter(RerankingVendorAdapter):
     """Rerank inline text through one explicitly selected Bedrock model."""
 
     def __init__(self, config: BedrockRerankingConfig) -> None:
+        config = BedrockRerankingConfig.model_validate(config)
         self._config = config
         self._session = aioboto3.Session(
             aws_access_key_id=config.access_key_id.get_secret_value(),
@@ -43,7 +58,9 @@ class BedrockRerankAdapter(RerankingVendorAdapter):
 
     @property
     def capabilities(self) -> RerankingCapabilities:
-        return RerankingCapabilities(max_documents=MAX_DOCUMENTS, truncates=True)
+        return RerankingCapabilities(
+            max_documents=MAX_DOCUMENTS, truncation=RerankingTruncation.ALLOWED
+        )
 
     async def rerank(
         self,
@@ -61,58 +78,43 @@ class BedrockRerankAdapter(RerankingVendorAdapter):
             max_documents=MAX_DOCUMENTS,
             vendor=PROVIDER,
         )
-        request = {
-            "queries": [{"type": "TEXT", "textQuery": {"text": query}}],
-            "sources": [
-                {
-                    "type": "INLINE",
-                    "inlineDocumentSource": {
-                        "type": "TEXT",
-                        "textDocument": {"text": document},
-                    },
-                }
-                for document in documents
-            ],
-            "rerankingConfiguration": {
-                "type": "BEDROCK_RERANKING_MODEL",
-                "bedrockRerankingConfiguration": {
-                    "numberOfResults": expected_count,
-                    "modelConfiguration": {"modelArn": self._model_arn},
-                },
-            },
-        }
         try:
-            entries: list[dict[str, object]] = []
-            next_token: str | None = None
+            request = BedrockRerankRequest(
+                query=query,
+                documents=tuple(documents),
+                model_arn=self._model_arn,
+                number_of_results=expected_count,
+            )
+        except ValidationError:
+            raise RerankingError(
+                "Bedrock reranking request is invalid.",
+                vendor=PROVIDER,
+                code=RerankingErrorCode.INVALID_REQUEST,
+            ) from None
+        try:
+            entries: list[RerankResult] = []
             seen_tokens: set[str] = set()
-            async with self._session.client("bedrock-agent-runtime") as client:
-                while True:
-                    response = await client.rerank(
-                        **request,
-                        **({"nextToken": next_token} if next_token else {}),
+            async with self._session.client(BEDROCK_AGENT_RUNTIME_SERVICE) as client:
+                for _page_number in range(MAX_RESPONSE_PAGES):
+                    response = BedrockRerankResponse.model_validate(
+                        await client.rerank(**request.to_payload())
                     )
-                    page = response.get("results")
-                    if not isinstance(page, list):
-                        raise _invalid_response()
                     entries.extend(
-                        {
-                            "index": item.get("index"),
-                            "relevance_score": item.get("relevanceScore"),
-                        }
-                        for item in page
-                        if isinstance(item, dict)
+                        RerankResult(index=item.index, score=item.relevance_score)
+                        for item in response.results
                     )
-                    raw_next_token = response.get("nextToken")
-                    if raw_next_token is None:
-                        break
-                    if (
-                        not isinstance(raw_next_token, str)
-                        or not raw_next_token
-                        or raw_next_token in seen_tokens
-                    ):
+                    if len(entries) > expected_count:
                         raise _invalid_response()
-                    seen_tokens.add(raw_next_token)
-                    next_token = raw_next_token
+                    if response.next_token is None:
+                        break
+                    if response.next_token in seen_tokens:
+                        raise _invalid_response()
+                    seen_tokens.add(response.next_token)
+                    request = request.model_copy(
+                        update={"next_token": response.next_token}
+                    )
+                else:
+                    raise _invalid_response()
             return validate_rerank_results(
                 entries,
                 expected_count=expected_count,
@@ -121,14 +123,16 @@ class BedrockRerankAdapter(RerankingVendorAdapter):
             )
         except RerankingError:
             raise
+        except ValidationError:
+            raise _invalid_response() from None
         except ClientError as error:
             raise _client_error(error) from None
         except BotoCoreError:
             raise RerankingError(
                 "Bedrock reranking transport failed.",
                 vendor=PROVIDER,
-                code="transport",
-                retryable=True,
+                code=RerankingErrorCode.TRANSPORT,
+                recovery=RerankingRecovery.RETRY,
             ) from None
 
     @property
@@ -140,34 +144,41 @@ class BedrockRerankAdapter(RerankingVendorAdapter):
 
 
 def _client_error(error: ClientError) -> RerankingError:
-    provider_code = str(error.response.get("Error", {}).get("Code", ""))
-    status = error.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+    try:
+        response = BedrockErrorResponse.model_validate(error.response)
+    except ValidationError:
+        return _invalid_response()
+    provider_code = response.error.code
+    status = response.metadata.status
     if provider_code in {
-        "AccessDeniedException",
-        "ExpiredTokenException",
-        "InvalidSignatureException",
-        "UnrecognizedClientException",
-    } or status in {401, 403}:
-        code = "authentication"
-        retryable = False
-    elif provider_code in {"ThrottlingException", "ServiceQuotaExceededException"}:
-        code = "rate_limited"
-        retryable = True
+        BedrockFailureCode.ACCESS_DENIED,
+        BedrockFailureCode.EXPIRED_TOKEN,
+        BedrockFailureCode.INVALID_SIGNATURE,
+        BedrockFailureCode.UNRECOGNIZED_CLIENT,
+    } or status in {HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN}:
+        code = RerankingErrorCode.AUTHENTICATION
+        recovery = RerankingRecovery.TERMINAL
     elif provider_code in {
-        "InternalServerException",
-        "ModelNotReadyException",
-        "ServiceUnavailableException",
-    } or (isinstance(status, int) and status >= 500):
-        code = "provider_unavailable"
-        retryable = True
+        BedrockFailureCode.THROTTLED,
+        BedrockFailureCode.QUOTA_EXCEEDED,
+    }:
+        code = RerankingErrorCode.RATE_LIMITED
+        recovery = RerankingRecovery.RETRY
+    elif provider_code in {
+        BedrockFailureCode.INTERNAL_SERVER,
+        BedrockFailureCode.MODEL_NOT_READY,
+        BedrockFailureCode.SERVICE_UNAVAILABLE,
+    } or (status is not None and status >= HTTPStatus.INTERNAL_SERVER_ERROR):
+        code = RerankingErrorCode.PROVIDER_UNAVAILABLE
+        recovery = RerankingRecovery.RETRY
     else:
-        code = "invalid_request"
-        retryable = False
+        code = RerankingErrorCode.INVALID_REQUEST
+        recovery = RerankingRecovery.TERMINAL
     return RerankingError(
         "Bedrock rejected the reranking request.",
         vendor=PROVIDER,
         code=code,
-        retryable=retryable,
+        recovery=recovery,
     )
 
 
@@ -175,6 +186,6 @@ def _invalid_response() -> RerankingError:
     return RerankingError(
         "Bedrock returned an invalid reranking response.",
         vendor=PROVIDER,
-        code="invalid_response",
-        retryable=True,
+        code=RerankingErrorCode.INVALID_RESPONSE,
+        recovery=RerankingRecovery.RETRY,
     )

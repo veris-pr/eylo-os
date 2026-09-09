@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -17,6 +16,8 @@ from eylo.modules.voice.schemas.api import (
     OrganizationVoiceConfigUpdate,
     VoiceConfigCompatibilityRead,
     VoiceConfigRead,
+    VoiceConfigSection,
+    VoiceConfigSectionInput,
 )
 
 router = APIRouter(prefix="/{organization_id}/voice-configs", tags=[APP_TAG])
@@ -97,8 +98,8 @@ async def get_voice_config_compatibility(
 async def patch_voice_config_section(
     organization_id: UUID,
     voice_config_id: UUID,
-    section: str,
-    data: dict[str, Any] | list[dict[str, Any]],
+    section: VoiceConfigSection,
+    data: VoiceConfigSectionInput,
     expected_revision: int = Query(..., gt=0),
     current_user: CurrentUserSchema = Depends(get_current_user),
 ) -> VoiceConfigRead:

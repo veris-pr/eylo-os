@@ -4,8 +4,14 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from eylo.modules.provider_configs.domain import ProviderConfig
 from eylo.modules.provider_configs.masking import mask_secrets
-from eylo.modules.storage_configs.catalog import storage_capabilities
+from eylo.modules.storage_configs.catalog import StorageProviders, storage_capabilities
+from eylo.modules.storage_configs.domain import (
+    FilesystemStorageSettings,
+    S3StorageSettings,
+    parse_storage_provider,
+)
 from eylo.modules.storage_configs.schemas import (
     StorageCapabilitiesResponse,
     StorageConfigCreate,
@@ -30,7 +36,7 @@ class StorageConfigController:
             organization_id=organization_id,
             provider=request.provider,
             name=request.name,
-            config=request.config,
+            config=request.config.model_dump(mode="json"),
             secrets=request.secrets,
         )
         return self._to_response(config)
@@ -60,7 +66,11 @@ class StorageConfigController:
             organization_id=organization_id,
             config_id=config_id,
             name=request.name if "name" in request.model_fields_set else None,
-            config=request.config if "config" in request.model_fields_set else None,
+            config=(
+                request.config.model_dump(mode="json")
+                if request.config is not None
+                else None
+            ),
             secret_patch=(
                 request.secrets if "secrets" in request.model_fields_set else None
             ),
@@ -71,11 +81,17 @@ class StorageConfigController:
         return self._to_response(config)
 
     @staticmethod
-    def _to_response(config) -> StorageConfigResponse:
+    def _to_response(config: ProviderConfig) -> StorageConfigResponse:
         capabilities = storage_capabilities(config.provider)
+        provider = parse_storage_provider(config.provider)
+        settings = (
+            S3StorageSettings.model_validate(dict(config.config))
+            if provider is StorageProviders.S3
+            else FilesystemStorageSettings.model_validate(dict(config.config))
+        )
         return StorageConfigResponse(
             id=config.id,
-            provider=config.provider,
+            provider=provider,
             name=config.name,
             revision=config.revision,
             enabled=config.enabled,
@@ -83,7 +99,7 @@ class StorageConfigController:
             verified=config.verified,
             ready=config.ready,
             verified_at=config.verified_at,
-            config=dict(config.config),
+            config=settings,
             secrets=mask_secrets(config.secrets),
             capabilities=StorageCapabilitiesResponse(**capabilities),
         )

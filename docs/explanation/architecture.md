@@ -29,6 +29,23 @@ transfer write ownership or justify direct mutation of another module's table.
 This is why the console can receive an efficient conversation aggregate while
 message, participant, Agent, contact, and voice records retain separate owners.
 
+Shared repositories return complete ORM rows, not selectable column tuples.
+Specialized projections belong in explicit queries with their own result
+contracts. Callers still supply organization, ownership, and lifecycle filters;
+the generic repository does not infer access policy.
+
+Schema-to-ORM conversion validates an explicitly selected target schema before
+constructing an unpersisted row. A narrower target drops source-only fields,
+including fields added by a subclass. UUIDs, enums and datetimes remain Python
+values during conversion. Conversion neither opens a transaction nor persists
+the row; the repository and calling use case retain those responsibilities.
+
+`EyloBaseService[ResponseSchema, RowModel]` binds those two representations
+explicitly. Reads return response schemas; conversion back to a row returns the
+repository's model, never an unrelated type variable. Deletion is intentionally
+absent from the shared service: module-specific operations own the lifecycle and
+ownership checks before calling repository persistence.
+
 ## Revisioned definitions
 
 Agents, tools, templates, schedules, campaigns, MCP servers, and provider

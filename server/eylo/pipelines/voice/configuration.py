@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
@@ -15,6 +14,8 @@ from eylo.modules.voice.schemas.api import (
     OrganizationVoiceConfigCreate,
     OrganizationVoiceConfigUpdate,
     VoiceConfigRead,
+    VoiceConfigSection,
+    VoiceConfigSectionInput,
 )
 from eylo.modules.voice.services.voice_configs import VoiceConfigService
 
@@ -75,8 +76,8 @@ class VoiceConfigurationService:
         *,
         organization_id: UUID,
         voice_config_id: UUID,
-        section: str,
-        data: Any,
+        section: VoiceConfigSection,
+        data: VoiceConfigSectionInput,
         expected_revision: int,
     ) -> VoiceConfigRead:
         result = await self._voice_configs.patch_section(

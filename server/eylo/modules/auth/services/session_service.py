@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.database import get_db
 from eylo.common.services import EyloBaseService
+from eylo.modules.auth.models import AuthSessionModel
 from eylo.modules.auth.repository import AuthSessionRepository
 from eylo.modules.auth.schemas import (
     AuthSessionCreate,
@@ -39,7 +40,7 @@ class AuthSessionInitiation:
     contact_resolution: ContactResolution
 
 
-class AuthSessionService(EyloBaseService[AuthSessionInDb]):
+class AuthSessionService(EyloBaseService[AuthSessionInDb, AuthSessionModel]):
     """Service for handling widget sessions."""
 
     def __init__(self, db: AsyncSession | None = None):

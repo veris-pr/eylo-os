@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+
+from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
 
 from eylo.common.contracts.reranking import (
     RankingMetadata,
+    RankingReason,
     RankingState,
     RerankResult,
     RerankingError,
+    RerankingErrorCode,
+    RerankingRecovery,
 )
 from eylo.pipelines.reranking.resolver import RerankingRuntime
 
@@ -18,11 +22,15 @@ logger = logging.getLogger(__name__)
 
 MAX_RERANK_CHARACTERS = 200_000
 RERANK_TIMEOUT_SECONDS = 3.0
+_SELECTIONS = TypeAdapter(list[RerankResult])
 
 
-@dataclass(frozen=True, slots=True)
-class BoundedRerankingOutcome:
+class BoundedRerankingOutcome(BaseModel):
     """Validated selections, or ``None`` when retrieval order must be used."""
+
+    model_config = ConfigDict(
+        strict=True, frozen=True, extra="forbid", revalidate_instances="always"
+    )
 
     selections: tuple[RerankResult, ...] | None
     metadata: RankingMetadata
@@ -34,7 +42,7 @@ async def bounded_rerank(
     reranker: RerankingRuntime | None,
     *,
     top_k: int,
-    pre_degraded_reason: str | None = None,
+    pre_degraded_reason: RankingReason | None = None,
 ) -> BoundedRerankingOutcome:
     """Rerank bounded candidates without making retrieval depend on the provider."""
     returned_count = min(top_k, len(documents))
@@ -56,12 +64,12 @@ async def bounded_rerank(
         degraded_reason is None
         and len(documents) > reranker.adapter.capabilities.max_documents
     ):
-        degraded_reason = "candidate_budget_exceeded"
+        degraded_reason = RankingReason.CANDIDATE_BUDGET_EXCEEDED
     if (
         degraded_reason is None
         and sum(len(document) for document in documents) > MAX_RERANK_CHARACTERS
     ):
-        degraded_reason = "candidate_content_budget_exceeded"
+        degraded_reason = RankingReason.CANDIDATE_CONTENT_BUDGET_EXCEEDED
 
     if degraded_reason is None and documents:
         try:
@@ -71,7 +79,7 @@ async def bounded_rerank(
                     documents,
                     top_k=returned_count,
                 )
-            _validate_selections(
+            selections = _validate_selections(
                 selections,
                 candidate_count=len(documents),
                 expected_count=returned_count,
@@ -79,7 +87,7 @@ async def bounded_rerank(
         except RerankingError as error:
             degraded_reason = safe_degraded_reason(error.code)
         except TimeoutError:
-            degraded_reason = "provider_timeout"
+            degraded_reason = RankingReason.PROVIDER_TIMEOUT
         else:
             return BoundedRerankingOutcome(
                 selections=tuple(selections),
@@ -100,7 +108,7 @@ async def bounded_rerank(
                 state=RankingState.APPLIED,
                 comparable=True,
                 reranker=reranker,
-                reason="no_candidates",
+                reason=RankingReason.NO_CANDIDATES,
                 candidate_count=0,
                 returned_count=0,
             ),
@@ -121,22 +129,31 @@ async def bounded_rerank(
 
 
 def _validate_selections(
-    selections: list[RerankResult],
+    selections: object,
     *,
     candidate_count: int,
     expected_count: int,
-) -> None:
-    indices = [selection.index for selection in selections]
+) -> list[RerankResult]:
+    try:
+        validated = _SELECTIONS.validate_python(selections, strict=True)
+    except ValidationError:
+        raise RerankingError(
+            "Reranking provider returned invalid selections.",
+            code=RerankingErrorCode.INVALID_RESPONSE,
+            recovery=RerankingRecovery.RETRY,
+        ) from None
+    indices = [selection.index for selection in validated]
     if (
-        len(selections) != expected_count
+        len(validated) != expected_count
         or len(indices) != len(set(indices))
         or any(index < 0 or index >= candidate_count for index in indices)
     ):
         raise RerankingError(
             "Reranking provider returned invalid selections.",
-            code="invalid_response",
-            retryable=True,
+            code=RerankingErrorCode.INVALID_RESPONSE,
+            recovery=RerankingRecovery.RETRY,
         )
+    return validated
 
 
 def _metadata(
@@ -144,7 +161,7 @@ def _metadata(
     state: RankingState,
     comparable: bool,
     reranker: RerankingRuntime | None,
-    reason: str | None,
+    reason: RankingReason | None,
     candidate_count: int,
     returned_count: int,
 ) -> RankingMetadata:
@@ -164,7 +181,7 @@ def _metadata(
 
 def _log_degradation(
     reranker: RerankingRuntime,
-    reason: str | None,
+    reason: RankingReason | None,
 ) -> None:
     logger.warning(
         "Reranking degraded provider=%s config_id=%s revision=%d reason=%s",
@@ -175,15 +192,15 @@ def _log_degradation(
     )
 
 
-def safe_degraded_reason(code: str) -> str:
+def safe_degraded_reason(code: RerankingErrorCode) -> RankingReason:
     return {
-        "transport": "provider_unavailable",
-        "rate_limited": "provider_rate_limited",
-        "provider_unavailable": "provider_unavailable",
-        "authentication": "provider_authentication_failed",
-        "invalid_request": "provider_rejected_request",
-        "invalid_response": "invalid_provider_response",
-    }.get(code, "provider_unavailable")
+        RerankingErrorCode.TRANSPORT: RankingReason.PROVIDER_UNAVAILABLE,
+        RerankingErrorCode.RATE_LIMITED: RankingReason.PROVIDER_RATE_LIMITED,
+        RerankingErrorCode.PROVIDER_UNAVAILABLE: RankingReason.PROVIDER_UNAVAILABLE,
+        RerankingErrorCode.AUTHENTICATION: RankingReason.PROVIDER_AUTHENTICATION_FAILED,
+        RerankingErrorCode.INVALID_REQUEST: RankingReason.PROVIDER_REJECTED_REQUEST,
+        RerankingErrorCode.INVALID_RESPONSE: RankingReason.INVALID_PROVIDER_RESPONSE,
+    }.get(code, RankingReason.PROVIDER_UNAVAILABLE)
 
 
 __all__ = [

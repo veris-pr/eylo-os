@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from sqlalchemy import and_, func, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from eylo.common.contracts.memory import MemoryLevel, MemoryProvenance
 from eylo.common.contracts.memory_reconciliation import MemoryIntegrityState
@@ -40,10 +42,10 @@ class MemoryNotFound(Exception):
 
 
 class MemoryOperatorService:
-    def __init__(self, session) -> None:
+    def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def list(
+    async def list_memories(
         self,
         *,
         organization_id: UUID,
@@ -319,17 +321,15 @@ class MemoryOperatorService:
         integrities: list[MemoryIntegrityState],
         recalled: bool | None,
         query: str | None,
-    ) -> list:
-        filters = [
+    ) -> list[ColumnElement[bool]]:
+        filters: list[ColumnElement[bool]] = [
             MemoryModel.organization_id == organization_id,
             MemoryModel.deleted.is_(False),
         ]
         if levels:
             filters.append(MemoryModel.scope_level.in_(levels))
         if integrities:
-            filters.append(
-                MemoryIntegrityProjector.filter_expression(integrities)
-            )
+            filters.append(MemoryIntegrityProjector.filter_expression(integrities))
         status_set = set(statuses)
         if status_set == {MemoryStatus.EXPIRED}:
             filters.append(
@@ -352,9 +352,7 @@ class MemoryOperatorService:
         if query:
             escaped = _escape_like(query.strip())
             if escaped:
-                filters.append(
-                    MemoryModel.content.ilike(f"%{escaped}%", escape="\\")
-                )
+                filters.append(MemoryModel.content.ilike(f"%{escaped}%", escape="\\"))
         return filters
 
     async def _subject_labels(
@@ -381,9 +379,8 @@ class MemoryOperatorService:
             )
             labels.update(
                 {
-                    (MemoryLevel.AGENT, row.id): row.name
-                    or f"Agent {str(row.id)[:8]}"
-                    for row in rows
+                    (MemoryLevel.AGENT, agent_id): name or f"Agent {str(agent_id)[:8]}"
+                    for agent_id, name in rows.tuples()
                 }
             )
         if contact_ids:
@@ -400,11 +397,11 @@ class MemoryOperatorService:
             )
             labels.update(
                 {
-                    (MemoryLevel.USER, row.id): row.name
-                    or row.primary_email
-                    or row.primary_phone
-                    or f"User {str(row.id)[:8]}"
-                    for row in rows
+                    (MemoryLevel.USER, contact_id): name
+                    or primary_email
+                    or primary_phone
+                    or f"User {str(contact_id)[:8]}"
+                    for contact_id, name, primary_email, primary_phone in rows.tuples()
                 }
             )
         if conversation_ids:
@@ -419,9 +416,9 @@ class MemoryOperatorService:
             )
             labels.update(
                 {
-                    (MemoryLevel.CONVERSATION, row.id): row.external_id
-                    or f"Conversation {str(row.id)[:8]}"
-                    for row in rows
+                    (MemoryLevel.CONVERSATION, conversation_id): external_id
+                    or f"Conversation {str(conversation_id)[:8]}"
+                    for conversation_id, external_id in rows.tuples()
                 }
             )
         return labels

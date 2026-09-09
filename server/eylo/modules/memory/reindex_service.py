@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from enum import StrEnum
 from typing import Sequence
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, func, select, update
 from sqlalchemy import text as sql
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.absurd_work import AbsurdBoundWorkService, DurableState
@@ -38,11 +40,29 @@ from eylo.modules.provider_configs.errors import NotConfiguredError
 MEMORY_REINDEX_BATCH_SIZE = 64
 
 
-@dataclass(frozen=True, slots=True)
-class ReindexFact:
+class _IndexLock(StrEnum):
+    """DB lock owned by the caller's reindex transaction."""
+
+    NONE = "none"
+    SHARED = "shared"
+    EXCLUSIVE = "exclusive"
+
+
+class ReindexFact(BaseModel):
+    """One detached fact revision to embed before a revision-fenced write."""
+
+    model_config = ConfigDict(
+        strict=True,
+        frozen=True,
+        extra="forbid",
+        from_attributes=True,
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+    )
+
     id: UUID
-    content: str
-    state_revision: int
+    content: str = Field(repr=False)
+    state_revision: int = Field(ge=1)
 
 
 def _safe_failure_summary(error: Exception) -> str:
@@ -81,17 +101,16 @@ class MemoryReindexService:
     ) -> MemoryIndexModel:
         if verified_space.organization_id != organization_id:
             raise MemoryError("Memory embedding space belongs to another organization.")
-        index = await self._index(
+        index = await self._find_index(
             organization_id,
             memory_provider_config_id,
-            for_update=True,
-            required=False,
+            lock=_IndexLock.EXCLUSIVE,
         )
         if index is None:
             index = MemoryIndexModel(
                 organization_id=organization_id,
                 memory_provider_config_id=memory_provider_config_id,
-                **_space_fields(verified_space, prefix="embedding"),
+                **verified_space.to_active_record().to_columns(),
             )
             self.session.add(index)
             await self.session.flush()
@@ -107,11 +126,7 @@ class MemoryReindexService:
                 raise MemoryError(
                     "Memory has a pending reindex; finish it before changing space."
                 )
-            for field, value in _space_fields(
-                verified_space,
-                prefix="target_embedding",
-            ).items():
-                setattr(index, field, value)
+            self._assign_target(index, verified_space)
             if index.reindex_state is MemoryReindexState.FAILED:
                 index.reindex_state = MemoryReindexState.REQUIRED
                 index.reindex_last_error = None
@@ -124,19 +139,11 @@ class MemoryReindexService:
             return index
 
         if active.is_compatible_with(verified_space):
-            for field, value in _space_fields(
-                verified_space,
-                prefix="embedding",
-            ).items():
-                setattr(index, field, value)
+            self._assign_active(index, verified_space)
             await self.session.flush()
             return index
 
-        for field, value in _space_fields(
-            verified_space,
-            prefix="target_embedding",
-        ).items():
-            setattr(index, field, value)
+        self._assign_target(index, verified_space)
         index.reindex_state = MemoryReindexState.REQUIRED
         index.reindex_last_error = None
         await self.session.flush()
@@ -152,10 +159,9 @@ class MemoryReindexService:
         organization_id: UUID,
         memory_provider_config_id: UUID,
     ) -> EmbeddingSpace:
-        index = await self._index(
+        index = await self._require_index(
             organization_id,
             memory_provider_config_id,
-            required=True,
         )
         space = embedding_space_from_record(index)
         if space is None:
@@ -168,10 +174,9 @@ class MemoryReindexService:
         organization_id: UUID,
         memory_provider_config_id: UUID,
     ) -> MemoryIndexModel | None:
-        return await self._index(
+        return await self._find_index(
             organization_id,
             memory_provider_config_id,
-            required=False,
         )
 
     async def latest_job(
@@ -202,11 +207,10 @@ class MemoryReindexService:
         memory_provider_config_id: UUID,
     ) -> EmbeddingSpace:
         """Fence formation filing against a concurrent atomic cutover."""
-        index = await self._index(
+        index = await self._require_index(
             organization_id,
             memory_provider_config_id,
-            for_share=True,
-            required=True,
+            lock=_IndexLock.SHARED,
         )
         space = embedding_space_from_record(index)
         if space is None:
@@ -220,11 +224,10 @@ class MemoryReindexService:
         memory_provider_config_id: UUID,
         max_attempts: int = DURABLE_MAX_ATTEMPTS,
     ) -> MemoryReindexJobModel:
-        index = await self._index(
+        index = await self._require_index(
             organization_id,
             memory_provider_config_id,
-            for_update=True,
-            required=True,
+            lock=_IndexLock.EXCLUSIVE,
         )
         source = embedding_space_from_record(index)
         target = target_embedding_space_from_record(index)
@@ -252,8 +255,8 @@ class MemoryReindexService:
             organization_id=organization_id,
             memory_provider_config_id=memory_provider_config_id,
             max_attempts=max_attempts,
-            **_space_fields(source, prefix="source_embedding"),
-            **_space_fields(target, prefix="target_embedding"),
+            **source.to_source_record().to_columns(),
+            **target.to_target_record().to_columns(),
         )
         self.session.add(job)
         index.reindex_state = MemoryReindexState.REQUIRED
@@ -281,11 +284,10 @@ class MemoryReindexService:
             DurableState.FAILED,
             DurableState.CANCELLED,
         }:
-            index = await self._index(
+            index = await self._require_index(
                 organization_id,
                 job.memory_provider_config_id,
-                for_update=True,
-                required=True,
+                lock=_IndexLock.EXCLUSIVE,
             )
             register_reindex_lifecycle(
                 index,
@@ -316,11 +318,10 @@ class MemoryReindexService:
             return job
         if job.state is not DurableState.RUNNING:
             raise MemoryError("Memory reindex attempt is not running.")
-        index = await self._index(
+        index = await self._require_index(
             organization_id,
             job.memory_provider_config_id,
-            for_update=True,
-            required=True,
+            lock=_IndexLock.EXCLUSIVE,
         )
         source = source_embedding_space_from_record(job)
         target = target_embedding_space_from_record(job)
@@ -378,14 +379,7 @@ class MemoryReindexService:
                 "limit": limit,
             },
         )
-        return [
-            ReindexFact(
-                id=UUID(str(row.id)),
-                content=row.content,
-                state_revision=row.state_revision,
-            )
-            for row in rows
-        ]
+        return [ReindexFact.model_validate(row) for row in rows]
 
     async def store_vectors(
         self,
@@ -397,11 +391,12 @@ class MemoryReindexService:
     ) -> int:
         if len(facts) != len(vectors):
             raise MemoryError("Memory reindex embedding returned a partial batch.")
+        validated_facts = tuple(ReindexFact.model_validate(fact) for fact in facts)
         job = await self._running_job(organization_id, job_id)
         if any(len(vector) != job.target_embedding_dimensions for vector in vectors):
             raise MemoryError("Memory reindex embedding dimensions are invalid.")
         stored = 0
-        for fact, vector in zip(facts, vectors, strict=True):
+        for fact, vector in zip(validated_facts, vectors, strict=True):
             result = await self.session.execute(
                 sql(
                     """
@@ -437,7 +432,9 @@ class MemoryReindexService:
                     "embedding": _vector(vector),
                 },
             )
-            stored += int(result.rowcount or 0)
+            if not isinstance(result, CursorResult) or result.rowcount not in {0, 1}:
+                raise MemoryError("Memory reindex staging did not report a valid row count.")
+            stored += result.rowcount
         await self.session.flush()
         return stored
 
@@ -457,11 +454,10 @@ class MemoryReindexService:
             return True
         if job.state is not DurableState.RUNNING:
             raise MemoryError("Memory reindex cutover is not running.")
-        index = await self._index(
+        index = await self._require_index(
             organization_id,
             job.memory_provider_config_id,
-            for_update=True,
-            required=True,
+            lock=_IndexLock.EXCLUSIVE,
         )
         source = source_embedding_space_from_record(job)
         target = target_embedding_space_from_record(job)
@@ -621,7 +617,7 @@ class MemoryReindexService:
                 "target_space_id": target.id,
             },
         )
-        if int(cutover.rowcount or 0) != source_count:
+        if not isinstance(cutover, CursorResult) or cutover.rowcount != source_count:
             raise MemoryError("Memory reindex cutover did not update every fact.")
 
         # A cursor is mutable filing authority, unlike its immutable change
@@ -639,7 +635,7 @@ class MemoryReindexService:
                 MemoryReconciliationCursorModel.deleted.is_(False),
             )
             .values(
-                **_space_fields(target, prefix="embedding"),
+                **target.to_active_record().to_columns(),
                 updated_at=func.now(),
             )
         )
@@ -688,11 +684,10 @@ class MemoryReindexService:
         )
         if not was_running:
             return state
-        index = await self._index(
+        index = await self._require_index(
             organization_id,
             job.memory_provider_config_id,
-            for_update=True,
-            required=True,
+            lock=_IndexLock.EXCLUSIVE,
         )
         if state is DurableState.FAILED:
             if index.target_embedding_space_id == job.target_embedding_space_id:
@@ -723,11 +718,10 @@ class MemoryReindexService:
         organization_id: UUID,
         memory_provider_config_id: UUID,
     ) -> MemoryIndexModel:
-        index = await self._index(
+        index = await self._require_index(
             organization_id,
             memory_provider_config_id,
-            for_update=True,
-            required=True,
+            lock=_IndexLock.EXCLUSIVE,
         )
         if index.reindex_state is MemoryReindexState.ACTIVE:
             return index
@@ -781,11 +775,10 @@ class MemoryReindexService:
         if not changed:
             return
         job = await work.get(work_id=job_id, organization_id=organization_id)
-        index = await self._index(
+        index = await self._require_index(
             organization_id,
             job.memory_provider_config_id,
-            for_update=True,
-            required=True,
+            lock=_IndexLock.EXCLUSIVE,
         )
         active = embedding_space_from_record(index)
         if (
@@ -816,31 +809,42 @@ class MemoryReindexService:
     ) -> MemoryReindexJobModel:
         return await self._job(organization_id, job_id)
 
-    async def _index(
+    async def _require_index(
         self,
         organization_id: UUID,
         memory_provider_config_id: UUID,
         *,
-        for_update: bool = False,
-        for_share: bool = False,
-        required: bool,
+        lock: _IndexLock = _IndexLock.NONE,
+    ) -> MemoryIndexModel:
+        """Resolve existing authority or refuse before reindex effects."""
+        index = await self._find_index(
+            organization_id, memory_provider_config_id, lock=lock
+        )
+        if index is None:
+            raise MemoryError("Memory config has no verified embedding index.")
+        return index
+
+    async def _find_index(
+        self,
+        organization_id: UUID,
+        memory_provider_config_id: UUID,
+        *,
+        lock: _IndexLock = _IndexLock.NONE,
     ) -> MemoryIndexModel | None:
-        if for_update and for_share:
-            raise ValueError("Memory index lock mode is ambiguous.")
+        """Tenant-scoped optional lookup under the caller's transaction."""
+        if not isinstance(lock, _IndexLock):
+            raise TypeError("Memory index lock must be an _IndexLock.")
         query = select(MemoryIndexModel).where(
             MemoryIndexModel.organization_id == organization_id,
             MemoryIndexModel.memory_provider_config_id
             == memory_provider_config_id,
             MemoryIndexModel.deleted.is_(False),
         )
-        if for_update:
+        if lock is _IndexLock.EXCLUSIVE:
             query = query.with_for_update()
-        elif for_share:
+        elif lock is _IndexLock.SHARED:
             query = query.with_for_update(read=True)
-        index = await self.session.scalar(query)
-        if index is None and required:
-            raise MemoryError("Memory config has no verified embedding index.")
-        return index
+        return await self.session.scalar(query)
 
     async def _job(
         self,
@@ -867,38 +871,47 @@ class MemoryReindexService:
         target = target_embedding_space_from_record(index)
         if target is None:
             raise MemoryError("Memory reindex target is missing.")
-        for field, value in _space_fields(target, prefix="embedding").items():
-            setattr(index, field, value)
+        MemoryReindexService._assign_active(index, target)
         MemoryReindexService._clear_target(index)
 
     @staticmethod
     def _clear_target(index: MemoryIndexModel) -> None:
-        for field in (
-            "target_embedding_provider_config_id",
-            "target_embedding_provider_config_revision",
-            "target_embedding_provider",
-            "target_embedding_endpoint",
-            "target_embedding_model",
-            "target_embedding_dimensions",
-            "target_embedding_semantic_options",
-            "target_embedding_space_id",
-        ):
-            setattr(index, field, None)
+        index.target_embedding_provider_config_id = None
+        index.target_embedding_provider_config_revision = None
+        index.target_embedding_provider = None
+        index.target_embedding_endpoint = None
+        index.target_embedding_model = None
+        index.target_embedding_dimensions = None
+        index.target_embedding_semantic_options = None
+        index.target_embedding_space_id = None
         index.reindex_state = MemoryReindexState.ACTIVE
         index.reindex_last_error = None
 
+    @staticmethod
+    def _assign_active(index: MemoryIndexModel, space: EmbeddingSpace) -> None:
+        """Assign one validated identity without changing reindex lifecycle policy."""
+        space = EmbeddingSpace.model_validate(space, strict=True)
+        index.embedding_provider_config_id = space.provider_config_id
+        index.embedding_provider_config_revision = space.provider_config_revision
+        index.embedding_provider = space.provider
+        index.embedding_endpoint = space.endpoint
+        index.embedding_model = space.model
+        index.embedding_dimensions = space.dimensions
+        index.embedding_semantic_options = dict(space.semantic_options)
+        index.embedding_space_id = space.id
 
-def _space_fields(space: EmbeddingSpace, *, prefix: str) -> dict[str, object]:
-    return {
-        f"{prefix}_provider_config_id": space.provider_config_id,
-        f"{prefix}_provider_config_revision": space.provider_config_revision,
-        f"{prefix}_provider": space.provider,
-        f"{prefix}_endpoint": space.endpoint,
-        f"{prefix}_model": space.model,
-        f"{prefix}_dimensions": space.dimensions,
-        f"{prefix}_semantic_options": dict(space.semantic_options),
-        f"{prefix}_space_id": space.id,
-    }
+    @staticmethod
+    def _assign_target(index: MemoryIndexModel, space: EmbeddingSpace) -> None:
+        """Assign one validated identity without changing reindex lifecycle policy."""
+        space = EmbeddingSpace.model_validate(space, strict=True)
+        index.target_embedding_provider_config_id = space.provider_config_id
+        index.target_embedding_provider_config_revision = space.provider_config_revision
+        index.target_embedding_provider = space.provider
+        index.target_embedding_endpoint = space.endpoint
+        index.target_embedding_model = space.model
+        index.target_embedding_dimensions = space.dimensions
+        index.target_embedding_semantic_options = dict(space.semantic_options)
+        index.target_embedding_space_id = space.id
 
 
 def _vector(values: Sequence[float]) -> str:

@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from eylo.common.outbound import OutboundAttemptState
 from eylo.common.services import EyloBaseService
 from eylo.modules.telephony.constants import CallTransferStatus
+from eylo.modules.telephony.models import PhoneNumberModel, TelephonyCallModel
 from eylo.modules.telephony.repositories import (
     PhoneNumberRepository,
     TelephonyCallRepository,
@@ -57,7 +58,7 @@ class PhoneNumberProvisioningNotFound(Exception):
     """The organization-owned purchase intent is absent."""
 
 
-class PhoneNumberService(EyloBaseService[PhoneNumberInDb]):
+class PhoneNumberService(EyloBaseService[PhoneNumberInDb, PhoneNumberModel]):
     @property
     def schema(self) -> type[PhoneNumberInDb]:
         return PhoneNumberInDb
@@ -246,7 +247,7 @@ class PhoneNumberService(EyloBaseService[PhoneNumberInDb]):
         return self.orm_to_schema(entity)
 
 
-class TelephonyCallService(EyloBaseService[TelephonyCallInDb]):
+class TelephonyCallService(EyloBaseService[TelephonyCallInDb, TelephonyCallModel]):
     """Service for managing telephony call records."""
 
     @property

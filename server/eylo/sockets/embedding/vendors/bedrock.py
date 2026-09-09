@@ -2,20 +2,31 @@
 
 from __future__ import annotations
 
-import json
+from http import HTTPStatus
 
 import aioboto3
 from botocore.exceptions import BotoCoreError, ClientError
+from pydantic import ValidationError
 
 from eylo.sockets.embedding.base import EmbeddingVendorAdapter
 from eylo.sockets.embedding.schemas import (
     BedrockEmbeddingConfig,
     EmbeddingCapabilities,
     EmbeddingError,
+    EmbeddingErrorCode,
     EmbeddingInput,
     EmbeddingSemanticOptions,
 )
-from eylo.sockets.embedding.validation import validate_indexed_vectors
+
+from .bedrock_wire import (
+    BEDROCK_RUNTIME_SERVICE,
+    JSON_CONTENT_TYPE,
+    BedrockErrorResponse,
+    BedrockFailureCode,
+    BedrockInvocationResponse,
+    TitanEmbeddingRequest,
+    TitanEmbeddingResponse,
+)
 
 PROVIDER = "bedrock"
 MAX_BATCH = 1
@@ -69,30 +80,32 @@ class BedrockEmbeddingAdapter(EmbeddingVendorAdapter):
 
         try:
             vectors: list[list[float]] = []
-            async with self._session.client("bedrock-runtime") as client:
+            async with self._session.client(BEDROCK_RUNTIME_SERVICE) as client:
                 for text in texts:
-                    response = await client.invoke_model(
-                        modelId=self._config.model,
-                        contentType="application/json",
-                        accept="application/json",
-                        body=json.dumps(
-                            {
-                                "inputText": text,
-                                "dimensions": self._config.dimensions,
-                                "normalize": self._config.normalize,
-                            }
-                        ),
+                    try:
+                        request = TitanEmbeddingRequest(
+                            input_text=text,
+                            dimensions=self._config.dimensions,
+                            normalize=self._config.normalize,
+                        )
+                    except ValidationError:
+                        raise EmbeddingError(
+                            "Bedrock embedding request is invalid.",
+                            vendor=PROVIDER,
+                            code=EmbeddingErrorCode.INVALID_REQUEST,
+                        ) from None
+                    response = BedrockInvocationResponse.model_validate(
+                        await client.invoke_model(
+                            modelId=self._config.model,
+                            contentType=JSON_CONTENT_TYPE,
+                            accept=JSON_CONTENT_TYPE,
+                            body=request.to_body(),
+                        )
                     )
-                    body = response.get("body")
-                    if body is None:
-                        raise _invalid_response("Bedrock response body is missing.")
-                    payload = json.loads(await body.read())
-                    embedding = payload.get("embedding") if isinstance(payload, dict) else None
-                    vector = validate_indexed_vectors(
-                        [(0, embedding)],
-                        expected_count=1,
-                        vendor=PROVIDER,
-                    )[0]
+                    payload = TitanEmbeddingResponse.model_validate_json(
+                        await response.body.read()
+                    )
+                    vector = payload.embedding
                     if len(vector) != self._config.dimensions:
                         raise _invalid_response(
                             "Bedrock returned a vector with unexpected dimensions."
@@ -107,37 +120,44 @@ class BedrockEmbeddingAdapter(EmbeddingVendorAdapter):
             raise EmbeddingError(
                 "Bedrock embedding transport failed.",
                 vendor=PROVIDER,
-                code="transport",
+                code=EmbeddingErrorCode.TRANSPORT,
                 retryable=True,
             ) from None
-        except (AttributeError, json.JSONDecodeError, TypeError, ValueError):
+        except (TypeError, ValueError):
             raise _invalid_response("Bedrock returned an invalid response.") from None
 
 
 def _client_error(error: ClientError) -> EmbeddingError:
-    provider_code = str(error.response.get("Error", {}).get("Code", ""))
-    status = error.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+    try:
+        response = BedrockErrorResponse.model_validate(error.response)
+    except ValidationError:
+        return _invalid_response("Bedrock returned an invalid error response.")
+    provider_code = response.error.code
+    status = response.metadata.status
     if provider_code in {
-        "AccessDeniedException",
-        "ExpiredTokenException",
-        "InvalidSignatureException",
-        "UnrecognizedClientException",
-    } or status in {401, 403}:
-        code = "authentication"
+        BedrockFailureCode.ACCESS_DENIED,
+        BedrockFailureCode.EXPIRED_TOKEN,
+        BedrockFailureCode.INVALID_SIGNATURE,
+        BedrockFailureCode.UNRECOGNIZED_CLIENT,
+    } or status in {HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN}:
+        code = EmbeddingErrorCode.AUTHENTICATION
         retryable = False
-    elif provider_code in {"ThrottlingException", "ServiceQuotaExceededException"}:
-        code = "rate_limited"
+    elif provider_code in {
+        BedrockFailureCode.THROTTLED,
+        BedrockFailureCode.QUOTA_EXCEEDED,
+    }:
+        code = EmbeddingErrorCode.RATE_LIMITED
         retryable = True
     elif provider_code in {
-        "InternalServerException",
-        "ModelNotReadyException",
-        "ModelTimeoutException",
-        "ServiceUnavailableException",
-    } or (isinstance(status, int) and status >= 500):
-        code = "provider_error"
+        BedrockFailureCode.INTERNAL_SERVER,
+        BedrockFailureCode.MODEL_NOT_READY,
+        BedrockFailureCode.MODEL_TIMEOUT,
+        BedrockFailureCode.SERVICE_UNAVAILABLE,
+    } or (status is not None and status >= HTTPStatus.INTERNAL_SERVER_ERROR):
+        code = EmbeddingErrorCode.PROVIDER_ERROR
         retryable = True
     else:
-        code = "invalid_request"
+        code = EmbeddingErrorCode.INVALID_REQUEST
         retryable = False
     return EmbeddingError(
         "Bedrock rejected the embedding request.",
@@ -151,6 +171,6 @@ def _invalid_response(message: str) -> EmbeddingError:
     return EmbeddingError(
         message,
         vendor=PROVIDER,
-        code="invalid_response",
+        code=EmbeddingErrorCode.INVALID_RESPONSE,
         retryable=True,
     )

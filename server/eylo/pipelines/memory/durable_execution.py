@@ -4,15 +4,26 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from enum import StrEnum
 from uuid import UUID
 
 from absurd_sdk import AsyncTaskContext, CancelledTask
-from pydantic import ValidationError
-from sqlalchemy import and_, cast, exists, func, literal, or_, select, text, tuple_
+from pydantic import BaseModel, ConfigDict, JsonValue, ValidationError
+from sqlalchemy import (
+    Select,
+    and_,
+    cast,
+    exists,
+    func,
+    literal,
+    or_,
+    select,
+    text,
+    tuple_,
+)
 from sqlalchemy.dialects.postgresql import JSONPATH
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from eylo.absurd_work import (
@@ -25,15 +36,22 @@ from eylo.absurd_work import (
 from eylo.common.contracts.embedding import embedding_space_from_record
 from eylo.common.contracts.memory import (
     MEMORY_MAX_WINDOW_MESSAGES,
-    MemoryError,
     MemoryInputMessage,
     MemoryLevel,
     MemoryMessageRole,
-    MemoryOperation,
     MemoryOrigin,
     MemoryOutcomeCounts,
+    MemoryRecoveryPolicy,
     MemoryScope,
     MemorySourceReference,
+)
+from eylo.common.contracts.memory import (
+    MemoryError as MemoryProviderError,
+)
+from eylo.common.contracts.memory_formation import (
+    MemoryFormationCountsMismatch,
+    MemoryFormationOutcomes,
+    MemoryOperationBatch,
 )
 from eylo.common.contracts.messages import MessageInDb, MessageKind
 from eylo.common.database import start_transaction
@@ -62,7 +80,11 @@ from eylo.modules.agent_runs.domain import (
 from eylo.modules.conversations.models.conversations import ConversationsModel
 from eylo.modules.conversations.models.messages import MessagesModel
 from eylo.modules.conversations.models.participants import ParticipantsModel
-from eylo.modules.conversations.schemas.message_content import text_from_content_blocks
+from eylo.modules.conversations.schemas.message_content import (
+    AssistantMessageContent,
+    UserMessageContent,
+    text_from_content_blocks,
+)
 from eylo.modules.memory.events import (
     register_formation_fact_changes,
     register_formation_lifecycle,
@@ -74,7 +96,14 @@ from eylo.modules.memory.models import (
 )
 from eylo.modules.memory.reindex_service import MemoryReindexService
 from eylo.modules.provider_configs.errors import NotConfiguredError
-from eylo.pipelines.memory.resolver import resolve_memory_runtime
+from eylo.pipelines.memory.resolver import MemoryRuntime, resolve_memory_runtime
+from eylo.pipelines.memory.work_contracts import (
+    MemoryFormationRange,
+    MemoryFormationReceipt,
+    MemoryJobParams,
+    MemoryMessagePosition,
+    MemoryTaskKind,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -91,14 +120,18 @@ _TEXT_BLOCK_JSONPATH = cast(
 )
 
 
-@dataclass(frozen=True, order=True, slots=True)
-class _MessagePosition:
-    created_at: datetime
-    message_id: UUID
+class _CursorWatermark(StrEnum):
+    """Which side of the formation cursor is being restored."""
+
+    REQUESTED = "requested"
+    PROCESSED = "processed"
 
 
-@dataclass(frozen=True, slots=True)
-class _CancellationResult:
+class _CancellationResult(BaseModel):
+    """Detached result after cancellation has committed."""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+
     cancelled: bool
     task_id: UUID | None
 
@@ -128,7 +161,7 @@ async def enqueue_memory_formation(
             )
         )
         if conversation_id is None:
-            raise MemoryError("Memory conversation authority is unavailable.")
+            raise MemoryProviderError("Memory conversation authority is unavailable.")
 
         requested = await _latest_message_position(session, scope)
         if requested is None:
@@ -139,8 +172,10 @@ async def enqueue_memory_formation(
             memory_provider_config_id=memory_provider_config_id,
             memory_provider_config_revision=memory_provider_config_revision,
         )
-        prior_requested = _position_from_cursor(cursor, requested=True)
-        if prior_requested is None or requested > prior_requested:
+        prior_requested = _position_from_cursor(
+            cursor, watermark=_CursorWatermark.REQUESTED
+        )
+        if prior_requested is None or requested.order_key > prior_requested.order_key:
             _set_requested_position(cursor, requested)
         cursor.memory_provider_config_id = memory_provider_config_id
         cursor.memory_provider_config_revision = memory_provider_config_revision
@@ -168,7 +203,7 @@ async def enqueue_memory_formation(
 
 
 async def _clear_explicitly_retryable_fence(
-    session,
+    session: AsyncSession,
     cursor: MemoryFormationCursorModel,
 ) -> None:
     """Let a new enqueue retry a terminal failure; periodic scans stay fenced."""
@@ -187,7 +222,7 @@ async def _clear_explicitly_retryable_fence(
         await session.flush()
 
 
-async def _lock_cursor_key(session, scope: MemoryScope) -> None:
+async def _lock_cursor_key(session: AsyncSession, scope: MemoryScope) -> None:
     await session.execute(
         text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
         {"key": f"memory:{scope.organization_id}:{scope.conversation_id}"},
@@ -195,7 +230,7 @@ async def _lock_cursor_key(session, scope: MemoryScope) -> None:
 
 
 async def _get_or_create_cursor(
-    session,
+    session: AsyncSession,
     *,
     scope: MemoryScope,
     memory_provider_config_id: UUID,
@@ -226,38 +261,39 @@ async def _get_or_create_cursor(
 def _position_from_cursor(
     cursor: MemoryFormationCursorModel,
     *,
-    requested: bool,
-) -> _MessagePosition | None:
-    created_at = (
-        cursor.requested_through_created_at
-        if requested
-        else cursor.processed_through_created_at
+    watermark: _CursorWatermark,
+) -> MemoryMessagePosition | None:
+    if not isinstance(watermark, _CursorWatermark):
+        raise TypeError("Memory cursor selection must be a _CursorWatermark.")
+    if watermark is _CursorWatermark.REQUESTED:
+        return MemoryMessagePosition.from_optional(
+            cursor.requested_through_created_at, cursor.requested_through_message_id
+        )
+    return MemoryMessagePosition.from_optional(
+        cursor.processed_through_created_at, cursor.processed_through_message_id
     )
-    message_id = (
-        cursor.requested_through_message_id
-        if requested
-        else cursor.processed_through_message_id
-    )
-    if created_at is None or message_id is None:
-        return None
-    return _MessagePosition(created_at=created_at, message_id=message_id)
 
 
 def _set_requested_position(
     cursor: MemoryFormationCursorModel,
-    position: _MessagePosition,
+    position: MemoryMessagePosition,
 ) -> None:
+    position = MemoryMessagePosition.model_validate(position)
     cursor.requested_through_created_at = position.created_at
     cursor.requested_through_message_id = position.message_id
 
 
 def _cursor_has_backlog(cursor: MemoryFormationCursorModel) -> bool:
-    requested = _position_from_cursor(cursor, requested=True)
-    processed = _position_from_cursor(cursor, requested=False)
-    return requested is not None and (processed is None or requested > processed)
+    requested = _position_from_cursor(cursor, watermark=_CursorWatermark.REQUESTED)
+    processed = _position_from_cursor(cursor, watermark=_CursorWatermark.PROCESSED)
+    return requested is not None and (
+        processed is None or requested.order_key > processed.order_key
+    )
 
 
-def _eligible_message_query(scope: MemoryScope, *entities: Any):
+def _eligible_message_query[*Result](
+    scope: MemoryScope, query: Select[tuple[*Result]]
+) -> Select[tuple[*Result]]:
     """Select learnable messages, excluding requests that operated on Memory."""
     tool_message = aliased(MessagesModel)
     message_content = MessagesModel.content["content"]
@@ -285,8 +321,7 @@ def _eligible_message_query(scope: MemoryScope, *entities: Any):
         )
     )
     return (
-        select(*entities)
-        .join(
+        query.join(
             ConversationsModel,
             ConversationsModel.id == MessagesModel.conversation_id,
         )
@@ -312,73 +347,82 @@ def _eligible_message_query(scope: MemoryScope, *entities: Any):
     )
 
 
-def _eligible_messages(scope: MemoryScope):
+def _eligible_messages(scope: MemoryScope) -> Select[tuple[datetime, UUID]]:
     return _eligible_message_query(
         scope,
-        MessagesModel.created_at,
-        MessagesModel.id,
+        select(MessagesModel.created_at, MessagesModel.id),
     )
 
 
 async def _latest_message_position(
-    session,
+    session: AsyncSession,
     scope: MemoryScope,
-) -> _MessagePosition | None:
+) -> MemoryMessagePosition | None:
     row = (
-        await session.execute(
-            _eligible_messages(scope)
-            .order_by(MessagesModel.created_at.desc(), MessagesModel.id.desc())
-            .limit(1)
+        (
+            await session.execute(
+                _eligible_messages(scope)
+                .order_by(MessagesModel.created_at.desc(), MessagesModel.id.desc())
+                .limit(1)
+            )
         )
-    ).one_or_none()
+        .tuples()
+        .one_or_none()
+    )
     if row is None:
         return None
-    return _MessagePosition(created_at=row.created_at, message_id=row.id)
+    created_at, message_id = row
+    return MemoryMessagePosition(created_at=created_at, message_id=message_id)
 
 
 async def _next_window_positions(
-    session,
+    session: AsyncSession,
     cursor: MemoryFormationCursorModel,
-) -> list[_MessagePosition]:
+) -> list[MemoryMessagePosition]:
     scope = MemoryScope(
         organization_id=cursor.organization_id,
         level=MemoryLevel.CONVERSATION,
         owner_id=cursor.conversation_id,
     )
-    requested = _position_from_cursor(cursor, requested=True)
+    requested = _position_from_cursor(cursor, watermark=_CursorWatermark.REQUESTED)
     if requested is None:
         return []
     query = _eligible_messages(scope).where(
         tuple_(MessagesModel.created_at, MessagesModel.id)
-        <= tuple_(requested.created_at, requested.message_id)
+        <= tuple_(literal(requested.created_at), literal(requested.message_id))
     )
-    processed = _position_from_cursor(cursor, requested=False)
+    processed = _position_from_cursor(cursor, watermark=_CursorWatermark.PROCESSED)
     if processed is not None:
         query = query.where(
             tuple_(MessagesModel.created_at, MessagesModel.id)
-            > tuple_(processed.created_at, processed.message_id)
+            > tuple_(literal(processed.created_at), literal(processed.message_id))
         )
     rows = (
-        await session.execute(
-            query.order_by(
-                MessagesModel.created_at.asc(), MessagesModel.id.asc()
-            ).limit(MEMORY_MAX_WINDOW_MESSAGES)
+        (
+            await session.execute(
+                query.order_by(
+                    MessagesModel.created_at.asc(), MessagesModel.id.asc()
+                ).limit(MEMORY_MAX_WINDOW_MESSAGES)
+            )
         )
-    ).all()
+        .tuples()
+        .all()
+    )
     return [
-        _MessagePosition(created_at=row.created_at, message_id=row.id) for row in rows
+        MemoryMessagePosition(created_at=created_at, message_id=message_id)
+        for created_at, message_id in rows
     ]
 
 
 async def _file_cursor_job(
-    session,
+    session: AsyncSession,
     cursor: MemoryFormationCursorModel,
 ) -> MemoryFormationJobModel | None:
     positions = await _next_window_positions(session, cursor)
     if not positions:
         return None
     through = positions[-1]
-    processed = _position_from_cursor(cursor, requested=False)
+    processed = _position_from_cursor(cursor, watermark=_CursorWatermark.PROCESSED)
     locked_space = await MemoryReindexService(session).lock_active_space(
         organization_id=cursor.organization_id,
         memory_provider_config_id=cursor.memory_provider_config_id,
@@ -391,7 +435,7 @@ async def _file_cursor_job(
     )
     space = runtime.embedding_space
     if not space.is_compatible_with(locked_space):
-        raise MemoryError("Memory formation filing crossed an index cutover.")
+        raise MemoryProviderError("Memory formation filing crossed an index cutover.")
     job = MemoryFormationJobModel(
         organization_id=cursor.organization_id,
         conversation_id=cursor.conversation_id,
@@ -603,9 +647,9 @@ class MemoryFormationWorkflow:
 
     async def execute(
         self,
-        params: dict[str, Any],
+        params: object,
         task_context: AsyncTaskContext,
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         organization_id, job_id = _parse_params(params)
         try:
             return await self._execute(
@@ -626,7 +670,7 @@ class MemoryFormationWorkflow:
         organization_id: UUID,
         job_id: UUID,
         task_context: AsyncTaskContext,
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         try:
             async with start_transaction() as session:
                 job = await AbsurdBoundWorkService(
@@ -662,11 +706,13 @@ class MemoryFormationWorkflow:
                 }:
                     return _receipt(job)
                 if job.state is not DurableState.RUNNING:
-                    raise MemoryError("Memory formation attempt is not running.")
+                    raise MemoryProviderError(
+                        "Memory formation attempt is not running."
+                    )
                 _validate_job_range(job)
                 cursor = await _locked_job_cursor(session, job)
                 if cursor is None:
-                    raise MemoryError(
+                    raise MemoryProviderError(
                         "Memory formation generation has no active cursor fence."
                     )
                 await activate_memory_formation_reservation_in_transaction(
@@ -681,7 +727,7 @@ class MemoryFormationWorkflow:
                 )
                 embedding_space = embedding_space_from_record(job)
                 if embedding_space is None:
-                    raise MemoryError(
+                    raise MemoryProviderError(
                         "Memory formation job has no embedding authority."
                     )
                 runtime = await resolve_memory_runtime(
@@ -712,7 +758,7 @@ class MemoryFormationWorkflow:
                 permanent=_is_permanent(error),
             )
 
-        async def form() -> list[dict[str, Any]]:
+        async def form() -> list[dict[str, JsonValue]]:
             with memory_formation_execution_budget_scope(
                 organization_id=organization_id,
                 job_id=job_id,
@@ -725,7 +771,7 @@ class MemoryFormationWorkflow:
                     actor=None,
                     formation_job_id=job_id,
                 )
-            return [operation.model_dump(mode="json") for operation in operations]
+            return MemoryOperationBatch(root=operations).to_json()
 
         try:
             remaining_milliseconds = await check_memory_formation_active_time(
@@ -744,7 +790,7 @@ class MemoryFormationWorkflow:
                 raise ExecutionBudgetExceeded(
                     ExecutionBudgetDimension.ACTIVE_TIME
                 ) from None
-            operations = [MemoryOperation.model_validate(item) for item in payload]
+            operations = MemoryOperationBatch.model_validate(payload).root
             await require_memory_formation_usage_reported(
                 organization_id=organization_id,
                 job_id=job_id,
@@ -778,7 +824,7 @@ class MemoryFormationWorkflow:
                 if row.state is DurableState.SUCCEEDED and not already_succeeded:
                     cursor = await _locked_job_cursor(session, row)
                     if cursor is None:
-                        raise MemoryError(
+                        raise MemoryProviderError(
                             "Memory formation succeeded without its cursor fence."
                         )
                     _advance_processed_cursor(cursor, row)
@@ -810,18 +856,14 @@ class MemoryFormationWorkflow:
         return receipt
 
 
-def _parse_params(params: dict[str, Any]) -> tuple[UUID, UUID]:
-    if set(params) != {"organization_id", "job_id"}:
-        raise ValueError("Memory formation task params must contain IDs only.")
-    try:
-        return UUID(str(params["organization_id"])), UUID(str(params["job_id"]))
-    except (TypeError, ValueError) as error:
-        raise ValueError(
-            "Memory formation task params contain an invalid UUID."
-        ) from error
+def _parse_params(params: object) -> tuple[UUID, UUID]:
+    parsed = MemoryJobParams.from_payload(params, kind=MemoryTaskKind.FORMATION)
+    return parsed.organization_id, parsed.job_id
 
 
-def _validate_extraction_authority(job, runtime) -> None:
+def _validate_extraction_authority(
+    job: MemoryFormationJobModel, runtime: MemoryRuntime
+) -> None:
     authority = runtime.extraction_authority
     if (
         authority.provider_config_id != job.extraction_llm_provider_config_id
@@ -831,7 +873,9 @@ def _validate_extraction_authority(job, runtime) -> None:
         or authority.model != job.extraction_llm_model
         or authority.prompt_revision != job.extraction_prompt_revision
     ):
-        raise MemoryError("Memory extraction authority changed before execution.")
+        raise MemoryProviderError(
+            "Memory extraction authority changed before execution."
+        )
 
 
 async def _handle_failure(
@@ -840,7 +884,7 @@ async def _handle_failure(
     job_id: UUID,
     error: Exception,
     permanent: bool,
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     summary = _safe_failure_summary(error)
     async with start_transaction() as session:
         service = AbsurdBoundWorkService(
@@ -875,17 +919,15 @@ async def _handle_failure(
                     else MemoryWorkTransition.FAILED
                 ),
                 outcomes=(
-                    _counts_from_job(row)
-                    if state is DurableState.FAILED
-                    else None
+                    _counts_from_job(row) if state is DurableState.FAILED else None
                 ),
                 failure_code=summary,
             )
         receipt = _receipt(row)
     if state is DurableState.PENDING:
-        raise MemoryError(
+        raise MemoryProviderError(
             "Memory formation retry requested.",
-            retryable=True,
+            recovery=MemoryRecoveryPolicy.RETRY,
         ) from None
     if state is DurableState.FAILED:
         logger.warning(
@@ -911,7 +953,7 @@ def _safe_failure_summary(error: Exception) -> str:
         return "memory_execution_usage_not_reported"
     if isinstance(error, ExecutionBudgetError):
         return "memory_execution_budget_conflict"
-    if isinstance(error, MemoryError):
+    if isinstance(error, MemoryProviderError):
         return (
             "memory_provider_retryable_failure"
             if error.retryable
@@ -935,51 +977,57 @@ def _is_permanent(error: Exception) -> bool:
             isinstance(error, ExecutionBudgetError)
             and not isinstance(error, ExecutionBudgetUnavailable)
         )
-        or (isinstance(error, MemoryError) and not error.retryable)
+        or (isinstance(error, MemoryProviderError) and not error.retryable)
     )
 
 
 async def _messages_in_job_range(
     job: MemoryFormationJobModel,
 ) -> list[MemoryInputMessage]:
+    _validate_job_range(job)
+    start = MemoryMessagePosition.from_optional(
+        job.range_start_created_at, job.range_start_message_id
+    )
     scope = MemoryScope(
         organization_id=job.organization_id,
         level=MemoryLevel.CONVERSATION,
         owner_id=job.conversation_id,
     )
     query = (
-        _eligible_message_query(scope, MessagesModel, ParticipantsModel)
+        _eligible_message_query(scope, select(MessagesModel, ParticipantsModel))
         .where(
             tuple_(MessagesModel.created_at, MessagesModel.id)
             <= tuple_(
-                job.range_through_created_at,
-                job.range_through_message_id,
+                literal(job.range_through_created_at),
+                literal(job.range_through_message_id),
             )
         )
         .order_by(MessagesModel.created_at.asc(), MessagesModel.id.asc())
         .limit(MEMORY_MAX_WINDOW_MESSAGES + 1)
     )
-    if job.range_start_created_at is not None:
+    if start is not None:
         query = query.where(
             tuple_(MessagesModel.created_at, MessagesModel.id)
-            > tuple_(job.range_start_created_at, job.range_start_message_id)
+            > tuple_(literal(start.created_at), literal(start.message_id))
         )
     async with start_transaction(ro=True) as session:
-        rows = (await session.execute(query)).all()
+        rows = (await session.execute(query)).tuples().all()
 
     if len(rows) != job.message_count:
-        raise MemoryError("Memory formation message range changed before execution.")
+        raise MemoryProviderError(
+            "Memory formation message range changed before execution."
+        )
     final_message = rows[-1][0]
-    final_position = _MessagePosition(
+    final_position = MemoryMessagePosition(
         created_at=final_message.created_at,
         message_id=final_message.id,
     )
-    expected_through = _MessagePosition(
+    expected_through = MemoryMessagePosition(
         created_at=job.range_through_created_at,
         message_id=job.range_through_message_id,
     )
     if final_position != expected_through:
-        raise MemoryError("Memory formation message watermark is inconsistent.")
+        raise MemoryProviderError("Memory formation message watermark is inconsistent.")
 
     messages: list[MemoryInputMessage] = []
     for message, participant in rows:
@@ -987,17 +1035,23 @@ async def _messages_in_job_range(
     return messages
 
 
-def _memory_input_from_row(message, participant) -> MemoryInputMessage:
+def _memory_input_from_row(
+    message: MessagesModel, participant: ParticipantsModel
+) -> MemoryInputMessage:
     try:
         record = MessageInDb.model_validate(message)
-        content = getattr(record.content, "content", None)
-        if content is None:
-            raise MemoryError("Memory formation message has no text content.")
+        if not isinstance(
+            record.content, (UserMessageContent, AssistantMessageContent)
+        ):
+            raise MemoryProviderError("Memory formation message has no text content.")
+        content = record.content.content
         content_text = (
             content if isinstance(content, str) else text_from_content_blocks(content)
         )
         if not content_text or not content_text.strip():
-            raise MemoryError("Memory formation message has empty text content.")
+            raise MemoryProviderError(
+                "Memory formation message has empty text content."
+            )
         role = (
             MemoryMessageRole.ASSISTANT
             if record.kind is MessageKind.ASSISTANT
@@ -1015,53 +1069,52 @@ def _memory_input_from_row(message, participant) -> MemoryInputMessage:
                 ),
             ),
         )
-    except MemoryError:
+    except MemoryProviderError:
         raise
     except (TypeError, ValueError):
-        raise MemoryError("Memory formation message contract is invalid.") from None
+        raise MemoryProviderError(
+            "Memory formation message contract is invalid."
+        ) from None
 
 
-def _receipt(job: MemoryFormationJobModel) -> dict[str, Any]:
-    return {
-        "organization_id": str(job.organization_id),
-        "job_id": str(job.id),
-        "state": job.state.value,
-        "generation": job.generation,
-        "range": {
-            "after": _position_json(
-                job.range_start_created_at,
-                job.range_start_message_id,
+def _receipt(job: MemoryFormationJobModel) -> dict[str, JsonValue]:
+    return MemoryFormationReceipt(
+        organization_id=job.organization_id,
+        job_id=job.id,
+        state=job.state,
+        generation=job.generation,
+        range=MemoryFormationRange(
+            after=MemoryMessagePosition.from_optional(
+                job.range_start_created_at, job.range_start_message_id
             ),
-            "through": _position_json(
-                job.range_through_created_at,
-                job.range_through_message_id,
+            through=MemoryMessagePosition(
+                created_at=job.range_through_created_at,
+                message_id=job.range_through_message_id,
             ),
-            "message_count": job.message_count,
-        },
-        "outcomes": _counts_from_job(job).model_dump(mode="json"),
-    }
+            message_count=job.message_count,
+        ),
+        outcomes=_counts_from_job(job),
+    ).to_payload()
 
 
 def _validate_job_range(job: MemoryFormationJobModel) -> None:
     if not 1 <= job.message_count <= MEMORY_MAX_WINDOW_MESSAGES:
-        raise MemoryError("Memory formation message count is outside its limit.")
-    through = _MessagePosition(
+        raise MemoryProviderError(
+            "Memory formation message count is outside its limit."
+        )
+    through = MemoryMessagePosition(
         created_at=job.range_through_created_at,
         message_id=job.range_through_message_id,
     )
-    if (job.range_start_created_at is None) != (job.range_start_message_id is None):
-        raise MemoryError("Memory formation start watermark is incomplete.")
-    if job.range_start_created_at is not None:
-        start = _MessagePosition(
-            created_at=job.range_start_created_at,
-            message_id=job.range_start_message_id,
-        )
-        if through <= start:
-            raise MemoryError("Memory formation range does not advance.")
+    start = MemoryMessagePosition.from_optional(
+        job.range_start_created_at, job.range_start_message_id
+    )
+    if start is not None and through.order_key <= start.order_key:
+        raise MemoryProviderError("Memory formation range does not advance.")
 
 
 async def _locked_job_cursor(
-    session,
+    session: AsyncSession,
     job: MemoryFormationJobModel,
 ) -> MemoryFormationCursorModel | None:
     return await session.scalar(
@@ -1080,24 +1133,19 @@ def _advance_processed_cursor(
     cursor: MemoryFormationCursorModel,
     job: MemoryFormationJobModel,
 ) -> None:
-    current = _position_from_cursor(cursor, requested=False)
-    expected = (
-        None
-        if job.range_start_created_at is None
-        else _MessagePosition(
-            created_at=job.range_start_created_at,
-            message_id=job.range_start_message_id,
-        )
+    current = _position_from_cursor(cursor, watermark=_CursorWatermark.PROCESSED)
+    expected = MemoryMessagePosition.from_optional(
+        job.range_start_created_at, job.range_start_message_id
     )
     if current != expected:
-        raise MemoryError("Memory formation processed watermark changed.")
-    through = _MessagePosition(
+        raise MemoryProviderError("Memory formation processed watermark changed.")
+    through = MemoryMessagePosition(
         created_at=job.range_through_created_at,
         message_id=job.range_through_message_id,
     )
-    requested = _position_from_cursor(cursor, requested=True)
-    if requested is None or requested < through:
-        raise MemoryError("Memory formation exceeded its requested watermark.")
+    requested = _position_from_cursor(cursor, watermark=_CursorWatermark.REQUESTED)
+    if requested is None or requested.order_key < through.order_key:
+        raise MemoryProviderError("Memory formation exceeded its requested watermark.")
     cursor.processed_through_created_at = through.created_at
     cursor.processed_through_message_id = through.message_id
 
@@ -1122,8 +1170,12 @@ def _set_job_outcomes(
     job: MemoryFormationJobModel,
     outcomes: MemoryOutcomeCounts,
 ) -> None:
-    for field_name, value in _outcome_values(outcomes).items():
-        setattr(job, field_name, value)
+    job.considered_count = outcomes.considered
+    job.added_count = outcomes.added
+    job.updated_count = outcomes.updated
+    job.deleted_count = outcomes.deleted
+    job.noop_count = outcomes.noop
+    job.failed_count = outcomes.failed
 
 
 def _counts_from_job(job: MemoryFormationJobModel) -> MemoryOutcomeCounts:
@@ -1140,34 +1192,16 @@ def _counts_from_job(job: MemoryFormationJobModel) -> MemoryOutcomeCounts:
 def _counts_from_effect(
     effect: MemoryFormationEffectModel,
 ) -> MemoryOutcomeCounts:
-    payload = effect.outcomes
-    if not isinstance(payload, dict) or set(payload) != {"operations", "counts"}:
-        raise MemoryError("Completed memory formation outcomes are invalid.")
     try:
-        operations = [
-            MemoryOperation.model_validate(operation)
-            for operation in payload["operations"]
-        ]
-        counts = MemoryOutcomeCounts.model_validate(payload["counts"])
-    except (TypeError, ValidationError):
-        raise MemoryError("Completed memory formation outcomes are invalid.") from None
-    if counts != MemoryOutcomeCounts.from_operations(operations):
-        raise MemoryError("Completed memory formation outcomes are inconsistent.")
-    return counts
-
-
-def _position_json(
-    created_at: datetime | None,
-    message_id: UUID | None,
-) -> dict[str, str] | None:
-    if created_at is None and message_id is None:
-        return None
-    if created_at is None or message_id is None:
-        raise MemoryError("Memory formation receipt has an incomplete watermark.")
-    return {
-        "created_at": created_at.isoformat(),
-        "message_id": str(message_id),
-    }
+        return MemoryFormationOutcomes.model_validate(effect.outcomes).counts
+    except MemoryFormationCountsMismatch:
+        raise MemoryProviderError(
+            "Completed memory formation outcomes are inconsistent."
+        ) from None
+    except ValidationError:
+        raise MemoryProviderError(
+            "Completed memory formation outcomes are invalid."
+        ) from None
 
 
 async def _continue_memory_backlog(job: MemoryFormationJobModel) -> None:

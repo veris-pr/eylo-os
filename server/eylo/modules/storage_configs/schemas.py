@@ -6,9 +6,16 @@ from datetime import datetime
 from typing import Self
 from uuid import UUID
 
-from pydantic import ConfigDict, Field, model_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from eylo.common.schemas import EyloBaseApiSchema
+from eylo.modules.storage_configs.catalog import StorageProviders
+from eylo.modules.storage_configs.domain import (
+    FilesystemStorageSettings,
+    InvalidStorageConfig,
+    S3StorageSettings,
+    parse_storage_provider,
+)
 
 __all__ = [
     "StorageConfigCreate",
@@ -28,21 +35,45 @@ class StorageCapabilitiesResponse(EyloBaseApiSchema):
     presigned_download: bool
 
 
-class StorageConfigCreate(EyloBaseApiSchema):
-    model_config = ConfigDict(extra="forbid")
+class _StorageProviderSchema(EyloBaseApiSchema):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
-    provider: str = Field(min_length=1)
+    provider: StorageProviders
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def normalize_provider(cls, value: object) -> StorageProviders:
+        return parse_storage_provider(value)
+
+
+class _StorageMaterialSchema(_StorageProviderSchema):
+    """Reuse domain settings without changing the public nested config shape."""
+
+    config: S3StorageSettings | FilesystemStorageSettings
+
+    @model_validator(mode="after")
+    def validate_provider_settings(self) -> Self:
+        expected = (
+            S3StorageSettings
+            if self.provider is StorageProviders.S3
+            else FilesystemStorageSettings
+        )
+        if not isinstance(self.config, expected):
+            raise InvalidStorageConfig("Storage settings do not match the provider.")
+        return self
+
+
+class StorageConfigCreate(_StorageMaterialSchema):
     name: str = Field(min_length=1)
-    config: dict[str, object]
-    secrets: dict[str, str] = Field(default_factory=dict)
+    secrets: dict[str, str] = Field(default_factory=dict, repr=False)
 
 
 class StorageConfigUpdate(EyloBaseApiSchema):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     name: str | None = Field(default=None, min_length=1)
-    config: dict[str, object] | None = None
-    secrets: dict[str, str | None] | None = None
+    config: S3StorageSettings | FilesystemStorageSettings | None = None
+    secrets: dict[str, str | None] | None = Field(default=None, repr=False)
     enabled: bool | None = None
 
     @model_validator(mode="after")
@@ -55,21 +86,15 @@ class StorageConfigUpdate(EyloBaseApiSchema):
         return self
 
 
-class StorageConfigVerificationResponse(EyloBaseApiSchema):
-    model_config = ConfigDict(extra="forbid")
-
+class StorageConfigVerificationResponse(_StorageProviderSchema):
     verified: bool = True
-    provider: str
     revision: int = Field(gt=0)
     verified_at: datetime
     capabilities: StorageCapabilitiesResponse
 
 
-class StorageConfigResponse(EyloBaseApiSchema):
-    model_config = ConfigDict(extra="forbid")
-
+class StorageConfigResponse(_StorageMaterialSchema):
     id: UUID
-    provider: str
     name: str
     revision: int = Field(gt=0)
     enabled: bool
@@ -77,6 +102,5 @@ class StorageConfigResponse(EyloBaseApiSchema):
     verified: bool
     ready: bool
     verified_at: datetime | None
-    config: dict[str, object]
     secrets: dict[str, str]
     capabilities: StorageCapabilitiesResponse

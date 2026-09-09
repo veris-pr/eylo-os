@@ -1021,10 +1021,11 @@ class FrameworkConversationRunner:
             request_status,
             conversation_id=user_message.conversation_id,
         )
-        message = _terminal_artifact_message(
+        message = await _terminal_artifact_message(
             result,
             context=context,
             user_message=user_message,
+            message_service=self._message_service,
         )
         if message is None:
             message = await self._message_service.create_(
@@ -2207,13 +2208,19 @@ def _should_emit_terminal_message_tokens(result: RunResult) -> bool:
     ) or result.status in _PAUSE_STATUSES
 
 
-def _terminal_artifact_message(
+async def _terminal_artifact_message(
     result: RunResult,
     *,
     context: ConversationContext,
     user_message: MessageInDb,
+    message_service: MessageService,
 ) -> MessageInDb | None:
-    """Resolve a tool-persisted assistant artifact used as the run result."""
+    """Resolve committed tool output, not the history snapshot from before the tool.
+
+    Tool-result persistence commits the artifact before terminal resolution.
+    Loading its exact identity avoids rebuilding the whole conversation and
+    preserves authority checks even when the tool supplied a foreign reference.
+    """
     result = RunResult.model_validate(result)
     if not isinstance(result.metadata, RunTerminalMetadata):
         return None
@@ -2222,15 +2229,14 @@ def _terminal_artifact_message(
         return None
     artifact = ConversationMessageArtifact.model_validate(reference.model_dump())
 
-    for message in context.messages or []:
-        if message.id != artifact.id:
-            continue
-        if (
-            message.conversation_id != user_message.conversation_id
-            or message.kind != MessageKind.ASSISTANT
-            or message.content_kind != MessageContentKind.WIDGET
-            or message.request_id != user_message.request_id
-        ):
-            raise ValueError("Terminal artifact message authority is invalid.")
-        return message
-    raise ValueError("Terminal artifact message was not persisted by this run.")
+    message = await message_service.get_(artifact.id)
+    if (
+        message.id != artifact.id
+        or message.conversation_id != context.conversation.id
+        or message.conversation_id != user_message.conversation_id
+        or message.kind != MessageKind.ASSISTANT
+        or message.content_kind != MessageContentKind.WIDGET
+        or message.request_id != user_message.request_id
+    ):
+        raise ValueError("Terminal artifact message authority is invalid.")
+    return message

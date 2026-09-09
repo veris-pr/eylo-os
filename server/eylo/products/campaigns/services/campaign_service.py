@@ -52,7 +52,7 @@ from eylo.products.campaigns.schemas.indb import (
 logger = logging.getLogger(__name__)
 
 
-class CampaignService(EyloBaseService[CampaignInDb]):
+class CampaignService(EyloBaseService[CampaignInDb, CampaignModel]):
     """Campaign CRUD, state machine, and contact management."""
 
     def __init__(self, db: AsyncSession | None = None) -> None:

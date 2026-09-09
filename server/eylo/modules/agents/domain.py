@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from types import MappingProxyType
-from typing import Mapping, Protocol
+from typing import Protocol, Self
 from uuid import UUID
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    model_validator,
+)
 
 from eylo.common.revisions import DefinitionRef
 from eylo.modules.agents.schemas.indb import AgentInDb
 from eylo.modules.templates.domain import TemplateConsumerKind, TemplateSegment
 from eylo.modules.tools.schemas.indb import ToolInDb
+from eylo.modules.voice.schemas.runtime import VoiceConfigSnapshot
 
 
 class InvalidAgentDefinitionError(ValueError):
@@ -29,9 +34,16 @@ class SwarmMemberNotFoundError(LookupError):
     """Raised when an organization-owned agent/member cannot be selected."""
 
 
-@dataclass(frozen=True, slots=True)
-class ResolvedExecutableAgent:
+class ResolvedExecutableAgent(BaseModel):
     """One exact agent revision ready for any supported runtime."""
+
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        strict=True,
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+    )
 
     ref: DefinitionRef
     agent: AgentInDb
@@ -40,9 +52,10 @@ class ResolvedExecutableAgent:
     prompt_segments: tuple[TemplateSegment, ...]
     tools: tuple[ToolInDb, ...]
     background_agents: tuple[DefinitionRef, ...]
-    voice_config: Mapping[str, object] | None
+    voice_config: VoiceConfigSnapshot | None
 
-    def __post_init__(self) -> None:
+    @model_validator(mode="after")
+    def validate_exact_revision(self) -> Self:
         if self.agent.id != self.ref.definition_id:
             raise InvalidAgentDefinitionError(
                 "Resolved agent identity does not match its exact revision ref."
@@ -51,12 +64,20 @@ class ResolvedExecutableAgent:
             raise InvalidAgentDefinitionError(
                 "Resolved agent payload does not match its exact revision ref."
             )
-        if self.voice_config is not None:
-            object.__setattr__(
-                self,
-                "voice_config",
-                MappingProxyType(dict(self.voice_config)),
-            )
+        return self
+
+    def with_tools(self, tools: tuple[ToolInDb, ...]) -> Self:
+        """Revalidate a runtime projection after the consumer filters its tools."""
+        return type(self)(
+            ref=self.ref,
+            agent=self.agent,
+            consumer_kind=self.consumer_kind,
+            system_prompt=self.system_prompt,
+            prompt_segments=self.prompt_segments,
+            tools=tools,
+            background_agents=self.background_agents,
+            voice_config=self.voice_config,
+        )
 
 
 class ResolveExecutableAgent(Protocol):
@@ -80,17 +101,31 @@ class ResolveExecutableAgent(Protocol):
     ) -> ResolvedExecutableAgent: ...
 
 
-@dataclass(frozen=True, slots=True)
-class ResolvedSwarmMember:
+class ResolvedSwarmMember(BaseModel):
     """One exact executable agent authorized by a topology revision."""
+
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        strict=True,
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+    )
 
     executable_agent: ResolvedExecutableAgent
     description: str | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class ResolvedSwarmTopology:
+class ResolvedSwarmTopology(BaseModel):
     """One immutable swarm topology plus its exact executable members."""
+
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        strict=True,
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+    )
 
     ref: DefinitionRef
     organization_id: UUID
@@ -99,7 +134,8 @@ class ResolvedSwarmTopology:
     description: str | None
     members: tuple[ResolvedSwarmMember, ...]
 
-    def __post_init__(self) -> None:
+    @model_validator(mode="after")
+    def validate_members(self) -> Self:
         if not self.members:
             raise InvalidSwarmDefinitionError(
                 "A published swarm topology requires at least one member."
@@ -118,6 +154,7 @@ class ResolvedSwarmTopology:
             raise InvalidSwarmDefinitionError(
                 "Every swarm member must belong to the topology organization."
             )
+        return self
 
     def member_by_agent_id(self, agent_id: UUID) -> ResolvedSwarmMember | None:
         return next(
@@ -159,6 +196,7 @@ class ResolveExecutableSwarm(Protocol):
         swarm_id: UUID,
         consumer_kind: TemplateConsumerKind,
     ) -> ResolvedSwarmTopology: ...
+
 
 __all__ = [
     "InvalidAgentDefinitionError",

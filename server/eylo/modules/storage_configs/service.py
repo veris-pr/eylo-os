@@ -52,7 +52,7 @@ class StorageConfigService:
         config: Mapping[str, object] | None = None,
         secrets: Mapping[str, str] | None = None,
     ) -> ProviderConfig:
-        validated = StorageProviderConfig.validate(
+        validated = StorageProviderConfig.from_input(
             provider=provider,
             config=config,
             secrets=secrets,
@@ -117,7 +117,7 @@ class StorageConfigService:
             next_config=merged_config,
             secret_patch=secret_patch,
         )
-        validated = StorageProviderConfig.validate(
+        validated = StorageProviderConfig.from_input(
             provider=existing.provider,
             config=merged_config,
             secrets=merged_secrets,
@@ -204,7 +204,7 @@ class StorageConfigService:
 
 
 def _validate_stored(config: ProviderConfig) -> None:
-    StorageProviderConfig.validate(
+    StorageProviderConfig.from_input(
         provider=config.provider,
         config=config.config,
         secrets=config.secrets,

@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from uuid import UUID
 
+from pydantic import ValidationError
+
 from eylo.common.contracts.embedding import EmbeddingError, EmbeddingInput
 from eylo.common.database import start_transaction
 from eylo.modules.embedding_configs.domain import EmbeddingProviderConfig
@@ -29,6 +31,7 @@ class EmbeddingRuntimeVerifier:
         self,
         config: EmbeddingProviderConfig,
     ) -> EmbeddingProviderVerification:
+        config = EmbeddingProviderConfig.model_validate(config)
         adapter = EmbeddingFactory(
             config.provider.value,
             build_embedding_runtime_config(config),
@@ -62,7 +65,7 @@ class EmbeddingRuntimeVerifier:
                 "Embedding provider returned an empty vector."
             )
         return EmbeddingProviderVerification(
-            provider=config.provider.value,
+            provider=config.provider,
             dimensions=dimension,
         )
 
@@ -85,7 +88,7 @@ class EmbeddingConfigVerificationUseCase:
                 organization_id=organization_id,
                 config_id=config_id,
             )
-            provider_config = EmbeddingProviderConfig.validate(
+            provider_config = EmbeddingProviderConfig.from_input(
                 provider=stored.provider,
                 config=stored.config,
                 secrets=stored.secrets,
@@ -93,7 +96,18 @@ class EmbeddingConfigVerificationUseCase:
             )
             expected_revision = stored.revision
 
-        result = await self._verifier.verify(provider_config)
+        try:
+            result = EmbeddingProviderVerification.model_validate(
+                await self._verifier.verify(provider_config)
+            )
+        except ValidationError:
+            raise EmbeddingVerificationError(
+                "Embedding verification returned invalid metadata."
+            ) from None
+        if result.provider is not provider_config.provider:
+            raise EmbeddingVerificationError(
+                "Embedding verification returned a different provider."
+            )
 
         async with start_transaction():
             verified = await build_embedding_config_service().mark_verified(

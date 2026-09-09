@@ -1145,7 +1145,7 @@ class AgentSwarmMappingModel(EyloOrganizationModel):
         UUID(as_uuid=True),
         nullable=False,
     )
-    agent_description: Mapped[str] = mapped_column(
+    agent_description: Mapped[str | None] = mapped_column(
         Text,
         nullable=True,
         doc="Swarm-specific description for the agent. Overrides agent description if present.",

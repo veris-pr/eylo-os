@@ -629,7 +629,11 @@ async def init_voice_pipeline(
     async with start_transaction() as voice_config_session:
         if executable_agent.agent.organization_id != organization_id:
             raise ValueError("Executable voice agent belongs to another organization.")
-        voice_config = VoiceConfig.model_validate(executable_agent.voice_config or {})
+        voice_config = (
+            VoiceConfig()
+            if executable_agent.voice_config is None
+            else executable_agent.voice_config.for_call()
+        )
         resolved_stt, resolved_tts = await resolve_decomposed_voice_runtime(
             organization_id,
             voice_config,

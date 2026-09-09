@@ -10,10 +10,11 @@ from eylo.common.schemas import (
     EyloBaseModelSchema,
     EyloBaseOrganizationModelSchema,
     EyloBaseSchema,
+    EyloOrganizationModelSchema,
 )
 
 
-class AgentSwarmBase(EyloBaseOrganizationModelSchema):
+class AgentSwarmBase(EyloOrganizationModelSchema):
     name: str = Field(..., max_length=100)
     slug: str = Field(..., max_length=100)
     description: Optional[str] = None
@@ -48,7 +49,7 @@ class AgentSwarmInDb(AgentSwarmBase):
 # Mapping between agents and swarms
 
 
-class AgentSwarmMappingBase(EyloBaseOrganizationModelSchema):
+class AgentSwarmMappingBase(EyloOrganizationModelSchema):
     agent_id: UUID = Field(..., description="Agent ID for the mapping.")
     swarm_id: UUID = Field(..., description="Swarm ID for the mapping.")
     organization_id: UUID = Field(..., description="Organization ID for the mapping.")

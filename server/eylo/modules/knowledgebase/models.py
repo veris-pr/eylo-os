@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import uuid
 
+from pydantic import JsonValue
 from sqlalchemy import (
     CheckConstraint,
     ForeignKey,
@@ -167,7 +168,7 @@ class KnowledgebaseModel(EyloOrganizationModel):
     embedding_endpoint: Mapped[str | None] = mapped_column(Text, nullable=True)
     embedding_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
     embedding_dimensions: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    embedding_semantic_options: Mapped[dict | None] = mapped_column(
+    embedding_semantic_options: Mapped[dict[str, JsonValue] | None] = mapped_column(
         JSONB(none_as_null=True), nullable=True
     )
     embedding_space_id: Mapped[str | None] = mapped_column(
@@ -199,8 +200,8 @@ class KnowledgebaseModel(EyloOrganizationModel):
     target_embedding_dimensions: Mapped[int | None] = mapped_column(
         Integer, nullable=True
     )
-    target_embedding_semantic_options: Mapped[dict | None] = mapped_column(
-        JSONB(none_as_null=True), nullable=True
+    target_embedding_semantic_options: Mapped[dict[str, JsonValue] | None] = (
+        mapped_column(JSONB(none_as_null=True), nullable=True)
     )
     target_embedding_space_id: Mapped[str | None] = mapped_column(
         String(64), nullable=True, index=True

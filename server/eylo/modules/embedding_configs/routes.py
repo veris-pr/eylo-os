@@ -32,7 +32,12 @@ def _build_controller() -> EmbeddingConfigController:
     return EmbeddingConfigController(build_embedding_config_service())
 
 
-@router.post("", response_model=EmbeddingConfigResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=EmbeddingConfigResponse,
+    status_code=status.HTTP_201_CREATED,
+    response_model_exclude_unset=True,
+)
 async def create_embedding_config(
     request: EmbeddingConfigCreate,
     current_user: Annotated[CurrentUserSchema, Depends(get_current_user)],
@@ -41,7 +46,9 @@ async def create_embedding_config(
         return await _build_controller().create(current_user.organization_id, request)
 
 
-@router.get("", response_model=list[EmbeddingConfigResponse])
+@router.get(
+    "", response_model=list[EmbeddingConfigResponse], response_model_exclude_unset=True
+)
 async def list_embedding_configs(
     current_user: Annotated[CurrentUserSchema, Depends(get_current_user)],
 ) -> list[EmbeddingConfigResponse]:
@@ -49,7 +56,11 @@ async def list_embedding_configs(
         return await _build_controller().list(current_user.organization_id)
 
 
-@router.get("/{config_id}", response_model=EmbeddingConfigResponse)
+@router.get(
+    "/{config_id}",
+    response_model=EmbeddingConfigResponse,
+    response_model_exclude_unset=True,
+)
 async def get_embedding_config(
     config_id: UUID,
     current_user: Annotated[CurrentUserSchema, Depends(get_current_user)],
@@ -58,7 +69,11 @@ async def get_embedding_config(
         return await _build_controller().get(current_user.organization_id, config_id)
 
 
-@router.patch("/{config_id}", response_model=EmbeddingConfigResponse)
+@router.patch(
+    "/{config_id}",
+    response_model=EmbeddingConfigResponse,
+    response_model_exclude_unset=True,
+)
 async def update_embedding_config(
     config_id: UUID,
     request: EmbeddingConfigUpdate,

@@ -4,16 +4,25 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from collections.abc import Sequence
 from uuid import UUID
 
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.absurd_work import AbsurdBoundWorkService
 from eylo.common.contracts.storage import StorageAuthority
+from eylo.common.contracts.storage_objects import StoredObject
 from eylo.durable_runtime import DURABLE_MAX_ATTEMPTS
 from eylo.events.schema.py_events.knowledgebase import KnowledgeWorkTransition
+from eylo.modules.knowledgebase.corpus import (
+    EMPTY_CORPUS_OBJECT,
+    UNSUPPORTED_CORPUS_OBJECT,
+    CorpusScreening,
+    SkippedCorpusObject,
+)
 from eylo.modules.knowledgebase.events import register_corpus_lifecycle
 from eylo.modules.knowledgebase.extraction import is_supported
 from eylo.modules.knowledgebase.jobs import (
@@ -51,7 +60,7 @@ class CorpusImportService:
         storage_authority: StorageAuthority,
     ) -> KnowledgeCorpusImportModel:
         """Record the intent to sweep a prefix. Reads nothing yet."""
-        if str(storage_authority.organization_id) != str(organization_id):
+        if storage_authority.organization_id != organization_id:
             raise CorpusImportError(
                 "Storage authority must belong to the corpus organization."
             )
@@ -78,7 +87,9 @@ class CorpusImportService:
             # refused, because asking twice is a retry, not an error.
             logger.info(
                 "A corpus import of '%s' is already %s; returning %s.",
-                prefix, existing.state.value, existing.id,
+                prefix,
+                existing.state.value,
+                existing.id,
             )
             return existing
 
@@ -201,7 +212,7 @@ def _import_key(prefix: str, authority: StorageAuthority) -> str:
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
-def screen(objects) -> tuple[list, list[dict]]:
+def screen(objects: Sequence[StoredObject]) -> CorpusScreening:
     """Split a listing into what will be queued and what will not, with reasons.
 
     Screening happens before any object is fetched, which is the only point at
@@ -209,20 +220,30 @@ def screen(objects) -> tuple[list, list[dict]]:
     because an import that reports only what it took is indistinguishable from
     one that took everything.
     """
-    keep, skipped = [], []
-    for entry in objects:
+    keep: list[StoredObject] = []
+    skipped: list[SkippedCorpusObject] = []
+    for observed in objects:
+        try:
+            entry = StoredObject.model_validate(observed)
+        except ValidationError:
+            raise CorpusImportError(
+                "Storage listing contains an invalid object."
+            ) from None
         if not is_importable(entry.key):
-            skipped.append({"key": entry.key, "reason": "unsupported file type"})
+            skipped.append(
+                SkippedCorpusObject(key=entry.key, reason=UNSUPPORTED_CORPUS_OBJECT)
+            )
         elif entry.size > MAX_STORAGE_OBJECT_BYTES:
             skipped.append(
-                {
-                    "key": entry.key,
-                    "reason": f"{entry.size} bytes exceeds the "
-                    f"{MAX_STORAGE_OBJECT_BYTES} byte limit",
-                }
+                SkippedCorpusObject(
+                    key=entry.key,
+                    reason=f"{entry.size} bytes exceeds the {MAX_STORAGE_OBJECT_BYTES} byte limit",
+                )
             )
         elif entry.size == 0:
-            skipped.append({"key": entry.key, "reason": "empty object"})
+            skipped.append(
+                SkippedCorpusObject(key=entry.key, reason=EMPTY_CORPUS_OBJECT)
+            )
         else:
             keep.append(entry)
     if len(objects) >= MAX_CORPUS_OBJECTS:
@@ -233,4 +254,4 @@ def screen(objects) -> tuple[list, list[dict]]:
             "this prefix that were never enumerated.",
             MAX_CORPUS_OBJECTS,
         )
-    return keep, skipped
+    return CorpusScreening(keep=tuple(keep), skipped=tuple(skipped))

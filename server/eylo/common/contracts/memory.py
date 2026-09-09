@@ -6,9 +6,17 @@ import uuid
 from collections.abc import Awaitable
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, Protocol
+from typing import Protocol, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    TypeAdapter,
+    ValidationError,
+    model_validator,
+)
 
 from eylo.common.contracts.reranking import RankingMetadata
 
@@ -24,7 +32,12 @@ MEMORY_MAX_OPERATIONS = 20
 MEMORY_MAX_EXTRACTOR_RESPONSE_BYTES = 32_000
 MEMORY_MAX_SEARCH_RESULTS = 100
 
+_MEMORY_METADATA = TypeAdapter(
+    dict[str, JsonValue], config=ConfigDict(strict=True, allow_inf_nan=False)
+)
 
+
+@runtime_checkable
 class MemoryTextCompleter(Protocol):
     """Complete an extraction/reconciliation prompt; never execute returned tools."""
 
@@ -221,14 +234,16 @@ class MemoryEvent(StrEnum):
 class Memory(BaseModel):
     """One remembered fact."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid", allow_inf_nan=False, hide_input_in_errors=True
+    )
 
     id: uuid.UUID
     content: str
     scope: MemoryScope
     created_at: datetime
     updated_at: datetime
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, JsonValue] = Field(default_factory=dict, repr=False)
     provenance: MemoryProvenance
 
 
@@ -248,14 +263,16 @@ class MemoryResult(BaseModel):
     knowledgebase carries, for the same reason. Rank within one result set.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid", allow_inf_nan=False, hide_input_in_errors=True
+    )
 
     id: uuid.UUID
     content: str
     score: float
     scope: MemoryScope
     updated_at: datetime
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, JsonValue] = Field(default_factory=dict, repr=False)
     provenance: MemoryProvenance
 
 
@@ -408,15 +425,41 @@ class MemoryCapabilities(BaseModel):
     history: bool = False
 
 
+class MemoryRecoveryPolicy(StrEnum):
+    """Whether an unchanged Memory operation may be attempted again."""
+
+    TERMINAL = "terminal"
+    RETRY = "retry"
+
+
 class MemoryError(Exception):
-    """A memory operation failed."""
+    """A Memory failure with an explicit, vendor-neutral recovery decision."""
 
     def __init__(
-        self, message: str, *, vendor: str | None = None, retryable: bool = False
+        self,
+        message: str,
+        *,
+        vendor: str | None = None,
+        recovery: MemoryRecoveryPolicy = MemoryRecoveryPolicy.TERMINAL,
     ) -> None:
+        if not isinstance(recovery, MemoryRecoveryPolicy):
+            raise TypeError("Memory recovery must be a MemoryRecoveryPolicy.")
         super().__init__(message)
         self.vendor = vendor
-        self.retryable = retryable
+        self.recovery = recovery
+
+    @property
+    def retryable(self) -> bool:
+        """Project the recovery decision for existing worker retry checks."""
+        return self.recovery is MemoryRecoveryPolicy.RETRY
+
+
+def require_memory_metadata(value: object) -> dict[str, JsonValue]:
+    """Copy open JSON metadata before provider work; never coerce opaque objects."""
+    try:
+        return _MEMORY_METADATA.validate_python({} if value is None else value)
+    except ValidationError:
+        raise MemoryError("Memory metadata must be a JSON object.") from None
 
 
 def require_memory_fact(value: str) -> str:

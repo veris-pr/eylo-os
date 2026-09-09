@@ -12,7 +12,6 @@ from eylo.common.contracts.memory import (
     Memory,
     MemoryActor,
     MemoryActorKind,
-    MemoryError,
     MemoryInputMessage,
     MemoryLevel,
     MemoryMessageRole,
@@ -20,14 +19,16 @@ from eylo.common.contracts.memory import (
     MemoryOrigin,
     MemoryProvenance,
     MemoryRecall,
+    MemoryRecoveryPolicy,
     MemoryScope,
     MemorySourceReference,
     require_memory_fact,
     require_memory_query,
 )
+from eylo.common.contracts.memory import MemoryError as MemoryProviderError
 from eylo.common.contracts.messages import MessageKind
 from eylo.common.contracts.provider_config import ProviderConfigError
-from eylo.common.contracts.reranking import RankingMetadata, RankingState
+from eylo.common.contracts.reranking import RankingMetadata, RankingReason, RankingState
 from eylo.common.database import async_session_factory
 from eylo.events.schema.py_events.memory import (
     MemoryFactAction,
@@ -114,7 +115,7 @@ async def _recall_context_memory(
     """Recall one globally ranked union of authorized memory levels."""
     scopes = authorized_scopes_from_context(conversation_context)
     if not scopes:
-        raise MemoryError("Memory context is unavailable.")
+        raise MemoryProviderError("Memory context is unavailable.")
     conversation_id = _conversation_id(conversation_context)
     _agent_actor(conversation_context, conversation_id)
     normalized_query = require_memory_query(query)
@@ -170,13 +171,13 @@ async def _recall_context_memory(
                 memory_ids=[memory.id for memory in selected],
                 limit=limit,
             )
-    except MemoryError:
+    except MemoryProviderError:
         raise
     except SQLAlchemyError as error:
         logger.warning("Memory conflict projection failed: %s", type(error).__name__)
-        raise MemoryError(
+        raise MemoryProviderError(
             "Memory conflict evidence is unavailable.",
-            retryable=True,
+            recovery=MemoryRecoveryPolicy.RETRY,
         ) from None
     try:
         async with async_session_factory() as recall_session:
@@ -197,7 +198,7 @@ async def remember_context_fact(
     """Apply one deliberate fact to an exact context-derived level."""
     scope = scope_for_level(conversation_context, level)
     if scope is None:
-        raise MemoryError("Memory context is unavailable.")
+        raise MemoryProviderError("Memory context is unavailable.")
     normalized = require_memory_fact(fact)
 
     conversation_id = _conversation_id(conversation_context)
@@ -304,7 +305,7 @@ async def forget_context_fact(
 def _recall_failure_code(error: Exception) -> str:
     if isinstance(error, NotConfiguredError):
         return "memory_not_configured"
-    if isinstance(error, MemoryError):
+    if isinstance(error, MemoryProviderError):
         return "memory_recall_failed"
     return "memory_recall_internal_failure"
 
@@ -380,12 +381,12 @@ async def _resolve_requested_reranker(
     binding: tuple[UUID, int | None] | None,
     *,
     db,
-) -> tuple[RerankingRuntime | None, str | None]:
+) -> tuple[RerankingRuntime | None, RankingReason | None]:
     if binding is None:
         return None, None
     config_id, revision = binding
     if revision is None:
-        return None, "configuration_unavailable"
+        return None, RankingReason.CONFIGURATION_UNAVAILABLE
     try:
         runtime = await resolve_reranker(
             organization_id,
@@ -400,19 +401,19 @@ async def _resolve_requested_reranker(
             revision,
             type(error).__name__,
         )
-        return None, "configuration_unavailable"
+        return None, RankingReason.CONFIGURATION_UNAVAILABLE
     return runtime, None
 
 
 def _candidate_limit(
     limit: int,
     reranker: RerankingRuntime | None,
-) -> tuple[int, str | None]:
+) -> tuple[int, RankingReason | None]:
     if reranker is None:
         return limit, None
     budget = reranker.adapter.capabilities.max_documents
     if budget < limit:
-        return limit, "candidate_budget_exceeded"
+        return limit, RankingReason.CANDIDATE_BUDGET_EXCEEDED
     overfetch = max(limit, min(MAX_MEMORY_RERANK_CANDIDATES, limit * 4))
     return min(overfetch, budget), None
 
@@ -420,12 +421,12 @@ def _candidate_limit(
 def _unavailable_ranking(
     binding: tuple[UUID, int | None] | None,
     *,
-    reason: str,
+    reason: RankingReason,
     candidate_count: int,
     returned_count: int,
 ) -> RankingMetadata:
     if binding is None:
-        raise MemoryError("Memory reranking authority is unavailable.")
+        raise MemoryProviderError("Memory reranking authority is unavailable.")
     config_id, revision = binding
     return RankingMetadata(
         state=RankingState.DEGRADED,
@@ -445,7 +446,7 @@ def _required_scope(
 ) -> MemoryScope:
     scope = scope_for_level(conversation_context, level)
     if scope is None:
-        raise MemoryError("Memory context is unavailable.")
+        raise MemoryProviderError("Memory context is unavailable.")
     return scope
 
 
@@ -453,7 +454,7 @@ def _conversation_id(conversation_context) -> UUID:
     conversation = getattr(conversation_context, "conversation", None)
     conversation_id = getattr(conversation, "id", None)
     if conversation_id is None:
-        raise MemoryError("Memory source conversation is unavailable.")
+        raise MemoryProviderError("Memory source conversation is unavailable.")
     return UUID(str(conversation_id))
 
 
@@ -486,9 +487,9 @@ def _latest_user_source(
             continue
         participant = participants.get(message.sender_participant_id)
         if participant is None:
-            raise MemoryError("Memory source participant is unavailable.")
+            raise MemoryProviderError("Memory source participant is unavailable.")
         return _source_reference(message.id, participant)
-    raise MemoryError("Memory source message is unavailable.")
+    raise MemoryProviderError("Memory source message is unavailable.")
 
 
 def _agent_actor(conversation_context, conversation_id: UUID) -> MemoryActor:
@@ -501,7 +502,7 @@ def _agent_actor(conversation_context, conversation_id: UUID) -> MemoryActor:
         or participant.agent_id != agent.id
         or participant.agent_revision is None
     ):
-        raise MemoryError("Memory agent provenance is unavailable.")
+        raise MemoryProviderError("Memory agent provenance is unavailable.")
     return MemoryActor(
         kind=MemoryActorKind.AGENT_PARTICIPANT,
         actor_id=participant.id,

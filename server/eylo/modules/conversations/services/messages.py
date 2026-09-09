@@ -85,7 +85,7 @@ class MessageProjectionConflict(Exception):
     """A canonical projection lacks exact conversation/sender authority."""
 
 
-class MessageService(EyloBaseService[MessageInDb]):
+class MessageService(EyloBaseService[MessageInDb, MessagesModel]):
     @property
     def schema(self) -> type[MessageInDb]:
         return MessageInDb
@@ -287,7 +287,7 @@ class MessageService(EyloBaseService[MessageInDb]):
                 message=message_indb,
             )
         )
-        return self.orm_to_schema(message_indb)
+        return message_indb
 
     async def _inherit_user_session(
         self,

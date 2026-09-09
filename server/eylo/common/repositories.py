@@ -2,30 +2,33 @@
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Generic, List, Optional, Type, TypeVar
+from collections.abc import Sequence
+from typing import Generic, List, Type, TypeVar
+from uuid import UUID
 
 from pydantic import BaseModel
-from sqlalchemy import delete, func, select
+from sqlalchemy import SQLColumnExpression, Select, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.inspection import inspect
+from sqlalchemy.sql.elements import ColumnElement
 
 from eylo.common.database import get_transaction
-from eylo.common.models import Base
+from eylo.common.models import EyloBaseModel
 
 logger = logging.getLogger(__name__)
 
-ModelClass = TypeVar("ModelClass", bound=Base)
+ModelClass = TypeVar("ModelClass", bound=EyloBaseModel)
 
 
 class BaseORMRepository(ABC, Generic[ModelClass]):
-    """Base ORM Repository."""
+    """Full-row persistence for Eylo identities; callers supply scope filters."""
 
     def __init__(self, db: AsyncSession | None = None):
         """Init for the "common" platform."""
         self._db_session = db
 
     @property
-    def db_session(self):
+    def db_session(self) -> AsyncSession:
         """Database Session Property."""
         return self._db_session or get_transaction()
 
@@ -40,44 +43,30 @@ class BaseORMRepository(ABC, Generic[ModelClass]):
         """Model for the "common" platform."""
         pass
 
-    def _build_filters(self, **kwargs):
-        """Build Query Filters."""
-        filters = []
-        for key, value in kwargs.items():
-            filters.append(getattr(self.model, key) == value)
-        return filters
-
-    def _build_columns(self, columns: List[str]):
-        """Build Column References."""
-        return [getattr(self.model, column) for column in columns]
-
     def _build_select(
         self,
-        filters: Optional[List] = None,
-        columns: Optional[List[str]] = None,
-        orders: Optional[List] = None,
-    ):
-        """Build SELECT Query."""
+        filters: Sequence[ColumnElement[bool]] | None = None,
+        orders: Sequence[SQLColumnExpression[object] | str] | None = None,
+    ) -> Select[tuple[ModelClass]]:
+        """Keep ORM identity intact; specialized projections own separate queries."""
         _select = select(self.model)
         if filters:
             _select = _select.filter(*filters)
-        if columns:
-            _select = _select.with_only_columns(self._build_columns(columns))
         if orders:
             _select = _select.order_by(None).order_by(*orders)
         return _select
 
-    async def get_(self, pk: Any, columns=[]) -> ModelClass | None:
-        query = self._build_select([self.model.id == pk], columns)
+    async def get_(self, pk: UUID) -> ModelClass | None:
+        query = self._build_select([self.model.id == pk])
         return (await self.db_session.execute(query)).scalar_one_or_none()
 
-    async def get_multi_(self, pks: List[Any], columns=[]) -> List[ModelClass]:
+    async def get_multi_(self, pks: Sequence[UUID]) -> list[ModelClass]:
         """Get Multiple Entities By Primary Keys."""
         if not pks:
             return []
         filters = [self.model.id.in_(pks)]
-        query = self._build_select(filters, columns)
-        return (await self.db_session.execute(query)).scalars().all()
+        query = self._build_select(filters)
+        return list((await self.db_session.execute(query)).scalars().all())
 
     async def save_(self, entity: ModelClass) -> ModelClass:
         self.db_session.add(entity)
@@ -132,59 +121,54 @@ class BaseORMRepository(ABC, Generic[ModelClass]):
             entity.deleted = True
             await self.save_(entity)
 
-    async def count_(self, filters: List) -> int:
-        query = self._build_select(filters)
-        return (
-            await self.db_session.execute(query.with_only_columns(func.count()))
-        ).scalar()
+    async def count_(self, filters: Sequence[ColumnElement[bool]]) -> int:
+        query = select(func.count()).select_from(self.model).where(*filters)
+        return (await self.db_session.execute(query)).scalar_one()
 
     async def filter_(
         self,
-        filters: List,
+        filters: Sequence[ColumnElement[bool]],
         limit: int = 100,
         offset: int = 0,
-        order_by: List | None = None,
-        columns: List[str] | None = None,
+        order_by: Sequence[SQLColumnExpression[object] | str] | None = None,
     ) -> List[ModelClass]:
-        query = self._build_select(filters, columns, order_by)
-        return (
+        query = self._build_select(filters, order_by)
+        return list(
             (await self.db_session.execute(query.limit(limit).offset(offset)))
             .scalars()
             .all()
         )
 
     async def filter_one_(
-        self, filters: List, columns: List[str] | None = None
+        self, filters: Sequence[ColumnElement[bool]]
     ) -> ModelClass | None:
-        query = self._build_select(filters, columns)
+        query = self._build_select(filters)
         return (await self.db_session.execute(query)).scalar_one_or_none()
 
     async def filter_all_(
         self,
-        filters: List,
-        order_by: List | None = None,
-        columns: List[str] | None = None,
+        filters: Sequence[ColumnElement[bool]],
+        order_by: Sequence[SQLColumnExpression[object] | str] | None = None,
     ) -> List[ModelClass]:
-        query = self._build_select(filters, columns, order_by)
+        query = self._build_select(filters, order_by)
         _list = (await self.db_session.execute(query)).scalars().all()
-        return _list
+        return list(_list)
 
     async def list_all_(
         self,
         limit: int = 100,
         offset: int = 0,
-        order_by: List | None = None,
-        columns: List[str] | None = None,
-        filters: List | None = None,
+        order_by: Sequence[SQLColumnExpression[object] | str] | None = None,
+        filters: Sequence[ColumnElement[bool]] | None = None,
     ) -> List[ModelClass]:
-        query = self._build_select(columns=columns, orders=order_by, filters=filters)
-        return (
+        query = self._build_select(orders=order_by, filters=filters)
+        return list(
             (await self.db_session.execute(query.limit(limit).offset(offset)))
             .scalars()
             .all()
         )
 
-    async def get_by_(self, key: str, value: str | int | float) -> ModelClass:
+    async def get_by_(self, key: str, value: str | int | float) -> ModelClass | None:
         if not hasattr(self.model, key):
             raise ValueError(
                 f"Model {self.model.__tablename__} does not have a {key} field"
@@ -210,14 +194,21 @@ def map_model_to_schema(
 def map_schema_to_model(
     model_cls: Type[ModelClass],
     schema_instance: BaseModel,
-    schema_cls: Type[BaseModel] = None,
+    schema_cls: type[BaseModel] | None = None,
 ) -> ModelClass:
-    """Map the Pydantic schema to the model instance."""
+    """Build an unpersisted ORM row from validated schema fields.
+
+    An explicit target schema projects and validates a different source schema
+    before any ORM setters run. Python-mode serialization preserves UUIDs, enums
+    and datetimes; repositories still own persistence and transaction behavior.
+    """
+    if schema_cls is not None:
+        fields = set(schema_cls.model_fields)
+        if type(schema_instance) is not schema_cls:
+            schema_instance = schema_cls.model_validate(
+                schema_instance.model_dump(include=fields)
+            )
     model_instance = model_cls()
-    if schema_cls and not isinstance(schema_instance, schema_cls):
-        schema_instance = schema_cls.model_validate(
-            schema_instance.model_dump(only=schema_cls.model_fields.keys())
-        )
     for key, value in schema_instance.model_dump().items():
         setattr(model_instance, key, value)
     return model_instance

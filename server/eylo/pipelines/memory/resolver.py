@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 from enum import StrEnum
 from uuid import UUID, uuid4
 
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.contracts.embedding import (
@@ -21,6 +21,7 @@ from eylo.common.contracts.memory import (
 )
 from eylo.common.contracts.memory import (
     MemoryExtractionAuthority,
+    MemoryRecoveryPolicy,
     MemoryTextCompleter,
 )
 from eylo.common.contracts.messages import MessageKind
@@ -59,13 +60,23 @@ class _DependencyRevisionMode(StrEnum):
     PINNED = "pinned"
 
 
-@dataclass(frozen=True)
-class MemoryRuntime:
+class MemoryRuntime(BaseModel):
+    """Runtime composition; live adapters and callables never enter JSON output."""
+
+    model_config = ConfigDict(
+        frozen=True,
+        strict=True,
+        extra="forbid",
+        arbitrary_types_allowed=True,
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+    )
+
     authority: ResolvedMemory
-    adapter: MemoryVendorAdapter
+    adapter: MemoryVendorAdapter = Field(repr=False, exclude=True)
     embedding_space: EmbeddingSpace
     extraction_authority: MemoryExtractionAuthority
-    reconciliation_completer: MemoryTextCompleter
+    reconciliation_completer: MemoryTextCompleter = Field(repr=False, exclude=True)
 
 
 async def resolve_memory_adapter(
@@ -242,7 +253,11 @@ def _embedding_functions(
             raise MemoryProviderError(
                 "Memory embedding failed.",
                 vendor=error.vendor,
-                retryable=error.retryable,
+                recovery=(
+                    MemoryRecoveryPolicy.RETRY
+                    if error.retryable
+                    else MemoryRecoveryPolicy.TERMINAL
+                ),
             ) from None
 
     async def embed_query(text: str) -> list[float]:
@@ -252,7 +267,11 @@ def _embedding_functions(
             raise MemoryProviderError(
                 "Memory query embedding failed.",
                 vendor=error.vendor,
-                retryable=error.retryable,
+                recovery=(
+                    MemoryRecoveryPolicy.RETRY
+                    if error.retryable
+                    else MemoryRecoveryPolicy.TERMINAL
+                ),
             ) from None
 
     return embed_documents, embed_query
@@ -287,7 +306,7 @@ def build_memory_completer(llm: ResolvedLLM) -> MemoryTextCompleter:
             raise MemoryProviderError(
                 "Memory extraction provider failed.",
                 vendor=llm.provider.value,
-                retryable=True,
+                recovery=MemoryRecoveryPolicy.RETRY,
             ) from None
         usage = response.usage
         await meter_current_execution_usage(
@@ -314,14 +333,13 @@ def _validate_dependency_authority(
     memory: ResolvedMemory,
     llm: ResolvedLLM,
 ) -> None:
-    metadata = memory.verification_metadata
-    expected = {
-        "llm_provider_config_id": str(llm.provider_config_id),
-        "llm_provider_config_revision": llm.provider_config_revision,
-        "llm_provider": llm.provider.value,
-        "llm_model": llm.generation.model.value,
-    }
-    if any(metadata.get(key) != value for key, value in expected.items()):
+    metadata = memory.dependency_authority
+    if (
+        metadata.llm_provider_config_id != llm.provider_config_id
+        or metadata.llm_provider_config_revision != llm.provider_config_revision
+        or metadata.llm_provider != llm.provider.value
+        or metadata.llm_model != llm.generation.model.value
+    ):
         raise _memory_not_configured("reverify_dependencies")
     if memory.llm_provider_config_id != llm.provider_config_id:
         raise InvalidMemoryConfig(

@@ -30,6 +30,7 @@ from eylo.modules.voice_transcripts.constants import (
     VoiceSessionStatus,
     VoiceSpeechOutcome,
 )
+from eylo.modules.voice_transcripts.models import VoiceSessionModel
 from eylo.modules.voice_transcripts.repositories import (
     VoiceSegmentRepository,
     VoiceSessionRepository,
@@ -43,7 +44,7 @@ from eylo.modules.voice_transcripts.schemas.indb import (
 )
 
 
-class VoiceTranscriptService(EyloBaseService[VoiceSessionInDb]):
+class VoiceTranscriptService(EyloBaseService[VoiceSessionInDb, VoiceSessionModel]):
     """Business operations for voice transcript sessions and segments."""
 
     def __init__(self, db: AsyncSession | None = None) -> None:

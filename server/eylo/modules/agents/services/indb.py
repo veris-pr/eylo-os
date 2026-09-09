@@ -25,7 +25,13 @@ from eylo.modules.agents.listing import (
     AgentSortDirection,
     AgentSortField,
 )
-from eylo.modules.agents.models import AgentKind, AgentStatus, AgentToolMappingModal
+from eylo.modules.agents.models import (
+    AgentKind,
+    AgentStatus,
+    AgentToolMappingModal,
+    AgentsModel,
+)
+from eylo.modules.agents.publication_bindings import revisioned_tool_ref
 from eylo.modules.agents.repositories import (
     AgentToolMappingRepository,
     AgentsRepository,
@@ -85,11 +91,11 @@ def _escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-class AgentService(EyloBaseService[AgentInDb]):
+class AgentService(EyloBaseService[AgentInDb, AgentsModel]):
     """AgentService behavior for the "agents" domain."""
 
     @property
-    def schema(self) -> AgentInDb:
+    def schema(self) -> type[AgentInDb]:
         """Schema for the "agents" domain."""
         return AgentInDb
 
@@ -123,7 +129,7 @@ class AgentService(EyloBaseService[AgentInDb]):
         self._memory_configs = memory_configs
         self._embedding_configs = embedding_configs
 
-    def orm_to_schema(self, orm_object) -> AgentInDb:
+    def orm_to_schema(self, orm_object: AgentsModel) -> AgentInDb:
         """Convert ORM Model to Schema."""
         return AgentInDb(
             id=orm_object.id,
@@ -286,7 +292,8 @@ class AgentService(EyloBaseService[AgentInDb]):
             organization_id=organization_id, pk=agent_id
         )
         fields = set(payload.model_fields_set)
-        if payload.expected_draft_version is None:
+        expected_draft_version = payload.expected_draft_version
+        if expected_draft_version is None:
             raise InvalidAgentDefinitionError(
                 "expected_draft_version is required to edit an agent draft."
             )
@@ -392,7 +399,7 @@ class AgentService(EyloBaseService[AgentInDb]):
         payload = AgentUpdate.model_validate(
             {
                 **update_data,
-                "expected_draft_version": payload.expected_draft_version,
+                "expected_draft_version": expected_draft_version,
             }
         )
         updated_agent_model = await self.repository.update_(
@@ -405,7 +412,7 @@ class AgentService(EyloBaseService[AgentInDb]):
             published_revision=updated_agent_model.published_revision,
             draft_version=updated_agent_model.draft_version,
             draft_dirty=updated_agent_model.draft_dirty,
-        ).edit(expected_draft_version=payload.expected_draft_version)
+        ).edit(expected_draft_version=expected_draft_version)
         updated_agent_model.lifecycle = state.lifecycle.value
         updated_agent_model.published_revision = state.published_revision
         updated_agent_model.draft_version = state.draft_version
@@ -865,11 +872,11 @@ class AgentService(EyloBaseService[AgentInDb]):
         return self.orm_to_schema(agent) if agent else None
 
 
-class AgentToolService(EyloBaseService[AgentToolInDb]):
+class AgentToolService(EyloBaseService[AgentToolInDb, AgentToolMappingModal]):
     """Agent Tool Service."""
 
     @property
-    def schema(self) -> AgentToolInDb:
+    def schema(self) -> type[AgentToolInDb]:
         """Schema for the "agents" domain."""
         return AgentToolInDb
 
@@ -905,17 +912,6 @@ class AgentToolService(EyloBaseService[AgentToolInDb]):
         )
         return self.orm_to_schema_list(tools)
 
-    async def get_by_tool_id_and_agent_id(
-        self, tool_id: UUID, agent_id: UUID
-    ) -> AgentToolInDb:
-        await self.repository.filter_one_(
-            filters=[
-                self.repository.model.tool_id == tool_id,
-                self.repository.model.agent_id == agent_id,
-            ]
-        )
-        return self.orm_to_schema(tool_id)
-
     async def get_by_agent_and_tool(
         self, agent_id: UUID, tool_id: UUID
     ) -> Optional[AgentToolInDb]:
@@ -935,7 +931,7 @@ class AgentToolService(EyloBaseService[AgentToolInDb]):
     ) -> list[ToolInDb]:
         """List all tools for a given agent."""
         mappings = await self.repository.list_tools_by_agent_id(agent_id=agent_id)
-        refs = [(UUID(str(mapping.tool_id)), mapping.tool_revision) for mapping in mappings]
+        refs = [revisioned_tool_ref(mapping) for mapping in mappings]
         if not refs:
             return []
         return await self.tool_service.list_exact(

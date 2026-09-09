@@ -10,15 +10,22 @@ import tempfile
 from pathlib import Path
 
 from eylo.sockets.storage.base import (
+    DEFAULT_LIST_LIMIT,
+    DEFAULT_PRESIGNED_EXPIRY_SECONDS,
+    DIGEST_CHUNK_BYTES,
     StorageCapabilities,
+    StorageFailure,
     StorageObjectTooLarge,
+    StorageOperation,
     StorageOperationError,
+    StorageRecovery,
     StorageVendorAdapter,
     StoredObject,
     UnsupportedStorageOperation,
     validate_content_sha256,
     validate_key,
     validate_limit,
+    validate_size_limit,
 )
 from eylo.sockets.storage.schemas import FilesystemStorageConfig
 
@@ -32,6 +39,7 @@ class FilesystemStorageAdapter(StorageVendorAdapter):
     )
 
     def __init__(self, config: FilesystemStorageConfig) -> None:
+        config = FilesystemStorageConfig.model_validate(config)
         self.config = config
         self._root = config.root.resolve()
 
@@ -43,7 +51,9 @@ class FilesystemStorageAdapter(StorageVendorAdapter):
         normalized = validate_key(key, allow_empty=allow_empty)
         candidate = (self._root / normalized).resolve()
         if not candidate.is_relative_to(self._root):
-            raise StorageOperationError("invalid_key", retryable=False)
+            raise StorageOperationError(
+                StorageFailure.INVALID_KEY, recovery=StorageRecovery.TERMINAL
+            )
         return candidate
 
     async def upload_file(
@@ -62,8 +72,8 @@ class FilesystemStorageAdapter(StorageVendorAdapter):
             destination.parent.mkdir(parents=True, exist_ok=True)
             if expected_digest is not None and _sha256_path(path) != expected_digest:
                 raise StorageOperationError(
-                    "upload_content_digest_mismatch",
-                    retryable=False,
+                    StorageFailure.UPLOAD_CONTENT_DIGEST_MISMATCH,
+                    recovery=StorageRecovery.TERMINAL,
                 )
             descriptor, temporary_name = tempfile.mkstemp(
                 prefix=".eylo-upload-",
@@ -82,7 +92,11 @@ class FilesystemStorageAdapter(StorageVendorAdapter):
         except StorageOperationError:
             raise
         except OSError:
-            raise StorageOperationError("upload_filesystem", retryable=True) from None
+            raise StorageOperationError(
+                StorageFailure.FILESYSTEM,
+                operation=StorageOperation.UPLOAD,
+                recovery=StorageRecovery.RETRY,
+            ) from None
         return destination.as_uri()
 
     async def inspect_object(self, key: str) -> StoredObject | None:
@@ -100,21 +114,25 @@ class FilesystemStorageAdapter(StorageVendorAdapter):
         try:
             return await asyncio.to_thread(inspect)
         except OSError:
-            raise StorageOperationError("inspect_filesystem", retryable=True) from None
+            raise StorageOperationError(
+                StorageFailure.FILESYSTEM,
+                operation=StorageOperation.INSPECT,
+                recovery=StorageRecovery.RETRY,
+            ) from None
 
     async def generate_presigned_url(
         self,
         key: str,
-        expires_in: int = 3600,
+        expires_in: int = DEFAULT_PRESIGNED_EXPIRY_SECONDS,
     ) -> str:
         del key, expires_in
-        raise UnsupportedStorageOperation("presigned_download")
+        raise UnsupportedStorageOperation(StorageOperation.PRESIGNED_DOWNLOAD)
 
     async def list_objects(
         self,
         prefix: str,
         *,
-        limit: int = 1000,
+        limit: int = DEFAULT_LIST_LIMIT,
     ) -> list[StoredObject]:
         ceiling = validate_limit(limit)
         root = self._resolve(prefix, allow_empty=True) if prefix else self._root
@@ -141,7 +159,11 @@ class FilesystemStorageAdapter(StorageVendorAdapter):
         try:
             return await asyncio.to_thread(walk)
         except OSError:
-            raise StorageOperationError("list_filesystem", retryable=True) from None
+            raise StorageOperationError(
+                StorageFailure.FILESYSTEM,
+                operation=StorageOperation.LIST,
+                recovery=StorageRecovery.RETRY,
+            ) from None
 
     async def download_object(
         self,
@@ -150,6 +172,7 @@ class FilesystemStorageAdapter(StorageVendorAdapter):
         max_bytes: int | None = None,
     ) -> bytes | None:
         target = self._resolve(key)
+        max_bytes = validate_size_limit(max_bytes)
 
         def read() -> bytes | None:
             if not target.is_file():
@@ -163,7 +186,11 @@ class FilesystemStorageAdapter(StorageVendorAdapter):
         except StorageObjectTooLarge:
             raise
         except OSError:
-            raise StorageOperationError("download_filesystem", retryable=True) from None
+            raise StorageOperationError(
+                StorageFailure.FILESYSTEM,
+                operation=StorageOperation.DOWNLOAD,
+                recovery=StorageRecovery.RETRY,
+            ) from None
 
     async def delete_object(self, key: str) -> bool:
         target = self._resolve(key)
@@ -174,7 +201,11 @@ class FilesystemStorageAdapter(StorageVendorAdapter):
         try:
             await asyncio.to_thread(remove)
         except OSError:
-            raise StorageOperationError("delete_filesystem", retryable=True) from None
+            raise StorageOperationError(
+                StorageFailure.FILESYSTEM,
+                operation=StorageOperation.DELETE,
+                recovery=StorageRecovery.RETRY,
+            ) from None
         return True
 
     def build_object_url(self, key: str) -> str:
@@ -184,6 +215,6 @@ class FilesystemStorageAdapter(StorageVendorAdapter):
 def _sha256_path(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
-        while chunk := source.read(1024 * 1024):
+        while chunk := source.read(DIGEST_CHUNK_BYTES):
             digest.update(chunk)
     return digest.hexdigest()

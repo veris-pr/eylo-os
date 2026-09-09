@@ -2,18 +2,24 @@
 
 from __future__ import annotations
 
+from http import HTTPStatus
+
+from pydantic import ValidationError
+
 from eylo.sockets.embedding.base import EmbeddingVendorAdapter
 from eylo.sockets.embedding.schemas import (
     EmbeddingCapabilities,
     EmbeddingConfig,
     EmbeddingError,
+    EmbeddingErrorCode,
     EmbeddingInput,
     EmbeddingSemanticOptions,
 )
 from eylo.sockets.embedding.validation import validate_indexed_vectors
 
+from .openai_wire import MAX_BATCH, OpenAIEmbeddingRequest, OpenAIEmbeddingResponse
+
 PROVIDER = "openai"
-MAX_BATCH = 256
 
 
 class OpenAIEmbeddingAdapter(EmbeddingVendorAdapter):
@@ -55,16 +61,28 @@ class OpenAIEmbeddingAdapter(EmbeddingVendorAdapter):
                 vectors: list[list[float]] = []
                 for start in range(0, len(texts), MAX_BATCH):
                     batch = texts[start : start + MAX_BATCH]
-                    response = await client.embeddings.create(
-                        model=self._config.model,
-                        input=batch,
-                    )
+                    try:
+                        request = OpenAIEmbeddingRequest(
+                            model=self._config.model, input=batch
+                        )
+                    except ValidationError:
+                        raise EmbeddingError(
+                            "OpenAI embedding request is invalid.",
+                            vendor=PROVIDER,
+                            code=EmbeddingErrorCode.INVALID_REQUEST,
+                        ) from None
+                    try:
+                        response = await client.embeddings.create(
+                            model=request.model,
+                            input=request.input,
+                        )
+                    except (AttributeError, TypeError, ValueError):
+                        # The SDK's base64 post-parser runs before our projection.
+                        raise _invalid_response() from None
+                    payload = OpenAIEmbeddingResponse.model_validate(response)
                     vectors.extend(
                         validate_indexed_vectors(
-                            [
-                                (item.index, item.embedding)
-                                for item in response.data
-                            ],
+                            [(item.index, item.embedding) for item in payload.data],
                             expected_count=len(batch),
                             vendor=PROVIDER,
                         )
@@ -72,6 +90,8 @@ class OpenAIEmbeddingAdapter(EmbeddingVendorAdapter):
                 return vectors
         except EmbeddingError:
             raise
+        except ValidationError:
+            raise _invalid_response() from None
         except Exception as error:
             raise _normalized_openai_error(error) from None
 
@@ -79,6 +99,7 @@ class OpenAIEmbeddingAdapter(EmbeddingVendorAdapter):
 def _normalized_openai_error(error: Exception) -> EmbeddingError:
     from openai import (
         APIConnectionError,
+        APIResponseValidationError,
         APIStatusError,
         APITimeoutError,
         AuthenticationError,
@@ -86,41 +107,52 @@ def _normalized_openai_error(error: Exception) -> EmbeddingError:
         RateLimitError,
     )
 
+    if isinstance(error, APIResponseValidationError):
+        return _invalid_response()
     if isinstance(error, AuthenticationError):
         return EmbeddingError(
             "OpenAI embedding authentication failed.",
             vendor=PROVIDER,
-            code="authentication",
+            code=EmbeddingErrorCode.AUTHENTICATION,
         )
     if isinstance(error, BadRequestError):
         return EmbeddingError(
             "OpenAI rejected the embedding request.",
             vendor=PROVIDER,
-            code="invalid_request",
+            code=EmbeddingErrorCode.INVALID_REQUEST,
         )
     if isinstance(error, RateLimitError):
         return EmbeddingError(
             "OpenAI rate-limited the embedding request.",
             vendor=PROVIDER,
-            code="rate_limited",
+            code=EmbeddingErrorCode.RATE_LIMITED,
             retryable=True,
         )
     if isinstance(error, (APIConnectionError, APITimeoutError)):
         return EmbeddingError(
             "OpenAI embedding transport failed.",
             vendor=PROVIDER,
-            code="transport",
+            code=EmbeddingErrorCode.TRANSPORT,
             retryable=True,
         )
     if isinstance(error, APIStatusError):
         return EmbeddingError(
             "OpenAI embedding provider failed.",
             vendor=PROVIDER,
-            code="provider_error",
-            retryable=error.status_code >= 500,
+            code=EmbeddingErrorCode.PROVIDER_ERROR,
+            retryable=error.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR,
         )
     return EmbeddingError(
         "OpenAI embedding request failed.",
         vendor=PROVIDER,
-        code="provider_error",
+        code=EmbeddingErrorCode.PROVIDER_ERROR,
+    )
+
+
+def _invalid_response() -> EmbeddingError:
+    return EmbeddingError(
+        "OpenAI returned an invalid embedding response.",
+        vendor=PROVIDER,
+        code=EmbeddingErrorCode.INVALID_RESPONSE,
+        retryable=True,
     )

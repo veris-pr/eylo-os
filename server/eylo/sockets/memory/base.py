@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
 from uuid import UUID
+
+from pydantic import JsonValue
 
 from eylo.sockets.memory.schemas import (
     Memory,
@@ -41,7 +42,7 @@ class MemoryVendorAdapter(ABC):
         source_conversation_id: UUID,
         origin: MemoryOrigin,
         actor: MemoryActor | None,
-        metadata: dict[str, Any] | None = None,
+        metadata: dict[str, JsonValue] | None = None,
         formation_job_id: UUID | None = None,
     ) -> list[MemoryOperation]:
         """Learn from a conversation."""

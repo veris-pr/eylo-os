@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
 from pathlib import Path
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from eylo.common.contracts.storage import StorageLocator
 from eylo.common.database import start_transaction
@@ -14,7 +15,7 @@ from eylo.pipelines.storage.runtime import (
     StorageRuntime,
     resolve_storage_runtime_for_authority,
 )
-from eylo.sockets.storage.base import UnsupportedStorageOperation
+from eylo.sockets.storage.base import StoredObject, UnsupportedStorageOperation
 
 logger = logging.getLogger(__name__)
 
@@ -27,10 +28,20 @@ class RecordingObjectNotFound(RecordingStorageUnavailable):
     """The canonical recording row points at an object that is not present."""
 
 
-@dataclass(frozen=True, slots=True)
-class RecordingObjectStream:
-    content: AsyncIterator[bytes]
-    size: int
+class RecordingObjectStream(BaseModel):
+    """Local stream handle, never a serializable recording payload."""
+
+    model_config = ConfigDict(
+        strict=True,
+        frozen=True,
+        extra="forbid",
+        revalidate_instances="always",
+        arbitrary_types_allowed=True,
+        hide_input_in_errors=True,
+    )
+
+    content: AsyncIterator[bytes] = Field(repr=False, exclude=True)
+    size: int = Field(ge=0)
     content_type: str = "audio/wav"
 
 
@@ -103,6 +114,7 @@ async def open_recording_stream(locator: StorageLocator) -> RecordingObjectStrea
         stored = await runtime.adapter.inspect_object(locator.key)
         if stored is None:
             raise RecordingObjectNotFound("Recording object was not found.")
+        stored = StoredObject.model_validate(stored)
         return RecordingObjectStream(
             content=runtime.adapter.stream_object(locator.key),
             size=stored.size,

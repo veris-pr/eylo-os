@@ -6,7 +6,7 @@ import math
 from collections.abc import Sequence
 from numbers import Real
 
-from eylo.common.contracts.embedding import EmbeddingError
+from eylo.common.contracts.embedding import EmbeddingError, EmbeddingErrorCode
 
 
 def validate_indexed_vectors(
@@ -63,6 +63,6 @@ def _invalid_response(vendor: str, message: str) -> EmbeddingError:
     return EmbeddingError(
         message,
         vendor=vendor,
-        code="invalid_response",
+        code=EmbeddingErrorCode.INVALID_RESPONSE,
         retryable=True,
     )

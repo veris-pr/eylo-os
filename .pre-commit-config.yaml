@@ -31,6 +31,17 @@ repos:
         types: [python]
         stages: [pre-commit, pre-push]
 
+      - id: python-typed-repository-contracts
+        name: Python shared repository and schema conversion types
+        entry: >-
+          bash -c 'cd server && .venv/bin/pyrefly check
+          eylo/common/repositories.py
+          eylo/common/services.py'
+        language: system
+        files: ^server/(pyproject\.toml|eylo/common/(models|schemas|repositories|services)\.py)
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+
       - id: python-typed-provider-config-contracts
         name: Python provider-config persistence, encryption and resolution types
         entry: >-
@@ -39,6 +50,103 @@ repos:
           eylo/pipelines/external_connections/credentials.py'
         language: system
         files: ^server/(pyproject\.toml|eylo/(common/contracts/provider_config\.py|modules/provider_configs/|pipelines/external_connections/credentials\.py))
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+
+      - id: python-typed-agent-publication-contracts
+        name: Python Agent definitions, swarms and explicit binding types
+        entry: >-
+          bash -c 'cd server && .venv/bin/pyrefly check
+          eylo/modules/agents/
+          eylo/pipelines/agents/resolver.py
+          eylo/pipelines/agents/swarm.py
+          eylo/pipelines/parallel_agents/swarm_agent_worker.py'
+        language: system
+        files: ^server/(pyproject\.toml|eylo/(common/(schemas\.py|repositories\.py|services\.py|revisions\.py|contracts/provider_config\.py)|pipelines/(agents/|parallel_agents/swarm_agent_worker\.py)|modules/(agents/|tools/|templates/|voice/|voice_configs/|provider_configs/|llm_configs/|email_configs/|webrtc_configs/|embedding_configs/|reranking_configs/|memory_configs/)))
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+
+      - id: python-typed-embedding-contracts
+        name: Python embedding adapter and runtime boundary types
+        entry: >-
+          bash -c 'cd server && .venv/bin/pyrefly check
+          eylo/common/contracts/embedding.py
+          eylo/common/contracts/embedding_records.py
+          eylo/common/contracts/embedding_vectors.py
+          eylo/modules/knowledgebase/models.py
+          eylo/modules/knowledgebase/jobs.py
+          eylo/modules/memory/models.py
+          eylo/modules/embedding_configs/
+          eylo/sockets/embedding/
+          eylo/pipelines/embedding/resolver.py
+          eylo/pipelines/embedding/config.py
+          eylo/pipelines/embedding/config_verification.py'
+        language: system
+        files: ^server/(pyproject\.toml|eylo/(common/contracts/embedding(_records|_vectors)?\.py|modules/embedding_configs/|sockets/embedding/|pipelines/embedding/|modules/(knowledgebase|memory)/))
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+
+      - id: python-typed-reranking-contracts
+        name: Python reranking config, adapter and retrieval boundary types
+        entry: >-
+          bash -c 'cd server && .venv/bin/pyrefly check
+          eylo/common/contracts/reranking.py
+          eylo/modules/reranking_configs/
+          eylo/sockets/reranking/
+          eylo/pipelines/reranking/
+          eylo/pipelines/knowledgebase/
+          eylo/pipelines/memory/application.py'
+        language: system
+        files: ^server/(pyproject\.toml|eylo/(common/contracts/(knowledgebase|memory|reranking)\.py|modules/reranking_configs/|pipelines/(knowledgebase|memory|reranking)/|sockets/reranking/))
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+
+      - id: python-typed-knowledge-contracts
+        name: Python knowledge query, ingestion and product boundary types
+        entry: >-
+          bash -c 'cd server && .venv/bin/pyrefly check
+          eylo/common/contracts/knowledgebase.py
+          eylo/common/contracts/storage_objects.py
+          eylo/common/contracts/storage.py
+          eylo/modules/storage_configs/
+          eylo/pipelines/storage/
+          eylo/sockets/storage/
+          eylo/modules/knowledgebase/
+          eylo/pipelines/knowledgebase/
+          eylo/sockets/knowledgebase/
+          eylo/pipelines/system_tools/knowledgebase_tools.py'
+        language: system
+        files: ^server/(pyproject\.toml|eylo/(common/contracts/(knowledgebase|embedding(_records|_vectors)?|storage(_objects)?|reranking)\.py|modules/(knowledgebase|embedding_configs|storage_configs)/|pipelines/(knowledgebase|embedding|storage|reranking)/|pipelines/system_tools/knowledgebase_tools\.py|sockets/(knowledgebase|storage)/))
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+
+      - id: python-typed-memory-contracts
+        name: Python memory contracts and dependency resolution types
+        entry: >-
+          bash -c 'cd server && .venv/bin/pyrefly check
+          eylo/common/contracts/memory.py
+          eylo/common/contracts/memory_formation.py
+          eylo/common/contracts/memory_reconciliation.py
+          eylo/modules/memory_configs/domain.py
+          eylo/modules/memory_configs/service.py
+          eylo/modules/memory_configs/resolver.py
+          eylo/modules/memory_configs/verification.py
+          eylo/modules/memory_configs/schemas.py
+          eylo/modules/memory_configs/controllers.py
+          eylo/modules/memory_configs/routes.py
+          eylo/modules/memory/reindex_service.py
+          eylo/modules/memory/reconciliation_service.py
+          eylo/modules/memory/operator_service.py
+          eylo/modules/memory/service.py
+          eylo/modules/memory/schemas.py
+          eylo/modules/memory/routes.py
+          eylo/sockets/memory/base.py
+          eylo/sockets/memory/schemas.py
+          eylo/sockets/memory/vendors/pgvector.py
+          eylo/sockets/memory/vendors/pgvector_records.py
+          eylo/pipelines/memory/'
+        language: system
+        files: ^server/(pyproject\.toml|eylo/(common/contracts/(memory(_reconciliation|_formation)?|embedding(_records|_vectors)?)\.py|modules/(memory|memory_configs)/|pipelines/(memory|embedding)/|sockets/memory/))
         pass_filenames: false
         stages: [pre-commit, pre-push]
 
@@ -75,9 +183,18 @@ repos:
           eylo/common/contracts/voice.py
           eylo/common/contracts/realtime_runtime.py
           eylo/common/contracts/speech_runtime.py
+          eylo/modules/voice/schemas/api.py
+          eylo/modules/voice/schemas/capabilities.py
+          eylo/modules/voice/schemas/runtime.py
+          eylo/modules/voice/services/voice_configs.py
+          eylo/modules/voice/controllers/voice_configs.py
+          eylo/modules/voice/routes/voice_configs.py
+          eylo/pipelines/voice/configuration.py
           eylo/modules/voice_configs/domain.py
           eylo/modules/voice_configs/resolver.py
           eylo/pipelines/voice/provider_runtime.py
+          eylo/pipelines/voice/recording_storage.py
+          eylo/pipelines/voice/recording_outbound.py
           eylo/runtime/tasks.py
           eylo/sockets/stt/
           eylo/sockets/voice/vendors/assemblyai/
@@ -125,6 +242,20 @@ repos:
           eylo/sockets/realtime/vendors/amazon_nova_sonic.py
           eylo/sockets/realtime/vendors/amazon_nova_sonic_wire.py
           eylo/sockets/tts/base.py
+          eylo/sockets/tts/http_synthesis.py
+          eylo/sockets/tts/adapters/openai_adapter.py
+          eylo/sockets/tts/adapters/openai_tts_wire.py
+          eylo/sockets/tts/adapters/amazon_polly_adapter.py
+          eylo/sockets/tts/adapters/polly_sdk.py
+          eylo/sockets/tts/adapters/polly_wire.py
+          eylo/sockets/tts/adapters/sarvam_contract_adapter.py
+          eylo/sockets/tts/adapters/sarvam_tts_wire.py
+          eylo/sockets/tts/adapters/deepgram_adapter.py
+          eylo/sockets/tts/adapters/deepgram_tts_wire.py
+          eylo/sockets/tts/adapters/groq_adapter.py
+          eylo/sockets/tts/adapters/groq_tts_wire.py
+          eylo/sockets/tts/adapters/rime_adapter.py
+          eylo/sockets/tts/adapters/rime_tts_wire.py
           eylo/sockets/tts/schemas.py
           eylo/sockets/tts/exceptions.py
           eylo/sockets/tts/adapters/config.py
@@ -143,7 +274,7 @@ repos:
           eylo/pipelines/telephony/sessions.py
           eylo/pipelines/voice/lifecycle_policy.py'
         language: system
-        files: ^server/(pyproject\.toml|eylo/(common/contracts/|audio/|runtime/tasks\.py|modules/(voice_configs|voice_transcripts|conversations)/|pipelines/(voice|webrtc|websocket|telephony)/|sockets/(realtime|stt|tts|voice/vendors/(assemblyai|cartesia|deepgram|gladia|google|revai|speechmatics))/))
+        files: ^server/(pyproject\.toml|eylo/(common/contracts/|audio/|runtime/tasks\.py|modules/(voice|voice_configs|voice_transcripts|conversations)/|pipelines/(voice|webrtc|websocket|telephony)/|sockets/(realtime|stt|tts|voice/vendors/(assemblyai|cartesia|deepgram|gladia|google|revai|speechmatics))/))
         pass_filenames: false
         stages: [pre-commit, pre-push]
 
@@ -195,6 +326,7 @@ repos:
           media_stream, number_management;
           from eylo.pipelines.parallel_agents import background_agent_worker, llm_task_worker,
           context, swarm_agent_worker;
+          from eylo.pipelines.memory import config_verification, resolver;
           from eylo.pipelines.llm.background_agents import summary_generator;
           assert all(hasattr(summary_generator, name) for name in summary_generator.__all__);
           print(\"RUNTIME-CONTRACT-IMPORTS-OK\")"'

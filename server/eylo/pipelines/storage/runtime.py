@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
+from typing import Self
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.contracts.storage import StorageAuthority, StorageLocator
@@ -21,11 +22,26 @@ from eylo.sockets.storage.schemas import (
 )
 
 
-@dataclass(frozen=True)
-class StorageRuntime:
-    resolved: ResolvedStorage
+class StorageRuntime(BaseModel):
+    """Local adapter handle bound to validated material; never a wire payload."""
+
+    model_config = ConfigDict(
+        strict=True,
+        frozen=True,
+        extra="forbid",
+        revalidate_instances="always",
+        arbitrary_types_allowed=True,
+        hide_input_in_errors=True,
+    )
+
+    resolved: ResolvedStorage = Field(repr=False, exclude=True)
     authority: StorageAuthority
-    adapter: StorageVendorAdapter
+    adapter: StorageVendorAdapter = Field(repr=False, exclude=True)
+
+    @model_validator(mode="after")
+    def require_matching_authority(self) -> Self:
+        _require_matching_authority(self.resolved, self.authority)
+        return self
 
     def locate(self, key: str) -> StorageLocator:
         return self.authority.locate(key)
@@ -87,6 +103,10 @@ async def resolve_storage_runtime_for_authority(
     *,
     db: AsyncSession | None = None,
 ) -> StorageRuntime:
+    try:
+        authority = StorageAuthority.model_validate(authority)
+    except ValidationError:
+        raise InvalidStorageConfig("Persisted storage authority is invalid.") from None
     resolved = await build_storage_config_resolver(db).resolve_pinned(
         authority.organization_id,
         provider_config_id=authority.provider_config_id,
@@ -149,8 +169,8 @@ def _require_matching_authority(
     authority: StorageAuthority,
 ) -> None:
     if (
-        str(resolved.organization_id) != str(authority.organization_id)
-        or str(resolved.provider_config_id) != str(authority.provider_config_id)
+        resolved.organization_id != authority.organization_id
+        or resolved.provider_config_id != authority.provider_config_id
         or resolved.provider_config_revision != authority.provider_config_revision
         or resolved.provider.value != authority.provider
     ):

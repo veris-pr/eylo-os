@@ -9,11 +9,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.services import EyloBaseService
 from eylo.modules.agents.kinds import assert_attachment_is_valid
+from eylo.modules.agents.models import AgentBackgroundAgentModel
 from eylo.modules.agents.repositories import AgentBackgroundAgentRepository
 from eylo.modules.agents.schemas.indb import AgentBackgroundAgentInDb
 
 
-class AgentBackgroundAgentService(EyloBaseService[AgentBackgroundAgentInDb]):
+class AgentBackgroundAgentService(
+    EyloBaseService[AgentBackgroundAgentInDb, AgentBackgroundAgentModel]
+):
     @property
     def schema(self) -> Type[AgentBackgroundAgentInDb]:
         return AgentBackgroundAgentInDb

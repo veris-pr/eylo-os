@@ -7,6 +7,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 
+from eylo.common.contracts.embedding import EmbeddingSpace
 from eylo.common.contracts.memory import MemoryError
 from eylo.common.database import start_transaction
 from eylo.modules.auth.schemas import CurrentUserSchema
@@ -94,9 +95,7 @@ async def verify_memory_config(
     current_user: Annotated[CurrentUserSchema, Depends(get_current_user)],
 ) -> MemoryConfigVerificationResponse:
     try:
-        result = await MemoryConfigVerificationUseCase(
-            MemoryRuntimeVerifier()
-        ).verify(
+        result = await MemoryConfigVerificationUseCase(MemoryRuntimeVerifier()).verify(
             organization_id=current_user.organization_id,
             config_id=config_id,
         )
@@ -119,7 +118,7 @@ async def verify_memory_config(
 async def get_memory_reindex_status(
     config_id: UUID,
     current_user: Annotated[CurrentUserSchema, Depends(get_current_user)],
-    ) -> MemoryReindexStatusRead:
+) -> MemoryReindexStatusRead:
     inspection = await inspect_memory_reindex(
         organization_id=current_user.organization_id,
         memory_provider_config_id=config_id,
@@ -137,10 +136,7 @@ async def get_memory_reindex_status(
             active is not None
             and (
                 (target is not None and not active.is_compatible_with(target))
-                or (
-                    available is not None
-                    and not active.is_compatible_with(available)
-                )
+                or (available is not None and not active.is_compatible_with(available))
             )
         ),
         last_error=(
@@ -160,10 +156,11 @@ async def reindex_memory_config(
     current_user: Annotated[CurrentUserSchema, Depends(get_current_user)],
 ) -> MemoryReindexJobRead:
     try:
-        return await request_memory_reindex(
+        job = await request_memory_reindex(
             organization_id=current_user.organization_id,
             memory_provider_config_id=config_id,
         )
+        return MemoryReindexJobRead.model_validate(job)
     except MemoryError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     except (InvalidEmbeddingConfig, InvalidMemoryConfig, NotConfiguredError):
@@ -173,7 +170,9 @@ async def reindex_memory_config(
         ) from None
 
 
-def _embedding_space_read(space) -> MemoryEmbeddingSpaceRead | None:
+def _embedding_space_read(
+    space: EmbeddingSpace | None,
+) -> MemoryEmbeddingSpaceRead | None:
     if space is None:
         return None
     return MemoryEmbeddingSpaceRead(

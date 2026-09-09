@@ -7,28 +7,33 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.contracts.embedding import (
+    DocumentEmbedder,
     EmbeddingError,
+    QueryEmbedder,
     embedding_space_from_record,
 )
-from eylo.common.contracts.knowledgebase import KnowledgeScope
+from eylo.common.contracts.knowledgebase import KnowledgeRecovery, KnowledgeScope
 from eylo.common.contracts.knowledgebase import (
     KnowledgebaseError as KnowledgebaseOperationError,
 )
 from eylo.common.database import async_session_factory
 from eylo.modules.embedding_configs.domain import InvalidEmbeddingConfig
+from eylo.modules.knowledgebase.jobs import KnowledgeIngestionJobModel
+from eylo.modules.knowledgebase.models import KnowledgebaseModel
 from eylo.modules.knowledgebase.services.knowledgebases import KnowledgebaseError
 from eylo.modules.knowledgebase.vendors import (
-    CHUNKING_KEY,
+    KnowledgeVendor,
     configuration_problem,
-    normalize_metadata,
+    parse_metadata,
 )
 from eylo.modules.provider_configs.errors import NotConfiguredError
 from eylo.pipelines.embedding.resolver import (
+    EmbeddingRuntime,
     resolve_compatible_embedding_runtime,
     resolve_pinned_embedding_runtime,
 )
 from eylo.sockets.knowledgebase.base import KnowledgebaseVendorAdapter
-from eylo.sockets.knowledgebase.chunking import build_chunker
+from eylo.sockets.knowledgebase.chunking import ChunkingStrategy, build_chunker
 from eylo.sockets.knowledgebase.vendors.pgvector import PgVectorAdapter
 from eylo.sockets.knowledgebase.vendors.postgres_base import (
     PostgresKnowledgebaseAuthority,
@@ -37,29 +42,29 @@ from eylo.sockets.knowledgebase.vendors.postgres_fts import PostgresFTSAdapter
 
 
 async def resolve_adapter(
-    knowledgebase,
+    knowledgebase: KnowledgebaseModel,
     *,
     organization_id: UUID,
     session: AsyncSession,
-    embedding_authority=None,
+    embedding_authority: KnowledgeIngestionJobModel | None = None,
 ) -> KnowledgebaseVendorAdapter:
     """Build the adapter named by one organization-owned knowledgebase."""
-    if str(knowledgebase.organization_id) != str(organization_id):
+    if knowledgebase.organization_id != organization_id:
         raise KnowledgebaseError("Knowledgebase not found.")
 
     vendor = knowledgebase.vendor
     chunker = _build_chunker(knowledgebase)
     authority = PostgresKnowledgebaseAuthority(
-        organization_id=UUID(str(organization_id)),
-        knowledgebase_id=UUID(str(knowledgebase.id)),
+        organization_id=organization_id,
+        knowledgebase_id=knowledgebase.id,
         scope=KnowledgeScope(knowledgebase.scope),
         scope_id=knowledgebase.scope_id,
     )
 
-    if vendor == "postgres_fts":
+    if vendor == KnowledgeVendor.POSTGRES_FTS:
         return PostgresFTSAdapter(async_session_factory, authority, chunker)
 
-    if vendor == "pgvector":
+    if vendor == KnowledgeVendor.PGVECTOR:
         runtime = await _embedding_runtime(
             embedding_authority if embedding_authority is not None else knowledgebase,
             organization_id=organization_id,
@@ -82,25 +87,25 @@ async def resolve_adapter(
     )
 
 
-def _build_chunker(knowledgebase):
+def _build_chunker(knowledgebase: KnowledgebaseModel) -> ChunkingStrategy:
     try:
-        meta = normalize_metadata(knowledgebase.meta)
+        meta = parse_metadata(knowledgebase.meta)
     except ValueError as error:
         raise KnowledgebaseError(str(error)) from None
     return build_chunker(
-        meta.get(CHUNKING_KEY),
-        size=meta.get("chunk_size"),
-        overlap=meta.get("chunk_overlap"),
+        meta.chunking.value,
+        size=meta.chunk_size,
+        overlap=meta.chunk_overlap,
     )
 
 
 async def _embedding_runtime(
-    knowledgebase,
+    knowledgebase: KnowledgebaseModel | KnowledgeIngestionJobModel,
     *,
     organization_id: UUID,
-    session,
+    session: AsyncSession,
     exact_revision: bool,
-):
+) -> EmbeddingRuntime:
     try:
         persisted_space = embedding_space_from_record(knowledgebase)
     except ValueError:
@@ -136,7 +141,9 @@ async def _embedding_runtime(
     return runtime
 
 
-def _embedding_functions(runtime):
+def _embedding_functions(
+    runtime: EmbeddingRuntime,
+) -> tuple[DocumentEmbedder, QueryEmbedder]:
     async def embed_documents(texts: list[str]) -> list[list[float]]:
         try:
             return await runtime.embed_documents(texts)
@@ -144,7 +151,9 @@ def _embedding_functions(runtime):
             raise KnowledgebaseOperationError(
                 "Knowledgebase embedding failed.",
                 vendor=error.vendor,
-                retryable=error.retryable,
+                recovery=KnowledgeRecovery.RETRY
+                if error.retryable
+                else KnowledgeRecovery.TERMINAL,
             ) from None
 
     async def embed_query(text: str) -> list[float]:
@@ -154,7 +163,9 @@ def _embedding_functions(runtime):
             raise KnowledgebaseOperationError(
                 "Knowledgebase query embedding failed.",
                 vendor=error.vendor,
-                retryable=error.retryable,
+                recovery=KnowledgeRecovery.RETRY
+                if error.retryable
+                else KnowledgeRecovery.TERMINAL,
             ) from None
 
     return embed_documents, embed_query

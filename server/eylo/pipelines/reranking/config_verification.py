@@ -5,9 +5,14 @@ from __future__ import annotations
 import asyncio
 from uuid import UUID
 
+from pydantic import ValidationError
+
 from eylo.common.contracts.reranking import RerankingError
 from eylo.common.database import start_transaction
-from eylo.modules.reranking_configs.domain import RerankingProviderConfig
+from eylo.modules.reranking_configs.domain import (
+    RerankingProviderConfig,
+    RerankingVerificationMetadata,
+)
 from eylo.modules.reranking_configs.verification import (
     RerankingProviderVerification,
     RerankingProviderVerifier,
@@ -33,6 +38,7 @@ class RerankingRuntimeVerifier:
         self,
         config: RerankingProviderConfig,
     ) -> RerankingProviderVerification:
+        config = RerankingProviderConfig.model_validate(config)
         adapter = RerankingFactory(
             config.provider.value,
             build_reranking_runtime_config(config),
@@ -56,7 +62,7 @@ class RerankingRuntimeVerifier:
             raise RerankingVerificationError(
                 "Reranking provider returned an incomplete result."
             )
-        return RerankingProviderVerification(provider=config.provider.value)
+        return RerankingProviderVerification(provider=config.provider)
 
 
 class RerankingConfigVerificationUseCase:
@@ -77,7 +83,7 @@ class RerankingConfigVerificationUseCase:
                 organization_id=organization_id,
                 config_id=config_id,
             )
-            provider_config = RerankingProviderConfig.validate(
+            provider_config = RerankingProviderConfig.from_input(
                 provider=stored.provider,
                 config=stored.config,
                 secrets=stored.secrets,
@@ -85,17 +91,28 @@ class RerankingConfigVerificationUseCase:
             )
             expected_revision = stored.revision
 
-        result = await self._verifier.verify(provider_config)
+        try:
+            result = RerankingProviderVerification.model_validate(
+                await self._verifier.verify(provider_config)
+            )
+        except ValidationError:
+            raise RerankingVerificationError(
+                "Reranking verification returned an invalid result."
+            ) from None
+        if result.provider is not provider_config.provider:
+            raise RerankingVerificationError(
+                "Reranking verification returned a different provider."
+            )
 
         async with start_transaction():
             verified = await build_reranking_config_service().mark_verified(
                 organization_id=organization_id,
                 config_id=config_id,
                 expected_revision=expected_revision,
-                verification_metadata={
-                    "endpoint": provider_config.endpoint,
-                    "model": provider_config.model,
-                },
+                verification_metadata=RerankingVerificationMetadata(
+                    endpoint=provider_config.endpoint,
+                    model=provider_config.model,
+                ).to_record(),
             )
         assert verified.verified_at is not None
         return RerankingVerificationResult(

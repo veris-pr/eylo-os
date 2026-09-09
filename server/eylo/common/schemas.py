@@ -68,6 +68,15 @@ class EyloBaseOrganizationModelSchema(EyloBaseModelSchema):
     )
 
 
+class EyloOrganizationModelSchema(EyloBaseModelSchema):
+    """Persisted records whose organization owner must always be present."""
+
+    external_id: Optional[str] = Field(None, description="External Service identifier")
+    organization_id: UUID = Field(
+        ..., description="The ID of the organization this record belongs to."
+    )
+
+
 class EyloBaseResponseSchema(EyloBaseApiSchema):
     """EyloBaseResponseSchema behavior for the "common" platform."""
 

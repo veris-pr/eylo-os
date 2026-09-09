@@ -14,12 +14,13 @@ from eylo.modules.members.listing import (
     MemberSortDirection,
     MemberSortField,
 )
+from eylo.modules.members.models import MemberModel
 from eylo.modules.members.repositories import MemberRepository
 from eylo.modules.members.schemas.indb import MemberCreateSchema, MemberInDb
 from eylo.modules.organizations.services import OrganizationService
 
 
-class MemberService(EyloBaseService[MemberInDb]):
+class MemberService(EyloBaseService[MemberInDb, MemberModel]):
     """Service for managing platform users.
 
     This service is responsible for:

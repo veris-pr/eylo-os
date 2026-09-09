@@ -41,7 +41,7 @@ const getInputType = (field: TWidgetFormField): string => {
 
 const buildInitialValues = (fields: TWidgetFormField[]): Record<string, unknown> => {
   return fields.reduce<Record<string, unknown>>((accumulator, field) => {
-    if (field.defaultValue !== undefined) {
+    if (field.defaultValue !== undefined && field.defaultValue !== null) {
       accumulator[field.name] = field.defaultValue;
       return accumulator;
     }
@@ -259,7 +259,7 @@ export const WidgetForm: FC<WidgetFormProps> = ({
           id={controlId}
           name={field.name}
           type={getInputType(field)}
-          value={fieldValue === undefined ? "" : String(fieldValue)}
+          value={String(fieldValue ?? "")}
           min={
             field.type === "date" || field.type === "datetime"
               ? nativeDateConstraint(field.validation?.minDate, field.type, "min")

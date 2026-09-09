@@ -1644,7 +1644,11 @@ async def handle_audio_config(
             }
         )
 
-        voice_config = VoiceConfig.model_validate(executable.voice_config or {})
+        voice_config = (
+            VoiceConfig()
+            if executable.voice_config is None
+            else executable.voice_config.for_call()
+        )
 
         resolved_stt: ResolvedSTT | None = None
         resolved_tts: ResolvedTTS | None = None

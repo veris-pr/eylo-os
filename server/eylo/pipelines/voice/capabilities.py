@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,8 +12,25 @@ from eylo.modules.voice.schemas.api import (
     VoicePlatformFeatureRead,
     VoiceProviderCapabilityRead,
 )
+from eylo.modules.voice.schemas.capabilities import (
+    RealtimeNativeCapabilitiesRead,
+    RealtimeProviderCapabilityRead,
+    STTNativeCapabilitiesRead,
+    STTProviderCapabilityRead,
+    TTSNativeCapabilitiesRead,
+    TTSProviderCapabilityRead,
+    VoiceFeatureSupport,
+    VoiceNativeEncoding,
+    VoicePlatformFeature,
+    VoiceSessionUpdateMode,
+)
 from eylo.modules.voice.services.voice_configs import VoiceConfigService
-from eylo.modules.voice_configs.catalog import VoiceKind
+from eylo.modules.voice_configs.catalog import (
+    RealtimeProviders,
+    STTProviders,
+    TTSProviders,
+    VoiceKind,
+)
 from eylo.modules.voice_configs.domain import (
     ResolvedRealtime,
     ResolvedSTT,
@@ -29,9 +45,14 @@ from eylo.pipelines.voice.provider_runtime import (
     build_stt_runtime_config,
     build_tts_runtime_config,
 )
+from eylo.sockets.realtime.base import RealtimeCapabilities
 from eylo.sockets.realtime.factory import RealtimeFactory
 from eylo.sockets.stt.factory import STTFactory
+from eylo.sockets.stt.schemas import STTCapabilities
 from eylo.sockets.tts.factory import TTSFactory
+from eylo.sockets.tts.schemas import TTSCapabilities
+
+_INSPECTION_SESSION_ID = "voice-config-capability-inspection"
 
 _GUIDANCE = (
     "Eylo platform features remain available when a selected provider does not "
@@ -110,13 +131,18 @@ class VoiceCapabilityService:
                 organization_id=organization_id,
                 config=validated,
             )
-            adapter = STTFactory(
+            stt_adapter = STTFactory(
                 organization_id=organization_id,
-                session_id="voice-config-capability-inspection",
+                session_id=_INSPECTION_SESSION_ID,
                 stt_vendor=stored.provider,
                 stt_config=build_stt_runtime_config(None, stt),
             ).service
-            capabilities = adapter.capabilities.model_dump(mode="json")
+            return STTProviderCapabilityRead(
+                provider_config_id=stored.id,
+                provider=STTProviders(stored.provider),
+                ready=stored.ready,
+                native_capabilities=_stt_capabilities(stt_adapter.capabilities),
+            )
         elif kind is VoiceKind.TTS:
             tts = ResolvedTTS.from_voice_config(
                 provider_config_id=stored.id,
@@ -124,61 +150,107 @@ class VoiceCapabilityService:
                 organization_id=organization_id,
                 config=validated,
             )
-            adapter = TTSFactory(
+            tts_adapter = TTSFactory(
                 tts_vendor=stored.provider,
                 tts_config=build_tts_runtime_config(tts),
             ).service
-            capabilities = adapter.capabilities.model_dump(mode="json")
+            return TTSProviderCapabilityRead(
+                provider_config_id=stored.id,
+                provider=TTSProviders(stored.provider),
+                ready=stored.ready,
+                native_capabilities=_tts_capabilities(tts_adapter.capabilities),
+            )
         else:
-            capabilities = self._realtime_capabilities(
+            realtime = ResolvedRealtime.from_voice_config(
                 organization_id=organization_id,
                 provider_config_id=stored.id,
                 provider_config_revision=stored.revision,
-                provider=stored.provider,
-                config=stored.config,
-                secrets=stored.secrets,
+                config=validated,
+                configured=True,
+                verified=False,
+                ready=False,
+                granted=True,
             )
-
-        return VoiceProviderCapabilityRead(
-            kind=kind.value,
-            provider_config_id=stored.id,
-            provider=stored.provider,
-            ready=stored.ready,
-            native_capabilities=capabilities,
-        )
+            return RealtimeProviderCapabilityRead(
+                provider_config_id=stored.id,
+                provider=RealtimeProviders(stored.provider),
+                ready=stored.ready,
+                native_capabilities=self._realtime_capabilities(realtime),
+            )
 
     @staticmethod
     def _realtime_capabilities(
-        *,
-        organization_id: UUID,
-        provider_config_id: UUID,
-        provider_config_revision: int,
-        provider: str,
-        config: Mapping[str, object],
-        secrets: Mapping[str, str],
-    ) -> dict[str, object]:
-        validated = VoiceProviderConfig.from_storage(
-            provider=provider, kind=VoiceKind.REALTIME, config=config, secrets=secrets
-        )
-        resolved = ResolvedRealtime.from_voice_config(
-            provider_config_id=provider_config_id,
-            provider_config_revision=provider_config_revision,
-            organization_id=organization_id,
-            config=validated,
-            configured=True,
-            verified=False,
-            ready=False,
-            granted=True,
-        )
+        resolved: ResolvedRealtime,
+    ) -> RealtimeNativeCapabilitiesRead:
         session_config = build_realtime_session_config(
             resolved,
-            organization_id=organization_id,
+            organization_id=resolved.organization_id,
             conversation_id=UUID(int=0),
             agent_id=UUID(int=0),
-            session_id="voice-config-capability-inspection",
+            session_id=_INSPECTION_SESSION_ID,
         )
         adapter = RealtimeFactory.create(session_config, resolved)
-        return adapter.capabilities.model_dump(mode="json")
+        return _realtime_capabilities(adapter.capabilities)
+
+
+def _stt_capabilities(native: STTCapabilities) -> STTNativeCapabilitiesRead:
+    """Project only public recognition fields across the socket/module boundary."""
+    return STTNativeCapabilitiesRead(
+        streaming=VoiceFeatureSupport(native.streaming.value),
+        batch_recognize=VoiceFeatureSupport(native.batch_recognize.value),
+        interim_results=VoiceFeatureSupport(native.interim_results.value),
+        vad_events=VoiceFeatureSupport(native.vad_events.value),
+        turn_detection=VoiceFeatureSupport(native.turn_detection.value),
+        word_timestamps=VoiceFeatureSupport(native.word_timestamps.value),
+        speaker_labels=VoiceFeatureSupport(native.speaker_labels.value),
+        language_detection=VoiceFeatureSupport(native.language_detection.value),
+        custom_vocabulary=VoiceFeatureSupport(native.custom_vocabulary.value),
+        punctuation=VoiceFeatureSupport(native.punctuation.value),
+        profanity_filter=VoiceFeatureSupport(native.profanity_filter.value),
+        aligned_transcript=VoiceFeatureSupport(native.aligned_transcript.value),
+        supported_encodings=tuple(
+            VoiceNativeEncoding(item.value) for item in native.supported_encodings
+        ),
+        supported_sample_rates=native.supported_sample_rates,
+    )
+
+
+def _tts_capabilities(native: TTSCapabilities) -> TTSNativeCapabilitiesRead:
+    """Synthesis capabilities are observations, not platform policy switches."""
+    return TTSNativeCapabilitiesRead(
+        streaming=VoiceFeatureSupport(native.streaming),
+        batch_synthesize=VoiceFeatureSupport(native.batch_synthesize),
+        native_interruption=VoiceFeatureSupport(native.native_interruption),
+        aligned_transcript=VoiceFeatureSupport(native.aligned_transcript),
+        emotion_control=VoiceFeatureSupport(native.emotion_control),
+        speed_control=VoiceFeatureSupport(native.speed_control),
+        voice_cloning=VoiceFeatureSupport(native.voice_cloning),
+        context_continuity=VoiceFeatureSupport(native.context_continuity),
+        word_timestamps=VoiceFeatureSupport(native.word_timestamps),
+        sample_rates=native.sample_rates,
+        languages_count=native.languages_count,
+    )
+
+
+def _realtime_capabilities(
+    native: RealtimeCapabilities,
+) -> RealtimeNativeCapabilitiesRead:
+    """Keep session update modes and audio facts explicit in the API projection."""
+    return RealtimeNativeCapabilitiesRead(
+        full_duplex_audio=VoiceFeatureSupport(native.full_duplex_audio.value),
+        input_transcription=VoiceFeatureSupport(native.input_transcription.value),
+        output_transcription=VoiceFeatureSupport(native.output_transcription.value),
+        native_turn_detection=VoiceFeatureSupport(native.native_turn_detection.value),
+        native_interruption=VoiceFeatureSupport(native.native_interruption.value),
+        tool_calling=VoiceFeatureSupport(native.tool_calling.value),
+        platform_message_speech=VoiceFeatureSupport(native.platform_message_speech.value),
+        session_update_mode=VoiceSessionUpdateMode(native.session_update_mode.value),
+        voice_selection=VoiceFeatureSupport(native.voice_selection.value),
+        session_resumption=VoiceFeatureSupport(native.session_resumption.value),
+        context_compression=VoiceFeatureSupport(native.context_compression.value),
+        input_sample_rates=native.input_sample_rates,
+        output_sample_rates=native.output_sample_rates,
+    )
 
 
 def _platform_features(config: VoiceConfig) -> list[VoicePlatformFeatureRead]:
@@ -188,49 +260,49 @@ def _platform_features(config: VoiceConfig) -> list[VoicePlatformFeatureRead]:
     )
     return [
         _feature(
-            "interruption_handling",
+            VoicePlatformFeature.INTERRUPTION_HANDLING,
             "Interruption handling",
             True,
             "Eylo coordinates user speech, Agent playback, and interrupted turns.",
         ),
         _feature(
-            "silence_policy",
+            VoicePlatformFeature.SILENCE_POLICY,
             "Silence policy",
             silence_enabled,
             "Eylo owns reminders and silence-based call termination.",
         ),
         _feature(
-            "duration_limit",
+            VoicePlatformFeature.DURATION_LIMIT,
             "Duration limit",
             config.conversation_control.max_duration_seconds > 0,
             "Eylo ends the session when its configured duration is reached.",
         ),
         _feature(
-            "recording_capture_and_upload",
+            VoicePlatformFeature.RECORDING_CAPTURE_AND_UPLOAD,
             "Recording capture and upload",
             config.artifacts.audio_storage_enabled,
             "Eylo records the primary flow and uploads through the selected storage config.",
         ),
         _feature(
-            "recording_notification",
+            VoicePlatformFeature.RECORDING_NOTIFICATION,
             "Recording notification",
             config.compliance.recording_consent_required,
             "Eylo attempts the notification without making it a call gate.",
         ),
         _feature(
-            "transcript_persistence",
+            VoicePlatformFeature.TRANSCRIPT_PERSISTENCE,
             "Transcript persistence",
             config.artifacts.transcript_storage_enabled,
             "Eylo persists the canonical post-call transcript.",
         ),
         _feature(
-            "post_call_pii_processing",
+            VoicePlatformFeature.POST_CALL_PII_PROCESSING,
             "Post-call PII processing",
             config.compliance.redact_pii_in_transcripts,
             "Eylo builds redacted canonical storage after the live flow.",
         ),
         _feature(
-            "session_observability",
+            VoicePlatformFeature.SESSION_OBSERVABILITY,
             "Session observability",
             (
                 config.observability.metrics_enabled
@@ -239,7 +311,7 @@ def _platform_features(config: VoiceConfig) -> list[VoicePlatformFeatureRead]:
             "Eylo owns session metrics and provider latency tracking.",
         ),
         _feature(
-            "primary_agent_voice_pinning",
+            VoicePlatformFeature.PRIMARY_AGENT_VOICE_PINNING,
             "Primary Agent Voice Config pinning",
             True,
             "Eylo keeps the primary Agent's published Voice Config for all handoffs.",
@@ -248,7 +320,7 @@ def _platform_features(config: VoiceConfig) -> list[VoicePlatformFeatureRead]:
 
 
 def _feature(
-    key: str,
+    key: VoicePlatformFeature,
     label: str,
     enabled: bool,
     description: str,

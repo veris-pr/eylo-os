@@ -4897,6 +4897,493 @@ Next: connected STT/TTS provider material and native provider flows, remaining
 F2 producer/caller contracts, and the rest of F3–F10. No deployment, migration,
 operator DB mutation, commit, history rewrite or dependency upgrade.
 
+### F4 progress: Bedrock embedding native boundary
+
+2026-09-09: followed verification and runtime resolution through the embedding
+factory, Titan V2 invocation, stream decoding, vector validation and the shared
+Knowledge/Memory embedding runtime. Native contracts now live in
+`sockets/embedding/vendors/bedrock_wire.py`; vendor errors translate to the neutral
+`EmbeddingErrorCode`. OpenAI/Voyage error producers and the runtime dimensional
+guard also retain this enum, preserving public strings and retry decisions.
+
+Evidence ledger:
+
+| Operation | Authority and contracts | Consumer/proof | Still unverified |
+| --- | --- | --- | --- |
+| Titan V2 `InvokeModel` | Installed aioboto3 15.5.0, aiobotocore 2.25.1, botocore 1.40.59; [V2 JSON](https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-titan-embed-text.html), [InvokeModel](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_InvokeModel.html); `TitanEmbeddingRequest`, `BedrockInvocationResponse`, `TitanEmbeddingResponse`, `BedrockErrorResponse` | Factory → SDK operation → actual `StreamingBody` → vector → `EmbeddingRuntime`; real verification caller exercises both intents | Live AWS invocation, configured-org KB/Memory ingestion and DB index readback |
+
+94 temporary function assertions pass: request spelling and privacy, copied invalid
+requests, supported dimensions, missing/malformed native fields, non-finite vectors,
+typed error/retry classification, sequential input correspondence, empty batch,
+cancellation and client exit, runtime and verification formation. The actual SDK
+Stubber validates operation parameters without issuing an AWS request. Neutral
+error regressions cover the OpenAI and Voyage classifiers; they do not establish
+those vendors' native request/response completion. The existing one-request-per-text
+behavior, semantic options and coordinate-space identity remain unchanged.
+
+The embedding socket/shared-contract/runtime type gate passes without suppressions.
+At this point verification still had two diagnostics from a dataclass declaring
+`provider` as enum-or-string while construction replaced it with an enum. The
+following authority slice resolves these without casts. Native OpenAI/Voyage
+embedding bodies, reranking, durable index readback and changed-image product QA
+remain open. No dependencies, DB, configured providers or running services changed.
+
+### F4 progress: embedding material, identity and verification handoffs
+
+2026-09-09: embedding settings and credentials now use provider-owned Pydantic
+objects through validation, service creation, effective config resolution and
+socket construction. `from_input` replaces the old dataclass `validate` factory;
+all consumers use it. Scalar `config`/`secrets` mappings remain explicit projections
+for the shared persistence service, preserving stored field names and omissions.
+Credential objects and the live adapter are excluded from dumps/representations.
+
+Endpoint policy, resolved authority, runtime handles and verification receipts
+are also Pydantic models. Provider identity stays an enum. Known verification
+metadata uses attributes; JSON extensions remain supported with read-only mapping
+bindings. Metadata and settings are copied on validation, not recursively frozen.
+Resolved snapshots check organization, config ID and capability agreement with
+`EffectiveProviderConfig`; runtime construction revalidates copied snapshots.
+Verification rejects invalid/mismatched provider receipts before the write while
+keeping provider I/O outside transactions.
+
+86 function assertions pass across OpenAI, Voyage and Bedrock material: mapping
+projections, normalization, secrets, invalid/cross-provider copies, strict revisions
+and flags, wrong authority identity, allowlisted custom endpoints, runtime handles,
+metadata and verification guards. Actual lifecycle/verification services are used
+with DB/provider effects substituted. The 94 native Bedrock regression assertions
+remain passing, including its actual SDK Stubber path. No live AWS or index DB
+readback proof is implied.
+
+The probe exposed the exact foundation input shape: `MappingProxyType`. Strict
+Pydantic models reject that directly; field parsing now makes a plain mapping
+copy before validating typed settings/credentials. The first probe also omitted
+the required foundation capability field; that fixture was corrected separately.
+The expanded gate covers the complete embedding config module, native socket
+directory, runtime resolution, translation and verification, with no suppressions.
+Broader embedding deletion-reference typing remains outside this gate. Native
+OpenAI/Voyage bodies are addressed below; retrieval persistence and full F0–F10
+completion remain open.
+
+### F4 progress: OpenAI and Voyage embedding HTTP boundaries
+
+2026-09-09: traced config → adapter batch → actual SDK/HTTP request → indexed vector
+validation. Vendor-owned request and consumed-response models now live in
+`openai_wire.py` and `voyage_wire.py`. Voyage no longer selects response dictionary
+keys or drops non-object entries. OpenAI revalidates SDK model attributes rather
+than relying on the SDK's permissive object construction. SDK types remain inside
+the adapter; the runtime still receives the neutral vector contract.
+
+Authority: installed/pinned OpenAI 2.14.0, installed HTTPX 0.28.1 and Pydantic
+2.11.10; [OpenAI create embeddings](https://developers.openai.com/api/reference/resources/embeddings/methods/create),
+[Voyage text embeddings](https://docs.voyageai.com/reference/embeddings-api).
+The installed SDK source confirms its implicit base64 request and decoding step;
+that behavior is retained, as are existing batch sizes, exact endpoint selection,
+Voyage intent/no-truncation policy and semantic identity. Unused response metadata
+is not required merely because the native vendor documents it.
+
+229 temporary function assertions pass using the actual OpenAI SDK over HTTPX
+MockTransport and Voyage's actual HTTP client path. Coverage includes exact request
+payloads, batch boundaries/order, missing/duplicate/boolean/string indices,
+non-numeric and empty vectors, inconsistent dimensions, malformed/empty payloads,
+copied invalid models, private snapshots, base64 decoding, HTTP failure categories,
+transport failures and cancellation/client closure. No vendor calls or DB writes.
+
+The probe found an SDK pre-validation path: malformed list entries raise an
+attribute error in OpenAI's base64 post-parser before Eylo sees the response.
+Decoding errors are now normalized at that SDK invocation boundary as retryable
+`invalid_response`, not generic non-retryable provider errors. The regression failed
+for this exact case before the fix. A separate fixture mistake supplied a nonexistent
+`vendor` field to `EmbeddingConfig`; the fixture was corrected without changing
+that public contract. Response validation and status classification retain typed
+error codes; HTTP status comparisons use `HTTPStatus`.
+
+The complete embedding type gate passes without suppression. All eight local
+typed/import hooks pass (the LLM hook retains its existing one suppression).
+Native Bedrock's 94 assertions and material/verification's 86 assertions pass
+alongside this slice. Full backend lint and documentation validation pass: 46
+pages, 284 links, 90 packages, 1,176 Python modules, 6,181 docstrings, 47 diagrams.
+Live vendor calls,
+Knowledge/Memory persisted index readback, remaining F4 ownership contracts and
+changed-image product QA are still required. No dependencies, migrations, operator
+configuration, deployment or Git history changed.
+
+### F4 progress: persisted embedding identity projections
+
+2026-09-09: traced active/source/target identity reads through Knowledge ingestion,
+runtime resolution, reindexing and Memory formation/reconciliation/reindexing.
+`embedding_records.py` now declares Pydantic row projections with the exact
+persisted fields. The three readers validate ORM input at that boundary, then
+read typed attributes. The old arbitrary prefix and interpolated `getattr` names
+are gone. Semantic-options columns in Knowledge/Memory models now declare
+`dict[str, JsonValue]`; their explicit JSONB types, nullability and DDL are unchanged.
+
+The restoration boundary validates complete configured identity with strict scalar
+types, then verifies the existing hash. A complete nullable projection with no config
+still returns no space. Missing fields, boolean/string revisions or dimensions,
+wrong field families and corrupt hashes fail validation. Config/revision remain
+execution identity and are not added to coordinate-space hash inputs. No database
+queries/writes, lazy relationship traversal, or new migration is introduced.
+
+An initial read-only Protocol design failed against SQLAlchemy descriptors in the
+installed Pyrefly checker (`organization_id` descriptor mismatch). It was replaced,
+not cast or suppressed: untrusted ORM input is validated once into a detached
+Pydantic projection. Typed domain code does not receive an unchecked object.
+
+276 temporary function assertions pass across 14 real ORM/prefix combinations:
+registered SQLAlchemy mappers, actual column existence/JSONB types, active/source/
+target projections, nullable state, invalid scalar types, missing authority,
+cross-org/hash mismatches, copied-model revalidation and isolation from mutable
+source mappings. These are real model/transform proofs, not DB round trips or live
+index readback. Native Bedrock and material/verification regression probes are
+also rerun. The local embedding hook includes the new projection and Knowledge/
+Memory owner model files; the Knowledge job file retains four pre-existing
+storage-authority diagnostics and is not advertised as type-clean.
+
+The broader Knowledge/Memory module and pipeline check has 67 diagnostics before
+and after this change; normalized comparison shows no added/removed diagnostic.
+Those remaining caller, repository, storage-authority and durable execution issues
+remain part of the full hardening objective. Typed persistence producers, DB
+readback, reranking and changed-image QA remain open. No operator data, provider
+config, migration, dependency, deployment or Git history changed.
+
+### F4 progress: embedding identity writers and cutover
+
+2026-09-09: Knowledge ingestion/reindex and Memory reindex writers now construct
+active/source/target records through explicit `EmbeddingSpace` projection methods.
+`to_columns()` is the serialization boundary for ORM constructor and SQL-update
+kwargs, excluding the tenant column that remains owned by the service. It is not
+a new dynamic domain dictionary. Input space instances are revalidated before
+projection; incorrect values introduced with `model_copy` cannot bypass that guard.
+
+Both reindex services no longer generate column names from a prefix or mutate
+records using `setattr`. Staging, active assignment and clearing name actual model
+attributes. Memory's assignment helpers do not own lifecycle policy; existing
+service branches still decide required/active state, recovery and emitted events.
+The existing transaction scope, flushes, cutover SQL and failure classes remain.
+
+348 temporary function assertions pass, including the prior 276 read checks.
+New coverage proves projection → actual ORM → restored-space round trips, exact
+PostgreSQL UPDATE parameter names, UUID preservation, detached JSON, invalid
+copied input refusal before assignments, complete target clearing, stage/cutover,
+and the actual Memory `record_verified_space` branches with DB/event effects
+substituted. Empty Knowledge ingestion projection remains empty. Source/target job
+payloads preserve all existing column names and values.
+
+Two probe assumptions were corrected from source evidence: SQLAlchemy adds the
+existing `updated_at` on-update binding; missing reindex targets raise the existing
+Knowledge/Memory domain errors rather than `ValueError`. Neither required a product
+change. The 86 material/verification and 94 native Bedrock regression assertions
+pass. All eight local typed/import hooks and full backend lint pass. The broader
+Knowledge/Memory check still has the same 67 diagnostics after normalizing line
+offsets, with none added or removed by this slice.
+
+This does not prove a live worker cutover or persisted pgvector readback. Remaining
+Knowledge/Memory diagnostics, further persistence producers, reranking and
+changed-image end-to-end QA remain in F4/full-platform scope. No dependency,
+migration, deployment, operator DB/provider data or Git history changed.
+
+### F4 progress: Knowledge storage-authority restoration
+
+2026-09-09: The shared corpus/upload-job restoration helper now explicitly
+narrows nullable storage fields before constructing `StorageAuthority`. Inline
+text jobs intentionally have no storage authority and are refused with the
+existing `InvalidStorageLocator` family. Valid rows retain the canonical UUID,
+revision, provider, location and key validation. The two JSONB authority columns
+now declare `dict[str, str]`; column types and nullability are unchanged.
+
+49 temporary function assertions pass with actual corpus/job ORM instances:
+complete authority, absent fields, malformed UUID/revision/provider/location,
+detached location mappings, locator identity and invalid object keys. The probe's
+initial model-registration import was corrected to `eylo.common.models` from the
+existing verified harness; no application import path changed.
+
+The Knowledge jobs file is now included in the local embedding type gate. All
+eight typed/import hooks and full backend lint pass. The broader Knowledge/Memory
+check drops from 67 to 63 diagnostics. This slice does not prove a live object
+download or DB readback; remaining diagnostics and changed-build QA are pending.
+No migration, operator data, provider config or deployment changed.
+
+Browser smoke QA used the existing Eylo Development org and its configured
+`QA Core Mixed Agent`. The widget issued `memory_recall` and displayed the answer;
+the console conversation `01a084d2-ce00-77d1-9be8-ca04ff4a0908` shows the completed
+tool call/result, Bedrock reranking applied, and completed background task/result
+(seven persisted messages). Console session expiry redirected to login; signing
+in restored the conversation-list destination. Only a QA conversation/messages
+were added. This exercises the already-running image, not the edited backend.
+
+### F4 progress: Memory recovery contracts
+
+2026-09-09: `MemoryError` now accepts `MemoryRecoveryPolicy` rather than a
+retry-policy boolean. `TERMINAL` retains the existing default; explicit transient
+paths use `RETRY`. All Memory constructors in pgvector, dependency resolution,
+recall, reconciliation and formation were migrated. The read-only `.retryable`
+projection preserves existing worker classification. Embedding-to-Memory policy
+translation remains at the pipeline boundary; neither capability imports the
+other's policy. No retry timing, attempts, transaction or persistence schema
+changed.
+
+The formation/reindex/recall pipeline imports now use the established
+`MemoryProviderError` alias. This removes a Pyrefly collision with the Python
+built-in `MemoryError`, not a runtime import bug: probes establish the alias is
+the canonical domain class and allocation errors remain internal failures.
+
+73 temporary function assertions pass with actual exception contracts, embedding
+runtime, ORM rows and worker functions. Coverage includes enum refusal,
+terminal/retry classification, stale reconciliation classification, document and
+query embedding translation, safe messages, cancellation propagation, and failure
+recording/reservation release/transaction exit before a worker retry is raised.
+DB/service/provider effects were substituted; this is not live retry/restart QA.
+
+A new local type hook covers the Memory contract, socket exports, resolver and
+reindex worker. All nine typed/import hooks and full backend lint pass. The broad
+Knowledge/Memory region has 58 remaining diagnostics, down from 63. Remaining
+worker watermark types, optional index authority, cursor-result contracts,
+provider payload work and rebuilt-image QA still belong to the full objective.
+
+### F4 progress: required Memory index authority and typed reindex facts
+
+2026-09-09: The Memory reindex service separates `_find_index` (optional) from
+`_require_index` (returns an index or raises the existing domain error). Required
+callers no longer inherit a nullable return type from a boolean flag. A private
+`_IndexLock` enum replaces independent shared/exclusive booleans; tenant/config
+filters and transaction ownership remain unchanged.
+
+`ReindexFact` is now a strict frozen Pydantic object, not a dataclass. DB rows are
+validated directly; copied objects are revalidated before vector writes. UUIDs,
+text and positive state revisions retain their meaning rather than being coerced.
+Content is excluded from repr. SQL staging requires a `CursorResult` with a zero
+or one affected-row count; cutover requires a reported count equal to source
+facts. Unknown result/count shapes refuse activation, including an unknown count
+for an empty source.
+
+134 temporary function checks pass: actual ORM models, PostgreSQL query
+compilation, SQLite-produced SQLAlchemy rows/results, optional/required lookup,
+all lock modes, invalid lock refusal, copied fact refusal before DB calls, and
+staging/cutover outcomes with service DB effects substituted. The existing writer
+probe was updated to substitute `_find_index` rather than the removed `_index`;
+its 348 assertions still pass. No production test suite was added.
+
+The complete reindex service is now part of the Memory type hook. All nine local
+typed/import hooks pass. Knowledge/Memory diagnostics drop from 58 to 39. Live
+PostgreSQL reindex/cutover remains unproven by these function checks; operator
+data, providers, migrations and deployment were untouched.
+
+### F4 progress: formation watermark contracts
+
+2026-09-09: Formation message positions and cancellation results are frozen
+Pydantic objects rather than dataclasses. Positions require timezone-aware
+timestamps and UUIDs; their explicit order key preserves timestamp/UUID ordering.
+Requested/processed selection uses `_CursorWatermark` instead of a boolean.
+
+Python restoration now matches the existing DB pair invariant: both absent means
+empty; a half-present timestamp/ID pair is refused. Previously the cursor helper
+treated either missing field as an empty watermark. Requested-position assignment
+revalidates copied objects. Job range loading validates its bounds before opening
+a read transaction. SQL tuple bounds use `literal()` parameters with unchanged
+exclusive-start/inclusive-end semantics. No ordering guarantee for platform
+events was added; this concerns only deterministic DB message pagination.
+
+65 temporary function assertions pass against actual ORM models, Pydantic values
+and PostgreSQL query compilation. Coverage includes timestamp/UUID tie-breaks,
+timezone equivalence, incomplete pair refusal, invalid selection, copied object
+refusal, cursor advancement fences, range limits and refusal before DB reads.
+Query execution was substituted; live worker replay is not proven by this probe.
+
+The formation worker is included in the Memory type gate. The broad
+Knowledge/Memory check drops from 39 to 29 diagnostics. Full backend lint passes.
+Remaining query/return contracts and provider payload work stay open under the
+platform-wide objective. No migrations, operator data or deployment changed.
+
+### F4 progress: operator Memory query contracts
+
+2026-09-09: The operator service uses an explicit `AsyncSession` and boolean SQL
+expression list. Its internal `list` method is named `list_memories` so it no
+longer shadows the built-in collection type in later annotations. The route
+calls the renamed method; public paths, filters, pagination and responses are
+unchanged. Both files are included in the Memory type gate.
+
+64 temporary function assertions pass: resolved annotations, tenant-scoped SQL,
+lifecycle/recall/content/integrity filters, wildcard escaping, all sort/direction
+pairs and empty-page projections. PostgreSQL query compilation uses real models;
+DB execution and integrity lookup are substituted. This is not live DB evidence.
+The broad Knowledge/Memory check drops from 29 to 22 diagnostics; remaining
+reconciliation, Knowledge query and result contracts are still open.
+
+The existing console and widget were reachable with the Eylo Development session.
+Memory list navigation loaded the saved facts. A read-only widget query with
+QA Core Mixed Agent called `kb_query`, returned the configured Knowledge result
+with Bedrock reranking and citation `K1`, and did not substitute a remembered
+fact for absent document evidence. Conversation
+`01a084d2-ce00-77d1-9be8-ca04ff4a0908` displayed all 14 persisted messages in
+completed states, including the tool and background-task results. This is a
+baseline check of the running image, which predates the current backend edits;
+it does not prove deployment of the operator-contract change. No provider
+configuration or source data was changed by the QA request.
+
+### F4 progress: reconciliation positions and effect contracts
+
+2026-09-09: Reconciliation positions and counts are frozen Pydantic models.
+Positions preserve timestamp/UUID ordering through an explicit order key;
+requested/processed cursor selection is an enum. Job ranges reject incomplete
+pairs and non-advancing bounds before reading changes. SQL tuple bounds use
+typed `literal()` parameters. Partition helpers have explicit cursor/job types
+and ORM owner-column selection, replacing dynamic attribute lookup.
+
+Related-fact revision objects remove nullable identity/revision values from
+effect-set and revision-fence consumers. Batches, candidates, inputs, settlements,
+decisions and proposals revalidate copied model instances at persistence and
+application boundaries. Valid wire/persisted JSON remains unchanged. This does
+not add a vendor type, migration, reconciliation policy or event ordering promise.
+
+149 temporary assertions pass against actual Pydantic/ORM objects and compiled
+PostgreSQL queries. They cover malformed/copied contracts, exclusive/inclusive
+bounds, all owner scopes, partition filters, stale/repeated revisions, all four
+decision outcomes through `apply`, expiry direction, relationship endpoints,
+cursor advancement and completed-job replay. DB execution, work receipts and
+event delivery are substituted; live worker/DB application remains unverified.
+The existing 73 Memory recovery assertions also pass.
+
+The reconciliation contract/service join the local Memory gate. The broader
+Knowledge/Memory check drops from 22 to 8 diagnostics, all in Knowledge paths:
+worksheet typing, DML row counts, storage-key narrowing and query-result handling.
+Zero Memory diagnostics is not a claim that every Memory payload boundary or
+the platform-wide typing objective is complete.
+
+### F4 progress: Knowledge query, extraction and DML contracts
+
+2026-09-09: The eight remaining diagnostics in the Knowledge/Memory module and
+pipeline check are resolved. Knowledge searches snapshot ID/name into typed
+Pydantic work objects rather than retaining ORM rows after the configuration
+transaction. Query observation and deletion/reindex result dataclasses are also
+Pydantic models. Invalid scope filters raise a local parse error instead of
+returning a boolean sentinel; public error payloads and empty-scope semantics
+remain unchanged.
+
+A function probe reproduced a cancelled adapter search becoming `TypeError`:
+the gather-result loop excluded only `Exception`, then tried to iterate the
+returned `CancelledError`. Non-ordinary exceptions now propagate; ordinary
+provider errors still produce the established unavailable/degraded result.
+
+Storage fetch/extraction uses the validated locator key. OpenPyXL read-only
+worksheets reuse `Worksheet` methods without subclassing it, so extraction uses
+a small runtime-checked public value interface instead of suppressing the
+incompatible inferred self type. Reindex chunks validate actual SQLAlchemy rows
+and copied objects before staging. Staging requires a cursor result with count
+zero or one; deletion requires known nonnegative counts before its event.
+
+66 query/extraction/storage assertions pass, covering exact cancellation,
+ordinary failures, empty/invalid scopes, citations, real in-memory XLSX parsing,
+workbook closure, storage bytes and missing-key refusal. 45 DML assertions use
+actual SQLAlchemy rows/cursors produced by disposable in-memory SQLite plus
+PostgreSQL query compilation. Service DB/vendor effects are substituted; these
+are not live PostgreSQL deletion, cutover or vendor-query proofs. The 348
+embedding writer/read regression assertions also pass. All ten typed/import
+hooks, full backend lint and the documentation verifier pass.
+
+The full Knowledge module/pipeline check joins a local pre-commit/pre-push gate.
+The broader Knowledge/Memory module/pipeline check reports zero diagnostics.
+This is a diagnostic milestone, not full F4 completion: loosely typed query
+payloads, socket dependencies and remaining config/vendor contracts still need
+data-flow hardening and current-image integration QA. No schema, deployment or
+operator configuration changed.
+
+### F4 progress: typed Knowledge result and citation flow
+
+2026-09-09: `pipelines/knowledgebase/query_contracts.py` now owns frozen Pydantic
+candidate, citation, result, observation and response objects. Adapter output
+is converted before interleaving/reranking; granting KB identity remains the
+authority for each result. Final citation labels follow result ordering, and
+reranking records the original retrieval score without mutating candidates.
+The public query wrapper serializes once at the agent-tool boundary and emits
+the separately typed observation. No new vendor/platform dependency was added.
+
+112 temporary assertions pass: the prior 66 query/extraction/storage checks plus
+46 typed result checks covering round-robin ordering, top-k, reranked order,
+retrieval provenance, citation labels, exact optional-field omissions, private
+content representation, copied-model refusal, finite scores and observation
+exclusion. Invalid adapter scores follow the existing per-KB unavailable path;
+observation failure cannot fail retrieval. Probes use real models and functions
+with DB, provider and event delivery I/O substituted. They are not current-image
+live vendor evidence. Existing public field names and values remain unchanged.
+All ten local typed/import hooks, full backend lint and documentation validation
+pass. The Knowledge/Memory module/pipeline check remains at zero diagnostics.
+
+Remaining F4 work includes socket dependencies and reranking/config/vendor
+contracts. Zero diagnostics in Knowledge/Memory does not establish platform-wide
+completion. Current-image browser QA remains an acceptance requirement; the
+attempt following this slice was blocked by the locked Mac. No DB, migration,
+provider configuration or deployment was changed by this slice.
+
+### F5 progress: reranking result and recovery contracts
+
+2026-09-09: traced shared reranking results through Bedrock/Cohere/Voyage adapters,
+the bounded stage, Knowledge citations and Memory selection. The original
+`RerankResult` accepted boolean/numeric-string inputs and negative indices;
+its score could be mutated to NaN after construction. Existing native response
+guards reject these raw responses, but the shared stage did not revalidate the
+canonical score. This was a local contract gap, not evidence of live corruption.
+
+Results and ranking metadata are now strict frozen Pydantic models, including
+revalidation of copied instances. The bounded result dataclass is a Pydantic
+model, and its stage validates the entire selection list before dereferencing
+candidate indices. Invalid lists, counts, indices or scores retain explicit
+degraded retrieval fallback. Ordinary unexpected implementation errors are not
+blanket-swallowed. Cancellation still propagates.
+
+Normalized adapter error codes, recovery policies, truncation policies and safe
+ranking reasons are separate named enums. Bedrock native error classification
+stays vendor-owned; no module/provider catalog leaks into sockets. Public
+status/reason strings are unchanged, with read-only `retryable` and `truncates`
+predicates for compatibility. Recovery policy does not add inline retries.
+
+211 temporary function assertions pass: strict/copy/frozen result guards, every
+normalized error/recovery mapping, HTTP and Bedrock error classification, exact
+ranking metadata, candidate/content budgets, malformed response degradation,
+real asyncio deadline and external cancellation, Memory fallback consumers, and
+all three adapters' closure paths. HTTP/AWS, DB and provider I/O are substituted;
+this does not establish live vendor or deployed-image operation. All 112 typed
+Knowledge checks and 73 Memory recovery checks also pass.
+
+The new reranking local hook covers common result/recovery contracts, socket
+adapters, the bounded stage and Knowledge/Memory consumers. All eleven typed/import
+hooks and full backend lint pass. The broader reranking config-region check has
+the same four pre-existing provider-union diagnostics. Next: typed config and
+resolved authority, then native request/response schemas and current-image QA.
+No DB, migration, provider configuration or deployment changed in this slice.
+
+### F5 progress: typed reranking config and resolved authority
+
+2026-09-09: reranking settings, API-key/AWS credentials, endpoint policy,
+verification metadata/results and resolved runtime authority now use frozen
+Pydantic models. Provider choice has an exact enum type; constructors no longer
+leave validated `enum | str` declarations behind. Builders consume typed fields
+instead of string-key secret/config lookups. Flat persistence projections retain
+the prior normalized shape, including omitted optional fields.
+
+The resolver compares effective organization/config/capability against the
+request, and checks a requested pinned revision. The pipeline independently
+checks returned identity and observed endpoint/model before building the adapter.
+Invalid copied material is revalidated. Credential fields and adapter objects
+are omitted from ordinary nested dumps and representations; explicit secret
+projection remains available only for the existing encrypted persistence path.
+No endpoint allowlist or historical pinned-revision lifecycle rule was relaxed.
+
+310 temporary assertions pass for baseline config-shape parity across all current
+Bedrock model/region pairs, Cohere hosted/compatible endpoints and Voyage; strict
+settings/credential separation; invalid/mixed/copied input; credential omission;
+create/update refusal before persistence; endpoint/key replacement; owner/config/
+capability/revision mismatch before adapter construction; typed verification and
+public projections; provider I/O outside transactions; verification revision races
+and cancellation. Actual functions and types execute with DB/provider I/O
+substituted. They do not prove live provider acceptance or deployed behavior.
+
+The 211 reranking result/recovery checks and 112 Knowledge regressions also pass.
+The entire reranking config/pipeline/socket region now reports zero diagnostics,
+down from four; the local gate covers that full region. All eleven typed/import
+hooks and full backend lint pass. Next: native reranking request/response contracts
+and remaining F5 retrieval adapters, followed by current-image product QA. No DB,
+migration, configured provider or deployment changed in this slice.
+
 ### F7 progress: resolved STT/TTS material and shared construction
 
 `common/contracts/speech_runtime.py` defines frozen Pydantic inference settings,
@@ -5027,6 +5514,21 @@ Final acceptance must use the existing test organization in the widget, followed
 by console inspection of the same conversation and tool calls, against a runtime
 that actually contains the changed source. Preserve configured providers and data.
 
+Final browser acceptance checklist (user-requested):
+
+1. Start the widget and operator console; verify backend and worker build identity
+   before treating results as changed-source evidence.
+2. Read the private test-organization credential file locally, sign in, and use
+   Eylo Development. Never copy credentials into this plan or QA output.
+3. Navigate the real widget and converse with published agents using their
+   configured providers and tools. Cover each affected capability with an
+   appropriate agent; record unavailable bindings rather than invent defaults.
+4. Open the same conversations in the console. Check message ordering, terminal
+   states, tool arguments/results, and the relevant persisted product outcomes.
+5. Record conversation links, tested build, configured-provider coverage, failures,
+   and unrun cases. Keep fixture checks separate from live-vendor evidence; request
+   user involvement only for consent or interactions that cannot be automated.
+
 ### F7 progress: initial OAuth exchange and state receipts
 
 2026-09-09: initial exchange and refresh now share `OAuthTokenResponse` at their
@@ -5078,19 +5580,1727 @@ Repairs:
   is revoked; active, reauthorization-required and newer connections survive.
 - Activation refuses a revision that changed since consent began. The controller
   releases its lookup transaction before invoking token exchange.
+- Reproduced cleanup dropping consumed expired states without returning their
+  connection ownership receipts. Cleanup now uses one `DELETE RETURNING` for all
+  expired attempts, including consumed states left by failed/cancelled exchanges;
+  the domain guard still preserves active/newer connections.
 
 Evidence: 97 function assertions cover actual controllers/domain guards, state
 replay, wrong callback route, missing installation, cancellation, expiry, revision
 conflicts and post-commit event timing. DB/HTTP effects are substituted. The earlier
 104 initial-exchange assertions still pass. A separate real PostgreSQL probe runs
-22 assertions with current source in a session-private state table: committed
+24 assertions with current source in a session-private state table: committed
 missing-installation/declined/missing-code consumption remains spent after failure.
+Consumed expired attempts now produce cleanup receipts before removal.
 The outer transaction is rolled back and temporary-table removal is verified;
 no public rows, configured credentials, schema or running services are changed.
 
 These checks do not prove concurrent callbacks across separate PostgreSQL sessions,
 every vendor's token authentication format, or changed-build browser acceptance.
 The running image remains older than this source. Full F0–F10 completion is open.
+
+Additional browser baseline: existing console/widget sessions remained logged in
+to Eylo Development. Started QA Dynamic Widget Agent through the widget picker;
+the real agent rendered a required-text feedback form via
+`compound_render_widget__cc8d3cbb`. Submitted a QA marker; the form became disabled
+and the agent acknowledged the exact submitted value. Console conversation
+`01a0849a-fac4-7c72-9e60-92f2efec9a58` shows seven completed entries: user request,
+assistant text, tool call, widget, tool result, widget response and final assistant
+message. Back-navigation updated its preview; loading older conversations appended
+two entries (eight to ten loaded). This is running-image behavior, not verification
+of the OAuth source patch, all providers, voice audio or live OAuth consent.
+
+### F5 progress: Memory material and verified dependency authority
+
+2026-09-09: replaced Memory config, resolved authority, verification facts/results
+and runtime composition dataclasses with Pydantic contracts. Settings expose UUID
+fields; the shared provider-config persistence boundary still receives the same
+string-valued config JSON. Memory's empty credential contract rejects supplied
+keys without echoing their values. The existing boolean authority predicates,
+provider spelling and dependency observation casing remain unchanged.
+
+Verification and runtime readback now reuse one `MemoryDependencyAuthority`.
+Known fields are typed, extra JSON metadata survives round trips, and resolved
+settings must match verified dependency IDs. The service takes that typed
+authority and serializes only when calling shared persistence. Runtime LLM
+comparison uses fields rather than a string-key dictionary. Reindex callers use
+the same new material entrypoint; no transaction, SDK request or index-lifecycle
+change was made. A wrong-capability effective config is rejected explicitly.
+
+An import probe caught an in-progress conversion defect that type checks missed:
+Pydantic could not inspect the static-only completion protocol. Made that protocol
+runtime-checkable without weakening its static keyword/async signature, and added
+Memory verification/resolution imports to the existing runtime gate. Live handles
+are excluded from runtime model serialization and reprs.
+
+Verification: 214 assertions (166 material/legacy-projection and 48 composition)
+cover service creation, current/pinned resolution, dependency refusal, metadata
+write/readback, adapter/callable exclusion, transaction boundaries, verification
+failure and cancellation. Persistence, dependency runtime calls and transaction
+contexts are controlled substitutes; these are not live provider or PostgreSQL
+concurrency proofs. All 11 scoped typing/import gates, backend Ruff and changed
+file formatting pass. Documentation validation also passes. The scoped baseline's
+two provider-type errors are gone.
+
+Next at this checkpoint: type the Memory public API settings/projections and
+remaining Memory operator payloads; then reconcile the remaining full F0–F10 ledger. Final
+changed-build widget/admin acceptance is still required. No DB reset, operator
+config edit, migration, deployment, commit or history change in this slice.
+
+### F5 progress: Memory public config API and console contract
+
+2026-09-09: Memory create/read/verification schemas now expose `MemoryProviders`;
+create/read/update settings use the same `MemorySettings` UUID contract as the
+domain. Controllers serialize at the shared provider persistence boundary and
+validate stored settings before projecting responses. PATCH still replaces a
+complete settings object, preserves omitted config and the existing nullable
+secret-patch map, and rejects explicit top-level null. Provider normalization,
+masked secrets, response aliases and successful JSON values remain unchanged.
+
+Expanded the existing Memory type hook to schemas, controllers and routes. This
+exposed a pre-existing reindex route return mismatch: it promised an API schema
+but returned an ORM row and relied on FastAPI conversion. The route now explicitly
+projects through `MemoryReindexJobRead.model_validate`; no reindex scheduling,
+job state, transaction or authorization behavior changed.
+
+Executed 94 HTTP/contract assertions with the real router, controllers, config
+service, domain aggregates and exception handler. Checks cover create/read/list,
+legacy JSON parity, revision/enable behavior, complete settings replacement,
+malformed inputs, masked/no-credential refusal, null secret patches, cross-org
+refusal, unavailable-credential projection, verification, reindex ORM projection
+and OpenAPI settings shape. Auth, foundation persistence, transactions and
+verification/reindex use cases were substituted. These do not prove live DB,
+provider calls, worker completion or browser acceptance of this source build.
+The preceding 214 material/composition assertions also pass unchanged. All 11
+scoped typing/import gates, backend Ruff and changed-file formatting pass.
+
+Regenerated the console client from a temporary changed-source app with lifecycle
+startup disabled. Console lint, TypeScript and production build pass; Vite retains
+its existing large-chunk warning. No console/widget behavior was changed. The
+remaining Memory operator payloads and full F0–F10 ledger remain open; final
+changed-build widget/admin acceptance is not replaced by the earlier old-image
+browser smoke. No operator config edit, DB reset, migration, deployment or commit.
+
+### F5 progress: Memory metadata, recall audit and operator projections
+
+2026-09-09: traced metadata through `MemoryVendorAdapter.add`, PgVector formation/
+reactivation writes, fact/recall contracts, ORM annotations and operator reads.
+These boundaries now use `dict[str, JsonValue]`, not untyped maps or `Any` values.
+The adapter copies/validates input before provider or DB work, including formation
+replay dispatch. No fixed custom-field schema was invented. Opaque objects,
+non-string keys and non-finite values are refused with a content-free terminal
+Memory error; valid JSON and stored-null-to-empty-object projection are preserved.
+Fact/recall models reject non-finite numbers and omit metadata from reprs while
+retaining explicit JSON output. Reindex API semantic options are typed JSON too.
+
+Recall auditing now requires `AsyncSession` and checks `CursorResult` before the
+existing exact row-count invariant. Owner lookup uses `MemoryLevel` members.
+Subject-label queries unpack typed selected tuples instead of dynamic row fields;
+they retain the same bounded three-query batching, tenant filters and fallback
+order. No schema, SQL predicate, ownership policy, transaction or scheduler change.
+
+Executed 113 assertions: metadata copies/serialization/refusals; all three owner
+levels; recall update PostgreSQL SQL parity against the previous implementation;
+real SQLAlchemy CursorResult/rollback/filter behavior on disposable in-memory
+SQLite; selected-column label queries with actual SQLAlchemy types/results; adapter
+ingress before substituted provider effects; and real FastAPI operator routes with
+controlled ORM/auth/integrity dependencies. HTTP checks include list/detail,
+metadata/provenance JSON, missing/cross-org refusal and invalid stored metadata.
+The HTTP fixture initially guessed `MemoryIntegrityState.CLEAR`; source defines
+`HEALTHY`. Corrected the fixture, not production. SQLite is not a PostgreSQL
+concurrency or schema-migration proof. The async DB driver is not exercised there.
+
+The previous 214 material/composition and 94 config-API assertions also pass.
+All 11 scoped typing/import hooks pass; the Memory hook now includes service,
+operator schemas, adapter base and PgVector implementation. Existing unrelated
+dynamic/raw-SQL/durable helpers remain open rather than being hidden by the gate.
+Regenerated the client from changed-source OpenAPI and verified schema parity
+after the final validation change. Console lint, TypeScript and build pass, with
+the existing chunk-size warning. `JsonValue` deliberately has an open Pydantic
+schema, so generated TypeScript values remain `unknown`; no generator override or
+hand-edited client hides that boundary. No operator data or running product image
+was changed. Changed-build widget/admin acceptance remains pending.
+
+Next: Memory raw SQL row/formation/reconciliation/durable envelope contracts, then
+reconcile full F0–F10 remaining work. This completes the inspected operator
+metadata/label/audit slice, not Memory or platform-wide typing as a whole.
+
+### F5 progress: PgVector Memory row and mutation snapshots
+
+2026-09-09: added adapter-owned `pgvector_records.py` contracts for fact, search,
+locked fact, history, target, duplicate/snapshot and returned history timestamp
+projections. Replaced `_FactSnapshot` dataclasses and dynamic consumed row fields
+with Pydantic values; the common Memory API contracts and module ORM ownership
+remain separate. SQL enum strings are explicitly parsed; UUIDs, aware timestamps,
+finite distances, positive revisions, nullable metadata and exact owner columns
+are validated before downstream use. Unconsumed extra selected columns are ignored.
+Malformed rows become safe terminal Memory errors without fact/provenance detail.
+
+Search/list/history and correction results keep the same public JSON and ordering.
+Target/duplicate snapshots retain hash and state-revision meaning. Correction
+`RETURNING` projection now occurs before history recording and commit rather than
+after commit: malformed output cannot become a committed success followed by a
+decoding failure. The history insert timestamp is likewise validated before the
+reconciliation cursor update. Typed `AsyncSession` helpers use `CursorResult`
+guards for affected row counts. Valid SQL, scope/index/revision guards, callback
+sequence and transaction ownership stay unchanged.
+
+Executed 234 contract assertions with real SQLAlchemy Row/Result objects and the
+installed asyncpg UUID class, controlled session/provider I/O and a captured
+pre-slice adapter. Proved valid JSON/SQL/effect-trace parity for all owner levels,
+retrieval, locked reads, correction no-op/race paths, new/duplicate/reactivated
+facts, targeted updates/deletes, expiry, history insertion and cursor timestamp
+propagation. Malformed fields, owner combinations, non-finite distances, revisions,
+timestamps and SQL result objects are refused before downstream effects where
+applicable. A probe initially compared two distinct mocked session identities in
+history call arguments; corrected the comparison to the operation arguments.
+These are not live PostgreSQL execution/concurrency or provider-completion proofs.
+
+The preceding 113 operator, 214 material/composition and 94 config-API assertions
+also pass. The new row module is covered by the existing Memory type hook. No
+public schema, frontend source, migration, configured provider or running product
+image changed. Changed-build widget/admin acceptance remains pending. Remaining
+Memory formation plan/outcome rows and durable/reconciliation envelopes still
+need typed contracts; full F0–F10 completion remains open.
+
+### F5 progress: Memory formation operations and committed outcomes
+
+2026-09-09: traced formation planning through persisted operations, embedding,
+locked effect selection, atomic application, durable-step replay and outcome
+recovery. Added shared `MemoryOperationBatch` and `MemoryFormationOutcomes`
+Pydantic contracts. The adapter and recovery pipeline now share operation/count
+validation instead of independently interpreting dictionary keys. ORM JSON fields
+retain their storage shape with explicit `JsonValue` annotations. Job counter
+assignment uses concrete attributes instead of string-driven `setattr`.
+
+The adapter-owned effect row requires outcomes and an aware completion timestamp
+together. Malformed or partially completed effects fail safely rather than being
+replayed or treated as new work. Plan policy remains separate from outcome shape:
+a committed ADD has a target ID that an unexecuted ADD plan must not contain.
+Wrapper reprs omit fact content without changing explicit JSON serialization.
+No SQL, table, job state, provider selection or transaction ownership changed.
+
+Executed 218 assertions against captured pre-slice implementations using real
+Pydantic/ORM/SQLAlchemy Row and Result types with controlled session/provider I/O.
+Checks cover list/outcome JSON parity, malformed payloads, count mismatch,
+partial-completion refusal, job counter projection, stored-plan reuse, competing
+insert winner readback, early/raced completion, stopped jobs, missing effects,
+commit guard failure and cancellation. Provider planning/embedding are asserted
+outside the controlled DB transaction; valid SQL/effect traces match the previous
+implementation. These are not live PostgreSQL concurrency or worker proofs.
+
+The previous 234 row/mutation, 113 operator, 214 material/composition and 94
+config-API assertions pass unchanged: 873 assertions including this slice.
+All 11 scoped typing/import hooks, backend Ruff and documentation verification
+pass; the shared formation contract joins the Memory hook.
+One pre-existing LLM suppression remains unchanged. No migration, operator data,
+provider configuration or running image changed. Changed-build widget/admin
+acceptance remains pending. Durable parameter/receipt and remaining reconciliation
+envelopes are still open, as is the full F0–F10 ledger.
+
+### F5 progress: Memory durable inputs, receipts and formation query types
+
+2026-09-09: traced all three Memory workflow entrypoints from `spawn_bound_work`
+ID payloads through task execution and terminal/failure receipts. Added
+pipeline-owned `work_contracts.py`: shared ID-only parameters, workflow-kind enum,
+typed formation/reconciliation/reindex receipts and the existing smaller reindex
+failure receipt. The parser preserves valid UUID/wire-string inputs and safe
+workflow-specific diagnostics; arbitrary objects are no longer stringified into
+UUIDs. Receipts reuse canonical formation/reconciliation count types and validate
+nonnegative counters. Existing successful JSON fields and terminal state values
+remain unchanged.
+
+Moved the existing message watermark value into that contract home for reuse in
+formation ranges. Its serializer preserves ISO offsets rather than changing UTC
+`+00:00` to `Z`. Formation eligibility now takes/returns a typed SQLAlchemy Select
+instead of variadic `Any` columns. Selected timestamp/ID and ORM-pair consumers
+unpack typed tuples. Session helpers, runtime authority comparisons, reconciliation
+batch building and candidate enrichment now have concrete inputs. Formation text
+extraction narrows user/assistant content types instead of using `getattr`; SQL
+already restricts this path to those learnable roles. Non-learnable content is
+explicitly refused at the extractor boundary too.
+
+Executed 294 assertions using actual ORM models, SQLAlchemy results, Pydantic and
+the installed asyncpg UUID type, with controlled transactions/services and captured
+pre-slice implementations. Checks cover task-shape/UUID refusals, receipt JSON for
+all durable states and timezone offsets, invalid counters, terminal workflow
+replay, retry-after-transaction behavior, SDK cancellation cleanup, PostgreSQL
+query/parameter parity, message watermark windows and text/provenance projection.
+No live PostgreSQL execution, provider call, worker restart or browser claim is
+made by these probes. Provider checkpoint decoding remains a separate boundary:
+reconciliation text has an existing parser; reindex vector replay still relies on
+downstream batch/dimension checks and needs explicit finite-vector decoding.
+
+The preceding 873 formation, row/mutation, operator, material/composition and
+config-API assertions pass unchanged: 1,167 checks including this slice. All 11
+scoped typing/import hooks, backend Ruff, changed-file formatting and docs
+verification pass. Existing test-client deprecation warnings and the single LLM
+type suppression remain unchanged.
+
+The full `pipelines/memory/` directory passes Pyrefly and now belongs to the Memory
+hook, replacing partial file coverage. Full platform F0–F10 completion and final
+changed-build widget/admin QA remain open. No task names, checkpoint keys, SQL,
+migrations, operator config, deployment or Git history were changed.
+
+### F5 progress: finite embedding results and reindex checkpoint replay
+
+2026-09-09: traced live embedding output and cached durable vectors into both
+Knowledge and Memory staging. Existing adapter validation ran only on a fresh
+provider call. Reindex replay checked count/dimensions downstream, then converted
+components with `float()` while constructing SQL parameters. A controlled probe
+confirmed that the previous paths passed `[nan,0.0]` to the staging statement.
+This is evidence of a missing pre-write guard, not proof PostgreSQL accepted or
+stored the vector. Replaying a bad checkpoint cannot repair its contents.
+
+Added vendor-neutral `EmbeddingVectorBatch` with strict nested list structure,
+finite numeric components, copied/revalidated values and private reprs. Live
+embedding runtime now validates full count and dimensions as well as component
+values, including query cardinality before indexing its first result. Both reindex
+workers validate fresh/replayed batches against their pinned target before opening
+the staging transaction. Invalid checkpoints translate to terminal product errors;
+vendor transport errors retain their original retry decision. Checkpoint keys and
+list shape, valid vectors, SQL/revision/tenant fences and cutover ownership stay
+unchanged. No adapter protocol or provider configuration changed.
+
+Executed 420 function assertions covering list/copy/finite-number contracts,
+complete counts, dimension errors, live document/query forwarding, fresh versus
+cached reindex steps, refusal before staging, exact valid SQL/effect traces,
+retry propagation, SDK cancellation and asyncio cancellation. The workflow probes
+use actual ORM jobs, embedding runtime, detached source items and both real staging
+methods, with controlled session/provider/worker services. They are not live
+PostgreSQL, provider or restart-recovery proof. The first harness run omitted
+`register_models()` and failed at ORM construction; corrected the harness to use
+the app's explicit bootstrap, not production schemas or import-order side effects.
+
+The preceding 1,167 Memory contract assertions pass unchanged: 1,587 across these
+executed checks. The new contract is in the embedding gate and triggers embedding,
+Knowledge and Memory checks. All 11 scoped type/import hooks, backend Ruff,
+formatting and docs verification pass, with the existing LLM suppression unchanged.
+
+A fresh full-project Pyrefly audit reports 624 errors and four suppressions.
+This is a current inventory, not a claimed reduction from a comparable baseline.
+Largest remaining groups include voice pipelines (143), event listeners (41),
+Agents (39), WebRTC (25), audio downsampling (23), sandbox pipelines (23) and SOR
+runtime/support (22 each). Scope-wide gates are therefore not platform completion.
+Next: follow published-agent definition and tool/provider binding assembly,
+including repository/service type boundaries and their actual consumers, before
+continuing the remaining F0–F10 operation inventory. The type-error count is only
+one signal; unchecked dictionaries, wire shapes and missing live QA still matter.
+Rebuilt-product browser acceptance remains open. No operator DB, configuration,
+migration, deployment or Git history was changed.
+
+### F2 progress: typed Agent publication bindings
+
+2026-09-09: followed draft choices through provider resolution, publication,
+immutable tool grants, revision readback, and service projections.
+
+RCA: provider references were a string-keyed dictionary of nullable tuples;
+publication assembled ORM attributes with `getattr`/`setattr`. Typed Voice Configs
+were serialized to JSON and parsed back to recover executable provider IDs.
+Tool readers relied on SQL filters and DB check constraints without narrowing the
+nullable ORM fields into the exact reference promised by their return types.
+This was a maintainability/type-boundary gap, not evidence of a live cross-tenant
+grant or an incorrect provider selected in an operator run.
+
+Implemented:
+
+- `modules/agents/publication_bindings.py` owns frozen Pydantic provider references
+  and explicit publication bindings. An exact reference requires a UUID and a
+  positive integer revision; unresolved optional choices remain absent. Native
+  UUID compatibility is retained without accepting arbitrary stringifiable objects.
+- Publication resolves the same providers, in the same order and organization.
+  Header/revision column assignments are explicit. Voice provider references come
+  from typed fields; the complete JSON snapshot is created only for storage.
+  Inactive STT/TTS choices in realtime mode remain in that snapshot, not in the
+  executable provider columns.
+- Draft/published tool readers validate their selected row's existing exactly-one
+  binding invariant before passing a non-null reference downstream. Curated tools
+  remain unrevisioned. Queries, tenant filters, constraints and grant authority
+  are unchanged.
+- Agent service schema properties correctly return schema classes. Draft editing
+  retains its already-validated optimistic version across payload reconstruction.
+  Published availability is explicitly translated into its existing owned enum.
+
+Function evidence: 1,499 assertions, including 96 provider/voice combinations
+executed against both pre-change and current publication functions. Real ORM
+models, Pydantic config/tool schemas, lifecycle objects and SQLAlchemy result
+objects are used; DB sessions, template lookup and external service I/O are
+controlled. Published/header projections, exact tool grants, query SQL/parameters,
+resolver calls and failure effects match. Coverage includes missing capability
+dependencies, stale draft versions, revoked revisions, voice binding failures,
+native UUIDs, malformed references, service draft readback, and cancellation.
+The first probe omitted the required `PlatformTool.input_schema`; corrected the
+fixture, not the production contract. These are function/data-flow checks, not
+live PostgreSQL publication, provider use or rebuilt-widget acceptance.
+
+The new local Agent-publication type hook and the preceding 11 type/import hooks
+pass. Backend Ruff, documentation verification and changed-file formatting pass.
+The comparable full-project Pyrefly audit moves from 624 to 613 errors, with four
+existing suppressions unchanged; Agent errors move from 39 to 28. This is scoped
+progress, not completion of F2 or F0–F10. No API/DB schema, operator configuration,
+migration, deployment or Git history changed.
+
+Next: finish the actual Agent/swarm schema and service/repository boundaries,
+then runtime assembly consumers. Shared schema-class/ORM conversion signatures
+remain open; this slice did not change a global generic service to silence them.
+The legacy `AgentToolService.get_by_tool_id_and_agent_id` also discards its fetched
+row and passes a UUID into schema projection; trace its callers and reproduce the
+publicly reachable path before deciding the follow-up correction/removal.
+Voice/provider response streams, other F0–F10 work, and rebuilt admin/widget
+acceptance against the configured QA organization remain open.
+
+### F2 progress: swarm lookup and schema ownership boundaries
+
+2026-09-09: the remaining 28 Agents-module diagnostics are resolved without
+changing API/DB schemas or tenant/lifecycle rules.
+
+- Swarm header lookup now separates optional `_find_header` from required
+  `_get_header`. The previous boolean `required` mode made every successful
+  required lookup statically nullable. Absence still raises `SwarmNotFoundError`
+  before mutation, with the same organization/deleted filters and lock selection.
+- `EyloOrganizationModelSchema` describes records with a required organization.
+  Agent and swarm draft/membership schemas use it instead of narrowing a mutable
+  optional-owner field inherited from the legacy base. All six affected model
+  JSON schemas match their pre-change versions. Other optional-owner consumers
+  were not silently tightened.
+- Swarm revision availability is translated explicitly to `RevisionAvailability`.
+  Membership uses its existing `AgentKind` rather than a dynamic attribute helper.
+  The nullable membership description now has a nullable ORM annotation; its
+  existing nullable DB column is unchanged.
+- Repository membership deletion narrows the actual SQLAlchemy `CursorResult`
+  before using its affected-row count. An unexpected non-DML result fails rather
+  than supplying invented deletion success.
+
+Executed 96 function/data-flow assertions. These use actual swarm ORM tables,
+repositories, services and lifecycle objects against disposable in-memory SQLite,
+with agent resolution substituted and FK enforcement not claimed. They cover
+optional/required/foreign/deleted lookup, draft editing, optimistic conflicts,
+membership, immutable publication/readback, withdrawal, revocation, draft deletion,
+empty/oversized/background/missing-agent refusal, and real DML affected-row counts.
+The existing HTTP transaction adapter still maps absence to 404 and conflicts to
+409. Schema checks include native UUID compatibility and exact JSON-schema parity.
+
+Fixture corrections were not production fixes: SQLite stored the PostgreSQL
+boolean server default `"false"` as text, so active-row queries missed it. The
+fixture supplies the equivalent native `False` during insertion. Independently
+generated external UUIDs are validated as UUIDs rather than compared for literal
+equality across two separate runs. Production defaults and identifier generation
+remain untouched. SQLite checks do not prove PostgreSQL FK enforcement, row locks,
+concurrent publication, restart recovery or live product operation.
+
+The local Agent hook now checks the entire `modules/agents/` directory. All 12
+scoped type/import hooks and backend Ruff pass. The comparable full-project audit
+moves from 613 to 585 errors, with four existing suppressions unchanged. Shared
+`CaseInSensitiveEnum` class-subscript diagnostics still exist in `common/schemas.py`;
+the new required-owner base does not hide or fix them. Likewise a clean Agents
+type gate does not prove remaining unannotated/dictionary/runtime boundaries are
+complete. F0–F10 and rebuilt admin/widget QA remain active.
+
+Next: shared service/repository conversion contracts and runtime Agent/swarm
+assembly, including the already-noted tool lookup projection. No operator DB,
+provider configuration, migration, deployment or Git history was changed.
+
+### F2 progress: shared full-row repositories and schema conversion
+
+2026-09-09: traced all 23 concrete generic repositories and the schema-conversion
+callers in auth, contacts, conversations, tools and OAuth state persistence.
+Every repository model inherits `EyloBaseModel`; the generic now carries that
+UUID-identity contract instead of the wider SQLAlchemy declarative base.
+
+- Full-row reads retain their exact model type and nullability. Collection
+  helpers return lists, matching their signatures. The unused `columns` mode
+  and its builders were removed: they conflicted with ORM-row return contracts.
+  No active caller selected columns through these helpers. Specialized aggregate
+  and projection queries are unchanged; tenant/lifecycle filters remain owned
+  by callers, not inferred by the generic repository.
+- `count_([])` previously emitted a table-less `SELECT count(*)`, returning one
+  regardless of table contents. It now explicitly selects from the model table.
+  Filtered counts retain their existing predicates. This fixes the helper's
+  contract; it is not evidence of an observed incorrect production count.
+- `map_schema_to_model` no longer calls Pydantic's nonexistent `model_dump(only=)`.
+  Explicit target fields use `include`, including inherited model fields, and
+  validation precedes ORM construction. Exact schema-type comparison also
+  projects subclass-only fields out instead of treating a subclass as the target
+  representation. Same-schema conversion preserves Python UUID/enum/date values.
+- Service conversion parameters now describe schema classes rather than schema
+  instances; list conversion correctly advertises ORM rows. OrganizationService's
+  schema property likewise returns a schema class. These annotation repairs do
+  not yet bind the generic service to its concrete model type.
+
+Executed 132 function assertions across nine real schema/ORM pairs and actual
+SQLAlchemy queries against disposable in-memory SQLite. Cases include same-schema
+conversion parity, narrower target projection, inherited fields, refusal before
+ORM construction, full-row lookup/filter/order/pagination, absent rows, empty bulk
+input, and empty/one/three-row table counts. Query SQL and parameters match the
+pre-change implementation outside the deliberate count repair. SQLite fixtures
+use UUID values with hexadecimal letters because its numeric affinity coerces
+all-digit UUIDs; this was a fixture limitation, not a production UUID change.
+
+Agent publication's 1,499 and swarm boundaries' 96 earlier assertions also pass:
+1,727 assertions total for this slice and its regressions. These execute real
+models/services/query construction with controlled provider and transaction ports;
+they do not prove live PostgreSQL concurrency, providers or rebuilt-widget use.
+All 13 local type/import hooks and backend Ruff pass. The repository/conversion
+hook is new; changes to shared repository/services also trigger the Agent hook.
+The full audit reports 566 errors with four existing suppressions, down from 585.
+No public API schema, migration, operator DB, provider config or deployment changed.
+
+Next service slice: carry both schema and ORM types through `EyloBaseService` and
+its 19 concrete subclasses. The shared service's `ModelClass` is currently unbound
+to its repository; a clean file-level gate does not fix that semantic gap. Its
+unused generic `delete_` passes a response schema into repository persistence,
+while `hard_delete_` needlessly reconstructs a row. Neither has active service
+callers in the inspected tree; lifecycle-specific deletion paths must retain their
+existing authority when deciding whether to remove these helpers. The separate
+Agent-tool lookup projection finding remains open. F0–F10 and changed-build
+admin/widget/real-agent acceptance remain required before goal completion.
+
+### F2 progress: concrete service schema and ORM pairings
+
+2026-09-09: `EyloBaseService` now carries two type parameters: the response schema
+and the repository's `EyloBaseModel` subtype. All 19 concrete services declare
+their actual pair; AgentService's custom row projection also accepts its exact
+`AgentsModel`. List conversion accepts iterables without losing the element type,
+and identity lookup requires a UUID rather than `Any`. An explicitly supplied
+conversion schema may still be a create schema, not only the response schema.
+
+The stricter contract exposed and resolved three representation mistakes:
+
+- Removed unused `AgentToolService.get_by_tool_id_and_agent_id`: it discarded
+  the queried row and passed the tool UUID to schema conversion. The active
+  `get_by_agent_and_tool` remains unchanged, including optional absence.
+- `MessageService._persist` returns its already-validated `MessageInDb`. It no
+  longer passes that schema back through an ORM-only conversion helper. Row
+  insertion, conversation timestamp update, voice/session facts and post-commit
+  message event registration remain in their existing order.
+- OrganizationService inherits the base required lookup instead of validating
+  `None` as an organization. Missing identity now raises `EntityNotFound` rather
+  than Pydantic `ValidationError`; existing rows retain their exact projection.
+
+Removed the base service's unused `delete_` and `hard_delete_` helpers. The former
+passed a response schema into SQLAlchemy persistence; the latter reconstructed
+a row only to delete by ID. Source and call-site checks found no active callers.
+All active module-specific deletion paths remain unchanged; no row, API route or
+operator data was deleted. This removes a misleading shared mutation API rather
+than bypassing domain lifecycle or ownership policy.
+
+Executed 132 service assertions cover all 19 generic/schema/repository pairings, actual
+shared reads and conversion against in-memory SQLite, exact query/output parity,
+missing/empty lookup, and actual MessageRepository construction/persistence calls
+through a controlled session port. Message filing checks both absent and present
+user-session identity and verifies the same typed message reaches voice facts and
+post-commit events. Provider I/O, real PostgreSQL locks and event delivery are not
+proven by these probes. The retained generic best-effort `get_by_` exception
+handling is unchanged, not a claim of complete error-boundary hardening.
+The removed helpers' failures were reproduced against the pre-change service:
+UUID projection raises Pydantic `ValidationError`, and schema persistence raises
+SQLAlchemy `UnmappedInstanceError` without changing the original ORM row.
+
+Agent publication's 1,499 assertions and swarm boundaries' 96 assertions pass
+again using a separately loaded pre-change base service for the legacy side;
+the old single-parameter generic is not silently evaluated against the new base.
+The preceding repository/conversion probe's 132 assertions also pass, for 1,859
+function/data-flow assertions including this slice and its regressions.
+All 13 local type/import hooks, backend Ruff and application/OpenAPI construction
+(245 paths) pass. The full audit remains at 566 errors/four suppressions with no
+new diagnostic headings: this slice closes a generic-contract blind spot rather
+than merely reducing a counter. F0–F10 remains open, including unannotated/native
+vendor boundaries, runtime Agent/swarm assembly and changed-build browser QA.
+
+### F2 progress: exact Agent runtime revision projection
+
+2026-09-09: `ExecutableAgentResolver._to_agent` now consumes the actual
+`AgentRevisionModel`. Persisted LLM overrides cross explicitly through
+`LLMOverridesSchema`; published lifecycle uses the owning enum. Valid output is
+unchanged. No schema migration or provider-config rewrite is involved.
+
+Template resolution now rejects an incomplete ID/revision pair, or a nonpositive
+revision, with `InvalidAgentDefinitionError` before invoking the renderer or tool
+lookups. A missing pair remains valid for code-owned background Agents. The prior
+resolver forwarded a missing/nonpositive revision when an ID existed, or silently
+ignored an orphan revision. Publication already intends exact paired references;
+this is a runtime guard, not a fallback to the current template.
+
+Executed 264 function/data-flow assertions use actual revision/schema/template
+types with substituted persistence/service I/O: projection parity for both Agent
+kinds, uploads and generation overrides; invalid overrides; new-work and exact
+assembly across five supported Agent consumers; empty instruction pairs; malformed
+pairs; and unchanged refusal of unavailable exact tool grants. These are not live
+DB/vendor or browser acceptance tests. The initial probe incorrectly included the
+separate campaign-message consumer; it was corrected without changing production
+template policy.
+
+The Agent type hook now covers runtime Agent/swarm resolvers and the swarm worker.
+All 13 type/import hooks, backend Ruff, documentation verification and app/OpenAPI
+construction (245 paths) pass. The full audit reports 565 errors/four existing
+suppressions; diagnostic-heading comparison removes only this resolver's nullable
+template-revision error and adds none.
+
+Admin (5173) and widget (5174) were confirmed running and authenticated/connected
+to the existing Eylo Development QA environment. The browser displays the prior
+23-message conversation, completed KB/memory tool calls, citations and Bedrock
+reranking results. This is readiness/old-image evidence, not new changed-build QA:
+the Docker services have not been recreated with the current typing work. No
+operator data, provider settings, migrations, deployment or credentials changed.
+
+Broader dataclass migration, structured voice snapshots and F0–F10 remain open.
+Do not convert these carriers mechanically: their existing invariant exceptions,
+replacement semantics and nested mutable configuration require consumer-level QA.
+
+### F2 progress: Pydantic executable Agent and swarm carriers
+
+2026-09-09: `ResolvedExecutableAgent`, `ResolvedSwarmMember`,
+`ResolvedSwarmTopology` and `SwarmWorkerRuntime` now use strict, frozen Pydantic
+models with forbidden extra fields and carrier-instance revalidation. They are
+runtime values, not live socket/task owners; no dataclass-only requirement was
+found. Existing `DefinitionRef` and template segment types remain owned by their
+existing modules and are not duplicated here.
+
+Exact Agent identity/revision and nonempty, unique, same-org swarm membership
+remain model invariants. Pydantic wraps those validation failures; the runtime
+resolvers retain `InvalidAgentDefinitionError`/`InvalidSwarmDefinitionError` as their
+public refusal classes, with value-free runtime/member/topology error messages.
+Direct model construction now has Pydantic's standard `ValidationError` behavior.
+The worker's `with_tools` reconstruction validates known fields; it does not use
+unchecked `model_copy(update=...)` or `dataclasses.replace` on a Pydantic model.
+
+Voice configuration narrows from arbitrary object values to JSON values, retains
+its top-level read-only mapping and serializes explicitly. Existing browser and
+telephony consumers still parse the same values through `VoiceConfig`. This does
+not claim recursive immutability or complete structured voice-snapshot work.
+Nested provider credentials retain their existing exclusion from serialization
+and repr. No vendor SDK types, secrets or runtime handles were moved into an API.
+
+Dependency evidence: installed Pydantic 2.11.10;
+[model validators](https://docs.pydantic.dev/2.11/concepts/validators/#model-validators)
+and [model copies](https://docs.pydantic.dev/2.11/concepts/models/#model-copy).
+The first runtime import caught an incorrect field-serializer signature that
+static checking did not detect. The signature was corrected against the installed
+implementation; full app/OpenAPI construction now passes (245 paths).
+
+Executed function/data-flow checks:
+
+- 120 carrier, voice mapping/serialization, frozen-field, malformed-field,
+  unchecked-copy, topology/refusal and real worker-loading assertions.
+- 114 worker-loop assertions: text, empty response, tool continuation, iteration
+  cap, cancellation propagation, exact tool selection and credential preservation
+  without serialization disclosure. Compared with the pre-change worker/carriers.
+- 264 prior resolver assertions plus eight runtime validation/domain-error checks.
+  Combined: 506 assertions. DB/service/provider I/O is substituted; no live
+  request, DB mutation, deployment, migration or persisted probe file.
+
+All 13 existing type/import hooks, backend Ruff, documentation verification and
+diff checks pass. The full type audit remains at 565 errors/four existing
+suppressions; this carrier conversion adds no diagnostic headings. This closes
+four runtime dataclass carriers, not the platform-wide F0–F10 goal. Remaining nested API schemas, typed
+voice snapshots, native vendor operations and rebuilt-product browser acceptance
+remain in scope.
+
+### F2/F7 progress: published voice snapshot boundary
+
+2026-09-09: `VoiceConfigSnapshot` replaces the executable Agent's JSON mapping.
+It reuses `VoiceConfig` rather than duplicating policy fields. Exact-revision
+resolution validates stored settings; browser and telephony consumers use
+`for_call()` to detach nested plans and collections. The publication carrier is
+also a frozen Pydantic model with a positive configuration revision.
+
+Provider selection, pinned revisions, editable API shape and stored DB values
+are unchanged. Partial legacy JSON receives existing schema defaults earlier;
+its effective per-call configuration remains equivalent. A snapshot is only
+top-level frozen. Per-call reconstruction, not recursive freezing, isolates
+mutable nested plans. Missing provider configuration still fails at its owned
+runtime resolver; this adds no provider fallback.
+
+Executed 159 publication/snapshot assertions covering both voice modes, optional
+storage, pinned provider resolution, invalid references, partial stored JSON and
+per-call isolation. Re-ran 1,499 Agent publication/service assertions, 272
+resolver/refusal assertions and 234 carrier/worker-loop assertions. These probes
+substitute service/provider I/O; they do not establish live voice acceptance.
+Browser audio, carrier media and changed-build product QA remain pending.
+
+An additional 15 assertions exercised the actual telephony initialization path
+through its provider-resolution boundary, including independent per-call plans
+and foreign-organization refusal. Focused Pyrefly, backend Ruff, documentation
+verification and diff checks pass.
+
+Browser baseline (existing Docker image, not this refactor): signed into Eylo
+Development, sent `QA_BROWSER_BASELINE_20260909` through QA Core Mixed Agent in
+the widget, then inspected conversation
+`01a084d2-ce00-77d1-9be8-ca04ff4a0908` in the console. Fresh `kb_query` and
+`memory_recall` calls completed with Bedrock reranking applied, citation K1 and
+separate memory provenance. The transcript contained 32 persisted messages,
+including completed tool results and the attached background Agent result.
+The expired console session returned to the same conversation after sign-in.
+No provider configuration, source data or credentials were changed. This proves
+the existing QA setup is usable; it does not close changed-build acceptance.
+
+This supersedes the preceding slice's temporary JSON-mapping representation.
+Full F0–F10 coverage, remaining native vendor contracts and the platform-wide
+type audit remain open.
+
+### F7 progress: typed Voice Config section editing and field metadata
+
+2026-09-09: the section-edit route, controller, orchestration and service use
+`VoiceConfigSection` and JSON-bounded request data. The section validator returns
+the concrete policy-model union or hook list instead of `Any`. Reconstructing and
+validating `VoiceConfig` replaces dynamic attribute assignment. Existing section
+replacement/default behavior, optimistic revisions, provider-reference checks
+and bound-draft advancement remain intact; published revisions are unchanged.
+
+`experimental()` now returns `FieldInfo` for `Annotated` fields, with explicit
+numeric-bound parameters. Defaults, required fields and factories remain visible
+at their declarations. This removes arbitrary keyword forwarding and its two
+pre-existing type errors. The approach follows installed Pydantic 2.11.10 and
+its [documented annotated-field pattern](https://docs.pydantic.dev/2.11/concepts/fields/#the-annotated-pattern).
+
+Executed 690 assertions: all 13 section values/defaults against the pre-change
+validator; actual HTTP route → controller → pipeline → domain/repository calls
+with substituted DB I/O; stale revisions, invalid values and cross-org refusal;
+bound-draft updates; OpenAPI enum/body projection; identical JSON Schema for all
+25 pre-existing API models, including all 27 experimental fields; required-field,
+range and mutable-default isolation checks. One probe initially assumed the
+request alias must be a named OpenAPI component; inspection confirmed FastAPI
+correctly inlines it, so the assertion now checks the actual object/list contract.
+
+Generated the console API types from a temporary localhost backend using the
+current source, placeholder credentials and disabled startup hooks. This does
+not update the operator DB or deploy the changed build. Extended the local voice
+type hook to cover the complete API/section-edit path. Real DB-backed editing,
+voice media and rebuilt-product acceptance remain pending.
+
+Final checks for this slice: 690 section/schema assertions plus 159 existing
+publication/snapshot assertions passed. All 13 local type/import hooks, backend
+Ruff, documentation/link/diagram verification, console lint/typecheck/Vite build
+and diff checks passed. Vite retains its large-chunk warning. The full Python
+audit decreased from 565 to 562 errors, with four existing suppressions. The
+temporary schema server was stopped; the operator deployment was not replaced.
+Remaining voice work includes typed native-capability projections, policy modes
+and complete provider/media acceptance. None of these gates establishes full
+platform completion.
+
+### F7 progress: native voice capability projections
+
+2026-09-09: the compatibility response now uses a `kind`-discriminated union
+with typed STT, TTS and realtime provider identities and native fields. Console
+projections belong to the Voice module; socket capability models remain in the
+sockets. The pipeline translates support, encoding and session-update enums
+explicitly. Removed the generic `dict[str, Any]` response and duplicate realtime
+config parsing. Platform features use named identifiers; platform policy does
+not depend on native capability support. Existing JSON keys and values remain
+unchanged.
+
+Verified all 24 configured factory branches (10 STT, 11 TTS, 3 realtime) against
+the pre-change projection. The probe uses real config validation, factories and
+adapter construction, synthetic credentials and blocked network connections.
+It covers typed response round-trips, invalid support/rate/provider/kind values,
+unknown fields, secret-free output, organization/config forwarding and unchanged
+platform policy. Google requires a structurally valid service account, so the
+probe generates an in-memory test key; Hume uses a synthetic saved-voice ID,
+and Nova uses the actual catalog values. No live provider requests occur.
+
+The real HTTP route/controller/service path also exercises all 24 projections
+with substituted read-only DB/config ports and cross-org refusal. OpenAPI now
+describes the tagged alternatives instead of arbitrary native JSON. Console
+types were regenerated from current source using a temporary local backend with
+startup hooks disabled. Live media, current-build Docker/widget acceptance and
+the remaining policy/vendor contracts are still pending; this slice does not
+establish platform completion.
+
+Checks: 1,516 capability/HTTP assertions and 440 section-edit regression
+assertions pass. All 13 local type/import hooks, backend Ruff, console
+lint/typecheck/Vite build and diff checks pass. The full Python audit remains
+562 errors with four existing suppressions; no new suppression was added.
+Vite retains its existing large-chunk warning. No DB migration, operator-data
+mutation, deployment, commit or persistent probe file was introduced.
+
+### F7 progress: Polly native config, SDK response and cancellation boundary
+
+2026-09-09: traced shared TTS config → factory → Polly construction → verification
+and synthesis → SDK body → ordered audio queue → manager completion/teardown.
+Polly still consumed option dictionaries and returned untyped SDK responses.
+A baseline function probe also confirmed cancellation during verification left
+the client context open: `CancelledError` bypassed its `Exception` handler.
+
+Added vendor-owned `PollyConfig`, engine/sample-rate enums and
+`PollySynthesisRequest`. Private credentials are excluded from serialization and
+the base audio contract no longer retains them. Exact SDK method arguments use
+the request model; generated client values and response bodies are narrowed
+inside the socket. Malformed/non-binary output fails explicitly. Rejected bodies
+with a usable close method are released; cancellation closes the verification
+body and client. Finished worker tasks are awaited rather than abandoned.
+
+Source authority: installed/locked aioboto3 15.5.0, aiobotocore 2.25.1 and
+botocore 1.40.59, plus AWS's
+[SynthesizeSpeech reference](https://docs.aws.amazon.com/polly/latest/APIReference/API_SynthesizeSpeech.html).
+The existing PCM-only request and explicit engine/voice/language selection remain
+unchanged. No SDK upgrade, fallback or new vendor capability was introduced.
+
+The first real-SDK probe exposed a refactor issue: runtime protocol checks do
+not recognize `close()` forwarded by aiobotocore's `StreamingBody` proxy. A small
+concrete-SDK wrapper now exposes its methods to the response contract. This is
+why structural mocks alone were insufficient. Subsequent checks use the actual
+generated SDK client and actual streaming-body class, with AioStubber responses
+and controlled body I/O rather than live AWS requests.
+
+Executed 153 function assertions for all four engines/two PCM rates, optional
+tokens, exact request serialization, private values, invalid/copied configs,
+ordered fragments, drain/completion, cancellation, interruption/next-turn
+isolation, malformed response/byte refusal, safe provider failures, rejected
+client/body cleanup and the real SDK proxy. The existing 1,516 all-provider
+capability/HTTP checks also pass. Added all three Polly files to the local voice
+type hook. Shared TTS carrier typing, Sarvam's native flow, further lifecycle
+policy enums and changed-build/live-provider acceptance remain pending. The
+complete F0–F10 goal stays active.
+
+Final gates: all 13 local type/import hooks, backend Ruff, documentation
+verification and diff checks pass. The full Python audit remains 562 errors
+with four existing suppressions. No public API or frontend contract changed in
+this Polly slice; no DB, migration, deployment or operator configuration changed.
+
+### F7 progress: Sarvam TTS wire and stream ownership
+
+2026-09-09: traced resolved config → actual TTS factory → WebSocket setup/text/
+flush → native audio/final → manager response queue → consumer/recording tap →
+playback completion and teardown. The pre-change probe reproduced two defects:
+documented `event` / `final` was ignored, and cancellation during configuration
+left the socket open and reported connected. Source/document comparison also
+found `target_language_code` instead of the streaming field `language_code`, and
+no explicit codec despite declaring PCM to downstream playback. The documented
+vendor default is MP3; this was not a live-vendor codec reproduction.
+
+Added frozen vendor configuration, model/language/rate/state enums, typed tuning,
+request models and a discriminated response union. Unconfigured tuning remains
+omitted; model-inapplicable pitch/loudness/temperature settings remain reported
+and omitted. Audio uses strict base64 decoding. Native errors are translated
+without their payloads. The resolved canonical sample rate is now requested
+explicitly; a conflicting legacy `speech_sample_rate` is refused. An implicit
+common rate of 24 kHz is therefore requested as 24 kHz even for Bulbul v2, instead
+of silently labelling vendor-default media. No provider, model, voice or language
+fallback was added.
+
+Setup publishes readiness only after configuration is sent. Failed/cancelled
+acquisitions close their sockets. Completed and interrupted streams are detached;
+the next text opens a fresh stream. Stale frames and stale EOF cannot change the
+new turn. Sends cancelled mid-frame retire the stream; polling cancellation of
+`recv()` does not. Close tasks remain owned if their caller is cancelled.
+
+Source authority: Sarvam's current
+[WebSocket reference](https://docs.sarvam.ai/api-reference/text-to-speech/stream),
+[streaming lifecycle guide](https://docs.sarvam.ai/api/api-guides-tutorials/text-to-speech/streaming-api/web-socket)
+and [audio-format guide](https://docs.sarvam.ai/api/api-guides-tutorials/text-to-speech/how-to/set-audio-format-for-output).
+The implementation uses the existing websockets dependency, with no upgrade.
+
+Executed 134 function assertions for config/request/response contracts, private
+fields, model-conditional tuning, rate and text bounds, final state, malformed
+audio/errors, setup/send cancellation, receive polling, late output and repeated
+cleanup. A real loopback WebSocket plus the actual `TTSRealtime` manager passed
+38 further assertions: framing, four stream lifetimes, successive turns,
+interruption/resumption, playback queues, recording bytes, turn outcomes and
+shutdown. The probe's initial outcome-enum import was corrected to its actual
+common-contract owner; no product code changed for that probe error.
+
+These are function/transport checks with controlled vendor messages. They do not
+prove live Sarvam synthesis, human audio quality, or changed-build browser QA.
+The existing test organization and configured providers must be preserved for
+the final widget → agent/tools → admin conversation inspection. Full F0–F10
+completion remains open; no migration or operator-data change is required here.
+
+Regression gates: all 1,516 existing factory/capability/HTTP assertions, all 13
+local type/import hooks, backend Ruff, documentation verification and diff checks
+pass. Full-project Pyrefly remains at 562 errors with four existing suppressions;
+the two Sarvam TTS files have no type diagnostics or suppressions. No frontend
+or public API schema changed in this slice. The shared base config also excludes
+the native credential after construction.
+
+### F7 progress: Deepgram Aura TTS contracts and owned receiving
+
+2026-09-09: traced the existing factory/config adapter, verification connection,
+native receive/control path, manager queues, recording tap, completion and
+interruption. Baseline function probes confirmed `Flushed` never completed a
+turn, EOF left `is_connected` true, interruption and keepalive both sent `Flush`,
+and cancelled acquisition leaked the separately created aiohttp session.
+
+The adapter now uses the existing websockets 15.0.1 transport with manager-owned
+receiving. There is no adapter audio queue or detached receive task to drop data
+or swallow failures. Native config uses codec/rate enums and validates supported
+pairs before I/O. `DeepgramTTSConfig` remains importable from its original adapter
+module. Typed Speak/Flush/Clear requests and a discriminated control union replace
+dict-key parsing. Metadata UUIDs and sequence integers are validated; warnings
+remain nonterminal and do not fabricate completion. Unknown/malformed controls,
+premature EOF and send failures become safe TTS failures.
+
+`Flushed` retires the completed stream. Interruption detaches the old stream
+before sending `Clear`, then closes it; a new reply opens a new connection.
+Untagged late audio cannot affect the next turn, even while Clear's send awaits
+I/O. The deliberate cost is one native handshake per utterance; persistent
+cross-turn context support is not claimed. Keepalive uses WebSocket ping/pong,
+not the rate-limited synthesis Flush command. Close tasks remain owned during
+caller cancellation. This fixes the real stream lifecycle rather than only
+annotating the old untyped queue and background task.
+
+Authoritative sources: Deepgram's current
+[Aura v1 stream API](https://developers.deepgram.com/reference/text-to-speech/speak-streaming),
+[Flush](https://developers.deepgram.com/docs/tts-ws-flush),
+[Clear](https://developers.deepgram.com/docs/tts-ws-clear), and
+[media combinations](https://developers.deepgram.com/docs/tts-media-output-settings).
+No migration to Flux TTS v2, SDK upgrade, default model or provider fallback.
+The installed dependencies were aiohttp 3.14.3, websockets 15.0.1 and Pydantic
+2.11.10; the existing websocket dependency replaces this adapter's HTTP session.
+
+Milestone review, in the required order:
+
+1. Boundaries: native schemas/state remain in the TTS socket; no module/DB access.
+2. Architecture: the factory interface remains stable; the existing TTS manager
+   owns receive scheduling, playback queues, recording and completion drain.
+3. Data flow: 194 function assertions cover accepted/refused media pairs,
+   private config projection, query encoding, controls, final/EOF/errors,
+   interrupted and late output, cancellation and repeated cleanup. A real local
+   WebSocket through `TTSRealtime` passed 38 further playback/recording/turn-outcome
+   assertions across four stream lifetimes. A stalled real handshake cancelled
+   cleanly and the loopback server observed TCP EOF.
+4. Plan alignment: advances F7's native provider path, not full-platform
+   completion. Changed-build widget/admin and live-provider QA remain required.
+5. Readability/security/performance: enums, frozen config, ordinary control
+   branches and typed frames replace dictionaries, manual query concatenation,
+   the hidden queue and swallowed receive errors. The review found that the
+   selected websocket library forwards additional headers across redirects.
+   A provider-local redirect refusal now prevents that additional request; a
+   two-listener loopback check confirmed zero requests at the redirect target.
+   This uses the pinned library's inspected `process_redirect` hook, following
+   the existing Gladia adapter precedent. Other header-bearing WebSocket adapters
+   still need the same explicit redirect audit; no platform-wide security claim.
+
+These checks use controlled vendor messages and placeholder credentials, not
+live Deepgram synthesis or human audio acceptance. No operator config, DB,
+migration, public API schema or frontend source changed in the adapter slice.
+
+Regression gates passed: 1,516 factory/capability/HTTP assertions, all 13 local
+type/import hooks, backend Ruff, documentation verification and diff checks.
+Full-project Pyrefly reports 561 errors and four existing suppressions; neither
+Deepgram file has diagnostics or suppressions. Deployment and browser evidence
+follow below; they do not prove live Deepgram audio.
+
+### Changed-build browser checkpoint and background tool-name correction
+
+2026-09-09: rebuilt the local Eylo image and recreated only the API and three
+worker/scheduler services. Preserved PostgreSQL/Redis volumes, the existing Eylo
+Development org and configured providers. Retained the previous image under
+`eylo-server:pre-type-hardening-20260909`. Existing console/widget processes serve
+this checkout on ports 5173/5174; the initial restricted-network connection test
+incorrectly suggested they were off. Duplicate startup attempts exited on occupied
+ports; the existing processes were reused.
+
+Logged into the console with the private development account and used the real
+widget to create conversation `01a086a6-efbc-7980-ba97-78c09c245f4b` with QA Core
+Mixed Agent. Fresh KB and memory calls returned the expected citation K1 and QA
+color; both persisted results show successful Bedrock reranking. The console
+shows completed user/assistant/tool exchanges. A separate QA Minimal Groq Agent
+conversation returned the correct arithmetic result through the configured LLM.
+
+The background result exposed a pre-existing dispatch mismatch, not a failed
+memory credential: the exact published background revision advertised raw names
+`memory_remember` and `memory_recall`, while context dispatch resolved suffixed
+names. A read-only fixture from the real QA actor confirmed both names and its
+valid memory binding. The background worker now builds its AgentSpec from the
+same task context as dispatch, after resolving durable execution facts. Exact-name
+refusal and per-call capability rechecks remain unchanged; no alias fallback.
+
+A focused probe with that real actor fixture passed advertised/dispatched name
+parity, repeated projection, exact actor identity, dispatch forwarding, raw-name
+refusal and revocation refusal. External execution and availability refresh were
+substituted in that probe. Subsequent live background runs completed, but did not
+request tools: they do not prove live background tool dispatch. The changed worker
+passes Pyrefly with zero errors. Broader F0–F10 completion and human/live voice
+acceptance remain open.
+
+The next widget test called `memory_remember` for a synthetic conversation
+checkpoint, followed by recall. Dispatch succeeded but extraction returned no
+changes and recall did not find the marker. Source tracing found that all levels
+used a personal, year-long fact policy that explicitly rejects temporary task
+context. This contradicts the agreed conversation working-memory purpose.
+Extraction now selects criteria with the authenticated `MemoryScope.level`:
+unchanged user policy, reusable Agent learnings, or conversation working context.
+Prompt provenance advances to `memory-extraction-v3`; ownership, vector identity,
+source-index validation and atomic application are unchanged. Existing facts do
+not require reindexing. A focused function probe checks byte-for-byte user prompt
+parity, all three scope selections through the real `_plan`, source provenance,
+invalid owner refusal and no write-session acquisition during planning. Both
+affected memory files pass Pyrefly with zero errors.
+
+After rebuilding and recreating the four application services again, repeated
+the same conversation-memory request through the widget. `memory_remember`
+returned an `add` for the synthetic checkpoint "amber telescope", memory ID
+`a24f40a5-a783-4e3d-8198-3865746ffaf2`. The subsequent `memory_recall` returned that
+same ID/content at conversation level with Bedrock reranking applied. The widget
+displayed both results live; the console showed the actual arguments, successful
+results and completed messages. This is a verified write/read, not an inferred
+success from assistant prose or a successful no-op.
+
+A separate live QA SOR Audit Agent conversation,
+`01a086b7-29a7-7d81-a6bd-75c5349283ec`, called `issue_search__ee9fc353` for `VER-50`.
+The persisted result returned the Linear issue title, Done/COMPLETED status and
+resolved assignee, reporter, team and cycle display values. Widget and console
+agreed; all five persisted messages were completed. This exercises the authorized
+SOR read projection, not a fresh vendor download or webhook delivery. No external
+records were mutated.
+
+All 13 local type/import hooks, backend Ruff, documentation verification and diff
+checks passed after both corrections. Full-project Pyrefly remains at 561 errors
+and four suppressions. The API is healthy; durable worker, ordinary-task worker
+and scheduler run the rebuilt image. Existing DB, Redis and provider configs were
+preserved. Console and widget remain running and logged in for continued QA.
+
+Remaining browser findings and verification limits:
+
+- Background participants hydrated from conversation aggregates enter the widget
+  agent cache and can appear in the new-conversation chooser. Conversation summary
+  conversion loses kind/selectability; the chooser uses the complete cache. Keep
+  eligible selectable agents distinct from hydrated participant entities. No
+  backend authorization bypass was tested or established.
+- Console Refresh briefly clears the visible transcript during loading. Preserve
+  existing data while background refresh runs; no persisted data loss was observed.
+- Live background tool invocation, voice/audio, uploads, every vendor and external
+  mutation/recovery paths were not exercised in this browser checkpoint. These
+  results do not close platform-wide typing or product acceptance.
+
+### F5 progress: Groq native synthesis contracts and ordered HTTP ownership
+
+2026-09-09: followed configuration → factory → native HTTP request → WAV response
+→ TTS manager → playback/recording. Added `groq_tts_wire.py` with owned model,
+format and turn-state enums, frozen request/config models, private credentials,
+named native limits and validated RIFF/PCM metadata. Shared TTS re-normalization
+now preserves which fields were actually supplied: an implicit envelope sample
+rate must not become an explicit native selection on a second normalization.
+Groq uses its existing 48 kHz output contract when no native rate was supplied;
+explicit incompatible rates now fail instead of being silently ignored.
+
+The adapter's existing HTTP 503 path was reproduced before editing: it incremented
+the failure counter twice, swallowed the first request failure and reported a
+completed turn with no audio. The new worker preserves failure as failure. Source
+inspection also found unordered concurrent requests, full-queue audio dropping,
+a fixed 44-byte header assumption, and missing cancellation cleanup during
+verification. Ordered requests, awaited bounded queue writes, chunk-aware WAV
+parsing and owned cleanup replace those paths. No text is automatically replayed
+after an uncertain external failure. Interruption discards its generation; a new
+turn starts cleanly. Reconnect waits for retained cleanup even if the original
+disconnect caller was cancelled.
+
+Source evidence: installed aiohttp 3.14.3 and Pydantic 2.11.10; Groq's
+[Orpheus reference](https://console.groq.com/docs/text-to-speech/orpheus) for the
+four request fields, WAV output and per-request text bound; Microsoft's
+[RIFF reference](https://learn.microsoft.com/en-us/windows/win32/xaudio2/resource-interchange-file-format--riff-)
+for chunk sizes and word padding. Groq's generic API reference still contains a
+PlayAI example and extra format/speed options absent from its Orpheus guide.
+This change does not infer Orpheus support for those options. The 32 MiB response
+bound is an Eylo adapter resource limit, not a claimed vendor limit. The existing
+48 kHz PCM contract is now checked against the actual WAV header, not established
+as a universal vendor guarantee by these sources.
+
+Verification:
+
+- 137 function assertions cover exact requests, secret exclusion, explicit rate
+  refusal, raw/typed/repeated config normalization, fragmented RIFF headers,
+  metadata and padding, malformed/truncated/wrong-format output, HTTP failures,
+  ordered synthesis, finalization, backpressure, interruption, verification
+  cancellation, retained cleanup and reconnect. Real `TTSRealtime` conversion
+  produces identical 16 kHz playback/recording bytes from the 48 kHz source.
+- 27 assertions through a real localhost aiohttp server cover streamed bodies,
+  ordered output, non-success status, malformed audio, refusal to follow redirects,
+  interruption, reuse after interruption, verification timeout and session close.
+  Placeholder credentials only; the temporary server was closed.
+- The existing 1,516 capability/factory/HTTP assertions pass for all 24 voice
+  providers. All 13 type/import hooks and backend Ruff pass. Both Groq files are
+  included in the voice hook and have zero Pyrefly diagnostics. Full-project
+  Pyrefly remains at 559 errors and four suppressions.
+
+A read-only lookup found no Groq TTS configuration in Eylo Development. Live
+Groq synthesis, voice quality and complete-call acceptance remain unverified.
+This slice is not deployed; the running console/widget and application services
+remain on the preceding QA checkpoint. No operator configuration, DB or migration
+was changed. OpenAI, Rime, Smallest and Murf native TTS work, other provider flows,
+and full F0–F10 acceptance remain open.
+
+### F5 progress: OpenAI speech contracts and shared HTTP lifecycle
+
+2026-09-09: the OpenAI adapter reproduced the same swallowed HTTP 503 as the
+previous Groq implementation: one failure incremented its counter twice, left
+no completion error, and appeared as a successful empty turn. Independent tasks
+also allowed request-order races, and a full audio queue dropped speech.
+
+The verified ordered HTTP lifecycle now has one socket-owned implementation in
+`sockets/tts/http_synthesis.py`. OpenAI and Groq supply their own Pydantic request
+and audio decoder. No vendor types cross into platform modules. The generic
+owner closes the surrounding response on errors/interruption, serializes text,
+retains cleanup through repeated cancellation, waits before reconnecting, and
+fails the current turn on HTTP errors. The removed Groq lifecycle enum and text
+splitter now have a single owner rather than dead vendor copies.
+
+OpenAI's request contract contains model, voice, input, speed and PCM format.
+Model/voice IDs remain open strings intentionally: the API accepts operator IDs
+and dated model aliases. Known wire format and numeric bounds are vendor-owned.
+Verification now includes the configured speed, not a different request shape.
+The raw PCM decoder preserves sample alignment across HTTP chunks and rejects
+empty, dangling-byte or locally oversized responses; it cannot validate speech
+quality. No new model, credential, SSE mode or custom voice-object support was
+invented. Native 24 kHz output remains converted at the existing pipeline boundary.
+
+Source evidence: the current OpenAI
+[speech API](https://developers.openai.com/api/reference/resources/audio/subresources/speech/methods/create)
+specifies 4,096 input characters and speed 0.25–4; the
+[TTS guide](https://developers.openai.com/api/docs/guides/text-to-speech#supported-output-formats)
+specifies raw 24 kHz signed little-endian PCM16. Installed aiohttp/Pydantic are
+unchanged. No provider or database configuration was modified.
+
+Verification:
+
+- OpenAI native/contract probe: **129 assertions**, including factory and repeated
+  normalization, requests, speed bounds, secret exclusion, arbitrary PCM chunk
+  boundaries, errors, ordering, cancellation and reconnection. The real
+  `TTSRealtime` publication path delivered identical playback/recording bytes at
+  the requested 16 kHz consumer rate.
+- OpenAI real localhost HTTP streaming: **37 assertions**, including request
+  parity, ordered audio, HTTP 503, redirect refusal, invalid PCM, interruption,
+  verification timeout and resource closure. Synthetic audio/placeholder key;
+  this is not live-provider acceptance.
+- Groq regression: **137 native assertions** and **27 real localhost HTTP
+  assertions** pass after extraction. No expected behavior was weakened.
+- Changed shared/OpenAI files have zero Pyrefly diagnostics; full-project count
+  decreased from **559 to 552 errors**, with four existing suppressions. This
+  does not make platform-wide typing complete. Rime, Smallest, Murf, remaining
+  provider flows and broader F0–F10 acceptance are still open.
+
+### F5 progress: Rime native WebSocket contracts
+
+2026-09-09: traced config → factory → native WebSocket → TTS manager → playback/
+recording. The old adapter ignored the documented `chunk.data` audio event,
+had a no-op flush, never signaled completion, and only drained a local queue on
+interruption. The baseline probe reproduced dropped documented audio and absent
+flush/completion. Its 500-frame queue also dropped overflow. These were native
+protocol mismatches, not merely the nullable-socket Pyrefly error.
+
+Contract-first correction:
+
+1. Rime-owned Pydantic query/text/EOS models and discriminated chunk/timestamp/
+   done/error events replace manual JSON keys. Closed protocol choices and
+   numeric bounds have named owners. Operator model/voice IDs remain strings,
+   secrets stay private, and query values are URL encoded.
+2. Use the current documented `users-ws.rime.ai/ws3` JSON endpoint. It supports
+   Mist and newer model families; the old `users.rime.ai/ws2` URL was not the
+   documented JSON host. No operator model or voice is silently replaced.
+3. Only raw PCM and mu-law are accepted by this adapter. Mist v1/v2 rates have
+   their documented bounds; PCM sample alignment survives split frames. The
+   existing pipeline still owns conversion to the consumer's media contract.
+4. Receive directly through the manager and bounded native transport. EOS ends
+   input; a batch `done` is not a final-turn fence. Completion requires valid
+   audio and the normal close after EOS. A going-away code 1001 is not accepted
+   as success despite belonging to `ConnectionClosedOK` in websockets 15.0.1.
+5. Failed/cancelled sends and interruption retire the socket. Reconnect waits
+   for retained cleanup, including cancellation of the disconnect caller.
+   Receive-poll cancellation preserves the stream. Credential-bearing redirects
+   are refused through the installed client's redirect hook, matching the
+   established Deepgram adapter pattern.
+6. Removed the false speed-control declaration. Timestamp messages are validated
+   but not projected as aligned transcript support. No capability is inferred
+   merely because the vendor can offer it.
+
+Evidence: installed websockets **15.0.1**, Pydantic **2.11.10**; Rime's
+[WebSocket overview](https://docs.rime.ai/docs/websockets),
+[Mist JSON schema](https://docs.rime.ai/api-reference/mistv2/websockets-json), and
+[current Coda JSON schema](https://docs.rime.ai/api-reference/coda/websockets-json).
+Current Arcana documentation redirects to Coda. Existing model/voice catalog
+aliases were not rewritten or proven live in this slice.
+
+Executed verification:
+
+- Native contracts/lifecycle: **128 assertions**, including invalid inputs,
+  exact query/text serialization, bounded and malformed events, strict base64,
+  timestamp validation, EOS, stale-stream refusal, cancellation and cleanup.
+- Real localhost WebSockets: **35 assertions**, nine synthesis connections
+  closed, 600-frame backpressure case with exact audio, error/EOF handling,
+  interruption, consecutive turns, and no redirected credential handshake.
+- Real factory/normalization/TTS publication code: **30 assertions**. PCM and
+  mu-law, across raw and typed config forms, produce identical playback and
+  recording bytes at the requested 24 kHz output rate.
+- Scoped Pyrefly: zero errors. Full-project Pyrefly: **551 errors**, four
+  existing suppressions. Backend lint passes. The local voice hook now includes
+  both Rime files.
+- The expanded voice type hook and **1,516 capability/API contract assertions**
+  across 24 provider branches passed. Persistence/auth were substituted for
+  these projection checks; no native provider connection was made. Documentation
+  validation and `git diff --check` passed.
+
+Focused review, in order: vendor protocol stays socket-owned; the existing
+factory/manager remains the execution path; completion and audio units were
+traced through sinks; protocol corrections are explicit plan additions from
+source-backed failures; hidden queues, dropped frames and loose payload access
+were removed. No remaining blocker found in the exercised function scope.
+The close-code and redirect cases were added during this review, then rerun.
+
+No live Rime credential/provider operation, UI change, deployment, migration or
+commit in this slice. Local fixtures use placeholder credentials. Native vendor
+acceptance and human voice QA remain unverified; the development services still
+run the previous successfully tested build. Smallest/Murf and the rest of the
+platform-wide F0–F10 work remain open.
+
+### Live QA correction: committed widget terminal artifacts
+
+2026-09-09: rebuilt API/workers with the typed TTS changes, preserving the
+existing environment, Tailscale API URL, credentials, Postgres and Redis. Alembic
+remained at `eylo0012`. Both UIs stayed available; the widget reconnected and
+loaded older conversations. Deepgram's existing TTS configuration passed live
+verification through the console. The QA org has no OpenAI or Groq TTS config,
+so their native vendor acceptance remains unverified.
+
+Mixed-agent conversation `01a086db-4e9a-7fa3-8b07-a2063ba38823` exposed a separate
+terminal-artifact failure. The first `memory_remember` saved conversation fact
+`1270ee67-c328-4216-885b-eb4e7e55b92a`; `memory_recall` returned that same fact with
+Bedrock reranking. `compound_render_widget` persisted its form. Nevertheless,
+`_terminal_artifact_message` searched only the pre-tool context's message list.
+Absurd recorded **Terminal artifact message was not persisted by this run.**
+Three attempts replayed the turn, generated three forms, and eventually marked
+the request and previously successful exchanges Failed. Later repeated memory
+writes returned unavailable; those are not evidence that the first write failed.
+
+The terminal resolver now loads the exact artifact through `MessageService`,
+then validates ID, conversation, request, assistant kind and widget content kind.
+It does not append uncommitted data or reload the full history. The existing
+AgentRun association validation remains in terminal persistence. A function
+probe with real Pydantic models covers stale snapshots, exactly one lookup, six
+authority refusals and a non-artifact result that performs no I/O. Focused
+Pyrefly and backend Ruff pass. Original failed QA records are retained as
+evidence. The corrected image was rebuilt and all four application services
+recreated without changing the QA organization, credentials or databases.
+
+The same browser pass also confirmed an unset form default rendered the string
+`null`. `WidgetForm` treated JSON null as an explicit value, then called
+`String(null)` for ordinary inputs. Null and omitted defaults now produce empty
+text/unchecked checkbox values; explicit zero, false, true and strings survive.
+Eight function-input cases pass against the actual TypeScript initializer;
+the prior null-string behavior was reproduced. SDK and Preact lint/type/build
+commands pass.
+
+Fresh browser acceptance: conversation `01a086e4-f8ce-7883-8cad-1eee68c5e15e`
+used the configured QA Core Mixed Agent and real Bedrock providers:
+
+1. `memory_remember` saved `1bd73f8f-9eaa-4213-ba5e-05d1e5aa1454` with the
+   conversation fact "The deployment checkpoint is amber observatory."
+   `memory_recall` returned the same identity with Bedrock reranking applied.
+2. One form was persisted as `01a086e5-4c52-7190-a2c3-189e5e2c5aec`; its required
+   text field started blank. Submitting blank displayed the required-field
+   error and focused the field. Submitting `amber observatory` succeeded.
+3. The widget received the assistant acknowledgment. Navigating to the list and
+   reopening the conversation retained the submitted value in a read-only form.
+   The admin conversation detail showed Completed messages and tool results,
+   including the background follow-up outcomes. This does not establish a
+   background agent's own tool dispatch; that was not observed in these turns.
+4. Console lint, TypeScript and production build passed, with the existing
+   large-chunk warning. Documentation verification passed. API and all workers
+   remained running; the API health check passed. Since the successful run,
+   worker logs showed no error, traceback or stale terminal-artifact failure.
+   The API logged a trapped Passlib/bcrypt version-introspection traceback at
+   login; login still succeeded. That dependency compatibility warning remains
+   open, rather than being suppressed or mistaken for a failed agent run.
+
+Focused milestone review, performed in order:
+
+1. DDD boundaries: message persistence stays in the conversation service;
+   orchestration resolves its committed artifact. Form default rendering stays
+   in Preact rather than changing the SDK or domain schema.
+2. Architectural fit: the existing tool-result commit and terminal-message path
+   remain authoritative. No duplicate persistence lane, context cache mutation
+   or new dependency was introduced.
+3. Data flow: committed widget ID → exact service lookup → conversation/request/
+   kind validation → existing AgentRun guard → terminal completion. Null form
+   defaults → empty controls → required validation → persisted submission.
+4. Plan alignment: these two runtime/UI corrections were added because the
+   requested real-agent QA exposed them. They do not imply completion of the
+   platform-wide typing plan or native OpenAI/Groq voice acceptance.
+5. Clean code/security/performance: one bounded message lookup replaces the
+   stale snapshot search; foreign identities are refused before use. Existing
+   meaningful form values are preserved without a second schema or conversion
+   system. No new blocker found in this focused review.
+
+Human review of the resulting experience remains available through the recorded
+conversation. Existing background-agent chooser hydration and admin refresh
+flicker remain separate UI findings. No commit, migration, database reset or
+external vendor mutation was performed for this QA correction.
+
+### F5 progress: embedding/reranking API settings and projections
+
+2026-09-09: both API families now expose owned provider enums and typed settings.
+Create/read selectors reuse domain parsing; PATCH uses a typed editable-field
+object because its provider comes from the stored configuration. Explicit nulls
+survive PATCH serialization for service validation. Endpoint trust, secret
+replacement, revision behavior and masked response values remain in their existing
+owners. Embedding response dimensions now come from typed verification metadata.
+
+Function/HTTP checks caught and resolved three in-progress refactor errors before
+deployment: a dict-returning serializer erased concrete OpenAPI types; FastAPI's
+`from_attributes=True` let an untagged union run Bedrock validation on an OpenAI
+settings object; and a callable tagged union emitted an invalid `oneOf` for
+overlapping model-only JSON shapes. Provider-selected runtime tags, typed PATCH
+fields, unset-field response exclusion and an `anyOf` wire schema address the
+actual boundaries. No new tag key, vendor default, endpoint or dependency upgrade.
+The discriminator API was checked against installed Pydantic 2.11.10 and its
+[versioned documentation](https://docs.pydantic.dev/2.11/concepts/unions/#discriminated-unions-with-callable-discriminator).
+
+Executed 212 route/controller/service contract assertions across all six provider
+branches, with static/session AWS credentials and compatible endpoints; 80 JSON
+Schema/runtime-union assertions; 86 embedding material regressions; and 310
+reranking authority/projection regressions. Total: 688. The reranking probe now
+checks the typed config's serialized projection instead of equality to a dict;
+its expected JSON is unchanged. Auth and foundation persistence were substituted;
+no operator data, provider request, deployed image or migration was changed.
+
+All 11 scoped typing/import gates, backend Ruff, changed-file formatting and
+documentation validation passed. Regenerated the console client from the
+changed-source schema-only API, then stopped that temporary server. Console lint,
+TypeScript and Vite build passed; the existing large-chunk warning remains. Widget
+SDK and Preact production builds also passed.
+
+Browser smoke checkpoint (existing image, not changed-build acceptance): signed
+into the configured Eylo Development org, navigated the widget conversation list,
+and sent `QA_RETRIEVAL_SMOKE_20260909` to QA Core Mixed Agent. KB query returned
+the release codename with citation K1; memory recall returned the QA color. Both
+tool results reported successful Bedrock reranking. The console showed the same
+exchange, completed tool calls/results, and the background task result. No
+provider settings or source records were changed. The backend schema file hash
+differs from this checkout and the container has no source mount, so this result
+cannot validate the new Python contracts.
+
+Observed follow-ups, not diagnosed by this smoke check: console Refresh briefly
+replaces the transcript with a loading view; background-agent prose claims the
+conversation is closed although authoritative conversation status remains Active.
+Do not treat generated prose as lifecycle evidence.
+
+Final acceptance must use the completed changed backend build with the existing
+configured org: login/navigation, representative provider/tool combinations,
+widget exchanges, and matching persisted console tool arguments/results/states.
+Retain configured providers; no DB reset or replacement org is needed.
+
+Full F0–F10 and final changed-build widget/admin acceptance remain open.
+
+### F4 progress: Storage API settings and reference-result contracts
+
+2026-09-09: Storage create/update/read/verification schemas now expose the owning
+provider enum and reuse domain S3/filesystem settings instead of arbitrary config
+objects. Controller serialization retains the existing nested JSON names and
+masked-secret response. Provider normalization is shared with domain input;
+config normalization now happens at API entry. Provider/settings mismatches are
+rejected, while the stored provider remains authoritative for PATCH. Secret patch
+maps deliberately preserve omission, null removal and complete replacement rules;
+credential variants still validate in the domain before persistence.
+
+Regenerated `web/src/api/generated/schema.d.ts` from the changed-source localhost
+API with lifecycle startup disabled, then checked its diff: only Storage schemas
+changed. This temporary schema server does not establish product/worker readiness.
+
+- 112 function/HTTP-contract assertions passed through real routes, schemas,
+  controller, Storage service and error handler. Member auth and provider-config
+  persistence were substituted. Checks include all three credential cases,
+  legacy response JSON parity, masking, PATCH/null behavior, wrong-org refusal,
+  and listing valid settings when credentials cannot be decrypted.
+- 57 reference/deletion assertions passed using the actual SQLAlchemy EXISTS
+  expressions against disposable in-memory SQLite tables whose checked column
+  types come from the five owner models. Empty result sets now raise rather than
+  count as no references. This proves those query/function contracts, not
+  PostgreSQL concurrency or a live operator deletion.
+- The prior 144 domain/resolution/verification assertions pass unchanged.
+  Console lint, TypeScript and Vite build pass; Vite still warns about large
+  chunks. No DB migration, provider edit, external vendor mutation or deployment.
+
+Full F0–F10 and changed-build widget/admin QA remain open. This closes the inspected
+Storage API settings and reference-result gaps, not all lifecycle/concurrency
+claims or broader recording/outbound contracts.
+
+### F4 progress: typed S3 SDK reads and bounded verification cleanup
+
+2026-09-09: completed the inspected SDK client → request → GET body → bounded
+download/stream → recording/Knowledge consumer seam. Target evidence is the
+installed aioboto3 15.5.0, aiobotocore 2.25.1, Botocore 1.40.59 and Pydantic 2.11.10,
+plus AWS GetObject documentation. No dependency upgrade was made.
+
+- `s3_sdk.py` declares only the consumed generated/injected methods and narrows
+  client/paginator instances locally without unchecked casts. Native SDK types
+  remain inside the storage socket.
+- Bucket/object/GET requests validate before serialization. The GET response
+  validates the actual SDK body type, excludes it from generic serialization and
+  reads only bytes. Both ordinary and checksum SDK bodies were exercised. Full
+  reads now close the body explicitly, as streaming already required.
+- S3 ranges preserve the extra-byte size probe. Full/stream cancellation and
+  checksum failure retain typed errors and close the response/client. Shared size
+  validation now rejects invalid filesystem limits before file I/O as S3 does.
+- Reproduced verification cancellation after one acknowledged upload with zero
+  deletion calls. `CancelledError` bypassed the `Exception` handler. Verification
+  now tracks whether the unique probe may exist and performs bounded best-effort
+  cleanup in `finally`; the same probe produces one deletion call after the fix.
+  Cleanup is capped at five seconds, preserves cancellation, starts no detached
+  task and does not misreport an uncertain external upload as definitely removed.
+
+Executed 71 SDK-boundary assertions use the actual generated client, service-model
+validation, paginator, presigner, upload helper and ordinary/checksum streaming
+bodies. `AioStubber` intercepts AWS calls; no bucket/provider credentials are used.
+These include the reproduced body-close failure masking cancellation: primary
+read errors/cancellation now survive failing synchronous or asynchronous closure;
+a close failure after a successful read becomes `download_cleanup_failed`.
+Another 65 assertions cover cleanup success/failure/deadlines, first/repeated
+cancellation, unconfirmed deletion, invalid limits and non-callable SDK handles.
+The configured default aiohttp SDK transport is covered, not an alternative
+HTTPX SDK transport or live S3 service behavior.
+
+The existing 711 storage-error/recording, 144 config, 223 authority, 58 S3
+observation, 49 Knowledge storage, 153 corpus/reindex and 149 ingestion assertions
+also pass: 1,623 across the affected probes. All 11 typed/import gates, backend
+Ruff, formatting and documentation checks pass. The old recording-stream test
+double now uses the real SDK `StreamingBody` wrapper; its assertions are retained.
+
+Full F0–F10 remains open. F4 completion still requires its remaining public JSON
+and reference/deletion boundaries to be reconciled with the scope ledger, plus
+changed-build product acceptance. Broader recording/outbound payloads remain on
+the F8/F9 path; their dataclasses are not claimed complete by these stream checks.
+
+### F4 progress: storage failures, capabilities and recording stream projection
+
+2026-09-09: traced S3/filesystem failure producers → normalized exception →
+recording outbound retry decision and recording download projection. Storage now
+owns `StorageOperation`, `StorageFailure` and `StorageRecovery`; exception inputs
+reject arbitrary strings and booleans. Existing diagnostic strings derive from
+these enums. Intrinsic capability predicates use a strict frozen Pydantic object.
+Shared listing, expiry, stream-chunk and digest-chunk bounds are named constants.
+
+S3 validates consumed native error fields in `s3_wire.py`, using the documented
+`Error.Code`/`ResponseMetadata.HTTPStatusCode` shape and the installed Botocore
+`ClientError` implementation. Known AWS classification codes remain vendor-owned;
+unknown codes are accepted as native strings, not added to a platform enum.
+Malformed native errors are terminal typed failures. No provider message/header
+content is copied into normalized diagnostics. Valid status/code classification
+and the existing missing-object semantics are unchanged.
+
+Both adapter constructors revalidate their Pydantic runtime config. Socket secret
+fields are excluded from generic dumps/repr; pipeline translation explicitly wraps
+plaintext invocation material in `SecretStr`. The expanded type gate caught three
+producer mismatches after the strict config change; the explicit translation
+resolves them without casts or weaker types. `RecordingObjectStream` is now a
+strict frozen Pydantic local value with nonnegative size and an excluded iterator.
+Its producer validates object metadata before exposing size to the HTTP consumer.
+
+Executed 711 function assertions cover old/new error classification parity,
+malformed/copy-poisoned payloads, capability types, validation bounds, SDK-client
+and response-body closure on normal/early/cancel/error streaming paths, actual
+filesystem writes/readback/temporary-file cleanup, recording stream projection,
+and the real recording sender's retry-vs-terminal decision. SDK operations,
+configuration resolution and durable writes are substituted; filesystem work is
+confined to a disposable directory. This is not live AWS or changed-build UI QA.
+
+Regression completion: the 144 Storage config, 223 authority/runtime/recording,
+58 S3 observation, 49 Knowledge storage, 153 corpus/reindex and 149 ingestion
+assertions also pass: 1,487 across the executed probes. All 11 typed/import gates,
+backend Ruff, formatting, documentation and whitespace checks pass. Temporary
+function probes remain outside the repository; no test suite or hosted CI was added.
+
+Next Storage work: the dynamically typed SDK client/download payload seam,
+stream-byte validation and complete verification cleanup/cancellation. Remaining
+platform flows, docs completion and changed-build widget/admin acceptance still
+belong to the full F0–F10 goal; clean type gates alone do not satisfy it.
+
+### F4 progress: storage configuration, resolution and verification contracts
+
+2026-09-09: followed create/update → shared provider snapshot → current/pinned
+resolution → typed socket config → bounded verification → revision CAS → public
+projection. The prior dataclass annotated `provider` as `str` but replaced it with
+an enum; four domain/pipeline type diagnostics resulted.
+
+- Replaced Storage config/resolved dataclasses with frozen, strict, revalidated
+  Pydantic values. S3 settings, static/session credentials and filesystem settings
+  are distinct objects. Existing config/secrets JSON, normalization, credential
+  replacement policy and platform-generated namespaces are preserved.
+- Private credentials and local adapter handles are excluded from generic dumps
+  and representations. Runtime construction revalidates copied material.
+- Resolution compares returned organization/config/capability against the request,
+  not against the returned identity itself. Pinned resolution verifies revision.
+- Verification receipts validate provider identity and intrinsic capability
+  predicates before CAS. The provider operation remains outside transactions.
+- The full-flow probe exposed strict model validation rejecting read-only
+  `MappingProxyType` provider material. The fix copies a checked mapping to a
+  dictionary at this boundary; malformed non-mappings remain rejected.
+- The local type gate now covers all Storage config modules and pipelines,
+  including the explicitly typed controller projection.
+
+Executed evidence: 144 assertions cover pre-change valid-output parity, settings
+and credential refusals, copied-model revalidation, safe serialization, service
+updates, requested authority/revision checks, verification rejection before CAS,
+revision conflicts and transaction depth. The actual filesystem verifier uploads,
+downloads, lists and deletes a probe in a disposable directory. DB/service and
+S3 calls in this probe are substituted; no operator configuration is changed.
+Existing 223 authority/runtime/job/recording assertions pass. Full F0–F10 remains
+open, including Storage error/streaming contracts and changed-build browser QA.
+
+Regression completion: 153 corpus/reindex, 49 Knowledge storage, 58 S3 observation
+and 149 ingestion assertions also pass, for 776 assertions across this slice and
+its affected consumers. All 11 typed/import hooks, backend Ruff, formatting,
+documentation verification and whitespace checks pass. S3 transport checks use
+substituted SDK responses; they do not prove live AWS access on the changed build.
+
+### F4 progress: pinned storage authority and locator contracts
+
+2026-09-09: traced config resolution → authority → locator → Knowledge job and
+voice-recording reconstruction. Reproduced the old dictionary parser accepting
+`True` as provider revision `1` and converting a numeric object key to a string.
+
+`StorageAuthority` and `StorageLocator` are now frozen/revalidated Pydantic values.
+Location maps remain immutable snapshots with explicit serialization. UUID strings
+decode intentionally; revisions and keys no longer use broad numeric/string
+coercion. The existing flat persisted representation, normalized provider names,
+location fingerprints and URI encoding remain unchanged for valid input.
+
+Historical runtime resolution validates authority before any config resolver
+access, then preserves exact organization/config/revision/provider/location checks.
+Knowledge row reconstruction and the locator helper keep their existing sanitized
+`InvalidStorageLocator` exception boundary. Direct Pydantic construction exposes
+sanitized validation errors; helper callers need not depend on Pydantic internals.
+The local gate explicitly covers the shared authority module and runtime resolver.
+
+Executed evidence:
+
+- 223 assertions compare valid current output with the pre-change implementation,
+  test malformed revisions/keys/UUIDs, immutable snapshots, copied-model refusal
+  before resolver access, current/pinned S3 and filesystem resolution, mismatched
+  authority refusal before adapter creation, and actual Knowledge/recording ORM
+  reconstruction. No live DB, provider, credential or object was changed.
+- Existing 153 corpus/reindex, 49 Knowledge storage, 58 S3 and 149 ingestion
+  assertions pass: 632 assertions across these suites.
+- All 11 typed/import gates and backend Ruff pass.
+
+Broader Storage domain/pipeline checking exposes four existing diagnostics:
+`StorageProviderConfig.provider` is annotated as a string but mutated to an enum,
+then consumed as an enum by service, verification and runtime config translation.
+The next slice must convert the domain config and resolved runtime dataclasses
+with explicit settings/credential contracts; merely changing an annotation would
+not satisfy the requested end state. Storage error/streaming contracts and the
+other F0–F10 flows remain open. Browser acceptance still requires the changed
+build and an unlocked Mac.
+
+### F4/F5 progress: corpus, reindex and storage observation contracts
+
+2026-09-09: followed storage listing → corpus screening → child ingestion filing,
+plus reindex configuration → checkpoint embedding → staged writes → cutover.
+
+- Moved `StoredObject` into a neutral shared contract, preserving its socket
+  re-export. It is now frozen/revalidated Pydantic: keys are strings, byte sizes
+  are strict nonnegative integers and optional content digests retain their format.
+  Modules do not import sockets to screen an observation.
+- Corpus screening returns a typed result instead of tuple/list/dict containers.
+  Skip texts, order, null empty summary and the existing 50-entry summary limit
+  are unchanged. Malformed observations are refused before child filing. The
+  ORM JSON annotation is precise; storage remains the same JSONB column.
+- Ingestion and reindex use `KnowledgeJobParams`; corpus uses its separate
+  `KnowledgeCorpusParams`. No `job_id`/`import_id` substitution or arbitrary
+  `str()` coercion is accepted. Typed full/failure receipts preserve their keys;
+  counters reject malformed types. Reindex inspection is Pydantic, retaining
+  typed local ORM handles but excluding them from generic dumps.
+- S3 list/head responses now validate native consumed fields rather than coercing
+  sizes with `int()` or inventing zero for absent sizes. Upload options have a
+  typed SDK serialization boundary. Checked AWS ListObjectsV2/HeadObject docs,
+  installed Botocore response shapes and S3Transfer upload argument names.
+  Unknown unused response fields remain vendor-owned. No new AWS permission.
+- Extended the Knowledge gate across all Storage sockets and the shared object
+  contract. A pre-existing mixed upload-options dictionary diagnostic is resolved
+  by the typed options object. Storage socket checking now reports zero errors.
+
+Executed evidence:
+
+- 153 assertions cover object/screening/receipt contracts, actual temporary
+  filesystem upload/list/inspect/delete, corpus duplicate-child handling,
+  cancellation during listing, terminal replay, malformed listing rejection,
+  post-commit spawning and retained outbox behavior on spawn failure. Reindex
+  workflow checks cover fresh embedding, checkpoint replay, terminal work and
+  catch-up refusal, with transaction-depth assertions.
+- 58 S3 assertions cover consumed SDK shapes, malformed/missing/boolean sizes,
+  copied-model revalidation, exact upload arguments, object namespace filtering,
+  cancellation propagation and client closure. SDK transport is substituted;
+  these are not live AWS tests. An initial copied-listing assertion exposed alias
+  fields resetting to their defaults during model revalidation; enabling canonical
+  field-name validation preserves the listing and rejects invalid nested copies.
+- Existing 149 ingestion lifecycle, 348 embedding-writer and 45 Knowledge DML
+  assertions pass: 753 assertions across these suites.
+- All 11 typed/import gates and full backend Ruff pass.
+
+No configured provider data, DB schema or deployed image changed. Browser QA is
+still pending due to the locked Mac; these tests do not prove the running image.
+Full F0–F10 remains open, including remaining storage authority/config/error and
+streaming contracts and the other planned vendor/platform flows.
+
+### F5 progress: Knowledge catalog and durable ingestion contracts
+
+2026-09-09: replaced the catalog dataclass with a frozen Pydantic specification
+and module-owned `KnowledgeVendor` enum. The persisted vendor strings and unknown
+vendor refusal remain unchanged; creation, adapter selection and reindex guards
+now reference the same enum. Socket identifiers stay adapter-owned. Removed the
+unused required-metadata extension and stale comments suggesting an embedding
+model override was supported. The intrinsic embedding-required predicate remains
+a strict boolean. Null metadata retains its established defaults; malformed
+falsey values no longer silently become an empty configuration.
+
+Added pipeline-owned `ingestion_contracts.py`: UUID-only task inputs, typed
+receipts, named failure/event values and bounded timeline payloads. The worker
+validates inputs before DB access and no longer converts arbitrary Python objects
+to UUIDs through `str()`. Valid UUID/string inputs, terminal receipts and the
+smaller failure receipt retain their existing serialized forms. Timeline payloads
+carry only KB/document identity and optional failure code. No new persistence,
+retry authority, event category, transaction or migration was introduced.
+
+Executed evidence:
+
+- 149 function assertions cover catalog validation, wire compatibility, malformed
+  task rejection before DB access, exact timeline keys, retry rethrow, permanent
+  failure receipt, terminal replay, checkpoint replay and mismatched document
+  refusal. Actual ORM/Pydantic types are used; DB and Absurd/provider effects are
+  substituted. Instrumented workflow calls verify ingestion outside transactions
+  and product success inside an owned transaction.
+- Existing 92 document/tool-authority, 112 query/extraction/storage, 126 adapter,
+  36 resolver and 45 DML assertions pass (560 assertions including the new slice).
+- All 11 typed/import hooks and full backend Ruff pass.
+
+The Mac remains locked, preventing browser interaction. The running backend
+image predates these source changes; no changed-build browser or live-provider
+acceptance is claimed. No configured organization/provider data was changed.
+F0–F10 remains open; this closes the catalog and single-document ingestion
+contract slice, not the remaining corpus/reindex workflows or platform flows.
+
+### F5 progress: Knowledge document and recovery contracts
+
+2026-09-09: reproduced `KnowledgeDocument` accepting arbitrary Python objects in
+metadata and permitting content mutation, plus `KnowledgeResult` accepting the
+string `NaN` as a numeric score. Both contracts now use frozen, revalidated
+Pydantic values, typed JSON metadata and private content representations. Result
+scores are strict and finite. Valid JSON/payload shapes and document identity
+remain unchanged; arbitrary metadata keys remain supported.
+
+Ingestion services and adapters revalidate copied documents before side effects.
+The validated snapshot copies nested metadata before asynchronous work. Operator
+ingestion translates invalid document construction to a safe 400 response. Stored
+job reconstruction no longer normalizes malformed falsey metadata into an empty
+object; it reports a sanitized `IngestionError`. The worker previously omitted
+that deterministic error from permanent classification. It now stops invalid
+document work instead of retrying it as an infrastructure failure.
+
+`KnowledgeRecovery` replaces the mutable retry-policy boolean. The existing
+`retryable` predicate remains read-only for consumers. Provider retry decisions
+and embedding-space-change recovery are preserved; the new enum introduces no
+retry loop. Capability predicates remain strict intrinsic booleans.
+
+The three Knowledge system tools now use explicit optional platform execution
+context, typed context access and JSON return values. Dispatcher tracing confirmed
+both `ConversationContext` and `AgentExecutionContext` reach these tools. Only the
+former supplies a persisted conversation ID; a background execution ID no longer
+stands in for conversation authority. Organization/agent grants remain usable.
+Their complete agent-visible schemas
+were captured before editing and compare equal afterward; injected context was
+and remains hidden. The Knowledge type gate now checks these tools and triggers
+on their changes. No tool-selection docstrings were changed.
+
+Executed evidence:
+
+- 92 function assertions cover strict/copy validation, JSON round trips, stable
+  document identity, private representations, nested snapshot isolation, named
+  recovery and permanent worker classification, actual ORM job reconstruction,
+  safe operator rejection and all three tool-schema projections. The final ten
+  use actual background context and grant models: conversation-scoped destinations
+  and writes are refused, while organization writes enqueue and spawn normally.
+- 112 Knowledge query/extraction/storage, 126 storage-adapter and 36 resolver
+  assertions pass. The adapter count decreased by one because malformed metadata
+  is now rejected before invoking its instrumented embedding callback.
+- All 11 typed/import gates and full backend Ruff pass.
+- Existing 348 embedding-writer and 45 Knowledge DML assertions also pass.
+
+DB/network effects in these probes are substituted; no changed-build browser or
+live-provider acceptance is claimed. Full F0–F10 remains open, including the
+Knowledge catalog and durable lifecycle payloads, then other planned flows.
+
+### F5 progress: Knowledge storage adapters and resolver wiring
+
+2026-09-09: extended the Knowledge type gate to include its complete socket
+directory, not only domain and pipeline code. Baseline: two parameter-name
+override errors. Both adapters accepted `text_query` while the ABC promised
+`text`; reproduced a valid keyword invocation raising `TypeError` before lookup.
+Both now implement the advertised signature; existing positional callers remain
+compatible.
+
+Contract changes:
+
+- Typed session factories, chunkers, document/query embedding callbacks and
+  resolver inputs/outputs. No socket imports domain models. The pipeline owns
+  the translation from actual Knowledgebase/ingestion-job ORM rows.
+- Frozen, revalidated Pydantic Postgres authority replaces an unchecked
+  dataclass. Invalid/copied UUIDs, scopes and partition identifiers fail before
+  adapter work. Existing namespace filters, live-owner locks and vector-space
+  revision checks remain intact.
+- Native SQL projections validate document UUID, scope, JSON metadata and finite
+  rank/distance before canonical result construction. No arbitrary `str()` or
+  `float()` coercion turns malformed row values into valid-looking results.
+- Metadata and finite-vector serialization complete before opening the write
+  transaction. Replacement remains delete/insert/commit under one owner; embedding
+  I/O remains outside it. Typed chunking metadata stays an object until persistence.
+- Document deletion checks the actual `CursorResult` before commit. An unknown
+  negative count no longer becomes success via `bool(rowcount)`. Zero-row deletion
+  still returns false; positive counts return true. Cancellation propagates.
+
+Executed evidence:
+
+- 127 storage-adapter assertions using real SQLAlchemy SQLite rows and DML results,
+  plus substituted async session effects: strict/copy authority, row projections,
+  malformed scores/metadata, vector refusal, keyword query calls, empty scopes,
+  namespace filters, ingestion handoffs, deletion outcomes and cancellation cleanup.
+- 36 resolver assertions with actual ORM/Pydantic contracts: all three chunking
+  settings, FTS versus vector construction, current versus pinned embedding
+  resolution, tenant refusal, incompatible spaces and translated provider failures.
+- Existing 112 Knowledge query/extraction/storage and 348 embedding-writer
+  assertions pass. Full backend Ruff and all 11 typed/import gates pass; the
+  expanded Knowledge gate reports zero diagnostics.
+
+These are source/function checks, not live PostgreSQL search-plan or provider
+acceptance. Configured operator data and deployment are unchanged. The full
+F0–F10 goal remains open; remaining Knowledge document/error/catalog contracts,
+durable lifecycle payloads and changed-build browser QA still require completion.
+
+### F5 progress: native reranking wire contracts
+
+2026-09-09: Bedrock, Cohere and Voyage now validate vendor-local request/response
+objects before translating into platform-owned ranked indices. No vendor schema
+crosses into the capability domain or Knowledge/Memory consumers. Requests retain
+the existing endpoints, authentication, model selection and truncation behavior.
+
+RCA: Bedrock's old response loop filtered out non-dictionary entries. Reproduced
+one valid result plus a malformed entry being accepted as a complete top-one
+ranking. Typed page validation now rejects the whole response, preserving the
+shared stage's degraded fallback rather than presenting a partial success.
+Continuation tokens are validated, cycles rejected, excess results refused and
+pagination bounded to 1,000 pages. The page bound is platform policy, not a vendor
+API limit; the existing outer deadline remains authoritative for elapsed work.
+
+Source evidence: current primary vendor references linked in
+[providers](../reference/providers.md#reranking-results-and-recovery), plus installed
+Botocore 1.40.59's Bedrock Agent Runtime `2023-07-26` operation schema. Cohere and
+Voyage use HTTP; no installed vendor SDK was assumed. Native document echoes,
+diagnostic metadata and provider error messages are not retained. Private query,
+document and continuation material is serialized only for dispatch.
+
+Executed checks:
+
+- 150 native-wire function assertions: exact HTTP/SDK request parity, installed
+  Botocore input validation, malformed/unknown fields, finite scores, private
+  serialization, copy revalidation, multi-page/empty-page/cyclic responses,
+  page bounds, invalid-request refusal before I/O and client closure.
+- Existing 211 reranking result/recovery, 310 config/authority and 112 Knowledge
+  query/extraction/storage assertions pass. The shared validator's valid fixture
+  now uses canonical result objects; native response validation remains covered
+  through the real adapters. Vendor/network effects are substituted.
+- All 11 local typed/import gates and full backend Ruff pass.
+
+Console and widget processes still listen on ports 5173/5174. Browser automation
+is currently blocked by the Mac lock screen. The running backend image predates
+these edits: no changed-build live vendor or browser acceptance is claimed.
+No DB, credentials, migrations or deployment changed. Full F0–F10 remains open.
 
 ### F7 progress: shared provider-config aggregate and snapshot
 

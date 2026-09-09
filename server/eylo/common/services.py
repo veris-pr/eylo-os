@@ -1,8 +1,9 @@
-"""Shared application-service conversion and CRUD helpers."""
+"""Typed row/schema conversion and shared application-service reads."""
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Generic, Optional, Type, TypeVar
+from collections.abc import Iterable
+from typing import Generic, TypeVar
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -15,29 +16,29 @@ SchemaClass = TypeVar("SchemaClass", bound=BaseModel)
 logger = logging.getLogger(__name__)
 
 
-class EyloBaseService(ABC, Generic[SchemaClass]):
-    """Base Service Class."""
+class EyloBaseService(ABC, Generic[SchemaClass, ModelClass]):
+    """Pair one response schema with one ORM model; domains own mutation policy."""
 
     @property
     @abstractmethod
-    def schema(self) -> Type[SchemaClass]:
+    def schema(self) -> type[SchemaClass]:
         """Schema for the "common" platform."""
         pass
 
     @property
     @abstractmethod
-    def repository(self) -> BaseORMRepository:
+    def repository(self) -> BaseORMRepository[ModelClass]:
         """Repository for the "common" platform."""
         pass
 
-    def orm_to_schema(self, orm_object) -> SchemaClass:
+    def orm_to_schema(self, orm_object: ModelClass) -> SchemaClass:
         """Convert ORM Object to Schema."""
         return self.schema.model_validate(orm_object)
 
     def schema_to_orm(
-        self, schema_object, schema_class: Optional[SchemaClass] = None
+        self, schema_object: BaseModel, schema_class: type[BaseModel] | None = None
     ) -> ModelClass:
-        """Convert Schema to ORM Dictionary."""
+        """Construct a row without attaching it to a transaction."""
         if schema_class:
             return map_schema_to_model(
                 model_cls=self.repository.model,
@@ -50,15 +51,19 @@ class EyloBaseService(ABC, Generic[SchemaClass]):
             schema_cls=self.schema,
         )
 
-    def orm_to_schema_list(self, orm_objects) -> list[SchemaClass]:
+    def orm_to_schema_list(
+        self, orm_objects: Iterable[ModelClass]
+    ) -> list[SchemaClass]:
         """Convert List of ORM Objects to Schemas."""
         return [self.orm_to_schema(orm_object) for orm_object in orm_objects]
 
-    def schema_to_orm_list(self, schema_objects) -> list[SchemaClass]:
-        """Convert List of Schemas to ORM Dictionaries."""
+    def schema_to_orm_list(
+        self, schema_objects: Iterable[BaseModel]
+    ) -> list[ModelClass]:
+        """Construct unpersisted ORM rows, not response-schema instances."""
         return [self.schema_to_orm(schema_object) for schema_object in schema_objects]
 
-    async def get_(self, pk: Any) -> SchemaClass:
+    async def get_(self, pk: UUID) -> SchemaClass:
         """Get Entity By Primary Key."""
         entity = await self.repository.get_(pk)
         if not entity:
@@ -102,14 +107,3 @@ class EyloBaseService(ABC, Generic[SchemaClass]):
             logger.error(
                 "External ID lookup failed error_type=%s", type(error).__name__
             )
-
-    async def delete_(self, pk: UUID):
-        """Delete Entity (Soft Delete)."""
-        entity = await self.get_(pk)
-        await self.repository.delete_(entity)
-
-    async def hard_delete_(self, pk: UUID):
-        """Hard Delete Entity."""
-        entity = await self.get_(pk)
-        orm_entity = self.schema_to_orm(entity)
-        await self.repository.delete_(orm_entity, hard_delete=True)

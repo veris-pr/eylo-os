@@ -265,6 +265,14 @@ def normalize_tts_config(
     data: dict[str, object]
     if isinstance(config, TTSConfig):
         data = config.to_adapter_config()
+        # Re-normalization must not turn implicit envelope defaults into native
+        # vendor selections. Explicit fields and options retain their authority.
+        for field in (
+            TTSConfig.model_fields.keys()
+            - config.model_fields_set
+            - config.options.keys()
+        ):
+            data.pop(field, None)
     elif isinstance(config, dict):
         data = _flatten_options(dict(config))
     elif config is None:

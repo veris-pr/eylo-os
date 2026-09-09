@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 from uuid import UUID
 
 from absurd_sdk import AsyncTaskContext, CancelledTask
+from pydantic import JsonValue, ValidationError
 
 from eylo.absurd_work import (
     AbsurdBoundWorkService,
@@ -16,6 +16,7 @@ from eylo.absurd_work import (
     spawn_unbound_work,
 )
 from eylo.common.contracts.knowledgebase import KnowledgeScope
+from eylo.common.contracts.storage_objects import StoredObject
 from eylo.common.database import start_transaction
 from eylo.durable_runtime import (
     PlatformDurableRuntime,
@@ -36,6 +37,12 @@ from eylo.pipelines.knowledgebase.durable_execution import (
     spawn_knowledge_ingestion,
 )
 from eylo.pipelines.knowledgebase.lifecycle import notify_cancelled_tasks
+from eylo.pipelines.knowledgebase.work_contracts import (
+    KnowledgeCorpusFailure,
+    KnowledgeCorpusFailureReceipt,
+    KnowledgeCorpusParams,
+    KnowledgeCorpusReceipt,
+)
 from eylo.pipelines.storage.runtime import resolve_storage_runtime_for_authority
 
 logger = logging.getLogger(__name__)
@@ -113,9 +120,9 @@ class KnowledgeCorpusWorkflow:
 
     async def execute(
         self,
-        params: dict[str, Any],
+        params: object,
         task_context: AsyncTaskContext,
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         organization_id, import_id = _parse_params(params)
         try:
             return await self._execute(
@@ -151,7 +158,7 @@ class KnowledgeCorpusWorkflow:
         organization_id: UUID,
         import_id: UUID,
         task_context: AsyncTaskContext,
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         try:
             async with start_transaction() as session:
                 record = await AbsurdBoundWorkService(
@@ -190,7 +197,7 @@ class KnowledgeCorpusWorkflow:
                 permanent=isinstance(error, NotConfiguredError),
             )
 
-        async def list_objects():
+        async def list_objects() -> list[StoredObject]:
             async with start_transaction(ro=True) as session:
                 storage = await resolve_storage_runtime_for_authority(
                     storage_authority,
@@ -203,7 +210,7 @@ class KnowledgeCorpusWorkflow:
 
         try:
             objects = await run_with_durable_heartbeat(task_context, list_objects)
-            keep, skipped = screen(objects)
+            screened = screen(objects)
         except Exception as error:  # noqa: BLE001 - listing failure is product state
             return await _handle_failure(
                 organization_id=organization_id,
@@ -223,7 +230,7 @@ class KnowledgeCorpusWorkflow:
             if current.state is not DurableState.RUNNING:
                 return _receipt(current)
             ingestion = IngestionService(session)
-            for entry in keep:
+            for entry in screened.keep:
                 job = await ingestion.enqueue_from_storage(
                     organization_id=organization_id,
                     knowledgebase_id=knowledgebase_id,
@@ -241,11 +248,7 @@ class KnowledgeCorpusWorkflow:
                     values={
                         "discovered_count": len(objects),
                         "queued_count": len(queued_ids),
-                        "skipped": (
-                            {"entries": skipped[:50], "total": len(skipped)}
-                            if skipped
-                            else None
-                        ),
+                        "skipped": screened.skipped_summary(),
                     },
                 )
                 register_corpus_lifecycle(
@@ -270,15 +273,21 @@ class KnowledgeCorpusWorkflow:
         return _receipt(result)
 
 
-def _parse_params(params: dict[str, Any]) -> tuple[UUID, UUID]:
-    if set(params) != {"organization_id", "import_id"}:
-        raise ValueError("Knowledge corpus task params must contain IDs only.")
+def _parse_params(params: object) -> tuple[UUID, UUID]:
     try:
-        return UUID(str(params["organization_id"])), UUID(str(params["import_id"]))
-    except (TypeError, ValueError) as error:
+        parsed = KnowledgeCorpusParams.model_validate(params)
+    except ValidationError as error:
+        if any(
+            item["type"] in {"missing", "extra_forbidden", "model_type"}
+            for item in error.errors(include_input=False)
+        ):
+            raise ValueError(
+                "Knowledge corpus task params must contain IDs only."
+            ) from None
         raise ValueError(
             "Knowledge corpus task params contain an invalid UUID."
-        ) from error
+        ) from None
+    return parsed.organization_id, parsed.import_id
 
 
 async def _handle_failure(
@@ -287,11 +296,11 @@ async def _handle_failure(
     import_id: UUID,
     error: Exception,
     permanent: bool,
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     summary = (
-        "knowledge_provider_not_configured"
+        KnowledgeCorpusFailure.NOT_CONFIGURED
         if isinstance(error, NotConfiguredError)
-        else "knowledge_corpus_import_failed"
+        else KnowledgeCorpusFailure.IMPORT
     )
     async with start_transaction() as session:
         work = AbsurdBoundWorkService(
@@ -323,17 +332,17 @@ async def _handle_failure(
     if state is DurableState.PENDING:
         raise error
     logger.warning("Knowledge corpus failed id=%s code=%s", import_id, summary)
-    return {"import_id": str(import_id), "state": state.value}
+    return KnowledgeCorpusFailureReceipt(import_id=import_id, state=state).to_payload()
 
 
-def _receipt(record: KnowledgeCorpusImportModel) -> dict[str, Any]:
-    return {
-        "organization_id": str(record.organization_id),
-        "import_id": str(record.id),
-        "state": record.state.value,
-        "discovered": record.discovered_count,
-        "queued": record.queued_count,
-    }
+def _receipt(record: KnowledgeCorpusImportModel) -> dict[str, JsonValue]:
+    return KnowledgeCorpusReceipt(
+        organization_id=record.organization_id,
+        import_id=record.id,
+        state=record.state,
+        discovered=record.discovered_count,
+        queued=record.queued_count,
+    ).to_payload()
 
 
 __all__ = [

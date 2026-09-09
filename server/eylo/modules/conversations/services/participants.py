@@ -10,6 +10,7 @@ from eylo.common.services import EyloBaseService
 from eylo.events.schema.py_events.base import ParticipantCreatedEvent
 from eylo.modules.agents.schemas.indb import AgentInDb
 from eylo.modules.contacts.schemas.indb import ContactCreateSchema, ContactRef
+from eylo.modules.conversations.models.participants import ParticipantsModel
 from eylo.modules.conversations.repositories.participants import (
     ConversationParticipantRepository,
 )
@@ -24,7 +25,9 @@ from eylo.modules.conversations.schemas.participants import (
 )
 
 
-class ConversationParticipantService(EyloBaseService[ParticipantInDb]):
+class ConversationParticipantService(
+    EyloBaseService[ParticipantInDb, ParticipantsModel]
+):
     @property
     def schema(self) -> Type[ParticipantInDb]:
         return ParticipantInDb

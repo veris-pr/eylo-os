@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.exceptions import EntityNotFound
 from eylo.common.services import EyloBaseService
+from eylo.modules.auth.models import ApiKeyModel
 from eylo.modules.auth.repository import ApiKeyRepository
 from eylo.modules.auth.schemas import (
     ApiKeyCreate,
@@ -17,7 +18,7 @@ from eylo.modules.auth.schemas import (
 )
 
 
-class ApiKeyService(EyloBaseService[ApiKeyInDb]):
+class ApiKeyService(EyloBaseService[ApiKeyInDb, ApiKeyModel]):
     """API Key Service."""
 
     def __init__(self, db: AsyncSession):

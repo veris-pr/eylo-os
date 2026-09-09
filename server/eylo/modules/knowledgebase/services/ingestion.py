@@ -14,6 +14,7 @@ import json
 import logging
 from uuid import UUID
 
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -64,6 +65,10 @@ class IngestionService:
         max_attempts: int = DURABLE_MAX_ATTEMPTS,
     ) -> KnowledgeIngestionJobModel:
         """Record a document to be ingested, or return the job already doing it."""
+        try:
+            document = KnowledgeDocument.model_validate(document)
+        except ValidationError:
+            raise IngestionError("Knowledge document is invalid.") from None
         if not document.content.strip():
             raise IngestionError("Refusing to enqueue an empty document.")
 
@@ -104,7 +109,9 @@ class IngestionService:
         if existing is not None:
             logger.info(
                 "Ingestion for %s is already %s; returning job %s.",
-                document.identity, existing.state.value, existing.id,
+                document.identity,
+                existing.state.value,
+                existing.id,
             )
             return existing
 
@@ -143,7 +150,8 @@ class IngestionService:
                 raise
             logger.info(
                 "Lost the enqueue race for %s; job %s owns it.",
-                document.identity, winner.id,
+                document.identity,
+                winner.id,
             )
             return winner
         register_ingestion_lifecycle(job, KnowledgeWorkTransition.QUEUED)
@@ -272,7 +280,9 @@ class IngestionService:
         )
         if states:
             query = query.where(KnowledgeIngestionJobModel.state.in_(states))
-        query = query.order_by(KnowledgeIngestionJobModel.created_at.desc()).limit(limit)
+        query = query.order_by(KnowledgeIngestionJobModel.created_at.desc()).limit(
+            limit
+        )
         result = await self.session.execute(query)
         return list(result.scalars().all())
 
@@ -321,9 +331,8 @@ class IngestionService:
         ).scalar_one_or_none()
         if record is None:
             raise IngestionError(f"No knowledgebase {knowledgebase_id}.")
-        if (
-            KnowledgeScope(record.scope) is not scope
-            or str(record.scope_id) != str(scope_id)
+        if KnowledgeScope(record.scope) is not scope or str(record.scope_id) != str(
+            scope_id
         ):
             raise IngestionError(
                 "Document scope does not match the target knowledgebase."
@@ -334,16 +343,7 @@ class IngestionService:
 def _embedding_job_fields(space: EmbeddingSpace | None) -> dict[str, object]:
     if space is None:
         return {}
-    return {
-        "embedding_provider_config_id": space.provider_config_id,
-        "embedding_provider_config_revision": space.provider_config_revision,
-        "embedding_provider": space.provider,
-        "embedding_endpoint": space.endpoint,
-        "embedding_model": space.model,
-        "embedding_dimensions": space.dimensions,
-        "embedding_semantic_options": dict(space.semantic_options),
-        "embedding_space_id": space.id,
-    }
+    return space.to_active_record().to_columns()
 
 
 def document_from_job(
@@ -362,11 +362,14 @@ def document_from_job(
         raise IngestionError(
             f"Job {job.id} has neither inline content nor fetched content."
         )
-    return KnowledgeDocument(
-        content=body,
-        scope=KnowledgeScope(job.scope),
-        scope_id=job.scope_id,
-        title=job.title,
-        source_uri=job.source_uri,
-        metadata=job.meta or {},
-    )
+    try:
+        return KnowledgeDocument(
+            content=body,
+            scope=KnowledgeScope(job.scope),
+            scope_id=job.scope_id,
+            title=job.title,
+            source_uri=job.source_uri,
+            metadata=job.meta if job.meta is not None else {},
+        )
+    except ValueError:
+        raise IngestionError("Stored knowledge document is invalid.") from None

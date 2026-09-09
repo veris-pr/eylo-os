@@ -13,11 +13,11 @@ infrastructure and accepting that.
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from sqlalchemy import text as sql
 
 from eylo.sockets.knowledgebase.base import KnowledgebaseVendorAdapter
+from eylo.sockets.knowledgebase.chunking import ChunkingStrategy
 from eylo.sockets.knowledgebase.schemas import (
     KnowledgeDocument,
     KnowledgeResult,
@@ -26,8 +26,13 @@ from eylo.sockets.knowledgebase.schemas import (
     KnowledgebaseError,
 )
 from eylo.sockets.knowledgebase.vendors.postgres_base import (
+    KnowledgeSessionFactory,
+    PostgresKeywordResult,
     PostgresKnowledgebaseAuthority,
     chunk,
+    deletion_changed_rows,
+    metadata_json,
+    validated_document,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,14 +45,14 @@ class PostgresFTSAdapter(KnowledgebaseVendorAdapter):
 
     def __init__(
         self,
-        session_factory,
+        session_factory: KnowledgeSessionFactory,
         authority: PostgresKnowledgebaseAuthority,
-        chunker=None,
+        chunker: ChunkingStrategy | None = None,
     ) -> None:
         # A factory rather than a session: ingestion runs on a worker and query
         # runs on a turn, and they must not share a transaction.
         self._session_factory = session_factory
-        self._authority = authority
+        self._authority = PostgresKnowledgebaseAuthority.model_validate(authority)
         # The knowledgebase's chunking strategy. None means paragraph packing.
         self._chunker = chunker
 
@@ -66,6 +71,7 @@ class PostgresFTSAdapter(KnowledgebaseVendorAdapter):
         )
 
     async def ingest(self, document: KnowledgeDocument) -> str:
+        document = validated_document(document)
         if not self._authority.accepts_document(document):
             raise KnowledgebaseError(
                 "Document authority does not match this knowledgebase.",
@@ -80,6 +86,7 @@ class PostgresFTSAdapter(KnowledgebaseVendorAdapter):
         # Derived, not generated. See KnowledgeDocument.identity — a random
         # id here would make every retry a duplicate.
         document_id = document.document_id
+        metadata = metadata_json(document.metadata)
         async with self._session_factory() as session:
             await self._authority.lock_live(session)
             # Delete-then-insert, in one transaction, keyed on the
@@ -121,7 +128,7 @@ class PostgresFTSAdapter(KnowledgebaseVendorAdapter):
                         "content": body,
                         "title": document.title,
                         "source_uri": document.source_uri,
-                        "meta": _json(document.metadata),
+                        "meta": metadata,
                     },
                 )
             await session.commit()
@@ -136,7 +143,7 @@ class PostgresFTSAdapter(KnowledgebaseVendorAdapter):
 
     async def query(
         self,
-        text_query: str,
+        text: str,
         *,
         scopes: dict[KnowledgeScope, str],
         limit: int = 5,
@@ -144,7 +151,7 @@ class PostgresFTSAdapter(KnowledgebaseVendorAdapter):
         # No scopes means no grants, which means no knowledge. Returning empty
         # rather than querying everything is the whole point of the scoping
         # model — a missing filter must never widen access.
-        if not text_query.strip() or not self._authority.is_requested(scopes):
+        if not text.strip() or not self._authority.is_requested(scopes):
             return []
 
         async with self._session_factory() as session:
@@ -174,26 +181,12 @@ class PostgresFTSAdapter(KnowledgebaseVendorAdapter):
                 ),
                 {
                     **self._authority.parameters,
-                    "q": text_query,
+                    "q": text,
                     "limit": limit,
                 },
             )
-            return [
-                KnowledgeResult(
-                    document_id=str(row.document_id),
-                    content=row.content,
-                    # A ts_rank, not a distance. Not comparable with pgvector's
-                    # score — the contract says so rather than normalising and
-                    # inventing a precision neither has.
-                    score=float(row.score),
-                    scope=KnowledgeScope(row.scope),
-                    scope_id=row.scope_id,
-                    title=row.title,
-                    source_uri=row.source_uri,
-                    metadata=row.meta or {},
-                )
-                for row in rows
-            ]
+            # ts_rank retains its native meaning, not a normalized vector score.
+            return [PostgresKeywordResult.from_row(row) for row in rows]
 
     async def delete(self, document_id: str) -> bool:
         async with self._session_factory() as session:
@@ -209,11 +202,6 @@ class PostgresFTSAdapter(KnowledgebaseVendorAdapter):
                     "id": document_id,
                 },
             )
+            changed = deletion_changed_rows(result)
             await session.commit()
-            return bool(result.rowcount)
-
-
-def _json(value: dict[str, Any]) -> str:
-    import json
-
-    return json.dumps(value or {})
+            return changed

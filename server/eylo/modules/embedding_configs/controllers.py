@@ -4,12 +4,18 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from eylo.modules.embedding_configs.domain import (
+    EmbeddingVerificationMetadata,
+    parse_embedding_provider,
+    parse_embedding_settings,
+)
 from eylo.modules.embedding_configs.schemas import (
     EmbeddingConfigCreate,
     EmbeddingConfigResponse,
     EmbeddingConfigUpdate,
 )
 from eylo.modules.embedding_configs.service import EmbeddingConfigService
+from eylo.modules.provider_configs.domain import ProviderConfig
 from eylo.modules.provider_configs.masking import mask_secrets
 
 __all__ = ["EmbeddingConfigController"]
@@ -28,7 +34,7 @@ class EmbeddingConfigController:
             organization_id=organization_id,
             provider=request.provider,
             name=request.name,
-            config=request.config,
+            config=request.config.model_dump(mode="json", exclude_none=True),
             secrets=request.secrets,
         )
         return self._to_response(config)
@@ -58,7 +64,11 @@ class EmbeddingConfigController:
             organization_id=organization_id,
             config_id=config_id,
             name=request.name if "name" in request.model_fields_set else None,
-            config=request.config if "config" in request.model_fields_set else None,
+            config=(
+                request.config.model_dump(mode="json", exclude_unset=True)
+                if request.config is not None
+                else None
+            ),
             secret_patch=(
                 request.secrets if "secrets" in request.model_fields_set else None
             ),
@@ -75,10 +85,14 @@ class EmbeddingConfigController:
         )
 
     @staticmethod
-    def _to_response(config) -> EmbeddingConfigResponse:
+    def _to_response(config: ProviderConfig) -> EmbeddingConfigResponse:
+        provider = parse_embedding_provider(config.provider)
+        metadata = EmbeddingVerificationMetadata.from_record(
+            config.verification_metadata
+        )
         return EmbeddingConfigResponse(
             id=config.id,
-            provider=config.provider,
+            provider=provider,
             name=config.name,
             revision=config.revision,
             enabled=config.enabled,
@@ -86,7 +100,7 @@ class EmbeddingConfigController:
             verified=config.verified,
             ready=config.ready,
             verified_at=config.verified_at,
-            dimensions=config.verification_metadata.get("dimensions"),
-            config=dict(config.config),
+            dimensions=metadata.dimensions,
+            config=parse_embedding_settings(provider, config.config),
             secrets=mask_secrets(config.secrets),
         )

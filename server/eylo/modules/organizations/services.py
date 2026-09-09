@@ -7,6 +7,7 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.services import EyloBaseService
+from eylo.modules.organizations.models import OrganizationModel
 from eylo.modules.organizations.repositories import OrganizationRepository
 
 from .schemas import OrganisationCreateSchema, OrganizationModelSchema
@@ -14,11 +15,11 @@ from .schemas import OrganisationCreateSchema, OrganizationModelSchema
 logger = logging.getLogger(__name__)
 
 
-class OrganizationService(EyloBaseService[OrganizationModelSchema]):
+class OrganizationService(EyloBaseService[OrganizationModelSchema, OrganizationModel]):
     """OrganizationService behavior for the "organizations" domain."""
 
     @property
-    def schema(self) -> OrganizationModelSchema:
+    def schema(self) -> type[OrganizationModelSchema]:
         """Schema for the "organizations" domain."""
         return OrganizationModelSchema
 
@@ -64,8 +65,3 @@ class OrganizationService(EyloBaseService[OrganizationModelSchema]):
                 organization_id,
                 type(error).__name__,
             )
-
-    async def get_(self, pk: UUID) -> OrganizationModelSchema:
-        """Get for the "organizations" domain."""
-        entity = await self.repository.get_(pk)
-        return self.orm_to_schema(entity)

@@ -6,7 +6,10 @@ from collections.abc import Mapping
 from typing import Protocol
 from uuid import UUID
 
-from eylo.modules.memory_configs.domain import MemoryProviderConfig
+from eylo.modules.memory_configs.domain import (
+    MemoryDependencyAuthority,
+    MemoryProviderConfig,
+)
 from eylo.modules.provider_configs.constants import Capability
 from eylo.modules.provider_configs.domain import (
     EffectiveProviderConfig,
@@ -39,7 +42,7 @@ class MemoryConfigService:
         config: Mapping[str, object] | None = None,
         secrets: Mapping[str, str] | None = None,
     ) -> ProviderConfig:
-        validated = MemoryProviderConfig.validate(
+        validated = MemoryProviderConfig.from_input(
             provider=provider,
             config=config,
             secrets=secrets,
@@ -97,7 +100,7 @@ class MemoryConfigService:
             if secret_patch is None
             else apply_secret_patch(existing.secrets, secret_patch)
         )
-        validated = MemoryProviderConfig.validate(
+        validated = MemoryProviderConfig.from_input(
             provider=existing.provider,
             config=next_config,
             secrets=next_secrets,
@@ -165,13 +168,13 @@ class MemoryConfigService:
         organization_id: UUID,
         config_id: UUID,
         expected_revision: int,
-        verification_metadata: Mapping[str, object],
+        verification_metadata: MemoryDependencyAuthority,
     ) -> ProviderConfig:
         return await self._provider_configs.mark_verified(
             organization_id=organization_id,
             config_id=config_id,
             expected_revision=expected_revision,
-            verification_metadata=verification_metadata,
+            verification_metadata=verification_metadata.to_metadata(),
         )
 
     async def resolve_for_new_run(

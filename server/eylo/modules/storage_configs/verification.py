@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
-from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+
+from eylo.modules.storage_configs.catalog import StorageProviders
 from eylo.modules.storage_configs.domain import StorageProviderConfig
 
 
@@ -14,8 +15,19 @@ class StorageVerificationError(Exception):
     """Raised when a provider cannot complete bounded live verification."""
 
 
-@dataclass(frozen=True)
-class StorageVerificationCapabilities:
+class _VerificationValue(BaseModel):
+    model_config = ConfigDict(
+        strict=True,
+        frozen=True,
+        extra="forbid",
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+    )
+
+
+class StorageVerificationCapabilities(_VerificationValue):
+    """Intrinsic operation support predicates, not a provider lifecycle policy."""
+
     upload: bool
     list: bool
     download: bool
@@ -23,20 +35,22 @@ class StorageVerificationCapabilities:
     presigned_download: bool
 
     def to_dict(self) -> dict[str, bool]:
-        return asdict(self)
+        return self.model_dump()
 
 
-@dataclass(frozen=True)
-class StorageProviderVerification:
-    provider: str
+class StorageProviderVerification(_VerificationValue):
+    """The adapter's verified provider identity and operation capabilities."""
+
+    provider: StorageProviders
     capabilities: StorageVerificationCapabilities
 
 
-@dataclass(frozen=True)
-class StorageVerificationResult:
-    provider: str
-    revision: int
-    verified_at: datetime
+class StorageVerificationResult(_VerificationValue):
+    """Only the exact revision tested outside the transaction can be verified."""
+
+    provider: StorageProviders
+    revision: int = Field(ge=1)
+    verified_at: AwareDatetime
     capabilities: StorageVerificationCapabilities
 
 

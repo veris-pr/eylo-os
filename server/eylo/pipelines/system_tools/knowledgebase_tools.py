@@ -1,10 +1,10 @@
 """Agent-facing knowledge query and write system tools."""
 
 import logging
-from typing import Annotated, Any
+from typing import Annotated
 from uuid import UUID
 
-from pydantic import Field
+from pydantic import Field, JsonValue, ValidationError
 
 from eylo.common.contracts.knowledgebase import (
     MAX_KNOWLEDGE_QUERY_CHARS,
@@ -28,6 +28,7 @@ from eylo.modules.knowledgebase.services.knowledgebases import (
     KnowledgebaseError,
     KnowledgebaseService,
 )
+from eylo.pipelines.agent_execution_context import PlatformExecutionContext
 from eylo.pipelines.knowledgebase import query_agent_knowledge
 
 logger = logging.getLogger(__name__)
@@ -44,7 +45,9 @@ KnowledgeWriteContent = Annotated[
     str,
     Field(min_length=1, max_length=MAX_CONTENT_BYTES),
 ]
-KnowledgeTitle = Annotated[str, Field(min_length=1, max_length=MAX_KNOWLEDGE_TITLE_CHARS)]
+KnowledgeTitle = Annotated[
+    str, Field(min_length=1, max_length=MAX_KNOWLEDGE_TITLE_CHARS)
+]
 KnowledgeTopK = Annotated[int, Field(ge=1, le=MAX_KNOWLEDGE_RESULTS)]
 
 
@@ -52,8 +55,8 @@ async def kb_query(
     query: KnowledgeQuery,
     scopes: KnowledgeScopes | None = None,
     top_k: KnowledgeTopK = MAX_KNOWLEDGE_RESULTS,
-    ctx: ConversationContext = None,
-) -> dict[str, Any]:
+    ctx: PlatformExecutionContext | None = None,
+) -> dict[str, JsonValue]:
     """Search the knowledge available to you and return the passages that match.
 
     Use this whenever the answer might be recorded rather than reasoned:
@@ -82,44 +85,41 @@ async def kb_query(
           matched.
 
     """
-    agent = getattr(ctx, "primary_agent", None) if ctx else None
-    if agent is None:
+    if ctx is None or ctx.primary_agent is None:
         return {"success": False, "results": [], "message": "No agent in context."}
-    conversation = getattr(ctx, "conversation", None)
     return await query_agent_knowledge(
         query=query,
         scopes=scopes,
-        agent=agent,
-        conversation_id=getattr(conversation, "id", None),
+        agent=ctx.primary_agent,
+        conversation_id=_conversation_id(ctx),
         top_k=top_k,
     )
 
 
 async def kb_write_destinations(
-    ctx: ConversationContext = None,
-) -> dict[str, Any]:
+    ctx: PlatformExecutionContext | None = None,
+) -> dict[str, JsonValue]:
     """List the exact knowledgebases this agent may write in this context.
 
     Returns only IDs, names and scopes. Call this before `kb_write`; there is no
     primary or default destination and a conversation knowledgebase is listed
     only inside its own conversation.
     """
-    agent = getattr(ctx, "primary_agent", None) if ctx else None
-    if agent is None:
+    if ctx is None or ctx.primary_agent is None:
         return {
             "success": False,
             "destinations": [],
             "message": "No agent in context.",
         }
-    conversation = getattr(ctx, "conversation", None)
-    conversation_id = getattr(conversation, "id", None)
+    agent = ctx.primary_agent
+    conversation_id = _conversation_id(ctx)
 
     async with start_transaction(ro=True):
         grants = await KnowledgebaseService(get_transaction()).grants_for_agent(
             agent.id,
             agent.organization_id,
         )
-        destinations = []
+        destinations: list[JsonValue] = []
         for grant in grants:
             try:
                 assert_writable(
@@ -148,8 +148,8 @@ async def kb_write(
     content: KnowledgeWriteContent,
     knowledgebase_id: UUID,
     title: KnowledgeTitle | None = None,
-    ctx: ConversationContext = None,
-) -> dict[str, Any]:
+    ctx: PlatformExecutionContext | None = None,
+) -> dict[str, JsonValue]:
     """Record something durably so it can be retrieved later.
 
     Use this for facts worth keeping — a decision reached, a correction the user
@@ -176,14 +176,13 @@ async def kb_write(
           refused and what access it would need.
 
     """
-    agent = getattr(ctx, "primary_agent", None) if ctx else None
-    if agent is None:
+    if ctx is None or ctx.primary_agent is None:
         return {"success": False, "message": "No agent in context."}
     if not content.strip():
         return {"success": False, "message": "Nothing to record."}
 
-    conversation = getattr(ctx, "conversation", None)
-    conversation_id = getattr(conversation, "id", None)
+    agent = ctx.primary_agent
+    conversation_id = _conversation_id(ctx)
 
     async with start_transaction():
         session = get_transaction()
@@ -210,13 +209,13 @@ async def kb_write(
             if str(item.knowledgebase_id) == str(knowledgebase_id)
         )
         knowledgebase = grant.knowledgebase
-        document = KnowledgeDocument(
-            content=content,
-            title=title,
-            scope=knowledgebase.scope,
-            scope_id=knowledgebase.scope_id,
-        )
         try:
+            document = KnowledgeDocument(
+                content=content,
+                title=title,
+                scope=knowledgebase.scope,
+                scope_id=knowledgebase.scope_id,
+            )
             job = await IngestionService(session).enqueue(
                 organization_id=agent.organization_id,
                 knowledgebase_id=knowledgebase_id,
@@ -224,6 +223,8 @@ async def kb_write(
             )
         except IngestionError as error:
             return {"success": False, "message": str(error)}
+        except ValidationError:
+            return {"success": False, "message": "Knowledge document is invalid."}
         job_id = job.id
         document_id = job.document_id
         knowledgebase_name = knowledgebase.name
@@ -251,3 +252,8 @@ async def kb_write(
         "document_id": str(document_id),
         "message": f"Accepted for '{knowledgebase_name}'.",
     }
+
+
+def _conversation_id(ctx: PlatformExecutionContext) -> UUID | None:
+    """A background execution scope is not a persisted conversation authority."""
+    return ctx.conversation.id if isinstance(ctx, ConversationContext) else None

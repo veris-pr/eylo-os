@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import StrEnum
 from uuid import UUID
 
-from pydantic import ValidationError
-from sqlalchemy import or_, select, tuple_
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError
+from sqlalchemy import Select, literal, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.absurd_work import AbsurdBoundWorkService, DurableState
@@ -20,6 +20,7 @@ from eylo.common.contracts.memory import (
     MemoryLevel,
     MemoryOrigin,
     MemoryProvenance,
+    MemoryRecoveryPolicy,
 )
 from eylo.common.contracts.memory_reconciliation import (
     MEMORY_RECONCILIATION_MAX_CHANGES,
@@ -49,27 +50,65 @@ from eylo.modules.memory.models import (
 from eylo.modules.memory.reindex_service import MemoryReindexService
 
 
-@dataclass(frozen=True, order=True, slots=True)
-class ReconciliationPosition:
-    created_at: datetime
+class ReconciliationPosition(BaseModel):
+    """One complete change watermark, ordered by timestamp then UUID."""
+
+    model_config = ConfigDict(
+        strict=True, frozen=True, extra="forbid", revalidate_instances="always"
+    )
+
+    created_at: AwareDatetime
     change_id: UUID
 
+    @property
+    def order_key(self) -> tuple[datetime, UUID]:
+        return self.created_at, self.change_id
 
-@dataclass(frozen=True, slots=True)
-class ReconciliationCounts:
-    considered: int
-    duplicate: int
-    superseded: int
-    conflict: int
-    unrelated: int
-    failed: int = 0
+    @classmethod
+    def from_optional(
+        cls, *, created_at: datetime | None, change_id: UUID | None
+    ) -> ReconciliationPosition | None:
+        if created_at is None and change_id is None:
+            return None
+        if created_at is None or change_id is None:
+            raise MemoryError("Memory reconciliation cursor watermark is incomplete.")
+        return cls(created_at=created_at, change_id=change_id)
+
+
+class _CursorWatermark(StrEnum):
+    REQUESTED = "requested"
+    PROCESSED = "processed"
+
+
+class _RelatedFactRevision(BaseModel):
+    """A complete, positive revision fence for a related fact."""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+
+    memory_id: UUID
+    state_revision: int = Field(gt=0)
+
+
+class ReconciliationCounts(BaseModel):
+    """Nonnegative reconciliation outcomes projected onto the job receipt."""
+
+    model_config = ConfigDict(
+        strict=True, frozen=True, extra="forbid", revalidate_instances="always"
+    )
+
+    considered: int = Field(ge=0)
+    duplicate: int = Field(ge=0)
+    superseded: int = Field(ge=0)
+    conflict: int = Field(ge=0)
+    unrelated: int = Field(ge=0)
+    failed: int = Field(default=0, ge=0)
 
     @classmethod
     def from_proposal(
         cls,
         proposal: MemoryReconciliationProposal,
     ) -> "ReconciliationCounts":
-        decisions = proposal.decisions
+        decisions = MemoryReconciliationProposal.model_validate(proposal).decisions
         return cls(
             considered=len(decisions),
             duplicate=sum(
@@ -91,6 +130,7 @@ class ReconciliationCounts:
         )
 
     def job_values(self) -> dict[str, int]:
+        ReconciliationCounts.model_validate(self)
         return {
             "considered_count": self.considered,
             "duplicate_count": self.duplicate,
@@ -105,7 +145,7 @@ class MemoryReconciliationStale(MemoryError):
     """An immutable proposal lost a fact revision and must be re-filed."""
 
     def __init__(self, message: str) -> None:
-        super().__init__(message, retryable=False)
+        super().__init__(message, recovery=MemoryRecoveryPolicy.TERMINAL)
 
 
 class MemoryReconciliationService:
@@ -156,7 +196,7 @@ class MemoryReconciliationService:
         if not changes:
             raise MemoryError("Memory reconciliation cursor has no durable changes.")
         through = _change_position(changes[-1])
-        processed = _cursor_position(cursor, requested=False)
+        processed = _cursor_position(cursor, watermark=_CursorWatermark.PROCESSED)
         recorded_space = embedding_space_from_record(cursor)
         active_space = await MemoryReindexService(self.session).lock_active_space(
             organization_id=cursor.organization_id,
@@ -260,14 +300,15 @@ class MemoryReconciliationService:
         self,
         job: MemoryReconciliationJobModel,
     ) -> list[MemoryChangeModel]:
+        start, through = _job_range(job)
         query = self._partition_changes(job).where(
             tuple_(MemoryChangeModel.created_at, MemoryChangeModel.id)
-            <= tuple_(job.range_through_created_at, job.range_through_change_id)
+            <= tuple_(literal(through.created_at), literal(through.change_id))
         )
-        if job.range_start_created_at is not None:
+        if start is not None:
             query = query.where(
                 tuple_(MemoryChangeModel.created_at, MemoryChangeModel.id)
-                > tuple_(job.range_start_created_at, job.range_start_change_id)
+                > tuple_(literal(start.created_at), literal(start.change_id))
             )
         changes = list(
             (
@@ -366,6 +407,7 @@ class MemoryReconciliationService:
         job_id: UUID,
         batch: MemoryReconciliationBatch,
     ) -> MemoryReconciliationEffectModel:
+        batch = MemoryReconciliationBatch.model_validate(batch)
         effect = await self.session.scalar(
             select(MemoryReconciliationEffectModel)
             .where(
@@ -415,6 +457,7 @@ class MemoryReconciliationService:
         job_id: UUID,
         proposal: MemoryReconciliationProposal,
     ) -> None:
+        proposal = MemoryReconciliationProposal.model_validate(proposal)
         effect = await self._locked_effect(organization_id, job_id)
         payload = proposal.model_dump(mode="json")
         if effect.proposal is None:
@@ -461,6 +504,8 @@ class MemoryReconciliationService:
             return job
         if job.state is not DurableState.RUNNING:
             raise MemoryError("Memory reconciliation apply is not running.")
+        batch = MemoryReconciliationBatch.model_validate(batch)
+        proposal = MemoryReconciliationProposal.model_validate(proposal)
         cursor = await self._locked_cursor(job)
         effect = await self._locked_effect(organization_id, job_id)
         if effect.finished_at is not None:
@@ -613,8 +658,11 @@ class MemoryReconciliationService:
             job.failed_count = 1
             if was_running:
                 cursor = await self._locked_cursor(job)
-                requested = _cursor_position(cursor, requested=True)
-                if requested is not None and requested > _job_through(job):
+                requested = _cursor_position(cursor, watermark=_CursorWatermark.REQUESTED)
+                if (
+                    requested is not None
+                    and requested.order_key > _job_through(job).order_key
+                ):
                     cursor.active_job_id = None
         await self.session.flush()
         if was_running:
@@ -672,18 +720,18 @@ class MemoryReconciliationService:
         self,
         cursor: MemoryReconciliationCursorModel,
     ) -> list[MemoryChangeModel]:
-        requested = _cursor_position(cursor, requested=True)
+        requested = _cursor_position(cursor, watermark=_CursorWatermark.REQUESTED)
         if requested is None:
             return []
         query = self._partition_changes(cursor).where(
             tuple_(MemoryChangeModel.created_at, MemoryChangeModel.id)
-            <= tuple_(requested.created_at, requested.change_id)
+            <= tuple_(literal(requested.created_at), literal(requested.change_id))
         )
-        processed = _cursor_position(cursor, requested=False)
+        processed = _cursor_position(cursor, watermark=_CursorWatermark.PROCESSED)
         if processed is not None:
             query = query.where(
                 tuple_(MemoryChangeModel.created_at, MemoryChangeModel.id)
-                > tuple_(processed.created_at, processed.change_id)
+                > tuple_(literal(processed.created_at), literal(processed.change_id))
             )
         return list(
             (
@@ -696,9 +744,15 @@ class MemoryReconciliationService:
             ).all()
         )
 
-    def _partition_changes(self, owner):
+    def _partition_changes(
+        self, owner: MemoryReconciliationCursorModel | MemoryReconciliationJobModel
+    ) -> Select[tuple[MemoryChangeModel]]:
         level = MemoryLevel(owner.scope_level)
-        owner_column = getattr(MemoryChangeModel, _owner_column(level))
+        owner_column = {
+            MemoryLevel.AGENT: MemoryChangeModel.agent_id,
+            MemoryLevel.USER: MemoryChangeModel.contact_id,
+            MemoryLevel.CONVERSATION: MemoryChangeModel.conversation_id,
+        }[level]
         return select(MemoryChangeModel).where(
             MemoryChangeModel.organization_id == owner.organization_id,
             MemoryChangeModel.memory_provider_config_id
@@ -745,50 +799,39 @@ class MemoryReconciliationService:
         return cursor
 
 
-def _owner_column(level: MemoryLevel) -> str:
-    return {
-        MemoryLevel.AGENT: "agent_id",
-        MemoryLevel.USER: "contact_id",
-        MemoryLevel.CONVERSATION: "conversation_id",
-    }[level]
-
-
 def _owner_fields(level: MemoryLevel, owner_id: UUID) -> dict[str, UUID | None]:
-    values: dict[str, UUID | None] = {
-        "agent_id": None,
-        "contact_id": None,
-        "conversation_id": None,
+    level = MemoryLevel(level)
+    return {
+        "agent_id": owner_id if level is MemoryLevel.AGENT else None,
+        "contact_id": owner_id if level is MemoryLevel.USER else None,
+        "conversation_id": owner_id if level is MemoryLevel.CONVERSATION else None,
     }
-    values[_owner_column(MemoryLevel(level))] = owner_id
-    return values
 
 
 def _cursor_position(
     cursor: MemoryReconciliationCursorModel,
     *,
-    requested: bool,
+    watermark: _CursorWatermark,
 ) -> ReconciliationPosition | None:
-    created_at = (
-        cursor.requested_through_created_at
-        if requested
-        else cursor.processed_through_created_at
+    if not isinstance(watermark, _CursorWatermark):
+        raise TypeError("Memory reconciliation cursor selection requires a watermark.")
+    if watermark is _CursorWatermark.REQUESTED:
+        return ReconciliationPosition.from_optional(
+            created_at=cursor.requested_through_created_at,
+            change_id=cursor.requested_through_change_id,
+        )
+    return ReconciliationPosition.from_optional(
+        created_at=cursor.processed_through_created_at,
+        change_id=cursor.processed_through_change_id,
     )
-    change_id = (
-        cursor.requested_through_change_id
-        if requested
-        else cursor.processed_through_change_id
-    )
-    if created_at is None and change_id is None:
-        return None
-    if created_at is None or change_id is None:
-        raise MemoryError("Memory reconciliation cursor watermark is incomplete.")
-    return ReconciliationPosition(created_at=created_at, change_id=change_id)
 
 
 def _cursor_has_backlog(cursor: MemoryReconciliationCursorModel) -> bool:
-    requested = _cursor_position(cursor, requested=True)
-    processed = _cursor_position(cursor, requested=False)
-    return requested is not None and (processed is None or requested > processed)
+    requested = _cursor_position(cursor, watermark=_CursorWatermark.REQUESTED)
+    processed = _cursor_position(cursor, watermark=_CursorWatermark.PROCESSED)
+    return requested is not None and (
+        processed is None or requested.order_key > processed.order_key
+    )
 
 
 def _change_position(change: MemoryChangeModel) -> ReconciliationPosition:
@@ -802,13 +845,34 @@ def _job_through(job: MemoryReconciliationJobModel) -> ReconciliationPosition:
     )
 
 
-def _matches_partition(fact: MemoryModel, owner) -> bool:
+def _job_range(
+    job: MemoryReconciliationJobModel,
+) -> tuple[ReconciliationPosition | None, ReconciliationPosition]:
+    start = ReconciliationPosition.from_optional(
+        created_at=job.range_start_created_at,
+        change_id=job.range_start_change_id,
+    )
+    through = _job_through(job)
+    if start is not None and start.order_key >= through.order_key:
+        raise MemoryError("Memory reconciliation change range is inconsistent.")
+    return start, through
+
+
+def _matches_partition(
+    fact: MemoryModel,
+    owner: MemoryReconciliationCursorModel | MemoryReconciliationJobModel,
+) -> bool:
     level = MemoryLevel(owner.scope_level)
+    fact_owner_id = {
+        MemoryLevel.AGENT: fact.agent_id,
+        MemoryLevel.USER: fact.contact_id,
+        MemoryLevel.CONVERSATION: fact.conversation_id,
+    }[level]
     return (
         fact.organization_id == owner.organization_id
         and fact.memory_provider_config_id == owner.memory_provider_config_id
         and MemoryLevel(fact.scope_level) is level
-        and getattr(fact, _owner_column(level)) == owner.owner_id
+        and fact_owner_id == owner.owner_id
         and fact.embedding_space_id == owner.embedding_space_id
     )
 
@@ -817,6 +881,8 @@ def _validate_complete_proposal(
     batch: MemoryReconciliationBatch,
     proposal: MemoryReconciliationProposal,
 ) -> tuple[MemoryReconciliationDecision, ...]:
+    batch = MemoryReconciliationBatch.model_validate(batch)
+    proposal = MemoryReconciliationProposal.model_validate(proposal)
     inputs = {item.memory_id: item for item in batch.inputs}
     decisions = proposal.decisions
     if len(decisions) != len(inputs) or {row.memory_id for row in decisions} != set(
@@ -830,13 +896,31 @@ def _validate_complete_proposal(
         candidates = {item.memory_id: item for item in source.candidates}
         if decision.outcome is MemoryReconciliationOutcome.UNRELATED:
             continue
-        candidate = candidates.get(decision.related_memory_id)
+        related = _require_related_revision(decision)
+        candidate = candidates.get(related.memory_id)
         if (
             candidate is None
-            or decision.related_state_revision != candidate.state_revision
+            or related.state_revision != candidate.state_revision
         ):
             raise MemoryError("Memory reconciliation candidate revision changed.")
     return decisions
+
+
+def _require_related_revision(
+    decision: MemoryReconciliationDecision,
+) -> _RelatedFactRevision:
+    decision = MemoryReconciliationDecision.model_validate(decision)
+    if (
+        decision.outcome is MemoryReconciliationOutcome.UNRELATED
+        or decision.related_memory_id is None
+        or decision.related_state_revision is None
+        or decision.related_memory_id == decision.memory_id
+    ):
+        raise MemoryError("Memory reconciliation related fact is unavailable.")
+    return _RelatedFactRevision(
+        memory_id=decision.related_memory_id,
+        state_revision=decision.related_state_revision,
+    )
 
 
 def _effect_sets(
@@ -845,16 +929,18 @@ def _effect_sets(
     expire_ids: list[UUID] = []
     retained: set[UUID] = set()
     for decision in decisions:
+        if decision.outcome is MemoryReconciliationOutcome.UNRELATED:
+            retained.add(decision.memory_id)
+            continue
+        related = _require_related_revision(decision)
         if decision.outcome is MemoryReconciliationOutcome.DUPLICATE:
             expire_ids.append(decision.memory_id)
-            retained.add(decision.related_memory_id)
+            retained.add(related.memory_id)
         elif decision.outcome is MemoryReconciliationOutcome.SUPERSEDES:
-            expire_ids.append(decision.related_memory_id)
+            expire_ids.append(related.memory_id)
             retained.add(decision.memory_id)
         elif decision.outcome is MemoryReconciliationOutcome.CONFLICTS:
-            retained.update((decision.memory_id, decision.related_memory_id))
-        else:
-            retained.add(decision.memory_id)
+            retained.update((decision.memory_id, related.memory_id))
     if len(expire_ids) != len(set(expire_ids)):
         raise MemoryError("Memory reconciliation expires one fact more than once.")
     return set(expire_ids), retained
@@ -869,13 +955,14 @@ def _expected_fact_revisions(
         for item in (*batch.inputs, *batch.settlements)
     }
     for decision in decisions:
-        if decision.related_memory_id is None:
+        if decision.outcome is MemoryReconciliationOutcome.UNRELATED:
             continue
+        related = _require_related_revision(decision)
         prior = expected.setdefault(
-            decision.related_memory_id,
-            decision.related_state_revision,
+            related.memory_id,
+            related.state_revision,
         )
-        if prior != decision.related_state_revision:
+        if prior != related.state_revision:
             raise MemoryError("Memory reconciliation repeats a conflicting revision.")
     return expected
 
@@ -1034,8 +1121,9 @@ def _advance_requested_cursor(
     cursor: MemoryReconciliationCursorModel,
     position: ReconciliationPosition,
 ) -> None:
-    current = _cursor_position(cursor, requested=True)
-    if current is None or position > current:
+    position = ReconciliationPosition.model_validate(position)
+    current = _cursor_position(cursor, watermark=_CursorWatermark.REQUESTED)
+    if current is None or position.order_key > current.order_key:
         cursor.requested_through_created_at = position.created_at
         cursor.requested_through_change_id = position.change_id
 
@@ -1044,20 +1132,12 @@ def _advance_processed_cursor(
     cursor: MemoryReconciliationCursorModel,
     job: MemoryReconciliationJobModel,
 ) -> None:
-    current = _cursor_position(cursor, requested=False)
-    expected = (
-        None
-        if job.range_start_created_at is None
-        else ReconciliationPosition(
-            created_at=job.range_start_created_at,
-            change_id=job.range_start_change_id,
-        )
-    )
+    current = _cursor_position(cursor, watermark=_CursorWatermark.PROCESSED)
+    expected, through = _job_range(job)
     if current != expected:
         raise MemoryError("Memory reconciliation processed watermark changed.")
-    through = _job_through(job)
-    requested = _cursor_position(cursor, requested=True)
-    if requested is None or through > requested:
+    requested = _cursor_position(cursor, watermark=_CursorWatermark.REQUESTED)
+    if requested is None or through.order_key > requested.order_key:
         raise MemoryError("Memory reconciliation processed beyond its request.")
     cursor.processed_through_created_at = through.created_at
     cursor.processed_through_change_id = through.change_id

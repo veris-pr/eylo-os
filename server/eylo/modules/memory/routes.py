@@ -45,7 +45,7 @@ async def list_memories(
     """List saved, recalled, and expired facts for one organization."""
     _authorize(organization_id, current_user)
     async with start_transaction(ro=True):
-        return await MemoryOperatorService(get_transaction()).list(
+        return await MemoryOperatorService(get_transaction()).list_memories(
             organization_id=organization_id,
             levels=level or [],
             statuses=status or [],

@@ -41,7 +41,7 @@ def build_embedding_config_service(
 def build_embedding_endpoint_policy() -> EmbeddingEndpointPolicy:
     raw = settings.EMBEDDING_BASE_URL_ALLOWLIST or ""
     return EmbeddingEndpointPolicy(
-        allowed_base_urls=tuple(
+        allowed_base_urls=frozenset(
             value.strip() for value in raw.split(",") if value.strip()
         )
     )

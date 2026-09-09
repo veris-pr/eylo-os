@@ -14,26 +14,37 @@ space.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Annotated
 
+from pydantic import Field, FiniteFloat, TypeAdapter, ValidationError
 from sqlalchemy import text as sql
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from eylo.common.contracts.embedding import DocumentEmbedder, QueryEmbedder
 from eylo.sockets.knowledgebase.base import KnowledgebaseVendorAdapter
+from eylo.sockets.knowledgebase.chunking import ChunkingStrategy
 from eylo.sockets.knowledgebase.schemas import (
     KnowledgeDocument,
+    KnowledgeRecovery,
     KnowledgeResult,
     KnowledgeScope,
     KnowledgebaseCapabilities,
     KnowledgebaseError,
 )
 from eylo.sockets.knowledgebase.vendors.postgres_base import (
+    KnowledgeSessionFactory,
     PostgresKnowledgebaseAuthority,
+    PostgresVectorResult,
     chunk,
+    deletion_changed_rows,
+    metadata_json,
+    validated_document,
 )
 
 logger = logging.getLogger(__name__)
 
 PROVIDER = "pgvector"
+_VECTOR = TypeAdapter(Annotated[list[FiniteFloat], Field(min_length=1)])
 
 
 class PgVectorAdapter(KnowledgebaseVendorAdapter):
@@ -41,12 +52,12 @@ class PgVectorAdapter(KnowledgebaseVendorAdapter):
 
     def __init__(
         self,
-        session_factory,
-        document_embedder,
-        query_embedder,
+        session_factory: KnowledgeSessionFactory,
+        document_embedder: DocumentEmbedder,
+        query_embedder: QueryEmbedder,
         embedding_space_id: str,
         authority: PostgresKnowledgebaseAuthority,
-        chunker=None,
+        chunker: ChunkingStrategy | None = None,
     ) -> None:
         """Inject intent-specific embedders and one immutable vector space.
 
@@ -54,7 +65,7 @@ class PgVectorAdapter(KnowledgebaseVendorAdapter):
         into `modules/` to resolve provider authority.
         """
         self._session_factory = session_factory
-        self._authority = authority
+        self._authority = PostgresKnowledgebaseAuthority.model_validate(authority)
         # The knowledgebase's chunking strategy. None means paragraph packing.
         self._chunker = chunker
         self._document_embedder = document_embedder
@@ -76,6 +87,7 @@ class PgVectorAdapter(KnowledgebaseVendorAdapter):
         )
 
     async def ingest(self, document: KnowledgeDocument) -> str:
+        document = validated_document(document)
         if not self._authority.accepts_document(document):
             raise KnowledgebaseError(
                 "Document authority does not match this knowledgebase.",
@@ -97,9 +109,12 @@ class PgVectorAdapter(KnowledgebaseVendorAdapter):
                 vendor=PROVIDER,
             )
 
+        encoded_vectors = [_vector(vector) for vector in vectors]
+
         # Derived, not generated. See KnowledgeDocument.identity — a random
         # id here would make every retry a duplicate.
         document_id = document.document_id
+        metadata = metadata_json(document.metadata)
         async with self._session_factory() as session:
             await self._lock_active_space(session)
             # Delete-then-insert, in one transaction, keyed on the
@@ -123,7 +138,9 @@ class PgVectorAdapter(KnowledgebaseVendorAdapter):
                     "embedding_space_id": self._embedding_space_id,
                 },
             )
-            for position, (body, vector) in enumerate(zip(chunks, vectors)):
+            for position, (body, vector) in enumerate(
+                zip(chunks, encoded_vectors, strict=True)
+            ):
                 await session.execute(
                     sql(
                         """
@@ -146,8 +163,8 @@ class PgVectorAdapter(KnowledgebaseVendorAdapter):
                         "content": body,
                         "title": document.title,
                         "source_uri": document.source_uri,
-                        "meta": _json(document.metadata),
-                        "embedding": _vector(vector),
+                        "meta": metadata,
+                        "embedding": vector,
                         "embedding_space_id": self._embedding_space_id,
                     },
                 )
@@ -163,17 +180,17 @@ class PgVectorAdapter(KnowledgebaseVendorAdapter):
 
     async def query(
         self,
-        text_query: str,
+        text: str,
         *,
         scopes: dict[KnowledgeScope, str],
         limit: int = 5,
     ) -> list[KnowledgeResult]:
         # Same rule as every vendor: no scopes means no grants means no
         # knowledge. A missing filter must never widen access.
-        if not text_query.strip() or not self._authority.is_requested(scopes):
+        if not text.strip() or not self._authority.is_requested(scopes):
             return []
 
-        vector = await self._query_embedder(text_query)
+        vector = _vector(await self._query_embedder(text))
 
         async with self._session_factory() as session:
             await self._lock_active_space(session)
@@ -203,27 +220,13 @@ class PgVectorAdapter(KnowledgebaseVendorAdapter):
                 ),
                 {
                     **self._authority.parameters,
-                    "embedding": _vector(vector),
+                    "embedding": vector,
                     "embedding_space_id": self._embedding_space_id,
                     "limit": limit,
                 },
             )
-            return [
-                KnowledgeResult(
-                    document_id=str(row.document_id),
-                    content=row.content,
-                    # Cosine distance inverted so higher is better, matching
-                    # every other vendor's direction. Still not comparable with
-                    # an FTS rank — same direction, different meaning.
-                    score=1.0 - float(row.distance),
-                    scope=KnowledgeScope(row.scope),
-                    scope_id=row.scope_id,
-                    title=row.title,
-                    source_uri=row.source_uri,
-                    metadata=row.meta or {},
-                )
-                for row in rows
-            ]
+            # Invert cosine distance; this does not make it comparable with FTS.
+            return [PostgresVectorResult.from_row(row) for row in rows]
 
     async def delete(self, document_id: str) -> bool:
         async with self._session_factory() as session:
@@ -241,10 +244,11 @@ class PgVectorAdapter(KnowledgebaseVendorAdapter):
                     "embedding_space_id": self._embedding_space_id,
                 },
             )
+            changed = deletion_changed_rows(result)
             await session.commit()
-            return bool(result.rowcount)
+            return changed
 
-    async def _lock_active_space(self, session) -> None:
+    async def _lock_active_space(self, session: AsyncSession) -> None:
         active_space_id = await session.scalar(
             sql(
                 """
@@ -264,16 +268,16 @@ class PgVectorAdapter(KnowledgebaseVendorAdapter):
             raise KnowledgebaseError(
                 "Knowledgebase embedding space changed; retry the operation.",
                 vendor=PROVIDER,
-                retryable=True,
+                recovery=KnowledgeRecovery.RETRY,
             )
 
 
-def _vector(values) -> str:
-    """Pgvector's literal form."""
-    return "[" + ",".join(str(float(v)) for v in values) + "]"
-
-
-def _json(value: dict[str, Any]) -> str:
-    import json
-
-    return json.dumps(value or {})
+def _vector(values: list[float]) -> str:
+    """Validate the injected embedding before constructing a pgvector literal."""
+    try:
+        vector = _VECTOR.validate_python(values, strict=True)
+    except ValidationError:
+        raise KnowledgebaseError(
+            "Knowledge embedding vector is invalid.", vendor=PROVIDER
+        ) from None
+    return "[" + ",".join(str(value) for value in vector) + "]"

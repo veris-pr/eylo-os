@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from eylo.common.contracts.embedding import (
-    EmbeddingError,
     EmbeddingInput,
     EmbeddingSpace,
 )
+from eylo.common.contracts.embedding_vectors import EmbeddingVectorBatch
 from eylo.modules.embedding_configs.domain import (
     InvalidEmbeddingConfig,
     ResolvedEmbedding,
@@ -21,39 +23,49 @@ from eylo.sockets.embedding.base import EmbeddingVendorAdapter
 from eylo.sockets.embedding.factory import EmbeddingFactory
 
 
-@dataclass(frozen=True)
-class EmbeddingRuntime:
+class EmbeddingRuntime(BaseModel):
     """Adapter plus the immutable coordinate space it is allowed to use."""
 
+    model_config = ConfigDict(
+        frozen=True,
+        strict=True,
+        extra="forbid",
+        revalidate_instances="always",
+        arbitrary_types_allowed=True,
+    )
+
     space: EmbeddingSpace
-    adapter: EmbeddingVendorAdapter
+    adapter: EmbeddingVendorAdapter = Field(repr=False, exclude=True)
 
     async def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return self._require_space(
-            await self.adapter.embed(texts, input_type=EmbeddingInput.DOCUMENT)
+            await self.adapter.embed(texts, input_type=EmbeddingInput.DOCUMENT),
+            expected_count=len(texts),
         )
 
     async def embed_query(self, text: str) -> list[float]:
         vectors = self._require_space(
-            await self.adapter.embed([text], input_type=EmbeddingInput.QUERY)
+            await self.adapter.embed([text], input_type=EmbeddingInput.QUERY),
+            expected_count=1,
         )
         return vectors[0]
 
-    def _require_space(self, vectors: list[list[float]]) -> list[list[float]]:
-        if any(len(vector) != self.space.dimensions for vector in vectors):
-            raise EmbeddingError(
-                "Embedding vector dimensions do not match the verified space.",
-                vendor=self.space.provider,
-                code="dimension_mismatch",
-            )
-        return vectors
+    def _require_space(
+        self, vectors: object, *, expected_count: int
+    ) -> list[list[float]]:
+        return EmbeddingVectorBatch.validate_result(
+            vectors,
+            expected_count=expected_count,
+            dimensions=self.space.dimensions,
+            vendor=self.space.provider,
+        ).root
 
 
 async def resolve_embedding_runtime(
     organization_id: UUID,
     *,
     provider_config_id: UUID,
-    db=None,
+    db: AsyncSession | None = None,
 ) -> EmbeddingRuntime:
     """Resolve the current verified revision selected by the caller."""
     resolved = await build_embedding_config_resolver(db).resolve(
@@ -68,7 +80,7 @@ async def resolve_pinned_embedding_runtime(
     *,
     provider_config_id: UUID,
     provider_config_revision: int,
-    db=None,
+    db: AsyncSession | None = None,
 ) -> EmbeddingRuntime:
     """Resolve the exact revision recorded by durable vector work."""
     resolved = await build_embedding_config_resolver(db).resolve_pinned(
@@ -83,7 +95,7 @@ async def resolve_compatible_embedding_runtime(
     organization_id: UUID,
     *,
     persisted_space: EmbeddingSpace,
-    db=None,
+    db: AsyncSession | None = None,
 ) -> EmbeddingRuntime:
     """Prefer current ready credentials, then fall back to recorded execution."""
     if persisted_space.organization_id != organization_id:
@@ -116,6 +128,7 @@ async def resolve_compatible_embedding_runtime(
 
 
 def _build_runtime(resolved: ResolvedEmbedding) -> EmbeddingRuntime:
+    resolved = ResolvedEmbedding.model_validate(resolved)
     adapter = EmbeddingFactory(
         resolved.provider.value,
         build_embedding_runtime_config(resolved),
@@ -127,14 +140,14 @@ def _build_runtime(resolved: ResolvedEmbedding) -> EmbeddingRuntime:
 def _build_space(
     resolved: ResolvedEmbedding,
     *,
-    semantic_options: dict[str, object],
+    semantic_options: dict[str, JsonValue],
 ) -> EmbeddingSpace:
     metadata = resolved.verification_metadata
-    if metadata.get("endpoint") != resolved.endpoint:
+    if metadata.endpoint != resolved.endpoint:
         raise InvalidEmbeddingConfig(
             "Verified embedding endpoint does not match the resolved revision."
         )
-    if metadata.get("model") != resolved.model:
+    if metadata.model != resolved.model:
         raise InvalidEmbeddingConfig(
             "Verified embedding model does not match the resolved revision."
         )

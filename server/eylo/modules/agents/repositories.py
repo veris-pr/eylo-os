@@ -1,9 +1,10 @@
-"""Repository for platform user database operations."""
+"""Persistence for Agent drafts, swarm membership and background attachments."""
 
 from typing import List, Optional, Type
 from uuid import UUID
 
 from sqlalchemy import delete
+from sqlalchemy.engine import CursorResult
 
 from eylo.common.repositories import BaseORMRepository
 from eylo.modules.agents.models import (
@@ -272,6 +273,8 @@ class AgentSwarmMappingRepository(BaseORMRepository[AgentSwarmMappingModel]):
                 self.model.organization_id == organization_id,
             )
         )
+        if not isinstance(result, CursorResult):
+            raise TypeError("Swarm membership deletion requires a DML row count.")
         return result.rowcount > 0
 
 

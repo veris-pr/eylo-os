@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from eylo.absurd_work import AbsurdBoundWorkService
 from eylo.common.contracts.embedding import (
@@ -21,6 +22,7 @@ from eylo.modules.knowledgebase.services.knowledgebases import (
     KnowledgebaseService,
 )
 from eylo.modules.knowledgebase.services.reindex import KnowledgeReindexService
+from eylo.modules.knowledgebase.vendors import KnowledgeVendor
 from eylo.modules.provider_configs.crypto import SecretCipherError
 from eylo.modules.provider_configs.errors import NotConfiguredError
 from eylo.pipelines.embedding.resolver import resolve_embedding_runtime
@@ -31,13 +33,22 @@ from eylo.pipelines.knowledgebase.reindex_durable_execution import (
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True, slots=True)
-class KnowledgeReindexInspection:
-    knowledgebase: KnowledgebaseModel
+class KnowledgeReindexInspection(BaseModel):
+    """Operator projection; ORM handles are local-only, never serialized."""
+
+    model_config = ConfigDict(
+        strict=True,
+        frozen=True,
+        extra="forbid",
+        arbitrary_types_allowed=True,
+        revalidate_instances="always",
+    )
+
+    knowledgebase: KnowledgebaseModel = Field(exclude=True, repr=False)
     active_space: EmbeddingSpace
     target_space: EmbeddingSpace | None
     available_space: EmbeddingSpace | None
-    latest_job: KnowledgeReindexJobModel | None
+    latest_job: KnowledgeReindexJobModel | None = Field(exclude=True, repr=False)
 
 
 async def inspect_knowledgebase_reindex(
@@ -50,15 +61,13 @@ async def inspect_knowledgebase_reindex(
             knowledgebase_id,
             organization_id,
         )
-        if knowledgebase.vendor != "pgvector":
+        if knowledgebase.vendor != KnowledgeVendor.PGVECTOR:
             raise KnowledgebaseError(
                 "Only pgvector knowledgebases have an embedding index."
             )
         active_space = embedding_space_from_record(knowledgebase)
         if active_space is None:
-            raise KnowledgebaseError(
-                "Knowledgebase has no active embedding authority."
-            )
+            raise KnowledgebaseError("Knowledgebase has no active embedding authority.")
         available_space = None
         if knowledgebase.embedding_provider_config_id is not None:
             try:
@@ -105,7 +114,7 @@ async def request_knowledgebase_reindex(
             knowledgebase_id=knowledgebase_id,
             target_space=runtime.space,
         )
-        job_id = UUID(str(job.id))
+        job_id = job.id
 
     try:
         await spawn_knowledge_reindex(

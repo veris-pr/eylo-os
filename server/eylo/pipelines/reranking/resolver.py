@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.modules.reranking_configs.domain import (
     InvalidRerankingConfig,
@@ -15,10 +17,19 @@ from eylo.sockets.reranking.base import RerankingVendorAdapter
 from eylo.sockets.reranking.factory import RerankingFactory
 
 
-@dataclass(frozen=True)
-class RerankingRuntime:
+class RerankingRuntime(BaseModel):
+    """Validated authority paired with a nonserializable provider resource."""
+
+    model_config = ConfigDict(
+        strict=True,
+        frozen=True,
+        extra="forbid",
+        revalidate_instances="always",
+        arbitrary_types_allowed=True,
+    )
+
     authority: ResolvedReranking
-    adapter: RerankingVendorAdapter
+    adapter: RerankingVendorAdapter = Field(repr=False, exclude=True)
 
     @property
     def provider_config_id(self) -> UUID:
@@ -38,7 +49,7 @@ async def resolve_reranker(
     *,
     provider_config_id: UUID,
     provider_config_revision: int | None = None,
-    db=None,
+    db: AsyncSession | None = None,
 ) -> RerankingRuntime:
     """Build exactly the requested current or pinned reranking runtime."""
     resolver = build_reranking_config_resolver(db)
@@ -53,6 +64,18 @@ async def resolve_reranker(
             provider_config_id=provider_config_id,
             revision=provider_config_revision,
         )
+    resolved = ResolvedReranking.model_validate(resolved)
+    if (
+        resolved.organization_id != organization_id
+        or resolved.provider_config_id != provider_config_id
+        or (
+            provider_config_revision is not None
+            and resolved.provider_config_revision != provider_config_revision
+        )
+    ):
+        raise InvalidRerankingConfig(
+            "Resolved reranking authority does not match the request."
+        )
     _validate_verified_authority(resolved)
     adapter = RerankingFactory(
         resolved.provider.value,
@@ -63,10 +86,7 @@ async def resolve_reranker(
 
 def _validate_verified_authority(resolved: ResolvedReranking) -> None:
     metadata = resolved.verification_metadata
-    if (
-        metadata.get("endpoint") != resolved.endpoint
-        or metadata.get("model") != resolved.model
-    ):
+    if metadata.endpoint != resolved.endpoint or metadata.model != resolved.model:
         raise InvalidRerankingConfig(
             "Verified reranking authority does not match its endpoint and model."
         )

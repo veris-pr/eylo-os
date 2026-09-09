@@ -28,6 +28,14 @@ conversation work. Reconciliation detects duplicates and conflicts in the
 background. Facts retain provenance, status, expiry, relationships, and index
 state so operators can understand what was learned and why.
 
+Extraction criteria follow the context-derived owner level. User memory keeps
+stable personal facts; Agent memory keeps reusable, evidence-backed learnings;
+conversation memory keeps working context, including temporary decisions,
+checkpoints and open questions. The model cannot select a different owner or
+broaden the lookup scope. All three use the same operation validation and exact
+source references. A valid no-change decision is not proof that a requested fact
+was saved; inspect returned changes and recall when verifying a write.
+
 ### Model and embedding boundaries
 
 Formation, reconciliation, and provider verification share a keyword-only

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Sequence
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, func, select, update
 from sqlalchemy import text as sql
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.absurd_work import AbsurdBoundWorkService, DurableState
@@ -31,15 +32,26 @@ from eylo.modules.knowledgebase.services.knowledgebases import (
     KnowledgebaseError,
     KnowledgebaseNotFound,
 )
+from eylo.modules.knowledgebase.vendors import KnowledgeVendor
 from eylo.modules.provider_configs.errors import NotConfiguredError
 
 REINDEX_BATCH_SIZE = 64
 
 
-@dataclass(frozen=True, slots=True)
-class ReindexChunk:
+class ReindexChunk(BaseModel):
+    """Validated source chunk captured before external embedding work."""
+
+    model_config = ConfigDict(
+        strict=True,
+        frozen=True,
+        extra="forbid",
+        from_attributes=True,
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+    )
+
     id: UUID
-    content: str
+    content: str = Field(repr=False)
 
 
 def _safe_failure_summary(error: Exception) -> str:
@@ -81,7 +93,7 @@ class KnowledgeReindexService:
             organization_id,
             knowledgebase_id,
         )
-        if knowledgebase.vendor != "pgvector":
+        if knowledgebase.vendor != KnowledgeVendor.PGVECTOR:
             raise KnowledgebaseError("Only pgvector knowledgebases can be reindexed.")
         if target_space.organization_id != organization_id:
             raise KnowledgebaseError(
@@ -128,8 +140,8 @@ class KnowledgeReindexService:
             organization_id=organization_id,
             knowledgebase_id=knowledgebase_id,
             max_attempts=max_attempts,
-            **_space_fields(source_space, prefix="source_embedding"),
-            **_space_fields(target_space, prefix="target_embedding"),
+            **source_space.to_source_record().to_columns(),
+            **target_space.to_target_record().to_columns(),
         )
         self.session.add(job)
         await self.session.flush()
@@ -264,7 +276,7 @@ class KnowledgeReindexService:
                 "limit": limit,
             },
         )
-        return [ReindexChunk(id=UUID(str(row.id)), content=row.content) for row in rows]
+        return [ReindexChunk.model_validate(row) for row in rows]
 
     async def store_vectors(
         self,
@@ -276,6 +288,7 @@ class KnowledgeReindexService:
     ) -> int:
         if len(chunks) != len(vectors):
             raise KnowledgebaseError("Reindex embedding returned a partial batch.")
+        chunks = tuple(ReindexChunk.model_validate(chunk) for chunk in chunks)
         job = await self._running_job(organization_id, job_id)
         if any(len(vector) != job.target_embedding_dimensions for vector in vectors):
             raise KnowledgebaseError("Reindex embedding dimensions are invalid.")
@@ -324,7 +337,9 @@ class KnowledgeReindexService:
                     "embedding": _vector(vector),
                 },
             )
-            stored += int(result.rowcount or 0)
+            if not isinstance(result, CursorResult) or result.rowcount not in {0, 1}:
+                raise KnowledgebaseError("Reindex chunk staging count is invalid.")
+            stored += result.rowcount
         await self.session.flush()
         return stored
 
@@ -350,8 +365,7 @@ class KnowledgeReindexService:
         )
         if (
             knowledgebase.embedding_space_id != job.source_embedding_space_id
-            or knowledgebase.target_embedding_space_id
-            != job.target_embedding_space_id
+            or knowledgebase.target_embedding_space_id != job.target_embedding_space_id
         ):
             raise KnowledgebaseError("Knowledgebase reindex fence changed.")
 
@@ -359,8 +373,7 @@ class KnowledgeReindexService:
             delete(KnowledgeChunkModel).where(
                 KnowledgeChunkModel.organization_id == organization_id,
                 KnowledgeChunkModel.knowledgebase_id == job.knowledgebase_id,
-                KnowledgeChunkModel.embedding_space_id
-                == job.target_embedding_space_id,
+                KnowledgeChunkModel.embedding_space_id == job.target_embedding_space_id,
                 KnowledgeChunkModel.reindex_source_chunk_id.is_(None),
             )
         )
@@ -426,8 +439,7 @@ class KnowledgeReindexService:
             .where(
                 KnowledgeChunkModel.organization_id == organization_id,
                 KnowledgeChunkModel.knowledgebase_id == job.knowledgebase_id,
-                KnowledgeChunkModel.embedding_space_id
-                == job.target_embedding_space_id,
+                KnowledgeChunkModel.embedding_space_id == job.target_embedding_space_id,
             )
             .values(reindex_source_chunk_id=None)
         )
@@ -435,8 +447,7 @@ class KnowledgeReindexService:
             delete(KnowledgeChunkModel).where(
                 KnowledgeChunkModel.organization_id == organization_id,
                 KnowledgeChunkModel.knowledgebase_id == job.knowledgebase_id,
-                KnowledgeChunkModel.embedding_space_id
-                == job.source_embedding_space_id,
+                KnowledgeChunkModel.embedding_space_id == job.source_embedding_space_id,
             )
         )
         self._activate_target(knowledgebase)
@@ -572,8 +583,7 @@ class KnowledgeReindexService:
         )
         if (
             knowledgebase.embedding_space_id == job.source_embedding_space_id
-            and knowledgebase.target_embedding_space_id
-            == job.target_embedding_space_id
+            and knowledgebase.target_embedding_space_id == job.target_embedding_space_id
         ):
             knowledgebase.reindex_state = KnowledgeReindexState.REQUIRED
             knowledgebase.reindex_last_error = None
@@ -647,11 +657,17 @@ class KnowledgeReindexService:
         knowledgebase: KnowledgebaseModel,
         target: EmbeddingSpace,
     ) -> None:
-        for field, value in _space_fields(
-            target,
-            prefix="target_embedding",
-        ).items():
-            setattr(knowledgebase, field, value)
+        target = EmbeddingSpace.model_validate(target, strict=True)
+        knowledgebase.target_embedding_provider_config_id = target.provider_config_id
+        knowledgebase.target_embedding_provider_config_revision = (
+            target.provider_config_revision
+        )
+        knowledgebase.target_embedding_provider = target.provider
+        knowledgebase.target_embedding_endpoint = target.endpoint
+        knowledgebase.target_embedding_model = target.model
+        knowledgebase.target_embedding_dimensions = target.dimensions
+        knowledgebase.target_embedding_semantic_options = dict(target.semantic_options)
+        knowledgebase.target_embedding_space_id = target.id
         knowledgebase.reindex_state = KnowledgeReindexState.REQUIRED
         knowledgebase.reindex_last_error = None
 
@@ -660,38 +676,30 @@ class KnowledgeReindexService:
         target = target_embedding_space_from_record(knowledgebase)
         if target is None:
             raise KnowledgebaseError("Knowledgebase reindex target is missing.")
-        for field, value in _space_fields(target, prefix="embedding").items():
-            setattr(knowledgebase, field, value)
+        knowledgebase.embedding_provider_config_id = target.provider_config_id
+        knowledgebase.embedding_provider_config_revision = (
+            target.provider_config_revision
+        )
+        knowledgebase.embedding_provider = target.provider
+        knowledgebase.embedding_endpoint = target.endpoint
+        knowledgebase.embedding_model = target.model
+        knowledgebase.embedding_dimensions = target.dimensions
+        knowledgebase.embedding_semantic_options = dict(target.semantic_options)
+        knowledgebase.embedding_space_id = target.id
         KnowledgeReindexService._clear_target(knowledgebase)
 
     @staticmethod
     def _clear_target(knowledgebase: KnowledgebaseModel) -> None:
-        for field in (
-            "target_embedding_provider_config_id",
-            "target_embedding_provider_config_revision",
-            "target_embedding_provider",
-            "target_embedding_endpoint",
-            "target_embedding_model",
-            "target_embedding_dimensions",
-            "target_embedding_semantic_options",
-            "target_embedding_space_id",
-        ):
-            setattr(knowledgebase, field, None)
+        knowledgebase.target_embedding_provider_config_id = None
+        knowledgebase.target_embedding_provider_config_revision = None
+        knowledgebase.target_embedding_provider = None
+        knowledgebase.target_embedding_endpoint = None
+        knowledgebase.target_embedding_model = None
+        knowledgebase.target_embedding_dimensions = None
+        knowledgebase.target_embedding_semantic_options = None
+        knowledgebase.target_embedding_space_id = None
         knowledgebase.reindex_state = KnowledgeReindexState.ACTIVE
         knowledgebase.reindex_last_error = None
-
-
-def _space_fields(space: EmbeddingSpace, *, prefix: str) -> dict[str, object]:
-    return {
-        f"{prefix}_provider_config_id": space.provider_config_id,
-        f"{prefix}_provider_config_revision": space.provider_config_revision,
-        f"{prefix}_provider": space.provider,
-        f"{prefix}_endpoint": space.endpoint,
-        f"{prefix}_model": space.model,
-        f"{prefix}_dimensions": space.dimensions,
-        f"{prefix}_semantic_options": dict(space.semantic_options),
-        f"{prefix}_space_id": space.id,
-    }
 
 
 def _vector(values: Sequence[float]) -> str:

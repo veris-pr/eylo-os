@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
 from uuid import UUID
 
 from absurd_sdk import AsyncTaskContext
+from pydantic import JsonValue
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,7 +20,7 @@ from eylo.common.contracts.embedding import embedding_space_from_record
 from eylo.common.contracts.memory import (
     MemoryError as MemoryProviderError,
 )
-from eylo.common.contracts.memory import MemoryLevel, MemoryScope
+from eylo.common.contracts.memory import MemoryLevel, MemoryRecoveryPolicy, MemoryScope
 from eylo.common.contracts.memory_reconciliation import (
     MEMORY_RECONCILIATION_MAX_CANDIDATES,
     MemoryReconciliationBatch,
@@ -57,9 +57,15 @@ from eylo.modules.memory.models import (
 from eylo.modules.memory.reconciliation_service import (
     MemoryReconciliationService,
     MemoryReconciliationStale,
+    ReconciliationCounts,
 )
 from eylo.modules.provider_configs.errors import NotConfiguredError
 from eylo.pipelines.memory.resolver import MemoryRuntime, resolve_memory_runtime
+from eylo.pipelines.memory.work_contracts import (
+    MemoryJobParams,
+    MemoryReconciliationReceipt,
+    MemoryTaskKind,
+)
 from eylo.sockets.memory.reconciliation import (
     RECONCILIATION_PROMPT_REVISION,
     RECONCILIATION_SYSTEM_PROMPT,
@@ -155,9 +161,9 @@ async def _file_next_with_budget(
 class MemoryReconciliationWorkflow:
     async def execute(
         self,
-        params: dict[str, Any],
+        params: object,
         task_context: AsyncTaskContext,
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         organization_id, job_id = _parse_params(params)
         try:
             async with start_transaction() as session:
@@ -255,7 +261,9 @@ class MemoryReconciliationWorkflow:
         return receipt
 
 
-async def _load_or_build_batch(job, runtime) -> MemoryReconciliationBatch:
+async def _load_or_build_batch(
+    job: MemoryReconciliationJobModel, runtime: MemoryRuntime
+) -> MemoryReconciliationBatch:
     async with start_transaction(ro=True) as session:
         service = MemoryReconciliationService(session)
         stored = await service.load_batch(
@@ -277,7 +285,11 @@ async def _load_or_build_batch(job, runtime) -> MemoryReconciliationBatch:
     return batch
 
 
-async def _with_candidates(job, runtime, batch) -> MemoryReconciliationBatch:
+async def _with_candidates(
+    job: MemoryReconciliationJobModel,
+    runtime: MemoryRuntime,
+    batch: MemoryReconciliationBatch,
+) -> MemoryReconciliationBatch:
     if not batch.inputs:
         return batch
     scope = MemoryScope(
@@ -388,7 +400,7 @@ async def _handle_failure(
     organization_id: UUID,
     job_id: UUID,
     error: Exception,
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     summary = _safe_failure_summary(error)
     if isinstance(error, MemoryReconciliationStale):
         async with start_transaction() as session:
@@ -421,7 +433,7 @@ async def _handle_failure(
     if row.state is DurableState.PENDING:
         raise MemoryProviderError(
             "Memory reconciliation retry requested.",
-            retryable=True,
+            recovery=MemoryRecoveryPolicy.RETRY,
         ) from None
     if row.state is DurableState.FAILED:
         logger.warning("Memory reconciliation %s failed: %s", job_id, summary)
@@ -475,18 +487,14 @@ async def _continue_backlog(job: MemoryReconciliationJobModel) -> None:
         )
 
 
-def _parse_params(params: dict[str, Any]) -> tuple[UUID, UUID]:
-    if set(params) != {"organization_id", "job_id"}:
-        raise ValueError("Memory reconciliation task params must contain IDs only.")
-    try:
-        return UUID(str(params["organization_id"])), UUID(str(params["job_id"]))
-    except (TypeError, ValueError) as error:
-        raise ValueError(
-            "Memory reconciliation task params contain an invalid UUID."
-        ) from error
+def _parse_params(params: object) -> tuple[UUID, UUID]:
+    parsed = MemoryJobParams.from_payload(params, kind=MemoryTaskKind.RECONCILIATION)
+    return parsed.organization_id, parsed.job_id
 
 
-def _validate_runtime_authority(job, runtime) -> None:
+def _validate_runtime_authority(
+    job: MemoryReconciliationJobModel, runtime: MemoryRuntime
+) -> None:
     authority = runtime.extraction_authority
     if (
         authority.provider_config_id != job.reconciliation_llm_provider_config_id
@@ -509,22 +517,22 @@ def _terminal(job: MemoryReconciliationJobModel) -> bool:
     }
 
 
-def _receipt(job: MemoryReconciliationJobModel) -> dict[str, Any]:
-    return {
-        "organization_id": str(job.organization_id),
-        "job_id": str(job.id),
-        "state": job.state.value,
-        "generation": job.generation,
-        "change_count": job.change_count,
-        "outcomes": {
-            "considered": job.considered_count,
-            "duplicate": job.duplicate_count,
-            "superseded": job.superseded_count,
-            "conflict": job.conflict_count,
-            "unrelated": job.unrelated_count,
-            "failed": job.failed_count,
-        },
-    }
+def _receipt(job: MemoryReconciliationJobModel) -> dict[str, JsonValue]:
+    return MemoryReconciliationReceipt(
+        organization_id=job.organization_id,
+        job_id=job.id,
+        state=job.state,
+        generation=job.generation,
+        change_count=job.change_count,
+        outcomes=ReconciliationCounts(
+            considered=job.considered_count,
+            duplicate=job.duplicate_count,
+            superseded=job.superseded_count,
+            conflict=job.conflict_count,
+            unrelated=job.unrelated_count,
+            failed=job.failed_count,
+        ),
+    ).to_payload()
 
 
 def _safe_failure_summary(error: Exception) -> str:

@@ -9,6 +9,7 @@ from eylo.common.contracts import embedding as embedding_contracts
 EmbeddingCapabilities = embedding_contracts.EmbeddingCapabilities
 EmbeddingConfig = embedding_contracts.EmbeddingConfig
 EmbeddingError = embedding_contracts.EmbeddingError
+EmbeddingErrorCode = embedding_contracts.EmbeddingErrorCode
 EmbeddingInput = embedding_contracts.EmbeddingInput
 EmbeddingSemanticOptions = dict[str, JsonValue]
 

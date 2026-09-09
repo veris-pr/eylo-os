@@ -4,23 +4,26 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.database import get_transaction
-from eylo.common.revisions import DefinitionRef
+from eylo.common.revisions import DefinitionLifecycle, DefinitionRef
 from eylo.modules.agents.domain import (
     InvalidAgentDefinitionError,
     ResolvedExecutableAgent,
 )
-from eylo.modules.agents.models import AgentKind, AgentStatus
+from eylo.modules.agents.models import AgentKind, AgentRevisionModel, AgentStatus
 from eylo.modules.agents.schemas.indb import AgentInDb
 from eylo.modules.agents.services.revisions import AgentRevisionService
 from eylo.modules.integrations_v2.services.installations import (
     CuratedIntegrationService,
 )
+from eylo.modules.llm_configs.schemas import LLMOverridesSchema
 from eylo.modules.templates.domain import TemplateConsumerKind
 from eylo.modules.templates.service import TemplateService
 from eylo.modules.tools.services.indb import ToolService
+from eylo.modules.voice.schemas.runtime import VoiceConfigSnapshot
 from eylo.pipelines.integrations_v2.agent_tools import project_curated_tools
 
 
@@ -45,9 +48,20 @@ class ExecutableAgentResolver:
             revision=revision,
         )
         if row.instruction_template_id is None:
+            if row.instruction_template_revision is not None:
+                raise InvalidAgentDefinitionError(
+                    "An exact agent revision contains an incomplete instruction template ref."
+                )
             system_prompt = None
             prompt_segments = ()
         else:
+            if (
+                row.instruction_template_revision is None
+                or row.instruction_template_revision <= 0
+            ):
+                raise InvalidAgentDefinitionError(
+                    "An exact agent revision contains an incomplete instruction template ref."
+                )
             rendered = await TemplateService(self._db).render_exact(
                 organization_id=organization_id,
                 template_id=row.instruction_template_id,
@@ -81,9 +95,7 @@ class ExecutableAgentResolver:
             agent_id=agent_id,
             revision=revision,
         )
-        curated_rows = await CuratedIntegrationService(
-            self._db
-        ).list_offerable_tools(
+        curated_rows = await CuratedIntegrationService(self._db).list_offerable_tools(
             organization_id=organization_id,
             tool_ids=curated_ids,
         )
@@ -93,22 +105,31 @@ class ExecutableAgentResolver:
             agent_id=agent_id,
             revision=revision,
         )
-        return ResolvedExecutableAgent(
-            ref=DefinitionRef(definition_id=agent_id, revision=revision),
-            agent=_to_agent(row),
-            consumer_kind=consumer_kind,
-            system_prompt=system_prompt,
-            prompt_segments=prompt_segments,
-            tools=(*tools, *curated_tools),
-            background_agents=tuple(
-                DefinitionRef(
-                    definition_id=background_agent_id,
-                    revision=background_revision,
-                )
-                for background_agent_id, background_revision in background_refs
-            ),
-            voice_config=row.voice_config,
-        )
+        try:
+            return ResolvedExecutableAgent(
+                ref=DefinitionRef(definition_id=agent_id, revision=revision),
+                agent=_to_agent(row),
+                consumer_kind=consumer_kind,
+                system_prompt=system_prompt,
+                prompt_segments=prompt_segments,
+                tools=(*tools, *curated_tools),
+                background_agents=tuple(
+                    DefinitionRef(
+                        definition_id=background_agent_id,
+                        revision=background_revision,
+                    )
+                    for background_agent_id, background_revision in background_refs
+                ),
+                voice_config=(
+                    None
+                    if row.voice_config is None
+                    else VoiceConfigSnapshot.model_validate(row.voice_config)
+                ),
+            )
+        except ValidationError:
+            raise InvalidAgentDefinitionError(
+                "An exact agent revision contains invalid runtime data."
+            ) from None
 
     async def resolve_for_new_work(
         self,
@@ -129,7 +150,8 @@ class ExecutableAgentResolver:
         )
 
 
-def _to_agent(row) -> AgentInDb:
+def _to_agent(row: AgentRevisionModel) -> AgentInDb:
+    """Project the exact revision, never mutable draft configuration, for runtime."""
     return AgentInDb(
         id=row.agent_id,
         name=row.name,
@@ -164,9 +186,9 @@ def _to_agent(row) -> AgentInDb:
             row.file_upload_embedding_provider_config_revision
         ),
         instruction_template_id=row.instruction_template_id,
-        llm_overrides=row.llm_overrides,
+        llm_overrides=LLMOverridesSchema.model_validate(row.llm_overrides),
         prompt=None,
-        lifecycle="published",
+        lifecycle=DefinitionLifecycle.PUBLISHED.value,
         published_revision=row.revision,
         draft_version=1,
         draft_dirty=False,

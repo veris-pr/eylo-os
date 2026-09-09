@@ -45,7 +45,9 @@ class MemoryReconciliationSettlementReason(StrEnum):
 class MemoryReconciliationCandidate(BaseModel):
     """One same-partition candidate presented as untrusted evidence."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, revalidate_instances="always", hide_input_in_errors=True
+    )
 
     memory_id: UUID
     state_revision: int = Field(gt=0)
@@ -61,7 +63,9 @@ class MemoryReconciliationCandidate(BaseModel):
 class MemoryReconciliationInput(BaseModel):
     """One changed current fact and its bounded same-partition candidates."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, revalidate_instances="always", hide_input_in_errors=True
+    )
 
     memory_id: UUID
     state_revision: int = Field(gt=0)
@@ -84,7 +88,9 @@ class MemoryReconciliationInput(BaseModel):
 class MemoryReconciliationSettlement(BaseModel):
     """One exact inactive fact that needs no semantic comparison."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, revalidate_instances="always", hide_input_in_errors=True
+    )
 
     memory_id: UUID
     state_revision: int = Field(gt=0)
@@ -95,7 +101,9 @@ class MemoryReconciliationSettlement(BaseModel):
 class MemoryReconciliationBatch(BaseModel):
     """Immutable semantic inputs plus deterministic lifecycle settlements."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, revalidate_instances="always", hide_input_in_errors=True
+    )
 
     inputs: tuple[MemoryReconciliationInput, ...] = Field(
         max_length=MEMORY_RECONCILIATION_MAX_CHANGES
@@ -117,7 +125,9 @@ class MemoryReconciliationBatch(BaseModel):
 class MemoryReconciliationDecision(BaseModel):
     """One lifecycle-neutral or relationship decision; no reasoning text."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, revalidate_instances="always", hide_input_in_errors=True
+    )
 
     memory_id: UUID
     observed_state_revision: int = Field(gt=0)
@@ -146,7 +156,9 @@ class MemoryReconciliationDecision(BaseModel):
 class MemoryReconciliationProposal(BaseModel):
     """The complete bounded decision set returned by the configured LLM."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, revalidate_instances="always", hide_input_in_errors=True
+    )
 
     decisions: tuple[MemoryReconciliationDecision, ...] = Field(
         max_length=MEMORY_RECONCILIATION_MAX_CHANGES

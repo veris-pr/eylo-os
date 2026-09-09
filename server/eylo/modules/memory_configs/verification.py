@@ -2,57 +2,46 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
+from pydantic import Field, field_validator
+
 from eylo.common.contracts.embedding import EmbeddingSpace
 from eylo.modules.llm_configs.domain import ResolvedLLM
-from eylo.modules.memory_configs.domain import MemoryProviderConfig
+from eylo.modules.memory_configs.catalog import MemoryProviders
+from eylo.modules.memory_configs.domain import (
+    MemoryConfigValue,
+    MemoryDependencyAuthority,
+    MemoryProviderConfig,
+    parse_memory_provider,
+)
+
+__all__ = [
+    "MemoryDependencyAuthority",
+    "MemoryEmbeddingRuntime",
+    "MemoryProviderVerifier",
+    "MemoryVerificationError",
+    "MemoryVerificationResult",
+]
 
 
 class MemoryVerificationError(Exception):
     """The composed memory runtime failed bounded verification."""
 
 
-@dataclass(frozen=True)
-class MemoryDependencyAuthority:
-    embedding_provider_config_id: UUID
-    embedding_provider_config_revision: int
-    embedding_provider: str
-    embedding_endpoint: str
-    embedding_model: str
-    embedding_dimensions: int
-    embedding_semantic_options: dict[str, object]
-    embedding_space_id: str
-    llm_provider_config_id: UUID
-    llm_provider_config_revision: int
-    llm_provider: str
-    llm_model: str
+class MemoryVerificationResult(MemoryConfigValue):
+    """Successful verification result, without provider material or live handles."""
 
-    def to_metadata(self) -> dict[str, object]:
-        return {
-            "embedding_provider_config_id": str(self.embedding_provider_config_id),
-            "embedding_provider_config_revision": self.embedding_provider_config_revision,
-            "embedding_provider": self.embedding_provider,
-            "embedding_endpoint": self.embedding_endpoint,
-            "embedding_model": self.embedding_model,
-            "embedding_dimensions": self.embedding_dimensions,
-            "embedding_semantic_options": dict(self.embedding_semantic_options),
-            "embedding_space_id": self.embedding_space_id,
-            "llm_provider_config_id": str(self.llm_provider_config_id),
-            "llm_provider_config_revision": self.llm_provider_config_revision,
-            "llm_provider": self.llm_provider,
-            "llm_model": self.llm_model,
-        }
-
-
-@dataclass(frozen=True)
-class MemoryVerificationResult:
-    provider: str
-    revision: int
+    provider: MemoryProviders
+    revision: int = Field(gt=0)
     verified_at: datetime
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def _provider(cls, value: object) -> MemoryProviders:
+        return parse_memory_provider(value)
 
 
 class MemoryEmbeddingRuntime(Protocol):

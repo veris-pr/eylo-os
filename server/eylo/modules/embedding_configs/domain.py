@@ -1,145 +1,332 @@
-"""Provider-specific validation and immutable embedding runtime authority."""
+"""Provider-owned embedding material and immutable resolved runtime authority."""
 
 from __future__ import annotations
 
 import re
 from collections.abc import Collection, Mapping
-from dataclasses import dataclass, field
 from types import MappingProxyType
+from typing import Annotated, Self
 from urllib.parse import urlsplit, urlunsplit
 from uuid import UUID
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Discriminator,
+    Field,
+    JsonValue,
+    ModelWrapValidatorHandler,
+    Tag,
+    ValidationError,
+    ValidationInfo,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from eylo.modules.embedding_configs.catalog import (
     BEDROCK_EMBEDDING_DIMENSIONS,
     BEDROCK_EMBEDDING_MODELS,
     EmbeddingProviders,
 )
+from eylo.modules.provider_configs.constants import Capability
 from eylo.modules.provider_configs.domain import (
     EffectiveProviderConfig,
     InvalidProviderConfig,
 )
 
-__all__ = [
-    "EmbeddingEndpointPolicy",
-    "EmbeddingProviderConfig",
-    "InvalidEmbeddingConfig",
-    "ResolvedEmbedding",
-]
-
 OPENAI_API_BASE_URL = "https://api.openai.com/v1"
 VOYAGE_API_URL = "https://api.voyageai.com/v1/embeddings"
-
-_CONFIG_FIELDS = {
-    EmbeddingProviders.BEDROCK: frozenset(
-        {"model", "region", "dimensions", "normalize"}
-    ),
-    EmbeddingProviders.OPENAI: frozenset({"model", "base_url"}),
-    EmbeddingProviders.VOYAGE: frozenset({"model"}),
-}
-_SECRET_FIELDS = {
-    EmbeddingProviders.BEDROCK: frozenset(
-        {"access_key_id", "secret_access_key", "session_token"}
-    ),
-    EmbeddingProviders.OPENAI: frozenset({"api_key"}),
-    EmbeddingProviders.VOYAGE: frozenset({"api_key"}),
-}
-
+MAX_MODEL_LENGTH = 255
+MAX_REGION_LENGTH = 64
+MAX_ACCESS_KEY_LENGTH = 512
+MAX_SECRET_LENGTH = 8192
+MAX_ENDPOINT_LENGTH = 2048
 _AWS_REGION = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)+$")
 
 
 class InvalidEmbeddingConfig(InvalidProviderConfig):
-    """Raised when an embedding provider config violates policy."""
+    """Invalid embedding material; messages never include credential values."""
 
 
-@dataclass(frozen=True)
-class EmbeddingEndpointPolicy:
+class _EmbeddingValue(BaseModel):
+    """Revalidate copied material at boundaries and keep validation failures safe."""
+
+    model_config = ConfigDict(
+        frozen=True,
+        strict=True,
+        extra="forbid",
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+        validate_by_name=True,
+        validate_default=True,
+    )
+
+
+class EmbeddingEndpointPolicy(_EmbeddingValue):
     """Deployment-owned exact custom endpoints trusted to receive org data/keys."""
 
-    allowed_base_urls: Collection[str] = ()
+    allowed_base_urls: frozenset[str] = frozenset()
 
-    def __post_init__(self) -> None:
-        normalized = frozenset(
-            _normalize_http_url(value, field_name="allowed base URL")
-            for value in self.allowed_base_urls
+    @field_validator("allowed_base_urls", mode="before")
+    @classmethod
+    def _urls(cls, value: object) -> frozenset[str]:
+        if not isinstance(value, Collection) or isinstance(
+            value, (str, bytes, Mapping)
+        ):
+            raise InvalidEmbeddingConfig(
+                "Allowed embedding endpoints must be a collection."
+            )
+        return frozenset(
+            _normalize_http_url(item, field_name="allowed base URL") for item in value
         )
-        object.__setattr__(self, "allowed_base_urls", normalized)
 
     def require_allowed(self, value: object) -> str:
+        policy = type(self).model_validate(self)
         normalized = _normalize_http_url(value, field_name="base_url")
-        if normalized not in self.allowed_base_urls:
+        if normalized not in policy.allowed_base_urls:
             raise InvalidEmbeddingConfig(
-                "base_url is not trusted by this deployment. Add the exact URL "
-                "to EMBEDDING_BASE_URL_ALLOWLIST before storing org credentials."
+                "base_url is not trusted by this deployment. Add the exact URL to EMBEDDING_BASE_URL_ALLOWLIST before storing org credentials."
             )
         return normalized
 
 
-@dataclass(frozen=True)
-class EmbeddingProviderConfig:
-    """Validated embedding config with plaintext secrets held in memory only."""
+class EmbeddingModelSettings(_EmbeddingValue):
+    """Model-only settings, currently used by Voyage."""
 
-    provider: EmbeddingProviders | str
-    config: Mapping[str, object]
-    secrets: Mapping[str, str] = field(repr=False)
-    endpoint_policy: EmbeddingEndpointPolicy = field(
-        default_factory=EmbeddingEndpointPolicy,
-        repr=False,
-        compare=False,
+    model: str
+
+    @field_validator("model", mode="before")
+    @classmethod
+    def _model(cls, value: object) -> str:
+        return _required_string(value, "model", maximum=MAX_MODEL_LENGTH)
+
+
+class OpenAIEmbeddingSettings(EmbeddingModelSettings):
+    base_url: str | None = None
+
+
+class BedrockEmbeddingSettings(EmbeddingModelSettings):
+    region: str
+    dimensions: int
+    normalize: bool
+
+    @field_validator("model")
+    @classmethod
+    def _supported_model(cls, value: str) -> str:
+        if value not in BEDROCK_EMBEDDING_MODELS:
+            raise InvalidEmbeddingConfig(
+                "model is not a supported AWS Bedrock embedding model."
+            )
+        return value
+
+    @field_validator("region", mode="before")
+    @classmethod
+    def _region(cls, value: object) -> str:
+        region = _required_string(value, "region", maximum=MAX_REGION_LENGTH)
+        if not _AWS_REGION.fullmatch(region):
+            raise InvalidEmbeddingConfig("region is not a valid AWS region name.")
+        return region
+
+    @field_validator("dimensions")
+    @classmethod
+    def _dimensions(cls, value: int) -> int:
+        if value not in BEDROCK_EMBEDDING_DIMENSIONS:
+            raise InvalidEmbeddingConfig(
+                "dimensions is not a supported Bedrock embedding size."
+            )
+        return value
+
+
+class ApiKeyEmbeddingCredentials(_EmbeddingValue):
+    api_key: str = Field(repr=False, exclude=True)
+
+    @field_validator("api_key", mode="before")
+    @classmethod
+    def _key(cls, value: object) -> str:
+        return _required_string(value, "api_key", maximum=MAX_SECRET_LENGTH)
+
+
+class AwsEmbeddingCredentials(_EmbeddingValue):
+    access_key_id: str = Field(repr=False, exclude=True)
+    secret_access_key: str = Field(repr=False, exclude=True)
+    session_token: str | None = Field(default=None, repr=False, exclude=True)
+
+    @field_validator(
+        "access_key_id", "secret_access_key", "session_token", mode="before"
+    )
+    @classmethod
+    def _secret(cls, value: object, info: ValidationInfo) -> str | None:
+        if info.field_name == "session_token" and value is None:
+            return None
+        return _required_string(
+            value,
+            info.field_name or "credential",
+            maximum=MAX_ACCESS_KEY_LENGTH
+            if info.field_name == "access_key_id"
+            else MAX_SECRET_LENGTH,
+        )
+
+
+def _embedding_settings_tag(value: object) -> str | None:
+    """Tag already-parsed material; raw input is selected by its owning provider."""
+    if type(value) is BedrockEmbeddingSettings:
+        return EmbeddingProviders.BEDROCK.value
+    if type(value) is OpenAIEmbeddingSettings:
+        return EmbeddingProviders.OPENAI.value
+    if type(value) is EmbeddingModelSettings:
+        return EmbeddingProviders.VOYAGE.value
+    return None
+
+
+def _embedding_settings_json_schema(schema: dict[str, JsonValue]) -> None:
+    """Wire shapes overlap without a tag field; the parent provider selects one."""
+    variants = schema.pop("oneOf", None)
+    if variants is not None:
+        schema["anyOf"] = variants
+
+
+type EmbeddingSettings = Annotated[
+    Annotated[BedrockEmbeddingSettings, Tag(EmbeddingProviders.BEDROCK.value)]
+    | Annotated[OpenAIEmbeddingSettings, Tag(EmbeddingProviders.OPENAI.value)]
+    | Annotated[EmbeddingModelSettings, Tag(EmbeddingProviders.VOYAGE.value)],
+    Discriminator(_embedding_settings_tag),
+    Field(json_schema_extra=_embedding_settings_json_schema),
+]
+
+
+def parse_embedding_provider(value: object) -> EmbeddingProviders:
+    """Normalize the existing provider vocabulary at API and domain boundaries."""
+    if not isinstance(value, str):
+        raise InvalidEmbeddingConfig("Embedding provider must be a string identifier.")
+    try:
+        return EmbeddingProviders(value.strip().lower())
+    except ValueError:
+        raise InvalidEmbeddingConfig("Embedding provider is not supported.") from None
+
+
+def parse_embedding_settings(
+    provider: EmbeddingProviders, value: object
+) -> EmbeddingSettings:
+    """Select by provider, not by whichever overlapping model validates first."""
+    if isinstance(value, Mapping):
+        value = dict(value)
+    if provider is EmbeddingProviders.BEDROCK:
+        return BedrockEmbeddingSettings.model_validate(value)
+    if provider is EmbeddingProviders.OPENAI:
+        return OpenAIEmbeddingSettings.model_validate(value)
+    if provider is EmbeddingProviders.VOYAGE:
+        return EmbeddingModelSettings.model_validate(value)
+    raise InvalidEmbeddingConfig("Embedding provider is not supported.")
+
+
+class EmbeddingProviderConfig(_EmbeddingValue):
+    """Typed material with explicit mapping projections only for persistence."""
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _safe_validation(
+        cls, value: object, handler: ModelWrapValidatorHandler[Self]
+    ) -> Self:
+        try:
+            return handler(value)
+        except ValidationError:
+            raise InvalidEmbeddingConfig(
+                "Embedding configuration contains invalid fields or types."
+            ) from None
+
+    provider: EmbeddingProviders
+    settings: EmbeddingSettings = Field(validation_alias="config")
+    credentials: AwsEmbeddingCredentials | ApiKeyEmbeddingCredentials = Field(
+        validation_alias="secrets", repr=False, exclude=True
+    )
+    endpoint_policy: EmbeddingEndpointPolicy = Field(
+        default_factory=EmbeddingEndpointPolicy, repr=False, exclude=True
     )
 
-    def __post_init__(self) -> None:
-        provider_value = (
-            self.provider.value
-            if isinstance(self.provider, EmbeddingProviders)
-            else str(self.provider).strip().lower()
-        )
-        try:
-            provider = EmbeddingProviders(provider_value)
-        except ValueError:
-            raise InvalidEmbeddingConfig(
-                f"Unknown embedding provider: {self.provider}. Available: "
-                f"{', '.join(item.value for item in EmbeddingProviders)}."
-            ) from None
-        if not isinstance(self.endpoint_policy, EmbeddingEndpointPolicy):
-            raise InvalidEmbeddingConfig("Embedding endpoint policy is invalid.")
-        object.__setattr__(self, "provider", provider)
-        object.__setattr__(
-            self,
-            "config",
-            MappingProxyType(
-                _validate_config(provider, self.config, self.endpoint_policy)
-            ),
-        )
-        object.__setattr__(
-            self,
-            "secrets",
-            MappingProxyType(_validate_secrets(provider, self.secrets)),
-        )
+    @field_validator("provider", mode="before")
+    @classmethod
+    def _provider(cls, value: object) -> EmbeddingProviders:
+        return parse_embedding_provider(value)
+
+    @field_validator("settings", mode="before")
+    @classmethod
+    def _settings(cls, value: object, info: ValidationInfo) -> EmbeddingSettings:
+        provider = info.data.get("provider")
+        if not isinstance(provider, EmbeddingProviders):
+            raise InvalidEmbeddingConfig("Embedding provider is not supported.")
+        return parse_embedding_settings(provider, value)
+
+    @field_validator("credentials", mode="before")
+    @classmethod
+    def _credentials(
+        cls, value: object, info: ValidationInfo
+    ) -> AwsEmbeddingCredentials | ApiKeyEmbeddingCredentials:
+        if isinstance(value, Mapping):
+            value = dict(value)
+        if info.data.get("provider") is EmbeddingProviders.BEDROCK:
+            return AwsEmbeddingCredentials.model_validate(value)
+        return ApiKeyEmbeddingCredentials.model_validate(value)
+
+    @model_validator(mode="after")
+    def _endpoint(self) -> Self:
+        if (
+            isinstance(self.settings, OpenAIEmbeddingSettings)
+            and self.settings.base_url is not None
+        ):
+            normalized = self.endpoint_policy.require_allowed(self.settings.base_url)
+            object.__setattr__(
+                self,
+                "settings",
+                OpenAIEmbeddingSettings(model=self.settings.model, base_url=normalized),
+            )
+        return self
 
     @classmethod
-    def validate(
+    def from_input(
         cls,
         *,
         provider: str,
         config: Mapping[str, object] | None = None,
         secrets: Mapping[str, str] | None = None,
         endpoint_policy: EmbeddingEndpointPolicy | None = None,
-    ) -> EmbeddingProviderConfig:
-        return cls(
-            provider=provider,
-            config={} if config is None else config,
-            secrets={} if secrets is None else secrets,
-            endpoint_policy=endpoint_policy or EmbeddingEndpointPolicy(),
+    ) -> Self:
+        return cls.model_validate(
+            {
+                "provider": provider,
+                "config": {} if config is None else config,
+                "secrets": {} if secrets is None else secrets,
+                "endpoint_policy": endpoint_policy or EmbeddingEndpointPolicy(),
+            }
         )
 
     @property
+    def config(self) -> Mapping[str, JsonValue]:
+        return MappingProxyType(self.settings.model_dump(exclude_none=True))
+
+    @property
+    def secrets(self) -> Mapping[str, str]:
+        if isinstance(self.credentials, AwsEmbeddingCredentials):
+            values = {
+                "access_key_id": self.credentials.access_key_id,
+                "secret_access_key": self.credentials.secret_access_key,
+            }
+            if self.credentials.session_token is not None:
+                values["session_token"] = self.credentials.session_token
+            return MappingProxyType(values)
+        return MappingProxyType({"api_key": self.credentials.api_key})
+
+    @property
     def model(self) -> str:
-        return str(self.config["model"])
+        return self.settings.model
 
     @property
     def base_url(self) -> str | None:
-        value = self.config.get("base_url")
-        return str(value) if value is not None else None
+        return (
+            self.settings.base_url
+            if isinstance(self.settings, OpenAIEmbeddingSettings)
+            else None
+        )
 
     @property
     def endpoint(self) -> str:
@@ -147,113 +334,104 @@ class EmbeddingProviderConfig:
             return self.base_url or OPENAI_API_BASE_URL
         if self.provider is EmbeddingProviders.VOYAGE:
             return VOYAGE_API_URL
-        return _bedrock_endpoint(self.region)
-
-    @property
-    def region(self) -> str:
-        return str(self.config["region"])
-
-    @property
-    def requested_dimensions(self) -> int:
-        return int(self.config["dimensions"])
-
-    @property
-    def normalize(self) -> bool:
-        return bool(self.config["normalize"])
-
-    def secret(self, name: str) -> str:
-        return self.secrets[name]
-
-    def optional_secret(self, name: str) -> str | None:
-        return self.secrets.get(name)
+        if not isinstance(self.settings, BedrockEmbeddingSettings):
+            raise InvalidEmbeddingConfig("Bedrock embedding settings are missing.")
+        return _bedrock_endpoint(self.settings.region)
 
 
-def _validate_config(
-    provider: EmbeddingProviders,
-    config: Mapping[str, object],
-    endpoint_policy: EmbeddingEndpointPolicy,
-) -> dict[str, object]:
-    if not isinstance(config, Mapping):
-        raise InvalidEmbeddingConfig("Config must be a mapping.")
-    unknown = set(config) - _CONFIG_FIELDS[provider]
-    if unknown:
-        raise InvalidEmbeddingConfig(
-            f"Unknown config fields for {provider.value}: {sorted(unknown)}"
+class EmbeddingVerificationMetadata(_EmbeddingValue):
+    """Known observed shape and identity; future JSON extensions remain supported."""
+
+    dimensions: int | None = Field(default=None, ge=1)
+    endpoint: str | None = None
+    model: str | None = None
+    extensions: Mapping[str, JsonValue] = Field(default_factory=dict)
+
+    @field_validator("extensions")
+    @classmethod
+    def _extensions(cls, value: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
+        return MappingProxyType(dict(value))
+
+    @field_serializer("extensions")
+    def _serialize_extensions(
+        self, value: Mapping[str, JsonValue]
+    ) -> dict[str, JsonValue]:
+        return dict(value)
+
+    @classmethod
+    def from_record(cls, value: Mapping[str, object]) -> Self:
+        return cls.model_validate(
+            {
+                "dimensions": value.get("dimensions"),
+                "endpoint": value.get("endpoint"),
+                "model": value.get("model"),
+                "extensions": {
+                    key: item
+                    for key, item in value.items()
+                    if key not in {"dimensions", "endpoint", "model"}
+                },
+            }
         )
-    model = _required_string(config.get("model"), "model", maximum=255)
-    if provider is EmbeddingProviders.BEDROCK:
-        if model not in BEDROCK_EMBEDDING_MODELS:
+
+
+class ResolvedEmbedding(EmbeddingProviderConfig):
+    """Validated identity and material detached from the provider-config session."""
+
+    provider_config_id: UUID
+    provider_config_revision: int = Field(ge=1)
+    organization_id: UUID
+    verification_metadata: EmbeddingVerificationMetadata = Field(
+        default_factory=EmbeddingVerificationMetadata
+    )
+    configured: bool = True
+    verified: bool = False
+    ready: bool = False
+    granted: bool = False
+
+    @classmethod
+    def from_provider_config(
+        cls,
+        *,
+        provider_config_id: UUID,
+        organization_id: UUID,
+        provider_config: EffectiveProviderConfig,
+        endpoint_policy: EmbeddingEndpointPolicy | None = None,
+    ) -> Self:
+        effective = EffectiveProviderConfig.model_validate(provider_config)
+        if (
+            effective.provider_config_id != provider_config_id
+            or effective.organization_id != organization_id
+            or effective.capability is not Capability.EMBEDDING
+        ):
             raise InvalidEmbeddingConfig(
-                "model is not a supported AWS Bedrock embedding model."
+                "Resolved embedding authority does not match the requested organization/config."
             )
-        region = _required_string(config.get("region"), "region", maximum=64)
-        if not _AWS_REGION.fullmatch(region):
-            raise InvalidEmbeddingConfig("region is not a valid AWS region name.")
-        dimensions = _required_integer(config.get("dimensions"), "dimensions")
-        if dimensions not in BEDROCK_EMBEDDING_DIMENSIONS:
-            allowed = ", ".join(str(value) for value in BEDROCK_EMBEDDING_DIMENSIONS)
-            raise InvalidEmbeddingConfig(f"dimensions must be one of: {allowed}.")
-        normalize = config.get("normalize")
-        if not isinstance(normalize, bool):
-            raise InvalidEmbeddingConfig("normalize must be a boolean.")
-        return {
-            "model": model,
-            "region": region,
-            "dimensions": dimensions,
-            "normalize": normalize,
-        }
-    normalized: dict[str, object] = {"model": model}
-    if provider is EmbeddingProviders.OPENAI and config.get("base_url") is not None:
-        normalized["base_url"] = endpoint_policy.require_allowed(config["base_url"])
-    return normalized
-
-
-def _validate_secrets(
-    provider: EmbeddingProviders,
-    secrets: Mapping[str, str],
-) -> dict[str, str]:
-    if not isinstance(secrets, Mapping):
-        raise InvalidEmbeddingConfig("Secrets must be a mapping.")
-    expected = _SECRET_FIELDS[provider]
-    unknown = set(secrets) - expected
-    if unknown:
-        raise InvalidEmbeddingConfig(
-            f"Unknown secret fields for {provider.value}: {sorted(unknown)}"
+        return cls.model_validate(
+            {
+                "provider_config_id": provider_config_id,
+                "provider_config_revision": effective.revision,
+                "organization_id": organization_id,
+                "provider": effective.provider,
+                "config": effective.settings,
+                "secrets": effective.secrets,
+                "endpoint_policy": endpoint_policy or EmbeddingEndpointPolicy(),
+                "verification_metadata": EmbeddingVerificationMetadata.from_record(
+                    effective.verification_metadata
+                ),
+                "configured": effective.configured,
+                "verified": effective.verified,
+                "ready": effective.ready,
+                "granted": effective.granted,
+            }
         )
-    if provider is not EmbeddingProviders.BEDROCK:
-        return {
-            "api_key": _required_string(
-                secrets.get("api_key"),
-                "api_key",
-                maximum=8192,
+
+    @property
+    def dimensions(self) -> int:
+        if self.verification_metadata.dimensions is None:
+            raise InvalidEmbeddingConfig(
+                "Verified embedding config is missing its observed dimensions."
             )
-        }
-    normalized = {
-        "access_key_id": _required_string(
-            secrets.get("access_key_id"),
-            "access_key_id",
-            maximum=512,
-        ),
-        "secret_access_key": _required_string(
-            secrets.get("secret_access_key"),
-            "secret_access_key",
-            maximum=8192,
-        ),
-    }
-    session_token = secrets.get("session_token")
-    if session_token is not None:
-        normalized["session_token"] = _required_string(
-            session_token,
-            "session_token",
-            maximum=8192,
-        )
-    return normalized
-
-
-def _required_integer(value: object, field_name: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise InvalidEmbeddingConfig(f"{field_name} must be an integer.")
-    return value
+        return self.verification_metadata.dimensions
 
 
 def _required_string(value: object, field_name: str, *, maximum: int) -> str:
@@ -273,9 +451,13 @@ def _required_string(value: object, field_name: str, *, maximum: int) -> str:
 
 
 def _normalize_http_url(value: object, *, field_name: str) -> str:
-    if not isinstance(value, str) or not value.strip() or len(value) > 2048:
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or len(value) > MAX_ENDPOINT_LENGTH
+    ):
         raise InvalidEmbeddingConfig(
-            f"{field_name} must be a non-empty HTTP(S) URL of at most 2048 characters."
+            f"{field_name} must be a non-empty HTTP(S) URL of at most {MAX_ENDPOINT_LENGTH} characters."
         )
     parsed = urlsplit(value.strip())
     if (
@@ -295,102 +477,3 @@ def _normalize_http_url(value: object, *, field_name: str) -> str:
 
 def _bedrock_endpoint(region: str) -> str:
     return f"https://bedrock-runtime.{region}.amazonaws.com"
-
-
-@dataclass(frozen=True)
-class ResolvedEmbedding:
-    """Immutable resolved embedding authority with plaintext credentials."""
-
-    provider_config_id: UUID
-    provider_config_revision: int
-    organization_id: UUID
-    provider: EmbeddingProviders
-    config: Mapping[str, object]
-    secrets: Mapping[str, str] = field(repr=False, compare=False)
-    verification_metadata: Mapping[str, object] = field(default_factory=dict)
-    configured: bool = True
-    verified: bool = False
-    ready: bool = False
-    granted: bool = False
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "config", MappingProxyType(dict(self.config)))
-        object.__setattr__(self, "secrets", MappingProxyType(dict(self.secrets)))
-        object.__setattr__(
-            self,
-            "verification_metadata",
-            MappingProxyType(dict(self.verification_metadata)),
-        )
-
-    @classmethod
-    def from_provider_config(
-        cls,
-        *,
-        provider_config_id: UUID,
-        organization_id: UUID,
-        provider_config: EffectiveProviderConfig,
-        endpoint_policy: EmbeddingEndpointPolicy | None = None,
-    ) -> ResolvedEmbedding:
-        validated = EmbeddingProviderConfig.validate(
-            provider=provider_config.provider,
-            config=provider_config.settings,
-            secrets=provider_config.secrets,
-            endpoint_policy=endpoint_policy,
-        )
-        return cls(
-            provider_config_id=provider_config_id,
-            provider_config_revision=provider_config.revision,
-            organization_id=organization_id,
-            provider=validated.provider,
-            config=validated.config,
-            secrets=validated.secrets,
-            verification_metadata=provider_config.verification_metadata,
-            configured=provider_config.configured,
-            verified=provider_config.verified,
-            ready=provider_config.ready,
-            granted=provider_config.granted,
-        )
-
-    @property
-    def model(self) -> str:
-        return str(self.config["model"])
-
-    @property
-    def base_url(self) -> str | None:
-        value = self.config.get("base_url")
-        return str(value) if value is not None else None
-
-    @property
-    def endpoint(self) -> str:
-        if self.provider is EmbeddingProviders.OPENAI:
-            return self.base_url or OPENAI_API_BASE_URL
-        if self.provider is EmbeddingProviders.VOYAGE:
-            return VOYAGE_API_URL
-        return _bedrock_endpoint(self.region)
-
-    @property
-    def region(self) -> str:
-        return str(self.config["region"])
-
-    @property
-    def requested_dimensions(self) -> int:
-        return int(self.config["dimensions"])
-
-    @property
-    def normalize(self) -> bool:
-        return bool(self.config["normalize"])
-
-    @property
-    def dimensions(self) -> int:
-        value = self.verification_metadata.get("dimensions")
-        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-            raise InvalidEmbeddingConfig(
-                "Verified embedding config is missing its observed dimensions."
-            )
-        return value
-
-    def secret(self, name: str) -> str:
-        return self.secrets[name]
-
-    def optional_secret(self, name: str) -> str | None:
-        return self.secrets.get(name)

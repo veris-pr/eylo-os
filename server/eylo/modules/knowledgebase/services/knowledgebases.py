@@ -9,11 +9,12 @@ explicitly or not at all.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import delete, select
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.absurd_work import DurableState
@@ -43,6 +44,7 @@ from eylo.modules.knowledgebase.models import (
     KnowledgebaseModel,
 )
 from eylo.modules.knowledgebase.vendors import (
+    KnowledgeVendor,
     KnowledgebaseMetadata,
     configuration_problem,
     needs_embeddings,
@@ -60,9 +62,10 @@ class KnowledgebaseNotFound(KnowledgebaseError):
     """An organization-owned knowledgebase resource was not found."""
 
 
-@dataclass(frozen=True, slots=True)
-class KnowledgebaseDeletion:
+class KnowledgebaseDeletion(BaseModel):
     """Committed product deletion plus engine tasks that need notification."""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
 
     task_ids: tuple[UUID, ...]
 
@@ -209,14 +212,14 @@ class KnowledgebaseService:
             knowledgebase = await self.create(
                 organization_id=organization_id,
                 name="Conversation files",
-                vendor="pgvector",
+                vendor=KnowledgeVendor.PGVECTOR,
                 scope=KnowledgeScope.CONVERSATION,
                 scope_id=normalized_conversation_id,
                 writable=True,
                 embedding_space=embedding_space,
             )
         elif (
-            knowledgebase.vendor != "pgvector"
+            knowledgebase.vendor != KnowledgeVendor.PGVECTOR
             or not knowledgebase.writable
             or knowledgebase.embedding_space_id != embedding_space.id
         ):
@@ -373,12 +376,16 @@ class KnowledgebaseService:
                 KnowledgeChunkModel.organization_id == organization_id,
             )
         )
+        if not isinstance(deleted_chunks, CursorResult) or deleted_chunks.rowcount < 0:
+            raise KnowledgebaseError("Knowledgebase chunk deletion count is unavailable.")
         revoked_grants = await self.session.execute(
             delete(KnowledgebaseGrantModel).where(
                 KnowledgebaseGrantModel.knowledgebase_id == knowledgebase_id,
                 KnowledgebaseGrantModel.organization_id == organization_id,
             )
         )
+        if not isinstance(revoked_grants, CursorResult) or revoked_grants.rowcount < 0:
+            raise KnowledgebaseError("Knowledgebase grant deletion count is unavailable.")
         knowledgebase.deleted = True
         await self.session.flush()
         register_knowledgebase_lifecycle(
@@ -388,8 +395,8 @@ class KnowledgebaseService:
             affected_ingestion_jobs=len(jobs),
             affected_corpus_imports=len(imports),
             affected_reindex_jobs=len(reindexes),
-            deleted_chunks=int(deleted_chunks.rowcount or 0),
-            revoked_grants=int(revoked_grants.rowcount or 0),
+            deleted_chunks=deleted_chunks.rowcount,
+            revoked_grants=revoked_grants.rowcount,
         )
         return KnowledgebaseDeletion(task_ids=tuple(sorted(task_ids, key=str)))
 

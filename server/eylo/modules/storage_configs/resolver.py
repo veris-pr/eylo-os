@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from pydantic import ValidationError
+
 from eylo.modules.provider_configs.constants import Capability
+from eylo.modules.provider_configs.domain import EffectiveProviderConfig
 from eylo.modules.provider_configs.errors import NotConfiguredError
 from eylo.modules.storage_configs.domain import InvalidStorageConfig, ResolvedStorage
 from eylo.modules.storage_configs.service import StorageConfigService
@@ -29,7 +32,7 @@ class StorageConfigResolver:
             config_id=provider_config_id,
             granted=True,
         )
-        return _to_resolved(effective, organization_id)
+        return _to_resolved(effective, organization_id, provider_config_id)
 
     async def resolve_pinned(
         self,
@@ -44,17 +47,24 @@ class StorageConfigResolver:
             revision=revision,
             granted=True,
         )
-        return _to_resolved(effective, organization_id)
+        resolved = _to_resolved(effective, organization_id, provider_config_id)
+        if resolved.provider_config_revision != revision:
+            raise _not_configured("valid_provider_config")
+        return resolved
 
 
-def _to_resolved(effective, organization_id: UUID) -> ResolvedStorage:
+def _to_resolved(
+    effective: EffectiveProviderConfig,
+    organization_id: UUID,
+    provider_config_id: UUID,
+) -> ResolvedStorage:
     try:
         return ResolvedStorage.from_provider_config(
-            provider_config_id=effective.provider_config_id,
+            provider_config_id=provider_config_id,
             organization_id=organization_id,
             provider_config=effective,
         )
-    except InvalidStorageConfig:
+    except (InvalidStorageConfig, ValidationError):
         raise _not_configured("valid_provider_config") from None
 
 
