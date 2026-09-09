@@ -2,12 +2,33 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from enum import StrEnum
+from collections.abc import Mapping
+from enum import Enum, StrEnum
 from time import monotonic
-from typing import Any, Mapping
+from typing import Annotated, Self
 
 import arrow
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    JsonValue,
+    StrictBool,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
+    TypeAdapter,
+    ValidationError,
+    model_validator,
+)
+
+from eylo.common.contracts.speech_runtime import SpeechOption, SpeechOptionState
+from eylo.sockets.stt.exceptions import STTConfigurationError
+
+_DEFAULT_SAMPLE_RATE = 16000
+_DEFAULT_EOT_THRESHOLD = 0.85
+_DEFAULT_EOT_TIMEOUT_MS = 5000
 
 
 class STTProvider(StrEnum):
@@ -50,7 +71,7 @@ class STTEndpointingMode(StrEnum):
 
 
 class STTEventType(StrEnum):
-    """Canonical STT event types plus websocket projection types."""
+    """Recognition outcomes; connection acknowledgements are not speech."""
 
     TRANSCRIPT_PARTIAL = "transcript_partial"
     TRANSCRIPT_PREFLIGHT = "transcript_preflight"
@@ -59,327 +80,347 @@ class STTEventType(StrEnum):
     SPEECH_END = "speech_end"
     START_OF_TURN = "start_of_turn"
     END_OF_TURN = "end_of_turn"
+    TURN_RESUMED = "turn_resumed"
     RECOGNITION_USAGE = "recognition_usage"
     ERROR = "error"
 
-    # Current downstream websocket contract.
-    TRANSCRIPT = "transcript"
-    VAD = "vad"
+
+class STTInterruptionHint(StrEnum):
+    """Adapter signal; the voice pipeline still applies interruption policy."""
+
+    NONE = "none"
+    REQUESTED = "requested"
 
 
-class STTVADEventKind(StrEnum):
-    """VAD event kinds consumed by websocket handlers."""
+class STTTranscriptForm(StrEnum):
+    """Independent segments use a separator; deltas already contain their spacing."""
 
-    SPEECH_STARTED = "speech_started"
-    SPEECH_ENDED = "speech_ended"
-    TURN_RESUMED = "turn_resumed"
-
-
-class STTTranscriptKind(StrEnum):
-    """Transcript event kinds consumed by websocket handlers."""
-
-    FINAL = "final"
-    PARTIAL = "partial"
-    PREFLIGHT = "preflight"
+    SEGMENT = "segment"
+    DELTA = "delta"
 
 
-@dataclass(frozen=True)
-class RetryOptions:
-    """Retry policy for STT operations."""
+class RetryOptions(BaseModel):
+    """Factory connection attempts, never permission to replay audio.
 
-    max_retry: int = 3
-    timeout: float = 10.0
-    retry_interval: float = 1.0
+    ``max_retry`` counts attempts after the first. ``timeout`` bounds each
+    connect/readiness attempt; ``retry_interval`` follows successful cleanup.
+    Both durations are seconds. Cancellation and cleanup failure stop retries.
+    """
+
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", revalidate_instances="always", allow_inf_nan=False
+    )
+
+    max_retry: StrictInt = Field(default=3, ge=0)
+    timeout: StrictFloat = Field(default=10.0, gt=0)
+    retry_interval: StrictFloat = Field(default=1.0, ge=0)
 
     @classmethod
-    def from_mapping(cls, value: Mapping[str, Any] | None) -> "RetryOptions":
-        """Build retry options from an optional dict."""
-        if not value:
-            return cls()
-        return cls(
-            max_retry=int(value.get("max_retry", cls.max_retry)),
-            timeout=float(value.get("timeout", cls.timeout)),
-            retry_interval=float(value.get("retry_interval", cls.retry_interval)),
-        )
+    def from_mapping(cls, value: RetryOptions | Mapping[str, object] | None) -> Self:
+        """Absent settings use transport defaults; malformed settings are refused."""
+        return cls.model_validate({} if value is None else value)
 
 
-@dataclass(frozen=True)
-class STTCapabilities:
-    """Vendor capability declaration used by the manager and tests."""
+class STTCapabilitySupport(Enum):
+    """Adapter capability claim; JSON retains the existing boolean representation."""
 
-    streaming: bool = True
-    batch_recognize: bool = False
-    interim_results: bool = True
-    vad_events: bool = False
-    turn_detection: bool = False
-    word_timestamps: bool = False
-    speaker_labels: bool = False
-    language_detection: bool = False
-    custom_vocabulary: bool = False
-    punctuation: bool = False
-    profanity_filter: bool = False
-    aligned_transcript: str | bool = False
-    supported_encodings: tuple[str, ...] = (
-        STTEncoding.LINEAR16.value,
-        STTEncoding.PCM_S16LE.value,
+    UNSUPPORTED = False
+    SUPPORTED = True
+
+    def __bool__(self) -> bool:
+        raise TypeError("Compare STT support with its explicit enum member.")
+
+
+def _capability_support(value: object) -> STTCapabilitySupport:
+    if isinstance(value, STTCapabilitySupport):
+        return value
+    if value is True:
+        return STTCapabilitySupport.SUPPORTED
+    if value is False:
+        return STTCapabilitySupport.UNSUPPORTED
+    raise ValueError("STT capability requires explicit support or a boolean.")
+
+
+STTSupport = Annotated[STTCapabilitySupport, BeforeValidator(_capability_support)]
+STTSampleRate = Annotated[StrictInt, Field(gt=0)]
+STTText = Annotated[StrictStr, Field(min_length=1, pattern=r"\S")]
+
+
+class STTCapabilities(BaseModel):
+    """Adapter-owned executable features, not a second platform policy catalog."""
+
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", revalidate_instances="always"
     )
-    supported_sample_rates: tuple[int, ...] = (8000, 16000, 44100, 48000)
+
+    streaming: STTSupport = STTCapabilitySupport.SUPPORTED
+    batch_recognize: STTSupport = STTCapabilitySupport.UNSUPPORTED
+    interim_results: STTSupport = STTCapabilitySupport.SUPPORTED
+    vad_events: STTSupport = STTCapabilitySupport.UNSUPPORTED
+    turn_detection: STTSupport = STTCapabilitySupport.UNSUPPORTED
+    word_timestamps: STTSupport = STTCapabilitySupport.UNSUPPORTED
+    speaker_labels: STTSupport = STTCapabilitySupport.UNSUPPORTED
+    language_detection: STTSupport = STTCapabilitySupport.UNSUPPORTED
+    custom_vocabulary: STTSupport = STTCapabilitySupport.UNSUPPORTED
+    punctuation: STTSupport = STTCapabilitySupport.UNSUPPORTED
+    profanity_filter: STTSupport = STTCapabilitySupport.UNSUPPORTED
+    aligned_transcript: STTSupport = STTCapabilitySupport.UNSUPPORTED
+    supported_encodings: tuple[STTEncoding, ...] = (
+        STTEncoding.LINEAR16,
+        STTEncoding.PCM_S16LE,
+    )
+    supported_sample_rates: tuple[STTSampleRate, ...] = (8000, 16000, 44100, 48000)
 
 
-@dataclass(frozen=True)
-class TimedWord:
+class TimedWord(BaseModel):
     """A transcript token with optional timing and confidence."""
 
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
     word: str
-    start_time: float = 0.0
-    end_time: float = 0.0
-    confidence: float = 0.0
+    start_time: float | None = None
+    end_time: float | None = None
+    confidence: float | None = None
+    speaker_id: str | None = None
 
 
-@dataclass(frozen=True)
-class RecognitionUsage:
+class RecognitionUsage(BaseModel):
     """Usage payload emitted by providers that report cost dimensions."""
 
-    audio_duration: float = 0.0
-    input_tokens: int = 0
-    output_tokens: int = 0
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    audio_duration: float | None = Field(default=None, ge=0)
+    input_tokens: int | None = Field(default=None, strict=True, ge=0)
+    output_tokens: int | None = Field(default=None, strict=True, ge=0)
 
 
-@dataclass(frozen=True)
-class STTError:
+class STTError(BaseModel):
     """Structured STT error details."""
 
-    message: str
-    recoverable: bool = True
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
+
+    message: str = Field(repr=False)
+    recoverable: StrictBool = True
     code: str | None = None
 
 
-@dataclass(frozen=True)
-class STTConfig:
-    """Typed STT configuration with vendor-option passthrough."""
+class STTConfig(BaseModel):
+    """Validated runtime settings; native fields stay private until adapter handoff."""
 
-    vendor: str
-    model: str = ""
-    language: str | None = None
-    sample_rate: int = 16000
-    encoding: str = STTEncoding.LINEAR16.value
-    interim_results: bool = True
-    vad_enabled: bool = True
-    turn_detection: str = STTTurnDetection.VENDOR.value
-    endpointing_mode: str = STTEndpointingMode.FIXED.value
-    eot_threshold: float = 0.85
-    eot_timeout_ms: int = 5000
-    custom_vocabulary: tuple[str, ...] = ()
-    word_timestamps: bool = True
-    speaker_labels: bool = False
-    batch_enabled: bool = False
-    retry: RetryOptions = field(default_factory=RetryOptions)
-    vendor_options: dict[str, Any] = field(default_factory=dict)
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        revalidate_instances="always",
+        allow_inf_nan=False,
+        hide_input_in_errors=True,
+    )
+
+    vendor: STTProvider
+    model: STTText | None = None
+    language: STTText | None = None
+    sample_rate: STTSampleRate = _DEFAULT_SAMPLE_RATE
+    encoding: STTEncoding = STTEncoding.LINEAR16
+    interim_results: SpeechOption = SpeechOptionState.ENABLED
+    vad_enabled: SpeechOption = SpeechOptionState.ENABLED
+    turn_detection: STTTurnDetection = STTTurnDetection.VENDOR
+    endpointing_mode: STTEndpointingMode = STTEndpointingMode.FIXED
+    eot_threshold: StrictFloat = Field(default=_DEFAULT_EOT_THRESHOLD, ge=0, le=1)
+    eot_timeout_ms: StrictInt = Field(default=_DEFAULT_EOT_TIMEOUT_MS, ge=0)
+    custom_vocabulary: tuple[STTText, ...] = ()
+    word_timestamps: SpeechOption = SpeechOptionState.ENABLED
+    speaker_labels: SpeechOption = SpeechOptionState.DISABLED
+    batch_enabled: SpeechOption = SpeechOptionState.DISABLED
+    wait_ms: StrictFloat = Field(default=0.0, ge=0)
+    retry: RetryOptions = Field(default_factory=RetryOptions)
+    vendor_options: dict[str, JsonValue] = Field(
+        default_factory=dict, repr=False, exclude=True
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_input(cls, value: object) -> object:
+        """Flat native options and the explicit envelope share one validated path."""
+        if not isinstance(value, Mapping):
+            return value
+        data: dict[str, object] = dict(value)
+        options = data.pop("vendor_options", {})
+        if not isinstance(options, Mapping):
+            raise ValueError("STT vendor options must be an object.")
+        for name, option in options.items():
+            if not isinstance(name, str) or name in {
+                "vendor",
+                "vendor_options",
+                "retry",
+            }:
+                raise ValueError("STT vendor options contain a reserved field.")
+            if name in data and (
+                type(data[name]) is not type(option) or data[name] != option
+            ):
+                raise ValueError("Conflicting STT configuration fields.")
+            data[name] = option
+
+        selected_vendor = data.get("vendor")
+        if isinstance(selected_vendor, str):
+            data["vendor"] = selected_vendor.strip()
+
+        # These raw PCM spellings are adapter input, not a fallback provider/model.
+        if "encoding" not in data:
+            data["encoding"] = (
+                STTEncoding.PCM_S16LE
+                if data.get("vendor") in (STTProvider.ASSEMBLYAI, STTProvider.CARTESIA)
+                else STTEncoding.LINEAR16
+            )
+        if data.get("custom_vocabulary") is None:
+            data["custom_vocabulary"] = ()
+        native = {
+            name: item for name, item in data.items() if name not in cls.model_fields
+        }
+        for name in native:
+            del data[name]
+        data["vendor_options"] = native
+        return data
 
     @classmethod
     def from_mapping(
         cls,
-        value: "STTConfig | Mapping[str, Any] | None",
+        value: STTConfig | Mapping[str, object] | None,
         *,
-        vendor: str | None = None,
-    ) -> "STTConfig":
-        """Normalize a provider-config mapping into the typed STT contract."""
-        if isinstance(value, cls):
-            if vendor is not None and vendor.strip() != value.vendor:
-                raise ValueError(
-                    "STT provider config does not match the selected provider."
-                )
-            return value
+        vendor: str | STTProvider | None = None,
+        api_key: str | None = None,
+    ) -> Self:
+        """Revalidate all entry paths without exposing values in configuration errors."""
+        if isinstance(value, STTConfig):
+            data = value.to_adapter_config()
+            data["retry"] = value.retry
+        elif isinstance(value, Mapping):
+            data = dict(value)
+        elif value is None:
+            data = {}
+        else:
+            raise STTConfigurationError("STT configuration must be an object.")
 
-        data = dict(value or {})
-        configured_vendor = data.pop("vendor", None)
-        if (
-            vendor is not None
-            and configured_vendor is not None
-            and vendor.strip() != configured_vendor
-        ):
-            raise ValueError(
+        selected_vendor = vendor if vendor is not None else data.get("vendor")
+        if not isinstance(selected_vendor, str) or not selected_vendor.strip():
+            raise STTConfigurationError("STT provider is required.")
+        selected_vendor = selected_vendor.strip()
+        configured_vendor = data.get("vendor")
+        if isinstance(configured_vendor, str):
+            configured_vendor = configured_vendor.strip()
+        if configured_vendor is not None and configured_vendor != selected_vendor:
+            raise STTConfigurationError(
                 "STT provider config does not match the selected provider."
             )
-        selected_vendor_value = vendor if vendor is not None else configured_vendor
-        if (
-            not isinstance(selected_vendor_value, str)
-            or not selected_vendor_value.strip()
-        ):
-            raise ValueError("STT provider is required.")
-        selected_vendor = selected_vendor_value.strip()
+        data["vendor"] = selected_vendor
+        if api_key is not None:
+            if not isinstance(api_key, str) or not api_key.strip():
+                raise STTConfigurationError("STT API key must be nonempty text.")
+            # Explicit resolved credentials are authoritative over settings.
+            options = data.get("vendor_options")
+            if isinstance(options, Mapping):
+                data["vendor_options"] = {
+                    name: item for name, item in options.items() if name != "api_key"
+                }
+            data["api_key"] = api_key
+        try:
+            return cls.model_validate(data)
+        except ValidationError:
+            raise STTConfigurationError("Invalid STT runtime configuration.") from None
 
-        if "encoding" not in data and data.get("input_audio_codec"):
-            data["encoding"] = data["input_audio_codec"]
-        if "eot_timeout_ms" not in data and data.get("utterance_end_ms"):
-            data["eot_timeout_ms"] = data["utterance_end_ms"]
-
-        retry = RetryOptions.from_mapping(data.pop("retry", None))
-        vocabulary = data.pop("custom_vocabulary", ()) or ()
-        if isinstance(vocabulary, list):
-            vocabulary = tuple(str(item) for item in vocabulary)
-
-        known_fields = {
-            "model",
-            "language",
-            "sample_rate",
-            "encoding",
-            "interim_results",
-            "vad_enabled",
-            "turn_detection",
-            "endpointing_mode",
-            "eot_threshold",
-            "eot_timeout_ms",
-            "word_timestamps",
-            "speaker_labels",
-            "batch_enabled",
-        }
-        base = {
-            field_name: data.pop(field_name)
-            for field_name in list(data)
-            if field_name in known_fields
-        }
-
-        return cls(
-            vendor=selected_vendor,
-            retry=retry,
-            custom_vocabulary=tuple(vocabulary),
-            vendor_options=data,
-            **base,
-        )
-
-    def to_adapter_config(self) -> dict[str, Any]:
-        """Flatten canonical and vendor-specific fields for one adapter."""
-        config = dict(self.vendor_options)
-        config.update(
-            {
-                "vendor": self.vendor,
-                "language": self.language,
-                "sample_rate": self.sample_rate,
-                "encoding": self.encoding,
-                "interim_results": self.interim_results,
-                "vad_enabled": self.vad_enabled,
-                "turn_detection": self.turn_detection,
-                "endpointing_mode": self.endpointing_mode,
-                "eot_threshold": self.eot_threshold,
-                "eot_timeout_ms": self.eot_timeout_ms,
-                "custom_vocabulary": list(self.custom_vocabulary),
-                "word_timestamps": self.word_timestamps,
-                "speaker_labels": self.speaker_labels,
-                "batch_enabled": self.batch_enabled,
-            }
-        )
-        if self.model:
-            config["model"] = self.model
-        return {key: value for key, value in config.items() if value is not None}
+    def to_adapter_config(self) -> dict[str, object]:
+        """Explicit private handoff; normal model dumps never include native secrets."""
+        try:
+            config = type(self).model_validate(self)
+        except ValidationError:
+            raise STTConfigurationError("Invalid STT runtime configuration.") from None
+        data: dict[str, object] = config.model_dump(mode="json", exclude_none=True)
+        data.update(config.vendor_options)
+        return data
 
 
-@dataclass(frozen=True)
-class STTEvent:
-    """Canonical STT event emitted by every provider adapter."""
+class STTEvent(BaseModel):
+    """Validated recognition result; never flattened with vendor metadata.
+
+    Finality is derived from the event type. Speech activity cannot masquerade
+    as a final transcript, and error/usage events must carry their own payload.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
 
     type: STTEventType
+    provider: STTProvider
     session_id: str = ""
-    provider: str = ""
     model: str = ""
-    transcript: str = ""
-    is_final: bool = False
+    transcript: str = Field(default="", repr=False)
+    transcript_form: STTTranscriptForm = STTTranscriptForm.SEGMENT
     confidence: float | None = None
     language: str | None = None
     request_id: str | None = None
     provider_request_id: str | None = None
-    words: tuple[TimedWord, ...] = ()
+    words: tuple[TimedWord, ...] = Field(default=(), repr=False)
     speaker_id: str | None = None
     audio_start_ms: int | None = None
     audio_end_ms: int | None = None
+    interruption_hint: STTInterruptionHint = STTInterruptionHint.NONE
     usage: RecognitionUsage | None = None
     error: STTError | None = None
-    timestamp: float = field(default_factory=lambda: arrow.utcnow().timestamp())
-    vendor_metadata: dict[str, Any] = field(default_factory=dict)
+    timestamp: float = Field(default_factory=lambda: arrow.utcnow().timestamp())
+    vendor_metadata: dict[str, JsonValue] = Field(default_factory=dict, repr=False)
 
-    def to_platform_event(self) -> dict[str, Any]:
-        """Project this event onto the current websocket voice-event shape."""
-        base: dict[str, Any] = {
-            "timestamp": self.timestamp,
-            "vendor_event_type": self.type.value,
-        }
-        if self.provider:
-            base["provider"] = self.provider
-        if self.model:
-            base["model"] = self.model
-        base.update(self.vendor_metadata)
+    @model_validator(mode="after")
+    def validate_payload_kind(self) -> "STTEvent":
+        if (self.type is STTEventType.ERROR) != (self.error is not None):
+            raise ValueError("Only an STT error event carries an error payload.")
+        if (self.type is STTEventType.RECOGNITION_USAGE) != (self.usage is not None):
+            raise ValueError("Only an STT usage event carries a usage payload.")
+        if (
+            self.type in {STTEventType.ERROR, STTEventType.RECOGNITION_USAGE}
+            and self.transcript
+        ):
+            raise ValueError("STT error and usage events cannot contain a transcript.")
+        return self
 
-        if self.type == STTEventType.ERROR:
-            base["type"] = STTEventType.ERROR.value
-            if self.error:
-                base["error"] = self.error.message
-                base["recoverable"] = self.error.recoverable
-                if self.error.code:
-                    base["code"] = self.error.code
-            return base
-
-        if self.type == STTEventType.RECOGNITION_USAGE:
-            base["type"] = STTEventType.RECOGNITION_USAGE.value
-            if self.usage:
-                base["usage"] = {
-                    "audio_duration": self.usage.audio_duration,
-                    "input_tokens": self.usage.input_tokens,
-                    "output_tokens": self.usage.output_tokens,
-                }
-            return base
-
-        if self.type in _SPEECH_START_TYPES:
-            event = {
-                **base,
-                "type": STTEventType.VAD.value,
-                "event": STTVADEventKind.SPEECH_STARTED.value,
-                "should_interrupt": self.vendor_metadata.get(
-                    "should_interrupt",
-                    self.vendor_metadata.get("vendor_event_type") == "interrupt",
-                ),
-            }
-            if self.transcript:
-                event["transcript"] = self.transcript
-            return event
-
-        if self.type in _SPEECH_END_TYPES and not self.transcript:
-            return {
-                **base,
-                "type": STTEventType.VAD.value,
-                "event": STTVADEventKind.SPEECH_ENDED.value,
-                "should_interrupt": False,
-            }
-
-        transcript_kind = (
-            STTTranscriptKind.FINAL.value
-            if self.is_final
-            else STTTranscriptKind.PARTIAL.value
+    @property
+    def is_final(self) -> bool:
+        return self.type is STTEventType.TRANSCRIPT_FINAL or (
+            self.type is STTEventType.END_OF_TURN and bool(self.transcript)
         )
-        if self.type == STTEventType.TRANSCRIPT_PREFLIGHT:
-            transcript_kind = STTTranscriptKind.PREFLIGHT.value
 
-        return {
-            **base,
-            "type": STTEventType.TRANSCRIPT.value,
-            "transcript": self.transcript,
-            "transcript_kind": transcript_kind,
-            "is_final": self.is_final,
-            "confidence": self.confidence,
-        }
+    @property
+    def is_speech_start(self) -> bool:
+        return self.type in _SPEECH_START_TYPES
+
+    @property
+    def is_speech_end(self) -> bool:
+        return self.type in _SPEECH_END_TYPES
+
+    @property
+    def is_transcript(self) -> bool:
+        return self.type in {
+            STTEventType.TRANSCRIPT_PARTIAL,
+            STTEventType.TRANSCRIPT_PREFLIGHT,
+            STTEventType.TRANSCRIPT_FINAL,
+        } or (self.type is STTEventType.END_OF_TURN and bool(self.transcript))
 
 
-@dataclass
-class STTMetricsSnapshot:
-    """Lightweight in-process metrics for STT sessions."""
+_ByteCount = Annotated[StrictInt, Field(ge=0)]
+_BYTE_COUNT = TypeAdapter(_ByteCount)
 
-    request_count: int = 0
-    event_count: int = 0
-    audio_bytes_sent: int = 0
-    error_count: int = 0
-    reconnect_count: int = 0
-    connected_at: float | None = None
-    last_event_at: float | None = None
-    last_event_type: str | None = None
+
+class STTMetricsSnapshot(BaseModel):
+    """Mutable counters; timestamps are process-monotonic seconds, not wall time."""
+
+    model_config = ConfigDict(
+        extra="forbid", validate_assignment=True, allow_inf_nan=False
+    )
+
+    request_count: StrictInt = Field(default=0, ge=0)
+    event_count: StrictInt = Field(default=0, ge=0)
+    audio_bytes_sent: StrictInt = Field(default=0, ge=0)
+    error_count: StrictInt = Field(default=0, ge=0)
+    reconnect_count: StrictInt = Field(default=0, ge=0)
+    connected_at: StrictFloat | None = Field(default=None, ge=0)
+    last_event_at: StrictFloat | None = Field(default=None, ge=0)
+    last_event_type: STTEventType | None = None
 
     def mark_connected(self) -> None:
         """Record connection start time."""
@@ -387,13 +428,15 @@ class STTMetricsSnapshot:
 
     def mark_audio_sent(self, byte_count: int) -> None:
         """Record a sent audio chunk."""
+        checked_count = _BYTE_COUNT.validate_python(byte_count)
         self.request_count += 1
-        self.audio_bytes_sent += byte_count
+        self.audio_bytes_sent += checked_count
 
-    def mark_event(self, event_type: str) -> None:
+    def mark_event(self, event_type: STTEventType) -> None:
         """Record a normalized STT event."""
+        checked_type = STTEventType(event_type)
         self.event_count += 1
-        self.last_event_type = event_type
+        self.last_event_type = checked_type
         self.last_event_at = monotonic()
 
     def mark_error(self) -> None:
@@ -404,7 +447,7 @@ class STTMetricsSnapshot:
         """Record a reconnect attempt."""
         self.reconnect_count += 1
 
-    def as_dict(self) -> dict[str, Any]:
+    def as_dict(self) -> dict[str, JsonValue]:
         """Return a serializable metrics snapshot."""
         return {
             "request_count": self.request_count,
@@ -414,13 +457,16 @@ class STTMetricsSnapshot:
             "reconnect_count": self.reconnect_count,
             "connected_at": self.connected_at,
             "last_event_at": self.last_event_at,
-            "last_event_type": self.last_event_type,
+            "last_event_type": self.last_event_type.value
+            if self.last_event_type is not None
+            else None,
         }
 
 
 _SPEECH_START_TYPES = {
     STTEventType.SPEECH_START,
     STTEventType.START_OF_TURN,
+    STTEventType.TURN_RESUMED,
 }
 _SPEECH_END_TYPES = {
     STTEventType.SPEECH_END,

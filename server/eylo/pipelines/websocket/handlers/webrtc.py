@@ -4,6 +4,7 @@ from typing import Any, Optional
 
 from fastapi import status
 
+from eylo.common.contracts.voice import BrowserVoiceTerminationReason
 from eylo.modules.provider_configs.errors import NotConfiguredError
 from eylo.modules.session_context.schemas import SessionContext
 from eylo.pipelines.voice.browser import terminate_browser_voice
@@ -123,7 +124,7 @@ async def handle_webrtc_hangup(
     """Run the one idempotent terminal command for a browser hangup."""
     terminated = await terminate_browser_voice(
         ctx,
-        reason="client_hangup",
+        reason=BrowserVoiceTerminationReason.CLIENT_HANGUP,
         notify_client=False,
     )
     return _response(

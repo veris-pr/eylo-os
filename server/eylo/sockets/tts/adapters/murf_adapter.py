@@ -24,11 +24,14 @@ import uuid
 from typing import Optional
 
 import websockets
+from pydantic import Field, StrictInt, field_validator
 from websockets.asyncio.client import ClientConnection
 
+from eylo.common.contracts.speech_runtime import SpeechText
+from eylo.sockets.tts.adapters.config import TTSAdapterConfig
 from eylo.sockets.tts.base import TTSVendorAdapter
 from eylo.sockets.tts.exceptions import TTSConnectionClosed, TTSConnectionFailed
-from eylo.sockets.tts.schemas import TTSCapabilities, TTSConfig
+from eylo.sockets.tts.schemas import TTSCapabilities, TTSConfig, TTSProvider
 
 logger = logging.getLogger(__name__)
 
@@ -41,40 +44,29 @@ _WS_URL = "wss://api.murf.ai/v1/speech/stream-input"
 _WAV_HEADER_SIZE = 44
 
 
-class MurfTTSConfig:
+class MurfTTSConfig(TTSAdapterConfig):
     """Configuration for Murf TTS adapter."""
 
-    def __init__(
-        self,
-        *,
-        voice: str,
-        sample_rate: int = _DEFAULT_SAMPLE_RATE,
-        format: str = _DEFAULT_FORMAT,
-        channel_type: str = _DEFAULT_CHANNEL,
-        style: str | None = None,
-        rate: int = 0,
-        pitch: int = 0,
-        variation: int = 1,
-        min_buffer_size: int = 60,
-        max_buffer_delay_ms: int = 500,
-        api_key: str,
-        **kwargs,
-    ):
-        self.voice_id = voice
-        self.voice = voice
-        self.sample_rate = sample_rate
-        self.format = format.upper()
-        self.channel_type = channel_type
-        self.style = style
-        self.rate = rate
-        self.pitch = pitch
-        self.variation = variation
-        self.min_buffer_size = min_buffer_size
-        self.max_buffer_delay_ms = max_buffer_delay_ms
-        self.api_key = api_key
+    provider = TTSProvider.MURF
+    voice: SpeechText
+    sample_rate: StrictInt = Field(default=_DEFAULT_SAMPLE_RATE, gt=0)
+    format: SpeechText = _DEFAULT_FORMAT
+    channel_type: SpeechText = _DEFAULT_CHANNEL
+    style: SpeechText | None = None
+    rate: StrictInt = 0
+    pitch: StrictInt = 0
+    variation: StrictInt = 1
+    min_buffer_size: StrictInt = Field(default=60, ge=0)
+    max_buffer_delay_ms: StrictInt = Field(default=500, ge=0)
 
-        if not self.api_key:
-            raise ValueError("Murf TTS api_key is required.")
+    @field_validator("format")
+    @classmethod
+    def normalize_format(cls, value: str) -> str:
+        return value.upper()
+
+    @property
+    def voice_id(self) -> str:
+        return self.voice
 
 
 class MurfTTSAdapter(TTSVendorAdapter):
@@ -86,26 +78,15 @@ class MurfTTSAdapter(TTSVendorAdapter):
     """
 
     def __init__(self, config: MurfTTSConfig):
+        config = MurfTTSConfig.model_validate(config)
         if config.format.upper() not in {"PCM", "WAV"}:
             raise ValueError("Murf TTS must emit PCM or WAV for realtime voice.")
-        # Feed the contract config up from the vendor config. getattr with
-        # fallbacks because vendor configs disagree — deepgram has no voice,
-        # murf calls it voice_id, openai carries no sample_rate. Unset keys
-        # are omitted: passing None would override a field default with an
-        # invalid value.
-        _contract = {
-            "model": getattr(config, "model", None),
-            "voice": getattr(config, "voice", None)
-            or getattr(config, "voice_id", None),
-            "sample_rate": getattr(config, "sample_rate", None),
-            # WAV headers are removed by the receiver before chunks leave the
-            # adapter, so both supported provider formats become raw PCM here.
-            "encoding": "pcm_s16le",
-        }
         super().__init__(
             TTSConfig(
-                vendor="murf",
-                **{k: v for k, v in _contract.items() if v is not None},
+                vendor=TTSProvider.MURF,
+                voice=config.voice,
+                sample_rate=config.sample_rate,
+                encoding="pcm_s16le",
             )
         )
         self._config = config

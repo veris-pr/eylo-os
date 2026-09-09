@@ -22,6 +22,7 @@ from eylo.modules.agents.models import AgentStatus
 from eylo.modules.agents.schemas.api import AgentWsResponseSchema
 from eylo.modules.agents.services.revisions import AgentRevisionService
 from eylo.pipelines.voice.session_tts import enqueue_conversation_tts_payload
+from eylo.pipelines.voice.tts_payloads import ConversationTTSRequest, TTSRequest
 from eylo.pipelines.websocket.schemas import (
     ContactUUID,
     ConversationUUID,
@@ -72,13 +73,13 @@ class WSPubSubManager:
 
     async def publish(
         self, message: Union[dict, BaseModel], channel: str | None = None
-    ):
+    ) -> None:
         """Publish a message to a Redis channel."""
         if isinstance(message, BaseModel):
-            message = message.model_dump_json(by_alias=True)
-        elif isinstance(message, dict):
-            message = json_serializer(message)
-        await self._redis.publish(channel or self.default_channel, message)
+            serialized = message.model_dump_json(by_alias=True)
+        else:
+            serialized = json_serializer(message)
+        await self._redis.publish(channel or self.default_channel, serialized)
 
     async def listen(self):
         """Listen for messages on subscribed channels."""
@@ -383,21 +384,23 @@ class WsConnectionManager:
                 )
                 await asyncio.sleep(1)
 
-    async def _listen_for_webrtc_pubsub_messages(self):
+    async def _listen_for_webrtc_pubsub_messages(self) -> None:
         while True:
             try:
                 async for message in self._webrtc_pubsub_manager.listen():
                     if message and message["type"] == "message":
                         try:
-                            data = message["data"].decode("utf-8")
-                            data = json.loads(data)
+                            raw = message["data"]
+                            if not isinstance(raw, (str, bytes, bytearray)):
+                                raise ValueError("TTS pubsub requires JSON text.")
+                            request = ConversationTTSRequest.model_validate_json(raw)
                             await enqueue_conversation_tts_payload(
                                 router=self,
-                                conversation_id=data["conversation_id"],
-                                organization_id=data["organization_id"],
-                                payload=data["payload"],
+                                conversation_id=request.conversation_id,
+                                organization_id=request.organization_id,
+                                payload=request.payload,
                             )
-                        except json.JSONDecodeError as error:
+                        except (ValueError, TypeError, KeyError) as error:
                             logger.error(
                                 "WebRTC pubsub decode failed error_type=%s",
                                 type(error).__name__,
@@ -1057,16 +1060,15 @@ class WsConnectionManager:
         self,
         conversation_id: ConversationUUID,
         organization_id: OrganizationUUID,
-        payload: dict | str,
-    ):
-        conversation_id = str(conversation_id)
-        organization_id = str(organization_id)
+        payload: TTSRequest,
+    ) -> None:
+        """Publish validated speech while preserving org/conversation authority."""
         await self._webrtc_pubsub_manager.publish(
-            message={
-                "conversation_id": conversation_id,
-                "organization_id": organization_id,
-                "payload": payload,
-            },
+            message=ConversationTTSRequest(
+                conversation_id=conversation_id,
+                organization_id=organization_id,
+                payload=payload,
+            ),
         )
 
 

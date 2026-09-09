@@ -11,12 +11,12 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from eylo.common.outbound import OutboundAttemptConflict, OutboundAttemptState
 from eylo.modules.provider_configs.errors import NotConfiguredError
-from eylo.pipelines.outbound.durable_execution import DurableStepContext
+from eylo.pipelines.outbound.durable_execution import CommandStepContext
 
 from .call_control import VoiceService
 
 if TYPE_CHECKING:
-    from eylo.modules.conversations.schemas.conversations import ConversationContext
+    from eylo.pipelines.agent_execution_context import PlatformExecutionContext
 
 PLACE_CALL_TOOL_NAME = "place_call"
 _E164_PATTERN = re.compile(r"^\+[1-9]\d{1,14}$")
@@ -47,9 +47,9 @@ class PlaceCallToolExecutionOutcome:
 async def execute_agent_place_call_tool(
     *,
     tool_input: Mapping[str, Any],
-    conversation_context: ConversationContext,
+    conversation_context: PlatformExecutionContext,
     tool_use_message_id: UUID,
-    durable_context: DurableStepContext,
+    durable_context: CommandStepContext,
 ) -> PlaceCallToolExecutionOutcome:
     """Place one call under the committed TOOL_USE message identity."""
     try:
@@ -86,25 +86,25 @@ async def execute_agent_place_call_tool(
 
     metadata = {
         "telephony_delivery": True,
-        "telephony_delivery_status": result["status"],
-        "call_id": result["call_id"],
-        "provider_call_id": result.get("call_sid"),
-        "outbound_attempt_id": result["outbound_attempt_id"],
-        "provider_config_id": result["provider_config_id"],
-        "provider_config_revision": result["provider_config_revision"],
+        "telephony_delivery_status": result.status.value,
+        "call_id": str(result.call_id),
+        "provider_call_id": result.call_sid,
+        "outbound_attempt_id": str(result.outbound_attempt_id),
+        "provider_config_id": str(result.provider_config_id),
+        "provider_config_revision": result.provider_config_revision,
     }
-    if result["status"] == OutboundAttemptState.SUCCEEDED.value:
+    if result.status is OutboundAttemptState.SUCCEEDED:
         return PlaceCallToolExecutionOutcome(
             content={
                 "status": "accepted",
-                "call_id": result["call_id"],
+                "call_id": str(result.call_id),
             },
             is_error=False,
             metadata=metadata,
         )
     code = (
         "telephony_delivery_unknown"
-        if result["status"] == OutboundAttemptState.UNKNOWN.value
+        if result.status is OutboundAttemptState.UNKNOWN
         else "telephony_delivery_rejected"
     )
     return _error(code, metadata=metadata)

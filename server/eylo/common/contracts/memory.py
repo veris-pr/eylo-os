@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Awaitable
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -22,6 +23,12 @@ MEMORY_MAX_WINDOW_MESSAGES = 20
 MEMORY_MAX_OPERATIONS = 20
 MEMORY_MAX_EXTRACTOR_RESPONSE_BYTES = 32_000
 MEMORY_MAX_SEARCH_RESULTS = 100
+
+
+class MemoryTextCompleter(Protocol):
+    """Complete an extraction/reconciliation prompt; never execute returned tools."""
+
+    def __call__(self, *, system: str, user: str) -> Awaitable[str]: ...
 
 
 def _utf8_size(value: str) -> int:

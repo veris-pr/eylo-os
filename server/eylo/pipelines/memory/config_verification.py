@@ -7,12 +7,14 @@ from uuid import UUID
 
 from eylo.common.contracts.memory import MemoryExtractionAuthority
 from eylo.common.database import async_session_factory, start_transaction
+from eylo.modules.llm_configs.domain import ResolvedLLM
 from eylo.modules.llm_configs.wiring import build_llm_config_resolver
 from eylo.modules.memory.reindex_service import MemoryReindexService
 from eylo.modules.memory_configs.catalog import MemoryProviders
 from eylo.modules.memory_configs.domain import MemoryProviderConfig
 from eylo.modules.memory_configs.verification import (
     MemoryDependencyAuthority,
+    MemoryEmbeddingRuntime,
     MemoryProviderVerifier,
     MemoryVerificationError,
     MemoryVerificationResult,
@@ -40,8 +42,8 @@ class MemoryRuntimeVerifier:
         memory_config_revision: int,
         config: MemoryProviderConfig,
         authority: MemoryDependencyAuthority,
-        embedding_runtime,
-        llm_runtime,
+        embedding_runtime: MemoryEmbeddingRuntime,
+        llm_runtime: ResolvedLLM,
     ) -> None:
         if config.provider is not MemoryProviders.PGVECTOR:
             raise MemoryVerificationError("Unsupported memory provider.")

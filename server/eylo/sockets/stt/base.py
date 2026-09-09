@@ -5,7 +5,6 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 from eylo.sockets.stt.schemas import (
-    RetryOptions,
     STTCapabilities,
     STTEvent,
 )
@@ -14,13 +13,9 @@ from eylo.sockets.stt.schemas import (
 class STTVendorAdapter(ABC):
     """Canonical contract implemented by every STT provider adapter."""
 
-    def __init__(self, retry_options: RetryOptions | None = None) -> None:
-        """Initialize shared adapter state."""
-        self.retry_options = retry_options or RetryOptions()
-
     @abstractmethod
     async def connect(self) -> object:
-        """Establish the vendor connection."""
+        """Establish once; the factory owns connection-attempt policy."""
 
     @abstractmethod
     async def disconnect(self) -> None:

@@ -2,21 +2,30 @@
 
 from __future__ import annotations
 
+from pydantic import ValidationError
+
 from eylo.common.config import settings
 from eylo.common.contracts.provider_config import Capability, NotConfiguredError
-from eylo.common.contracts.realtime_runtime import ResolvedRealtimeConfig
+from eylo.common.contracts.realtime_runtime import (
+    RealtimeAWSCredentials,
+    RealtimeApiKeyCredentials,
+    ResolvedRealtimeConfig,
+)
 from eylo.sockets.realtime.base import RealtimeAdapter
-from eylo.sockets.realtime.config import RealtimeSessionConfig
+from eylo.sockets.realtime.config import RealtimeSessionConfig, RealtimeVendor
 
 
 class RealtimeFactory:
     @staticmethod
-    def validate(vendor: str, resolved: ResolvedRealtimeConfig) -> None:
+    def validate(vendor: RealtimeVendor, resolved: ResolvedRealtimeConfig) -> None:
         if not settings.ENABLE_REALTIME_VOICE:
             raise ValueError("Realtime voice is disabled (ENABLE_REALTIME_VOICE=false)")
-        if vendor != resolved.provider_id:
+        if (
+            not isinstance(vendor, RealtimeVendor)
+            or vendor.value != resolved.provider_id
+        ):
             raise _not_configured("compatible_realtime_provider")
-        if vendor == "amazon-nova-sonic":
+        if vendor is RealtimeVendor.AMAZON_NOVA_SONIC:
             _aws_credentials(resolved)
         else:
             _api_key(resolved)
@@ -26,31 +35,30 @@ class RealtimeFactory:
         config: RealtimeSessionConfig,
         resolved: ResolvedRealtimeConfig,
     ) -> RealtimeAdapter:
+        config = RealtimeSessionConfig.model_validate(config)
         RealtimeFactory.validate(config.vendor, resolved)
 
-        if config.vendor == "amazon-nova-sonic":
+        if config.vendor is RealtimeVendor.AMAZON_NOVA_SONIC:
             from eylo.sockets.realtime.vendors.amazon_nova_sonic import (
                 AmazonNovaSonicAdapter,
             )
 
-            access_key_id, secret_access_key, session_token = _aws_credentials(
-                resolved
-            )
-            region = resolved.config.get("region")
+            credentials = _aws_credentials(resolved)
+            region = resolved.region
             if not isinstance(region, str) or not region:
                 raise _not_configured("region")
             return AmazonNovaSonicAdapter(
                 config,
                 region=region,
-                access_key_id=access_key_id,
-                secret_access_key=secret_access_key,
-                session_token=session_token,
+                access_key_id=credentials.access_key_id,
+                secret_access_key=credentials.secret_access_key,
+                session_token=credentials.session_token,
             )
-        if config.vendor == "gemini-live":
+        if config.vendor is RealtimeVendor.GEMINI_LIVE:
             from eylo.sockets.realtime.vendors.gemini_live import GeminiLiveAdapter
 
             return GeminiLiveAdapter(config, api_key=_api_key(resolved))
-        if config.vendor == "openai-realtime":
+        if config.vendor is RealtimeVendor.OPENAI_REALTIME:
             from eylo.sockets.realtime.vendors.openai_realtime import (
                 OpenAIRealtimeAdapter,
             )
@@ -60,20 +68,23 @@ class RealtimeFactory:
 
 
 def _api_key(resolved: ResolvedRealtimeConfig) -> str:
-    api_key = resolved.secrets.get("api_key")
-    if not api_key:
+    if not isinstance(resolved.credentials, RealtimeApiKeyCredentials):
         raise _not_configured("credentials")
-    return api_key
+    try:
+        return RealtimeApiKeyCredentials.model_validate(resolved.credentials).api_key
+    except ValidationError:
+        raise _not_configured("credentials") from None
 
 
 def _aws_credentials(
     resolved: ResolvedRealtimeConfig,
-) -> tuple[str, str, str | None]:
-    access_key_id = resolved.secrets.get("access_key_id")
-    secret_access_key = resolved.secrets.get("secret_access_key")
-    if not access_key_id or not secret_access_key:
+) -> RealtimeAWSCredentials:
+    if not isinstance(resolved.credentials, RealtimeAWSCredentials):
         raise _not_configured("credentials")
-    return access_key_id, secret_access_key, resolved.secrets.get("session_token")
+    try:
+        return RealtimeAWSCredentials.model_validate(resolved.credentials)
+    except ValidationError:
+        raise _not_configured("credentials") from None
 
 
 def _not_configured(missing: str) -> NotConfiguredError:

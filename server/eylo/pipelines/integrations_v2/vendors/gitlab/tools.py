@@ -14,7 +14,8 @@ endpoint, and merge request approvals at a third, so `get_issue` and
 
 from __future__ import annotations
 
-from typing import Any
+from enum import StrEnum
+from typing import Any, Self
 from urllib.parse import quote
 
 from pydantic import BaseModel, Field
@@ -27,8 +28,34 @@ from .definition import vendor
 
 MAX_BODY_CHARS = 6_000
 MAX_NOTES = 20
-_STATES = ("opened", "closed", "all")
-_MR_STATES = ("opened", "closed", "merged", "all")
+
+
+class _GitLabQueryChoice(StrEnum):
+    """Normalize existing query inputs without coupling distinct choice sets."""
+
+    @classmethod
+    def _missing_(cls, value: object) -> Self | None:
+        if not isinstance(value, str):
+            return None
+        normalized = value.strip().casefold()
+        return next((choice for choice in cls if choice.value == normalized), None)
+
+
+class GitLabIssueQueryState(_GitLabQueryChoice):
+    """Issue filters; ALL is a query choice rather than an entity state."""
+
+    OPENED = "opened"
+    CLOSED = "closed"
+    ALL = "all"
+
+
+class GitLabMergeRequestQueryState(_GitLabQueryChoice):
+    """The curated tool's supported MR filters, separate from issue filters."""
+
+    OPENED = "opened"
+    CLOSED = "closed"
+    MERGED = "merged"
+    ALL = "all"
 
 
 class SearchIssuesInput(BaseModel):
@@ -36,7 +63,10 @@ class SearchIssuesInput(BaseModel):
         min_length=1, description="Project path such as acme/api, or its numeric id."
     )
     text: str | None = Field(default=None, description="Free text to match.")
-    state: str = Field(default="opened", description="opened, closed, or all.")
+    state: GitLabIssueQueryState = Field(
+        default=GitLabIssueQueryState.OPENED,
+        description="Issue state to search; all omits the state filter.",
+    )
     labels: list[str] | None = None
     assignee_username: str | None = None
     limit: int = Field(default=20, ge=1, le=100)
@@ -64,7 +94,10 @@ class AddCommentInput(BaseModel):
 
 class ListMergeRequestsInput(BaseModel):
     project: str = Field(min_length=1)
-    state: str = Field(default="opened", description="opened, closed, merged, or all.")
+    state: GitLabMergeRequestQueryState = Field(
+        default=GitLabMergeRequestQueryState.OPENED,
+        description="Merge request state to list; all omits the state filter.",
+    )
     target_branch: str | None = None
     limit: int = Field(default=20, ge=1, le=100)
 
@@ -90,10 +123,9 @@ class GetMergeRequestInput(BaseModel):
 async def search_issues(
     payload: SearchIssuesInput, ctx: VendorToolContext
 ) -> dict[str, Any]:
-    state = _state(payload.state, _STATES)
     query: dict[str, Any] = {"per_page": payload.limit, "order_by": "updated_at"}
-    if state != "all":
-        query["state"] = state
+    if payload.state is not GitLabIssueQueryState.ALL:
+        query["state"] = payload.state.value
     if payload.text:
         query["search"] = payload.text
     if payload.labels:
@@ -216,10 +248,9 @@ async def add_comment(
 async def list_merge_requests(
     payload: ListMergeRequestsInput, ctx: VendorToolContext
 ) -> dict[str, Any]:
-    state = _state(payload.state, _MR_STATES)
     query: dict[str, Any] = {"per_page": payload.limit, "order_by": "updated_at"}
-    if state != "all":
-        query["state"] = state
+    if payload.state is not GitLabMergeRequestQueryState.ALL:
+        query["state"] = payload.state.value
     if payload.target_branch:
         query["target_branch"] = payload.target_branch
     response = await ctx.read(
@@ -304,15 +335,6 @@ def _project(value: str) -> str:
     if candidate.isdigit():
         return candidate
     return quote(candidate, safe="")
-
-
-def _state(value: str, allowed: tuple[str, ...]) -> str:
-    state = value.strip().casefold()
-    if state not in allowed:
-        raise VendorToolError(
-            "state_invalid", f"State must be one of: {', '.join(allowed)}."
-        )
-    return state
 
 
 def _issue_view(issue: dict[str, Any]) -> dict[str, Any]:

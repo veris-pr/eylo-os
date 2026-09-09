@@ -11,8 +11,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, validate
 from jsonschema.exceptions import SchemaError
+from pydantic import JsonValue, ValidationError
 from pydantic_core import to_jsonable_python
 from referencing.jsonschema import DRAFT202012
 from sqlalchemy import JSON, update
@@ -51,6 +52,11 @@ from eylo.modules.agent_runs.schemas import (
     AgentRunReservationRead,
     AgentRunStepRead,
 )
+from eylo.modules.agent_runs.waits import (
+    AgentApprovalResponse,
+    AgentRunWaitState,
+    parse_agent_run_wait_state,
+)
 from eylo.modules.user_sessions.events import file_user_session_fact
 
 
@@ -87,19 +93,6 @@ class ObjectiveAgentRunFiling:
 
     run_id: UUID
     created: bool
-
-
-@dataclass(frozen=True, slots=True)
-class AgentRunWaitState:
-    """Internal resume state; engine events carry only these product IDs."""
-
-    request_id: UUID
-    kind: AgentInputRequestKind
-    status: AgentInputRequestStatus
-    event_name: str
-    resume_step_key: str
-    response: object
-    continuation: dict
 
 
 async def file_schedule_agent_run_in_transaction(
@@ -580,15 +573,7 @@ async def load_agent_run_wait(
             AgentRunLifecycle.RUNNING,
         }:
             raise AgentRunConflict("AgentRun wait state is internally inconsistent.")
-        return AgentRunWaitState(
-            request_id=request.id,
-            kind=request.kind,
-            status=request.status,
-            event_name=request.event_name,
-            resume_step_key=request.resume_step_key,
-            response=request.response,
-            continuation=dict(request.continuation),
-        )
+        return _wait_state_from_request(request)
 
 
 async def resume_agent_run_in_transaction(
@@ -619,6 +604,7 @@ async def resume_agent_run_in_transaction(
         raise AgentRunConflict("AgentRun input request has not been answered.")
     if run.cancellation_requested_at is not None:
         raise AgentRunConflict("A cancelling AgentRun cannot resume.")
+    wait = _wait_state_from_request(request)
     if run.lifecycle is not AgentRunLifecycle.RUNNING:
         _require_answerable_lifecycle(run, request)
         await activate_agent_run_reservation_in_transaction(
@@ -636,15 +622,24 @@ async def resume_agent_run_in_transaction(
             event_type="agent.run.resumed",
             payload={"input_request_id": str(request.id)},
         )
-    return AgentRunWaitState(
-        request_id=request.id,
-        kind=request.kind,
-        status=request.status,
-        event_name=request.event_name,
-        resume_step_key=request.resume_step_key,
-        response=request.response,
-        continuation=dict(request.continuation),
-    )
+    return wait
+
+
+def _wait_state_from_request(request: AgentInputRequestModel) -> AgentRunWaitState:
+    try:
+        return parse_agent_run_wait_state(
+            {
+                "request_id": request.id,
+                "kind": request.kind,
+                "status": request.status,
+                "event_name": request.event_name,
+                "resume_step_key": request.resume_step_key,
+                "response": request.response,
+                "continuation": request.continuation,
+            }
+        )
+    except ValidationError as error:
+        raise AgentRunConflict("AgentRun wait snapshot is invalid.") from error
 
 
 async def finish_agent_run_in_transaction(
@@ -1067,14 +1062,14 @@ async def answer_input_request(
         if run.cancellation_requested_at is not None:
             raise AgentRunConflict("A cancelling run cannot accept input.")
 
-        normalized_response = to_jsonable_python(command.response)
+        response = command.response
         if input_request.status is AgentInputRequestStatus.ANSWERED:
             _require_answerable_lifecycle(run, input_request)
             if (
                 input_request.answered_by_principal_kind
                 is not InitiatingPrincipalKind.MEMBER
                 or input_request.answered_by_principal_id != member_id
-                or input_request.response != normalized_response
+                or input_request.response != response
             ):
                 raise AgentRunConflict(
                     "Input request was already answered with different semantics."
@@ -1085,13 +1080,11 @@ async def answer_input_request(
                 command.expected_state_revision,
             )
             _require_answerable(run, input_request)
-            _validate_input_response(input_request, normalized_response)
+            _validate_input_response(input_request, response)
 
             now = datetime.now(timezone.utc)
             input_request.status = AgentInputRequestStatus.ANSWERED
-            input_request.response = (
-                JSON.NULL if command.response is None else normalized_response
-            )
+            input_request.response = JSON.NULL if response is None else response
             input_request.answered_by_principal_kind = InitiatingPrincipalKind.MEMBER
             input_request.answered_by_principal_id = member_id
             input_request.answered_at = now
@@ -1114,14 +1107,15 @@ async def answer_input_request(
         projection = AgentInputRequestRead.model_validate(input_request)
 
     from eylo.modules.agent_runs.absurd import emit_agent_run_event
+    from eylo.modules.agent_runs.waits import AgentRunInputEvent
 
     await emit_agent_run_event(
         event_name=event_name,
-        payload={
-            "organization_id": str(organization_id),
-            "run_id": str(run_id),
-            "request_id": str(request_id),
-        },
+        payload=AgentRunInputEvent(
+            organization_id=organization_id,
+            run_id=run_id,
+            request_id=request_id,
+        ),
     )
     return projection
 
@@ -1211,7 +1205,7 @@ def _require_answerable_lifecycle(
 
 def _validate_input_response(
     input_request: AgentInputRequestModel,
-    response: object,
+    response: JsonValue,
 ) -> None:
     _require_json_size(
         response,
@@ -1220,7 +1214,11 @@ def _validate_input_response(
         error_type=AgentRunConflict,
     )
     try:
-        Draft202012Validator(input_request.expected_response_schema).validate(response)
+        validate(
+            instance=response,
+            schema=input_request.expected_response_schema,
+            cls=Draft202012Validator,
+        )
     except Exception as error:  # noqa: BLE001 - fail closed on resolver errors
         raise AgentRunConflict(
             "Input response does not match the expected response schema."
@@ -1228,15 +1226,10 @@ def _validate_input_response(
 
     if input_request.kind is not AgentInputRequestKind.APPROVAL:
         return
-    if not isinstance(response, dict):
-        raise AgentRunConflict("Approval response must be an object.")
-    if set(response) - {"decision", "comment"}:
-        raise AgentRunConflict("Approval response contains unsupported fields.")
-    if response.get("decision") not in {"approve", "reject"}:
-        raise AgentRunConflict("Approval decision must be approve or reject.")
-    comment = response.get("comment")
-    if comment is not None and not isinstance(comment, str):
-        raise AgentRunConflict("Approval comment must be text.")
+    try:
+        AgentApprovalResponse.model_validate(response)
+    except ValidationError as error:
+        raise AgentRunConflict("Approval response is invalid.") from error
 
 
 def _validated_response_schema(value: object) -> dict:

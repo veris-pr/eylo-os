@@ -1,89 +1,94 @@
-"""Cartesia implementation of the provider-neutral TTS contract."""
+"""Translate Cartesia's context-scoped wire protocol into the TTS audio contract."""
 
 from __future__ import annotations
 
-import json
+import asyncio
 import logging
-import uuid
-from typing import Any
+from urllib.parse import urlencode
+from uuid import uuid4
 
-from eylo.common.contracts.provider_config import NotConfiguredError
+from pydantic import ValidationError
+from websockets.asyncio.client import ClientConnection, connect
+
+from eylo.sockets.tts.adapters.cartesia_wire import (
+    CartesiaAudioOutput,
+    CartesiaCancelRequest,
+    CartesiaContinuation,
+    CartesiaDoneOutput,
+    CartesiaErrorOutput,
+    CartesiaGenerationConfig,
+    CartesiaGenerationRequest,
+    CartesiaInput,
+    CartesiaInputError,
+    CartesiaOutputError,
+    CartesiaStreamState,
+    CartesiaVoice,
+    parse_envelope,
+    parse_output,
+)
 from eylo.sockets.tts.base import TTSVendorAdapter
-from eylo.sockets.tts.schemas import RetryOptions, TTSCapabilities, TTSConfig
+from eylo.sockets.tts.exceptions import TTSConnectionFailed
+from eylo.sockets.tts.schemas import (
+    RetryOptions,
+    TTSAudioFormat,
+    TTSCapabilities,
+    TTSConfig,
+    TTSProvider,
+)
 
 logger = logging.getLogger(__name__)
 
-PROVIDER = "cartesia"
+PROVIDER = TTSProvider.CARTESIA
 CARTESIA_VERSION = "2025-04-16"
-
-# Cartesia names its container/encoding explicitly rather than in one string.
-DEFAULT_CONTAINER = "raw"
-DEFAULT_ENCODING = "pcm_s16le"
+_STREAM_URL = "wss://api.cartesia.ai/tts/websocket"
+_API_KEY_HEADER = "X-API-Key"
 
 
 class CartesiaContractAdapter(TTSVendorAdapter):
-    """Cartesia websocket TTS, contract-first."""
+    """Own a persistent WebSocket and a distinct context for every utterance."""
 
     def __init__(
         self,
         config: TTSConfig,
         retry_options: RetryOptions | None = None,
     ) -> None:
-        if str(config.options.get("container") or DEFAULT_CONTAINER) != "raw":
-            raise ValueError("Cartesia TTS must emit raw audio for realtime voice.")
+        self._input = CartesiaInput.from_config(config)
         super().__init__(config, retry_options)
-        self._ws: Any = None
+        self._ws: ClientConnection | None = None
+        self._state = CartesiaStreamState.DISCONNECTED
+        self._context_id: str | None = None
         self._turn_complete = False
-        self._context_id = str(uuid.uuid4())
-
-        missing = []
-        self._api_key = str(config.options.get("api_key") or "")
-        if not self._api_key:
-            missing.append("api_key")
-        # All three are required by Cartesia with no vendor default, so all
-        # three raise. Defaulting any of them would pick on the operator's
-        # behalf — which for `voice` is what their users hear.
-        if not config.voice:
-            missing.append("voice")
-        if not config.model:
-            missing.append("model")
-        if missing:
-            raise NotConfiguredError(
-                missing=tuple(missing),
-                capability="tts",
-                configure_via="/api/tts-configs",
-            )
+        self._completion_error: TTSConnectionFailed | None = None
+        self._lifecycle_lock = asyncio.Lock()
+        self._closing_tasks: set[asyncio.Task[None]] = set()
 
     @property
     def config(self) -> TTSConfig:
         return self._contract_config
 
-    # ---- identity ----------------------------------------------------
-
     @property
     def provider(self) -> str:
-        return PROVIDER
+        return PROVIDER.value
 
     @property
     def model(self) -> str:
-        return str(self.config.model)
+        return self._input.model
 
     @property
     def sample_rate(self) -> int:
-        return int(self.config.sample_rate)
+        return self._input.output_format.sample_rate
+
+    @property
+    def output_audio_format(self) -> TTSAudioFormat:
+        return TTSAudioFormat.model_validate(self._input.output_format.model_dump())
 
     @property
     def capabilities(self) -> TTSCapabilities:
-        """Stated, not discovered.
-
-        `context_continuity` is the one that matters and is where Cartesia
-        genuinely differs from ElevenLabs: a context id lets a later request
-        continue the same utterance, which a caller can only use if it knows.
-        """
+        """Native cancel stops queued work; local filtering stops late playback."""
         return TTSCapabilities(
             streaming=True,
             batch_synthesize=False,
-            native_interruption=False,
+            native_interruption=True,
             aligned_transcript=False,
             emotion_control=False,
             speed_control=True,
@@ -99,121 +104,199 @@ class CartesiaContractAdapter(TTSVendorAdapter):
     def is_turn_complete(self) -> bool:
         return self._turn_complete
 
-    # ---- payloads ----------------------------------------------------
-
-    def output_format(self) -> dict[str, Any]:
-        """Required by the vendor, and read by the pipeline for resampling."""
-        return {
-            "container": str(self.config.options.get("container") or DEFAULT_CONTAINER),
-            "encoding": str(self.config.encoding or DEFAULT_ENCODING),
-            "sample_rate": int(self.config.sample_rate),
-        }
+    @property
+    def turn_completion_error(self) -> TTSConnectionFailed | None:
+        return self._completion_error
 
     def url(self) -> str:
-        return (
-            f"wss://api.cartesia.ai/tts/websocket"
-            f"?api_key={self._api_key}&cartesia_version={CARTESIA_VERSION}"
-        )
+        """Credentials go in headers, not a URL retained in transport errors."""
+        return f"{_STREAM_URL}?{urlencode({'cartesia_version': CARTESIA_VERSION})}"
 
-    def request(self, text: str, *, continue_: bool = True) -> dict[str, Any]:
-        """One generation request.
+    def request(
+        self,
+        text: str,
+        *,
+        context_id: str,
+        continuation: CartesiaContinuation,
+    ) -> CartesiaGenerationRequest:
+        speed = self._input.options.speed
+        try:
+            return CartesiaGenerationRequest(
+                model_id=self._input.model,
+                transcript=text,
+                voice=CartesiaVoice(id=self._input.voice),
+                output_format=self._input.output_format,
+                context_id=context_id,
+                continue_=continuation,
+                language=self._input.language,
+                generation_config=(
+                    CartesiaGenerationConfig(speed=speed) if speed is not None else None
+                ),
+            )
+        except ValidationError:
+            raise CartesiaInputError("Invalid Cartesia synthesis input.") from None
 
-        `context_id` is required and identifies the utterance. Holding one per
-        adapter is what makes `context_continuity` true: successive requests
-        with `continue` set extend the same speech rather than starting over.
-        """
-        return {
-            "model_id": str(self.config.model),
-            "transcript": text,
-            "voice": {"mode": "id", "id": str(self.config.voice)},
-            "output_format": self.output_format(),
-            "context_id": self._context_id,
-            "continue": continue_,
-            **(
-                {"language": self.config.language}
-                if self.config.language
-                else {}
-            ),
-        }
-
-    # ---- lifecycle ---------------------------------------------------
-
-    async def connect(self) -> object:
-        import websockets
-
-        self._ws = await websockets.connect(self.url())
-        self._turn_complete = False
-        logger.info(
-            "Cartesia TTS connected (model=%s voice=%s)",
-            self.config.model,
-            self.config.voice,
-        )
-        return self._ws
+    async def connect(self) -> ClientConnection:
+        """Serialize acquisitions; native connect owns cleanup before it returns."""
+        async with self._lifecycle_lock:
+            if self._ws is not None:
+                return self._ws
+            try:
+                ws = await connect(
+                    self.url(),
+                    additional_headers={_API_KEY_HEADER: self._input.options.api_key},
+                    open_timeout=self._retry_options.timeout_seconds,
+                    close_timeout=self._retry_options.timeout_seconds,
+                )
+            except asyncio.CancelledError:
+                self._state = CartesiaStreamState.DISCONNECTED
+                raise
+            except Exception:
+                error = TTSConnectionFailed("Cartesia connection failed.")
+                self._completion_error = error
+                self._state = CartesiaStreamState.FAILED
+                raise error from None
+            self._ws = ws
+            self._context_id = None
+            self._state = CartesiaStreamState.READY
+            self._turn_complete = False
+            self._completion_error = None
+            logger.info("Cartesia TTS connected")
+            return ws
 
     async def disconnect(self) -> None:
-        if self._ws is None:
-            return
-        try:
-            await self._ws.close()
-        finally:
-            self._ws = None
+        """Detach before close; cancelled callers leave bounded close work owned."""
+        async with self._lifecycle_lock:
+            self._state = CartesiaStreamState.DISCONNECTED
+            self._context_id = None
+            ws, self._ws = self._ws, None
+            if ws is not None:
+                await self._close(ws)
+            if self._closing_tasks:
+                closing = asyncio.gather(*self._closing_tasks, return_exceptions=True)
+                await asyncio.shield(closing)
 
-    # ---- streaming ---------------------------------------------------
+    async def _close(self, ws: ClientConnection) -> None:
+        # websockets bounds this handshake with close_timeout. Retain ownership
+        # when the task awaiting it is cancelled during disconnect/failure.
+        task = asyncio.create_task(ws.close())
+        self._closing_tasks.add(task)
+        task.add_done_callback(self._closed)
+        try:
+            await asyncio.shield(task)
+        except Exception:
+            pass  # Callback consumes failure; preserve the original exception.
+
+    def _closed(self, task: asyncio.Task[None]) -> None:
+        self._closing_tasks.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            logger.warning("Cartesia close failed")
+
+    async def _fail(self, ws: ClientConnection, error: TTSConnectionFailed) -> None:
+        if self._ws is ws:
+            self._ws = None
+            self._context_id = None
+            self._state = CartesiaStreamState.FAILED
+            self._turn_complete = False
+            self._completion_error = error
+        await self._close(ws)
+
+    async def _send(
+        self, message: CartesiaGenerationRequest | CartesiaCancelRequest
+    ) -> None:
+        ws = self._ws
+        if ws is None:
+            raise TTSConnectionFailed("Cartesia TTS is not connected.")
+        try:
+            await ws.send(message.model_dump_json(by_alias=True, exclude_none=True))
+        except asyncio.CancelledError:
+            await self._fail(ws, TTSConnectionFailed("Cartesia send cancelled."))
+            raise
+        except Exception:
+            error = TTSConnectionFailed("Cartesia send failed.")
+            await self._fail(ws, error)
+            raise error from None
 
     async def send_text(self, text: str) -> None:
-        if self._ws is None:
-            raise RuntimeError("Cartesia TTS is not connected")
-        self._turn_complete = False
-        await self._ws.send(json.dumps(self.request(text)))
+        async with self._lifecycle_lock:
+            if self._completion_error is not None:
+                raise self._completion_error
+            if self._ws is None:
+                raise TTSConnectionFailed("Cartesia TTS is not connected.")
+            if self._state is CartesiaStreamState.DRAINING:
+                raise TTSConnectionFailed("Cartesia previous turn is still draining.")
+            context_id = self._context_id or str(uuid4())
+            message = self.request(
+                text, context_id=context_id, continuation=CartesiaContinuation.CONTINUE
+            )
+            self._context_id = context_id
+            self._turn_complete = False
+            self._state = CartesiaStreamState.STREAMING
+            await self._send(message)
 
     async def flush(self) -> None:
-        """Force generation without ending the context.
-
-        Native, like ElevenLabs and unlike what the migration audit assumed
-        before the vendor docs were read. Cartesia answers with a `flush_id`
-        that maps audio back to the request that produced it.
-        """
-        if self._ws is None:
-            return
-        await self._ws.send(
-            json.dumps({"context_id": self._context_id, "flush": True})
-        )
+        """Eylo finalize means end-of-input, not Cartesia's nonterminal flush."""
+        async with self._lifecycle_lock:
+            if self._state is CartesiaStreamState.STREAMING and self._context_id:
+                message = self.request(
+                    "",
+                    context_id=self._context_id,
+                    continuation=CartesiaContinuation.FINALIZE,
+                )
+                self._state = CartesiaStreamState.DRAINING
+                await self._send(message)
 
     async def keepalive(self) -> None:
-        """No keepalive frame exists. Stated rather than faked.
-
-        Cartesia holds the socket open on its own; sending an empty transcript
-        would generate audio, which is worse than doing nothing.
-        """
-        return None
+        """Native WebSocket ping/pong owns keepalive; no synthetic speech input."""
 
     async def receive_audio(self) -> bytes | None:
-        if self._ws is None:
+        """Filter stale contexts before decoding or changing the active turn."""
+        ws = self._ws
+        if ws is None:
+            if self._completion_error is not None:
+                raise self._completion_error
             return None
-
-        import base64
-
-        raw = await self._ws.recv()
-        message = json.loads(raw) if isinstance(raw, (str, bytes)) else raw
-        kind = message.get("type")
-
-        if kind == "done":
-            self._turn_complete = True
+        try:
+            raw = await ws.recv()
+            if self._ws is not ws:
+                return None
+            # No await after consumption: a polling timeout must not discard a
+            # frame while waiting for a concurrent send's lifecycle lock.
+            envelope = parse_envelope(raw)
+            if (
+                envelope.context_id is not None
+                and envelope.context_id != self._context_id
+            ):
+                return None
+            output = parse_output(raw)
+            if isinstance(output, CartesiaErrorOutput):
+                raise CartesiaOutputError("Cartesia rejected speech synthesis.")
+            if isinstance(output, CartesiaDoneOutput):
+                self._context_id = None
+                self._turn_complete = True
+                self._state = CartesiaStreamState.READY
+            if isinstance(output, CartesiaAudioOutput):
+                return output.audio_bytes()
             return None
-        if kind == "error":
-            raise RuntimeError(f"Cartesia error: {message.get('error')}")
-        data = message.get("data")
-        return base64.b64decode(data) if data else None
+        except CartesiaOutputError as error:
+            await self._fail(ws, error)
+            raise
+        except Exception:
+            if self._ws is not ws:
+                return None
+            error = TTSConnectionFailed("Cartesia receive failed.")
+            await self._fail(ws, error)
+            raise error from None
+        # Cancelling recv is supported by websockets and used for polling. It
+        # does not close the socket, retire the context or fabricate completion.
 
     async def handle_interruption(self) -> None:
-        """End the context and start a new one.
-
-        `continue: false` closes the current utterance without dropping the
-        socket, so a new turn does not pay a reconnect — which is why this
-        differs from the ElevenLabs adapter, and why `native_interruption`
-        stays false for both: neither vendor cancels audio already sent.
-        """
-        if self._ws is not None:
-            await self._ws.send(json.dumps(self.request("", continue_=False)))
-        self._context_id = str(uuid.uuid4())
-        self._turn_complete = True
+        """Retire identity before sending cancel; discard any late vendor output."""
+        async with self._lifecycle_lock:
+            if not self.is_connected:
+                return
+            context_id, self._context_id = self._context_id, None
+            self._state = CartesiaStreamState.READY
+            self._turn_complete = True
+            if context_id is not None:
+                await self._send(CartesiaCancelRequest(context_id=context_id))

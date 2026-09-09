@@ -22,9 +22,16 @@ from uuid import UUID, uuid4, uuid5
 
 from pydantic import ValidationError
 from sqlalchemy import text as sql
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from eylo.common.contracts.embedding import EmbeddingSpace
+from eylo.common.contracts.embedding import (
+    DocumentEmbedder,
+    EmbeddingSpace,
+    QueryEmbedder,
+)
+from eylo.common.contracts.memory import MemoryTextCompleter
 from eylo.sockets.memory.base import MemoryVendorAdapter
 from eylo.sockets.memory.extraction import (
     EXTRACTION_SYSTEM_PROMPT,
@@ -40,11 +47,11 @@ from eylo.sockets.memory.schemas import (
     MemoryActor,
     MemoryCapabilities,
     MemoryChange,
-    MemoryError,
     MemoryEvent,
     MemoryExtractionAuthority,
     MemoryInputMessage,
     MemoryLevel,
+    MemoryMessageRole,
     MemoryOperation,
     MemoryOrigin,
     MemoryOutcomeCounts,
@@ -54,6 +61,9 @@ from eylo.sockets.memory.schemas import (
     MemoryUpdateResult,
     require_memory_fact,
     require_memory_query,
+)
+from eylo.sockets.memory.schemas import (
+    MemoryError as MemoryProviderError,
 )
 
 logger = logging.getLogger(__name__)
@@ -82,10 +92,10 @@ class PgVectorMemoryAdapter(MemoryVendorAdapter):
 
     def __init__(
         self,
-        session_factory,
-        document_embedder,
-        query_embedder,
-        completer,
+        session_factory: Callable[[], AsyncSession],
+        document_embedder: DocumentEmbedder,
+        query_embedder: QueryEmbedder,
+        completer: MemoryTextCompleter,
         embedding_space: EmbeddingSpace,
         *,
         memory_provider_config_id: UUID,
@@ -127,11 +137,13 @@ class PgVectorMemoryAdapter(MemoryVendorAdapter):
         document_vectors = await self._document_embedder([content])
         query_vector = await self._query_embedder(content)
         if len(document_vectors) != 1:
-            raise MemoryError("Memory verification embedding count is invalid.")
+            raise MemoryProviderError("Memory verification embedding count is invalid.")
         document_vector = document_vectors[0]
         dimensions = self._embedding_space.dimensions
         if len(document_vector) != dimensions or len(query_vector) != dimensions:
-            raise MemoryError("Memory verification embedding dimensions are invalid.")
+            raise MemoryProviderError(
+                "Memory verification embedding dimensions are invalid."
+            )
         await self._completer(
             system="Reply with the single word ready.",
             user="Memory verification contains no tenant data.",
@@ -163,7 +175,7 @@ class PgVectorMemoryAdapter(MemoryVendorAdapter):
                 or not math.isfinite(float(distance))
                 or table_count is None
             ):
-                raise MemoryError("Memory verification similarity is invalid.")
+                raise MemoryProviderError("Memory verification similarity is invalid.")
 
     # ---- the decision and atomic application flow -------------------
 
@@ -183,7 +195,7 @@ class PgVectorMemoryAdapter(MemoryVendorAdapter):
             origin is MemoryOrigin.AUTOMATIC_FORMATION
             and self._require_conversation_scope(scope) != source_conversation_id
         ):
-            raise MemoryError("Automatic memory formation changed its owner.")
+            raise MemoryProviderError("Automatic memory formation changed its owner.")
         if formation_job_id is not None:
             return await self._add_formation(
                 messages,
@@ -211,11 +223,11 @@ class PgVectorMemoryAdapter(MemoryVendorAdapter):
                 )
                 await session.commit()
                 return applied
-        except MemoryError:
+        except MemoryProviderError:
             raise
         except SQLAlchemyError as error:
             logger.info("Memory plan rolled back: %s", type(error).__name__)
-            raise MemoryError(
+            raise MemoryProviderError(
                 "Memory plan conflicted with current facts.",
                 vendor=PROVIDER,
                 retryable=True,
@@ -268,7 +280,7 @@ class PgVectorMemoryAdapter(MemoryVendorAdapter):
                     },
                 )
                 if job_state != "running":
-                    raise MemoryError(
+                    raise MemoryProviderError(
                         "Memory formation is no longer running.",
                         vendor=PROVIDER,
                     )
@@ -291,7 +303,7 @@ class PgVectorMemoryAdapter(MemoryVendorAdapter):
                     )
                 ).one_or_none()
                 if effect is None:
-                    raise MemoryError("Memory formation plan is unavailable.")
+                    raise MemoryProviderError("Memory formation plan is unavailable.")
                 if effect.finished_at is not None:
                     await self._guard_formation_commit()
                     return self._operations_from_outcomes(effect.outcomes)
@@ -347,13 +359,13 @@ class PgVectorMemoryAdapter(MemoryVendorAdapter):
                 )
                 await session.commit()
                 return applied
-        except MemoryError:
+        except MemoryProviderError:
             raise
         except Exception as error:
             if error is guard_error:
                 raise
             logger.info("Memory formation plan rolled back: %s", type(error).__name__)
-            raise MemoryError(
+            raise MemoryProviderError(
                 "Memory formation plan conflicted with current facts.",
                 vendor=PROVIDER,
                 retryable=True,
@@ -428,9 +440,11 @@ class PgVectorMemoryAdapter(MemoryVendorAdapter):
             scope.organization_id,
         )
         if stored is None:
-            raise MemoryError("Memory formation plan was not persisted.")
-        if result.rowcount not in {0, 1}:
-            raise MemoryError("Memory formation plan persistence was ambiguous.")
+            raise MemoryProviderError("Memory formation plan was not persisted.")
+        if not isinstance(result, CursorResult) or result.rowcount not in {0, 1}:
+            raise MemoryProviderError(
+                "Memory formation plan persistence was ambiguous."
+            )
         return stored
 
     async def _stored_formation_plan(
@@ -457,13 +471,15 @@ class PgVectorMemoryAdapter(MemoryVendorAdapter):
         if payload is None:
             return None
         if not isinstance(payload, list):
-            raise MemoryError("Stored memory formation plan is invalid.")
+            raise MemoryProviderError("Stored memory formation plan is invalid.")
         try:
             operations = [
                 MemoryOperation.model_validate(operation) for operation in payload
             ]
         except (TypeError, ValidationError):
-            raise MemoryError("Stored memory formation plan is invalid.") from None
+            raise MemoryProviderError(
+                "Stored memory formation plan is invalid."
+            ) from None
         self._validate_plan(operations)
         return operations
 
@@ -497,7 +513,7 @@ class PgVectorMemoryAdapter(MemoryVendorAdapter):
     @staticmethod
     def _operations_from_outcomes(payload: Any) -> list[MemoryOperation]:
         if not isinstance(payload, dict) or set(payload) != {"operations", "counts"}:
-            raise MemoryError("Stored memory formation outcomes are invalid.")
+            raise MemoryProviderError("Stored memory formation outcomes are invalid.")
         try:
             operations = [
                 MemoryOperation.model_validate(operation)
@@ -505,9 +521,13 @@ class PgVectorMemoryAdapter(MemoryVendorAdapter):
             ]
             counts = MemoryOutcomeCounts.model_validate(payload["counts"])
         except (TypeError, ValidationError):
-            raise MemoryError("Stored memory formation outcomes are invalid.") from None
+            raise MemoryProviderError(
+                "Stored memory formation outcomes are invalid."
+            ) from None
         if counts != MemoryOutcomeCounts.from_operations(operations):
-            raise MemoryError("Stored memory formation counts are inconsistent.")
+            raise MemoryProviderError(
+                "Stored memory formation counts are inconsistent."
+            )
         return operations
 
     async def _operation_vectors(
@@ -525,13 +545,13 @@ class PgVectorMemoryAdapter(MemoryVendorAdapter):
             [content for _, content in indexed_content]
         )
         if len(vectors) != len(indexed_content):
-            raise MemoryError(
+            raise MemoryProviderError(
                 "Embedder returned an invalid memory vector count.",
                 vendor=PROVIDER,
             )
         dimensions = self._embedding_space.dimensions
         if any(len(vector) != dimensions for vector in vectors):
-            raise MemoryError(
+            raise MemoryProviderError(
                 "Embedder returned invalid memory vector dimensions.",
                 vendor=PROVIDER,
             )
@@ -585,7 +605,7 @@ class PgVectorMemoryAdapter(MemoryVendorAdapter):
             )
             targets = {row.id: row for row in rows}
             if set(targets) != set(target_ids):
-                raise MemoryError(
+                raise MemoryProviderError(
                     "Memory plan target changed before commit.",
                     vendor=PROVIDER,
                     retryable=True,
@@ -649,7 +669,9 @@ class PgVectorMemoryAdapter(MemoryVendorAdapter):
                     if duplicate.expired:
                         vector = vectors.get(index)
                         if vector is None:
-                            raise MemoryError("Memory reactivation has no embedding.")
+                            raise MemoryProviderError(
+                                "Memory reactivation has no embedding."
+                            )
                         committed = await self._reactivate(
                             session,
                             operation=operation,
@@ -684,7 +706,7 @@ class PgVectorMemoryAdapter(MemoryVendorAdapter):
                     continue
                 vector = vectors.get(index)
                 if vector is None:
-                    raise MemoryError("Memory ADD has no embedding.")
+                    raise MemoryProviderError("Memory ADD has no embedding.")
                 memory_id = (
                     uuid5(formation_job_id, f"operation:{index}")
                     if formation_job_id is not None
@@ -758,6 +780,8 @@ class PgVectorMemoryAdapter(MemoryVendorAdapter):
                 applied.append(operation.model_copy(update={"target_id": memory_id}))
                 continue
 
+            if operation.target_id is None:
+                raise MemoryProviderError("Memory operation plan omitted a target.")
             target = targets[operation.target_id]
             if operation.event is MemoryEvent.UPDATE:
                 content_hash = _digest(operation.content)
@@ -774,13 +798,13 @@ class PgVectorMemoryAdapter(MemoryVendorAdapter):
                     continue
                 duplicate = existing_by_hash.get(content_hash)
                 if duplicate is not None and duplicate.id != target.id:
-                    raise MemoryError(
+                    raise MemoryProviderError(
                         "Memory update would duplicate another fact.",
                         vendor=PROVIDER,
                     )
                 vector = vectors.get(index)
                 if vector is None:
-                    raise MemoryError("Memory UPDATE has no embedding.")
+                    raise MemoryProviderError("Memory UPDATE has no embedding.")
                 result = await session.execute(
                     sql(
                         f"""
@@ -812,7 +836,7 @@ class PgVectorMemoryAdapter(MemoryVendorAdapter):
                     },
                 )
                 if result.rowcount != 1:
-                    raise MemoryError(
+                    raise MemoryProviderError(
                         "Memory update lost its state revision.",
                         retryable=True,
                     )
@@ -861,7 +885,7 @@ class PgVectorMemoryAdapter(MemoryVendorAdapter):
                 },
             )
             if result.rowcount != 1:
-                raise MemoryError(
+                raise MemoryProviderError(
                     "Memory delete lost its state revision.",
                     retryable=True,
                 )
@@ -933,7 +957,7 @@ class PgVectorMemoryAdapter(MemoryVendorAdapter):
             },
         )
         if result.rowcount != 1:
-            raise MemoryError(
+            raise MemoryProviderError(
                 "Memory reactivation lost its state revision.",
                 retryable=True,
             )
@@ -954,39 +978,45 @@ class PgVectorMemoryAdapter(MemoryVendorAdapter):
     @staticmethod
     def _validate_plan(operations: list[MemoryOperation]) -> None:
         if len(operations) > MEMORY_MAX_OPERATIONS:
-            raise MemoryError("Memory operation plan exceeds its limit.")
+            raise MemoryProviderError("Memory operation plan exceeds its limit.")
         targets: set[UUID] = set()
         proposed_hashes: set[str] = set()
         for operation in operations:
             if operation.event in {MemoryEvent.ADD, MemoryEvent.UPDATE}:
                 if require_memory_fact(operation.content) != operation.content:
-                    raise MemoryError(
+                    raise MemoryProviderError(
                         "Memory operation fact is not canonically normalized."
                     )
                 content_hash = _digest(operation.content)
                 if content_hash in proposed_hashes:
-                    raise MemoryError("Memory operation plan repeats fact content.")
+                    raise MemoryProviderError(
+                        "Memory operation plan repeats fact content."
+                    )
                 proposed_hashes.add(content_hash)
             if operation.event in {MemoryEvent.UPDATE, MemoryEvent.DELETE}:
                 if operation.target_id is None:
-                    raise MemoryError("Memory operation plan omitted a target.")
+                    raise MemoryProviderError("Memory operation plan omitted a target.")
                 if operation.target_id in targets:
-                    raise MemoryError("Memory operation plan repeats a target.")
+                    raise MemoryProviderError("Memory operation plan repeats a target.")
                 targets.add(operation.target_id)
             elif operation.event is MemoryEvent.ADD and operation.target_id is not None:
-                raise MemoryError("Memory ADD operation has an unexpected target.")
+                raise MemoryProviderError(
+                    "Memory ADD operation has an unexpected target."
+                )
             if (
                 operation.event is not MemoryEvent.NOOP
                 and not operation.source_messages
             ):
-                raise MemoryError("Memory operation plan omitted source evidence.")
+                raise MemoryProviderError(
+                    "Memory operation plan omitted source evidence."
+                )
 
     @staticmethod
     def _related_query(messages: list[MemoryInputMessage]) -> str:
         if not messages:
-            raise MemoryError("Memory exchange is empty.")
+            raise MemoryProviderError("Memory exchange is empty.")
         for message in reversed(messages):
-            if message.role.value == "user":
+            if message.role is MemoryMessageRole.USER:
                 return require_memory_query(message.content)
         return require_memory_query(messages[-1].content)
 
@@ -1004,7 +1034,7 @@ class PgVectorMemoryAdapter(MemoryVendorAdapter):
 
         vector = await self._query_embedder(normalized_query)
         if len(vector) != self._embedding_space.dimensions:
-            raise MemoryError("Memory query embedding dimensions are invalid.")
+            raise MemoryProviderError("Memory query embedding dimensions are invalid.")
 
         clauses, params = self._scopes_sql(scopes)
         params.update(
@@ -1097,7 +1127,7 @@ class PgVectorMemoryAdapter(MemoryVendorAdapter):
     @staticmethod
     def _validate_result_limit(limit: int) -> None:
         if isinstance(limit, bool) or not 1 <= limit <= MEMORY_MAX_SEARCH_RESULTS:
-            raise MemoryError("Memory result limit is outside its bounds.")
+            raise MemoryProviderError("Memory result limit is outside its bounds.")
 
     # ---- correction and erasure --------------------------------------
 
@@ -1116,7 +1146,7 @@ class PgVectorMemoryAdapter(MemoryVendorAdapter):
         async with self._session_factory() as session:
             current = await self._locked_memory(session, memory_id, scope)
             if current is None:
-                raise MemoryError("That memory is gone.", vendor=PROVIDER)
+                raise MemoryProviderError("That memory is gone.", vendor=PROVIDER)
             if current.content_hash == content_hash:
                 memory = self._memory_of(current)
                 await session.rollback()
@@ -1125,11 +1155,11 @@ class PgVectorMemoryAdapter(MemoryVendorAdapter):
 
         vectors = await self._document_embedder([normalized])
         if len(vectors) != 1 or len(vectors[0]) != self._embedding_space.dimensions:
-            raise MemoryError("Memory correction embedding is invalid.")
+            raise MemoryProviderError("Memory correction embedding is invalid.")
         async with self._session_factory() as session:
             current = await self._locked_memory(session, memory_id, scope)
             if current is None:
-                raise MemoryError("That memory is gone.", vendor=PROVIDER)
+                raise MemoryProviderError("That memory is gone.", vendor=PROVIDER)
             if current.content_hash == content_hash:
                 memory = self._memory_of(current)
                 await session.rollback()
@@ -1156,7 +1186,7 @@ class PgVectorMemoryAdapter(MemoryVendorAdapter):
                 },
             )
             if duplicate is not None:
-                raise MemoryError("Memory correction duplicates another fact.")
+                raise MemoryProviderError("Memory correction duplicates another fact.")
             row = (
                 await session.execute(
                     sql(
@@ -1197,7 +1227,7 @@ class PgVectorMemoryAdapter(MemoryVendorAdapter):
                 )
             ).one_or_none()
             if row is None:
-                raise MemoryError(
+                raise MemoryProviderError(
                     "Memory correction lost its state revision.",
                     retryable=True,
                 )
@@ -1262,8 +1292,8 @@ class PgVectorMemoryAdapter(MemoryVendorAdapter):
                     "embedding_space_id": self._embedding_space.id,
                 },
             )
-            if result.rowcount != 1:
-                raise MemoryError(
+            if not isinstance(result, CursorResult) or result.rowcount != 1:
+                raise MemoryProviderError(
                     "Memory expiry lost its state revision.",
                     retryable=True,
                 )
@@ -1315,8 +1345,8 @@ class PgVectorMemoryAdapter(MemoryVendorAdapter):
                     "embedding_space_id": self._embedding_space.id,
                 },
             )
-            if result.rowcount != 1:
-                raise MemoryError(
+            if not isinstance(result, CursorResult) or result.rowcount != 1:
+                raise MemoryProviderError(
                     "Memory deletion lost its state revision.",
                     retryable=True,
                 )
@@ -1452,9 +1482,7 @@ class PgVectorMemoryAdapter(MemoryVendorAdapter):
                     "formation_job_id": formation_job_id,
                     "formation_operation_index": formation_operation_index,
                     "reconciliation_job_id": provenance.reconciliation_job_id,
-                    "reconciliation_operation_index": (
-                        reconciliation_operation_index
-                    ),
+                    "reconciliation_operation_index": (reconciliation_operation_index),
                 },
             )
         ).one()
@@ -1570,7 +1598,9 @@ class PgVectorMemoryAdapter(MemoryVendorAdapter):
     ):
         await self._lock_active_embedding_space(session)
         scope_clause, scope_params = self._scope_sql(scope)
-        expiry_clause = "" if include_expired else "AND (expires_at IS NULL OR expires_at > now())"
+        expiry_clause = (
+            "" if include_expired else "AND (expires_at IS NULL OR expires_at > now())"
+        )
         return (
             await session.execute(
                 sql(
@@ -1616,12 +1646,12 @@ class PgVectorMemoryAdapter(MemoryVendorAdapter):
             },
         )
         if active_space_id is None:
-            raise MemoryError(
+            raise MemoryProviderError(
                 "Memory embedding index is unavailable.",
                 vendor=PROVIDER,
             )
         if active_space_id != self._embedding_space.id:
-            raise MemoryError(
+            raise MemoryProviderError(
                 "Memory embedding index changed; resolve a fresh adapter.",
                 vendor=PROVIDER,
                 retryable=True,
@@ -1685,14 +1715,14 @@ class PgVectorMemoryAdapter(MemoryVendorAdapter):
         scopes: tuple[MemoryScope, ...],
     ) -> tuple[str, dict[str, object]]:
         if not scopes or len(scopes) > len(MemoryLevel):
-            raise MemoryError("Memory recall scope set is invalid.")
+            raise MemoryProviderError("Memory recall scope set is invalid.")
         organization_id = scopes[0].organization_id
         if any(scope.organization_id != organization_id for scope in scopes):
-            raise MemoryError("Memory recall scopes cross organizations.")
+            raise MemoryProviderError("Memory recall scopes cross organizations.")
         if len(set(scopes)) != len(scopes):
-            raise MemoryError("Memory recall scopes repeat an owner.")
+            raise MemoryProviderError("Memory recall scopes repeat an owner.")
 
-        predicates = []
+        predicates: list[str] = []
         params: dict[str, object] = {"organization_id": organization_id}
         for index, scope in enumerate(scopes):
             level_key = f"scope_level_{index}"
@@ -1705,9 +1735,7 @@ class PgVectorMemoryAdapter(MemoryVendorAdapter):
             params[level_key] = scope.level.value
             params[owner_key] = scope.owner_id
         return (
-            "organization_id = :organization_id AND ("
-            + " OR ".join(predicates)
-            + ")",
+            "organization_id = :organization_id AND (" + " OR ".join(predicates) + ")",
             params,
         )
 
@@ -1740,7 +1768,9 @@ class PgVectorMemoryAdapter(MemoryVendorAdapter):
             MemoryLevel.CONVERSATION: row.conversation_id,
         }[level]
         if owner_id is None:
-            raise MemoryError("Stored memory scope is incomplete.", vendor=PROVIDER)
+            raise MemoryProviderError(
+                "Stored memory scope is incomplete.", vendor=PROVIDER
+            )
         return MemoryScope(
             organization_id=row.organization_id,
             level=level,
@@ -1761,7 +1791,7 @@ class PgVectorMemoryAdapter(MemoryVendorAdapter):
     @staticmethod
     def _require_conversation_scope(scope: MemoryScope) -> UUID:
         if scope.level is not MemoryLevel.CONVERSATION:
-            raise MemoryError("Durable formation requires Conversation memory.")
+            raise MemoryProviderError("Durable formation requires Conversation memory.")
         return scope.owner_id
 
     def _provenance(

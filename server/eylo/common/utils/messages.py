@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Dict, List
 from uuid import UUID
 
-from eylo.modules.conversations.schemas.messages import MessageInDb
+from eylo.common.contracts.messages import MessageInDb
 
 
 def group_messages_by_request_id(

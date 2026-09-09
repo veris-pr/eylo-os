@@ -8,8 +8,6 @@ Features: Speaker diarization, custom vocabularies, interim results
 """
 
 from .stt import (
-    SpeechmaticsLanguages,
-    SpeechmaticsModels,
     SpeechmaticsSTT,
     SpeechmaticsSTTStream,
 )
@@ -17,6 +15,4 @@ from .stt import (
 __all__ = [
     "SpeechmaticsSTT",
     "SpeechmaticsSTTStream",
-    "SpeechmaticsModels",
-    "SpeechmaticsLanguages",
 ]

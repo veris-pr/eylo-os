@@ -1,24 +1,21 @@
 """Shared utilities for OpenAI vendor adapters.
 
-Contains functions that are identical between the Chat Completions adapter
-(openai.py), the Responses API adapter (openai_responses.py), and the
-Realtime API adapter (realtime/vendors/openai_realtime.py). All three APIs
-share the same client, strict-mode schema requirements, and tool content
-serialization.
+Chat Completions, Responses, and realtime share function-schema projection.
+Only the HTTP adapters use the client helper; realtime owns its WebSocket.
+Tool-result serialization lives in the vendor-neutral llm/tool_content.py module.
 """
 
 import logging
-from typing import Any, Dict
+from collections.abc import Sequence
 
 from openai import AsyncOpenAI
+from openai.types.shared_params import FunctionDefinition
+from pydantic import JsonValue, TypeAdapter
 
 from eylo.common.contracts.tool_platform import PlatformTool
 from eylo.common.contracts.tool_record import ToolRecord
-from eylo.common.utils.toon_serde import toon_encode
 
 logger = logging.getLogger(__name__)
-
-# ── Client ────────────────────────────────────────────────────────
 
 
 def create_openai_client(api_key: str) -> AsyncOpenAI:
@@ -26,63 +23,71 @@ def create_openai_client(api_key: str) -> AsyncOpenAI:
     return AsyncOpenAI(api_key=api_key)
 
 
-# ── Strict-mode schema helpers ────────────────────────────────────
+_SCHEMA = TypeAdapter(dict[str, JsonValue])
+_SCHEMA_MAP_KEYWORDS = frozenset(
+    {"properties", "$defs", "definitions", "patternProperties", "dependentSchemas"}
+)
+_SCHEMA_LIST_KEYWORDS = frozenset({"anyOf", "oneOf", "allOf", "prefixItems"})
+_SCHEMA_SINGLE_KEYWORDS = frozenset(
+    {
+        "items",
+        "additionalProperties",
+        "contains",
+        "not",
+        "if",
+        "then",
+        "else",
+        "propertyNames",
+        "unevaluatedProperties",
+        "unevaluatedItems",
+    }
+)
 
 
-def ensure_strict_mode_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
-    """Ensure a JSON schema is compatible with OpenAI's strict mode."""
-    schema = schema.copy()
-
-    if schema.get("type") == "object":
-        schema["additionalProperties"] = False
-
-        properties = schema.get("properties")
+def ensure_strict_mode_schema(schema: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    """Close every object schema without mutating input or rewriting annotation data."""
+    result: dict[str, JsonValue] = {}
+    for key, value in schema.items():
+        if key in _SCHEMA_MAP_KEYWORDS and isinstance(value, dict):
+            result[key] = {
+                name: ensure_strict_mode_schema(child)
+                if isinstance(child, dict)
+                else child
+                for name, child in value.items()
+            }
+        elif key in _SCHEMA_LIST_KEYWORDS and isinstance(value, list):
+            result[key] = [
+                ensure_strict_mode_schema(child) if isinstance(child, dict) else child
+                for child in value
+            ]
+        elif key in _SCHEMA_SINGLE_KEYWORDS and isinstance(value, dict):
+            result[key] = ensure_strict_mode_schema(value)
+        else:
+            result[key] = value
+    schema_type = result.get("type")
+    if schema_type == "object" or (
+        isinstance(schema_type, list) and "object" in schema_type
+    ):
+        result["additionalProperties"] = False
+        properties = result.get("properties")
         if not isinstance(properties, dict):
-            # Ensure ``properties`` always exists for object schemas.
-            # Vendors like Groq reject schemas that have ``required``
-            # without ``properties``.
             properties = {}
-            schema["properties"] = properties
-
-        for prop_name, prop_schema in properties.items():
-            if isinstance(prop_schema, dict):
-                properties[prop_name] = ensure_strict_mode_schema(prop_schema)
-
-        # OpenAI strict mode: every property must be in ``required``.
-        # Optional fields use null type (already handled by Pydantic's
-        # anyOf generation) rather than being absent from ``required``.
-        schema["required"] = list(properties.keys())
-
-    elif schema.get("type") == "array":
-        if "items" in schema and isinstance(schema["items"], dict):
-            schema["items"] = ensure_strict_mode_schema(schema["items"])
-
-    return schema
+            result["properties"] = properties
+        # OpenAI requires all properties. Preserve declared nullable unions/types;
+        # do not invent nullability for non-nullable platform inputs.
+        result["required"] = list(properties)
+    return result
 
 
 def extract_openai_function_declarations(
-    tools: list[ToolRecord],
-) -> list[Dict[str, Any]]:
-    """Extract OpenAI-compatible function declarations from platform tools.
+    tools: Sequence[ToolRecord],
+) -> list[FunctionDefinition]:
+    """Project tool schemas without modifying the canonical platform definitions.
 
-    Iterates *tools*, extracts name / description / strict-mode parameters
-    from each ``ToolRecord.llm_config`` (``PlatformTool``), and applies
-    ``ensure_strict_mode_schema`` to enforce additionalProperties: false
-    at all levels.
-
-    Args:
-        tools: Platform tools with populated ``llm_config``.
-
-    Returns:
-        List of ``{"name", "description", "parameters"}`` dicts ready to
-        be wrapped in the caller's API-specific format:
-
-        - Chat Completions: ``{"type": "function", "function": {**d, "strict": True}}``
-        - Responses API: ``{"type": "function", **d, "strict": True}``
-        - Realtime API: ``{"type": "function", **d}``
-
+    Callers own their API-specific wrapper and strict flag. Unconfigured or
+    malformed tools retain the existing skip-and-log behavior; logs omit inputs.
     """
-    declarations: list[Dict[str, Any]] = []
+    declarations: list[FunctionDefinition] = []
 
     for tool in tools:
         try:
@@ -100,13 +105,16 @@ def extract_openai_function_declarations(
                 continue
 
             input_schema = ensure_strict_mode_schema(
-                platform_tool.input_schema.to_json_schema()
+                _SCHEMA.validate_python(
+                    platform_tool.input_schema.to_json_schema(), strict=True
+                )
             )
+            parameters: dict[str, object] = dict(input_schema)
             declarations.append(
                 {
                     "name": platform_tool.name,
                     "description": platform_tool.description,
-                    "parameters": input_schema,
+                    "parameters": parameters,
                 }
             )
         except Exception as error:
@@ -118,22 +126,3 @@ def extract_openai_function_declarations(
             continue
 
     return declarations
-
-
-# ── Tool content serialization ────────────────────────────────────
-
-
-def serialize_tool_content(content: Any) -> str:
-    """Serialize tool execution content to a string.
-
-    Both Chat Completions and Responses API expect tool output as strings.
-    """
-    if isinstance(content, str):
-        return content
-    elif isinstance(content, (dict, list)):
-        return toon_encode(content)
-    else:
-        return str(content)
-
-
-# ── Platform-side response accessors ──────────────────────────────

@@ -16,7 +16,7 @@ from eylo.modules.provider_configs.repository import ProviderConfigRepository
 class ProviderConfigService:
     """Provider-config lifecycle use cases within one caller-owned transaction."""
 
-    def __init__(self, repository: ProviderConfigRepository):
+    def __init__(self, repository: ProviderConfigRepository) -> None:
         self._repository = repository
 
     async def create(

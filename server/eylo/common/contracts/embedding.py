@@ -14,10 +14,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Awaitable, Callable
 from enum import StrEnum
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
+
+type DocumentEmbedder = Callable[[list[str]], Awaitable[list[list[float]]]]
+type QueryEmbedder = Callable[[str], Awaitable[list[float]]]
 
 
 class EmbeddingInput(StrEnum):
@@ -137,9 +141,7 @@ def _embedding_space_from_record(record, *, prefix: str) -> EmbeddingSpace | Non
     space = EmbeddingSpace(
         organization_id=record.organization_id,
         provider_config_id=config_id,
-        provider_config_revision=getattr(
-            record, f"{prefix}_provider_config_revision"
-        ),
+        provider_config_revision=getattr(record, f"{prefix}_provider_config_revision"),
         provider=getattr(record, f"{prefix}_provider"),
         endpoint=getattr(record, f"{prefix}_endpoint"),
         model=getattr(record, f"{prefix}_model"),

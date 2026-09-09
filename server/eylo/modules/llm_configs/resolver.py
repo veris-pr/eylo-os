@@ -21,7 +21,7 @@ _CONFIGURE_VIA = "/api/llm-configs"
 class LLMConfigResolver:
     """Resolve one explicitly selected, ready LLM config revision."""
 
-    def __init__(self, configs: LLMConfigService):
+    def __init__(self, configs: LLMConfigService) -> None:
         self._configs = configs
 
     async def resolve_llm(

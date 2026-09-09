@@ -1,9 +1,11 @@
 """Provider policies and immutable runtime values for LLM configuration."""
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field, replace
 from types import MappingProxyType
+from typing import Protocol, Self
 from uuid import UUID
+
+from pydantic import Field, field_validator, model_validator
 
 from eylo.common.contracts.llm_catalog import (
     LLMModels,
@@ -13,6 +15,9 @@ from eylo.common.contracts.llm_catalog import (
 from eylo.common.contracts.llm_runtime import (
     InvalidLLMConfig,
     LLMConfigError,
+    LLMConfigValue,
+    LLMGenerationConfig,
+    LLMGenerationParameters,
 )
 from eylo.modules.provider_configs.masking import MASKED_SECRET_VALUE
 
@@ -23,6 +28,7 @@ __all__ = [
     "LLMOverrides",
     "LLMProviderConfig",
     "ResolvedLLM",
+    "ResolvePinnedLLM",
 ]
 
 _COMMON_CONFIG_FIELDS = frozenset(
@@ -67,38 +73,8 @@ _BEDROCK_STORED_SECRET_FIELDS = frozenset(
 )
 
 
-@dataclass(frozen=True)
-class LLMGenerationSettings:
-    model: LLMModels
-    max_tokens: int | None = None
-    top_k: int | None = None
-    top_p: float | None = None
-    temperature: float | None = None
-    stop_sequences: tuple[str, ...] | None = None
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "model", _required_model(self.model))
-        object.__setattr__(
-            self,
-            "max_tokens",
-            _optional_positive_int(self.max_tokens, "max_tokens"),
-        )
-        object.__setattr__(self, "top_k", _optional_positive_int(self.top_k, "top_k"))
-        object.__setattr__(
-            self,
-            "top_p",
-            _optional_bounded_float(self.top_p, "top_p", 0.0, 1.0),
-        )
-        object.__setattr__(
-            self,
-            "temperature",
-            _optional_bounded_float(self.temperature, "temperature", 0.0, 2.0),
-        )
-        object.__setattr__(
-            self,
-            "stop_sequences",
-            _optional_stop_sequences(self.stop_sequences),
-        )
+class LLMGenerationSettings(LLMGenerationConfig):
+    """Generation values with provider-specific override and storage policy."""
 
     def apply(
         self,
@@ -106,36 +82,34 @@ class LLMGenerationSettings:
         provider: LLMProviders,
         overrides: "LLMOverrides",
     ) -> "LLMGenerationSettings":
+        current = LLMGenerationSettings.model_validate(self)
+        overrides = LLMOverrides.model_validate(overrides)
         allowed = _allowed_generation_fields(provider)
-        effective = replace(
-            self,
-            model=self.model if overrides.model is None else overrides.model,
+        effective = LLMGenerationSettings(
+            model=current.model if overrides.model is None else overrides.model,
             max_tokens=(
-                self.max_tokens
+                current.max_tokens
                 if overrides.max_tokens is None or "max_tokens" not in allowed
                 else overrides.max_tokens
             ),
             top_k=(
-                self.top_k
+                current.top_k
                 if overrides.top_k is None or "top_k" not in allowed
                 else overrides.top_k
             ),
             top_p=(
-                self.top_p
+                current.top_p
                 if overrides.top_p is None or "top_p" not in allowed
                 else overrides.top_p
             ),
             temperature=(
-                self.temperature
+                current.temperature
                 if overrides.temperature is None or "temperature" not in allowed
                 else overrides.temperature
             ),
             stop_sequences=(
-                self.stop_sequences
-                if (
-                    overrides.stop_sequences is None
-                    or "stop_sequences" not in allowed
-                )
+                current.stop_sequences
+                if (overrides.stop_sequences is None or "stop_sequences" not in allowed)
                 else overrides.stop_sequences
             ),
         )
@@ -157,38 +131,15 @@ class LLMGenerationSettings:
         return values
 
 
-@dataclass(frozen=True)
-class LLMOverrides:
-    model: LLMModels | None = None
-    max_tokens: int | None = None
-    top_k: int | None = None
-    top_p: float | None = None
-    temperature: float | None = None
-    stop_sequences: tuple[str, ...] | None = None
+class LLMOverrides(LLMGenerationParameters):
+    """Optional per-run settings; an omitted value preserves stored config."""
 
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "model", _optional_model(self.model))
-        object.__setattr__(
-            self,
-            "max_tokens",
-            _optional_positive_int(self.max_tokens, "max_tokens"),
-        )
-        object.__setattr__(self, "top_k", _optional_positive_int(self.top_k, "top_k"))
-        object.__setattr__(
-            self,
-            "top_p",
-            _optional_bounded_float(self.top_p, "top_p", 0.0, 1.0),
-        )
-        object.__setattr__(
-            self,
-            "temperature",
-            _optional_bounded_float(self.temperature, "temperature", 0.0, 2.0),
-        )
-        object.__setattr__(
-            self,
-            "stop_sequences",
-            _optional_stop_sequences(self.stop_sequences),
-        )
+    model: LLMModels | None = None
+
+    @field_validator("model", mode="before")
+    @classmethod
+    def _validate_model(cls, value: object) -> LLMModels | None:
+        return _optional_model(value)
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, object] | None) -> "LLMOverrides":
@@ -196,16 +147,7 @@ class LLMOverrides:
             return cls()
         data = _validate_mapping(values, name="Overrides")
         _reject_unknown_fields(data, allowed=_COMMON_CONFIG_FIELDS, name="override")
-        return cls(
-            model=_optional_model(data.get("model")),
-            max_tokens=_optional_positive_int(data.get("max_tokens"), "max_tokens"),
-            top_k=_optional_positive_int(data.get("top_k"), "top_k"),
-            top_p=_optional_bounded_float(data.get("top_p"), "top_p", 0.0, 1.0),
-            temperature=_optional_bounded_float(
-                data.get("temperature"), "temperature", 0.0, 2.0
-            ),
-            stop_sequences=_optional_stop_sequences(data.get("stop_sequences")),
-        )
+        return cls.model_validate(data)
 
     def to_storage(self) -> dict[str, object]:
         values: dict[str, object] = {}
@@ -224,34 +166,42 @@ class LLMOverrides:
         return values
 
 
-@dataclass(frozen=True)
-class LLMProviderConfig:
+class LLMProviderConfig(LLMConfigValue):
+    """Provider-validated values; credentials are read-only and never dumped."""
+
     provider: LLMProviders
     generation: LLMGenerationSettings
-    secrets: Mapping[str, str] = field(repr=False, compare=False)
+    secrets: Mapping[str, str] = Field(repr=False, exclude=True)
     region: str | None = None
 
-    def __post_init__(self) -> None:
-        provider = _normalize_provider(self.provider)
-        secrets = _validate_secrets(self.secrets)
-        _ensure_supported_model(provider, self.generation.model)
-        object.__setattr__(self, "provider", provider)
+    @field_validator("provider", mode="before")
+    @classmethod
+    def _validate_provider(cls, value: object) -> LLMProviders:
+        return _normalize_provider(value)
 
-        if provider is LLMProviders.BEDROCK:
+    @field_validator("secrets", mode="before")
+    @classmethod
+    def _validate_secret_values(cls, value: object) -> dict[str, str]:
+        return _validate_secrets(value)
+
+    @model_validator(mode="after")
+    def _validate_provider_policy(self) -> Self:
+        _ensure_supported_model(self.provider, self.generation.model)
+        if self.provider is LLMProviders.BEDROCK:
             region = _required_non_empty_string(self.region, "region")
-            _validate_bedrock_secrets(secrets)
+            _validate_bedrock_secrets(self.secrets)
             object.__setattr__(self, "region", region)
         else:
-            if provider not in _API_KEY_PROVIDERS:
+            if self.provider not in _API_KEY_PROVIDERS:
                 raise InvalidLLMConfig("LLM provider is not supported.")
             if self.region is not None:
                 raise InvalidLLMConfig("Region is only valid for Bedrock.")
-            _validate_api_key_secrets(secrets)
-
-        object.__setattr__(self, "secrets", MappingProxyType(secrets))
+            _validate_api_key_secrets(self.secrets)
+        object.__setattr__(self, "secrets", MappingProxyType(dict(self.secrets)))
+        return self
 
     @classmethod
-    def validate(
+    def from_storage(
         cls,
         *,
         provider: LLMProviders | str,
@@ -296,47 +246,16 @@ class LLMProviderConfig:
         return values
 
 
-@dataclass(frozen=True)
-class ResolvedLLM:
+class ResolvedLLM(LLMProviderConfig):
+    """Detached provider material and explicit revision/authority for one run."""
+
     provider_config_id: UUID
-    provider_config_revision: int
+    provider_config_revision: int = Field(ge=1)
     organization_id: UUID
-    provider: LLMProviders
-    generation: LLMGenerationSettings
-    secrets: Mapping[str, str] = field(repr=False, compare=False)
     configured: bool
     verified: bool
     ready: bool
     granted: bool
-    region: str | None = None
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.provider_config_id, UUID) or not isinstance(
-            self.organization_id, UUID
-        ):
-            raise InvalidLLMConfig("Resolved LLM identifiers must be UUIDs.")
-        if (
-            isinstance(self.provider_config_revision, bool)
-            or not isinstance(self.provider_config_revision, int)
-            or self.provider_config_revision < 1
-        ):
-            raise InvalidLLMConfig(
-                "Resolved LLM config revision must be a positive integer."
-            )
-        if not all(
-            isinstance(value, bool)
-            for value in (self.configured, self.verified, self.ready, self.granted)
-        ):
-            raise InvalidLLMConfig("Resolved LLM authority flags must be booleans.")
-        validated = LLMProviderConfig(
-            provider=self.provider,
-            generation=self.generation,
-            secrets=self.secrets,
-            region=self.region,
-        )
-        object.__setattr__(self, "provider", validated.provider)
-        object.__setattr__(self, "secrets", validated.secrets)
-        object.__setattr__(self, "region", validated.region)
 
     @classmethod
     def from_provider_config(
@@ -352,6 +271,7 @@ class ResolvedLLM:
         granted: bool,
         overrides: LLMOverrides | None = None,
     ) -> "ResolvedLLM":
+        provider_config = LLMProviderConfig.model_validate(provider_config)
         effective_generation = provider_config.generation.apply(
             provider=provider_config.provider,
             overrides=overrides or LLMOverrides(),
@@ -374,15 +294,28 @@ class ResolvedLLM:
         return self.secrets.get(name)
 
 
-def _normalize_provider(value: LLMProviders | str) -> LLMProviders:
+class ResolvePinnedLLM(Protocol):
+    """Resolve pinned authority into detached values without retaining a session."""
+
+    async def __call__(
+        self,
+        organization_id: UUID,
+        *,
+        provider_config_id: UUID,
+        revision: int,
+        overrides: LLMOverrides | None = None,
+    ) -> ResolvedLLM: ...
+
+
+def _normalize_provider(value: object) -> LLMProviders:
     if isinstance(value, LLMProviders):
         return value
     if not isinstance(value, str):
         raise InvalidLLMConfig("LLM provider is not supported.")
     try:
         return LLMProviders(value.strip().upper())
-    except ValueError as error:
-        raise InvalidLLMConfig("LLM provider is not supported.") from error
+    except ValueError:
+        raise InvalidLLMConfig("LLM provider is not supported.") from None
 
 
 def _generation_settings(
@@ -393,22 +326,12 @@ def _generation_settings(
         raise InvalidLLMConfig("Config is missing required field: model.")
     model = _required_model(values["model"])
     _ensure_supported_model(provider, model)
-    max_tokens = _optional_positive_int(values.get("max_tokens"), "max_tokens")
-    if (
-        provider in _REQUIRED_MAX_TOKENS_PROVIDERS
-        and max_tokens is None
-    ):
-        raise InvalidLLMConfig("Config is missing required field: max_tokens.")
-    return LLMGenerationSettings(
-        model=model,
-        max_tokens=max_tokens,
-        top_k=_optional_positive_int(values.get("top_k"), "top_k"),
-        top_p=_optional_bounded_float(values.get("top_p"), "top_p", 0.0, 1.0),
-        temperature=_optional_bounded_float(
-            values.get("temperature"), "temperature", 0.0, 2.0
-        ),
-        stop_sequences=_optional_stop_sequences(values.get("stop_sequences")),
+    generation = LLMGenerationSettings.model_validate(
+        {key: value for key, value in values.items() if key in _COMMON_CONFIG_FIELDS}
     )
+    if provider in _REQUIRED_MAX_TOKENS_PROVIDERS and generation.max_tokens is None:
+        raise InvalidLLMConfig("Config is missing required field: max_tokens.")
+    return generation
 
 
 def _allowed_generation_fields(provider: LLMProviders) -> frozenset[str]:
@@ -427,8 +350,8 @@ def _required_model(value: object) -> LLMModels:
         raise InvalidLLMConfig("Model is not supported.")
     try:
         return LLMModels(value)
-    except ValueError as error:
-        raise InvalidLLMConfig("Model is not supported.") from error
+    except ValueError:
+        raise InvalidLLMConfig("Model is not supported.") from None
 
 
 def _optional_model(value: object) -> LLMModels | None:
@@ -441,7 +364,7 @@ def _ensure_supported_model(provider: LLMProviders, model: LLMModels) -> None:
 
 
 def _validate_mapping(
-    values: Mapping[str, object],
+    values: object,
     *,
     name: str,
 ) -> dict[str, object]:
@@ -452,7 +375,7 @@ def _validate_mapping(
     return dict(values)
 
 
-def _validate_secrets(values: Mapping[str, str]) -> dict[str, str]:
+def _validate_secrets(values: object) -> dict[str, str]:
     data = _validate_mapping(values, name="Secrets")
     if not all(
         isinstance(value, str) and value and value != MASKED_SECRET_VALUE
@@ -502,45 +425,3 @@ def _required_non_empty_string(value: object, name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise InvalidLLMConfig(f"{name} must be a non-empty string.")
     return value.strip()
-
-
-def _positive_int(value: object, name: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise InvalidLLMConfig(f"{name} must be a positive integer.")
-    return value
-
-
-def _optional_positive_int(value: object, name: str) -> int | None:
-    return None if value is None else _positive_int(value, name)
-
-
-def _bounded_float(value: object, name: str, minimum: float, maximum: float) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise InvalidLLMConfig(f"{name} must be a number.")
-    normalized = float(value)
-    if not minimum <= normalized <= maximum:
-        raise InvalidLLMConfig(f"{name} must be between {minimum} and {maximum}.")
-    return normalized
-
-
-def _optional_bounded_float(
-    value: object,
-    name: str,
-    minimum: float,
-    maximum: float,
-) -> float | None:
-    if value is None:
-        return None
-    return _bounded_float(value, name, minimum, maximum)
-
-
-def _optional_stop_sequences(value: object) -> tuple[str, ...] | None:
-    if value is None:
-        return None
-    if not isinstance(value, (list, tuple)) or not all(
-        isinstance(item, str) and item for item in value
-    ):
-        raise InvalidLLMConfig(
-            "stop_sequences must be a list of non-empty strings."
-        )
-    return tuple(value)

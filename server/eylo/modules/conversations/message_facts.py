@@ -8,11 +8,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from eylo.common.contracts.messages import MessageKind, RequestStatus
-from eylo.common.contracts.voice import (
-    VOICE_MESSAGE_META_SESSION_ROW_ID,
-    VOICE_MESSAGE_META_SPEECH_OUTCOME,
-)
+from eylo.common.contracts.messages import MessageInDb, MessageKind, RequestStatus
 from eylo.events.durable.domain import DurableEventEnvelope
 from eylo.events.durable.service import DurableEventService
 from eylo.events.durable.voice_contracts import (
@@ -23,20 +19,18 @@ from eylo.events.durable.voice_contracts import (
 )
 from eylo.modules.conversations.models.conversations import ConversationsModel
 
-_ASSISTANT_TERMINAL_STATUSES = frozenset(
-    {
-        RequestStatus.COMPLETED.value,
-        RequestStatus.FAILED.value,
-        RequestStatus.INTERRUPTED.value,
-        RequestStatus.SKIPPED.value,
-    }
+_ASSISTANT_TERMINAL_STATUSES = (
+    RequestStatus.COMPLETED,
+    RequestStatus.FAILED,
+    RequestStatus.INTERRUPTED,
+    RequestStatus.SKIPPED,
 )
 
 
 async def file_voice_message_fact(
     *,
     session: AsyncSession,
-    message,
+    message: MessageInDb,
 ) -> UUID | None:
     """File one stable fact when a canonical message is a final V1 voice class."""
     if not _is_final_voice_timeline_message(message):
@@ -50,7 +44,7 @@ async def file_voice_message_fact(
     if organization_id is None:
         raise ValueError("Canonical voice message conversation is unavailable.")
 
-    occurred_at = _require_datetime(message.created_at)
+    occurred_at = message.created_at
     recorded_at = _recorded_at(message, occurred_at)
     event_id = uuid5(
         NAMESPACE_URL,
@@ -73,52 +67,23 @@ async def file_voice_message_fact(
     return event_id
 
 
-def _is_final_voice_timeline_message(message) -> bool:
-    meta = _meta(message)
-    if not meta.get(VOICE_MESSAGE_META_SESSION_ROW_ID):
+def _is_final_voice_timeline_message(message: MessageInDb) -> bool:
+    meta = message.meta
+    if meta is None or meta.voice_session_row_id is None:
         return False
-    kind = _enum_value(message.kind)
-    if kind in {MessageKind.USER.value, MessageKind.TOOL_USE.value}:
+    if message.kind in (MessageKind.USER, MessageKind.TOOL_USE):
         return True
-    if kind != MessageKind.ASSISTANT.value:
+    if message.kind is not MessageKind.ASSISTANT:
         return False
-    if meta.get(VOICE_MESSAGE_META_SPEECH_OUTCOME) is not None:
+    if meta.speech_turn_outcome is not None:
         return True
-    status = _enum_value(message.request_status)
-    return status in _ASSISTANT_TERMINAL_STATUSES
+    return message.request_status in _ASSISTANT_TERMINAL_STATUSES
 
 
-def _meta(message) -> dict:
-    raw = message.meta
-    if raw is None:
-        return {}
-    if isinstance(raw, dict):
-        return raw
-    if hasattr(raw, "model_dump"):
-        return raw.model_dump(exclude_none=True)
-    return {}
-
-
-def _enum_value(value) -> str | None:
-    if value is None:
-        return None
-    return value.value if hasattr(value, "value") else str(value)
-
-
-def _require_datetime(value) -> datetime:
-    if not isinstance(value, datetime):
-        raise ValueError("Canonical voice message is missing created_at.")
-    return value
-
-
-def _recorded_at(message, occurred_at: datetime) -> datetime:
-    meta = _meta(message)
-    kind = _enum_value(message.kind)
-    if (
-        kind == MessageKind.ASSISTANT.value
-        and meta.get(VOICE_MESSAGE_META_SPEECH_OUTCOME) is None
+def _recorded_at(message: MessageInDb, occurred_at: datetime) -> datetime:
+    meta = message.meta
+    if message.kind is MessageKind.ASSISTANT and (
+        meta is None or meta.speech_turn_outcome is None
     ):
-        updated_at = getattr(message, "updated_at", None)
-        if isinstance(updated_at, datetime):
-            return max(updated_at, occurred_at)
+        return max(message.updated_at, occurred_at)
     return occurred_at

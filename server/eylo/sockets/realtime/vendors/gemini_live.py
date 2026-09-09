@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager
+from decimal import Decimal
 
 from google import genai
 from google.genai import types
@@ -20,8 +22,16 @@ from google.genai.live import AsyncSession
 from eylo.common.contracts.tool_platform import PlatformTool
 from eylo.common.contracts.tool_record import ToolRecord
 from eylo.sockets.common.schema_utils import clean_schema_for_gemini
-from eylo.sockets.realtime.base import RealtimeAdapter, RealtimeCapabilities
-from eylo.sockets.realtime.config import RealtimeSessionConfig
+from eylo.sockets.realtime.base import (
+    RealtimeAdapter,
+    RealtimeCapabilities,
+    RealtimeFeatureSupport,
+    RealtimeSessionUpdateMode,
+)
+from eylo.sockets.realtime.config import (
+    RealtimeContextCompression,
+    RealtimeSessionConfig,
+)
 from eylo.sockets.realtime.events import (
     VENDOR_OUTPUT_SAMPLE_RATE,
     AudioDataEvent,
@@ -40,6 +50,17 @@ logger = logging.getLogger(__name__)
 
 # Gemini Live accepts 16kHz PCM mono input
 _INPUT_AUDIO_MIME = "audio/pcm;rate=16000"
+_DISCONNECT_DURATION = re.compile(r"[0-9]+(?:\.[0-9]{1,9})?s")
+_MILLISECONDS_PER_SECOND = 1000
+
+
+def _go_away_milliseconds(value: str | None) -> int:
+    """Translate Google's protobuf duration to the platform's millisecond unit."""
+    if value is None:
+        return 0
+    if _DISCONNECT_DURATION.fullmatch(value) is None:
+        raise ValueError("Gemini disconnect duration must be nonnegative seconds.")
+    return int(Decimal(value.removesuffix("s")) * _MILLISECONDS_PER_SECOND)
 
 
 class GeminiLiveAdapter(RealtimeAdapter):
@@ -55,9 +76,9 @@ class GeminiLiveAdapter(RealtimeAdapter):
     @property
     def capabilities(self) -> RealtimeCapabilities:
         return RealtimeCapabilities(
-            session_update_mode="reconnect",
-            session_resumption=True,
-            context_compression=True,
+            session_update_mode=RealtimeSessionUpdateMode.RECONNECT,
+            session_resumption=RealtimeFeatureSupport.SUPPORTED,
+            context_compression=RealtimeFeatureSupport.SUPPORTED,
         )
 
     async def connect(self) -> None:
@@ -170,16 +191,15 @@ class GeminiLiveAdapter(RealtimeAdapter):
         voice: str | None = None,
         temperature: float | None = None,
     ) -> None:
-        # Gemini requires reconnect for config changes
+        updated = self._config.updated(
+            system_prompt=system_prompt,
+            tools=tools,
+            voice=voice,
+            temperature=temperature,
+        )
+        # Validate first: an invalid replacement must not close a working session.
         await self.disconnect()
-        if system_prompt is not None:
-            self._config.system_prompt = system_prompt
-        if tools is not None:
-            self._config.tools = tools
-        if voice is not None:
-            self._config.voice = voice
-        if temperature is not None:
-            self._config.temperature = temperature
+        self._config = updated
         await self.connect()
 
     # --- Private ---
@@ -209,7 +229,7 @@ class GeminiLiveAdapter(RealtimeAdapter):
         # Tools
         tool_decls = self._format_tools()
         if tool_decls:
-            config.tools = tool_decls
+            config.tools = [tool for tool in tool_decls]
 
         # Session resumption
         if self._resumption_handle:
@@ -218,7 +238,10 @@ class GeminiLiveAdapter(RealtimeAdapter):
             )
 
         # Context window compression (D013)
-        if self._config.is_context_compression_enabled:
+        if (
+            self._config.is_context_compression_enabled
+            is RealtimeContextCompression.ENABLED
+        ):
             compression = types.ContextWindowCompressionConfig(
                 sliding_window=types.SlidingWindow()
             )
@@ -275,12 +298,8 @@ class GeminiLiveAdapter(RealtimeAdapter):
 
         return [types.Tool(function_declarations=declarations)]
 
-    def _translate(self, response: object) -> list[RealtimeEvent]:
+    def _translate(self, response: types.LiveServerMessage) -> list[RealtimeEvent]:
         """Translate a Gemini server message into platform events.
-
-        ``response`` is the return value of ``AsyncSession._receive()`` — not
-        part of the public SDK API so its concrete type is unspecified.  We
-        inspect it via ``getattr`` throughout.
 
         A single Gemini event can contain multiple parts (audio + transcript
         simultaneously), so we always return a list.
@@ -288,10 +307,10 @@ class GeminiLiveAdapter(RealtimeAdapter):
         events: list[RealtimeEvent] = []
 
         # Server content — audio, transcripts, interruption, turn complete
-        content = getattr(response, "server_content", None)
+        content = response.server_content
         if content:
             if content.model_turn:
-                for part in content.model_turn.parts:
+                for part in content.model_turn.parts or ():
                     if part.inline_data and part.inline_data.data:
                         events.append(
                             AudioDataEvent(
@@ -300,38 +319,34 @@ class GeminiLiveAdapter(RealtimeAdapter):
                             )
                         )
 
-            if (
-                hasattr(content, "input_transcription")
-                and content.input_transcription
-                and content.input_transcription.text
-            ):
+            # Gemini emits fragments even when `finished` is set. Normalized
+            # `is_final` means replace accumulated text, so these stay append-only.
+            if content.input_transcription and content.input_transcription.text:
                 events.append(
                     InputTranscriptEvent(
                         text=content.input_transcription.text,
                         is_final=False,
                     )
                 )
-            if (
-                hasattr(content, "output_transcription")
-                and content.output_transcription
-                and content.output_transcription.text
-            ):
+            if content.output_transcription and content.output_transcription.text:
                 events.append(
                     OutputTranscriptEvent(
                         text=content.output_transcription.text,
                         is_final=False,
                     )
                 )
-            if getattr(content, "interrupted", None) is True:
+            if content.interrupted is True:
                 events.append(InterruptionEvent())
-            if getattr(content, "turn_complete", None) is True:
+            if content.turn_complete is True:
                 events.append(TurnCompleteEvent())
 
         # Tool calls
-        tool_call = getattr(response, "tool_call", None)
+        tool_call = response.tool_call
         if tool_call:
-            for fc in tool_call.function_calls:
-                call_id = getattr(fc, "id", None) or f"{fc.name}_{id(fc):x}"
+            for fc in tool_call.function_calls or ():
+                if not fc.name:
+                    raise ValueError("Gemini tool call requires a function name.")
+                call_id = fc.id or f"{fc.name}_{id(fc):x}"
                 self._pending_tool_names[call_id] = fc.name
                 events.append(
                     ToolCallEvent(
@@ -344,26 +359,23 @@ class GeminiLiveAdapter(RealtimeAdapter):
         # Session resumption handle — Gemini sends updated handles periodically.
         # We store the handle for reconnection but do NOT emit a resumed event
         # here. That event is only emitted after an actual reconnect via GoAway.
-        resumption = getattr(response, "session_resumption_update", None)
+        resumption = response.session_resumption_update
         if resumption:
-            handle = getattr(resumption, "new_handle", None)
+            handle = resumption.new_handle
             if handle:
                 self._resumption_handle = handle
 
         # GoAway
-        go_away = getattr(response, "go_away", None)
+        go_away = response.go_away
         if go_away:
             events.append(
                 GoAwayEvent(
-                    time_left_ms=getattr(go_away, "time_left_ms", 0),
+                    time_left_ms=_go_away_milliseconds(go_away.time_left),
                 )
             )
 
         # Session started (setup_complete)
-        if (
-            getattr(response, "setup_complete", None)
-            and not self._session_started_emitted
-        ):
+        if response.setup_complete and not self._session_started_emitted:
             self._session_started_emitted = True
             events.append(SessionStartedEvent(session_id="gemini"))
 

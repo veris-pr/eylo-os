@@ -1,4 +1,4 @@
-"""Bounded, revision-safe STT/TTS provider verification."""
+"""Bounded, revision-safe STT, TTS and realtime provider verification."""
 
 from __future__ import annotations
 
@@ -11,7 +11,12 @@ from eylo.modules.voice_configs.catalog import (
     RealtimeProviders,
     VoiceKind,
 )
-from eylo.modules.voice_configs.domain import ResolvedRealtime, VoiceProviderConfig
+from eylo.modules.voice_configs.domain import (
+    ResolvedRealtime,
+    ResolvedSTT,
+    ResolvedTTS,
+    VoiceProviderConfig,
+)
 from eylo.modules.voice_configs.verification import (
     VoiceProviderVerification,
     VoiceProviderVerifier,
@@ -19,7 +24,11 @@ from eylo.modules.voice_configs.verification import (
     VoiceVerificationResult,
 )
 from eylo.modules.voice_configs.wiring import build_voice_config_service
-from eylo.sockets.realtime.config import RealtimeSessionConfig
+from eylo.pipelines.voice.provider_runtime import (
+    build_realtime_session_config,
+    build_stt_runtime_config,
+    build_tts_runtime_config,
+)
 from eylo.sockets.realtime.factory import RealtimeFactory
 from eylo.sockets.stt.factory import STTFactory
 from eylo.sockets.tts.factory import TTSFactory
@@ -45,8 +54,7 @@ class VoiceRuntimeVerifier:
                     await self._verify_realtime(config)
         except Exception as error:
             logger.warning(
-                "Voice provider verification failed kind=%s provider=%s "
-                "error_type=%s",
+                "Voice provider verification failed kind=%s provider=%s error_type=%s",
                 config.kind.value,
                 config.provider.value,
                 type(error).__name__,
@@ -61,76 +69,58 @@ class VoiceRuntimeVerifier:
 
     @staticmethod
     async def _verify_stt(config: VoiceProviderConfig) -> None:
+        resolved = ResolvedSTT.from_voice_config(
+            provider_config_id=UUID(int=0),
+            provider_config_revision=1,
+            organization_id=UUID(int=0),
+            config=config,
+        )
         factory = STTFactory(
             organization_id=UUID(int=0),
             session_id="provider-config-verification",
             stt_vendor=config.provider.value,
-            stt_config={**config.config, **config.secrets},
-            api_key=config.secrets.get("api_key"),
+            stt_config=build_stt_runtime_config(None, resolved),
         )
         async with factory.connection():
             if not factory.is_connected:
-                raise VoiceVerificationError(
-                    "Voice provider verification failed."
-                )
+                raise VoiceVerificationError("Voice provider verification failed.")
 
     @staticmethod
     async def _verify_tts(config: VoiceProviderConfig) -> None:
-        runtime_config = {**config.config, **config.secrets}
+        resolved = ResolvedTTS.from_voice_config(
+            provider_config_id=UUID(int=0),
+            provider_config_revision=1,
+            organization_id=UUID(int=0),
+            config=config,
+        )
         factory = TTSFactory(
             tts_vendor=config.provider.value,
-            tts_config=runtime_config,
-            api_key=config.secret,
+            tts_config=build_tts_runtime_config(resolved),
         )
         async with factory.connection():
             if not factory.service.is_connected:
-                raise VoiceVerificationError(
-                    "Voice provider verification failed."
-                )
+                raise VoiceVerificationError("Voice provider verification failed.")
 
     @staticmethod
     async def _verify_realtime(config: VoiceProviderConfig) -> None:
         if not isinstance(config.provider, RealtimeProviders):
             raise VoiceVerificationError("Voice provider verification failed.")
-        resolved = ResolvedRealtime(
+        resolved = ResolvedRealtime.from_voice_config(
             provider_config_id=UUID(int=0),
             provider_config_revision=1,
             organization_id=UUID(int=0),
-            provider=config.provider,
-            config=config.config,
-            secrets=config.secrets,
+            config=config,
             configured=True,
             verified=False,
             ready=False,
             granted=True,
         )
-        session_config = RealtimeSessionConfig.model_validate(
-            {
-                "organization_id": UUID(int=0),
-                "conversation_id": UUID(int=0),
-                "agent_id": UUID(int=0),
-                "session_id": "provider-config-verification",
-                "vendor": config.provider.value,
-                "model": config.config["model"],
-                "voice": config.config["voice"],
-                "temperature": config.config.get("temperature"),
-                "top_p": config.config.get("top_p"),
-                "max_tokens": config.config.get("max_tokens"),
-                "input_transcription_model": config.config.get(
-                    "input_transcription_model"
-                ),
-                "vad_threshold": config.config.get("vad_threshold"),
-                "vad_silence_ms": config.config.get("vad_silence_ms"),
-                "endpointing_sensitivity": config.config.get(
-                    "endpointing_sensitivity"
-                ),
-                "is_context_compression_enabled": config.config.get(
-                    "context_compression_enabled"
-                ),
-                "context_compression_trigger_tokens": config.config.get(
-                    "context_compression_trigger_tokens"
-                ),
-            }
+        session_config = build_realtime_session_config(
+            resolved,
+            organization_id=UUID(int=0),
+            conversation_id=UUID(int=0),
+            agent_id=UUID(int=0),
+            session_id="provider-config-verification",
         )
         adapter = RealtimeFactory.create(session_config, resolved)
         try:
@@ -159,7 +149,7 @@ class VoiceConfigVerificationUseCase:
                 config_id=config_id,
                 kind=kind,
             )
-            provider_config = VoiceProviderConfig.validate(
+            provider_config = VoiceProviderConfig.from_storage(
                 provider=stored.provider,
                 kind=kind,
                 config=stored.config,

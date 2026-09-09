@@ -6,7 +6,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.modules.conversations.message_facts import file_voice_message_fact
 from eylo.modules.conversations.repositories.messages import MessageRepository
-from eylo.modules.conversations.schemas.messages import MessageKind, RequestStatus
+from eylo.modules.conversations.schemas.messages import (
+    MessageInDb,
+    MessageKind,
+    RequestStatus,
+)
 from eylo.modules.conversations.schemas.request_status import (
     RequestStatusTransitionResult,
 )
@@ -89,16 +93,11 @@ class RequestStatusService:
                 request_id,
                 conversation_id,
             ):
-                kind = (
-                    message.kind.value
-                    if hasattr(message.kind, "value")
-                    else str(message.kind)
-                )
-                if kind != MessageKind.ASSISTANT.value:
+                if message.kind != MessageKind.ASSISTANT.value:
                     continue
                 await file_voice_message_fact(
                     session=self.repository.db_session,
-                    message=message,
+                    message=MessageInDb.model_validate(message),
                 )
         if updated_count:
             authority = await self.repository.get_request_timeline_authority(

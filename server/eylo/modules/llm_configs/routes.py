@@ -9,20 +9,20 @@ from fastapi import APIRouter, Depends, Response, status
 from eylo.common.database import start_transaction
 from eylo.modules.auth.schemas import CurrentUserSchema
 from eylo.modules.auth.services.auth_service import get_current_user
-from eylo.modules.llm_configs.controllers import LLMConfigController
+from eylo.modules.llm_configs.controllers import (
+    LLMConfigController,
+    LLMConfigVerificationController,
+)
 from eylo.modules.llm_configs.schemas import (
     LLMConfigCreate,
     LLMConfigResponse,
     LLMConfigUpdate,
     LLMConfigVerificationResponse,
 )
-from eylo.modules.llm_configs.verification import (
-    LLMConfigVerificationService,
-    LLMCredentialVerifier,
-)
 from eylo.modules.llm_configs.wiring import build_llm_config_service
 from eylo.modules.provider_configs.constants import Capability
 from eylo.pipelines.agents.config_deletion import delete_agent_bound_config
+from eylo.pipelines.llm.config_verification import build_llm_verification_service
 
 router = APIRouter(prefix="/llm-configs", tags=["llm-configs"])
 
@@ -30,10 +30,11 @@ router = APIRouter(prefix="/llm-configs", tags=["llm-configs"])
 async def get_llm_config_controller() -> AsyncIterator[LLMConfigController]:
     async with start_transaction():
         service = build_llm_config_service()
-        yield LLMConfigController(
-            service,
-            LLMConfigVerificationService(service, LLMCredentialVerifier()),
-        )
+        yield LLMConfigController(service)
+
+
+def get_llm_config_verification_controller() -> LLMConfigVerificationController:
+    return LLMConfigVerificationController(build_llm_verification_service())
 
 
 @router.post(
@@ -96,8 +97,8 @@ async def verify_llm_config(
     config_id: UUID,
     current_user: Annotated[CurrentUserSchema, Depends(get_current_user)],
     controller: Annotated[
-        LLMConfigController,
-        Depends(get_llm_config_controller, scope="function"),
+        LLMConfigVerificationController,
+        Depends(get_llm_config_verification_controller),
     ],
 ) -> LLMConfigVerificationResponse:
     return await controller.verify(current_user.organization_id, config_id)

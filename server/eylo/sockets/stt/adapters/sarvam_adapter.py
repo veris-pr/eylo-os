@@ -2,38 +2,58 @@
 
 import asyncio
 import base64
-import json
 import logging
-from enum import Enum
-from typing import Any, Optional
+from collections.abc import Mapping
+from enum import Enum, IntEnum, StrEnum
+from typing import Self
 from urllib.parse import urlencode
 
-import arrow
 import websockets
-from pydantic import BaseModel, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    ValidationError,
+    field_serializer,
+    model_validator,
+)
+from sarvamai.types import AudioData, AudioMessage, SttFlushSignal
 
+from eylo.common.contracts.speech_runtime import SpeechOption, SpeechOptionState
 from eylo.common.contracts.voice import InterruptionType
+from eylo.sockets.stt.adapters.connection_errors import raise_websocket_connection_error
+from eylo.sockets.stt.adapters.sarvam_events import (
+    sarvam_speech_started_event,
+    sarvam_transcript_event,
+)
+from eylo.sockets.stt.adapters.sarvam_wire import (
+    SarvamErrorEvent,
+    SarvamSTTEvent,
+    SarvamSignalType,
+    SarvamTranscript,
+    parse_sarvam_stt_event,
+)
 from eylo.sockets.stt.base import STTVendorAdapter
 from eylo.sockets.stt.exceptions import (
-    STTConnectionError,
-    STTConnectionFailed,
+    STTConnectionCleanupFailed,
+    STTConnectionClosed,
+    STTConnectionFailureKind,
+    STTConnectionRetryUnsafe,
 )
-from eylo.sockets.stt.schemas import STTCapabilities, STTEvent, STTEventType
+from eylo.sockets.stt.schemas import (
+    STTCapabilities,
+    STTCapabilitySupport,
+    STTEvent,
+    STTProvider,
+)
 
 logger = logging.getLogger(__name__)
 
 _SARVAM_STT_WS_URL = "wss://api.sarvam.ai/speech-to-text/ws"
 _KEEPALIVE_SILENCE_SECONDS = 0.1
-_MULAW_ENCODINGS = {"mulaw", "pcm_mulaw", "ulaw", "pcm_ulaw"}
-_ENCODING_TO_CODEC = {
-    "audio/wav": "wav",
-    "linear16": "pcm_s16le",
-    "l16": "pcm_l16",
-    "pcm_l16": "pcm_l16",
-    "pcm_raw": "pcm_raw",
-    "pcm_s16le": "pcm_s16le",
-    "wav": "wav",
-}
+_CLOSE_TIMEOUT_SECONDS = 10.0
+_CLEANUP_WAIT_SECONDS = 12.0
 
 
 class SarvamSTTModel(str, Enum):
@@ -56,122 +76,171 @@ class SarvamInputAudioCodec(str, Enum):
     PCM_RAW = "pcm_raw"
 
 
-class _SarvamMessageType(str, Enum):
-    DATA = "data"
-    ERROR = "error"
-    EVENTS = "events"
-    TRANSLATION = "translation"
+class SarvamSourceEncoding(StrEnum):
+    """Consumed transport encodings, including existing direct-adapter aliases."""
+
+    LINEAR16 = "linear16"
+    PCM_S16LE = "pcm_s16le"
+    L16 = "l16"
+    PCM_L16 = "pcm_l16"
+    PCM_RAW = "pcm_raw"
+    WAV = "wav"
+    AUDIO_WAV = "audio/wav"
+    MULAW = "mulaw"
+    PCM_MULAW = "pcm_mulaw"
+    ULAW = "ulaw"
+    PCM_ULAW = "pcm_ulaw"
 
 
-class _SarvamSignalType(str, Enum):
-    END_SPEECH = "END_SPEECH"
-    START_SPEECH = "START_SPEECH"
+class SarvamSampleRate(IntEnum):
+    HZ_8000 = 8000
+    HZ_16000 = 16000
+
+
+_MULAW_ENCODINGS = {
+    SarvamSourceEncoding.MULAW,
+    SarvamSourceEncoding.PCM_MULAW,
+    SarvamSourceEncoding.ULAW,
+    SarvamSourceEncoding.PCM_ULAW,
+}
+_ENCODING_TO_CODEC = {
+    SarvamSourceEncoding.AUDIO_WAV: SarvamInputAudioCodec.WAV,
+    SarvamSourceEncoding.WAV: SarvamInputAudioCodec.WAV,
+    SarvamSourceEncoding.LINEAR16: SarvamInputAudioCodec.PCM_S16LE,
+    SarvamSourceEncoding.PCM_S16LE: SarvamInputAudioCodec.PCM_S16LE,
+    SarvamSourceEncoding.L16: SarvamInputAudioCodec.PCM_L16,
+    SarvamSourceEncoding.PCM_L16: SarvamInputAudioCodec.PCM_L16,
+    SarvamSourceEncoding.PCM_RAW: SarvamInputAudioCodec.PCM_RAW,
+    **{encoding: SarvamInputAudioCodec.PCM_S16LE for encoding in _MULAW_ENCODINGS},
+}
+_PCM_SAMPLE_BYTES = 2
+_MULAW_BYTE_MASK = 0xFF
+_MULAW_MANTISSA_MASK = 0x0F
+_MULAW_EXPONENT_MASK = 0x70
+_MULAW_SIGN_MASK = 0x80
+_MULAW_BIAS = 0x84
+_MULAW_MANTISSA_SHIFT = 3
+_MULAW_EXPONENT_SHIFT = 4
 
 
 def _decode_mulaw_to_pcm_s16le(audio_data: bytes) -> bytes:
-    pcm_data = bytearray(len(audio_data) * 2)
+    pcm_data = bytearray(len(audio_data) * _PCM_SAMPLE_BYTES)
 
     for index, byte in enumerate(audio_data):
-        mu_law = (~byte) & 0xFF
-        magnitude = ((mu_law & 0x0F) << 3) + 0x84
-        magnitude <<= (mu_law & 0x70) >> 4
-        sample = 0x84 - magnitude if mu_law & 0x80 else magnitude - 0x84
+        mu_law = (~byte) & _MULAW_BYTE_MASK
+        magnitude = (
+            (mu_law & _MULAW_MANTISSA_MASK) << _MULAW_MANTISSA_SHIFT
+        ) + _MULAW_BIAS
+        magnitude <<= (mu_law & _MULAW_EXPONENT_MASK) >> _MULAW_EXPONENT_SHIFT
+        sample = (
+            _MULAW_BIAS - magnitude
+            if mu_law & _MULAW_SIGN_MASK
+            else magnitude - _MULAW_BIAS
+        )
 
-        offset = index * 2
-        pcm_data[offset : offset + 2] = int(sample).to_bytes(
-            2, byteorder="little", signed=True
+        offset = index * _PCM_SAMPLE_BYTES
+        pcm_data[offset : offset + _PCM_SAMPLE_BYTES] = int(sample).to_bytes(
+            _PCM_SAMPLE_BYTES, byteorder="little", signed=True
         )
 
     return bytes(pcm_data)
 
 
 class SarvamSTTConfig(BaseModel):
-    api_key: str = Field(min_length=1)
+    """Frozen resolved input; aliases normalize before vendor protocol validation."""
+
+    model_config = ConfigDict(
+        frozen=True,
+        extra="ignore",
+        hide_input_in_errors=True,
+        revalidate_instances="always",
+    )
+    api_key: SecretStr = Field(min_length=1, exclude=True, repr=False)
     model: SarvamSTTModel
-    # Invented locale default, same class as the TTS module's. Unset lets
-    # Sarvam apply its own.
-    language_code: str = Field(min_length=1)
+    language_code: str = Field(strict=True, min_length=1, pattern=r"\S")
     mode: SarvamSTTMode = SarvamSTTMode.TRANSCRIBE
-    sample_rate: int = Field(default=16000, ge=8000, le=48000)
+    sample_rate: int = Field(default=SarvamSampleRate.HZ_16000, strict=True)
     input_audio_codec: SarvamInputAudioCodec = SarvamInputAudioCodec.PCM_S16LE
-    high_vad_sensitivity: bool = True
-    vad_signals: bool = True
-    flush_signal: bool = True
+    high_vad_sensitivity: SpeechOption = SpeechOptionState.ENABLED
+    vad_signals: SpeechOption = SpeechOptionState.ENABLED
+    flush_signal: SpeechOption = SpeechOptionState.ENABLED
     interruption_type: InterruptionType = InterruptionType.VAD
-    source_encoding: str = "linear16"
+    source_encoding: SarvamSourceEncoding = SarvamSourceEncoding.LINEAR16
 
     @model_validator(mode="before")
     @classmethod
-    def normalize_inputs(cls, data: Any) -> Any:
-        if not isinstance(data, dict):
+    def normalize_inputs(cls, data: object) -> object:
+        if not isinstance(data, Mapping):
             return data
 
-        normalized = dict(data)
+        normalized: dict[str, object] = {}
+        for key, value in data.items():
+            if not isinstance(key, str):
+                raise ValueError("Sarvam config keys must be strings.")
+            normalized[key] = value
 
         if "language" in normalized and "language_code" not in normalized:
             normalized["language_code"] = normalized["language"]
         if "encoding" in normalized and "source_encoding" not in normalized:
             normalized["source_encoding"] = normalized["encoding"]
-        if "source_encoding" in normalized and isinstance(
-            normalized["source_encoding"], str
-        ):
-            normalized["source_encoding"] = normalized["source_encoding"].lower()
-        if "input_audio_codec" in normalized and isinstance(
-            normalized["input_audio_codec"], str
-        ):
-            normalized["input_audio_codec"] = normalized["input_audio_codec"].lower()
+        for key in ("source_encoding", "input_audio_codec"):
+            value = normalized.get(key)
+            if isinstance(value, str):
+                normalized[key] = value.lower()
 
         if "input_audio_codec" not in normalized:
-            source_encoding = str(
-                normalized.get("source_encoding")
-                or normalized.get("encoding")
-                or "linear16"
-            ).lower()
-
-            if source_encoding in _MULAW_ENCODINGS:
-                normalized["input_audio_codec"] = SarvamInputAudioCodec.PCM_S16LE.value
-            else:
-                normalized["input_audio_codec"] = _ENCODING_TO_CODEC.get(
-                    source_encoding,
-                    SarvamInputAudioCodec.PCM_S16LE.value,
-                )
+            source_encoding = normalized.get(
+                "source_encoding", SarvamSourceEncoding.LINEAR16
+            )
+            if not isinstance(source_encoding, str):
+                raise ValueError("Sarvam source encoding must be a named encoding.")
+            normalized["input_audio_codec"] = _ENCODING_TO_CODEC[
+                SarvamSourceEncoding(source_encoding)
+            ]
 
         return normalized
 
     @model_validator(mode="after")
-    def validate_config(self):
-        if self.sample_rate not in {8000, 16000}:
-            raise ValueError("Sarvam STT sample_rate must be 8000 or 16000.")
-
-        self.source_encoding = self.source_encoding.lower()
-
-        if self.interruption_type == InterruptionType.TRANSCRIPT:
-            logger.warning(
-                "Sarvam STT does not emit interim transcripts. Falling back to VAD "
-                "interruption."
-            )
-            self.interruption_type = InterruptionType.VAD
-
+    def validate_config(self) -> Self:
+        SarvamSampleRate(self.sample_rate)
         return self
 
 
-class _SarvamSTTState(BaseModel):
-    interrupted_this_turn: bool = False
-    speech_active: bool = False
+class _SarvamSpeechState(StrEnum):
+    IDLE = "idle"
+    SPEAKING = "speaking"
+
+
+class _SarvamSTTQuery(BaseModel):
+    """Serialize only supported connection fields; credentials stay in headers."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    language_code: str = Field(serialization_alias="language-code")
+    model: SarvamSTTModel
+    mode: SarvamSTTMode
+    sample_rate: SarvamSampleRate
+    input_audio_codec: SarvamInputAudioCodec
+    high_vad_sensitivity: SpeechOption
+    vad_signals: SpeechOption
+    flush_signal: SpeechOption
+
+    @field_serializer("high_vad_sensitivity", "vad_signals", "flush_signal")
+    def query_flag(self, value: SpeechOptionState) -> str:
+        return str(value.value).lower()
 
 
 class SarvamSTT(STTVendorAdapter):
-    _BACKOFF_FACTOR = 2
-    _MAX_RECONNECTION_ATTEMPTS = 1
+    """Own one native stream; only the factory may retry establishment."""
 
-    def __init__(self, config: SarvamSTTConfig):
-        # Initialise the contract's shared state. Inheriting without this
-        # leaves `retry_options` unset, so the ABC's helpers raise on this
-        # class while every structural check still passes.
+    def __init__(self, config: SarvamSTTConfig) -> None:
         super().__init__()
-        self._config = config
-        self._ws: Optional[websockets.ClientConnection] = None
-        self._state = _SarvamSTTState()
+        self._config = SarvamSTTConfig.model_validate(config)
+        self._ws: websockets.ClientConnection | None = None
+        self._speech_state = _SarvamSpeechState.IDLE
+        self._lifecycle_lock = asyncio.Lock()
+        self._send_lock = asyncio.Lock()
+        self._close_task: asyncio.Task[None] | None = None
+        self._stream_failure: STTConnectionRetryUnsafe | None = None
 
     @property
     def is_connected(self) -> bool:
@@ -180,16 +249,17 @@ class SarvamSTT(STTVendorAdapter):
         return self._ws.state == websockets.protocol.State.OPEN
 
     def _get_ws_url(self) -> str:
-        params = {
-            "flush_signal": str(self._config.flush_signal).lower(),
-            "high_vad_sensitivity": str(self._config.high_vad_sensitivity).lower(),
-            "input_audio_codec": self._config.input_audio_codec.value,
-            "language-code": self._config.language_code,
-            "mode": self._config.mode.value,
-            "model": self._config.model.value,
-            "sample_rate": str(self._config.sample_rate),
-            "vad_signals": str(self._config.vad_signals).lower(),
-        }
+        query = _SarvamSTTQuery(
+            flush_signal=self._config.flush_signal,
+            high_vad_sensitivity=self._config.high_vad_sensitivity,
+            input_audio_codec=self._config.input_audio_codec,
+            language_code=self._config.language_code,
+            mode=self._config.mode,
+            model=self._config.model,
+            sample_rate=SarvamSampleRate(self._config.sample_rate),
+            vad_signals=self._config.vad_signals,
+        )
+        params = query.model_dump(mode="json", by_alias=True)
         return f"{_SARVAM_STT_WS_URL}?{urlencode(params)}"
 
     def _prepare_audio(self, audio_data: bytes) -> bytes:
@@ -199,15 +269,13 @@ class SarvamSTT(STTVendorAdapter):
 
     def _build_audio_message(self, audio_data: bytes) -> str:
         encoded_audio = base64.b64encode(audio_data).decode("utf-8")
-        return json.dumps(
-            {
-                "audio": {
-                    "data": encoded_audio,
-                    "encoding": "audio/wav",
-                    "sample_rate": self._config.sample_rate,
-                }
-            }
-        )
+        return AudioMessage(
+            audio=AudioData(
+                data=encoded_audio,
+                encoding="audio/wav",
+                sample_rate=self._config.sample_rate,
+            )
+        ).model_dump_json()
 
     def _build_keepalive_chunk(self) -> bytes:
         samples = max(1, int(self._config.sample_rate * _KEEPALIVE_SILENCE_SECONDS))
@@ -216,222 +284,189 @@ class SarvamSTT(STTVendorAdapter):
         return b"\x00\x00" * samples
 
     async def connect(self) -> websockets.ClientConnection:
-        if self._ws and self.is_connected:
-            return self._ws
+        async with self._lifecycle_lock:
+            if self._close_task is not None:
+                await self._await_close()
+            if self._stream_failure is not None:
+                raise self._stream_failure
+            if self._ws is not None:
+                if self.is_connected:
+                    return self._ws
+                raise STTConnectionRetryUnsafe(
+                    "Sarvam's previous stream ended; implicit replacement is refused."
+                )
+            self._close_task = None
+            try:
+                self._ws = await websockets.connect(
+                    self._get_ws_url(),
+                    additional_headers={
+                        "api-subscription-key": self._config.api_key.get_secret_value(),
+                    },
+                    ping_interval=None,
+                    close_timeout=_CLOSE_TIMEOUT_SECONDS,
+                )
+                logger.info("Connected to Sarvam STT service")
+                return self._ws
+            except Exception as error:
+                logger.error(
+                    "Sarvam STT connection failed error_type=%s",
+                    type(error).__name__,
+                )
+                raise_websocket_connection_error(error)
 
+    async def disconnect(self) -> None:
+        """Retain failed/in-progress cleanup; cancelling a caller cannot abandon it."""
+        async with self._lifecycle_lock:
+            if self._close_task is None:
+                self._close_task = asyncio.create_task(self._close())
+                self._close_task.add_done_callback(self._observe_close)
+            await self._await_close()
+
+    @staticmethod
+    def _observe_close(task: asyncio.Task[None]) -> None:
+        if not task.cancelled():
+            task.exception()
+
+    async def _await_close(self) -> None:
+        task = self._close_task
+        if task is None:
+            return
         try:
-            headers: websockets.HeadersLike = {
-                "api-subscription-key": self._config.api_key,
-            }  # type: ignore[assignment]
-            self._ws = await websockets.connect(
-                self._get_ws_url(),
-                additional_headers=headers,
-                ping_interval=None,
-            )
-            logger.info("Connected to Sarvam STT service")
-            return self._ws
-        except Exception as error:
-            logger.error(
-                "Sarvam STT connection failed error_type=%s",
-                type(error).__name__,
-            )
-            raise STTConnectionFailed from error
+            await asyncio.wait_for(asyncio.shield(task), _CLEANUP_WAIT_SECONDS)
+        except TimeoutError:
+            raise STTConnectionCleanupFailed(
+                "Sarvam STT cleanup is still pending; replacement is refused."
+            ) from None
 
-    async def disconnect(self):
-        try:
-            if self._ws and self.is_connected:
-                await self._ws.close()
-        except Exception as error:
-            logger.error(
-                "Sarvam STT disconnect failed error_type=%s",
-                type(error).__name__,
-            )
-        finally:
-            self._ws = None
-            self._state = _SarvamSTTState()
+    async def _close(self) -> None:
+        socket = self._ws
+        if socket is not None:
+            try:
+                await socket.close()
+                await socket.wait_closed()
+            except Exception:
+                raise STTConnectionCleanupFailed(
+                    "Sarvam STT cleanup failed; the connection remains owned."
+                ) from None
+        self._ws = None
+        self._speech_state = _SarvamSpeechState.IDLE
 
-    async def keepalive(self):
+    async def keepalive(self) -> None:
         if not self.is_connected:
             return
         await self.send_audio(self._build_keepalive_chunk())
 
-    async def _reconnect(self, attempt: int = 0):
-        exponential_backoff = self._BACKOFF_FACTOR**attempt
-        await asyncio.sleep(exponential_backoff)
-        try:
-            await self.connect()
-        except Exception as error:
-            logger.error(
-                "Sarvam STT reconnect failed attempt=%d error_type=%s",
-                attempt + 1,
-                type(error).__name__,
-            )
-            if attempt >= self._MAX_RECONNECTION_ATTEMPTS:
-                raise STTConnectionFailed from error
-            await self._reconnect(attempt + 1)
-
     async def _receive(self) -> str | None:
-        if not self._ws or not self.is_connected:
+        if self._stream_failure is not None:
+            raise self._stream_failure
+        if not self._ws:
             return None
 
         try:
             return await self._ws.recv(decode=True)
         except websockets.ConnectionClosed:
-            logger.info("Connection closed by Sarvam STT")
-            await self._reconnect()
-        except (asyncio.TimeoutError, asyncio.CancelledError):
-            pass
-        except Exception as error:
-            logger.error(
-                "Sarvam STT receive failed error_type=%s",
-                type(error).__name__,
+            if self._close_task is not None:
+                raise STTConnectionClosed("Sarvam STT was closed locally.") from None
+            self._stream_failure = STTConnectionRetryUnsafe(
+                "Sarvam STT ended without confirmed final delivery.",
+                kind=STTConnectionFailureKind.NETWORK,
             )
-            raise
-        return None
+            raise self._stream_failure from None
 
-    async def _send_flush(self):
-        if not self._ws or not self.is_connected or not self._config.flush_signal:
+    async def _send_flush(self) -> None:
+        if (
+            not self._ws
+            or not self.is_connected
+            or self._config.flush_signal is SpeechOptionState.DISABLED
+        ):
             return
-        await self._ws.send(json.dumps({"type": "flush"}))
+        await self._send(SttFlushSignal().model_dump_json())
 
-    async def _receive_raw_event(self) -> dict | None:
+    async def _receive_raw_event(self) -> SarvamSTTEvent | None:
         payload = await self._receive()
-        if not payload:
+        if payload is None:
             return None
-
         try:
-            data = json.loads(payload)
-            message_type = str(data.get("type", "")).lower()
-            message_data = data.get("data", {})
-            timestamp = arrow.utcnow().timestamp()
-
-            if message_type in {
-                _SarvamMessageType.DATA.value,
-                _SarvamMessageType.TRANSLATION.value,
-            }:
-                transcript = (
-                    message_data.get("transcript")
-                    or message_data.get("translation")
-                    or message_data.get("text")
-                    or ""
-                ).strip()
-                if not transcript:
-                    return None
-
-                self._state.speech_active = False
-                self._state.interrupted_this_turn = False
-                return {
-                    "type": "transcript",
-                    "transcript": transcript,
-                    "is_final": True,
-                    "timestamp": timestamp,
-                }
-
-            if message_type == _SarvamMessageType.EVENTS.value:
-                signal_type = message_data.get("signal_type")
-
-                if signal_type == _SarvamSignalType.START_SPEECH.value:
-                    self._state.speech_active = True
-                    if not self._state.interrupted_this_turn:
-                        self._state.interrupted_this_turn = True
-                        return {
-                            "type": "interrupt",
-                            "should_interrupt": True,
-                            "timestamp": timestamp,
-                        }
-                    return None
-
-                if signal_type == _SarvamSignalType.END_SPEECH.value:
-                    self._state.speech_active = False
-                    self._state.interrupted_this_turn = False
-                    await self._send_flush()
-                    return None
-
-            if message_type == _SarvamMessageType.ERROR.value:
-                logger.error("Sarvam STT provider error")
-                return None
-        except json.JSONDecodeError:
-            logger.error("Failed to decode Sarvam STT response")
-        except Exception as error:
-            logger.error(
-                "Sarvam STT response processing failed error_type=%s",
-                type(error).__name__,
+            return parse_sarvam_stt_event(payload)
+        except ValidationError:
+            self._stream_failure = STTConnectionRetryUnsafe(
+                "Sarvam returned an invalid STT event.",
+                kind=STTConnectionFailureKind.PROTOCOL,
             )
+            raise self._stream_failure from None
 
-        return None
+    async def send_audio(self, audio_data: bytes) -> None:
+        prepared_audio = self._prepare_audio(audio_data)
+        await self._send(self._build_audio_message(prepared_audio))
 
-    async def send_audio(self, audio_data: bytes):
-        if not self._ws or not self.is_connected:
-            raise STTConnectionError("Not connected to Sarvam STT")
-
-        try:
-            prepared_audio = self._prepare_audio(audio_data)
-            await self._ws.send(self._build_audio_message(prepared_audio))
-        except Exception as error:
-            logger.error(
-                "Sarvam STT audio send failed error_type=%s",
-                type(error).__name__,
-            )
-            raise
+    async def _send(self, message: str) -> None:
+        async with self._send_lock:
+            if self._stream_failure is not None:
+                raise self._stream_failure
+            if self._close_task is not None or not self._ws or not self.is_connected:
+                raise STTConnectionRetryUnsafe("Sarvam STT is not accepting input.")
+            try:
+                await self._ws.send(message)
+            except asyncio.CancelledError:
+                self._stream_failure = STTConnectionRetryUnsafe(
+                    "Sarvam STT input delivery was interrupted and is uncertain."
+                )
+                raise
+            except Exception:
+                self._stream_failure = STTConnectionRetryUnsafe(
+                    "Sarvam STT input delivery failed and is uncertain."
+                )
+                raise self._stream_failure from None
 
     async def receive_event(self, timeout_ms: int = 100) -> STTEvent | None:
-        """Next event as the canonical `STTEvent`.
-
-        Adapts what `receive_event` already returns instead of replacing it,
-        so the live path keeps its exact behaviour. Only fields the vendor
-        actually reported are set — confidence and timings stay unset rather
-        than invented.
-        """
-        raw = await self._receive_raw_event()
-        if raw is None:
+        """Keep native identity and metrics; failed responses are not empty speech."""
+        native = await self._receive_raw_event()
+        if native is None:
             return None
-        event_type = raw.get("type") or raw.get("event")
-        return STTEvent(
-            type=STTEventType(event_type)
-            if event_type in set(STTEventType)
-            else STTEventType.TRANSCRIPT_PARTIAL,
-            provider=self.provider,
-            model=self.model,
-            transcript=str(raw.get("transcript") or raw.get("text") or ""),
-            is_final=bool(raw.get("is_final", False)),
-            confidence=raw.get("confidence"),
-            language=raw.get("language"),
-        )
+        if isinstance(native, SarvamErrorEvent):
+            self._stream_failure = STTConnectionRetryUnsafe(
+                "Sarvam reported an STT failure.",
+                kind=STTConnectionFailureKind.PROTOCOL,
+            )
+            raise self._stream_failure from None
+        if isinstance(native, SarvamTranscript):
+            self._speech_state = _SarvamSpeechState.IDLE
+            return sarvam_transcript_event(native, model=self.model)
+        if native.data.signal_type is SarvamSignalType.START_SPEECH:
+            if self._speech_state is not _SarvamSpeechState.SPEAKING:
+                self._speech_state = _SarvamSpeechState.SPEAKING
+                return sarvam_speech_started_event(native, model=self.model)
+            return None
+        self._speech_state = _SarvamSpeechState.IDLE
+        await self._send_flush()
+        return None
 
     async def flush(self) -> None:
-        """No flush frame on this stream. Explicit, not faked."""
-        return None
+        """Request a final result when enabled; this API has no flush-complete ack."""
+        await self._send_flush()
 
     @property
     def provider(self) -> str:
-        return "sarvam"
+        return STTProvider.SARVAM.value
 
     @property
     def model(self) -> str:
-        return str(getattr(self._config, "model", "") or "")
+        return self._config.model.value
 
     @property
     def sample_rate(self) -> int:
-        """From the operator's config. 16 kHz only if nothing was configured —
-        the transport needs a number, and this is the pipeline's rate.
-        """
-        return int(getattr(self._config, "sample_rate", 16000) or 16000)
+        return self._config.sample_rate
 
     @property
     def capabilities(self) -> STTCapabilities:
-        """Derived from this module's own behaviour, not from vendor memory.
-
-        Deepgram's documentation has been unreachable throughout this
-        migration, so confirm any of these against it before relying on a
-        False.
-        """
+        """The configured legacy endpoint emits finals, not realtime partials."""
         return STTCapabilities(
-            streaming=True,
-            batch_recognize=False,
-            interim_results=True,
-            vad_events=True,
-            turn_detection=False,
-            word_timestamps=False,
-            speaker_labels=False,
-            language_detection=False,
+            streaming=STTCapabilitySupport.SUPPORTED,
+            batch_recognize=STTCapabilitySupport.UNSUPPORTED,
+            interim_results=STTCapabilitySupport.UNSUPPORTED,
+            vad_events=STTCapabilitySupport.SUPPORTED,
+            turn_detection=STTCapabilitySupport.UNSUPPORTED,
+            word_timestamps=STTCapabilitySupport.UNSUPPORTED,
+            speaker_labels=STTCapabilitySupport.UNSUPPORTED,
+            language_detection=STTCapabilitySupport.UNSUPPORTED,
         )

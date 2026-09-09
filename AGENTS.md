@@ -115,6 +115,17 @@ These rules are hard boundaries:
 
 ### Domain contracts
 
+- Prefer Pydantic models for platform data contracts, including internal values
+  and runtime state. Use frozen models for immutable values; keep mutable state
+  explicit. Retain dataclasses only for a specific documented requirement, not
+  merely because a type is internal. Preserve live-resource identity and exclude
+  runtime dependencies/raw content from snapshots during conversion. Protocols
+  still describe behavioral interfaces; do not replace them with data models.
+  SDK-owned types remain native inside adapters. Resource owners that manage
+  connections, queues, or task lifetimes may remain ordinary classes. Document
+  dataclass exceptions with the concrete interoperability requirement or measured
+  constraint; `frozen`, `slots`, and keyword-only construction alone are not a
+  reason to introduce a second platform data-contract convention.
 - When choosing a new domain, API, configuration, or persistence contract,
   always prefer a named enum over a boolean. Booleans are reserved for
   intrinsic predicates whose only meaningful states are true and false; never

@@ -276,9 +276,6 @@ def register_system_tools():
         ToolRequirements,
         ToolRuntimeFact,
     )
-    from eylo.modules.tools.services.executors.system_tools.compound_render_widget import (
-        compound_render_widget,
-    )
     from eylo.modules.tools.services.executors.system_tools.convert_to_utc import (
         convert_to_utc,
     )
@@ -301,12 +298,6 @@ def register_system_tools():
     )
 
     registrations = (
-        (
-            "compound_render_widget",
-            compound_render_widget,
-            ToolRequirements(runtime_facts=frozenset({ToolRuntimeFact.WIDGET})),
-            None,
-        ),
         ("convert_to_utc", convert_to_utc, ToolRequirements(), None),
         ("get_current_time", get_current_time, ToolRequirements(), None),
         ("is_iso_datetime", is_iso_datetime, ToolRequirements(), None),

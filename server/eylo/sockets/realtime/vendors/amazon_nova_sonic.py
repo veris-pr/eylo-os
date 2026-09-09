@@ -12,23 +12,41 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator, Awaitable
-from typing import Any, TypeVar
+from enum import StrEnum
+from typing import Literal, TypeVar
 from uuid import uuid4
 
 from aws_sdk_bedrock_runtime.client import BedrockRuntimeClient
 from aws_sdk_bedrock_runtime.config import Config
 from aws_sdk_bedrock_runtime.models import (
     BidirectionalInputPayloadPart,
+    InvokeModelWithBidirectionalStreamInput,
     InvokeModelWithBidirectionalStreamInputChunk,
     InvokeModelWithBidirectionalStreamOperationInput,
+    InvokeModelWithBidirectionalStreamOperationOutput,
+    InvokeModelWithBidirectionalStreamOutput,
+    InvokeModelWithBidirectionalStreamOutputChunk,
+    InvokeModelWithBidirectionalStreamOutputInternalServerException,
+    InvokeModelWithBidirectionalStreamOutputModelStreamErrorException,
+    InvokeModelWithBidirectionalStreamOutputModelTimeoutException,
+    InvokeModelWithBidirectionalStreamOutputServiceUnavailableException,
+    InvokeModelWithBidirectionalStreamOutputThrottlingException,
+    InvokeModelWithBidirectionalStreamOutputValidationException,
 )
+from pydantic import BaseModel, ConfigDict, Field
 from smithy_aws_core.identity import StaticCredentialsResolver
+from smithy_core.aio.eventstream import DuplexEventStream
+from smithy_core.aio.interfaces.eventstream import EventReceiver
 
 from eylo.common.contracts.tool_record import ToolRecord
 from eylo.sockets.llm.vendors.openai_utils import (
     extract_openai_function_declarations,
 )
-from eylo.sockets.realtime.base import RealtimeAdapter, RealtimeCapabilities
+from eylo.sockets.realtime.base import (
+    RealtimeAdapter,
+    RealtimeCapabilities,
+    RealtimeSessionUpdateMode,
+)
 from eylo.sockets.realtime.config import RealtimeSessionConfig
 from eylo.sockets.realtime.events import (
     VENDOR_OUTPUT_SAMPLE_RATE,
@@ -43,34 +61,58 @@ from eylo.sockets.realtime.events import (
     ToolCallEvent,
     TurnCompleteEvent,
 )
+from eylo.sockets.realtime.vendors import amazon_nova_sonic_wire as wire
 
 logger = logging.getLogger(__name__)
 
-_INPUT_AUDIO_CONFIG = {
-    "mediaType": "audio/lpcm",
-    "sampleRateHertz": 16000,
-    "sampleSizeBits": 16,
-    "channelCount": 1,
-    "audioType": "SPEECH",
-    "encoding": "base64",
-}
-_OUTPUT_AUDIO_CONFIG = {
-    "mediaType": "audio/lpcm",
-    "sampleRateHertz": VENDOR_OUTPUT_SAMPLE_RATE,
-    "sampleSizeBits": 16,
-    "channelCount": 1,
-    "encoding": "base64",
-    "audioType": "SPEECH",
-}
+_INPUT_AUDIO_CONFIG = wire.NovaInputAudioConfiguration(sample_rate_hertz=16000)
 _SESSION_LIMIT_SECONDS = 8 * 60
 _TURN_BOUNDARY_ROTATION_SECONDS = 7 * 60
 _FORCED_ROTATION_SECONDS = 7 * 60 + 45
 _SDK_RECEIVE_DRAIN_SECONDS = 5.0
+_SDK_CLOSE_SECONDS = 10.0
 
+NovaStream = DuplexEventStream[
+    InvokeModelWithBidirectionalStreamInput,
+    InvokeModelWithBidirectionalStreamOutput,
+    InvokeModelWithBidirectionalStreamOperationOutput,
+]
+NovaOutput = tuple[
+    InvokeModelWithBidirectionalStreamOperationOutput,
+    EventReceiver[InvokeModelWithBidirectionalStreamOutput],
+]
 _SDKResult = TypeVar("_SDKResult")
 
 
-def _consume_detached_sdk_result(task: asyncio.Future[Any]) -> None:
+class NovaStreamError(StrEnum):
+    INTERNAL_SERVER = "InternalServer"
+    MODEL_TIMEOUT = "ModelTimeout"
+    SERVICE_UNAVAILABLE = "ServiceUnavailable"
+    THROTTLING = "Throttling"
+    VALIDATION = "Validation"
+    MODEL_STREAM = "ModelStreamError"
+    UNKNOWN = "stream_error"
+
+
+class NovaContentState(BaseModel):
+    """One validated output block and its text fragments, owned by this stream."""
+
+    model_config = ConfigDict(extra="forbid", validate_assignment=True)
+
+    start: wire.NovaOutputStart
+    fragments: list[str] = Field(default_factory=list)
+
+
+class NovaHistoryEntry(BaseModel):
+    """Only final user/spoken assistant text is eligible for reconnect replay."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    role: Literal[wire.NovaRole.USER, wire.NovaRole.ASSISTANT]
+    text: str
+
+
+def _consume_detached_sdk_result(task: asyncio.Future[_SDKResult]) -> None:
     """Consume a shielded SDK await after Eylo stops waiting for it."""
     try:
         task.result()
@@ -78,14 +120,14 @@ def _consume_detached_sdk_result(task: asyncio.Future[Any]) -> None:
         pass
     except Exception as error:
         logger.debug(
-            "Detached Amazon Nova receive completed with error_type=%s",
+            "Detached Amazon Nova operation completed with error_type=%s",
             type(error).__name__,
         )
 
 
 async def _await_cancellation_unsafe_sdk(
     operation: Awaitable[_SDKResult],
-    pending_tasks: set[asyncio.Future[Any]],
+    pending_tasks: set[asyncio.Future[_SDKResult]],
 ) -> _SDKResult:
     """Keep task cancellation out of AWS CRT response futures.
 
@@ -126,23 +168,30 @@ class AmazonNovaSonicAdapter(RealtimeAdapter):
             aws_session_token=session_token,
         )
         self._client = BedrockRuntimeClient(config=sdk_config)
-        self._stream: Any | None = None
+        self._stream: NovaStream | None = None
         self._send_lock = asyncio.Lock()
         self._generation = 0
         self._session_started_emitted = False
         self._prompt_name = ""
         self._audio_content_name = ""
-        self._content_metadata: dict[str, dict[str, str]] = {}
-        self._text_fragments: dict[str, list[str]] = {}
-        self._conversation_history: list[tuple[str, str]] = []
+        self._content_state: dict[str, NovaContentState] = {}
+        self._conversation_history: list[NovaHistoryEntry] = []
+        self._pending_tools: dict[str, wire.NovaToolUse] = {}
+        self._session_id: str | None = None
         self._pending_policy_inputs: list[frozenset[str]] = []
-        self._sdk_receive_tasks: set[asyncio.Future[Any]] = set()
+        self._sdk_output_tasks: set[asyncio.Future[NovaOutput]] = set()
+        self._sdk_receive_tasks: set[
+            asyncio.Future[InvokeModelWithBidirectionalStreamOutput | None]
+        ] = set()
+        self._sdk_close_tasks: set[asyncio.Future[None]] = set()
         self._connected_at = 0.0
         self._rotation_requested = False
 
     @property
     def capabilities(self) -> RealtimeCapabilities:
-        return RealtimeCapabilities(session_update_mode="reconnect")
+        return RealtimeCapabilities(
+            session_update_mode=RealtimeSessionUpdateMode.RECONNECT
+        )
 
     async def connect(self) -> None:
         if self._connected:
@@ -150,8 +199,9 @@ class AmazonNovaSonicAdapter(RealtimeAdapter):
         self._generation += 1
         self._prompt_name = str(uuid4())
         self._audio_content_name = str(uuid4())
-        self._content_metadata.clear()
-        self._text_fragments.clear()
+        self._content_state.clear()
+        self._pending_tools.clear()
+        self._session_id = None
         self._session_started_emitted = False
         self._rotation_requested = False
 
@@ -163,9 +213,9 @@ class AmazonNovaSonicAdapter(RealtimeAdapter):
         self._stream = stream
         try:
             await self._send_initial_events()
-        except Exception:
-            await stream.input_stream.close()
+        except BaseException:
             self._stream = None
+            await self._close_stream(stream)
             raise
         self._connected = True
         self._connected_at = time.monotonic()
@@ -187,58 +237,72 @@ class AmazonNovaSonicAdapter(RealtimeAdapter):
 
     async def disconnect(self) -> None:
         stream = self._stream
-        if stream is None:
-            self._connected = False
-            self._session_started_emitted = False
-            self._pending_policy_inputs.clear()
-            return
         self._connected = False
         self._stream = None
         try:
-            async with self._send_lock:
-                await self._send_event_to_stream(
-                    stream,
-                    self._content_end(self._audio_content_name),
-                )
-                await self._send_event_to_stream(
-                    stream,
-                    {"event": {"promptEnd": {"promptName": self._prompt_name}}},
-                )
-                await self._send_event_to_stream(
-                    stream,
-                    {"event": {"sessionEnd": {}}},
-                )
-        except Exception as error:
-            logger.debug(
-                "Amazon Nova 2 Sonic close events failed error_type=%s",
-                type(error).__name__,
-            )
-        finally:
-            try:
-                await stream.input_stream.close()
-            except Exception as error:
-                logger.debug(
-                    "Amazon Nova 2 Sonic input close failed error_type=%s",
-                    type(error).__name__,
-                )
-            await self._drain_sdk_receive_tasks()
-            output_stream = getattr(stream, "output_stream", None)
-            if output_stream is not None:
+            if stream is not None:
                 try:
-                    await output_stream.close()
+                    async with self._send_lock:
+                        for event in (
+                            self._content_end(self._audio_content_name),
+                            wire.NovaPromptEnd(prompt_name=self._prompt_name),
+                            wire.NovaSessionEnd(),
+                        ):
+                            await self._send_event_to_stream(stream, event)
                 except Exception as error:
                     logger.debug(
-                        "Amazon Nova 2 Sonic output close failed error_type=%s",
+                        "Amazon Nova 2 Sonic close events failed error_type=%s",
                         type(error).__name__,
                     )
-            self._content_metadata.clear()
-            self._text_fragments.clear()
+                finally:
+                    await self._close_stream(stream)
+        finally:
+            self._content_state.clear()
+            self._pending_tools.clear()
+            self._session_id = None
             self._session_started_emitted = False
             self._pending_policy_inputs.clear()
 
+    async def _close_stream(self, stream: NovaStream) -> None:
+        """Bound caller wait; keep late SDK cleanup owned and shielded."""
+        try:
+            async with asyncio.timeout(_SDK_CLOSE_SECONDS):
+                await _await_cancellation_unsafe_sdk(
+                    self._close_native_stream(stream), self._sdk_close_tasks
+                )
+        except TimeoutError:
+            logger.warning(
+                "Amazon Nova 2 Sonic close exceeded %.1fs; "
+                "tracked native cleanup continues in background.",
+                _SDK_CLOSE_SECONDS,
+            )
+
+    async def _close_native_stream(self, stream: NovaStream) -> None:
+        """Include output acquired after setup failed, not only an exposed receiver."""
+        try:
+            await stream.input_stream.close()
+        except Exception as error:
+            logger.debug(
+                "Amazon Nova 2 Sonic input close failed error_type=%s",
+                type(error).__name__,
+            )
+        await self._drain_sdk_receive_tasks()
+        try:
+            _, output_stream = await stream.await_output()
+            await output_stream.close()
+        except Exception as error:
+            logger.debug(
+                "Amazon Nova 2 Sonic output close failed error_type=%s",
+                type(error).__name__,
+            )
+
     async def _drain_sdk_receive_tasks(self) -> None:
         """Let native response callbacks settle without cancelling their futures."""
-        pending = {task for task in self._sdk_receive_tasks if not task.done()}
+        pending = {
+            task
+            for task in (*self._sdk_output_tasks, *self._sdk_receive_tasks)
+            if not task.done()
+        }
         if not pending:
             return
         _, still_pending = await asyncio.wait(
@@ -255,17 +319,12 @@ class AmazonNovaSonicAdapter(RealtimeAdapter):
     async def send_audio(self, audio_data: bytes) -> None:
         if not audio_data:
             return
-        encoded = base64.b64encode(audio_data).decode("ascii")
         await self._send_event(
-            {
-                "event": {
-                    "audioInput": {
-                        "promptName": self._prompt_name,
-                        "contentName": self._audio_content_name,
-                        "content": encoded,
-                    }
-                }
-            }
+            wire.NovaAudioInput(
+                prompt_name=self._prompt_name,
+                content_name=self._audio_content_name,
+                content=base64.b64encode(audio_data).decode("ascii"),
+            )
         )
 
     async def request_speech(self, text: str) -> None:
@@ -281,9 +340,9 @@ class AmazonNovaSonicAdapter(RealtimeAdapter):
             )
         )
         await self._send_text_sequence(
-            role="USER",
+            role=wire.NovaRole.USER,
             text=instruction,
-            interactive=True,
+            mode=wire.NovaTextMode.INTERACTIVE,
         )
 
     async def receive(self) -> AsyncIterator[RealtimeEvent]:
@@ -295,34 +354,47 @@ class AmazonNovaSonicAdapter(RealtimeAdapter):
             while self._connected and generation == self._generation:
                 rotation_timeout = max(
                     0.0,
-                    _FORCED_ROTATION_SECONDS
-                    - (time.monotonic() - self._connected_at),
+                    _FORCED_ROTATION_SECONDS - (time.monotonic() - self._connected_at),
                 )
                 try:
                     async with asyncio.timeout(rotation_timeout):
                         output = await _await_cancellation_unsafe_sdk(
                             stream.await_output(),
-                            self._sdk_receive_tasks,
+                            self._sdk_output_tasks,
                         )
                         result = await _await_cancellation_unsafe_sdk(
                             output[1].receive(),
                             self._sdk_receive_tasks,
                         )
                 except TimeoutError:
+                    if not self._connected or generation != self._generation:
+                        return
                     self._rotation_requested = True
                     yield GoAwayEvent(time_left_ms=self._rotation_time_left_ms())
                     return
-                if generation != self._generation:
+                if not self._connected or generation != self._generation:
                     return
-                payload = getattr(getattr(result, "value", None), "bytes_", None)
-                if payload:
-                    data = json.loads(payload.decode("utf-8"))
-                    for event in self._translate(data):
+                if result is None:
+                    return
+                if isinstance(result, InvokeModelWithBidirectionalStreamOutputChunk):
+                    payload = result.value.bytes_
+                    if payload is None:
+                        raise wire.NovaProtocolError(
+                            wire.NovaProtocolFailure.MALFORMED_EVENT
+                        )
+                    for event in self._translate(wire.parse_nova_event(payload)):
                         yield event
                     continue
                 error = self._translate_stream_error(result)
-                if error is not None:
-                    yield error
+                yield error
+                if not error.is_recoverable:
+                    return
+        except wire.NovaProtocolError as error:
+            yield ErrorEvent(
+                message=str(error),
+                code=error.code.value,
+                is_recoverable=False,
+            )
         except StopAsyncIteration:
             return
         except asyncio.CancelledError:
@@ -340,39 +412,27 @@ class AmazonNovaSonicAdapter(RealtimeAdapter):
                 )
 
     async def send_tool_result(self, tool_call_id: str, result: str) -> None:
+        if tool_call_id not in self._pending_tools:
+            raise wire.NovaProtocolError(wire.NovaProtocolFailure.IDENTITY_MISMATCH)
         content_name = str(uuid4())
         await self._send_events(
             [
-                {
-                    "event": {
-                        "contentStart": {
-                            "promptName": self._prompt_name,
-                            "contentName": content_name,
-                            "interactive": False,
-                            "type": "TOOL",
-                            "role": "TOOL",
-                            "toolResultInputConfiguration": {
-                                "toolUseId": tool_call_id,
-                                "type": "TEXT",
-                                "textInputConfiguration": {
-                                    "mediaType": "text/plain"
-                                },
-                            },
-                        }
-                    }
-                },
-                {
-                    "event": {
-                        "toolResult": {
-                            "promptName": self._prompt_name,
-                            "contentName": content_name,
-                            "content": json.dumps({"result": result}),
-                        }
-                    }
-                },
+                wire.NovaToolResultStart(
+                    prompt_name=self._prompt_name,
+                    content_name=content_name,
+                    tool_result_input_configuration=wire.NovaToolResultConfiguration(
+                        tool_use_id=tool_call_id
+                    ),
+                ),
+                wire.NovaToolResult(
+                    prompt_name=self._prompt_name,
+                    content_name=content_name,
+                    content=wire.NovaResultContent(result=result).model_dump_json(),
+                ),
                 self._content_end(content_name),
             ]
         )
+        self._pending_tools.pop(tool_call_id, None)
 
     async def update_session(
         self,
@@ -383,125 +443,100 @@ class AmazonNovaSonicAdapter(RealtimeAdapter):
         temperature: float | None = None,
     ) -> None:
         """Reconnect and replay finalized history for handoffs/config changes."""
-        if system_prompt is not None:
-            self._config.system_prompt = system_prompt
-        if tools is not None:
-            self._config.tools = tools
-        if voice is not None:
-            self._config.voice = voice
-        if temperature is not None:
-            self._config.temperature = temperature
+        updated = self._config.updated(
+            system_prompt=system_prompt,
+            tools=tools,
+            voice=voice,
+            temperature=temperature,
+        )
         await self.disconnect()
+        self._config = updated
         await self.connect()
 
     async def _send_initial_events(self) -> None:
-        inference = {
-            "maxTokens": self._require_int("max_tokens"),
-            "topP": self._require_float("top_p"),
-            "temperature": self._require_float("temperature"),
-        }
-        session_start: dict[str, Any] = {
-            "event": {
-                "sessionStart": {
-                    "inferenceConfiguration": inference,
-                    "turnDetectionConfiguration": {
-                        "endpointingSensitivity": self._require_string(
-                            "endpointing_sensitivity"
-                        )
-                    },
-                }
-            }
-        }
-        prompt_start: dict[str, Any] = {
-            "event": {
-                "promptStart": {
-                    "promptName": self._prompt_name,
-                    "textOutputConfiguration": {"mediaType": "text/plain"},
-                    "audioOutputConfiguration": {
-                        **_OUTPUT_AUDIO_CONFIG,
-                        "voiceId": self._config.voice,
-                    },
-                }
-            }
-        }
-        tool_config = self._format_tools()
-        if tool_config:
-            prompt_start["event"]["promptStart"].update(
-                {
-                    "toolUseOutputConfiguration": {
-                        "mediaType": "application/json"
-                    },
-                    "toolConfiguration": {"tools": tool_config},
-                }
-            )
-
+        max_tokens = self._config.max_tokens
+        top_p = self._config.top_p
+        temperature = self._config.temperature
+        endpointing_sensitivity = self._config.endpointing_sensitivity
+        if max_tokens is None:
+            raise RuntimeError("Amazon Nova 2 Sonic requires max_tokens.")
+        if top_p is None:
+            raise RuntimeError("Amazon Nova 2 Sonic requires top_p.")
+        if temperature is None:
+            raise RuntimeError("Amazon Nova 2 Sonic requires temperature.")
+        if endpointing_sensitivity is None:
+            raise RuntimeError("Amazon Nova 2 Sonic requires endpointing_sensitivity.")
+        session_start = wire.NovaSessionStart(
+            inference_configuration=wire.NovaInferenceConfiguration(
+                max_tokens=max_tokens, top_p=top_p, temperature=temperature
+            ),
+            turn_detection_configuration=wire.NovaTurnDetectionConfiguration(
+                endpointing_sensitivity=wire.NovaEndpointingSensitivity(
+                    endpointing_sensitivity.value
+                )
+            ),
+        )
+        tools = self._format_tools()
+        prompt_start = wire.NovaPromptStart(
+            prompt_name=self._prompt_name,
+            audio_output_configuration=wire.NovaOutputAudioConfiguration(
+                sample_rate_hertz=VENDOR_OUTPUT_SAMPLE_RATE, voice_id=self._config.voice
+            ),
+            tool_use_output_configuration=wire.NovaJsonConfiguration()
+            if tools
+            else None,
+            tool_configuration=wire.NovaToolConfiguration(tools=tools)
+            if tools
+            else None,
+        )
         await self._send_events([session_start, prompt_start])
         if self._config.system_prompt.strip():
             await self._send_text_sequence(
-                role="SYSTEM",
+                role=wire.NovaRole.SYSTEM,
                 text=self._config.system_prompt,
-                interactive=False,
+                mode=wire.NovaTextMode.HISTORY,
             )
-        for role, text in self._replayable_history():
+        for entry in self._replayable_history():
             await self._send_text_sequence(
-                role=role,
-                text=text,
-                interactive=False,
+                role=entry.role, text=entry.text, mode=wire.NovaTextMode.HISTORY
             )
         await self._send_event(
-            {
-                "event": {
-                    "contentStart": {
-                        "promptName": self._prompt_name,
-                        "contentName": self._audio_content_name,
-                        "type": "AUDIO",
-                        "interactive": True,
-                        "role": "USER",
-                        "audioInputConfiguration": dict(_INPUT_AUDIO_CONFIG),
-                    }
-                }
-            }
+            wire.NovaAudioStart(
+                prompt_name=self._prompt_name,
+                content_name=self._audio_content_name,
+                audio_input_configuration=_INPUT_AUDIO_CONFIG,
+            )
         )
 
     async def _send_text_sequence(
         self,
         *,
-        role: str,
+        role: wire.NovaRole,
         text: str,
-        interactive: bool,
+        mode: wire.NovaTextMode,
     ) -> None:
         content_name = str(uuid4())
         await self._send_events(
             [
-                {
-                    "event": {
-                        "contentStart": {
-                            "promptName": self._prompt_name,
-                            "contentName": content_name,
-                            "type": "TEXT",
-                            "interactive": interactive,
-                            "role": role,
-                            "textInputConfiguration": {"mediaType": "text/plain"},
-                        }
-                    }
-                },
-                {
-                    "event": {
-                        "textInput": {
-                            "promptName": self._prompt_name,
-                            "contentName": content_name,
-                            "content": text,
-                        }
-                    }
-                },
+                wire.NovaTextStart(
+                    prompt_name=self._prompt_name,
+                    content_name=content_name,
+                    role=role,
+                    interactive=mode is wire.NovaTextMode.INTERACTIVE,
+                ),
+                wire.NovaTextInput(
+                    prompt_name=self._prompt_name,
+                    content_name=content_name,
+                    content=text,
+                ),
                 self._content_end(content_name),
             ]
         )
 
-    async def _send_event(self, event: dict[str, Any]) -> None:
+    async def _send_event(self, event: wire.NovaClientEvent) -> None:
         await self._send_events([event])
 
-    async def _send_events(self, events: list[dict[str, Any]]) -> None:
+    async def _send_events(self, events: list[wire.NovaClientEvent]) -> None:
         stream = self._stream
         if stream is None:
             raise RuntimeError("Amazon Nova 2 Sonic session is not connected.")
@@ -510,74 +545,81 @@ class AmazonNovaSonicAdapter(RealtimeAdapter):
                 await self._send_event_to_stream(stream, event)
 
     @staticmethod
-    async def _send_event_to_stream(stream: Any, event: dict[str, Any]) -> None:
-        payload = json.dumps(event, separators=(",", ":")).encode("utf-8")
+    async def _send_event_to_stream(
+        stream: NovaStream, event: wire.NovaClientEvent
+    ) -> None:
+        payload = wire.encode_nova_event(event)
         await stream.input_stream.send(
             InvokeModelWithBidirectionalStreamInputChunk(
                 value=BidirectionalInputPayloadPart(bytes_=payload)
             )
         )
 
-    def _content_end(self, content_name: str) -> dict[str, Any]:
-        return {
-            "event": {
-                "contentEnd": {
-                    "promptName": self._prompt_name,
-                    "contentName": content_name,
-                }
-            }
-        }
+    def _content_end(self, content_name: str) -> wire.NovaContentEnd:
+        return wire.NovaContentEnd(
+            prompt_name=self._prompt_name, content_name=content_name
+        )
 
-    def _format_tools(self) -> list[dict[str, Any]]:
+    def _format_tools(self) -> tuple[wire.NovaToolDefinition, ...]:
         declarations = extract_openai_function_declarations(self._config.tools)
-        return [
-            {
-                "toolSpec": {
-                    "name": declaration["name"],
-                    "description": declaration.get("description", ""),
-                    "inputSchema": {
-                        "json": json.dumps(declaration.get("parameters", {}))
-                    },
-                }
-            }
+        return tuple(
+            wire.NovaToolDefinition(
+                tool_spec=wire.NovaToolSpec(
+                    name=declaration["name"],
+                    description=declaration.get("description", ""),
+                    input_schema=wire.NovaToolInputSchema(
+                        json=json.dumps(
+                            declaration.get("parameters", {}), allow_nan=False
+                        )
+                    ),
+                )
+            )
             for declaration in declarations
-        ]
+        )
 
-    def _translate(self, data: dict[str, Any]) -> list[RealtimeEvent]:
-        event_wrapper = data.get("event")
-        if not isinstance(event_wrapper, dict) or not event_wrapper:
+    def _translate(self, event: wire.NovaServerEvent | None) -> list[RealtimeEvent]:
+        if event is None:
             return []
-        event_name, payload = next(iter(event_wrapper.items()))
-        if not isinstance(payload, dict):
-            return []
-
-        if event_name in {"sessionStart", "usageEvent"}:
+        if event.prompt_name != self._prompt_name or (
+            self._session_id is not None and event.session_id != self._session_id
+        ):
+            raise wire.NovaProtocolError(wire.NovaProtocolFailure.IDENTITY_MISMATCH)
+        if isinstance(event, (wire.NovaCompletionStart, wire.NovaUsageEvent)):
+            self._session_id = event.session_id
             if self._session_started_emitted:
                 return []
             self._session_started_emitted = True
-            return [SessionStartedEvent(session_id=str(payload.get("sessionId", "")))]
-        if event_name == "completionStart":
+            return [SessionStartedEvent(session_id=event.session_id)]
+        if isinstance(
+            event,
+            (
+                wire.NovaTextOutputStart,
+                wire.NovaAudioOutputStart,
+                wire.NovaToolOutputStart,
+            ),
+        ):
+            if event.content_id in self._content_state:
+                raise wire.NovaProtocolError(wire.NovaProtocolFailure.CONTENT_MISMATCH)
+            if isinstance(event, wire.NovaAudioOutputStart) and (
+                event.audio_output_configuration.sample_rate_hertz
+                != VENDOR_OUTPUT_SAMPLE_RATE
+            ):
+                raise wire.NovaProtocolError(wire.NovaProtocolFailure.INVALID_AUDIO)
+            self._content_state[event.content_id] = NovaContentState(start=event)
             return []
-        if event_name == "contentStart":
-            self._remember_content_metadata(payload)
+        if isinstance(event, wire.NovaTextOutput):
+            state = self._content_for(event, wire.NovaContentType.TEXT)
+            state.fragments.append(event.content)
             return []
-        if event_name == "textOutput":
-            content_id = str(payload.get("contentId", ""))
-            content = payload.get("content")
-            if content_id and isinstance(content, str):
-                self._text_fragments.setdefault(content_id, []).append(content)
-            return []
-        if event_name == "audioOutput":
-            encoded = payload.get("content")
-            if not isinstance(encoded, str):
-                return []
+        if isinstance(event, wire.NovaAudioOutput):
+            self._content_for(event, wire.NovaContentType.AUDIO)
             try:
-                audio = base64.b64decode(encoded, validate=True)
-            except (ValueError, TypeError):
+                audio = base64.b64decode(event.content, validate=True)
+            except ValueError:
                 return [
                     ErrorEvent(
                         message="Amazon Nova 2 Sonic returned invalid audio",
-                        code="invalid_audio",
+                        code=wire.NovaProtocolFailure.INVALID_AUDIO.value,
                         is_recoverable=True,
                     )
                 ]
@@ -586,13 +628,31 @@ class AmazonNovaSonicAdapter(RealtimeAdapter):
                 if audio
                 else []
             )
-        if event_name == "toolUse":
-            return [self._translate_tool_call(payload)]
-        if event_name == "contentEnd":
-            return self._translate_content_end(payload)
-        if event_name == "completionEnd":
-            stop_reason = str(payload.get("stopReason", ""))
-            if stop_reason not in {"END_TURN", "INTERRUPTED"}:
+        if isinstance(event, wire.NovaToolUse):
+            self._content_for(event, wire.NovaContentType.TOOL)
+            arguments = wire.parse_nova_tool_arguments(event.content)
+            if event.tool_use_id in self._pending_tools:
+                raise wire.NovaProtocolError(wire.NovaProtocolFailure.IDENTITY_MISMATCH)
+            self._pending_tools[event.tool_use_id] = event
+            return [
+                ToolCallEvent(
+                    tool_call_id=event.tool_use_id,
+                    tool_name=event.tool_name,
+                    arguments=arguments,
+                )
+            ]
+        if isinstance(event, wire.NovaOutputContentEnd):
+            return self._translate_content_end(event)
+        if isinstance(event, wire.NovaCompletionEnd):
+            self._content_state = {
+                key: state
+                for key, state in self._content_state.items()
+                if state.start.completion_id != event.completion_id
+            }
+            if event.stop_reason not in {
+                wire.NovaStopReason.END_TURN,
+                wire.NovaStopReason.INTERRUPTED,
+            }:
                 return []
             events: list[RealtimeEvent] = [TurnCompleteEvent()]
             if (
@@ -601,48 +661,39 @@ class AmazonNovaSonicAdapter(RealtimeAdapter):
                 >= _TURN_BOUNDARY_ROTATION_SECONDS
             ):
                 self._rotation_requested = True
-                events.append(
-                    GoAwayEvent(time_left_ms=self._rotation_time_left_ms())
-                )
+                events.append(GoAwayEvent(time_left_ms=self._rotation_time_left_ms()))
             return events
-        if event_name == "error":
-            return [
-                ErrorEvent(
-                    message="Amazon Nova 2 Sonic reported an error",
-                    code=str(payload.get("code", "provider_error")),
-                    is_recoverable=False,
-                )
-            ]
         return []
 
-    def _remember_content_metadata(self, payload: dict[str, Any]) -> None:
-        content_id = str(payload.get("contentId", ""))
-        if not content_id:
-            return
-        additional = payload.get("additionalModelFields")
-        generation_stage = ""
-        if isinstance(additional, str):
-            try:
-                parsed = json.loads(additional)
-                generation_stage = str(parsed.get("generationStage", ""))
-            except json.JSONDecodeError:
-                logger.debug("Amazon Nova 2 Sonic sent invalid model metadata")
-        self._content_metadata[content_id] = {
-            "role": str(payload.get("role", "")),
-            "type": str(payload.get("type", "")),
-            "generation_stage": generation_stage,
-        }
+    def _content_for(
+        self, event: wire.NovaOutputContent, kind: wire.NovaContentType
+    ) -> NovaContentState:
+        state = self._content_state.get(event.content_id)
+        if state is None or state.start.type is not kind:
+            raise wire.NovaProtocolError(wire.NovaProtocolFailure.CONTENT_MISMATCH)
+        if (
+            state.start.session_id != event.session_id
+            or state.start.prompt_name != event.prompt_name
+            or state.start.completion_id != event.completion_id
+        ):
+            raise wire.NovaProtocolError(wire.NovaProtocolFailure.IDENTITY_MISMATCH)
+        return state
 
     def _translate_content_end(
-        self, payload: dict[str, Any]
+        self, event: wire.NovaOutputContentEnd
     ) -> list[RealtimeEvent]:
+        state = self._content_for(event, event.type)
+        del self._content_state[event.content_id]
         events: list[RealtimeEvent] = []
-        content_id = str(payload.get("contentId", ""))
-        metadata = self._content_metadata.pop(content_id, {})
-        text = "".join(self._text_fragments.pop(content_id, [])).strip()
-        if text and metadata.get("generation_stage") == "FINAL":
-            role = metadata.get("role")
-            if role == "USER":
+        text = "".join(state.fragments).strip()
+        start = state.start
+        if (
+            text
+            and isinstance(start, wire.NovaTextOutputStart)
+            and start.additional_model_fields.generation_stage
+            is wire.NovaGenerationStage.FINAL
+        ):
+            if start.role is wire.NovaRole.USER:
                 normalized = _normalize_text(text)
                 matching_policy = next(
                     (
@@ -655,78 +706,64 @@ class AmazonNovaSonicAdapter(RealtimeAdapter):
                 if matching_policy is not None:
                     self._pending_policy_inputs.remove(matching_policy)
                 else:
-                    self._conversation_history.append(("USER", text))
+                    self._conversation_history.append(
+                        NovaHistoryEntry(role=wire.NovaRole.USER, text=text)
+                    )
                     events.append(InputTranscriptEvent(text=text, is_final=True))
-            elif role == "ASSISTANT":
-                self._conversation_history.append(("ASSISTANT", text))
+            else:
+                self._conversation_history.append(
+                    NovaHistoryEntry(role=wire.NovaRole.ASSISTANT, text=text)
+                )
                 events.append(OutputTranscriptEvent(text=text, is_final=True))
-        if payload.get("stopReason") == "INTERRUPTED":
+        if event.stop_reason is wire.NovaStopReason.INTERRUPTED:
             events.append(InterruptionEvent())
         return events
 
     @staticmethod
-    def _translate_tool_call(payload: dict[str, Any]) -> ToolCallEvent:
-        raw_arguments = payload.get("content", {})
-        if isinstance(raw_arguments, str):
-            try:
-                raw_arguments = json.loads(raw_arguments)
-            except json.JSONDecodeError:
-                raw_arguments = {}
-        arguments = raw_arguments if isinstance(raw_arguments, dict) else {}
-        return ToolCallEvent(
-            tool_call_id=str(payload.get("toolUseId", "")),
-            tool_name=str(payload.get("toolName", "")),
-            arguments=arguments,
-        )
-
-    @staticmethod
-    def _translate_stream_error(result: object) -> ErrorEvent | None:
-        value = getattr(result, "value", None)
-        if value is None:
-            return None
-        result_name = type(result).__name__
-        recoverable = result_name in {
-            "InvokeModelWithBidirectionalStreamOutputInternalServerException",
-            "InvokeModelWithBidirectionalStreamOutputModelTimeoutException",
-            "InvokeModelWithBidirectionalStreamOutputServiceUnavailableException",
-            "InvokeModelWithBidirectionalStreamOutputThrottlingException",
-        }
-        code = result_name.removeprefix(
-            "InvokeModelWithBidirectionalStreamOutput"
-        ).removesuffix("Exception")
+    def _translate_stream_error(
+        result: InvokeModelWithBidirectionalStreamOutput,
+    ) -> ErrorEvent:
+        if isinstance(
+            result, InvokeModelWithBidirectionalStreamOutputInternalServerException
+        ):
+            code, recoverable = NovaStreamError.INTERNAL_SERVER, True
+        elif isinstance(
+            result, InvokeModelWithBidirectionalStreamOutputModelTimeoutException
+        ):
+            code, recoverable = NovaStreamError.MODEL_TIMEOUT, True
+        elif isinstance(
+            result, InvokeModelWithBidirectionalStreamOutputServiceUnavailableException
+        ):
+            code, recoverable = NovaStreamError.SERVICE_UNAVAILABLE, True
+        elif isinstance(
+            result, InvokeModelWithBidirectionalStreamOutputThrottlingException
+        ):
+            code, recoverable = NovaStreamError.THROTTLING, True
+        elif isinstance(
+            result, InvokeModelWithBidirectionalStreamOutputValidationException
+        ):
+            code, recoverable = NovaStreamError.VALIDATION, False
+        elif isinstance(
+            result, InvokeModelWithBidirectionalStreamOutputModelStreamErrorException
+        ):
+            code, recoverable = NovaStreamError.MODEL_STREAM, False
+        else:
+            code, recoverable = NovaStreamError.UNKNOWN, False
         return ErrorEvent(
             message="Amazon Nova 2 Sonic stream error",
-            code=code or "stream_error",
+            code=code.value,
             is_recoverable=recoverable,
         )
 
-    def _replayable_history(self) -> list[tuple[str, str]]:
-        for index, (role, _) in enumerate(self._conversation_history):
-            if role == "USER":
+    def _replayable_history(self) -> list[NovaHistoryEntry]:
+        for index, entry in enumerate(self._conversation_history):
+            if entry.role is wire.NovaRole.USER:
                 return self._conversation_history[index:]
         return []
 
     def _rotation_time_left_ms(self) -> int:
         elapsed = time.monotonic() - self._connected_at
         return max(0, int((_SESSION_LIMIT_SECONDS - elapsed) * 1000))
-
-    def _require_string(self, field_name: str) -> str:
-        value = getattr(self._config, field_name)
-        if not isinstance(value, str) or not value:
-            raise RuntimeError(f"Amazon Nova 2 Sonic requires {field_name}.")
-        return value
-
-    def _require_int(self, field_name: str) -> int:
-        value = getattr(self._config, field_name)
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise RuntimeError(f"Amazon Nova 2 Sonic requires {field_name}.")
-        return value
-
-    def _require_float(self, field_name: str) -> float:
-        value = getattr(self._config, field_name)
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise RuntimeError(f"Amazon Nova 2 Sonic requires {field_name}.")
-        return float(value)
 
 
 def _normalize_text(value: str) -> str:

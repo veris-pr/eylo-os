@@ -8,30 +8,19 @@ presentation-only and never drive TTS, filler, or voice request state.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from uuid import UUID
 
 from eylo.modules.conversations.schemas.conversations import ConversationInDb
 from eylo.modules.conversations.schemas.messages import MessageInDb, MessageKind
 from eylo.modules.conversations.services.messages import MessageService
+from eylo.pipelines.llm.voice_text import VoiceTextPhase, VoiceTextSegment
 from eylo.pipelines.voice.filler import FillerPhraseManager
 from eylo.pipelines.voice.interaction_state import VoiceInteractionState
 from eylo.pipelines.voice.request_state import VoiceRequestStatus
+from eylo.pipelines.voice.tts_payloads import TTSFinalizeRequest, TTSTextRequest
 from eylo.pipelines.websocket.singleton import S_ws_manager
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True, slots=True)
-class VoiceTextSegment:
-    """One ordered LLM-to-TTS delivery unit for an active voice turn."""
-
-    organization_id: UUID
-    conversation_id: UUID
-    text: str
-    is_complete: bool
-    turn_id: str | None = None
-    request_id: str | None = None
 
 
 async def push_voice_message_to_tts(
@@ -45,10 +34,15 @@ async def push_voice_message_to_tts(
     logger.debug("Broadcasting created message to TTS")
     message_text = MessageService.get_message_content(message.content)
 
-    await S_ws_manager.conversation_tts_to_session(
-        conversation_id=conversation.id,
-        organization_id=conversation.organization_id,
-        payload={"type": "text", "text": message_text},
+    await deliver_voice_text_segment(
+        VoiceTextSegment(
+            conversation_id=conversation.id,
+            organization_id=conversation.organization_id,
+            turn_id=message.id,
+            request_id=message.request_id,
+            text=message_text,
+            phase=VoiceTextPhase.COMPLETE,
+        ),
     )
 
 
@@ -95,6 +89,8 @@ async def complete_voice_sessions_for_response(
 
 async def deliver_voice_text_segment(segment: VoiceTextSegment) -> None:
     """Deliver one segment directly so event scheduling cannot reorder speech."""
+    segment = VoiceTextSegment.model_validate(segment)
+    turn_id = str(segment.turn_id) if segment.turn_id is not None else None
     FillerPhraseManager.cancel_filler(segment.conversation_id)
 
     try:
@@ -108,7 +104,7 @@ async def deliver_voice_text_segment(segment: VoiceTextSegment) -> None:
             organization_id=segment.organization_id,
             request_id=segment.request_id,
             status=VoiceRequestStatus.LLM_STREAMING,
-            turn_id=segment.turn_id,
+            turn_id=turn_id,
         )
     except Exception:
         logger.warning("Could not clear thinking state")
@@ -122,15 +118,14 @@ async def deliver_voice_text_segment(segment: VoiceTextSegment) -> None:
         await S_ws_manager.conversation_tts_to_session(
             conversation_id=segment.conversation_id,
             organization_id=segment.organization_id,
-            payload={
-                "type": "text",
-                "text": segment.text,
-                "turn_id": segment.turn_id,
-                "request_id": segment.request_id,
-            },
+            payload=TTSTextRequest(
+                text=segment.text,
+                turn_id=turn_id,
+                request_id=segment.request_id,
+            ),
         )
 
-    if segment.is_complete:
+    if segment.phase is VoiceTextPhase.COMPLETE:
         logger.info(
             "[TTS_PIPELINE] LLM complete -> finalize (turn_id=%s)",
             segment.turn_id,
@@ -138,17 +133,16 @@ async def deliver_voice_text_segment(segment: VoiceTextSegment) -> None:
         await S_ws_manager.conversation_tts_to_session(
             conversation_id=segment.conversation_id,
             organization_id=segment.organization_id,
-            payload={
-                "type": "finalize",
-                "turn_id": segment.turn_id,
-                "request_id": segment.request_id,
-            },
+            payload=TTSFinalizeRequest(
+                turn_id=turn_id,
+                request_id=segment.request_id,
+            ),
         )
 
 
 async def set_thinking_state(
-    conversation_id,
-    organization_id,
+    conversation_id: UUID,
+    organization_id: UUID,
     thinking: bool,
 ) -> None:
     """Set ``is_agent_thinking`` on every voice session for a conversation."""
@@ -169,8 +163,8 @@ async def set_thinking_state(
 
 
 async def finish_idle_voice_activity(
-    conversation_id,
-    organization_id,
+    conversation_id: UUID,
+    organization_id: UUID,
 ) -> None:
     """Mark voice sessions as awaiting the user when no TTS turn is active."""
     session_ids = await S_ws_manager.get_sessions_for_conversation(
@@ -188,10 +182,7 @@ async def finish_idle_voice_activity(
         ):
             already_awaiting_user = session_state.voice_activity_gate.is_awaiting_user
             session_state.voice_activity_gate.mark_agent_activity_finished()
-            if (
-                not already_awaiting_user
-                and session_state.voice_interaction_callback
-            ):
+            if not already_awaiting_user and session_state.voice_interaction_callback:
                 session_state.voice_interaction_callback(
                     VoiceInteractionState.LISTENING
                 )
@@ -199,9 +190,9 @@ async def finish_idle_voice_activity(
 
 async def mark_voice_request_state(
     *,
-    conversation_id,
-    organization_id,
-    request_id,
+    conversation_id: UUID,
+    organization_id: UUID,
+    request_id: UUID | str | None,
     status: VoiceRequestStatus,
     turn_id: str | None = None,
 ) -> None:

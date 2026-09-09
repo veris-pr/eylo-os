@@ -7,6 +7,8 @@ from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
+from eylo.common.contracts.embedding import EmbeddingSpace
+from eylo.modules.llm_configs.domain import ResolvedLLM
 from eylo.modules.memory_configs.domain import MemoryProviderConfig
 
 
@@ -53,6 +55,17 @@ class MemoryVerificationResult:
     verified_at: datetime
 
 
+class MemoryEmbeddingRuntime(Protocol):
+    """Embedding operations and their verified coordinate space, without SDK types."""
+
+    @property
+    def space(self) -> EmbeddingSpace: ...
+
+    async def embed_documents(self, texts: list[str]) -> list[list[float]]: ...
+
+    async def embed_query(self, text: str) -> list[float]: ...
+
+
 class MemoryProviderVerifier(Protocol):
     async def verify(
         self,
@@ -62,6 +75,6 @@ class MemoryProviderVerifier(Protocol):
         memory_config_revision: int,
         config: MemoryProviderConfig,
         authority: MemoryDependencyAuthority,
-        embedding_runtime,
-        llm_runtime,
+        embedding_runtime: MemoryEmbeddingRuntime,
+        llm_runtime: ResolvedLLM,
     ) -> None: ...

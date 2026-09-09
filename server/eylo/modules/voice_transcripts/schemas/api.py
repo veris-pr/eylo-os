@@ -11,6 +11,7 @@ from pydantic import ConfigDict, Field
 from eylo.common.schemas import EyloBaseApiSchema
 from eylo.modules.voice_transcripts.constants import (
     VoiceAudioTrackKind,
+    VoiceCanonicalFailureCode,
     VoiceCanonicalState,
     VoiceRuntimeMode,
     VoiceSegmentRole,
@@ -72,7 +73,7 @@ class VoiceSessionSummary(EyloBaseApiSchema):
     status: VoiceSessionStatus
     canonical_state: VoiceCanonicalState
     canonical_redaction_version: int | None = None
-    canonical_failure_code: str | None = None
+    canonical_failure_code: VoiceCanonicalFailureCode | None = None
     canonical_source_complete: bool | None = None
     canonical_projected_at: datetime | None = None
     canonical_message_count: int = 0

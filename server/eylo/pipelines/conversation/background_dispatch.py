@@ -5,7 +5,9 @@ from __future__ import annotations
 import logging
 from uuid import UUID
 
+from eylo.common.database import current_transaction, start_transaction
 from eylo.common.revisions import DefinitionRef
+from eylo.modules.conversations.schemas.conversations import ConversationContext
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +15,7 @@ logger = logging.getLogger(__name__)
 async def dispatch_background_agents(
     *,
     agent_id: UUID,
-    conversation_context,
+    conversation_context: ConversationContext,
     request_id: UUID | None,
 ) -> int:
     """Enqueue every enabled background agent attached to `agent_id`.
@@ -41,13 +43,14 @@ async def dispatch_background_agents(
         # Per attachment: one background agent failing to enqueue must not
         # cost the others their dispatch.
         try:
-            await dispatcher.dispatch_background_agent(
+            task_id = await dispatcher.dispatch_background_agent(
                 background_agent_id=ref.definition_id,
                 background_agent_revision=ref.revision,
                 instruction=instruction,
                 request_id=request_id,
             )
-            dispatched += 1
+            if task_id is not None:
+                dispatched += 1
         except Exception as error:
             logger.error(
                 "Background agent=%s was not dispatched for agent=%s error_type=%s",
@@ -60,7 +63,7 @@ async def dispatch_background_agents(
 
 async def _published_background_refs(
     agent_id: UUID,
-    conversation_context,
+    conversation_context: ConversationContext,
 ) -> tuple[DefinitionRef, ...]:
     """Read the exact attachment snapshot filed with the running agent."""
     try:
@@ -70,12 +73,22 @@ async def _published_background_refs(
         agent = conversation_context.primary_agent
         if agent is None or agent.published_revision is None:
             raise ValueError("Conversation agent revision is unavailable.")
-        resolved = await build_executable_agent_resolver().resolve_exact(
-            organization_id=conversation_context.conversation.organization_id,
-            agent_id=agent_id,
-            revision=agent.published_revision,
-            consumer_kind=TemplateConsumerKind.CONVERSATIONAL_TEXT,
-        )
+        session = current_transaction()
+        if session is not None:
+            resolved = await build_executable_agent_resolver(session).resolve_exact(
+                organization_id=conversation_context.conversation.organization_id,
+                agent_id=agent_id,
+                revision=agent.published_revision,
+                consumer_kind=TemplateConsumerKind.CONVERSATIONAL_TEXT,
+            )
+        else:
+            async with start_transaction(ro=True) as session:
+                resolved = await build_executable_agent_resolver(session).resolve_exact(
+                    organization_id=conversation_context.conversation.organization_id,
+                    agent_id=agent_id,
+                    revision=agent.published_revision,
+                    consumer_kind=TemplateConsumerKind.CONVERSATIONAL_TEXT,
+                )
         return resolved.background_agents
     except Exception as error:
         logger.error(

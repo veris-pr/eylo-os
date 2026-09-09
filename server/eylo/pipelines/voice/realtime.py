@@ -20,15 +20,18 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
-from typing import Any
+from enum import Enum
+from typing import Any, assert_never
 from uuid import UUID, uuid4
 
 import arrow
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, StrictStr, ValidationError
+from pydantic.json_schema import SkipJsonSchema
 
-from eylo.audio.ops import StreamingResampler
-from eylo.common.contracts.voice import VoiceSpeechOutcome
+from eylo.common.contracts.voice import (
+    BrowserVoiceTerminationReason,
+    VoiceSpeechOutcome,
+)
 from eylo.common.database import start_transaction
 from eylo.modules.agents.hooks.event_broadcast import EventBroadcastHooks
 from eylo.modules.agents.hooks.runner import HookRunner
@@ -53,9 +56,15 @@ from eylo.modules.conversations.services.participants import (
 )
 from eylo.modules.tools.schemas.indb import ToolInDb
 from eylo.modules.tools.schemas.platform import PlatformToolResult
+from eylo.modules.voice_configs.catalog import RealtimeProviders
 from eylo.modules.voice_configs.domain import ResolvedRealtime
 from eylo.modules.voice_transcripts.constants import VoiceRuntimeMode
 from eylo.pipelines.conversation.context import ConversationContextService
+from eylo.pipelines.conversation.handoff import HandoffMessageMetadata, HandoffState
+from eylo.pipelines.voice.audio_transport import (
+    BROWSER_OUTPUT_AUDIO_FORMAT,
+    StreamingAudioTranscoder,
+)
 from eylo.pipelines.voice.lifecycle_policy import matches_end_call_phrase
 from eylo.pipelines.voice.live_buffer import (
     LiveVoiceBuffer,
@@ -63,11 +72,15 @@ from eylo.pipelines.voice.live_buffer import (
     LiveVoiceItemKind,
 )
 from eylo.pipelines.voice.live_transcript import schedule_live_message_transcripts
-from eylo.pipelines.voice.realtime_tool_dispatcher import RealtimeToolDispatcher
+from eylo.pipelines.voice.realtime_tool_dispatcher import (
+    DispatchResult,
+    RealtimeToolDispatcher,
+)
 from eylo.pipelines.voice.tool_executor import without_live_sandbox_tools
 from eylo.sockets.realtime.base import RealtimeAdapter
 from eylo.sockets.realtime.config import RealtimeSessionConfig
 from eylo.sockets.realtime.events import (
+    VENDOR_OUTPUT_SAMPLE_RATE,
     AudioDataEvent,
     ErrorEvent,
     GoAwayEvent,
@@ -75,20 +88,34 @@ from eylo.sockets.realtime.events import (
     InterruptionEvent,
     OutputTranscriptEvent,
     RealtimeEvent,
-    RealtimeEventType,
     SessionStartedEvent,
     ToolCallEvent,
     TurnCompleteEvent,
     UserSpeechStartedEvent,
+    validate_realtime_event,
 )
 from eylo.sockets.realtime.factory import RealtimeFactory
+from eylo.sockets.tts.schemas import TTSAudioFormat
 
 logger = logging.getLogger(__name__)
 
-# OutgoingAudioTrack sends at 16kHz. Vendors output 24kHz.
-OUTGOING_SAMPLE_RATE = 16000
-_VENDOR_SAMPLE_RATE = 24000
+# Browser output is fixed; normalized provider events declare their actual rate.
+OUTGOING_SAMPLE_RATE = BROWSER_OUTPUT_AUDIO_FORMAT.sample_rate
+_SUPPORTED_AUDIO_SAMPLE_RATES = frozenset(
+    {OUTGOING_SAMPLE_RATE, VENDOR_OUTPUT_SAMPLE_RATE}
+)
+_PCM16_SAMPLE_WIDTH_BYTES = 2
 _ADAPTER_DISCONNECT_TIMEOUT_SECONDS = 7.0
+
+
+class _AudioOutputState(Enum):
+    ACCEPTING = "accepting"
+    SUPPRESSED = "suppressed"
+    CLOSED = "closed"
+
+
+class RealtimeAudioFormatError(Exception):
+    """Provider audio violates the supported or turn-pinned media contract."""
 
 
 def _consume_adapter_disconnect_result(task: asyncio.Task[None]) -> None:
@@ -115,6 +142,18 @@ def _consume_teardown_result(task: asyncio.Task[None]) -> None:
         )
 
 
+def _consume_interaction_callback_result(task: asyncio.Task[None]) -> None:
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        return
+    except Exception as error:
+        logger.error(
+            "Realtime interaction callback failed error_type=%s",
+            type(error).__name__,
+        )
+
+
 class _ToolInteraction(BaseModel):
     """One tool call → result pair accumulated during a turn."""
 
@@ -123,43 +162,47 @@ class _ToolInteraction(BaseModel):
     source_sequence: int
     tool_call_id: str
     tool_name: str
-    arguments: dict[str, Any]
+    arguments: dict[str, JsonValue]
     result: str
     is_error: bool
     sender_participant_id: UUID | None
-    meta: dict[str, Any]
+    meta: HandoffMessageMetadata | None
 
 
-@dataclass(frozen=True, slots=True)
-class RealtimeInteractionCallbacks:
-    """Interaction-plane effects driven by normalized realtime events."""
+class RealtimeInteractionCallbacks(BaseModel):
+    """Live interaction effects; callables never enter snapshots or JSON schemas."""
 
-    on_user_activity: Callable[[], None]
-    on_processing_started: Callable[[], None]
-    on_agent_activity_started: Callable[[], None]
-    on_agent_activity_finished: Callable[[], None]
-    on_end_call: Callable[[UUID, str | None], Awaitable[None]]
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", revalidate_instances="always"
+    )
+
+    on_user_activity: SkipJsonSchema[Callable[[], None]] = Field(
+        exclude=True, repr=False
+    )
+    on_processing_started: SkipJsonSchema[Callable[[], None]] = Field(
+        exclude=True, repr=False
+    )
+    on_agent_activity_started: SkipJsonSchema[Callable[[], None]] = Field(
+        exclude=True, repr=False
+    )
+    on_agent_activity_finished: SkipJsonSchema[Callable[[], None]] = Field(
+        exclude=True, repr=False
+    )
+    on_end_call: SkipJsonSchema[Callable[[UUID, str | None], Awaitable[None]]] = Field(
+        exclude=True, repr=False
+    )
 
 
-@dataclass(frozen=True, slots=True)
-class _PinnedRealtimeVoiceAuthority:
+class _PinnedRealtimeVoiceAuthority(BaseModel):
     """Primary Agent voice authority that cannot change during the session."""
 
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
     provider_config_id: UUID
-    provider_config_revision: int
-    vendor: str
-    model: str
-    voice: str
-
-
-def _resample_24k_to_16k(audio_24k: bytes, resampler: StreamingResampler) -> bytes:
-    """Resample PCM 16-bit mono from 24kHz to 16kHz.
-
-    Both Gemini Live and OpenAI Realtime output 24kHz audio, but
-    OutgoingAudioTrack (WebRTC) runs at 16kHz to match the decomposed
-    TTS pipeline. Ratio: 2/3 (down=3, up=2).
-    """
-    return resampler.process(audio_24k)
+    provider_config_revision: int = Field(strict=True, gt=0)
+    vendor: RealtimeProviders
+    model: StrictStr
+    voice: StrictStr
 
 
 def _tool_log_fields(tool: ToolInDb | None) -> dict[str, object]:
@@ -196,14 +239,16 @@ class RealtimeManager:
         end_call_message: str | None = None,
         on_audio_chunk: Callable[[bytes], None] | None = None,
         hook_runner: HookRunner | None = None,
-        on_teardown: Callable[[str], Awaitable[None]] | None = None,
+        on_teardown: Callable[[BrowserVoiceTerminationReason], Awaitable[None]]
+        | None = None,
     ) -> None:
+        config = RealtimeSessionConfig.model_validate(config)
         self._config = config
         self._initial_resolved_realtime: ResolvedRealtime | None = resolved_realtime
         self._pinned_voice_authority = _PinnedRealtimeVoiceAuthority(
             provider_config_id=resolved_realtime.provider_config_id,
             provider_config_revision=resolved_realtime.provider_config_revision,
-            vendor=config.vendor,
+            vendor=RealtimeProviders(config.vendor),
             model=config.model,
             voice=config.voice,
         )
@@ -211,7 +256,7 @@ class RealtimeManager:
         self._tts_interrupt_event = tts_interrupt_event
         self._on_audio_chunk = on_audio_chunk
         self._on_teardown = on_teardown
-        self._interaction = interaction
+        self._interaction = RealtimeInteractionCallbacks.model_validate(interaction)
         self._end_call_phrases = list(end_call_phrases or [])
         self._end_call_message = end_call_message
         self._live_buffer = live_buffer
@@ -254,7 +299,7 @@ class RealtimeManager:
         self._tool_source_sequence = 0
 
         # D012: suppress audio between interruption and next TurnComplete.
-        self._suppress_audio: bool = False
+        self._audio_output_state = _AudioOutputState.ACCEPTING
 
         self._is_initialized: bool = False
         self._teardown_complete = False
@@ -262,10 +307,8 @@ class RealtimeManager:
         self._adapter_restart_in_progress = False
         self._event_loop_generation = 0
 
-        # Per-session resampler — never share across sessions.
-        self._downsampler = StreamingResampler(
-            from_rate=_VENDOR_SAMPLE_RATE, to_rate=OUTGOING_SAMPLE_RATE
-        )
+        # One actual source format per turn; never carry filter history forward.
+        self._audio_transcoder: StreamingAudioTranscoder | None = None
 
         # Hooks — same HookRunner infrastructure as the sync runner.
         if hook_runner is None:
@@ -279,22 +322,6 @@ class RealtimeManager:
         self._hooks: HookRunner = hook_runner
         self._hook_ctx: HookContext | None = None
         self._turn_counter: int = 0
-
-        # Dispatch table — maps event types to handler methods
-        self._handlers: dict[
-            RealtimeEventType, Callable[[RealtimeEvent], Awaitable[None]]
-        ] = {
-            RealtimeEventType.AUDIO_DATA: self._on_audio_data,
-            RealtimeEventType.USER_SPEECH_STARTED: self._on_user_speech_started,
-            RealtimeEventType.INPUT_TRANSCRIPT: self._on_input_transcript,
-            RealtimeEventType.OUTPUT_TRANSCRIPT: self._on_output_transcript,
-            RealtimeEventType.TOOL_CALL: self._on_tool_call,
-            RealtimeEventType.INTERRUPTION: self._on_interruption,
-            RealtimeEventType.TURN_COMPLETE: self._on_turn_complete,
-            RealtimeEventType.GO_AWAY: self._on_go_away,
-            RealtimeEventType.ERROR: self._on_error,
-            RealtimeEventType.SESSION_STARTED: self._on_session_started,
-        }
 
     @property
     def is_initialized(self) -> bool:
@@ -335,7 +362,11 @@ class RealtimeManager:
             self._current_request_id = request_id
             self._policy_completion = asyncio.get_running_loop().create_future()
             self._response_done.clear()
-            self._suppress_audio = False
+            if self._audio_output_state is _AudioOutputState.CLOSED:
+                self._policy_completion.set_result(False)
+                self._response_done.set()
+                return False
+            self._audio_output_state = _AudioOutputState.ACCEPTING
             self._speech_outcome = VoiceSpeechOutcome.DRAINED
             try:
                 await self._adapter.request_speech(text)
@@ -396,14 +427,19 @@ class RealtimeManager:
         )
 
     def _schedule_end_call(self, request_id: UUID) -> None:
+        async def end_call() -> None:
+            await self._interaction.on_end_call(request_id, self._end_call_message)
+
         task = asyncio.create_task(
-            self._interaction.on_end_call(request_id, self._end_call_message),
+            end_call(),
             name="realtime-end-call",
         )
         self._callback_tasks.add(task)
         task.add_done_callback(self._callback_tasks.discard)
+        task.add_done_callback(_consume_interaction_callback_result)
 
     def _interrupt_playback(self) -> None:
+        self._discard_audio_conversion()
         while not self._tts_response_queue.empty():
             try:
                 self._tts_response_queue.get_nowait()
@@ -422,8 +458,10 @@ class RealtimeManager:
         self._conversation_ctx = ctx
         await self._resolve_participants(ctx)
 
-        self._config.system_prompt = ctx.system_prompt or ""
-        self._config.tools = list(without_live_sandbox_tools(ctx.get_tools()))
+        self._config = self._config.updated(
+            system_prompt=ctx.system_prompt or "",
+            tools=list(without_live_sandbox_tools(ctx.get_tools())),
+        )
         self._tool_dispatcher = RealtimeToolDispatcher(
             ctx,
             self._live_buffer.identity,
@@ -495,9 +533,11 @@ class RealtimeManager:
         """Change prompt/tools while retaining the primary Agent voice authority."""
         self._assert_pinned_voice_authority()
         if self._conversation_ctx:
-            self._config.system_prompt = self._conversation_ctx.system_prompt or ""
-            self._config.tools = list(
-                without_live_sandbox_tools(self._conversation_ctx.get_tools())
+            self._config = self._config.updated(
+                system_prompt=self._conversation_ctx.system_prompt or "",
+                tools=list(
+                    without_live_sandbox_tools(self._conversation_ctx.get_tools())
+                ),
             )
 
         if self._adapter:
@@ -591,7 +631,9 @@ class RealtimeManager:
         try:
             task.result()
         except asyncio.CancelledError:
-            logger.warning("Realtime adapter cancelled its disconnect; teardown continues.")
+            logger.warning(
+                "Realtime adapter cancelled its disconnect; teardown continues."
+            )
         except Exception as error:
             logger.warning(
                 "Realtime adapter disconnect failed error_type=%s; teardown continues.",
@@ -603,7 +645,7 @@ class RealtimeManager:
         speech_outcome: VoiceSpeechOutcome = VoiceSpeechOutcome.CANCELLED,
         *,
         notify_owner: bool,
-        reason: str = "realtime_disconnected",
+        reason: BrowserVoiceTerminationReason = BrowserVoiceTerminationReason.REALTIME_DISCONNECTED,
     ) -> None:
         """Run one cancellation-safe teardown and share it across all callers.
 
@@ -613,6 +655,9 @@ class RealtimeManager:
         current_task = asyncio.current_task()
         teardown_task = self._teardown_task
         if teardown_task is None:
+            # Retire output before any provider close await can deliver callbacks.
+            self._audio_output_state = _AudioOutputState.CLOSED
+            self._interrupt_playback()
             teardown_task = asyncio.create_task(
                 self._run_teardown(
                     speech_outcome=speech_outcome,
@@ -636,7 +681,7 @@ class RealtimeManager:
         *,
         speech_outcome: VoiceSpeechOutcome,
         notify_owner: bool,
-        reason: str,
+        reason: BrowserVoiceTerminationReason,
         initiator_task: asyncio.Task[Any] | None,
     ) -> None:
         """Close the provider, stop owned work, then finalize session state."""
@@ -724,7 +769,7 @@ class RealtimeManager:
             await self._teardown(
                 VoiceSpeechOutcome.FAILED,
                 notify_owner=True,
-                reason="realtime_transport_error",
+                reason=BrowserVoiceTerminationReason.REALTIME_TRANSPORT_ERROR,
             )
         if (
             not cancelled
@@ -735,28 +780,71 @@ class RealtimeManager:
             await self._teardown(
                 VoiceSpeechOutcome.FAILED,
                 notify_owner=True,
-                reason="realtime_transport_ended",
+                reason=BrowserVoiceTerminationReason.REALTIME_TRANSPORT_ENDED,
             )
         logger.info("Realtime event loop exited")
 
     async def _dispatch(self, event: RealtimeEvent) -> None:
-        handler = self._handlers.get(event.type)
-        if handler:
-            await handler(event)
+        if self._audio_output_state is _AudioOutputState.CLOSED:
+            return
+        event = validate_realtime_event(event)
+        if isinstance(event, AudioDataEvent):
+            await self._on_audio_data(event)
+        elif isinstance(event, UserSpeechStartedEvent):
+            await self._on_user_speech_started(event)
+        elif isinstance(event, InputTranscriptEvent):
+            await self._on_input_transcript(event)
+        elif isinstance(event, OutputTranscriptEvent):
+            await self._on_output_transcript(event)
+        elif isinstance(event, ToolCallEvent):
+            await self._on_tool_call(event)
+        elif isinstance(event, InterruptionEvent):
+            await self._on_interruption(event)
+        elif isinstance(event, TurnCompleteEvent):
+            await self._on_turn_complete(event)
+        elif isinstance(event, GoAwayEvent):
+            await self._on_go_away(event)
+        elif isinstance(event, ErrorEvent):
+            await self._on_error(event)
+        elif isinstance(event, SessionStartedEvent):
+            await self._on_session_started(event)
         else:
-            logger.debug("No handler for event type %s", event.type)
+            assert_never(event)
 
     # --- Handlers ---
 
     async def _on_audio_data(self, event: AudioDataEvent) -> None:
-        """Resample vendor audio (24kHz) to WebRTC output (16kHz) and enqueue."""
-        if self._suppress_audio:
+        """Pin actual PCM format for this turn and publish browser-ready bytes."""
+        if self._audio_output_state is not _AudioOutputState.ACCEPTING:
             return  # D012: trailing audio from interrupted response
+        if not event.audio:
+            return
+        if event.sample_rate not in _SUPPORTED_AUDIO_SAMPLE_RATES:
+            raise RealtimeAudioFormatError(
+                "Realtime audio sample rate has no configured converter."
+            )
+        if len(event.audio) % _PCM16_SAMPLE_WIDTH_BYTES:
+            raise RealtimeAudioFormatError("Realtime PCM contains an incomplete sample.")
+        if self._audio_transcoder is None:
+            self._audio_transcoder = StreamingAudioTranscoder(
+                source=TTSAudioFormat(
+                    container=BROWSER_OUTPUT_AUDIO_FORMAT.container,
+                    encoding=BROWSER_OUTPUT_AUDIO_FORMAT.encoding,
+                    sample_rate=event.sample_rate,
+                ),
+                target=BROWSER_OUTPUT_AUDIO_FORMAT,
+            )
+        elif self._audio_transcoder.source.sample_rate != event.sample_rate:
+            raise RealtimeAudioFormatError("Realtime audio format changed within a turn.")
         self._response_done.clear()
         self._mark_agent_activity_started()
-        audio = event.audio
-        if event.sample_rate != OUTGOING_SAMPLE_RATE:
-            audio = _resample_24k_to_16k(audio, self._downsampler)
+        self._publish_audio(self._audio_transcoder.process(event.audio))
+
+    def _publish_audio(self, audio: bytes) -> None:
+        """Record only nonempty output accepted by the playback queue."""
+        if not audio:
+            return
+        self._tts_response_queue.put_nowait(audio)
         if self._on_audio_chunk:
             try:
                 self._on_audio_chunk(audio)
@@ -765,10 +853,26 @@ class RealtimeManager:
                     "Realtime recording tap failed error_type=%s; call continues.",
                     type(error).__name__,
                 )
-        bytes_per_second = OUTGOING_SAMPLE_RATE * 2
+        bytes_per_second = OUTGOING_SAMPLE_RATE * _PCM16_SAMPLE_WIDTH_BYTES
         playback_start = max(time.monotonic(), self._playback_deadline)
         self._playback_deadline = playback_start + len(audio) / bytes_per_second
-        self._tts_response_queue.put_nowait(audio)
+
+    def _finish_audio_conversion(self) -> None:
+        """Flush once on completion; suppressed/closed turns discard their tail."""
+        transcoder = self._audio_transcoder
+        self._audio_transcoder = None
+        if transcoder is None:
+            return
+        if self._audio_output_state is _AudioOutputState.ACCEPTING:
+            self._publish_audio(transcoder.finish())
+        else:
+            transcoder.reset()
+
+    def _discard_audio_conversion(self) -> None:
+        transcoder = self._audio_transcoder
+        self._audio_transcoder = None
+        if transcoder is not None:
+            transcoder.reset()
 
     async def _on_input_transcript(self, event: InputTranscriptEvent) -> None:
         """Accumulate user speech transcription from the vendor."""
@@ -778,6 +882,8 @@ class RealtimeManager:
             if self._current_request_id is None:
                 self._current_request_id = uuid4()
             await self._ensure_turn_lifecycle()
+            if self._audio_output_state is _AudioOutputState.CLOSED:
+                return
         if event.is_final:
             self._input_transcript = event.text
         else:
@@ -792,7 +898,7 @@ class RealtimeManager:
             )
         ):
             self._end_call_pending = True
-            self._suppress_audio = True
+            self._audio_output_state = _AudioOutputState.SUPPRESSED
             self._speech_outcome = VoiceSpeechOutcome.INTERRUPTED
             self._interrupt_playback()
             logger.info(
@@ -854,7 +960,9 @@ class RealtimeManager:
 
     def _interrupt_agent_response(self) -> None:
         """Apply one provider-neutral interruption to generation and playback."""
-        self._suppress_audio = True
+        if self._audio_output_state is _AudioOutputState.CLOSED:
+            return
+        self._audio_output_state = _AudioOutputState.SUPPRESSED
         self._speech_outcome = VoiceSpeechOutcome.INTERRUPTED
         logger.info("Audio suppressed after interruption")
         self._interrupt_playback()
@@ -862,9 +970,16 @@ class RealtimeManager:
             self._policy_completion.set_result(False)
 
     async def _on_turn_complete(self, event: TurnCompleteEvent) -> None:
+        if self._audio_output_state is _AudioOutputState.CLOSED:
+            return
+        # Complete the media stream before tool/hook awaits. Interruption can
+        # then drain already-published bytes, but cannot revive a buffered tail.
+        self._finish_audio_conversion()
         # F01: await pending tool tasks so their results enter the same turn batch.
         if self._tool_tasks:
             await asyncio.gather(*self._tool_tasks, return_exceptions=True)
+        if self._audio_output_state is _AudioOutputState.CLOSED:
+            return
         request_id = self._current_request_id or uuid4()
         self._current_request_id = request_id
         end_call_pending = self._end_call_pending or matches_end_call_phrase(
@@ -881,11 +996,13 @@ class RealtimeManager:
             len(self._tool_interactions),
         )
         await self._buffer_turn(turn_index=self._turn_counter)
+        if self._audio_output_state is _AudioOutputState.CLOSED:
+            return
 
         # Reset immediately after buffering, before hooks, so disconnect cannot
         # append the same raw turn twice if a hook is cancelled.
         self._reset_turn_state()
-        self._suppress_audio = False  # D012: allow audio from the next response
+        self._audio_output_state = _AudioOutputState.ACCEPTING
         if self._tool_dispatcher:
             self._tool_dispatcher.reset_turn_state()
 
@@ -898,6 +1015,8 @@ class RealtimeManager:
             await self._hooks.on_turn_end(hook_ctx, agent, self._turn_counter)
             await self._hooks.on_agent_end(hook_ctx, agent, output_msg)
 
+        if self._audio_output_state is _AudioOutputState.CLOSED:
+            return
         self._response_done.set()
         self._schedule_agent_activity_finished()
         if policy_completion and not policy_completion.done():
@@ -926,7 +1045,7 @@ class RealtimeManager:
                 await self._teardown(
                     VoiceSpeechOutcome.FAILED,
                     notify_owner=True,
-                    reason="realtime_reconnect_failed",
+                    reason=BrowserVoiceTerminationReason.REALTIME_RECONNECT_FAILED,
                 )
 
     async def _on_error(self, event: ErrorEvent) -> None:
@@ -951,7 +1070,7 @@ class RealtimeManager:
             await self._teardown(
                 VoiceSpeechOutcome.FAILED,
                 notify_owner=True,
-                reason="realtime_vendor_error",
+                reason=BrowserVoiceTerminationReason.REALTIME_VENDOR_ERROR,
             )
 
     async def _on_session_started(self, event: SessionStartedEvent) -> None:
@@ -1039,13 +1158,15 @@ class RealtimeManager:
 
         is_error = False
         try:
-            dispatch = await asyncio.wait_for(
-                self._tool_dispatcher.execute(
-                    tool_call_id=event.tool_call_id,
-                    tool_name=event.tool_name,
-                    arguments=event.arguments,
+            dispatch = DispatchResult.model_validate(
+                await asyncio.wait_for(
+                    self._tool_dispatcher.execute(
+                        tool_call_id=event.tool_call_id,
+                        tool_name=event.tool_name,
+                        arguments=event.arguments,
+                    ),
+                    timeout=self._TOOL_TIMEOUT_SECONDS,
                 ),
-                timeout=self._TOOL_TIMEOUT_SECONDS,
             )
             result = dispatch.result
             is_error = dispatch.is_error
@@ -1088,32 +1209,28 @@ class RealtimeManager:
             )
 
         handoff = dispatch.handoff if dispatch else None
-        interaction_meta: dict[str, Any] = {}
+        interaction_meta: HandoffMessageMetadata | None = None
         if handoff and self._conversation_ctx:
             conversation = self._conversation_ctx.conversation
-            interaction_meta = {
-                "handoff_outcome": "rejected" if handoff.is_error else "succeeded",
-                "swarm_id": str(conversation.swarm_id)
-                if conversation.swarm_id
-                else None,
-                "swarm_revision": conversation.swarm_revision,
-                "source_agent_id": str(agent.id) if agent else None,
-                "source_agent_revision": source_participant.agent_revision
+            interaction_meta = HandoffMessageMetadata(
+                handoff_outcome=HandoffState.REJECTED
+                if handoff.is_error
+                else HandoffState.SUCCEEDED,
+                swarm_id=conversation.swarm_id,
+                swarm_revision=conversation.swarm_revision,
+                source_agent_id=agent.id if agent else None,
+                source_agent_revision=source_participant.agent_revision
                 if source_participant
                 else None,
-                "source_participant_id": str(source_participant_id)
-                if source_participant_id
-                else None,
-                "target_agent_id": str(handoff.to_agent.id)
-                if handoff.to_agent
-                else None,
-                "target_agent_revision": handoff.to_participant.agent_revision
+                source_participant_id=source_participant_id,
+                target_agent_id=handoff.to_agent.id if handoff.to_agent else None,
+                target_agent_revision=handoff.to_participant.agent_revision
                 if handoff.to_participant
                 else None,
-                "target_participant_id": str(handoff.to_participant.id)
+                target_participant_id=handoff.to_participant.id
                 if handoff.to_participant
                 else None,
-            }
+            )
 
         # Record for ordered live buffering when the turn completes.
         self._tool_interactions.append(
@@ -1164,10 +1281,15 @@ class RealtimeManager:
                 await self._resolve_participants(new_ctx)
             except Exception as error:
                 logger.error(
-                    "Handoff context rebuild failed error_type=%s; "
-                    "using local mutation",
+                    "Handoff context rebuild failed error_type=%s",
                     type(error).__name__,
                 )
+                await self._teardown(
+                    VoiceSpeechOutcome.FAILED,
+                    notify_owner=True,
+                    reason=BrowserVoiceTerminationReason.REALTIME_HANDOFF_FAILED,
+                )
+                return
 
             # Hook: on_handoff + on_agent_start for the new agent.
             if from_agent and to_agent and self._hook_ctx:
@@ -1189,7 +1311,7 @@ class RealtimeManager:
                 await self._teardown(
                     VoiceSpeechOutcome.FAILED,
                     notify_owner=True,
-                    reason="realtime_handoff_failed",
+                    reason=BrowserVoiceTerminationReason.REALTIME_HANDOFF_FAILED,
                 )
                 return
 
@@ -1221,6 +1343,43 @@ class RealtimeManager:
             return False
 
         request_id = self._current_request_id or uuid4()
+        try:
+            drafts = self._turn_drafts(
+                turn_index=turn_index,
+                request_id=request_id,
+                is_policy_speech=is_policy_speech,
+            )
+        except ValidationError:
+            await self._live_buffer.reject_capture()
+            logger.error("Realtime voice capture contains invalid data.")
+            return False
+
+        if is_policy_speech:
+            self._live_buffer.mark_speech_outcome(request_id, self._speech_outcome)
+        if not drafts:
+            return is_policy_speech
+        try:
+            appended = await self._live_buffer.append_turn(drafts)
+        except Exception as error:
+            logger.error(
+                "Realtime raw buffer failed error_type=%s",
+                type(error).__name__,
+            )
+            return False
+        if not appended:
+            logger.warning("Realtime raw capture is incomplete")
+            return False
+        schedule_live_message_transcripts(self._live_buffer.identity, appended)
+        return True
+
+    def _turn_drafts(
+        self,
+        *,
+        turn_index: int,
+        request_id: UUID,
+        is_policy_speech: bool,
+    ) -> list[LiveVoiceDraft]:
+        """Validate a complete provider turn before appending any capture items."""
         drafts: list[LiveVoiceDraft] = []
         if self._input_transcript:
             drafts.append(
@@ -1251,10 +1410,10 @@ class RealtimeManager:
                 )
             )
             result_payload: str | dict[str, Any] = interaction.result
-            if interaction.meta:
+            if interaction.meta is not None:
                 result_payload = {
                     "content": interaction.result,
-                    "handoff": interaction.meta,
+                    "handoff": interaction.meta.model_dump(mode="json"),
                 }
             drafts.append(
                 LiveVoiceDraft(
@@ -1276,32 +1435,11 @@ class RealtimeManager:
                     turn_index=turn_index,
                     participant_id=self._agent_participant_id,
                     request_id=request_id,
-                    speech_outcome=self._speech_outcome.value,
+                    speech_outcome=self._speech_outcome,
                 )
             )
 
-        if is_policy_speech:
-            self._live_buffer.mark_speech_outcome(
-                request_id,
-                self._speech_outcome.value,
-            )
-
-        if not drafts:
-            return is_policy_speech
-
-        try:
-            appended = await self._live_buffer.append_turn(drafts)
-        except Exception as error:
-            logger.error(
-                "Realtime raw buffer failed error_type=%s",
-                type(error).__name__,
-            )
-            return False
-        if not appended:
-            logger.warning("Realtime raw capture is incomplete")
-            return False
-        schedule_live_message_transcripts(self._live_buffer.identity, appended)
-        return True
+        return drafts
 
     def _reset_turn_state(self) -> None:
         self._input_transcript = ""

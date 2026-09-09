@@ -26,7 +26,7 @@ class LLMConfigService:
         provider_configs: ProviderConfigService,
         *,
         references: LLMConfigReferences | None = None,
-    ):
+    ) -> None:
         self._provider_configs = provider_configs
         self._references = references
 
@@ -39,7 +39,7 @@ class LLMConfigService:
         config: Mapping[str, object],
         secrets: Mapping[str, str],
     ) -> ProviderConfig:
-        validated = LLMProviderConfig.validate(
+        validated = LLMProviderConfig.from_storage(
             provider=provider,
             config=config,
             secrets=secrets,
@@ -91,7 +91,7 @@ class LLMConfigService:
             organization_id=organization_id,
             config_id=config_id,
         )
-        effective_config = dict(current.config)
+        effective_config: dict[str, object] = dict(current.config)
         if config_patch is not None:
             effective_config.update(config_patch)
         effective_secrets = (
@@ -99,7 +99,7 @@ class LLMConfigService:
             if secret_patch is None
             else apply_secret_patch(current.secrets, secret_patch)
         )
-        validated = LLMProviderConfig.validate(
+        validated = LLMProviderConfig.from_storage(
             provider=current.provider,
             config=effective_config,
             secrets=effective_secrets,
@@ -111,9 +111,7 @@ class LLMConfigService:
                 config_id=config_id,
                 name=name,
                 config=(
-                    validated.config_for_storage()
-                    if config_patch is not None
-                    else None
+                    validated.config_for_storage() if config_patch is not None else None
                 ),
                 secret_patch=secret_patch,
             )
@@ -212,7 +210,7 @@ def to_llm_provider_config(config: ProviderConfig) -> LLMProviderConfig:
     """Validate and translate a shared aggregate into the LLM domain."""
     if config.capability is not Capability.LLM:
         raise ProviderConfigNotFound("LLM provider config was not found.")
-    return LLMProviderConfig.validate(
+    return LLMProviderConfig.from_storage(
         provider=config.provider,
         config=config.config,
         secrets=config.secrets,
@@ -224,7 +222,7 @@ def effective_to_llm_provider_config(
 ) -> LLMProviderConfig:
     if config.capability is not Capability.LLM:
         raise ProviderConfigNotFound("LLM provider config was not found.")
-    return LLMProviderConfig.validate(
+    return LLMProviderConfig.from_storage(
         provider=config.provider,
         config=config.settings,
         secrets=config.secrets,

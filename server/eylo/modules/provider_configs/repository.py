@@ -4,7 +4,7 @@ import logging
 from typing import NoReturn
 from uuid import UUID
 
-from sqlalchemy import and_, select, update
+from sqlalchemy import Select, and_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -37,11 +37,12 @@ logger = logging.getLogger(__name__)
 class ProviderConfigRepository:
     """Org-scoped config headers with immutable encrypted revision material."""
 
-    def __init__(self, session: AsyncSession, cipher: SecretCipher):
+    def __init__(self, session: AsyncSession, cipher: SecretCipher) -> None:
         self._session = session
         self._cipher = cipher
 
     async def add(self, config: ProviderConfig) -> ProviderConfig:
+        config = ProviderConfig.model_validate(config)
         encrypted_secrets = self._encrypt_secrets(config)
         row = ProviderConfigModel(
             id=config.id,
@@ -134,6 +135,7 @@ class ProviderConfigRepository:
         return configs
 
     async def save(self, config: ProviderConfig) -> ProviderConfig:
+        config = ProviderConfig.model_validate(config)
         persisted_revision = await self._current_revision_for_update(
             config.organization_id,
             config.id,
@@ -154,7 +156,9 @@ class ProviderConfigRepository:
         await self._flush_with_conflict_mapping()
         return config
 
-    def _current_revision_query(self):
+    def _current_revision_query(
+        self,
+    ) -> Select[tuple[ProviderConfigModel, ProviderConfigRevisionModel]]:
         return select(ProviderConfigModel, ProviderConfigRevisionModel).join(
             ProviderConfigRevisionModel,
             and_(
@@ -243,8 +247,7 @@ class ProviderConfigRepository:
         result = await self._session.execute(
             update(ProviderConfigRevisionModel)
             .where(
-                ProviderConfigRevisionModel.organization_id
-                == config.organization_id,
+                ProviderConfigRevisionModel.organization_id == config.organization_id,
                 ProviderConfigRevisionModel.provider_config_id == config.id,
                 ProviderConfigRevisionModel.revision == config.revision,
             )
@@ -252,8 +255,9 @@ class ProviderConfigRepository:
                 verified_at=config.verified_at,
                 verification_metadata=dict(config.verification_metadata),
             )
+            .returning(ProviderConfigRevisionModel.provider_config_id)
         )
-        if result.rowcount != 1:
+        if result.scalar_one_or_none() != config.id:
             raise ProviderConfigRevisionConflict(
                 "Provider configuration revision was not found."
             )
@@ -283,13 +287,15 @@ class ProviderConfigRepository:
                     ProviderConfigModel.deleted.is_(False),
                 )
                 .values(**values)
+                .returning(ProviderConfigModel.id)
             )
         except IntegrityError as error:
             _raise_mapped_integrity_error(error)
-        if result.rowcount != 1:
-            raise ProviderConfigRevisionConflict(
-                "Provider configuration changed during update."
-            )
+        else:
+            if result.scalar_one_or_none() != config.id:
+                raise ProviderConfigRevisionConflict(
+                    "Provider configuration changed during update."
+                )
 
     def _to_domain(
         self,
@@ -306,20 +312,22 @@ class ProviderConfigRepository:
                 revision.revision,
             ),
         )
-        return ProviderConfig(
-            id=row.id,
-            organization_id=row.organization_id,
-            capability=capability,
-            provider=row.provider,
-            name=row.name,
-            config=revision.config,
-            secrets=secrets,
-            deleted=row.deleted,
-            revision=revision.revision,
-            current_revision=row.revision,
-            enabled=row.enabled,
-            verified_at=revision.verified_at,
-            verification_metadata=revision.verification_metadata,
+        return ProviderConfig.model_validate(
+            {
+                "id": row.id,
+                "organization_id": row.organization_id,
+                "capability": capability,
+                "provider": row.provider,
+                "name": row.name,
+                "config": revision.config,
+                "secrets": secrets,
+                "deleted": row.deleted,
+                "revision": revision.revision,
+                "current_revision": row.revision,
+                "enabled": row.enabled,
+                "verified_at": revision.verified_at,
+                "verification_metadata": revision.verification_metadata,
+            }
         )
 
     @staticmethod
@@ -392,8 +400,10 @@ def _encryption_context(
 
 def _constraint_name(error: IntegrityError) -> str | None:
     cause = getattr(error.orig, "__cause__", None)
-    return getattr(cause, "constraint_name", None) or getattr(
-        error.orig,
-        "constraint_name",
-        None,
-    )
+    for candidate in (
+        getattr(cause, "constraint_name", None),
+        getattr(error.orig, "constraint_name", None),
+    ):
+        if isinstance(candidate, str) and candidate:
+            return candidate
+    return None

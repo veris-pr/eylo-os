@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 
 from eylo.common.config import settings
 from eylo.common.database import start_transaction
 from eylo.framework.agents import RunConfig as FrameworkRunConfig
+from eylo.framework.agents.config import RunPromptCaching, RunStreaming
 from eylo.framework.agents.result import RunStatus
 from eylo.modules.agent_runs.domain import AgentRunOriginKind
 from eylo.modules.agent_runs.service import (
@@ -15,6 +15,7 @@ from eylo.modules.agent_runs.service import (
     load_agent_run_wait,
     resume_agent_run_in_transaction,
 )
+from eylo.modules.agent_runs.waits import AgentRunInputEvent
 from eylo.modules.agent_runs.workflow import (
     AgentRunExecutionClaim,
     AgentRunWorkflowContext,
@@ -27,13 +28,11 @@ from eylo.modules.conversations.schemas.messages import (
     MessageInDb,
     MessageKind,
 )
+from eylo.pipelines.agent_run_heartbeat import run_with_agent_heartbeat
 from eylo.pipelines.parallel_agents import ParallelTaskAgentRunExecutor
 
 from .conversation_runner import FrameworkConversationRunner
 from .run_failure import fail_agent_run_and_converge_message
-
-_HEARTBEAT_SECONDS = 120
-_HEARTBEAT_INTERVAL_SECONDS = 30
 
 
 class ConversationAgentRunInvalid(Exception):
@@ -82,8 +81,16 @@ class ConversationAgentRunExecutor:
             return
 
         config = FrameworkRunConfig(
-            stream=getattr(settings, "ENABLE_LLM_STREAMING", False),
-            prompt_caching=getattr(settings, "ENABLE_PROMPT_CACHING", False),
+            stream=(
+                RunStreaming.ENABLED
+                if settings.ENABLE_LLM_STREAMING
+                else RunStreaming.DISABLED
+            ),
+            prompt_caching=(
+                RunPromptCaching.ENABLED
+                if settings.ENABLE_PROMPT_CACHING
+                else RunPromptCaching.DISABLED
+            ),
         )
         wait = await load_agent_run_wait(
             organization_id=claim.organization_id,
@@ -138,7 +145,7 @@ class ConversationAgentRunExecutor:
                         )
                     result_holder.append(result)
 
-            await _run_with_heartbeat(context, run_turn)
+            await run_with_agent_heartbeat(context, run_turn)
             result = result_holder[0]
             if result.status not in {
                 RunStatus.WAITING_FOR_INPUT,
@@ -189,44 +196,16 @@ def _validate_resume_event(
     claim: AgentRunExecutionClaim,
     wait: AgentRunWaitState,
 ) -> None:
-    expected = {
-        "organization_id": str(claim.organization_id),
-        "run_id": str(claim.run_id),
-        "request_id": str(wait.request_id),
-    }
-    if payload != expected:
+    try:
+        AgentRunInputEvent(
+            organization_id=claim.organization_id,
+            run_id=claim.run_id,
+            request_id=wait.request_id,
+        ).require_matching_payload(payload)
+    except ValueError:
         raise ConversationAgentRunInvalid(
             "Durable input event does not match the identified request."
-        )
-
-
-async def _run_with_heartbeat(
-    context: AgentRunWorkflowContext,
-    operation: Callable[[], Awaitable[None]],
-) -> None:
-    """Keep the Absurd claim live; cancellation propagates through heartbeat."""
-    operation_task = asyncio.create_task(operation())
-    try:
-        while not operation_task.done():
-            remaining_milliseconds = await context.heartbeat(seconds=_HEARTBEAT_SECONDS)
-            try:
-                await asyncio.wait_for(
-                    asyncio.shield(operation_task),
-                    timeout=min(
-                        _HEARTBEAT_INTERVAL_SECONDS,
-                        max(0.001, remaining_milliseconds / 1000),
-                    ),
-                )
-            except TimeoutError:
-                continue
-        await operation_task
-    finally:
-        if not operation_task.done():
-            operation_task.cancel()
-            try:
-                await operation_task
-            except asyncio.CancelledError:
-                pass
+        ) from None
 
 
 __all__ = ["ConversationAgentRunExecutor"]

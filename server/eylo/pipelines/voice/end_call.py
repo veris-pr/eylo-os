@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from eylo.common.contracts.telephony import CallEndedReason
+from eylo.common.contracts.voice import BrowserVoiceTerminationReason
 from eylo.modules.session_context.schemas import SessionChannel, SessionContext
 from eylo.modules.voice_transcripts.constants import VoiceRuntimeMode
 from eylo.pipelines.voice.live_buffer import LiveVoiceBufferIdentity
 from eylo.pipelines.voice.request_state import VoiceRequestSource
 
 if TYPE_CHECKING:
-    from eylo.modules.conversations.schemas.conversations import ConversationContext
+    from eylo.pipelines.agent_execution_context import PlatformExecutionContext
     from eylo.pipelines.telephony.sessions import CallSession
     from eylo.pipelines.websocket.schemas import WSSessionState
 
@@ -41,7 +43,7 @@ async def is_live_voice_session_active(identity: LiveVoiceBufferIdentity) -> boo
 
 async def execute_agent_end_call_tool(
     *,
-    conversation_context: ConversationContext,
+    conversation_context: PlatformExecutionContext,
     identity: LiveVoiceBufferIdentity,
 ) -> AgentVoiceTerminationOutcome:
     """Request teardown through the owner of the exact active voice transport."""
@@ -96,7 +98,7 @@ async def _end_browser_session(
     )
     accepted = await request_browser_voice_termination(
         context,
-        reason=CallEndedReason.AGENT_ENDED_CALL.value,
+        reason=BrowserVoiceTerminationReason.AGENT_ENDED_CALL,
         notify_client=True,
         source=VoiceRequestSource.END_CALL,
     )
@@ -152,7 +154,7 @@ async def _resolve_browser_session(
 
 
 def _one_exact_session(
-    matches: list[SessionT],
+    matches: Sequence[SessionT],
     runtime_mode: VoiceRuntimeMode,
 ) -> SessionT | None:
     if len(matches) > 1:

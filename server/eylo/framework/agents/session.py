@@ -24,9 +24,11 @@ class Session(Protocol):
 
     async def load(self, conversation_id: UUID) -> SessionSnapshot:
         """Load persisted conversation history."""
+        ...
 
     async def build_run_input(self, conversation_id: UUID) -> RunInput:
         """Build LLM-visible input for the next model call."""
+        ...
 
     async def append_items(
         self,
@@ -34,3 +36,4 @@ class Session(Protocol):
         items: tuple[RunMessage, ...],
     ) -> None:
         """Persist framework-created messages."""
+        ...

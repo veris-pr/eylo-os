@@ -1,272 +1,306 @@
-"""Google Cloud Speech STT adapter for canonical STT pipeline.
+"""Translate Google Speech v1 native responses into the STT socket contract."""
 
-This adapter wraps the new voice module's GoogleSTT to work with
-the existing STT factory and manager patterns.
-"""
+from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Dict, Optional
+
+from google.api_core import exceptions as google_errors
+from google.cloud import speech_v1 as speech
+from google.rpc import code_pb2
+from pydantic import BaseModel, ConfigDict
 
 from eylo.sockets.stt.base import STTVendorAdapter
-from eylo.sockets.stt.schemas import STTCapabilities, STTEvent, STTEventType
-from eylo.sockets.voice.vendors.google import GoogleSTT, GoogleSTTStream
+from eylo.sockets.stt.exceptions import (
+    STTConnectionClosed,
+    STTConnectionFailed,
+    STTConnectionFailureKind,
+    STTConnectionRetryUnsafe,
+    STTFinalizationFailed,
+)
+from eylo.sockets.stt.schemas import (
+    STTCapabilities,
+    STTCapabilitySupport,
+    STTEvent,
+    STTEventType,
+    STTProvider,
+    TimedWord,
+)
+from eylo.sockets.voice.vendors.google import (
+    GoogleSTT,
+    GoogleSTTConfig,
+    GoogleSTTStream,
+)
 
 logger = logging.getLogger(__name__)
+_RESPONSE_QUEUE_CAPACITY = 1000
+_FINAL_FORWARD_TIMEOUT_SECONDS = 2.0
+_MILLISECONDS_PER_SECOND = 1000
+_STATUS_KINDS: dict[int, STTConnectionFailureKind] = {
+    code_pb2.UNAUTHENTICATED: STTConnectionFailureKind.AUTHENTICATION,
+    code_pb2.PERMISSION_DENIED: STTConnectionFailureKind.AUTHORIZATION,
+    code_pb2.INVALID_ARGUMENT: STTConnectionFailureKind.REQUEST_REJECTED,
+    code_pb2.RESOURCE_EXHAUSTED: STTConnectionFailureKind.QUOTA_EXCEEDED,
+    code_pb2.UNAVAILABLE: STTConnectionFailureKind.SERVICE_UNAVAILABLE,
+    code_pb2.DEADLINE_EXCEEDED: STTConnectionFailureKind.TIMEOUT,
+}
+_ERROR_KINDS = (
+    (google_errors.Unauthenticated, STTConnectionFailureKind.AUTHENTICATION),
+    (google_errors.PermissionDenied, STTConnectionFailureKind.AUTHORIZATION),
+    (google_errors.InvalidArgument, STTConnectionFailureKind.REQUEST_REJECTED),
+    (google_errors.ResourceExhausted, STTConnectionFailureKind.QUOTA_EXCEEDED),
+    (google_errors.ServiceUnavailable, STTConnectionFailureKind.SERVICE_UNAVAILABLE),
+    (google_errors.DeadlineExceeded, STTConnectionFailureKind.TIMEOUT),
+)
+_SPEECH_EVENTS: dict[int, STTEventType] = {
+    speech.StreamingRecognizeResponse.SpeechEventType.SPEECH_ACTIVITY_BEGIN: STTEventType.SPEECH_START,
+    speech.StreamingRecognizeResponse.SpeechEventType.SPEECH_ACTIVITY_END: STTEventType.SPEECH_END,
+    speech.StreamingRecognizeResponse.SpeechEventType.END_OF_SINGLE_UTTERANCE: STTEventType.SPEECH_END,
+}
+
+
+class GoogleResultMetadata(BaseModel):
+    """Native channel/stability are not fabricated request or segment identities."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    channel_tag: int | None = None
+    stability: float | None = None
+
+
+def google_stt_events(
+    response: speech.StreamingRecognizeResponse, *, model: str
+) -> tuple[STTEvent, ...]:
+    """Preserve native ordering, absent confidence, timing and detected language."""
+    if response.error.code != code_pb2.OK:
+        raise STTConnectionRetryUnsafe(
+            "Google STT rejected the stream.",
+            kind=_STATUS_KINDS.get(
+                response.error.code, STTConnectionFailureKind.UNKNOWN
+            ),
+        )
+    events: list[STTEvent] = []
+    event_type = _SPEECH_EVENTS.get(response.speech_event_type)
+    if event_type is not None:
+        events.append(
+            STTEvent(type=event_type, provider=STTProvider.GOOGLE, model=model)
+        )
+    for result in response.results:
+        if not result.alternatives:
+            continue
+        alternative = result.alternatives[0]
+        if not alternative.transcript:
+            continue
+        metadata = GoogleResultMetadata(
+            channel_tag=result.channel_tag or None,
+            stability=result.stability
+            if not result.is_final and result.stability
+            else None,
+        )
+        events.append(
+            STTEvent(
+                type=STTEventType.TRANSCRIPT_FINAL
+                if result.is_final
+                else STTEventType.TRANSCRIPT_PARTIAL,
+                provider=STTProvider.GOOGLE,
+                model=model,
+                transcript=alternative.transcript,
+                confidence=alternative.confidence
+                if result.is_final and alternative.confidence
+                else None,
+                language=result.language_code or None,
+                audio_end_ms=int(
+                    result.result_end_time.total_seconds() * _MILLISECONDS_PER_SECOND
+                ),
+                words=[
+                    TimedWord(
+                        word=word.word,
+                        start_time=word.start_time.total_seconds(),
+                        end_time=word.end_time.total_seconds(),
+                        confidence=word.confidence or None,
+                        speaker_id=word.speaker_label or None,
+                    )
+                    for word in alternative.words
+                ],
+                vendor_metadata=metadata.model_dump(mode="json", exclude_none=True),
+            )
+        )
+    return tuple(events)
+
+
+def _stream_error(error: Exception) -> STTConnectionFailed:
+    if isinstance(error, STTConnectionFailed):
+        return error
+    kind = STTConnectionFailureKind.UNKNOWN
+    for error_type, candidate in _ERROR_KINDS:
+        if isinstance(error, error_type):
+            kind = candidate
+            break
+    return STTConnectionRetryUnsafe("Google STT stream failed.", kind=kind)
 
 
 class GoogleAdapter(STTVendorAdapter):
-    """Adapter to use new voice module GoogleSTT with canonical STT pipeline.
+    """Own one native attempt; no response dictionaries or implicit reconnects."""
 
-    This class bridges the gap between:
-    - Canonical interface: connect(), send_audio(), receive_event()
-    - New voice module: stream() with async iteration
-
-    The adapter handles:
-    - Audio streaming to Google Cloud Speech via gRPC
-    - Event parsing (transcripts, confidence scores)
-    - Response queuing for STT manager
-    """
-
-    def __init__(self, config: dict):
-        """Initialize Google adapter with resolved provider config.
-
-        Args:
-            config: Resolved STT config dict with keys:
-                - service_account_json: Organization-owned service account JSON
-                - model: Recognition model
-                - language: Language code
-                - sample_rate: Audio sample rate
-                - interim_results: Enable interim results
-                - punctuation: Enable automatic punctuation
-                - profanity_filter: Enable profanity filtering
-                - detect_language: Enable automatic language detection
-                - alternative_languages: Alternative languages for detection
-
-        """
-        # Initialise the contract's shared state. Inheriting without this
-        # leaves `retry_options` unset, so the ABC's helpers raise on this
-        # class while every structural check still passes.
-        super().__init__()
-        self._config = config
-        self._is_connected = False
-        self._stream: Optional[GoogleSTTStream] = None
-        self._receive_task: Optional[asyncio.Task] = None
-        self._response_queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
-
-        # Initialize new voice module STT
-        self._stt = GoogleSTT(
-            model=config["model"],
-            language=config["language"],
-            sample_rate=config.get("sample_rate", 16000),
-            interim_results=config.get("interim_results", True),
-            punctuation=config.get("punctuation", True),
-            profanity_filter=config.get("profanity_filter", False),
-            service_account_json=config["service_account_json"],
-            detect_language=config.get("detect_language", False),
-            alternative_languages=config.get("alternative_languages", []),
+    def __init__(self, config: object) -> None:
+        self._config = GoogleSTTConfig.model_validate(config)
+        self._stt = GoogleSTT(self._config)
+        self._stream: GoogleSTTStream | None = None
+        self._receive_task: asyncio.Task[None] | None = None
+        self._response_queue: asyncio.Queue[STTEvent] = asyncio.Queue(
+            maxsize=_RESPONSE_QUEUE_CAPACITY
         )
+        self._stream_error: STTConnectionFailed | None = None
+        self._disconnect_task: asyncio.Task[None] | None = None
+        self._lifecycle_lock = asyncio.Lock()
 
-        logger.info(f"Initialized GoogleAdapter with language={self._stt.language}")
-
-    async def connect(self):
-        """Connect to Google Cloud Speech service (canonical interface).
-
-        Returns:
-            Self to maintain interface compatibility.
-
-        """
-        # Create stream
-        self._stream = self._stt.stream()
-
-        # Start background task to receive events
-        self._receive_task = asyncio.create_task(self._receive_events())
-
-        self._is_connected = True
-        logger.info("Google Cloud Speech adapter connected")
-        return self
-
-    async def _receive_events(self):
-        """Receive events from Google stream and queue them.
-
-        This background task continuously receives events from the voice module
-        stream and puts them in the response queue for the STT manager.
-        """
-        try:
-            async for event in self._stream:
-                # Convert voice module event to adapter event format
-                adapter_event = self._convert_event(event)
-                if adapter_event:
-                    try:
-                        await self._response_queue.put(adapter_event)
-                    except asyncio.QueueFull:
-                        logger.warning("Response queue full, dropping event")
-
-        except Exception as error:
-            logger.error(
-                "Google STT event receive failed error_type=%s",
-                type(error).__name__,
-            )
-            self._is_connected = False
-
-    def _convert_event(self, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Convert voice module event format to adapter event format."""
-        is_final = event.get("is_final", False)
-        alternatives = event.get("alternatives", [])
-
-        if not alternatives:
-            return None
-
-        # Get top alternative
-        alt = alternatives[0]
-        transcript = alt.get("transcript", "")
-
-        if not transcript:
-            return None
-
-        # Build the adapter event consumed by `receive_event`.
-        adapter_event = {
-            "transcript": transcript,
-            "is_final": is_final,
-            "confidence": alt.get("confidence", 0.0) if is_final else 0.0,
-            "type": "final" if is_final else "partial",
-            "stability": event.get("stability", 0.0),
-        }
-
-        # Add detected language if available
-        if "language_code" in event:
-            adapter_event["language_code"] = event["language_code"]
-
-        return adapter_event
-
-    async def send_audio(self, audio_data: bytes):
-        """Send audio data for transcription (canonical interface).
-
-        Args:
-            audio_data: Raw audio bytes (PCM format).
-
-        """
-        if not self._is_connected or not self._stream:
-            raise RuntimeError("Not connected. Call connect() first.")
-
-        # Push audio to stream
-        from eylo.sockets.voice.audio import AudioFrame
-
-        frame = AudioFrame(
-            data=audio_data,
-            sample_rate=self._stt.sample_rate,
-            num_channels=1,
-            samples_per_channel=len(audio_data) // 2,  # 16-bit PCM
-        )
-
-        await self._stream.push_audio(frame)
-
-    async def _receive_raw_event(self) -> Optional[Dict[str, Any]]:
-        """Read one vendor-shaped event from the internal queue.
-
-        Returns:
-            Event dict or None if no data available.
-
-        """
-        try:
-            # Non-blocking get with timeout
-            event = await asyncio.wait_for(self._response_queue.get(), timeout=0.1)
-            return event
-        except asyncio.TimeoutError:
-            return None
-
-    async def keepalive(self):
-        """Send keepalive (canonical interface).
-
-        The new voice module handles keepalive internally via gRPC, so this is a no-op.
-        """
-        pass
-
-    async def disconnect(self):
-        """Disconnect from Google Cloud Speech service (canonical interface)."""
-        logger.info("Disconnecting Google Cloud Speech adapter")
-
-        self._is_connected = False
-
-        # Cancel receive task
-        if self._receive_task and not self._receive_task.done():
-            self._receive_task.cancel()
+    async def connect(self) -> GoogleAdapter:
+        async with self._lifecycle_lock:
+            if self._stream is not None and self._stream.is_connected:
+                return self
+            await self._disconnect()
+            self._disconnect_task = None
+            self._stream_error = None
+            self._response_queue = asyncio.Queue(maxsize=_RESPONSE_QUEUE_CAPACITY)
+            self._stream = self._stt.stream()
             try:
-                await self._receive_task
-            except asyncio.CancelledError:
-                pass
+                await self._stream.connect()
+            except BaseException as error:
+                try:
+                    await self._disconnect()
+                except Exception as cleanup_error:
+                    if isinstance(error, asyncio.CancelledError):
+                        raise error from cleanup_error
+                    raise
+                if isinstance(error, Exception):
+                    raise _stream_error(error) from error
+                raise
+            self._receive_task = asyncio.create_task(self._receive_events())
+            logger.info("Google STT native stream established")
+            return self
 
-        # Close stream
-        if self._stream:
-            await self._stream.aclose()
-            self._stream = None
+    async def _receive_events(self) -> None:
+        stream = self._stream
+        if stream is None:
+            raise STTConnectionClosed("Google STT stream is unavailable.")
+        try:
+            async for response in stream:
+                for event in google_stt_events(response, model=self.model):
+                    await self._response_queue.put(event)
+        except Exception as error:
+            self._stream_error = _stream_error(error)
+            logger.warning(
+                "Google STT receiver ended failure_kind=%s",
+                self._stream_error.kind.value,
+            )
 
-        # Close STT client
-        self._stt.close()
+    async def send_audio(self, audio_data: bytes) -> None:
+        if self._stream is None or self._disconnect_task is not None:
+            raise STTConnectionClosed("Google STT is not accepting audio.")
+        try:
+            await self._stream.push_audio(audio_data)
+        except google_errors.GoogleAPICallError as error:
+            raise _stream_error(error) from error
+
+    async def receive_event(self, timeout_ms: int = 100) -> STTEvent | None:
+        if not self._response_queue.empty():
+            return self._response_queue.get_nowait()
+        if self._stream_error is not None:
+            error = self._stream_error
+            self._stream_error = None
+            raise error
+        if not self.is_connected:
+            raise STTConnectionClosed("Google STT stream ended.")
+        try:
+            return await asyncio.wait_for(
+                self._response_queue.get(), timeout_ms / _MILLISECONDS_PER_SECOND
+            )
+        except TimeoutError:
+            return None
+
+    async def keepalive(self) -> None:
+        """The gRPC channel owns keepalive; it is not audio or a second request."""
+        return None
+
+    async def flush(self) -> None:
+        """Speech v1 has no in-stream flush; EOF belongs to disconnect."""
+        return None
+
+    async def disconnect(self) -> None:
+        async with self._lifecycle_lock:
+            await self._disconnect()
+
+    async def _disconnect(self) -> None:
+        if self._disconnect_task is None:
+            self._disconnect_task = asyncio.create_task(self._close())
+            self._disconnect_task.add_done_callback(_observe_disconnect)
+        await asyncio.shield(self._disconnect_task)
+
+    async def _close(self) -> None:
+        stream = self._stream
+        receiver = self._receive_task
+        previous_error = self._stream_error
+        finalization_error: Exception | None = None
+        try:
+            if stream is not None:
+                try:
+                    await stream.aclose()
+                except STTFinalizationFailed as error:
+                    finalization_error = error
+                self._stream = None
+            if receiver is not None:
+                try:
+                    async with asyncio.timeout(_FINAL_FORWARD_TIMEOUT_SECONDS):
+                        await asyncio.shield(receiver)
+                    if (
+                        self._stream_error is not previous_error
+                        and self._stream_error is not None
+                    ):
+                        raise self._stream_error
+                except Exception as error:
+                    finalization_error = error
+        finally:
+            if receiver is not None:
+                if not receiver.done():
+                    receiver.cancel()
+                await asyncio.gather(receiver, return_exceptions=True)
+                self._receive_task = None
+        if finalization_error is not None:
+            raise STTFinalizationFailed(
+                "Google STT closed before final output was forwarded."
+            ) from finalization_error
 
     @property
     def is_connected(self) -> bool:
-        """Check if connected."""
-        return self._is_connected
+        return (
+            self._stream_error is not None
+            or not self._response_queue.empty()
+            or (self._receive_task is not None and not self._receive_task.done())
+        )
 
     @property
     def sample_rate(self) -> int:
-        """Get audio sample rate."""
-        return self._stt.sample_rate
+        return self._config.sample_rate
 
     @property
     def provider(self) -> str:
-        """Get provider name."""
-        return self._stt.provider
-
-    async def receive_event(self, timeout_ms: int = 100) -> STTEvent | None:
-        """Next event as the canonical `STTEvent`.
-
-        Adapts the queue `receive_event` already reads rather than replacing
-        it, so the live path keeps its exact behaviour while the contract is
-        young. Only fields the vendor actually reported are set — confidence and
-        timings are left unset rather than invented.
-        """
-        raw = await self._receive_raw_event()
-        if raw is None:
-            return None
-        event_type = raw.get("type") or raw.get("event")
-        return STTEvent(
-            type=STTEventType(event_type)
-            if event_type in set(STTEventType)
-            else STTEventType.TRANSCRIPT_PARTIAL,
-            provider=self.provider,
-            model=self.model,
-            transcript=str(raw.get("transcript") or raw.get("text") or ""),
-            is_final=bool(raw.get("is_final", False)),
-            confidence=raw.get("confidence"),
-            language=raw.get("language"),
-        )
-
-    async def flush(self) -> None:
-        """No flush frame on this stream. Explicit, not faked."""
-        return None
+        return STTProvider.GOOGLE.value
 
     @property
     def model(self) -> str:
-        """From the vendor client — what actually connected."""
-        return str(getattr(self._stt, "model", "") or "")
+        return self._config.model
 
     @property
     def capabilities(self) -> STTCapabilities:
-        """Derived from what this adapter's own code does, not from memory.
-
-        Conservative where unknown: under-claiming makes a caller skip a
-        feature, over-claiming makes it break. Confirm against vendor
-        documentation before relying on a False here.
-        """
         return STTCapabilities(
-            streaming=True,
-            batch_recognize=False,
-            interim_results=True,
-            vad_events=False,
-            turn_detection=False,
-            word_timestamps=False,
-            speaker_labels=False,
-            language_detection=False,
+            streaming=STTCapabilitySupport.SUPPORTED,
+            interim_results=STTCapabilitySupport.SUPPORTED,
+            word_timestamps=STTCapabilitySupport.SUPPORTED,
+            language_detection=STTCapabilitySupport.SUPPORTED,
+            punctuation=STTCapabilitySupport.SUPPORTED,
+            profanity_filter=STTCapabilitySupport.SUPPORTED,
         )
+
+
+def _observe_disconnect(task: asyncio.Task[None]) -> None:
+    if not task.cancelled():
+        task.exception()

@@ -24,6 +24,7 @@ from eylo.audio.ops import (
     AudioChunkBuffer,
     generate_brown_noise,
 )
+from eylo.pipelines.voice.audio_transport import BROWSER_OUTPUT_AUDIO_FORMAT
 from eylo.pipelines.websocket.schemas import WSSessionState
 
 logger = logging.getLogger(__name__)
@@ -236,8 +237,8 @@ class OutgoingAudioTrack(AudioStreamTrack):
         super().__init__()
         self.session_state = session_state
 
-        self.sample_rate = 16000
-        self.channels = 1
+        self.sample_rate = BROWSER_OUTPUT_AUDIO_FORMAT.sample_rate
+        self.channels = BROWSER_OUTPUT_AUDIO_FORMAT.channels
         self.frame_duration_ms = 20
         self.samples_per_frame = int(self.sample_rate * self.frame_duration_ms / 1000)
 

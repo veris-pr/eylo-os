@@ -51,6 +51,10 @@ architecture rationale do not compete for attention.
    [product data-flow atlas](diagrams/product-data-flows.md).
 4. Follow [source documentation rules](reference/source-documentation.md) when
    changing docstrings or comments.
+5. Use the [Python typing review and work plan](plans/python-typing.md) for the
+   flow-by-flow enum, constant, and request/response contract work across every
+   provider, curated vendor, and SOR adapter. It separates verified progress from
+   planned changes and pending live QA.
 
 ## Authority and freshness
 

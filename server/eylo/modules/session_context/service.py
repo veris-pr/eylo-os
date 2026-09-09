@@ -92,20 +92,16 @@ class SessionContextHydrator:
         call_session: TelephonySessionStatePort,
         voice_session_id: Optional[UUID] = None,
     ) -> SessionContext:
-        """Build SessionContext for telephony call sessions.
+        """Compose already-authorized auth, WebSocket and call state.
 
-        Called from: media_stream.py _handle_start_event(), after
-        all three session objects are created and TTS bridge is complete.
-
-        Hydrates: auth + ws + call.
+        Explicit voice identity takes precedence over call and WebSocket facts.
+        Construction does not acquire, authenticate or close any resource.
         """
         return SessionContext(
             channel=SessionChannel.TELEPHONY,
             organization_id=auth_session.organization_id,
             session_id=ws_state.session_id,
-            user_session_id=(
-                call_session.user_session_id or ws_state.user_session_id
-            ),
+            user_session_id=(call_session.user_session_id or ws_state.user_session_id),
             contact_id=ws_state.contact_id,
             voice_session_id=(
                 voice_session_id
@@ -122,14 +118,24 @@ class SessionContextHydrator:
         existing_ctx: SessionContext,
         webrtc_session: WebRTCSessionStatePort,
     ) -> SessionContext:
-        """Enrich an existing WS SessionContext with WebRTC state.
+        """Add an already-authorized peer without changing inherited authority.
 
-        Called from: handle_webrtc_offer(), after
-        S_webrtc_signaling.handle_offer() creates the WebRTCSession.
-
-        Returns a new SessionContext with channel=WEBRTC and webrtc set.
+        Reconstruct through validation, preserving live object identity. Do not
+        use model_copy(update=...) or serialize runtime resources to rebuild.
+        The caller owns peer authorization and resource lifetime.
         """
-        return existing_ctx.enrich(
+        return SessionContext(
             channel=SessionChannel.WEBRTC,
+            organization_id=existing_ctx.organization_id,
+            session_id=existing_ctx.session_id,
+            user_session_id=existing_ctx.user_session_id,
+            contact_id=existing_ctx.contact_id,
+            voice_session_id=existing_ctx.voice_session_id,
+            authorized_agent_id=existing_ctx.authorized_agent_id,
+            authorized_agent_revision=existing_ctx.authorized_agent_revision,
+            authorized_conversation_id=existing_ctx.authorized_conversation_id,
+            auth=existing_ctx.auth,
+            ws=existing_ctx.ws,
+            call=existing_ctx.call,
             webrtc=webrtc_session,
         )

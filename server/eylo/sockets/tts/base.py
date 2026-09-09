@@ -77,6 +77,11 @@ class TTSVendorAdapter(ABC):
         return False
 
     @property
+    def turn_completion_error(self) -> Exception | None:
+        """Failure for the active turn, distinct from successful empty output."""
+        return None
+
+    @property
     @abstractmethod
     def is_connected(self) -> bool:
         """Return whether the adapter is connected."""

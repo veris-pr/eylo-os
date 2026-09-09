@@ -1,19 +1,31 @@
-"""Execute registered first-party background Agent implementations."""
+"""Execute first-party background implementations with explicit agent authority."""
 
 from __future__ import annotations
 
 import logging
-from typing import Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Final, TypeAlias
+
+from eylo.common.contracts.background_task import BackgroundTaskOutcome
+from eylo.modules.agents.schemas.indb import AgentInDb
+from eylo.modules.conversations.schemas.conversations import ConversationContext
 
 logger = logging.getLogger(__name__)
 
+BackgroundImplementation: TypeAlias = Callable[
+    [ConversationContext, AgentInDb], Awaitable[BackgroundTaskOutcome]
+]
+_TITLE_LOCK_NAME: Final = "title_gen"
+_SUMMARY_LOCK_NAME: Final = "ctx_mgmt"
 
-async def _locked(context, lock_name: str, worker) -> bool:
-    """Run `worker` under the conversation lock this built-in has always used.
 
-    `LockNotAcquired` means a concurrent run holds it. That is not an error and
-    not work done: it reports False, which the caller records as SKIPPED.
-    """
+async def _locked(
+    context: ConversationContext,
+    lock_name: str,
+    worker: BackgroundImplementation,
+    agent: AgentInDb,
+) -> BackgroundTaskOutcome:
+    """A concurrent owner means skipped work; other failures propagate."""
     from eylo.pipelines.llm.background_agents.redis_lock.conversation_lock import (
         LockNotAcquired,
         lock_conversation,
@@ -21,49 +33,56 @@ async def _locked(context, lock_name: str, worker) -> bool:
 
     try:
         async with lock_conversation(context.conversation.id, lock_name):
-            return await worker(context)
+            return await worker(context, agent)
     except LockNotAcquired:
         logger.debug(
             "%s already running for conversation %s",
             lock_name,
             context.conversation.id,
         )
-        return False
+        return BackgroundTaskOutcome.SKIPPED
 
 
-async def _run_title_generator(context) -> bool:
+async def _run_title_generator(
+    context: ConversationContext,
+    agent: AgentInDb,
+) -> BackgroundTaskOutcome:
     from eylo.pipelines.llm.background_agents.title_generator.agent import (
         process_title_generation_request,
     )
 
-    return await _locked(context, "title_gen", process_title_generation_request)
+    return await _locked(
+        context, _TITLE_LOCK_NAME, process_title_generation_request, agent
+    )
 
 
-async def _run_summary_generator(context) -> bool:
+async def _run_summary_generator(
+    context: ConversationContext,
+    agent: AgentInDb,
+) -> BackgroundTaskOutcome:
     from eylo.pipelines.llm.background_agents.summary_generator.agent import (
         process_context_management_request,
     )
 
-    return await _locked(context, "ctx_mgmt", process_context_management_request)
+    return await _locked(
+        context, _SUMMARY_LOCK_NAME, process_context_management_request, agent
+    )
 
 
-# Slug -> adapter. Keys must match `modules.agents.implementations`, which is
-# what write-time validation checks against; a test pins that they agree, so a
-# slug can never be accepted at write time and unresolvable at dispatch.
-IMPLEMENTATION_RUNNERS: dict[str, Callable[[object], Awaitable[bool]]] = {
+IMPLEMENTATION_RUNNERS: Final[dict[str, BackgroundImplementation]] = {
     "title_generator": _run_title_generator,
     "summary_generator": _run_summary_generator,
 }
 
 
-async def run_implementation(slug: str, context) -> bool:
-    """Run a first-party implementation. True when it did work.
-
-    False means it looked and found nothing to do, which the caller records as
-    `SKIPPED` — not a failure. Exceptions propagate so `_mark_task_failed`
-    records them.
-    """
-    runner = IMPLEMENTATION_RUNNERS.get(slug)
+async def run_implementation(
+    *,
+    agent: AgentInDb,
+    context: ConversationContext,
+) -> BackgroundTaskOutcome:
+    """Use the dispatched agent's implementation and config, not the conversation's."""
+    slug = agent.implementation
+    runner = None if slug is None else IMPLEMENTATION_RUNNERS.get(slug)
     if runner is None:
         raise ValueError(f"No runtime registered for implementation {slug!r}.")
-    return await runner(context)
+    return await runner(context, agent)

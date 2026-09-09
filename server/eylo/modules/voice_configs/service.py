@@ -51,7 +51,7 @@ class VoiceConfigService:
         config: Mapping[str, object] | None = None,
         secrets: Mapping[str, str] | None = None,
     ) -> ProviderConfig:
-        validated = VoiceProviderConfig.validate(
+        validated = VoiceProviderConfig.from_storage(
             provider=provider,
             kind=kind,
             config=config,
@@ -63,7 +63,7 @@ class VoiceConfigService:
             capability=capability,
             provider=validated.provider.value,
             name=name,
-            config=validated.config,
+            config=validated.to_storage_config(),
             secrets=validated.secrets,
         )
 
@@ -81,7 +81,7 @@ class VoiceConfigService:
         for config in configs:
             if not config.credentials_available:
                 continue
-            VoiceProviderConfig.validate(
+            VoiceProviderConfig.from_storage(
                 provider=config.provider,
                 kind=kind,
                 config=config.config,
@@ -103,7 +103,7 @@ class VoiceConfigService:
         expected_capability = Capability(kind.value)
         if config.capability is not expected_capability:
             raise ProviderConfigNotFound("Provider configuration was not found.")
-        VoiceProviderConfig.validate(
+        VoiceProviderConfig.from_storage(
             provider=config.provider,
             kind=kind,
             config=config.config,
@@ -133,7 +133,7 @@ class VoiceConfigService:
             if secret_patch is None
             else apply_secret_patch(existing.secrets, secret_patch)
         )
-        VoiceProviderConfig.validate(
+        validated = VoiceProviderConfig.from_storage(
             provider=existing.provider,
             kind=kind,
             config=merged_config,
@@ -145,7 +145,7 @@ class VoiceConfigService:
                 organization_id=organization_id,
                 config_id=config_id,
                 name=name,
-                config=config,
+                config=validated.to_storage_config() if config is not None else None,
                 secret_patch=secret_patch,
             )
         if enabled is not None:

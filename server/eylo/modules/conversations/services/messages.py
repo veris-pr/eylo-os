@@ -24,6 +24,7 @@ from eylo.modules.agent_runs.domain import (
 from eylo.modules.agent_runs.models import AgentRunModel
 from eylo.modules.conversations.constants import REALTIME_MESSAGE_SOURCE
 from eylo.modules.conversations.message_facts import file_voice_message_fact
+from eylo.modules.conversations.models.messages import MessagesModel
 from eylo.modules.conversations.repositories.messages import (
     MessageAgentRunRepository,
     MessageRepository,
@@ -445,7 +446,7 @@ class MessageService(EyloBaseService[MessageInDb]):
                 sender_participant_id=message.sender_participant_id,
             )
         )
-        if organization_id != principal.organization_id:
+        if organization_id is None or organization_id != principal.organization_id:
             raise MessageAgentRunNotFound
         if task_content is None:
             target_is_valid = (
@@ -863,7 +864,7 @@ def _json_value(value: Any) -> Any:
 def _same_filing(
     *,
     run: AgentRunModel,
-    origin,
+    origin: MessagesModel,
     message: MessageCreate,
     principal: InitiatingPrincipalRef,
     agent_id: UUID,
@@ -874,6 +875,14 @@ def _same_filing(
 ) -> bool:
     same_request = (
         not request_id_was_supplied or origin.request_id == message.request_id
+    )
+    # Task status is execution output, not immutable filing input. A PENDING
+    # retry must recover the same task after its worker has advanced the status.
+    # Other message kinds retain their existing status comparison.
+    task_retry = (
+        message.kind is MessageKind.SYSTEM
+        and message.content_kind is MessageContentKind.TASK
+        and message.request_status is RequestStatus.PENDING
     )
     return (
         run.initiating_principal_kind == principal.kind
@@ -892,7 +901,7 @@ def _same_filing(
         and origin.content_kind == message.content_kind
         and origin.content == _json_value(message.content)
         and origin.parent_message_id == message.parent_message_id
-        and origin.request_status == message.request_status
+        and (task_retry or origin.request_status == message.request_status)
         and origin.external_id == message.external_id
         and origin.meta == _json_value(message.meta)
         and same_request

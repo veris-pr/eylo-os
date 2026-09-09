@@ -6,10 +6,16 @@ Status tracking uses the message row's request_status field — content is immut
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import Literal, Optional
+from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
+from eylo.common.contracts.background_task import (
+    BackgroundTaskOutcome,
+    ParallelTaskKind,
+)
 from eylo.common.contracts.background_task import TaskContent as TaskContent
 from eylo.common.contracts.background_task import (
     TaskResultContent as TaskResultContent,
@@ -25,8 +31,8 @@ class WorkerResult(BaseModel):
     text: str
     model_used: str
     iterations_used: int = 1
-    outcome: Literal["completed", "skipped"] = Field(
-        "completed",
+    outcome: BackgroundTaskOutcome = Field(
+        BackgroundTaskOutcome.COMPLETED,
         description=(
             "`skipped` means the worker picked the task up and decided no work "
             "was needed. It maps to RequestStatus.SKIPPED and is not a failure "
@@ -60,11 +66,41 @@ class SpawnTaskFnfInput(BaseModel):
     )
 
 
+class TaskDispatchStatus(str, Enum):
+    """Whether a task was filed, not whether its asynchronous work succeeded."""
+
+    DISPATCHED = "dispatched"
+    ERROR = "error"
+
+
+class ParallelTaskManifest(BaseModel):
+    """Pinned task context serialized into the generic AgentRun manifest."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["parallel_task"] = "parallel_task"
+    conversation_id: UUID
+    task_type: ParallelTaskKind
+    source_agent_id: UUID
+    source_agent_revision: int = Field(gt=0)
+
+
+class ParallelTaskMetadata(BaseModel):
+    """Task-owned message metadata; absent optional keys remain absent on wire."""
+
+    model_config = ConfigDict(frozen=True)
+
+    task_type: ParallelTaskKind
+    triggering_request_id: UUID | None = None
+    background_agent_id: UUID | None = None
+    background_agent_revision: int | None = Field(default=None, gt=0)
+
+
 class SpawnTaskFnfResult(BaseModel):
     """Structured response returned by spawn_task_fnf to the LLM."""
 
     task_id: str = Field(..., description="ID of the created TASK message")
-    status: str = Field(default="dispatched")
+    status: TaskDispatchStatus = TaskDispatchStatus.DISPATCHED
     instruction: str = Field(..., description="Echo of the task instruction")
     swarm_id: Optional[str] = None
     error: Optional[str] = None

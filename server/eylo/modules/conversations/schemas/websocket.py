@@ -3,8 +3,12 @@
 from typing import Optional
 from uuid import UUID
 
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, JsonValue, field_validator, model_validator
 
+from eylo.common.contracts.message_content import (
+    WidgetResponseMessageContent,
+    normalize_widget_response_message_content,
+)
 from eylo.common.contracts.websocket import WsConversationQueryFilters, WsEvent
 from eylo.modules.conversations.schemas.messages import (
     MessageContentKind,
@@ -15,12 +19,23 @@ from eylo.modules.conversations.schemas.messages import (
 class WsMessageEvent(WsEvent):
     """Message event for sending text or data."""
 
+    model_config = ConfigDict(allow_inf_nan=False)
+
     conversation_id: UUID
     content_kind: MessageContentKind = MessageContentKind.TEXT
     text: Optional[str] = None
-    content: Optional[dict | list[dict]] = None
+    content: WidgetResponseMessageContent | None = None
     parent_message_id: Optional[UUID] = None
-    context: Optional[dict] = None
+    context: dict[str, JsonValue] | None = None
+
+    @field_validator("content", mode="before")
+    @classmethod
+    def parse_widget_response(
+        cls, value: object
+    ) -> WidgetResponseMessageContent | None:
+        if value is None:
+            return None
+        return normalize_widget_response_message_content(value)
 
     @model_validator(mode="after")
     def validate_payload(self) -> "WsMessageEvent":
@@ -38,10 +53,6 @@ class WsMessageEvent(WsEvent):
                 )
             if self.content is None:
                 raise ValueError("content is required for WIDGET_RESPONSE messages")
-            if not isinstance(self.content, dict):
-                raise ValueError(
-                    "content must be an object for WIDGET_RESPONSE messages"
-                )
             return self
 
         raise ValueError(

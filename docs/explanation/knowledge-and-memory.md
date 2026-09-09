@@ -28,11 +28,30 @@ conversation work. Reconciliation detects duplicates and conflicts in the
 background. Facts retain provenance, status, expiry, relationships, and index
 state so operators can understand what was learned and why.
 
+### Model and embedding boundaries
+
+Formation, reconciliation, and provider verification share a keyword-only
+`MemoryTextCompleter` contract: `system` and `user` text enter, completion text
+returns. The pipeline binds the selected LLM authority and bounded generation
+settings; the socket does not resolve credentials or import provider modules.
+Native SDK requests/responses remain inside the LLM adapter. Usage is metered
+before completion text is accepted; unexpected tool calls and empty text are
+refused. Formation/reconciliation parsers separately validate the proposed
+operations and resolve model-supplied indices to platform-owned identities.
+
+Document and query embedders have distinct typed call signatures. The memory
+socket also receives a factory for fresh native async DB sessions. Verification
+depends on a structural embedding port and resolved LLM authority, not a
+pipeline implementation or vendor SDK type. Typing these boundaries does not
+replace runtime authority, vector-space, response, or concurrency validation.
+
 ## Shared retrieval infrastructure
 
 Both systems can use embedding and optional reranking configurations. The
-embedding config ID and revision define a vector space. Changing either makes
-previous vectors invalid until reindexing finishes.
+embedding config ID and revision identify executable provider authority. Vector
+compatibility is compared using organization, provider, endpoint, model,
+dimensions, and semantic options. A coordinate-space change requires reindexing;
+config identity alone is not the vector-space hash.
 
 The systems do not merge stores merely because they share an organization,
 scope label, or embedding provider. Every chunk/fact query retains its owning

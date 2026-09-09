@@ -56,6 +56,82 @@ the curated-vendor API and defined under
 - `ToolExecutionMode`: `auto`, `requires_approval`, or `disabled`, read live at
   execution.
 
+Invocation arguments must be JSON values, then satisfy the registered vendor
+input model. Its existing normalization rules still apply. Handler results must
+also be JSON-safe: non-finite numbers, cycles, or arbitrary Python objects return
+`tool_result_invalid`, without retrying a potentially completed mutation.
+Disabled tools return `tool_execution_blocked`; only an approval-policy refusal
+sets the `approval_required` result metadata flag. This flag alone is not a
+durable approval wait.
+
+## Typed tool choices
+
+GitHub issue search and pull-request listing expose `open`, `closed`, and `all`
+as enum choices. `all` is a query option, not an issue or pull-request state.
+Freshdesk ticket search/create/update expose built-in status and priority names
+as enums; the vendor handler translates them to
+[Freshdesk's documented integer codes](https://developers.freshdesk.com/api/#tickets).
+These types belong to their curated vendor implementations, not the platform's
+canonical ticketing/support domains.
+
+GitLab issue search exposes `opened`, `closed`, and `all`; merge-request listing
+also exposes `merged`. The query enums remain separate so an issue cannot accept
+`merged`. These retain the existing curated subset of the
+[GitLab issue](https://docs.gitlab.com/api/issues/#list-project-issues) and
+[merge-request](https://docs.gitlab.com/api/merge_requests/#list-project-merge-requests)
+filters; the vendor's additional `locked` MR filter is not exposed yet.
+
+Intercom conversation search exposes `open`, `closed`, and `snoozed`. Its internal
+reply path uses a vendor message-type enum for `comment` versus `note`, matching
+the pinned [Intercom 2.11 contract](https://developers.intercom.com/docs/references/2.11/rest-api/api.intercom.io/conversations/replyconversation.md).
+The public `reply_to_conversation` tool still requires `visible_to_customer`,
+without a default; `add_note` always selects an internal note.
+
+These four vendors retain case-insensitive, whitespace-tolerant valid inputs. Invalid
+choices return `tool_input_invalid` before credential resolution or vendor I/O.
+Freshdesk optional search/update choices retain empty-string omission; an update
+with no changes still returns `no_change_requested`. Unknown native status or
+priority values in responses remain available rather than being discarded.
+Intercom also retains optional empty-string omission. A search without a contact
+email or state returns `search_unbounded`. Invalid state is now refused before
+the contact lookup, including when that lookup would have returned no contact.
+
+### Freshdesk request and response contracts
+
+All six Freshdesk tools validate vendor responses before projecting agent
+results. Request, response, and result models remain inside the Freshdesk adapter;
+they are not the platform's canonical customer-support entities. Request fields
+are closed; unrelated vendor response fields are ignored, not passed to agents.
+
+- Ticket list/detail request `include=requester` and read the nested requester's
+  email. Search-index and mutation responses may not include it; those results
+  return `null`, without inventing an email or making per-ticket contact calls.
+- Requester email uses the ticket-list query parameter, not the search-index
+  query language. Combined status/priority filters apply to that requester list.
+  List-based queries retain Freshdesk's recent-ticket window (past 30 days).
+- Reads paginate within a bounded budget: at most ten pages, up to 100 results.
+  `coverage` distinguishes `exhausted`, `result_limit`, and `scan_limit` within
+  the chosen query. The status/priority search index can lag changes.
+- Ticket detail includes the first 30 conversation entries when requested.
+  Incoming messages and public notes are not labelled outgoing customer replies.
+- HTTP failures, malformed records, mismatched IDs, and unconfirmed private-note
+  visibility fail as tool errors. Raw vendor error text is not returned.
+
+These wire shapes follow the [Freshdesk v2 API](https://developers.freshdesk.com/api/).
+Mutations retain their existing request-body bytes and outbound-attempt owner.
+A response-validation failure does not authorize a repeat send. Replaying an
+existing outbound receipt still cannot reconstruct its response body; the shared
+client returns `vendor_outcome_unknown` without sending again.
+
+## Known transport limitation
+
+GitLab project paths such as `group/project` currently fail with
+`vendor_request_invalid`: the adapter encodes the slash as GitLab requires, but
+the shared HTTP guard refuses encoded path separators. Numeric project IDs pass
+that request validation. This affects the existing named-project path across
+GitLab tools, not just the new query enums. Until the transport contract is
+corrected, use the numeric project ID; do not remove the shared path guard.
+
 ## Security boundary
 
 Curated tools receive neither credentials nor DB access. They address relative

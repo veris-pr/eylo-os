@@ -22,8 +22,45 @@ from eylo.modules.conversations.schemas.participants import (
 
 class ConversationParticipantRepository(BaseORMRepository[ParticipantsModel]):
     @property
-    def model(self) -> ParticipantsModel:
+    def model(self) -> type[ParticipantsModel]:
         return ParticipantsModel
+
+    async def lock_conversation(
+        self, conversation_id: UUID, *, organization_id: UUID | None = None
+    ) -> None:
+        """Serialize actor creation and handoff without locking provider work."""
+        statement = select(ConversationsModel.id).where(
+            ConversationsModel.id == conversation_id,
+            ConversationsModel.deleted.is_(False),
+        )
+        if organization_id is not None:
+            statement = statement.where(
+                ConversationsModel.organization_id == organization_id
+            )
+        if await self.db_session.scalar(statement.with_for_update()) is None:
+            raise ValueError("Conversation is unavailable.")
+
+    async def active_agent_actor(
+        self, *, conversation_id: UUID, agent_id: UUID, agent_revision: int
+    ) -> ParticipantsModel | None:
+        """Read an existing exact actor while the caller owns the conversation lock."""
+        return await self.db_session.scalar(
+            select(self.model)
+            .where(
+                self.model.conversation_id == conversation_id,
+                self.model.entity_kind == ParticipantKind.AGENT.value,
+                self.model.agent_id == agent_id,
+                self.model.agent_revision == agent_revision,
+                self.model.is_active.is_(True),
+                self.model.deleted.is_(False),
+            )
+            .order_by(
+                self.model.is_primary.desc(),
+                self.model.joined_at.asc(),
+                self.model.id.asc(),
+            )
+            .limit(1)
+        )
 
     async def create_(self, participant: ParticipantCreateSchema) -> ParticipantsModel:
         entity = map_schema_to_model(
@@ -126,6 +163,7 @@ class ConversationParticipantRepository(BaseORMRepository[ParticipantsModel]):
         new_agent_id: UUID,
         new_agent_revision: int,
     ) -> UUID:
+        await self.lock_conversation(conversation_id)
         current_primary_id = await self.db_session.scalar(
             select(self.model.id)
             .where(

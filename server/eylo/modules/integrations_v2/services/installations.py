@@ -93,7 +93,7 @@ class CuratedIntegrationService:
             IntegrationV2InstallationModel(
                 organization_id=organization_id,
                 vendor=offer.vendor,
-                auth_kind=auth_kind.value,
+                auth_kind=auth_kind,
                 instance_url=instance_url,
                 oauth_client_id=oauth_client_id,
                 oauth_client_secret=oauth_client_secret,
@@ -231,7 +231,7 @@ class CuratedIntegrationService:
             organization_id=organization_id,
             installation_id=installation.id,
             wire_id=wire_id,
-            execution_mode=ToolExecutionMode.AUTO.value,
+            execution_mode=ToolExecutionMode.AUTO,
         )
         return CuratedToolInDb.model_validate(await self._tools.add(tool))
 
@@ -258,7 +258,7 @@ class CuratedIntegrationService:
                 "tool_binding_unavailable",
                 f"Curated tool '{wire_id}' is unavailable.",
             )
-        row.execution_mode = execution_mode.value
+        row.execution_mode = execution_mode
         await self._db.flush()
         return CuratedToolInDb.model_validate(row)
 

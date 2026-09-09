@@ -1,17 +1,21 @@
-"""Resolve scoped integration credentials and refresh expiring OAuth grants."""
+"""Resolve scoped credentials; refuse expired grants without inline refresh I/O."""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import Final
 from uuid import UUID
 
+from eylo.common.database import current_transaction, start_transaction
 from eylo.common.http_egress import (
     HttpEgressPolicyError,
     HttpOrigin,
     parse_https_target,
 )
+from eylo.modules.connections.schemas.external import ExternalConnectionInDb
 from eylo.modules.integrations_v2.domain.enums import VendorAuthKind
 from eylo.modules.integrations_v2.domain.errors import (
     CredentialUnavailableError,
@@ -30,6 +34,7 @@ from .credentials import VendorWireAuth, build_vendor_wire_auth
 from .registry import CuratedRegistry, load_vendors
 
 NO_AUTH_CONNECTION_ID = "no-auth"
+_REQUEST_BUDGET_SECONDS: Final = 20.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,12 +55,14 @@ async def resolve_vendor_auth(
     registry: CuratedRegistry | None = None,
     connections: CuratedIntegrationService | None = None,
     required_scopes: Sequence[str] = (),
-    request_budget_seconds: float = 20.0,
+    request_budget_seconds: float = _REQUEST_BUDGET_SECONDS,
 ) -> ResolvedVendorAuth:
     """Resolve the credential authorizing one curated tool call.
 
-    Raises `CredentialUnavailableError` when no usable connection exists, which
-    callers surface to the agent as `auth_required` rather than as a fault.
+    Missing, expiring, or mismatched grants produce `auth_required`. Malformed
+    credential material retains its distinct safe validation error code.
+    An owned DB-only lookup closes before decryption and wire-auth construction;
+    an injected service or ambient session is never committed or closed here.
     """
     vendor = (registry or load_vendors()).vendor(grant.vendor)
     if vendor is None:
@@ -81,11 +88,11 @@ async def resolve_vendor_auth(
             account=VendorAccount(connection_id=NO_AUTH_CONNECTION_ID),
         )
 
-    service = connections or CuratedIntegrationService()
-    connection = await service.get_active_external_connection(
+    connection = await _active_connection(
         installation_id=grant.installation_id,
         organization_id=grant.organization_id,
         contact_id=contact_id,
+        service=connections,
     )
     if connection is None:
         raise CredentialUnavailableError(
@@ -98,7 +105,8 @@ async def resolve_vendor_auth(
             f"The '{grant.vendor}' credential expires inside the request budget.",
         )
     if (
-        connection.vendor_key != grant.vendor
+        connection.organization_id != grant.organization_id
+        or connection.vendor_key != grant.vendor
         or connection.auth_kind.value != grant.auth_kind.value
         or connection.instance_origin != grant.instance_url
     ):
@@ -120,7 +128,7 @@ async def resolve_vendor_auth(
         )
     credentials = decrypt_connection_credentials(
         connection.credentials,
-        organization_id=connection.organization_id,
+        organization_id=grant.organization_id,
         connection_id=connection.id,
         revision=connection.revision,
     )
@@ -138,6 +146,29 @@ async def resolve_vendor_auth(
         auth=auth,
         account=VendorAccount(connection_id=str(connection.id)),
     )
+
+
+async def _active_connection(
+    *,
+    installation_id: UUID,
+    organization_id: UUID,
+    contact_id: UUID | None,
+    service: CuratedIntegrationService | None,
+) -> ExternalConnectionInDb | None:
+    if service is not None:
+        return await service.get_active_external_connection(
+            installation_id=installation_id,
+            organization_id=organization_id,
+            contact_id=contact_id,
+        )
+    session = current_transaction()
+    scope = start_transaction(ro=True) if session is None else nullcontext(session)
+    async with scope as db:
+        return await CuratedIntegrationService(db).get_active_external_connection(
+            installation_id=installation_id,
+            organization_id=organization_id,
+            contact_id=contact_id,
+        )
 
 
 def _expires_within(expires_at: datetime | None, budget_seconds: float) -> bool:

@@ -1,335 +1,277 @@
-"""Speechmatics STT adapter for canonical STT pipeline.
+"""Translate validated Speechmatics responses into the canonical STT contract."""
 
-This adapter wraps the new voice module's SpeechmaticsSTT to work with
-the existing STT factory and manager patterns.
-"""
+from __future__ import annotations
 
 import asyncio
-import logging
-from typing import Any, Dict, Optional
 
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    StrictBool,
+    field_validator,
+)
+
+from eylo.sockets.stt.adapters.connection_errors import (
+    close_failed_websocket_connection,
+)
 from eylo.sockets.stt.base import STTVendorAdapter
-from eylo.sockets.stt.schemas import STTCapabilities, STTEvent, STTEventType
-from eylo.sockets.voice.vendors.speechmatics import (
+from eylo.sockets.stt.exceptions import STTConnectionClosed
+from eylo.sockets.stt.schemas import (
+    STTCapabilities,
+    STTCapabilitySupport,
+    STTEncoding,
+    STTError,
+    STTEvent,
+    STTEventType,
+    STTProvider,
+    STTTranscriptForm,
+    TimedWord,
+)
+from eylo.sockets.voice.audio import AudioFrame
+from eylo.sockets.voice.vendors.speechmatics.stt import (
     SpeechmaticsSTT,
     SpeechmaticsSTTStream,
 )
+from eylo.sockets.voice.vendors.speechmatics.wire import (
+    SpeechmaticsAudioAdded,
+    SpeechmaticsDiarization,
+    SpeechmaticsEncoding,
+    SpeechmaticsEndOfTranscript,
+    SpeechmaticsEndOfUtterance,
+    SpeechmaticsEntity,
+    SpeechmaticsError,
+    SpeechmaticsEvent,
+    SpeechmaticsMessage,
+    SpeechmaticsRecognitionStarted,
+    SpeechmaticsResultKind,
+    SpeechmaticsToken,
+)
 
-logger = logging.getLogger(__name__)
+_MILLISECONDS_PER_SECOND = 1000
+_PCM_BYTES_PER_SAMPLE = 2
+
+
+class SpeechmaticsAdapterConfig(BaseModel):
+    """Select consumed vendor options without importing platform configuration types."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore", hide_input_in_errors=True)
+
+    api_key: SecretStr = Field(min_length=1, repr=False, exclude=True)
+    language: str = Field(min_length=1)
+    sample_rate: int = Field(default=16000, strict=True, gt=0)
+    encoding: SpeechmaticsEncoding = SpeechmaticsEncoding.PCM_S16LE
+    enable_partials: StrictBool = True
+    enable_entities: StrictBool = False
+    max_delay: float = Field(default=2.0, strict=True, ge=0.7, le=4.0)
+    diarization: SpeechmaticsDiarization | None = None
+    custom_vocabulary: tuple[str, ...] | None = Field(default=None, repr=False)
+
+    @field_validator("encoding", mode="before")
+    @classmethod
+    def translate_pcm_encoding(cls, value: object) -> object:
+        if value == STTEncoding.LINEAR16:
+            return SpeechmaticsEncoding.PCM_S16LE
+        return value
 
 
 class SpeechmaticsAdapter(STTVendorAdapter):
-    """Adapter to use new voice module SpeechmaticsSTT with canonical STT pipeline.
+    """One native stream owns resources; the factory owns failure recovery."""
 
-    This class bridges the gap between:
-    - Canonical interface: connect(), send_audio(), receive_event()
-    - New voice module: stream() with async iteration
-
-    The adapter handles:
-    - Audio streaming to Speechmatics
-    - Event parsing (transcripts, partials, speaker diarization)
-    - Response queuing for STT manager
-    """
-
-    def __init__(self, config: dict):
-        """Initialize Speechmatics adapter with resolved provider config.
-
-        Args:
-            config: Resolved STT config dict with keys:
-                - api_key: Speechmatics API key
-                - language: Language code
-                - sample_rate: Audio sample rate
-                - enable_partials: Enable interim results
-                - enable_entities: Enable entity extraction
-                - max_delay: Maximum delay in seconds
-                - diarization: Enable speaker diarization
-                - custom_vocabulary: List of custom words
-
-        """
-        # Initialise the contract's shared state. Inheriting without this
-        # leaves `retry_options` unset, so the ABC's helpers raise on this
-        # class while every structural check still passes.
+    def __init__(self, config: object) -> None:
         super().__init__()
-        self._config = config
+        self._config = SpeechmaticsAdapterConfig.model_validate(config)
+        self._stream: SpeechmaticsSTTStream | None = None
         self._is_connected = False
-        self._stream: Optional[SpeechmaticsSTTStream] = None
-        self._receive_task: Optional[asyncio.Task] = None
-        self._response_queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
-
-        # Initialize new voice module STT
+        self._lifecycle_lock = asyncio.Lock()
         self._stt = SpeechmaticsSTT(
-            language=config["language"],
-            enable_partials=config.get("enable_partials", True),
-            enable_entities=config.get("enable_entities", False),
-            max_delay=config.get("max_delay", 2.0),
-            sample_rate=config.get("sample_rate", 16000),
-            api_key=config["api_key"],
-            diarization=config.get("diarization"),
-            custom_vocabulary=config.get("custom_vocabulary"),
+            api_key=self._config.api_key.get_secret_value(),
+            language=self._config.language,
+            sample_rate=self._config.sample_rate,
+            enable_partials=self._config.enable_partials,
+            enable_entities=self._config.enable_entities,
+            max_delay=self._config.max_delay,
+            diarization=self._config.diarization,
+            custom_vocabulary=self._config.custom_vocabulary,
         )
 
-        logger.info(
-            f"Initialized SpeechmaticsAdapter with language={self._stt.language}"
-        )
+    async def connect(self) -> SpeechmaticsAdapter:
+        async with self._lifecycle_lock:
+            if self.is_connected:
+                return self
+            if self._stream is not None:
+                await self._close_stream()
+            self._stream = self._stt.stream()
+            try:
+                await self._stream.connect()
+            except BaseException as error:
+                await close_failed_websocket_connection(error, self._close_stream)
+            self._is_connected = True
+            return self
 
-    async def connect(self):
-        """Connect to Speechmatics service (canonical interface).
-
-        Returns:
-            Self to maintain interface compatibility.
-
-        """
-        # Create stream
-        self._stream = self._stt.stream()
-
-        # Start background task to receive events
-        self._receive_task = asyncio.create_task(self._receive_events())
-
-        self._is_connected = True
-        logger.info("Speechmatics adapter connected")
-        return self
-
-    async def _receive_events(self):
-        """Receive events from Speechmatics stream and queue them.
-
-        This background task continuously receives events from the voice module
-        stream and puts them in the response queue for the STT manager.
-        """
-        try:
-            async for event in self._stream:
-                # Convert voice module event to adapter event format
-                adapter_event = self._convert_event(event)
-                if adapter_event:
-                    try:
-                        await self._response_queue.put(adapter_event)
-                    except asyncio.QueueFull:
-                        logger.warning("Response queue full, dropping event")
-
-        except Exception as error:
-            logger.error(
-                "Speechmatics event receive failed error_type=%s",
-                type(error).__name__,
-            )
-            self._is_connected = False
-
-    def _convert_event(self, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Convert voice module event format to adapter event format.
-
-        Args:
-            event: Event from voice module.
-
-        Returns:
-            Event in adapter event format or None if should be filtered.
-
-        Speechmatics event types:
-        - message: "AddPartialTranscript" - interim results
-        - message: "AddTranscript" - final results
-        - message: "RecognitionStarted" - connection established
-        - message: "AudioAdded" - audio chunk acknowledged
-        - message: "EndOfTranscript" - transcription complete
-        - message: "Error" - error occurred
-
-        Adapter event shape consumed by receive_event:
-        - transcript: str
-        - is_final: bool
-        - confidence: float
-        - type: "speech_started" | "utterance_end" | etc.
-
-        """
-        message_type = event.get("message")
-
-        # Handle partial transcripts (interim results)
-        if message_type == "AddPartialTranscript":
-            results = event.get("results", [])
-            if results:
-                result = results[0]
-                alternatives = result.get("alternatives", [])
-                if alternatives:
-                    alt = alternatives[0]
-                    return {
-                        "transcript": alt.get("content", ""),
-                        "is_final": False,
-                        "confidence": alt.get("confidence", 0.0),
-                        "type": "partial",
-                        "speaker": result.get("speaker"),  # Speaker diarization
-                        "start_time": result.get("start_time"),
-                        "end_time": result.get("end_time"),
-                    }
-
-        # Handle final transcripts
-        elif message_type == "AddTranscript":
-            results = event.get("results", [])
-            if results:
-                result = results[0]
-                alternatives = result.get("alternatives", [])
-                if alternatives:
-                    alt = alternatives[0]
-                    return {
-                        "transcript": alt.get("content", ""),
-                        "is_final": True,
-                        "confidence": alt.get("confidence", 1.0),
-                        "type": "final",
-                        "speaker": result.get("speaker"),  # Speaker diarization
-                        "start_time": result.get("start_time"),
-                        "end_time": result.get("end_time"),
-                        "entities": alt.get("entities", []),  # Entity extraction
-                    }
-
-        # Handle connection events
-        elif message_type == "RecognitionStarted":
-            return {
-                "type": "recognition_started",
-                "id": event.get("id"),
-            }
-
-        # Handle end of transcript
-        elif message_type == "EndOfTranscript":
-            return {
-                "type": "end_of_transcript",
-            }
-
-        # Ignore audio acknowledgments
-        elif message_type == "AudioAdded":
+    def _convert_event(self, event: SpeechmaticsEvent) -> STTEvent | None:
+        """Use the complete formatted segment, never just its first result/alternative."""
+        session_id = self._stream.session_id if self._stream is not None else ""
+        request_id = self._stream.recognition_id if self._stream is not None else None
+        if isinstance(
+            event,
+            (
+                SpeechmaticsRecognitionStarted,
+                SpeechmaticsAudioAdded,
+                SpeechmaticsEndOfTranscript,
+            ),
+        ):
             return None
+        if isinstance(event, SpeechmaticsError):
+            return STTEvent(
+                type=STTEventType.ERROR,
+                provider=STTProvider.SPEECHMATICS,
+                model=self.model,
+                session_id=session_id,
+                provider_request_id=request_id,
+                error=STTError(
+                    message=event.reason, code=event.type.value, recoverable=False
+                ),
+            )
+        if isinstance(event, SpeechmaticsEndOfUtterance):
+            return STTEvent(
+                type=STTEventType.SPEECH_END,
+                provider=STTProvider.SPEECHMATICS,
+                model=self.model,
+                session_id=session_id,
+                provider_request_id=request_id,
+                audio_start_ms=round(
+                    event.metadata.start_time * _MILLISECONDS_PER_SECOND
+                )
+                if event.metadata.start_time is not None
+                else None,
+                audio_end_ms=round(event.metadata.end_time * _MILLISECONDS_PER_SECOND)
+                if event.metadata.end_time is not None
+                else None,
+            )
+        if not event.metadata.transcript:
+            return None
+        is_final = event.message is SpeechmaticsMessage.FINAL
+        tokens: list[SpeechmaticsToken] = []
+        for result in event.results:
+            if isinstance(result, SpeechmaticsEntity):
+                tokens.extend(result.written_form)
+            else:
+                tokens.append(result)
+        words = tuple(
+            TimedWord(
+                word=token.alternatives[0].content,
+                start_time=token.start_time,
+                end_time=token.end_time,
+                confidence=token.alternatives[0].confidence if is_final else None,
+                speaker_id=token.alternatives[0].speaker,
+            )
+            for token in tokens
+            if token.type is SpeechmaticsResultKind.WORD and token.alternatives
+        )
+        speakers = {word.speaker_id for word in words if word.speaker_id is not None}
+        return STTEvent(
+            type=STTEventType.TRANSCRIPT_FINAL
+            if is_final
+            else STTEventType.TRANSCRIPT_PARTIAL,
+            provider=STTProvider.SPEECHMATICS,
+            model=self.model,
+            session_id=session_id,
+            provider_request_id=request_id,
+            transcript=event.metadata.transcript,
+            transcript_form=STTTranscriptForm.DELTA,
+            language=self._config.language,
+            words=words,
+            speaker_id=next(iter(speakers)) if len(speakers) == 1 else None,
+            audio_start_ms=round(event.metadata.start_time * _MILLISECONDS_PER_SECOND),
+            audio_end_ms=round(event.metadata.end_time * _MILLISECONDS_PER_SECOND),
+            vendor_metadata=event.model_dump(
+                mode="json", include={"results", "forced"}, exclude_defaults=True
+            ),
+        )
 
-        # Handle errors
-        elif message_type == "Error":
-            logger.error("Speechmatics STT provider error")
-            return {
-                "type": "error",
-                "error": event.get("reason", "Unknown error"),
-            }
-
-        return None
-
-    async def send_audio(self, audio_data: bytes):
-        """Send audio data for transcription (canonical interface).
-
-        Args:
-            audio_data: Raw audio bytes (PCM format).
-
-        """
-        if not self._is_connected or not self._stream:
-            raise RuntimeError("Not connected. Call connect() first.")
-
-        # Push audio to stream
-        from eylo.sockets.voice.audio import AudioFrame
-
+    async def send_audio(self, audio_data: bytes) -> None:
+        if self._stream is None:
+            raise STTConnectionClosed("Speechmatics stream is not connected.")
         frame = AudioFrame(
             data=audio_data,
-            sample_rate=self._stt.sample_rate,
+            sample_rate=self.sample_rate,
             num_channels=1,
-            samples_per_channel=len(audio_data) // 2,  # 16-bit PCM
+            samples_per_channel=len(audio_data) // _PCM_BYTES_PER_SAMPLE,
         )
-
-        await self._stream.push_audio(frame)
-
-    async def _receive_raw_event(self) -> Optional[Dict[str, Any]]:
-        """Read one vendor-shaped event from the internal queue.
-
-        Returns:
-            Event dict or None if no data available.
-
-        """
         try:
-            # Non-blocking get with timeout
-            event = await asyncio.wait_for(self._response_queue.get(), timeout=0.1)
-            return event
-        except asyncio.TimeoutError:
+            await self._stream.push_audio(frame)
+        except BaseException:
+            self._is_connected = False
+            raise
+
+    async def receive_event(self, timeout_ms: int = 100) -> STTEvent | None:
+        if self._stream is None:
+            raise STTConnectionClosed("Speechmatics stream is not connected.")
+        try:
+            event = await asyncio.wait_for(
+                anext(self._stream), timeout=timeout_ms / _MILLISECONDS_PER_SECOND
+            )
+        except TimeoutError:
             return None
+        except StopAsyncIteration as error:
+            self._is_connected = False
+            raise STTConnectionClosed("Speechmatics stream ended.") from error
+        except Exception:
+            self._is_connected = False
+            raise
+        return self._convert_event(event)
 
-    async def keepalive(self):
-        """Send keepalive (canonical interface).
+    async def flush(self) -> None:
+        if self._stream is None:
+            raise STTConnectionClosed("Speechmatics stream is not connected.")
+        try:
+            await self._stream.flush()
+        except BaseException:
+            self._is_connected = False
+            raise
 
-        The new voice module handles keepalive internally, so this is a no-op.
-        """
-        pass
+    async def keepalive(self) -> None:
+        """The native aiohttp connection owns ping/pong heartbeats."""
 
-    async def disconnect(self):
-        """Disconnect from Speechmatics service (canonical interface)."""
-        logger.info("Disconnecting Speechmatics adapter")
-
+    async def _close_stream(self) -> None:
         self._is_connected = False
+        stream, self._stream = self._stream, None
+        try:
+            if stream is not None:
+                await stream.aclose()
+        finally:
+            await self._stt.aclose()
 
-        # Cancel receive task
-        if self._receive_task and not self._receive_task.done():
-            self._receive_task.cancel()
-            try:
-                await self._receive_task
-            except asyncio.CancelledError:
-                pass
-
-        # Close stream
-        if self._stream:
-            await self._stream.aclose()
-            self._stream = None
-
-        # Close STT client
-        await self._stt.aclose()
+    async def disconnect(self) -> None:
+        async with self._lifecycle_lock:
+            await self._close_stream()
 
     @property
     def is_connected(self) -> bool:
-        """Check if connected."""
+        """Queued terminal output stays readable after the physical socket closes."""
         return self._is_connected
 
     @property
     def sample_rate(self) -> int:
-        """Get audio sample rate."""
         return self._stt.sample_rate
 
     @property
     def provider(self) -> str:
-        """Get provider name."""
         return self._stt.provider
-
-    async def receive_event(self, timeout_ms: int = 100) -> STTEvent | None:
-        """Next event as the canonical `STTEvent`.
-
-        Adapts the queue `receive_event` already reads rather than replacing
-        it, so the live path keeps its exact behaviour while the contract is
-        young. Only fields the vendor actually reported are set — confidence and
-        timings are left unset rather than invented.
-        """
-        raw = await self._receive_raw_event()
-        if raw is None:
-            return None
-        event_type = raw.get("type") or raw.get("event")
-        return STTEvent(
-            type=STTEventType(event_type)
-            if event_type in set(STTEventType)
-            else STTEventType.TRANSCRIPT_PARTIAL,
-            provider=self.provider,
-            model=self.model,
-            transcript=str(raw.get("transcript") or raw.get("text") or ""),
-            is_final=bool(raw.get("is_final", False)),
-            confidence=raw.get("confidence"),
-            language=raw.get("language"),
-        )
-
-    async def flush(self) -> None:
-        """No flush frame on this stream. Explicit, not faked."""
-        return None
 
     @property
     def model(self) -> str:
-        """From the vendor client — what actually connected."""
-        return str(getattr(self._stt, "model", "") or "")
+        """This integration selects the vendor language model through language."""
+        return self._stt.language
 
     @property
     def capabilities(self) -> STTCapabilities:
-        """Derived from what this adapter's own code does, not from memory.
-
-        Conservative where unknown: under-claiming makes a caller skip a
-        feature, over-claiming makes it break. Confirm against vendor
-        documentation before relying on a False here.
-        """
         return STTCapabilities(
-            streaming=True,
-            batch_recognize=False,
-            interim_results=True,
-            vad_events=False,
-            turn_detection=False,
-            word_timestamps=False,
-            speaker_labels=True,
-            language_detection=False,
+            interim_results=STTCapabilitySupport.SUPPORTED,
+            word_timestamps=STTCapabilitySupport.SUPPORTED,
+            speaker_labels=STTCapabilitySupport.SUPPORTED,
+            custom_vocabulary=STTCapabilitySupport.SUPPORTED,
+            punctuation=STTCapabilitySupport.SUPPORTED,
         )

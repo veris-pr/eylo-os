@@ -15,9 +15,11 @@ from eylo.pipelines.voice.live_buffer import (
 )
 from eylo.pipelines.voice.request_state import (
     VoiceRequestSource,
+    VoiceRequestState,
     VoiceRequestStatus,
 )
 from eylo.pipelines.voice.tts import TTSRealtime
+from eylo.pipelines.voice.tts_payloads import TTSFinalizeRequest, TTSTextRequest
 
 
 class PolicySpeechState(Protocol):
@@ -28,7 +30,7 @@ class PolicySpeechState(Protocol):
         conversation_id: UUID,
         source: VoiceRequestSource,
         status: VoiceRequestStatus,
-    ) -> object: ...
+    ) -> VoiceRequestState: ...
 
     def mark_voice_request(
         self,
@@ -38,7 +40,7 @@ class PolicySpeechState(Protocol):
         conversation_id: UUID | None = None,
         source: VoiceRequestSource = VoiceRequestSource.USER,
         turn_id: str | None = None,
-    ) -> object | None: ...
+    ) -> VoiceRequestState | None: ...
 
 
 class RealtimePolicySpeaker(Protocol):
@@ -106,7 +108,7 @@ async def play_policy_speech(
         except Exception:
             live_buffer.mark_speech_outcome(
                 request_id,
-                VoiceSpeechOutcome.FAILED.value,
+                VoiceSpeechOutcome.FAILED,
             )
             raise
         if played and wait_until_played and wait_for_transport_drain is not None:
@@ -114,7 +116,7 @@ async def play_policy_speech(
         if not played:
             live_buffer.mark_speech_outcome(
                 request_id,
-                VoiceSpeechOutcome.FAILED.value,
+                VoiceSpeechOutcome.FAILED,
             )
         if session_state is not None:
             session_state.mark_voice_request(
@@ -136,19 +138,10 @@ async def play_policy_speech(
 
     assert tts_manager is not None
     await tts_manager.add_to_request_queue(
-        {
-            "type": "text",
-            "text": text,
-            "turn_id": turn_id,
-            "request_id": str(request_id),
-        }
+        TTSTextRequest(text=text, turn_id=turn_id, request_id=request_id)
     )
     await tts_manager.add_to_request_queue(
-        {
-            "type": "finalize",
-            "turn_id": turn_id,
-            "request_id": str(request_id),
-        }
+        TTSFinalizeRequest(turn_id=turn_id, request_id=request_id)
     )
     if not wait_until_played:
         return request_id
@@ -157,7 +150,7 @@ async def play_policy_speech(
     if played and wait_for_transport_drain is not None:
         played = await wait_for_transport_drain(remaining_timeout())
     outcome = VoiceSpeechOutcome.DRAINED if played else VoiceSpeechOutcome.FAILED
-    live_buffer.mark_speech_outcome(request_id, outcome.value)
+    live_buffer.mark_speech_outcome(request_id, outcome)
     if session_state is not None:
         session_state.mark_voice_request(
             request_id,

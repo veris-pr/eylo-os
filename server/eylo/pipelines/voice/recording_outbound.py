@@ -28,7 +28,7 @@ from eylo.common.outbound import (
 )
 from eylo.durable_runtime import run_with_durable_heartbeat
 from eylo.pipelines.outbound.durable_execution import (
-    DurableStepContext,
+    CommandStepContext,
     OutboundExecutionReceipt,
     execute_outbound_attempt,
 )
@@ -68,7 +68,7 @@ class RecordingUploadCancellation:
     all_required_succeeded: bool
 
 
-class RecordingAbsurdStepContext(DurableStepContext):
+class RecordingAbsurdStepContext(CommandStepContext):
     """Adapt Absurd's positional step API to the shared outbound protocol."""
 
     def __init__(self, context: AsyncTaskContext) -> None:
@@ -89,7 +89,7 @@ async def execute_recording_track_upload(
     content: bytes,
     key: str,
     storage: StorageRuntime,
-    context: DurableStepContext,
+    context: CommandStepContext,
 ) -> RecordingTrackUploadResult:
     """Execute or recover one stable-key PUT without blind replay."""
     if track not in _TRACKS:

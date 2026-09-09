@@ -24,6 +24,7 @@ from eylo.modules.conversations.schemas.conversations import (
 )
 from eylo.modules.conversations.schemas.participants import ParticipantKind
 from eylo.modules.conversations.services.conversations import ConversationService
+from eylo.modules.telephony.constants import CallOpenerDeliveryStatus
 from eylo.modules.telephony.lifecycle import record_opener_delivery
 from eylo.modules.user_sessions.domain import UserSessionEntryChannel
 from eylo.modules.user_sessions.events import file_user_session_fact
@@ -217,7 +218,7 @@ async def persist_delivered_outbound_opener(
         await record_opener_delivery(
             call_id=call_id,
             organization_id=organization_id,
-            accepted=True,
+            outcome=CallOpenerDeliveryStatus.ACCEPTED,
             db=db_session,
         )
 

@@ -24,6 +24,10 @@ from eylo.modules.conversations.schemas.conversations import (
     ConversationContext,
     ConversationInDb,
 )
+from eylo.modules.conversations.schemas.message_content import (
+    UserMessageContent,
+    WidgetResponseMessageContent,
+)
 from eylo.modules.conversations.schemas.messages import MessageInDb, MessageKind
 from eylo.modules.conversations.schemas.participants import ParticipantInDb
 from eylo.modules.conversations.services.messages import MessageService
@@ -32,12 +36,20 @@ from eylo.modules.conversations.services.participants import (
 )
 from eylo.modules.provider_configs.errors import NotConfiguredError
 from eylo.modules.templates.domain import TemplateConsumerKind
+from eylo.pipelines.conversation.prompt_context import (
+    ConversationPromptContext,
+    PromptAgent,
+    PromptInteraction,
+    PromptMemory,
+    memory_prompt_from_recall,
+)
 
 logger = logging.getLogger(__name__)
 
 # How many memories reach a prompt. The blob this replaces was unbounded and
 # had no relevance signal at all.
 MEMORY_RECALL_LIMIT = 5
+
 
 class ConversationContextService:
     """Service responsible for building comprehensive ConversationContext objects.
@@ -201,12 +213,11 @@ class ConversationContextService:
                 None,
             )
             if latest_user_msg and latest_user_msg.meta:
-                interaction = latest_user_msg.meta.get("interaction", {})
-                is_voice_mode = interaction.get("is_voice", False)
-                # Fallback: STT-originated messages stamp is_audio=True
-                # but not interaction metadata (background task path)
-                if not is_voice_mode:
-                    is_voice_mode = latest_user_msg.meta.get("is_audio", False)
+                metadata = latest_user_msg.meta
+                interaction = metadata.interaction
+                is_voice_mode = (
+                    interaction is not None and interaction.is_voice
+                ) or metadata.is_audio is True
 
         # Detect widget mode from the conversation channel.
         # Only conversations started from the widget SDK get compound_render_widget.
@@ -235,20 +246,20 @@ class ConversationContextService:
             )
 
         conversation_context = (conversation.meta or {}).get("context")
-        runtime_context = {
-            "current_time_utc": datetime.now(timezone.utc).isoformat(),
-            "agent": {
-                "name": primary_agent.name,
-                "description": primary_agent.description,
-            },
-            "interaction": {
-                "voice": is_voice_mode,
-                "phone": is_phone,
-                "widget": is_widget_mode,
-            },
-            "memory": memory_context,
-            "conversation_context": conversation_context,
-        }
+        runtime_context = ConversationPromptContext(
+            current_time_utc=datetime.now(timezone.utc),
+            agent=PromptAgent(
+                name=primary_agent.name,
+                description=primary_agent.description,
+            ),
+            interaction=PromptInteraction(
+                voice=is_voice_mode,
+                phone=is_phone,
+                widget=is_widget_mode,
+            ),
+            memory=memory_context,
+            conversation_context=conversation_context,
+        )
         ctx.system_prompt = _compose_system_prompt(
             resolved_agent.system_prompt,
             runtime_context,
@@ -348,7 +359,7 @@ class ConversationContextService:
         self,
         conversation_context: ConversationContext,
         recall_query: str | None = None,
-    ) -> dict[str, object] | None:
+    ) -> PromptMemory | None:
         """Recall a bounded union owned by this Agent, User, and Conversation."""
         if not recall_query:
             return None
@@ -373,30 +384,9 @@ class ConversationContextService:
             )
             return None
 
-        if not recall.memories and not recall.conflicts:
+        context = memory_prompt_from_recall(recall)
+        if context is None:
             return None
-
-        context = {
-            "facts": [
-                {
-                    "id": str(memory.id),
-                    "level": memory.scope.level.value,
-                    "content": memory.content,
-                }
-                for memory in recall.memories
-            ],
-            "conflicts": [
-                {
-                    "relationship_id": str(conflict.relationship_id),
-                    "level": conflict.facts[0].scope.level.value,
-                    "facts": [
-                        {"id": str(fact.id), "content": fact.content}
-                        for fact in conflict.facts
-                    ],
-                }
-                for conflict in recall.conflicts
-            ],
-        }
         logger.debug(
             "[ConversationMemory] Recalled %d memory(ies), %d conflict(s) "
             "for conversation=%s ranking=%s",
@@ -410,14 +400,19 @@ class ConversationContextService:
 
 def _compose_system_prompt(
     authored_instructions: str | None,
-    runtime_context: dict[str, object],
+    runtime_context: ConversationPromptContext,
 ) -> str:
     if not authored_instructions:
         raise ValueError(
             "Executable conversational agents require authored instructions."
         )
     serialized = html.escape(
-        json.dumps(runtime_context, ensure_ascii=False, separators=(",", ":"))
+        json.dumps(
+            runtime_context.model_dump(mode="json"),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
     )
     return (
         f"{authored_instructions}\n\n"
@@ -433,24 +428,13 @@ def _compose_system_prompt(
     )
 
 
-def _latest_user_text(ctx) -> str:
-    """The most recent thing the person said, as the recall query.
-
-    Their own words rather than the whole transcript. Searching with the
-    transcript would match everything weakly and nothing well, which is the
-    failure the unbounded blob already had.
-    """
-    from eylo.modules.conversations.schemas.message_content import (
-        text_from_content_blocks,
-    )
-
+def _latest_user_text(ctx: ConversationContext) -> str:
+    """Recall from the latest nonempty user text or structured submission."""
     for message in reversed(ctx.filter_messages([MessageKind.USER])):
-        content = getattr(message.content, "content", None)
-        if content is None:
+        content = message.content
+        if not isinstance(content, (UserMessageContent, WidgetResponseMessageContent)):
             continue
-        text = (
-            content if isinstance(content, str) else text_from_content_blocks(content)
-        )
-        if text and text.strip():
-            return text.strip()
+        text = content.get_text_content().strip()
+        if text:
+            return text
     return ""

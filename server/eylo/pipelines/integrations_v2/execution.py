@@ -10,24 +10,26 @@ or approval-gated tool before a client was ever constructed.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 from uuid import UUID
 
-from pydantic import ValidationError
+from pydantic import ConfigDict, JsonValue, TypeAdapter, ValidationError
 
+from eylo.common.database import current_transaction, start_transaction
 from eylo.events.py_events.emitter import emit_ephemeral
 from eylo.events.schema.py_events.base import AuthRequiredEvent
 from eylo.modules.integrations_v2.domain.errors import (
     IntegrationsV2Error,
     ToolApprovalRequiredError,
-    ToolExecutionBlockedError,
 )
+from eylo.modules.integrations_v2.schemas.indb import ToolExecutionGrant
 from eylo.modules.integrations_v2.services.installations import (
     CuratedIntegrationService,
 )
-from eylo.pipelines.outbound.durable_execution import DurableStepContext
+from eylo.pipelines.outbound.durable_execution import CommandStepContext
 
 from .contracts import VendorToolContext, VendorToolError
 from .http_client import DurableMutationOwner, GuardedVendorClient, VendorTransport
@@ -35,16 +37,19 @@ from .registry import CuratedRegistry, load_vendors
 from .resolution import resolve_vendor_auth
 
 if TYPE_CHECKING:
-    from eylo.modules.conversations.schemas.conversations import ConversationContext
+    from eylo.pipelines.agent_execution_context import PlatformExecutionContext
+
+_ARGUMENTS = TypeAdapter(dict[str, JsonValue], config=ConfigDict(allow_inf_nan=False))
+_RESULT = TypeAdapter(JsonValue, config=ConfigDict(allow_inf_nan=False))
 
 
 @dataclass(frozen=True, slots=True)
 class CuratedToolExecutionOutcome:
     """Safe content and metadata consumed by the conversation adapter."""
 
-    content: dict[str, Any] = field(repr=False)
+    content: dict[str, JsonValue] = field(repr=False)
     is_error: bool
-    metadata: Mapping[str, Any]
+    metadata: Mapping[str, JsonValue]
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "content", dict(self.content))
@@ -54,24 +59,30 @@ class CuratedToolExecutionOutcome:
 async def execute_curated_tool(
     *,
     tool_id: UUID,
-    tool_input: Mapping[str, Any],
-    conversation_context: ConversationContext,
+    tool_input: Mapping[str, object],
+    conversation_context: PlatformExecutionContext,
     tool_use_message_id: UUID,
-    durable_context: DurableStepContext,
+    durable_context: CommandStepContext,
     registry: CuratedRegistry | None = None,
     transport: VendorTransport | None = None,
     service: CuratedIntegrationService | None = None,
 ) -> CuratedToolExecutionOutcome:
-    """Authorize, resolve, and run one curated tool call."""
+    """Authorize and prepare in DB-only scopes, then invoke the vendor handler.
+
+    Borrowed sessions and injected services remain caller-owned. Without them,
+    policy and connection lookups each release their owned scope before I/O.
+    Invalid results are reported without retrying a possibly committed effect.
+    """
     organization_id = UUID(str(conversation_context.conversation.organization_id))
     registry = registry or load_vendors()
 
     try:
-        grant = await (service or CuratedIntegrationService()).resolve_for_execution(
+        grant = await _execution_grant(
             organization_id=organization_id,
             tool_id=tool_id,
+            service=service,
         )
-    except (ToolExecutionBlockedError, ToolApprovalRequiredError) as error:
+    except ToolApprovalRequiredError as error:
         return _error_outcome(error.code, approval_required=True)
     except IntegrationsV2Error as error:
         return _error_outcome(error.code)
@@ -81,17 +92,19 @@ async def execute_curated_tool(
         return _error_outcome("tool_binding_unavailable")
 
     try:
-        payload = spec.input_model.model_validate(dict(tool_input))
-    except ValidationError:
+        arguments = _ARGUMENTS.validate_python(dict(tool_input), strict=True)
+        payload = spec.input_model.model_validate(arguments)
+    except (TypeError, ValueError):
         return _error_outcome("tool_input_invalid")
 
+    contact_id = _primary_contact_id(conversation_context)
     try:
-        contact_id = _primary_contact_id(conversation_context)
         resolved = await resolve_vendor_auth(
             grant=grant,
             contact_id=contact_id,
             registry=registry,
             required_scopes=spec.scopes,
+            connections=service,
         )
     except IntegrationsV2Error as error:
         auth_required = error.code == "auth_required"
@@ -138,9 +151,13 @@ async def execute_curated_tool(
     )
 
     try:
-        result = await spec.handler(payload, context)
+        raw_result = await spec.handler(payload, context)
     except VendorToolError as error:
         return _error_outcome(error.code, vendor=grant.vendor)
+    try:
+        result = _RESULT.validate_python(raw_result, strict=True)
+    except ValidationError:
+        return _error_outcome("tool_result_invalid", vendor=grant.vendor)
 
     return CuratedToolExecutionOutcome(
         content={"kind": "curated_result", "data": result},
@@ -154,7 +171,25 @@ async def execute_curated_tool(
     )
 
 
-def _primary_contact_id(conversation_context: ConversationContext) -> UUID | None:
+async def _execution_grant(
+    *,
+    organization_id: UUID,
+    tool_id: UUID,
+    service: CuratedIntegrationService | None,
+) -> ToolExecutionGrant:
+    if service is not None:
+        return await service.resolve_for_execution(
+            organization_id=organization_id, tool_id=tool_id
+        )
+    session = current_transaction()
+    scope = start_transaction(ro=True) if session is None else nullcontext(session)
+    async with scope as db:
+        return await CuratedIntegrationService(db).resolve_for_execution(
+            organization_id=organization_id, tool_id=tool_id
+        )
+
+
+def _primary_contact_id(conversation_context: PlatformExecutionContext) -> UUID | None:
     participant = conversation_context.get_primary_contact()
     if participant is None:
         return None
@@ -177,7 +212,7 @@ def _error_outcome(
     vendor: str | None = None,
 ) -> CuratedToolExecutionOutcome:
     kind = "auth_required" if auth_required else "curated_error"
-    metadata: dict[str, Any] = {
+    metadata: dict[str, JsonValue] = {
         "curated_execution": True,
         "auth_required": auth_required,
         "approval_required": approval_required,

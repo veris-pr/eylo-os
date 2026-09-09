@@ -3,7 +3,7 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from typing import Any, AsyncGenerator, Literal, Optional, Union
+from typing import AsyncGenerator
 
 from eylo.common.contracts.provider_config import Capability, NotConfiguredError
 from eylo.sockets.tts.adapters.amazon_polly_adapter import AmazonPollyTTSAdapter
@@ -25,42 +25,14 @@ from eylo.sockets.tts.adapters.smallest_adapter import (
     SmallestTTSAdapter,
     SmallestTTSConfig,
 )
+from eylo.sockets.tts.base import TTSVendorAdapter
 from eylo.sockets.tts.exceptions import TTSConnectionFailed
-from eylo.sockets.tts.schemas import TTSConfig, normalize_tts_config
-
-# Every configured TTS provider reaches one contract adapter through this union.
-TTSService = Union[
-    AmazonPollyTTSAdapter,
-    ElevenLabsTTSAdapter,
-    CartesiaContractAdapter,
-    SarvamContractAdapter,
-    OpenAITTSAdapter,
-    DeepgramTTSAdapter,
-    GroqTTSAdapter,
-    RimeTTSAdapter,
-    SmallestTTSAdapter,
-    HumeTTSAdapter,
-    MurfTTSAdapter,
-]
-
-TTSVendor = Literal[
-    "amazon-polly",
-    "elevenlabs",
-    "cartesia",
-    "sarvam",
-    "openai",
-    "deepgram",
-    "groq",
-    "rime",
-    "smallest",
-    "hume",
-    "murf",
-]
+from eylo.sockets.tts.schemas import TTSConfig, TTSProvider, normalize_tts_config
 
 logger = logging.getLogger(__name__)
 
-_REQUIRED_FIELDS: dict[str, frozenset[str]] = {
-    "amazon-polly": frozenset(
+_REQUIRED_FIELDS: dict[TTSProvider, frozenset[str]] = {
+    TTSProvider.AMAZON_POLLY: frozenset(
         {
             "region",
             "model",
@@ -70,152 +42,132 @@ _REQUIRED_FIELDS: dict[str, frozenset[str]] = {
             "secret_access_key",
         }
     ),
-    "cartesia": frozenset({"model", "voice", "api_key"}),
-    "deepgram": frozenset({"model", "api_key"}),
-    "elevenlabs": frozenset({"model", "voice", "api_key"}),
-    "groq": frozenset({"model", "voice", "api_key"}),
-    "hume": frozenset({"model", "language", "api_key"}),
-    "murf": frozenset({"voice", "api_key"}),
-    "openai": frozenset({"model", "voice", "api_key"}),
-    "rime": frozenset({"model", "voice", "api_key"}),
-    "sarvam": frozenset({"model", "voice", "language", "api_key"}),
-    "smallest": frozenset({"model", "voice", "language", "api_key"}),
+    TTSProvider.CARTESIA: frozenset({"model", "voice", "api_key"}),
+    TTSProvider.DEEPGRAM: frozenset({"model", "api_key"}),
+    TTSProvider.ELEVENLABS: frozenset({"model", "voice", "api_key"}),
+    TTSProvider.GROQ: frozenset({"model", "voice", "api_key"}),
+    TTSProvider.HUME: frozenset({"model", "language", "api_key"}),
+    TTSProvider.MURF: frozenset({"voice", "api_key"}),
+    TTSProvider.OPENAI: frozenset({"model", "voice", "api_key"}),
+    TTSProvider.RIME: frozenset({"model", "voice", "api_key"}),
+    TTSProvider.SARVAM: frozenset({"model", "voice", "language", "api_key"}),
+    TTSProvider.SMALLEST: frozenset({"model", "voice", "language", "api_key"}),
 }
 
 
 class TTSFactory:
     def __init__(
         self,
-        tts_vendor: TTSVendor | str,
-        tts_config: TTSConfig | dict[str, Any] | None = None,
+        tts_vendor: TTSProvider | str,
+        tts_config: TTSConfig | dict[str, object] | None = None,
         *,
         api_key: str | None = None,
-    ):
-        self._typed_config = normalize_tts_config(tts_config, vendor=tts_vendor)
-        self._tts_vendor = (
-            self._typed_config.vendor.value
-            if hasattr(self._typed_config.vendor, "value")
-            else self._typed_config.vendor
+    ) -> None:
+        if not isinstance(tts_vendor, str):
+            raise ValueError("Unsupported TTS vendor.")
+        try:
+            self._tts_vendor = TTSProvider(tts_vendor.strip())
+        except ValueError:
+            raise ValueError("Unsupported TTS vendor.") from None
+        self._typed_config = normalize_tts_config(
+            tts_config, vendor=self._tts_vendor, api_key=api_key
         )
         self._tts_config = self._typed_config.to_adapter_config()
-        if api_key is not None:
-            self._tts_config["api_key"] = api_key
         _require_configuration(self._tts_vendor, self._tts_config)
-        self._tts_service: Optional[TTSService] = None
+        self._tts_service: TTSVendorAdapter | None = None
 
     def _contract_config(self) -> TTSConfig:
-        """The unified config a contract adapter expects.
-
-        `_typed_config` is already a `TTSConfig`; the only work here is moving
-        vendor-specific settings into `options`, which is where the contract
-        says they live.
-
-        The promotion is one rule rather than a table per vendor: anything the
-        caller supplied that is not a field of `TTSConfig` is vendor-specific
-        by definition, and each adapter picks out the keys it knows. A per-
-        vendor mapping would have to be extended for every new adapter, and the
-        symptom of forgetting is a silently ignored setting — the exact class of
-        bug this migration exists to remove.
-        """
+        """Translate the legacy flat carrier to adapter-owned option validation."""
         config = self._typed_config
         known = set(TTSConfig.model_fields)
-        options = dict(config.options)
+        options = {}
         for key, value in self._tts_config.items():
             # `options` itself is not a vendor setting, and a field of the
             # contract belongs on the contract rather than duplicated beneath it.
             if key in known or key == "options" or value is None:
                 continue
-            options.setdefault(key, value)
+            options[key] = value
         return config.model_copy(update={"options": options})
 
-    def create_tts(self) -> TTSService:
-        if self._tts_vendor == "amazon-polly":
+    def create_tts(self) -> TTSVendorAdapter:
+        if self._tts_vendor is TTSProvider.AMAZON_POLLY:
             return AmazonPollyTTSAdapter(self._contract_config())
-        elif self._tts_vendor == "elevenlabs":
+        elif self._tts_vendor is TTSProvider.ELEVENLABS:
             return ElevenLabsTTSAdapter(self._contract_config())
-        elif self._tts_vendor == "cartesia":
+        elif self._tts_vendor is TTSProvider.CARTESIA:
             return CartesiaContractAdapter(self._contract_config())
-        elif self._tts_vendor == "sarvam":
+        elif self._tts_vendor is TTSProvider.SARVAM:
             return SarvamContractAdapter(self._contract_config())
-        elif self._tts_vendor == "openai":
-            return OpenAITTSAdapter(config=OpenAITTSConfig(**self._tts_config))
-        elif self._tts_vendor == "deepgram":
-            return DeepgramTTSAdapter(config=DeepgramTTSConfig(**self._tts_config))
-        elif self._tts_vendor == "groq":
-            return GroqTTSAdapter(config=GroqTTSConfig(**self._tts_config))
-        elif self._tts_vendor == "rime":
-            return RimeTTSAdapter(config=RimeTTSConfig(**self._tts_config))
-        elif self._tts_vendor == "smallest":
-            return SmallestTTSAdapter(config=SmallestTTSConfig(**self._tts_config))
-        elif self._tts_vendor == "hume":
-            return HumeTTSAdapter(config=HumeTTSConfig(**self._tts_config))
-        elif self._tts_vendor == "murf":
-            return MurfTTSAdapter(config=MurfTTSConfig(**self._tts_config))
+        elif self._tts_vendor is TTSProvider.OPENAI:
+            return OpenAITTSAdapter(
+                config=OpenAITTSConfig.from_runtime(self._typed_config)
+            )
+        elif self._tts_vendor is TTSProvider.DEEPGRAM:
+            return DeepgramTTSAdapter(
+                config=DeepgramTTSConfig.from_runtime(self._typed_config)
+            )
+        elif self._tts_vendor is TTSProvider.GROQ:
+            return GroqTTSAdapter(config=GroqTTSConfig.from_runtime(self._typed_config))
+        elif self._tts_vendor is TTSProvider.RIME:
+            return RimeTTSAdapter(config=RimeTTSConfig.from_runtime(self._typed_config))
+        elif self._tts_vendor is TTSProvider.SMALLEST:
+            return SmallestTTSAdapter(
+                config=SmallestTTSConfig.from_runtime(self._typed_config)
+            )
+        elif self._tts_vendor is TTSProvider.HUME:
+            return HumeTTSAdapter(config=HumeTTSConfig.from_runtime(self._typed_config))
+        elif self._tts_vendor is TTSProvider.MURF:
+            return MurfTTSAdapter(config=MurfTTSConfig.from_runtime(self._typed_config))
         else:
             raise ValueError(f"Unsupported TTS vendor: {self._tts_vendor}")
 
-    def initialize_agent(self) -> TTSService:
+    def initialize_agent(self) -> TTSVendorAdapter:
         """Initialize the TTS service."""
         if not self._tts_service:
             self._tts_service = self.create_tts()
         return self._tts_service
 
     @property
-    def service(self) -> TTSService:
+    def service(self) -> TTSVendorAdapter:
         """Get the current TTS service, initializing if needed."""
         if self._tts_service:
             return self._tts_service
         return self.initialize_agent()
 
     @asynccontextmanager
-    async def connection(self) -> AsyncGenerator[TTSService, None]:
-        """Establish a connection to the TTS service.
-
-        For WebSocket vendors (Cartesia, ElevenLabs, Sarvam, Deepgram):
-            Establishes persistent WS connection.
-        For HTTP vendors (OpenAI):
-            Validates API reachability with a probe request.
-
-        Raises TTSConnectionFailed if connection cannot be established.
-        """
+    async def connection(self) -> AsyncGenerator[TTSVendorAdapter, None]:
+        """Yield the adapter, never its native handle; close it when use ends."""
         retry = self._typed_config.retry
-        last_error: Exception | None = None
         for attempt in range(retry.max_retries + 1):
             try:
-                ws = await self.service.connect()
+                await self.service.connect()
                 break
             except TTSConnectionFailed as error:
-                last_error = error
                 if attempt >= retry.max_retries:
                     raise TTSConnectionFailed("TTS connection failed.") from error
                 logger.warning(
                     "TTS connection failed vendor=%s retry=%s/%s error_type=%s",
-                    self._tts_vendor,
+                    self._tts_vendor.value,
                     attempt + 1,
                     retry.max_retries,
                     type(error).__name__,
                 )
                 await asyncio.sleep(retry.retry_interval_seconds)
         else:
-            raise TTSConnectionFailed("TTS connection failed.") from last_error
+            raise TTSConnectionFailed("TTS connection failed.")
         try:
-            yield ws
+            yield self.service
         finally:
             await self.service.disconnect()
 
 
-def _require_configuration(vendor: str, config: dict[str, Any]) -> None:
+def _require_configuration(vendor: TTSProvider, config: dict[str, object]) -> None:
     required = _REQUIRED_FIELDS.get(vendor)
     if required is None:
         return
-    missing = {
-        name
-        for name in required
-        if not isinstance(config.get(name), str) or not config[name].strip()
-    }
-    if vendor == "hume" and not any(
-        isinstance(config.get(name), str) and config[name].strip()
-        for name in ("voice", "voice_description")
+    missing = {name for name in required if not _is_configured_text(config.get(name))}
+    if vendor is TTSProvider.HUME and not any(
+        _is_configured_text(config.get(name)) for name in ("voice", "voice_description")
     ):
         missing.add("voice")
     if missing:
@@ -224,3 +176,7 @@ def _require_configuration(vendor: str, config: dict[str, Any]) -> None:
             missing=sorted(missing),
             configure_via="/api/tts-configs",
         )
+
+
+def _is_configured_text(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())

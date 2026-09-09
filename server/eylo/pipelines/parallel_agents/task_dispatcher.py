@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from uuid import UUID, uuid4
 
 import arrow
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from eylo.common.database import get_transaction
+from eylo.common.database import current_transaction, start_transaction
 from eylo.modules.agent_runs.absurd import spawn_agent_run
 from eylo.modules.agent_runs.domain import (
     InitiatingPrincipalKind,
     InitiatingPrincipalRef,
 )
+from eylo.modules.agents.domain import ResolvedSwarmTopology
 from eylo.modules.agents.schemas.indb import AgentInDb
 from eylo.modules.conversations.schemas.conversations import ConversationContext
 from eylo.modules.conversations.schemas.message_content import SystemMessageContent
@@ -27,11 +31,33 @@ from eylo.modules.conversations.services.messages import (
     MessageService,
 )
 from eylo.modules.parallel_agents.schemas import (
+    ParallelTaskManifest,
+    ParallelTaskMetadata,
     SpawnTaskFnfResult,
     TaskContent,
+    TaskDispatchStatus,
 )
+from eylo.modules.templates.domain import TemplateConsumerKind
+from eylo.pipelines.agents import build_executable_swarm_resolver
 
 logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def _task_filing_transaction() -> AsyncIterator[AsyncSession]:
+    """Commit a task before spawn, preserving legacy caller-session commits.
+
+    Without a caller session, own a short scope and close it before returning.
+    A borrowed session is committed, not closed; callers must not place unrelated
+    uncommitted work around dispatch. Failure propagates to its transaction owner.
+    """
+    session = current_transaction()
+    if session is not None:
+        yield session
+        await session.commit()
+    else:
+        async with start_transaction() as session:
+            yield session
 
 
 class TaskDispatcher:
@@ -43,7 +69,6 @@ class TaskDispatcher:
 
     def __init__(self, ctx: ConversationContext):
         self.ctx = ctx
-        self.message_service = MessageService()
 
     async def dispatch(
         self,
@@ -53,20 +78,14 @@ class TaskDispatcher:
     ) -> SpawnTaskFnfResult:
         """Create a TASK message and spawn its durable AgentRun.
 
-        Args:
-            instruction: Self-contained task description.
-            swarm_id: Target member slug, or None for a bare LLM task.
-            request_id: Current request ID for tracing.
-
-        Returns:
-            Structured result with task_id and status.
-
+        Pin topology in a DB-only read scope. Commit message and run together
+        before spawning; a spawn outage leaves the run available to recovery.
         """
         swarm_agent = self._find_swarm_agent(swarm_id)
         if swarm_id is not None and swarm_agent is None:
             return SpawnTaskFnfResult(
                 task_id="",
-                status="error",
+                status=TaskDispatchStatus.ERROR,
                 instruction=instruction,
                 swarm_id=swarm_id,
                 error=f"Agent '{swarm_id}' not found in swarm",
@@ -82,7 +101,7 @@ class TaskDispatcher:
         ):
             return SpawnTaskFnfResult(
                 task_id="",
-                status="error",
+                status=TaskDispatchStatus.ERROR,
                 instruction=instruction,
                 swarm_id=swarm_id,
                 error="No primary agent participant found",
@@ -90,26 +109,21 @@ class TaskDispatcher:
 
         resolved_swarm_agent = None
         resolved_topology = None
-        if swarm_agent is not None:
-            from eylo.modules.templates.domain import TemplateConsumerKind
-            from eylo.pipelines.agents import build_executable_swarm_resolver
-
+        if swarm_agent is not None and swarm_id is not None:
             if (
                 self.ctx.conversation.swarm_id is None
                 or self.ctx.conversation.swarm_revision is None
             ):
                 return SpawnTaskFnfResult(
                     task_id="",
-                    status="error",
+                    status=TaskDispatchStatus.ERROR,
                     instruction=instruction,
                     swarm_id=swarm_id,
                     error="Conversation has no pinned swarm topology",
                 )
-            resolved_topology = await build_executable_swarm_resolver().resolve_exact(
-                organization_id=self.ctx.conversation.organization_id,
+            resolved_topology = await self._resolve_swarm(
                 swarm_id=self.ctx.conversation.swarm_id,
                 revision=self.ctx.conversation.swarm_revision,
-                consumer_kind=TemplateConsumerKind.SWARM_AGENT,
             )
             member = resolved_topology.member_by_slug(swarm_id)
             if (
@@ -118,7 +132,7 @@ class TaskDispatcher:
             ):
                 return SpawnTaskFnfResult(
                     task_id="",
-                    status="error",
+                    status=TaskDispatchStatus.ERROR,
                     instruction=instruction,
                     swarm_id=swarm_id,
                     error=f"Agent '{swarm_id}' is not authorized by the pinned topology",
@@ -156,12 +170,8 @@ class TaskDispatcher:
             task_content=task_content,
             sender_participant_id=agent_participant.id,
             request_id=request_id,
-            task_type="swarm_agent" if swarm_id else "llm_task",
-            meta={"task_type": "swarm_agent" if swarm_id else "llm_task"},
             idempotency_key=f"parallel-task:{uuid4()}",
         )
-
-        await get_transaction().commit()
 
         try:
             await spawn_agent_run(
@@ -184,7 +194,7 @@ class TaskDispatcher:
 
         return SpawnTaskFnfResult(
             task_id=str(filing.message.id),
-            status="dispatched",
+            status=TaskDispatchStatus.DISPATCHED,
             instruction=instruction,
             swarm_id=swarm_id,
         )
@@ -235,20 +245,12 @@ class TaskDispatcher:
             task_content=task_content,
             sender_participant_id=agent_participant.id,
             request_id=request_id,
-            task_type="background_agent",
-            meta={
-                "task_type": "background_agent",
-                "background_agent_id": str(background_agent_id),
-                "background_agent_revision": background_agent_revision,
-            },
             idempotency_key=(
                 f"parallel-background:{self.ctx.conversation.id}:"
                 f"{filing_identity}:{background_agent_id}:"
                 f"{background_agent_revision}"
             ),
         )
-
-        await get_transaction().commit()
 
         try:
             await spawn_agent_run(
@@ -276,17 +278,24 @@ class TaskDispatcher:
         task_content: TaskContent,
         sender_participant_id: UUID,
         request_id: UUID | None,
-        task_type: str,
-        meta: dict,
         idempotency_key: str,
     ) -> MessageAgentRunFiling:
-        """File one task message and AgentRun in the caller transaction."""
+        """File and commit one task message plus AgentRun under the same authority."""
         execution_agent_id, execution_agent_revision = (
             task_content.execution_agent_ref()
         )
-        task_meta = dict(meta)
-        if request_id is not None:
-            task_meta["triggering_request_id"] = str(request_id)
+        task_meta = ParallelTaskMetadata(
+            task_type=task_content.task_kind,
+            triggering_request_id=request_id,
+            background_agent_id=task_content.background_agent_id,
+            background_agent_revision=task_content.background_agent_revision,
+        )
+        manifest = ParallelTaskManifest(
+            conversation_id=self.ctx.conversation.id,
+            task_type=task_content.task_kind,
+            source_agent_id=task_content.source_agent_id,
+            source_agent_revision=task_content.source_agent_revision,
+        )
         message = MessageCreate(
             conversation_id=self.ctx.conversation.id,
             sender_participant_id=sender_participant_id,
@@ -294,31 +303,45 @@ class TaskDispatcher:
             kind=MessageKind.SYSTEM,
             content_kind=MessageContentKind.TASK,
             content=SystemMessageContent(content=task_content.to_json()),
-            # A parallel task owns an independent request lifecycle. Reusing
-            # its trigger's ID lets the task's PENDING state block the parent
-            # request from reaching COMPLETED.
-            request_id=uuid4(),
+            # The filing service allocates the independent request ID once.
+            # Supplying a fresh ID here makes retries with the same filing key
+            # conflict. Reusing the trigger's ID would block the parent request.
+            request_id=None,
             request_status=RequestStatus.PENDING,
-            meta=task_meta,
+            meta=task_meta.model_dump(mode="json", exclude_none=True),
         )
-        return await self.message_service.create_task_with_agent_run(
-            message=message,
-            principal=InitiatingPrincipalRef(
+        async with _task_filing_transaction() as session:
+            return await MessageService(session).create_task_with_agent_run(
+                message=message,
+                principal=InitiatingPrincipalRef(
+                    organization_id=self.ctx.conversation.organization_id,
+                    kind=InitiatingPrincipalKind.WORKER,
+                    principal_id=task_content.source_agent_id,
+                ),
+                agent_id=execution_agent_id,
+                agent_revision=execution_agent_revision,
+                context_manifest=manifest.model_dump(mode="json"),
+                idempotency_key=idempotency_key,
+            )
+
+    async def _resolve_swarm(
+        self, *, swarm_id: UUID, revision: int
+    ) -> ResolvedSwarmTopology:
+        session = current_transaction()
+        if session is not None:
+            return await build_executable_swarm_resolver(session).resolve_exact(
                 organization_id=self.ctx.conversation.organization_id,
-                kind=InitiatingPrincipalKind.WORKER,
-                principal_id=task_content.source_agent_id,
-            ),
-            agent_id=execution_agent_id,
-            agent_revision=execution_agent_revision,
-            context_manifest={
-                "kind": "parallel_task",
-                "conversation_id": str(self.ctx.conversation.id),
-                "task_type": task_type,
-                "source_agent_id": str(task_content.source_agent_id),
-                "source_agent_revision": task_content.source_agent_revision,
-            },
-            idempotency_key=idempotency_key,
-        )
+                swarm_id=swarm_id,
+                revision=revision,
+                consumer_kind=TemplateConsumerKind.SWARM_AGENT,
+            )
+        async with start_transaction(ro=True) as session:
+            return await build_executable_swarm_resolver(session).resolve_exact(
+                organization_id=self.ctx.conversation.organization_id,
+                swarm_id=swarm_id,
+                revision=revision,
+                consumer_kind=TemplateConsumerKind.SWARM_AGENT,
+            )
 
     def _find_swarm_agent(self, swarm_id: str | None) -> AgentInDb | None:
         """Return the selected configured swarm agent, if present."""

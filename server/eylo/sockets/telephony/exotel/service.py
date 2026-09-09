@@ -41,6 +41,7 @@ from eylo.sockets.telephony.base import (
     TelephonyProvider,
     classify_control_failure,
 )
+from eylo.sockets.telephony.config import ExotelSettings
 
 logger = logging.getLogger(__name__)
 
@@ -251,6 +252,7 @@ class ExotelService(BaseTelephonyService):
             websocket: Optional WebSocket connection for media streaming
 
         """
+        self.settings = config.require_settings(ExotelSettings)
         super().__init__(config)
         self.websocket = websocket
         self._parser = ExotelMessageParser()
@@ -358,17 +360,10 @@ class ExotelService(BaseTelephonyService):
         """
         del authorization, ws_url  # Exotel exposes no client idempotency slot.
 
-        if not self.config.extra_config:
-            return OutboundSendTerminal(failure_code="call_create_not_configured")
-
-        # 1. Get Credentials/config
-        api_key = self.config.extra_config.get("api_key")
-        api_token = self.config.extra_config.get("api_token")
-        account_sid = self.config.extra_config.get("account_sid")
-        app_id = self.config.extra_config.get("exotel_app_id")
-
-        if not all([api_key, api_token, account_sid, app_id]):
-            return OutboundSendTerminal(failure_code="call_create_not_configured")
+        api_key = self.settings.api_key
+        api_token = self.settings.api_token
+        account_sid = self.settings.account_sid
+        app_id = self.settings.application_id
 
         phone_norm_service = PhoneNumberNormalizationService()
 
@@ -385,7 +380,7 @@ class ExotelService(BaseTelephonyService):
             )
 
         # 3. Call Exotel REST API
-        subdomain = self.config.extra_config.get("subdomain")
+        subdomain = self.settings.api_host
         url = f"https://{subdomain}/v1/Accounts/{account_sid}/Calls/connect.json"
 
         # Format numbers per Exotel expectations
@@ -482,19 +477,10 @@ class ExotelService(BaseTelephonyService):
             Response data from Exotel API
 
         """
-        if not self.config.extra_config:
-            raise ValueError("Missing Exotel credentials")
-
-        api_key = self.config.extra_config.get("api_key")
-        api_token = self.config.extra_config.get("api_token")
-        account_sid = self.config.extra_config.get("account_sid")
-
-        if not all([api_key, api_token, account_sid]):
-            raise ValueError("Missing Exotel credentials for end_call")
-
-        subdomain = str(self.config.extra_config.get("subdomain") or "").strip()
-        if not subdomain:
-            raise ValueError("Missing Exotel API host for end_call")
+        api_key = self.settings.api_key
+        api_token = self.settings.api_token
+        account_sid = self.settings.account_sid
+        subdomain = self.settings.api_host
         url = f"https://{subdomain}/v1/Accounts/{account_sid}/Calls/{call_sid}.json"
 
         try:
@@ -531,19 +517,10 @@ class ExotelService(BaseTelephonyService):
         digits: str,
     ) -> TelephonyControlResult:
         """Send DTMF tones on an active Exotel call."""
-        if not self.config.extra_config:
-            raise ValueError("Missing Exotel credentials")
-
-        api_key = self.config.extra_config.get("api_key")
-        api_token = self.config.extra_config.get("api_token")
-        account_sid = self.config.extra_config.get("account_sid")
-
-        if not all([api_key, api_token, account_sid]):
-            raise ValueError("Missing Exotel credentials for send_dtmf")
-
-        subdomain = str(self.config.extra_config.get("subdomain") or "").strip()
-        if not subdomain:
-            raise ValueError("Missing Exotel API host for send_dtmf")
+        api_key = self.settings.api_key
+        api_token = self.settings.api_token
+        account_sid = self.settings.account_sid
+        subdomain = self.settings.api_host
         url = (
             f"https://{subdomain}/v1/Accounts/{account_sid}/Calls/{call_sid}/SendDtmf/"
         )
@@ -571,9 +548,7 @@ class ExotelService(BaseTelephonyService):
             return classify_control_failure(error, operation="call_dtmf")
 
     def outbound_call_profile(self) -> TelephonyOperationProfile:
-        host = str((self.config.extra_config or {}).get("subdomain") or "").strip()
-        if not host:
-            raise ValueError("Exotel API host is required.")
+        host = self.settings.api_host
         return TelephonyOperationProfile(
             provider_operation="telephony.exotel.call.create",
             transport_kind=OutboundTransportKind.HTTP,

@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from uuid import UUID
 
+from eylo.common.outbound import OutboundAttemptState
 from eylo.modules.scheduler.actions import ActionContext, schedulable
 
 logger = logging.getLogger(__name__)
@@ -57,9 +58,12 @@ async def place_call(payload: dict, *, context: ActionContext) -> dict:
             "schedule_run_id": str(context.run_id),
         },
     )
-    if result["status"] not in {"succeeded", "unknown"}:
+    if result.status not in {
+        OutboundAttemptState.SUCCEEDED,
+        OutboundAttemptState.UNKNOWN,
+    }:
         raise ValueError(
-            f"Telephony provider rejected the call: {result['failure_code']}."
+            f"Telephony provider rejected the call: {result.failure_code}."
         )
 
     if context.misfired_count:
@@ -72,8 +76,8 @@ async def place_call(payload: dict, *, context: ActionContext) -> dict:
 
     return {
         "to_number": to_number,
-        "call_id": result["call_id"],
-        "provider_call_id": result.get("call_sid"),
-        "status": result["status"],
+        "call_id": str(result.call_id),
+        "provider_call_id": result.call_sid,
+        "status": result.status.value,
         "late_by_occurrences": context.misfired_count,
     }

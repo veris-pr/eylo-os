@@ -3,23 +3,31 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
 from dataclasses import dataclass
 from uuid import UUID
 
+from eylo.common.contracts.llm_runtime import LLMInferenceConfig
 from eylo.modules.agent_runs.budgets import meter_current_agent_run_usage
 from eylo.modules.agents.models import AgentStatus
 from eylo.modules.agents.schemas.indb import AgentInDb
 from eylo.modules.conversations.schemas.messages import MessageKind
-from eylo.modules.llm_configs.domain import ResolvedLLM
+from eylo.modules.llm_configs.domain import LLMOverrides, ResolvedLLM
 from eylo.modules.llm_configs.resolver import LLMConfigResolver
 from eylo.modules.llm_configs.wiring import build_llm_config_resolver
 from eylo.modules.provider_configs.constants import Capability
 from eylo.modules.provider_configs.errors import NotConfiguredError
-from eylo.sockets.llm import LLMContentType, LLMFactory, LLMResponse, LLMTextBlock
+from eylo.sockets.llm import LLMContentType, LLMFactory, LLMResponse
 from eylo.sockets.llm.transient import text_message
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class BackgroundPrompt:
+    """One instruction and user-text input; not a vendor message envelope."""
+
+    system_prompt: str
+    user_content: str
 
 
 @dataclass(frozen=True)
@@ -39,7 +47,7 @@ class BackgroundPromptResult:
 async def resolve_background_agent(
     agent: AgentInDb,
     *,
-    generation_overrides: Mapping[str, object] | None = None,
+    generation_overrides: LLMOverrides | None = None,
     resolver: LLMConfigResolver | None = None,
 ) -> ResolvedLLM:
     """Resolve one agent config with optional job-specific generation limits."""
@@ -59,8 +67,8 @@ async def resolve_background_agent(
             configure_via=f"/api/agents/{agent.id}",
         )
     effective_overrides = agent.llm_overrides.model_dump(exclude_none=True)
-    if generation_overrides:
-        effective_overrides.update(generation_overrides)
+    if generation_overrides is not None:
+        effective_overrides.update(generation_overrides.to_storage())
     if resolver is None:
         resolver = build_llm_config_resolver()
     return await resolver.resolve_llm_pinned(
@@ -74,8 +82,7 @@ async def resolve_background_agent(
 async def run_background_prompt_agent(
     *,
     agent_name: str,
-    system_prompt: str,
-    user_content: str,
+    prompt: BackgroundPrompt,
     sender_id: UUID,
     conversation_id: UUID,
     resolved: ResolvedLLM,
@@ -88,12 +95,12 @@ async def run_background_prompt_agent(
                 sender_id,
                 conversation_id,
                 MessageKind.USER,
-                user_content,
+                prompt.user_content,
             )
         ],
-        system_prompt=system_prompt,
+        system_prompt=prompt.system_prompt,
         tools=[],
-        llm_config=resolved.generation.to_storage(),
+        llm_config=LLMInferenceConfig(generation=resolved.generation),
     )
     usage = response.usage
     await meter_current_agent_run_usage(
@@ -109,7 +116,7 @@ async def run_background_prompt_agent(
 def _result_from_response(response: LLMResponse) -> BackgroundPromptResult | None:
     text = next(
         (
-            _text_from_content(block.content)
+            block.content.text
             for block in response.content
             if block.type == LLMContentType.TEXT
         ),
@@ -124,15 +131,3 @@ def _result_from_response(response: LLMResponse) -> BackgroundPromptResult | Non
         input_tokens=usage.input_tokens if usage else 0,
         output_tokens=usage.output_tokens if usage else 0,
     )
-
-
-def _text_from_content(content: object) -> str | None:
-    if isinstance(content, LLMTextBlock):
-        return content.text
-    if isinstance(content, str):
-        return content
-    if isinstance(content, dict):
-        text = content.get("text")
-        return text if isinstance(text, str) else None
-    text = getattr(content, "text", None)
-    return text if isinstance(text, str) else None

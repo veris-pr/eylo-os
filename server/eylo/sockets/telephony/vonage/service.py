@@ -20,6 +20,7 @@ import time
 from typing import Any, Dict, Optional
 from uuid import uuid4
 
+import aiohttp
 import jwt
 from fastapi import HTTPException, WebSocket
 
@@ -48,6 +49,7 @@ from eylo.sockets.telephony.base import (
     TelephonyProvider,
     classify_control_failure,
 )
+from eylo.sockets.telephony.config import VonageSettings
 
 logger = logging.getLogger(__name__)
 
@@ -219,6 +221,7 @@ class VonageService(BaseTelephonyService):
             websocket: Optional WebSocket connection for audio streaming
 
         """
+        self.settings = config.require_settings(VonageSettings)
         # Override config for Vonage-specific settings
         config.encoding = VONAGE_AUDIO_ENCODING
         config.sample_rate = VONAGE_SAMPLING_RATE
@@ -226,24 +229,12 @@ class VonageService(BaseTelephonyService):
         super().__init__(config)
         self.websocket = websocket
         self._parser = VonageMessageParser()
-
-        # Extract Vonage credentials from extra_config
-        extra_config = config.extra_config or {}
-        api_key = extra_config.get("api_key")
-        api_secret = extra_config.get("api_secret")
-        application_id = extra_config.get("application_id")
-        private_key = extra_config.get("private_key")
-
-        if not all([api_key, api_secret, application_id, private_key]):
-            logger.warning("Vonage credentials incomplete in config.extra_config")
-            logger.info("Will skip Vonage REST client initialization")
-            self.client = None
-            return
+        self.client: _VonageApplicationClient | None = None
 
         try:
             self.client = _VonageApplicationClient(
-                application_id=application_id,
-                private_key=private_key,
+                application_id=self.settings.application_id,
+                private_key=self.settings.private_key,
             )
             logger.info("Vonage client initialized successfully")
         except Exception as error:
@@ -436,8 +427,6 @@ class VonageService(BaseTelephonyService):
                 call_data["event_url"] = [status_callback_url]
 
             # Make REST API call using aiohttp (async)
-            import aiohttp
-
             jwt_token = self.client.generate_application_jwt()
 
             timeout = aiohttp.ClientTimeout(total=20)
@@ -482,11 +471,11 @@ class VonageService(BaseTelephonyService):
             logger.warning("Vonage call initiation outcome is unconfirmed")
             return OutboundSendUnknown(failure_code="call_create_unconfirmed")
 
-    async def end_call(self, call_uuid: str) -> TelephonyControlResult:
+    async def end_call(self, call_sid: str) -> TelephonyControlResult:
         """End an active Vonage call.
 
         Args:
-            call_uuid: Vonage call UUID
+            call_sid: Vonage call UUID
 
         Returns:
             Response data confirming call hangup
@@ -499,14 +488,12 @@ class VonageService(BaseTelephonyService):
             raise RuntimeError("Vonage client not initialized. Check credentials.")
 
         try:
-            import aiohttp
-
             jwt_token = self.client.generate_application_jwt()
 
             timeout = aiohttp.ClientTimeout(total=20)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.put(
-                    f"https://api.nexmo.com/v1/calls/{call_uuid}",
+                    f"https://api.nexmo.com/v1/calls/{call_sid}",
                     json={"action": "hangup"},
                     headers={"Authorization": f"Bearer {jwt_token}"},
                 ) as response:
@@ -552,13 +539,13 @@ class VonageService(BaseTelephonyService):
 
     async def send_dtmf(
         self,
-        call_uuid: str,
+        call_sid: str,
         digits: str,
     ) -> TelephonyControlResult:
         """Send DTMF tones to Vonage call.
 
         Args:
-            call_uuid: Vonage call UUID
+            call_sid: Vonage call UUID
             digits: DTMF digits to send (0-9, *, #)
 
         Returns:
@@ -572,14 +559,12 @@ class VonageService(BaseTelephonyService):
             raise RuntimeError("Vonage client not initialized. Check credentials.")
 
         try:
-            import aiohttp
-
             jwt_token = self.client.generate_application_jwt()
 
             timeout = aiohttp.ClientTimeout(total=20)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.put(
-                    f"https://api.nexmo.com/v1/calls/{call_uuid}/dtmf",
+                    f"https://api.nexmo.com/v1/calls/{call_sid}/dtmf",
                     json={"digits": digits},
                     headers={"Authorization": f"Bearer {jwt_token}"},
                 ) as response:
@@ -622,8 +607,6 @@ class VonageService(BaseTelephonyService):
             raise RuntimeError("Vonage client not initialized. Check credentials.")
 
         try:
-            import aiohttp
-
             jwt_token = self.client.generate_application_jwt()
 
             timeout = aiohttp.ClientTimeout(total=20)

@@ -9,15 +9,18 @@ that fan-out is gone.
 """
 
 import logging
-from typing import Optional
+from typing import Final, Optional
 
+from eylo.common.contracts.background_task import BackgroundTaskOutcome
 from eylo.common.database import start_transaction
 from eylo.common.instrumentation import traced_agent
+from eylo.modules.agents.schemas.indb import AgentInDb
 from eylo.modules.conversations.schemas.conversations import ConversationContext
 from eylo.modules.conversations.schemas.messages import MessageKind
 from eylo.modules.conversations.services.conversations import (
     ConversationService,
 )
+from eylo.modules.llm_configs.domain import LLMOverrides
 
 from ..framework_prompt import resolve_background_agent
 from .prompt import (
@@ -30,99 +33,60 @@ from .utils import (
 
 logger = logging.getLogger(__name__)
 
+TITLE_MINIMUM_MESSAGES: Final = 5
+TITLE_GENERATION_OVERRIDES: Final = LLMOverrides(max_tokens=30, temperature=0.3)
+
 
 @traced_agent("title_generator")
 async def process_title_generation_request(
     ctx: ConversationContext,
-) -> bool:
-    """Processes a request to generate a title for a given conversation.
+    agent: AgentInDb,
+) -> BackgroundTaskOutcome:
+    """Generate through the executing background agent's pinned LLM config.
 
-    This involves fetching conversation data, invoking an LLM (with fallbacks),
-    and updating the conversation record in the database.
-
-    Returns True when a title was written, False when the work was unnecessary
-    or could not be done. Background-agent dispatch maps that to COMPLETED or
-    SKIPPED — under the todo-list model the thresholds below run at pickup, so
-    a conversation that does not need a title produces a SKIPPED task rather
-    than no task at all.
+    Conversation history is the input, not authority to choose another agent's
+    provider. Read resolution and title persistence own short transactions;
+    inference occurs between them. Cancellation propagates.
     """
-    messages_ = ctx.filter_messages()
-    if len(messages_) < 5 or ctx.conversation.has_triggered_title_generation:
-        return False
-
-    conversation_id = ctx.conversation.id
-    logger.info(
-        f"Processing title generation request for conversation {conversation_id}"
-    )
     conversation = ctx.conversation
-
-    # Pre-condition checks: Ensure conversation exists and title generation hasn't been attempted.
-    if not conversation or conversation.has_triggered_title_generation:
-        logger.info("Title generation already triggered or conversation not found.")
-        return False
-
-    if not conversation.id:
-        logger.warning("Conversation ID is None. Aborting.")
-        return False
+    if (
+        len(ctx.filter_messages()) < TITLE_MINIMUM_MESSAGES
+        or conversation.has_triggered_title_generation
+    ):
+        return BackgroundTaskOutcome.SKIPPED
 
     message_content = await _get_message_content_for_title_generation(ctx)
-    if not ctx.primary_agent:
-        logger.warning("Conversation %s has no primary agent", conversation_id)
-        return False
-
-    # --- LLM-based Title Generation Attempt --- #
-    generated_title_from_llm = None
-    if message_content:  # Only attempt LLM call if there's usable content.
-        logger.debug(
-            "Attempting LLM title generation for conversation %s",
-            ctx.conversation.id,
+    if not message_content:
+        return BackgroundTaskOutcome.SKIPPED
+    try:
+        prompt = build_title_generation_prompt(message_content)
+        async with start_transaction(ro=True):
+            resolved = await resolve_background_agent(
+                agent,
+                generation_overrides=TITLE_GENERATION_OVERRIDES,
+            )
+        generated_title = await call_llm_for_title_generation(
+            prompt,
+            agent,
+            resolved,
+            conversation.id,
         )
-        try:
-            # Build the prompts using the external utility function.
-            system_prompt, llm_messages = build_title_generation_prompt(message_content)
-            async with start_transaction(ro=True):
-                resolved = await resolve_background_agent(
-                    ctx.primary_agent,
-                    generation_overrides={"max_tokens": 30, "temperature": 0.3},
-                )
-
-            # Call the helper function to interact with the LLM
-            generated_title_from_llm = await call_llm_for_title_generation(
-                system_prompt,
-                llm_messages,
-                ctx.primary_agent,
-                resolved,
-                ctx.conversation.id,
+        if not generated_title or not generated_title.strip():
+            return BackgroundTaskOutcome.SKIPPED
+        title = ensure_title_max_length(generated_title, str(conversation.id))
+        async with start_transaction():
+            await ConversationService().update_title(
+                conversation_id=conversation.id,
+                title=title,
             )
-            if generated_title_from_llm and generated_title_from_llm.strip():
-                generated_title = generated_title_from_llm
-            else:
-                return False
-
-            # Ensure the final title (whether from LLM or fallback) respects max DB length.
-            generated_title = ensure_title_max_length(
-                generated_title, str(ctx.conversation.id)
-            )
-
-            logger.info(
-                "Updating generated title for conversation %s",
-                ctx.conversation.id,
-            )
-            async with start_transaction():
-                await ConversationService().update_title(
-                    conversation_id=ctx.conversation.id,
-                    title=generated_title,
-                )
-            return True
-        except Exception as error:
-            logger.error(
-                "LLM title generation failed conversation=%s error_type=%s",
-                ctx.conversation.id,
-                type(error).__name__,
-            )
-            return False
-
-    return False
+        return BackgroundTaskOutcome.COMPLETED
+    except Exception as error:
+        logger.error(
+            "LLM title generation failed conversation=%s error_type=%s",
+            conversation.id,
+            type(error).__name__,
+        )
+        return BackgroundTaskOutcome.SKIPPED
 
 
 async def _get_message_content_for_title_generation(

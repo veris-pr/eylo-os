@@ -54,6 +54,7 @@ class Guardrail(Protocol):
         run_input: RunInput,
     ) -> GuardrailResult:
         """Validate LLM-visible input before a model call."""
+        ...
 
     async def check_output(
         self,
@@ -61,6 +62,7 @@ class Guardrail(Protocol):
         result: RunResult,
     ) -> GuardrailResult:
         """Validate final output before completion."""
+        ...
 
     async def check_tool_input(
         self,
@@ -68,6 +70,7 @@ class Guardrail(Protocol):
         call: ToolCall,
     ) -> GuardrailResult:
         """Validate a proposed tool call before execution."""
+        ...
 
     async def check_tool_output(
         self,
@@ -75,3 +78,4 @@ class Guardrail(Protocol):
         tool_result: ToolResult,
     ) -> GuardrailResult:
         """Validate a tool result before feeding it back to the model."""
+        ...

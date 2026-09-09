@@ -10,14 +10,17 @@ transformation methods to convert between Eylo's internal formats and vendor-spe
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
+from collections.abc import Sequence
+from typing import Any, AsyncGenerator, Dict, List
 from uuid import UUID
 
 import arrow
+from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
 from eylo.common.context_compaction import (
     latest_context_compaction,
 )
+from eylo.common.contracts.llm_runtime import LLMInferenceConfig
 from eylo.common.contracts.message_content import (
     AssistantMessageContent,
     TextContent,
@@ -31,6 +34,7 @@ from eylo.common.contracts.messages import (
 )
 from eylo.common.contracts.tool_record import ToolRecord
 from eylo.common.utils.toon_serde import toon_encode
+from eylo.sockets.llm.history import order_model_response_history
 from eylo.sockets.llm.schemas import LLMResponse
 
 logger = logging.getLogger(__name__)
@@ -39,6 +43,22 @@ _REQUEST_STATUSES_EXCLUDED_FROM_LLM_CONTEXT = (
     RequestStatus.INTERRUPTED,
     RequestStatus.SKIPPED,
 )
+
+
+class ToolCallCompleteness(BaseModel):
+    """Identity counts for a normalized history, independent of row batching."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    total_tool_uses: StrictInt = Field(ge=0)
+    total_tool_results: StrictInt = Field(ge=0)
+    matched_pairs: StrictInt = Field(ge=0)
+    missing_results: frozenset[str]
+    orphaned_results: frozenset[str]
+
+    @property
+    def is_complete(self) -> bool:
+        return not self.missing_results and not self.orphaned_results
 
 
 class LLMVendorAdapter(ABC):
@@ -72,7 +92,7 @@ class LLMVendorAdapter(ABC):
             logger.debug("Merging consecutive USER messages")
             prev_ = stack[-1]
             prev_.content = UserMessageContent(
-                content=f"{prev_.content.get_text_content()}\n{msg.get_text_content()}"
+                content=f"{prev_.get_text_content()}\n{msg.get_text_content()}"
             )
             # Keep the first user message, log the merge
             stack[-1] = prev_
@@ -169,26 +189,7 @@ class LLMVendorAdapter(ABC):
             )
             stack[-1] = prev_
         elif current_kind == MessageKind.TOOL_RESULT:
-            # Orphaned result - no preceding tool_use
-            tool_result_id = self._extract_tool_result_id(msg)
-            if tool_result_id and tool_result_id in pending_tool_calls:
-                # This should not happen - tool_result after assistant when tool_use is pending
-                # but we have a valid tool_use pending
-                # log error and accept the message
-                logger.error(
-                    "Matched tool result after assistant message=%s pending_count=%d",
-                    msg.id,
-                    len(pending_tool_calls),
-                )
-                stack.append(msg)
-                pending_tool_calls.pop(tool_result_id, None)
-            else:
-                logger.error(
-                    "Orphaned tool result after assistant; rejecting message=%s "
-                    "pending_count=%d",
-                    msg.id,
-                    len(pending_tool_calls),
-                )
+            self._accept_tool_results(stack, msg, pending_tool_calls)
 
     def _handle_tool_use_transition(
         self,
@@ -209,31 +210,7 @@ class LLMVendorAdapter(ABC):
             f"[BaseAdapter] Handling TOOL_USE message transition. {msg.id=} {current_kind=}"
         )
         if current_kind == MessageKind.TOOL_RESULT:
-            # Extract and validate tool_result ID
-            tool_result_id = self._extract_tool_result_id(msg)
-            if not tool_result_id:
-                logger.error(
-                    f"TOOL_RESULT message missing 'tool_use_id' field. Rejecting message {msg.id}"
-                )
-                return
-
-            # Check if this result matches a pending tool_use
-            if tool_result_id not in pending_tool_calls:
-                logger.error(
-                    "Orphaned tool result; rejecting message=%s pending_count=%d",
-                    msg.id,
-                    len(pending_tool_calls),
-                )
-                return
-
-            # Valid result - add to stack and remove from pending
-            stack.append(msg)
-            pending_tool_calls.pop(tool_result_id, None)
-            logger.debug(
-                "Matched tool result message=%s remaining_count=%d",
-                msg.id,
-                len(pending_tool_calls),
-            )
+            self._accept_tool_results(stack, msg, pending_tool_calls)
 
         elif current_kind == MessageKind.USER:
             # User interruption - cleanup incomplete tool sequence
@@ -300,12 +277,12 @@ class LLMVendorAdapter(ABC):
             f"[BaseAdapter] Handling TOOL_RESULT message transition. {msg.id=} {current_kind=}"
         )
         if current_kind == MessageKind.ASSISTANT:
-            # Accept even if pending tool calls remain (log warning)
             if pending_tool_calls:
                 logger.warning(
                     f"ASSISTANT after TOOL_RESULT with {len(pending_tool_calls)} "
-                    "incomplete tool calls. Accepting ASSISTANT with incomplete sequence."
+                    "incomplete tool calls. Cleaning up incomplete sequence."
                 )
+                self._cleanup_incomplete_tool_sequence(stack, pending_tool_calls)
             stack.append(msg)
 
         elif current_kind == MessageKind.USER:
@@ -351,58 +328,51 @@ class LLMVendorAdapter(ABC):
             )
 
         elif current_kind == MessageKind.TOOL_RESULT:
-            # Parallel tool result - extract and validate ID
-            tool_result_id = self._extract_tool_result_id(msg)
-            if not tool_result_id:
-                logger.error(
-                    f"TOOL_RESULT message missing 'tool_use_id' field. Rejecting message {msg.id}"
-                )
-                return
-            # Check if this result matches a pending tool_use
-            if tool_result_id not in pending_tool_calls:
-                logger.error(
-                    "Orphaned parallel tool result; rejecting message=%s "
-                    "pending_count=%d",
-                    msg.id,
-                    len(pending_tool_calls),
-                )
-                return
+            self._accept_tool_results(stack, msg, pending_tool_calls)
 
-            # Valid parallel result - add to stack and remove from pending
-            stack.append(msg)
-            pending_tool_calls.pop(tool_result_id, None)
-            logger.debug(
-                "Matched parallel tool result message=%s remaining_count=%d",
+    def _accept_tool_results(
+        self,
+        stack: list[MessageInDb],
+        msg: MessageInDb,
+        pending_tool_calls: dict[str, UUID],
+    ) -> None:
+        """Accept a result row atomically only when every identity is pending.
+
+        Reject empty, duplicate, or orphan-containing batches without consuming
+        any pending calls. Keep the original row identity and result ordering.
+        """
+        result_ids = self._extract_tool_result_ids(msg)
+        if (
+            not result_ids
+            or any(not tool_id.strip() for tool_id in result_ids)
+            or len(set(result_ids)) != len(result_ids)
+            or any(tool_id not in pending_tool_calls for tool_id in result_ids)
+        ):
+            logger.error(
+                "Invalid or orphaned tool-result batch; rejecting message=%s "
+                "result_count=%d pending_count=%d",
                 msg.id,
+                len(result_ids),
                 len(pending_tool_calls),
             )
+            return
 
-    def _extract_tool_use_id(self, msg: MessageInDb) -> Optional[str]:
-        """Extract tool_use ID from TOOL_USE message.
+        stack.append(msg)
+        for tool_id in result_ids:
+            del pending_tool_calls[tool_id]
+        logger.debug(
+            "Matched tool-result batch message=%s result_count=%d remaining_count=%d",
+            msg.id,
+            len(result_ids),
+            len(pending_tool_calls),
+        )
 
-        Args:
-            msg: Message with kind=TOOL_USE
-
-        Returns:
-            Tool use ID if found, None otherwise
-
-        """
+    def _extract_tool_use_id(self, msg: MessageInDb) -> str | None:
+        """Read a nonblank identity through the canonical message contract."""
         try:
-            if not msg.content:
-                return None
-
-            # Handle ToolUseMessageContent schema
-            if hasattr(msg.content, "content") and hasattr(msg.content.content, "id"):
-                return msg.content.content.id
-
-            # Handle dict format: {"role": "tool_use", "content": {"id": "...", ...}}
-            if isinstance(msg.content, dict):
-                content = msg.content.get("content", {})
-                if isinstance(content, dict):
-                    return content.get("id")
-
-            return None
-        except Exception as error:
+            tool_id = msg.get_tool_use_content().content.id
+            return tool_id if tool_id.strip() else None
+        except ValueError as error:
             logger.error(
                 "Tool-use identity extraction failed message=%s error_type=%s",
                 msg.id,
@@ -410,92 +380,40 @@ class LLMVendorAdapter(ABC):
             )
             return None
 
-    def _extract_tool_result_id(self, msg: MessageInDb) -> Optional[str]:
-        """Extract tool_call_id from TOOL_RESULT message.
-
-        Args:
-            msg: Message with kind=TOOL_RESULT
-
-        Returns:
-            Tool call ID if found, None otherwise
-
-        """
+    def _extract_tool_result_ids(self, msg: MessageInDb) -> tuple[str, ...]:
+        """Read every result identity without guessing the serialized shape."""
         try:
-            if not msg.content:
-                return None
-
-            # Handle ToolResultMessageContent schema
-            if hasattr(msg.content, "content") and isinstance(
-                msg.content.content, list
-            ):
-                if len(msg.content.content) > 0:
-                    result = msg.content.content[0]
-                    if hasattr(result, "tool_use_id"):
-                        return result.tool_use_id
-
-            # Handle dict format: {"role": "user", "content": [{"tool_use_id": "...", ...}]}
-            if isinstance(msg.content, dict):
-                content = msg.content.get("content", [])
-                if isinstance(content, list) and len(content) > 0:
-                    result = content[0]
-                    if isinstance(result, dict):
-                        return result.get("tool_use_id")
-
-            return None
-        except Exception as error:
+            return tuple(
+                result.tool_use_id for result in msg.get_tool_result_content().content
+            )
+        except ValueError as error:
             logger.error(
                 "Tool-result identity extraction failed message=%s error_type=%s",
                 msg.id,
                 type(error).__name__,
             )
-            return None
+            return ()
 
     def _cleanup_incomplete_tool_sequence(
-        self, stack: List[MessageInDb], pending_tool_calls: dict[str, UUID]
+        self, stack: list[MessageInDb], pending_tool_calls: dict[str, UUID]
     ) -> None:
-        """Remove incomplete tool sequences from stack.
-
-        Removes all TOOL_USE and TOOL_RESULT messages from the end of the stack
-        until we reach an ASSISTANT or USER message.
-
-        Args:
-            stack: Message stack to clean
-            pending_tool_calls: Set of pending tool call IDs (will be cleared)
-
-        """
-        if not stack:
+        """Remove unresolved calls only; preserve completed pairs and result rows."""
+        if not pending_tool_calls:
             return
-
-        for msg in reversed(stack):
-            if msg.kind in (MessageKind.TOOL_USE, MessageKind.TOOL_RESULT):
-                for tool_id, msg_id in list(pending_tool_calls.items()):
-                    if msg.id == msg_id:
-                        logger.warning(
-                            "Removed incomplete %s message=%s from sequence",
-                            msg.kind.value,
-                            msg.id,
-                        )
-                        stack.remove(msg)
-                        pending_tool_calls.pop(tool_id)
+        pending_message_ids = set(pending_tool_calls.values())
+        stack[:] = [
+            message for message in stack if message.id not in pending_message_ids
+        ]
+        logger.warning(
+            "Removed incomplete tool calls from history count=%d",
+            len(pending_tool_calls),
+        )
+        pending_tool_calls.clear()
 
     def _validate_tool_call_completeness(
         self, messages: List[MessageInDb]
-    ) -> Dict[str, Any]:
-        """Generate validation report for tool call completeness.
-
-        Args:
-            messages: List of messages to validate
-
-        Returns:
-            Dictionary containing:
-            - total_tool_uses: Count of TOOL_USE messages
-            - total_tool_results: Count of TOOL_RESULT messages
-            - matched_pairs: Count of successfully matched pairs
-            - missing_results: List of tool_use IDs without results
-            - orphaned_results: List of tool_result IDs without matching tool_use
-            - is_complete: Boolean indicating all tools are matched
-
-        """
+    ) -> ToolCallCompleteness:
+        """Count identities, not rows, after sequence validation rejects duplicates."""
         tool_uses: Dict[str, MessageInDb] = {}
         tool_results: Dict[str, MessageInDb] = {}
 
@@ -507,8 +425,7 @@ class LLMVendorAdapter(ABC):
                     tool_uses[tool_id] = msg
 
             elif msg.kind == MessageKind.TOOL_RESULT:
-                tool_id = self._extract_tool_result_id(msg)
-                if tool_id:
+                for tool_id in self._extract_tool_result_ids(msg):
                     tool_results[tool_id] = msg
 
         # Find matched, missing, and orphaned
@@ -516,22 +433,21 @@ class LLMVendorAdapter(ABC):
         missing_results = set(tool_uses.keys()) - set(tool_results.keys())
         orphaned_results = set(tool_results.keys()) - set(tool_uses.keys())
 
-        report = {
-            "total_tool_uses": len(tool_uses),
-            "total_tool_results": len(tool_results),
-            "matched_pairs": len(matched),
-            "missing_results": list(missing_results),
-            "orphaned_results": list(orphaned_results),
-            "is_complete": len(missing_results) == 0 and len(orphaned_results) == 0,
-        }
+        report = ToolCallCompleteness(
+            total_tool_uses=len(tool_uses),
+            total_tool_results=len(tool_results),
+            matched_pairs=len(matched),
+            missing_results=frozenset(missing_results),
+            orphaned_results=frozenset(orphaned_results),
+        )
 
-        if not report["is_complete"]:
+        if not report.is_complete:
             logger.debug(
                 "Tool-call validation incomplete uses=%d results=%d matched=%d "
                 "missing=%d orphaned=%d",
-                report["total_tool_uses"],
-                report["total_tool_results"],
-                report["matched_pairs"],
+                report.total_tool_uses,
+                report.total_tool_results,
+                report.matched_pairs,
                 len(missing_results),
                 len(orphaned_results),
             )
@@ -557,7 +473,7 @@ class LLMVendorAdapter(ABC):
         stack: List[MessageInDb] = []
         pending_tool_calls: dict[str, UUID] = {}
 
-        for msg in group_messages:
+        for msg in order_model_response_history(group_messages):
             current_kind = msg.kind
             # Skip SYSTEM messages (handled separately as system prompt)
             if current_kind == MessageKind.SYSTEM:
@@ -645,7 +561,7 @@ class LLMVendorAdapter(ABC):
         enriched_messages: List[MessageInDb] = []
         for i, msg in enumerate(messages):
             if msg.kind == MessageKind.USER and msg.meta:
-                context = msg.meta.get("context")
+                context = msg.meta.context
                 # Initial context already appears in the conversation prompt;
                 # append only context introduced after the first three messages.
                 if i > 2 and context:
@@ -696,7 +612,8 @@ class LLMVendorAdapter(ABC):
         summary_msg: MessageInDb,
         user_message_idx: int,
     ) -> List[MessageInDb]:
-        if not summary_msg.get_text_content():
+        summary_text = summary_msg.get_text_content()
+        if not summary_text:
             return messages
         user_msg = messages[user_message_idx]
         if user_msg.content:
@@ -708,7 +625,7 @@ class LLMVendorAdapter(ABC):
                     + "---"
                     + "\n\n"
                     + "## Untrusted summary of earlier conversation:\n"
-                    + summary_msg.get_text_content(),
+                    + summary_text,
                 ),
             )
             messages[user_message_idx] = enriched_user_msg
@@ -718,7 +635,7 @@ class LLMVendorAdapter(ABC):
         self,
         messages: List[MessageInDb],
         task_messages: List[MessageInDb],
-        task_result_map: dict,
+        task_result_map: dict[UUID, MessageInDb],
         last_user_message_idx: int,
     ) -> List[MessageInDb]:
         """Inject background task results into the last USER message.
@@ -736,10 +653,7 @@ class LLMVendorAdapter(ABC):
 
         parts = []
         for task_msg in task_messages:
-            if (
-                task_msg.request_status
-                in _REQUEST_STATUSES_EXCLUDED_FROM_LLM_CONTEXT
-            ):
+            if task_msg.request_status in _REQUEST_STATUSES_EXCLUDED_FROM_LLM_CONTEXT:
                 continue
             try:
                 # `get_text_content()`, not `.content.content`. The dispatcher
@@ -749,7 +663,14 @@ class LLMVendorAdapter(ABC):
                 # `from_json` on a list raises, and the `except` below turned
                 # that into a silent skip — every background task was dropped
                 # from the prompt, which looks exactly like "no tasks running".
-                task_content = TaskContent.from_json(task_msg.get_text_content())
+                task_text = task_msg.get_text_content()
+                if not task_text:
+                    logger.warning(
+                        "Empty TASK content on msg=%s; omitted from prompt.",
+                        task_msg.id,
+                    )
+                    continue
+                task_content = TaskContent.from_json(task_text)
             except Exception:
                 logger.warning(
                     "Unparseable TASK content on msg=%s; omitted from prompt.",
@@ -764,7 +685,7 @@ class LLMVendorAdapter(ABC):
                 outcome = task_msg.request_status.value.lower()
                 try:
                     result_content = TaskResultContent.from_json(
-                        task_result.get_text_content()
+                        task_result.get_text_content() or ""
                     )
                     parts.append(f"### {label} ({outcome})\n{result_content.result}")
                 except Exception:
@@ -902,7 +823,9 @@ class LLMVendorAdapter(ABC):
                     type(exc).__name__,
                 )
                 continue
-            validated.append(msg)
+            # History normalization may merge text rows. Never mutate a caller's
+            # canonical message or the content retained for another inference.
+            validated.append(msg.model_copy(deep=True))
 
         # SYSTEM summaries were captured above for later
         # injection.  Remove them before request grouping — they have
@@ -925,8 +848,7 @@ class LLMVendorAdapter(ABC):
             message.request_id
             for message in validated
             if message.request_id is not None
-            and message.request_status
-            in _REQUEST_STATUSES_EXCLUDED_FROM_LLM_CONTEXT
+            and message.request_status in _REQUEST_STATUSES_EXCLUDED_FROM_LLM_CONTEXT
         }
         if excluded_request_ids:
             logger.debug(
@@ -987,7 +909,9 @@ class LLMVendorAdapter(ABC):
             # append the last pending group
             # because it is the most recent one
             # forget older pending groups
-            valid_message_group.extend(pending_groups[-1])
+            valid_message_group.extend(
+                self._process_message_transition(pending_groups[-1])
+            )
 
         last_user_message_idx = None
         for i in range(len(valid_message_group) - 1, -1, -1):
@@ -1023,59 +947,23 @@ class LLMVendorAdapter(ABC):
         )
 
     @abstractmethod
-    def get_client(self) -> Any:
-        """Get a configured vendor-specific client."""
-        pass
-
-    @abstractmethod
-    def transform_messages_to_vendor(
-        self, messages: List[MessageInDb], system_prompt: str
-    ) -> Tuple[str, List[Dict[str, Any]]]:
-        """Transform Eylo's generic messages to a vendor-specific format."""
-        pass
-
-    @abstractmethod
-    def transform_tools_to_vendor(
-        self, tools: List["ToolRecord"]
-    ) -> List[Dict[str, Any]]:
-        """Transform Eylo's platform-native tools to a vendor-specific format."""
-        pass
-
-    @abstractmethod
-    def transform_response_to_platform(self, vendor_response: Any) -> "LLMResponse":
-        """Transform vendor-specific response to platform-native LLMResponse.
-
-        This method must be implemented by all adapters to convert their
-        vendor's response format into the standardized LLMResponse format.
-
-        Args:
-            vendor_response: The raw response from the vendor's API
-
-        Returns:
-            LLMResponse: Standardized platform response
-
-        """
-        pass
-
-    @abstractmethod
-    def run_inference(
+    async def run_inference(
         self,
         messages: List[MessageInDb],
         system_prompt: str,
-        tools: List[ToolRecord],
-        llm_config: Dict[str, Any],
-        stream: bool = False,
-    ) -> Any:
+        tools: Sequence[ToolRecord],
+        llm_config: LLMInferenceConfig,
+    ) -> LLMResponse:
         """Run inference against the vendor's API."""
-        pass
+        raise NotImplementedError
 
-    async def run_streaming_inference(
+    def run_streaming_inference(
         self,
         messages: List[MessageInDb],
         system_prompt: str,
-        tools: List[ToolRecord],
-        llm_config: Dict[str, Any],
-    ) -> AsyncIterator[LLMResponse]:
+        tools: Sequence[ToolRecord],
+        llm_config: LLMInferenceConfig,
+    ) -> AsyncGenerator[LLMResponse, None]:
         """Run streaming inference against the vendor's API (optional)."""
         raise NotImplementedError(
             f"{self.__class__.__name__} does not support streaming inference"

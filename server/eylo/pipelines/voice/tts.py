@@ -11,7 +11,16 @@ import arrow
 from eylo.common.contracts.voice import VoiceSpeechOutcome
 from eylo.events.py_events.emitter import emit_ephemeral
 from eylo.events.schema.py_events.voice import TTSState, TTSStateEvent
+from eylo.pipelines.voice.audio_transport import StreamingAudioTranscoder
+from eylo.pipelines.voice.tts_payloads import (
+    TTSFinalizeRequest,
+    TTSRequest,
+    TTSRequestRef,
+    TTSTextRequest,
+    validate_tts_request,
+)
 from eylo.runtime.tasks import (
+    LongRunningTaskFactory,
     monitor_long_running_tasks,
     teardown_long_running_tasks,
     teardown_queues,
@@ -27,8 +36,6 @@ from eylo.sockets.tts.schemas import (
 )
 from eylo.sockets.tts.text_stream import (
     SpeakableTextBuffer,
-    has_speakable_text,
-    normalize_tts_text,
 )
 
 logger = logging.getLogger(__name__)
@@ -48,21 +55,25 @@ class TTSRealtime:
         self,
         organization_id: UUID,
         session_id: str,
-        consumer_queue: asyncio.Queue,
-        tts_config: TTSConfig | dict[str, Any],
+        consumer_queue: asyncio.Queue[bytes],
+        tts_config: TTSConfig | dict[str, object],
         on_audio_chunk: "Callable[[bytes], None] | None" = None,
         on_playback_started: Callable[[], None] | None = None,
         on_playback_finished: Callable[[], None] | None = None,
         on_turn_outcome: Callable[[str | None, VoiceSpeechOutcome], None] | None = None,
         *,
         api_key: str | None = None,
-    ):
+        consumer_audio_format: TTSAudioFormat | None = None,
+    ) -> None:
         self._organization_id = organization_id
         self._session_id = session_id
-        self._request_queue = asyncio.Queue(maxsize=self._MAX_QUEUE_SIZE)
-        self._response_queue = asyncio.Queue(maxsize=self._MAX_QUEUE_SIZE)
+        self._request_queue: asyncio.Queue[TTSRequest] = asyncio.Queue(
+            maxsize=self._MAX_QUEUE_SIZE
+        )
+        self._response_queue: asyncio.Queue[TTSAudioChunk] = asyncio.Queue(
+            maxsize=self._MAX_QUEUE_SIZE
+        )
         self._typed_tts_config = normalize_tts_config(tts_config)
-        self._tts_config = self._typed_tts_config.to_adapter_config()
         self._consumer_queue = consumer_queue
         self._on_audio_chunk = on_audio_chunk
         self._on_playback_started = on_playback_started
@@ -71,10 +82,8 @@ class TTSRealtime:
         # Connection state
         self._is_connected = False
 
-        self._active_turn_id: str | None = None
-        self._queued_turn_id: str | None = None
-        self._active_request_id: str | None = None
-        self._queued_request_id: str | None = None
+        self._active_turn: TTSRequestRef | None = None
+        self._queued_turn: TTSRequestRef | None = None
         self._text_buffer = SpeakableTextBuffer()
 
         # Playback completion signaling
@@ -88,31 +97,32 @@ class TTSRealtime:
         self._last_playback_activity_at = 0.0
 
         # Init
-        self._tts_vendor = self._tts_config["vendor"]
+        self._tts_vendor = self._typed_tts_config.vendor.value
 
         self._tts_factory = TTSFactory(
-            tts_vendor=self._tts_vendor, tts_config=self._tts_config, api_key=api_key
+            tts_vendor=self._typed_tts_config.vendor,
+            tts_config=self._typed_tts_config,
+            api_key=api_key,
+        )
+        self._audio_transcoder = (
+            StreamingAudioTranscoder(
+                source=self.output_audio_format,
+                target=consumer_audio_format,
+            )
+            if consumer_audio_format is not None
+            else None
         )
 
         # Metrics
-        self._metrics = {
-            "request_drops": 0,
-            "response_drops": 0,
-            "consumer_drops": 0,
-            "errors": 0,
-            "interruptions": 0,
-            "audio_chunks": 0,
-            "audio_bytes": 0,
-            "first_audio_latency_seconds": None,
-            "total_requests_processed": 0,
-            "total_responses_processed": 0,
-            "start_time": arrow.utcnow().timestamp(),
-            "last_activity": arrow.utcnow().timestamp(),
-        }
+        self._metrics = TTSMetricsSnapshot(
+            vendor=self._tts_vendor,
+            start_time=arrow.utcnow().timestamp(),
+            last_activity=arrow.utcnow().timestamp(),
+        )
         self._first_text_sent_at: float | None = None
 
     @property
-    def consumer_queue(self) -> asyncio.Queue:
+    def consumer_queue(self) -> asyncio.Queue[bytes]:
         """Queue that receives synthesized audio for downstream playback."""
         return self._consumer_queue
 
@@ -123,44 +133,71 @@ class TTSRealtime:
 
     @property
     def active_request_id(self) -> str | None:
-        return self._active_request_id
+        if self._active_turn is None or self._active_turn.request_id is None:
+            return None
+        return str(self._active_turn.request_id)
 
     @property
     def queued_request_id(self) -> str | None:
-        return self._queued_request_id
+        if self._queued_turn is None or self._queued_turn.request_id is None:
+            return None
+        return str(self._queued_turn.request_id)
 
     @property
     def output_audio_format(self) -> TTSAudioFormat:
         """Actual provider output, independent of downstream transport needs."""
         return self._tts_factory.service.output_audio_format
 
+    @property
+    def consumer_audio_format(self) -> TTSAudioFormat:
+        """Format of both consumer queue bytes and the recording callback."""
+        if self._audio_transcoder is not None:
+            return self._audio_transcoder.target
+        return self.output_audio_format
+
+    def _publish_audio(self, audio: bytes) -> None:
+        """Publish identical transport bytes to playback and the recording tap."""
+        if not audio:
+            return
+        try:
+            self._consumer_queue.put_nowait(audio)
+        except asyncio.QueueFull:
+            self._metrics.consumer_drops += 1
+            raise TTSConnectionFailed("TTS playback queue capacity exceeded.") from None
+        self._last_playback_activity_at = time.monotonic()
+        if self._on_audio_chunk is not None:
+            try:
+                self._on_audio_chunk(audio)
+            except Exception:
+                logger.debug("TTS recording callback failed")
+
+    def _publish_response(self, response: TTSAudioChunk) -> None:
+        """Check native format before applying the explicit transport conversion."""
+        native_format = self.output_audio_format
+        if (
+            response.sample_rate != native_format.sample_rate
+            or response.encoding != native_format.encoding
+            or (
+                self._audio_transcoder is not None
+                and native_format != self._audio_transcoder.source
+            )
+        ):
+            raise TTSConnectionFailed("TTS audio disagrees with its declared format.")
+        audio = (
+            self._audio_transcoder.process(response.data)
+            if self._audio_transcoder is not None
+            else response.data
+        )
+        self._publish_audio(audio)
+
     def metrics_snapshot(self) -> TTSMetricsSnapshot:
         """Return a typed snapshot of current TTS runtime metrics."""
-        return TTSMetricsSnapshot(
-            vendor=self._tts_vendor,
-            chunks=self._metrics["audio_chunks"],
-            bytes=self._metrics["audio_bytes"],
-            first_audio_latency_seconds=self._metrics["first_audio_latency_seconds"],
-            interruptions=self._metrics["interruptions"],
-            request_drops=self._metrics["request_drops"],
-            response_drops=self._metrics["response_drops"],
-            consumer_drops=self._metrics["consumer_drops"],
-            errors=self._metrics["errors"],
-            total_requests_processed=self._metrics["total_requests_processed"],
-            total_responses_processed=self._metrics["total_responses_processed"],
-            start_time=self._metrics["start_time"],
-            last_activity=self._metrics["last_activity"],
-        )
+        return self._metrics.model_copy()
 
-    def _emit_tts_state(self, state: TTSState, message: str, data: dict = None):
-        """Helper to emit TTS state changes via event system.
-
-        Args:
-            state: TTS state enum
-            message: Human-readable status message
-            data: Optional additional data for the event
-
-        """
+    def _emit_tts_state(
+        self, state: TTSState, message: str, *, error_type: str | None = None
+    ) -> None:
+        """Emit presentation state without exposing provider error contents."""
         try:
             emit_ephemeral(
                 TTSStateEvent(
@@ -169,7 +206,7 @@ class TTSRealtime:
                     vendor=self._tts_vendor,
                     session_id=self._session_id,
                     organization_id=self._organization_id,
-                    data=data or {},
+                    data={"error_type": error_type} if error_type is not None else {},
                 )
             )
             logger.debug(f"Emitted TTS state event: {state.value}")
@@ -240,24 +277,11 @@ class TTSRealtime:
         self._first_text_sent_at = None
 
     def _service_reports_turn_complete(self) -> bool:
-        """Whether the vendor has signalled end-of-turn.
-
-        A plain read: `TTSVendorAdapter.is_turn_complete` is part of the
-        contract and defaults to False for vendors with no turn boundary. This
-        used to be a `getattr` with a `callable()` branch, because the contract
-        did not name the attribute and the code could not assume its shape —
-        all four implementations were properties, so that branch was never
-        taken.
-        """
-        return bool(getattr(self._tts_factory.service, "is_turn_complete", False))
+        """Read the adapter contract without inventing a second completion state."""
+        return self._tts_factory.service.is_turn_complete
 
     def _service_completion_error(self) -> Exception | None:
-        error = getattr(self._tts_factory.service, "turn_completion_error", None)
-        if callable(error):
-            return error()
-        if isinstance(error, Exception):
-            return error
-        return None
+        return self._tts_factory.service.turn_completion_error
 
     def _mark_playback_done(
         self,
@@ -265,27 +289,34 @@ class TTSRealtime:
         notify_finished: bool = True,
         outcome: VoiceSpeechOutcome = VoiceSpeechOutcome.DRAINED,
     ) -> None:
-        request_id = self._active_request_id or self._queued_request_id
+        request_id = self.active_request_id or self.queued_request_id
         self._awaiting_playback_completion = False
         self._received_audio_for_turn = False
         self._last_audio_chunk_at = 0.0
-        self._active_turn_id = None
-        self._queued_turn_id = None
-        self._active_request_id = None
-        self._queued_request_id = None
+        self._active_turn = None
+        self._queued_turn = None
         self._text_buffer.reset()
+        if self._audio_transcoder is not None:
+            self._audio_transcoder.reset()
         self._playback_done.set()
         self._notify_turn_outcome(request_id, outcome)
         if notify_finished:
             self._notify_playback_finished()
 
     def _mark_playback_failed(self, error: Exception) -> None:
+        if self._playback_done.is_set() and self._playback_error is not None:
+            return
         self._playback_error = error
         self._mark_playback_done(outcome=VoiceSpeechOutcome.FAILED)
 
+    def _stop_after_failure(self, error: Exception) -> None:
+        """A failed provider operation ends this runtime; never replay speech."""
+        self._is_connected = False
+        self._mark_playback_failed(error)
+
     def is_playback_active(self, grace_seconds: float | None = None) -> bool:
         """Return True while speech is still being produced or draining downstream."""
-        if self._active_turn_id is not None or self._queued_turn_id is not None:
+        if self._active_turn is not None or self._queued_turn is not None:
             return True
         if self._awaiting_playback_completion or not self._playback_done.is_set():
             return True
@@ -326,34 +357,80 @@ class TTSRealtime:
             self._mark_playback_failed(error)
             return
         if self._service_reports_turn_complete():
+            if self._audio_transcoder is not None:
+                tail = self._audio_transcoder.finish()
+                if tail:
+                    self._publish_audio(tail)
+                    return
             self._mark_playback_done()
 
-    async def add_to_request_queue(self, tts_item: str | dict):
-        """Add text data to the request queue for processing.
-        Drops data if the queue is full to prevent blocking or exceptions.
+    async def _drain_completed_turn(self) -> None:
+        """Finish native output without waiting for another vendor poll timeout.
+
+        Queue joins include locally dequeued work. A turn replaced while waiting
+        retains its own completion authority; this drain cannot complete it.
         """
-        if isinstance(tts_item, dict) and tts_item.get("type") == "text":
-            turn_id = tts_item.get("turn_id")
-            request_id = tts_item.get("request_id")
-            if turn_id and turn_id != self._queued_turn_id:
-                self._queued_turn_id = turn_id
-                self._queued_request_id = request_id
-                self._playback_done.clear()
-                self._notify_playback_started()
+        turn = self._active_turn
+        if (
+            turn is None
+            or not self._awaiting_playback_completion
+            or not self._service_reports_turn_complete()
+        ):
+            self._maybe_mark_playback_done()
+            return
+        await self._response_queue.join()
+        await self._consumer_queue.join()
+        if self._active_turn is not turn:
+            return
+        self._maybe_mark_playback_done()
+        # The first completion check may have published the resampler tail.
+        await self._consumer_queue.join()
+        if self._active_turn is turn:
+            self._maybe_mark_playback_done()
+
+    async def add_to_request_queue(self, tts_item: TTSRequest) -> None:
+        """Validate before enqueue; dropped work must not change playback identity."""
+        tts_item = validate_tts_request(tts_item)
         try:
             self._request_queue.put_nowait(tts_item)
         except asyncio.QueueFull:
-            self._metrics["request_drops"] += 1
+            self._metrics.request_drops += 1
             logger.warning(
                 "TTS request queue full size=%s organization_id=%s total_drops=%s",
                 self._MAX_QUEUE_SIZE,
                 self._organization_id,
-                self._metrics["request_drops"],
+                self._metrics.request_drops,
             )
+            return
+        if isinstance(tts_item, TTSTextRequest):
+            if not self._same_turn(self._queued_turn, tts_item):
+                self._queued_turn = tts_item
+                self._playback_done.clear()
+                self._notify_playback_started()
 
-    async def _read_from_response_queue(self):
+    async def _read_from_response_queue(self) -> TTSAudioChunk:
         """Get the processed response from the response queue."""
         return await self._response_queue.get()
+
+    @staticmethod
+    def _same_turn(active: TTSRequestRef | None, incoming: TTSRequestRef) -> bool:
+        return (
+            active is not None
+            and active.turn_id == incoming.turn_id
+            and active.request_id == incoming.request_id
+        )
+
+    async def _begin_turn(self, request: TTSTextRequest) -> None:
+        """Replace current synthesis without discarding the next turn's input."""
+        if self._same_turn(self._active_turn, request):
+            return
+        if self._active_turn is not None:
+            await self._interrupt_playback()
+            self._queued_turn = request
+            self._notify_playback_started()
+        self._active_turn = request
+        self._text_buffer.reset()
+        self._reset_playback_tracking()
 
     async def initialize(self) -> None:
         """Run TTS and surface every fatal startup/runtime failure to the client."""
@@ -366,7 +443,7 @@ class TTSRealtime:
             self._emit_tts_state(
                 state=TTSState.ERROR,
                 message="TTS service failed",
-                data={"error_type": type(error).__name__},
+                error_type=type(error).__name__,
             )
             logger.error(
                 "TTS service terminated error_type=%s",
@@ -390,7 +467,7 @@ class TTSRealtime:
                 message="TTS service connected",
             )
 
-            async def _keepalive_loop():
+            async def _keepalive_loop() -> None:
                 """Send periodic keepalive messages to maintain the connection."""
                 try:
                     while self._is_connected:
@@ -400,13 +477,14 @@ class TTSRealtime:
                     # Allow cancellation to propagate for clean shutdown
                     raise
                 except Exception as error:
+                    self._stop_after_failure(error)
                     logger.error(
                         "TTS keepalive loop failed error_type=%s",
                         type(error).__name__,
                     )
-                    raise  # Re-raise to trigger task restart
+                    raise
 
-            async def _forward_request():
+            async def _forward_request() -> None:
                 """Process text data from the request queue and send it to the TTS service."""
                 logger.info("TTS forward_request loop started.")
                 try:
@@ -417,60 +495,27 @@ class TTSRealtime:
                                 self._request_queue.get(), self._REQUEST_QUEUE_TIMEOUT
                             )
                             try:
-                                if (
-                                    isinstance(data, dict)
-                                    and data.get("type") == "text"
-                                ):
-                                    turn_id = data.get("turn_id")
-                                    request_id = data.get("request_id")
-                                    text = data.get("text")
+                                if isinstance(data, TTSTextRequest):
+                                    await self._begin_turn(data)
+                                    for chunk in self._text_buffer.add(data.text):
+                                        await self._process_text_chunk(chunk)
 
-                                    # First text in a stream: set the active turn id without interrupting.
-                                    if turn_id and self._active_turn_id is None:
-                                        self._active_turn_id = turn_id
-                                        self._active_request_id = request_id
-                                        self._text_buffer.reset()
-                                        self._reset_playback_tracking()
-                                    elif turn_id and turn_id != self._active_turn_id:
-                                        await self.interrupt()
-                                        self._active_turn_id = turn_id
-                                        self._active_request_id = request_id
-                                        self._text_buffer.reset()
-                                        self._reset_playback_tracking()
-
-                                    if isinstance(text, str) and text:
-                                        for chunk in self._text_buffer.add(text):
-                                            await self._process_text_chunk(chunk)
-
-                                elif (
-                                    isinstance(data, dict)
-                                    and data.get("type") == "finalize"
-                                ):
-                                    turn_id = data.get("turn_id")
-                                    if (not turn_id) or (
-                                        turn_id == self._active_turn_id
-                                    ):
+                                elif isinstance(data, TTSFinalizeRequest):
+                                    if self._same_turn(self._active_turn, data):
                                         self._awaiting_playback_completion = True
                                         for chunk in self._text_buffer.flush():
                                             await self._process_text_chunk(chunk)
                                         if self._sent_text_for_turn:
                                             logger.debug(
-                                                f"[TTS_PIPELINE] request_queue → vendor.flush (turn_id={turn_id})"
+                                                "[TTS_PIPELINE] request_queue → vendor.flush (turn_id=%s)",
+                                                data.turn_id,
                                             )
                                             await self._tts_factory.service.flush()
                                         else:
                                             self._mark_playback_done()
 
-                                elif isinstance(data, str):
-                                    # Backwards compatible path (no turn_id)
-                                    text = normalize_tts_text(data)
-                                    if text and has_speakable_text(text):
-                                        await self._process_text_chunk(text)
-
-                                self._metrics["total_requests_processed"] += 1
-                                self._metrics["last_activity"] = (
-                                    arrow.utcnow().timestamp()
-                                )
+                                self._metrics.total_requests_processed += 1
+                                self._metrics.last_activity = arrow.utcnow().timestamp()
                             finally:
                                 self._request_queue.task_done()
                         except asyncio.TimeoutError:
@@ -482,14 +527,15 @@ class TTSRealtime:
                     self._is_connected = False
                     raise
                 except Exception as error:
-                    self._metrics["errors"] += 1
+                    self._metrics.errors += 1
+                    self._stop_after_failure(error)
                     logger.error(
                         "TTS request forwarding failed error_type=%s",
                         type(error).__name__,
                     )
-                    raise  # Re-raise to trigger task restart
+                    raise
 
-            async def _receive_response():
+            async def _receive_response() -> None:
                 """Receive and process responses from the TTS service."""
                 logger.info("TTS receive_response loop started.")
                 try:
@@ -504,7 +550,7 @@ class TTSRealtime:
                                     response,
                                     sample_rate=self.output_audio_format.sample_rate,
                                     encoding=self.output_audio_format.encoding,
-                                    request_id=self._active_request_id,
+                                    request_id=self.active_request_id,
                                 )
                                 self._received_audio_for_turn = True
                                 self._last_audio_chunk_at = time.monotonic()
@@ -512,26 +558,26 @@ class TTSRealtime:
                                     self._last_audio_chunk_at
                                 )
                                 if (
-                                    self._metrics["first_audio_latency_seconds"] is None
+                                    self._metrics.first_audio_latency_seconds is None
                                     and self._first_text_sent_at is not None
                                 ):
-                                    self._metrics["first_audio_latency_seconds"] = (
+                                    self._metrics.first_audio_latency_seconds = (
                                         self._last_audio_chunk_at
                                         - self._first_text_sent_at
                                     )
-                                self._metrics["audio_chunks"] += 1
-                                self._metrics["audio_bytes"] += len(audio_chunk.data)
+                                self._metrics.chunks += 1
+                                self._metrics.bytes += len(audio_chunk.data)
                                 logger.debug(
                                     f"[TTS_PIPELINE] Vendor returned audio: {len(audio_chunk.data)} bytes → response_queue"
                                 )
                                 self._response_queue.put_nowait(audio_chunk)
                             else:
-                                self._maybe_mark_playback_done()
+                                await self._drain_completed_turn()
                         except asyncio.QueueFull:
-                            self._metrics["response_drops"] += 1
+                            self._metrics.response_drops += 1
                             logger.warning("Response queue full, dropping data.")
                         except asyncio.TimeoutError:
-                            self._maybe_mark_playback_done()
+                            await self._drain_completed_turn()
                             continue
                         except TTSConnectionClosed:
                             logger.info(
@@ -543,49 +589,27 @@ class TTSRealtime:
                     logger.info("TTS receive_response loop cancelled.")
                     raise
                 except Exception as error:
-                    self._metrics["errors"] += 1
+                    self._metrics.errors += 1
+                    self._stop_after_failure(error)
                     logger.error(
                         "TTS response receive failed error_type=%s",
                         type(error).__name__,
                     )
                     raise
 
-            async def _respond_to_consumer():
+            async def _respond_to_consumer() -> None:
                 """Send processed responses to the client."""
                 logger.info("TTS respond_to_consumer loop started.")
                 try:
                     while self._is_connected:
+                        # No scheduling gap between dequeue and conversion:
+                        # completion must not overtake an in-flight chunk.
+                        response = await self._read_from_response_queue()
                         try:
-                            response = await asyncio.wait_for(
-                                self._read_from_response_queue(),
-                                self._REQUEST_QUEUE_TIMEOUT,
-                            )
-                            if response:
-                                audio_chunk = (
-                                    response
-                                    if isinstance(response, TTSAudioChunk)
-                                    else TTSAudioChunk.from_response(response)
-                                )
-                                audio_bytes = audio_chunk.data
-                                self._last_playback_activity_at = time.monotonic()
-                                logger.debug(
-                                    f"[TTS_PIPELINE] response_queue → consumer_queue: {len(audio_bytes)} bytes"
-                                )
-                                self._consumer_queue.put_nowait(audio_bytes)
-                                self._response_queue.task_done()
-                                # Non-blocking recording tap
-                                if self._on_audio_chunk:
-                                    try:
-                                        self._on_audio_chunk(audio_bytes)
-                                    except Exception:
-                                        pass
-                        except asyncio.QueueFull:
-                            self._metrics["consumer_drops"] += 1
-                            logger.warning("Consumer queue full, dropping data.")
+                            self._publish_response(response)
+                            self._metrics.total_responses_processed += 1
+                        finally:
                             self._response_queue.task_done()
-                        except asyncio.TimeoutError:
-                            # Timeout waiting for response - continue
-                            continue
                 except asyncio.CancelledError:
                     # Allow cancellation to propagate for clean shutdown
                     raise
@@ -593,7 +617,8 @@ class TTSRealtime:
                     self._is_connected = False
                     raise
                 except Exception as error:
-                    self._metrics["errors"] += 1
+                    self._metrics.errors += 1
+                    self._stop_after_failure(error)
                     logger.error(
                         "TTS client response failed error_type=%s",
                         type(error).__name__,
@@ -601,14 +626,13 @@ class TTSRealtime:
                     raise  # Re-raise to trigger task restart
 
             # Dictionary mapping task names to their coroutine functions
-            task_definitions = {
+            task_definitions: dict[str, LongRunningTaskFactory] = {
                 "request": _forward_request,
                 "response": _receive_response,
                 "client": _respond_to_consumer,
+                "keepalive": _keepalive_loop,
             }
-            if callable(getattr(self._tts_factory.service, "keepalive", None)):
-                task_definitions["keepalive"] = _keepalive_loop
-            active_tasks = {
+            active_tasks: dict[str, asyncio.Task[None]] = {
                 name: asyncio.create_task(coro())
                 for name, coro in task_definitions.items()
             }
@@ -622,6 +646,8 @@ class TTSRealtime:
                 # Main task monitoring loop
                 while self._is_connected:
                     await asyncio.sleep(self._HEALTH_CHECK_INTERVAL)
+                    if not self._is_connected:
+                        break
                     await monitor_long_running_tasks(
                         task_definitions=task_definitions,
                         active_tasks=active_tasks,
@@ -631,8 +657,11 @@ class TTSRealtime:
                             TTSConnectionFailed,
                         },
                     )
+                if self._playback_error is not None:
+                    raise self._playback_error
             except asyncio.CancelledError:
                 logger.info("Process TTS main loop was cancelled")
+                raise
             except Exception as error:
                 logger.error(
                     "TTS main loop failed error_type=%s",
@@ -652,18 +681,19 @@ class TTSRealtime:
                 await teardown_long_running_tasks(active_tasks)
                 logger.info("All TTS tasks have been stopped")
 
-    async def interrupt(self):
-        """Interrupt the TTS by clearing all queues and flushing the vendor service."""
-        logger.info("Interrupting TTS")
-        self._metrics["interruptions"] += 1
-
-        # 1. Clear internal queues
+    async def interrupt(self) -> None:
+        """User interruption discards all pending input as well as current audio."""
         while not self._request_queue.empty():
             try:
                 self._request_queue.get_nowait()
                 self._request_queue.task_done()
             except asyncio.QueueEmpty:
                 break
+        await self._interrupt_playback()
+
+    async def _interrupt_playback(self) -> None:
+        """Stop current synthesis; a turn switch must retain queued future input."""
+        self._metrics.interruptions += 1
         while not self._response_queue.empty():
             try:
                 self._response_queue.get_nowait()
@@ -687,7 +717,7 @@ class TTSRealtime:
         try:
             await self._tts_factory.service.handle_interruption()
         except Exception:
-            self._metrics["errors"] += 1
+            self._metrics.errors += 1
             raise
         finally:
             self._mark_playback_done(outcome=VoiceSpeechOutcome.INTERRUPTED)
@@ -747,7 +777,7 @@ class TTSRealtime:
             )
             return False
 
-    async def disconnect(self):
+    async def disconnect(self) -> None:
         """Disconnect from the TTS service and clean up resources."""
         if self.is_playback_active():
             self._mark_playback_done(outcome=VoiceSpeechOutcome.CANCELLED)
@@ -759,8 +789,8 @@ class TTSRealtime:
                 message="TTS service disconnected",
             )
 
-            await self._tts_factory.service.disconnect()
             self._is_connected = False
+            await self._tts_factory.service.disconnect()
 
             logger.info("Disconnected from TTS service")
         else:

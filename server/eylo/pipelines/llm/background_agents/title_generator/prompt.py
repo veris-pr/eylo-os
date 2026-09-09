@@ -1,22 +1,12 @@
 """Utility for building prompts for LLM-based title generation."""
 
-from typing import Dict, List, Tuple
+from ..framework_prompt import BackgroundPrompt
 
 
 def build_title_generation_prompt(
     conversation_string: str,
-) -> Tuple[str, List[Dict[str, str]]]:
-    """Builds the system prompt and user messages for conversation title generation.
-
-    Args:
-        conversation_string: The string content of the conversation.
-
-    Returns:
-        A tuple containing:
-            - system_prompt (str): The system prompt for the LLM.
-            - llm_messages (List[Dict[str, str]]): The list of messages for the LLM.
-
-    """
+) -> BackgroundPrompt:
+    """Build the instruction and conversation text for one title request."""
     system_prompt = """
         You are an AI assistant tasked with generating conversation titles.
 
@@ -53,6 +43,6 @@ def build_title_generation_prompt(
         - "Help me with this problem please"
     """
 
-    llm_messages = [{"role": "user", "content": conversation_string}]
-
-    return system_prompt, llm_messages
+    return BackgroundPrompt(
+        system_prompt=system_prompt, user_content=conversation_string
+    )

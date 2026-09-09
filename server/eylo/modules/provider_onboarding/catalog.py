@@ -299,7 +299,6 @@ def _stt_capability() -> CapabilityDefinition:
                 "encoding",
                 "eot_threshold",
                 "eot_timeout_ms",
-                "high_vad_sensitivity",
             ),
             {"model"},
         ),

@@ -14,8 +14,9 @@ import json
 import logging
 import math
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from functools import lru_cache
-from typing import Dict, List
+from typing import List
 
 import tiktoken
 
@@ -47,6 +48,19 @@ def _count_local_tokens(text: str) -> int:
     encoding = _local_encoding()
     encoded_tokens = len(encoding.encode(text)) if encoding is not None else 0
     return max(encoded_tokens, math.ceil(len(text) / 3))
+
+
+@dataclass(frozen=True, slots=True)
+class ContextTokenCount:
+    """Component estimates with one derived total; never sum the total twice."""
+
+    system_tokens: int
+    message_tokens: int
+    tool_tokens: int
+
+    @property
+    def total_tokens(self) -> int:
+        return self.system_tokens + self.message_tokens + self.tool_tokens
 
 
 class TokenCounter(ABC):
@@ -145,56 +159,22 @@ class TokenCounter(ABC):
         messages: List[MessageInDb],
         system_prompt: str,
         tools: List[ToolInDb],
-    ) -> Dict[str, int]:
-        """Count total tokens for a complete context.
-
-        Args:
-            messages: Conversation messages
-            system_prompt: System prompt
-            tools: Available tools
-
-        Returns:
-            Dictionary with token breakdown:
-            {
-                "system": int,
-                "messages": int,
-                "tools": int,
-                "total": int,
-            }
-
-        """
-        system_tokens = (
-            self.count_system_prompt_tokens(system_prompt) if system_prompt else 0
+    ) -> ContextTokenCount:
+        """Keep component estimates separate from their derived total."""
+        return ContextTokenCount(
+            system_tokens=(
+                self.count_system_prompt_tokens(system_prompt) if system_prompt else 0
+            ),
+            message_tokens=self.count_messages_tokens(messages),
+            tool_tokens=self.count_tools_tokens(tools) if tools else 0,
         )
-        messages_tokens = self.count_messages_tokens(messages)
-        tools_tokens = self.count_tools_tokens(tools) if tools else 0
 
-        total = system_tokens + messages_tokens + tools_tokens
-
-        return {
-            "system": system_tokens,
-            "messages": messages_tokens,
-            "tools": tools_tokens,
-            "total": total,
-        }
-
-    def count_context_tokens(self, ctx: ConversationContext) -> Dict[str, int]:
-        """Count total tokens for a conversation context.
-
-        Args:
-            ctx: Conversation context
-        Returns:
-            Dictionary with token breakdown
-
-        """
-        messages = ctx.messages or []
-        system_prompt = ctx.system_prompt or ""
-        tools = ctx.get_tools() or []
-
+    def count_context_tokens(self, ctx: ConversationContext) -> ContextTokenCount:
+        """Estimate the hydrated conversation without changing its history."""
         return self.count_total_context_tokens(
-            messages=messages,
-            system_prompt=system_prompt,
-            tools=tools,
+            messages=ctx.messages or [],
+            system_prompt=ctx.system_prompt or "",
+            tools=ctx.get_tools() or [],
         )
 
 

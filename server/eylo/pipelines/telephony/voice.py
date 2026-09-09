@@ -9,12 +9,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
 import arrow
+from pydantic import BaseModel, ConfigDict, Field, InstanceOf
+from pydantic.json_schema import SkipJsonSchema
 
+from eylo.common.contracts.speech_runtime import (
+    SpeechTransportEncoding,
+    SpeechTransportFormat,
+)
+from eylo.common.contracts.voice import RecordingDisclosureState
 from eylo.common.database import start_transaction
 from eylo.modules.agents.domain import ResolvedExecutableAgent
 from eylo.modules.telephony.lifecycle import link_call_voice_session
@@ -24,8 +30,7 @@ from eylo.modules.voice_configs.domain import ResolvedSTT, ResolvedTTS
 from eylo.modules.voice_transcripts.constants import VoiceRuntimeMode
 from eylo.modules.voice_transcripts.schemas.indb import VoiceSessionCreate
 from eylo.modules.voice_transcripts.services.indb import VoiceTranscriptService
-from eylo.pipelines.telephony.sessions import CallSession
-from eylo.pipelines.voice.audio_transport import StreamingAudioTranscoder
+from eylo.pipelines.telephony.sessions import CallSession, CallTerminationState
 from eylo.pipelines.voice.interaction_config import apply_voice_interaction_config
 from eylo.pipelines.voice.lifecycle_policy import (
     monitor_silence,
@@ -45,61 +50,64 @@ from eylo.pipelines.voice.provider_runtime import (
 )
 from eylo.pipelines.voice.request_state import VoiceRequestSource
 from eylo.pipelines.voice.stt import STTRealtime
+from eylo.pipelines.voice.transcript_inputs import VoiceTranscriptInput
 from eylo.pipelines.voice.transcripts import write_user_transcript
 from eylo.pipelines.voice.tts import TTSRealtime
+from eylo.pipelines.voice.tts_payloads import TTSRequest
 from eylo.pipelines.websocket.singleton import S_ws_manager
 from eylo.sockets.telephony.base import (
     CallEndedReason,
     TelephonyControlAccepted,
 )
 from eylo.sockets.telephony.manager import TelephonyRealtime
-from eylo.sockets.tts.schemas import TTSAudioFormat
+from eylo.sockets.tts.schemas import TTSAudioFormat, TTSConfig
 
 logger = logging.getLogger(__name__)
 
+_ROLLBACK_TRANSCRIPT_DRAIN_SECONDS = 1.0
 
-@dataclass
-class VoicePipelineBundle:
-    """Return contract for telephony voice pipeline initialization."""
 
-    stt: STTRealtime
-    tts: TTSRealtime
-    tts_audio_transcoder: StreamingAudioTranscoder
-    stt_request_queue: asyncio.Queue
-    stt_response_queue: asyncio.Queue
-    tts_request_queue: asyncio.Queue
-    tts_response_queue: asyncio.Queue
-    stt_tasks: dict[str, asyncio.Task]
-    tts_tasks: dict[str, asyncio.Task]
-    voice_config: VoiceConfig | None
-    stt_config: dict[str, Any]
-    stt_vendor: str
-    tts_config: dict[str, Any]
+class VoicePipelineBundle(BaseModel):
+    """Validated call runtime handoff; live handles never enter snapshots."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    stt: SkipJsonSchema[InstanceOf[STTRealtime]] = Field(exclude=True, repr=False)
+    tts: SkipJsonSchema[InstanceOf[TTSRealtime]] = Field(exclude=True, repr=False)
+    stt_request_queue: SkipJsonSchema[InstanceOf[asyncio.Queue[bytes]]] = Field(
+        exclude=True, repr=False
+    )
+    stt_response_queue: SkipJsonSchema[
+        InstanceOf[asyncio.Queue[VoiceTranscriptInput]]
+    ] = Field(exclude=True, repr=False)
+    tts_request_queue: SkipJsonSchema[InstanceOf[asyncio.Queue[TTSRequest]]] = Field(
+        exclude=True, repr=False
+    )
+    tts_response_queue: SkipJsonSchema[InstanceOf[asyncio.Queue[bytes]]] = Field(
+        exclude=True, repr=False
+    )
+    stt_tasks: SkipJsonSchema[dict[str, InstanceOf[asyncio.Task[None]]]] = Field(
+        exclude=True, repr=False
+    )
+    tts_tasks: SkipJsonSchema[dict[str, InstanceOf[asyncio.Task[None]]]] = Field(
+        exclude=True, repr=False
+    )
+    voice_config: VoiceConfig
     runtime_identity: DecomposedVoiceRuntimeIdentity
 
 
 def apply_voice_bundle_to_session(
     sess: CallSession, voice_bundle: VoicePipelineBundle
 ) -> None:
-    if voice_bundle.stt_request_queue:
-        sess.stt_request_queue = voice_bundle.stt_request_queue
-    if voice_bundle.stt_response_queue:
-        sess.stt_response_queue = voice_bundle.stt_response_queue
-    if voice_bundle.tts_request_queue:
-        sess.tts_request_queue = voice_bundle.tts_request_queue
-    if voice_bundle.tts_response_queue:
-        sess.tts_response_queue = voice_bundle.tts_response_queue
-    if voice_bundle.stt:
-        sess.stt = voice_bundle.stt
-    if voice_bundle.tts:
-        sess.tts = voice_bundle.tts
-    sess.tts_audio_transcoder = voice_bundle.tts_audio_transcoder
-    if voice_bundle.stt_tasks:
-        sess.stt_tasks = voice_bundle.stt_tasks
-    if voice_bundle.tts_tasks:
-        sess.tts_tasks = voice_bundle.tts_tasks
-    if voice_bundle.voice_config:
-        sess.voice_config = voice_bundle.voice_config
+    sess.stt_request_queue = voice_bundle.stt_request_queue
+    sess.stt_response_queue = voice_bundle.stt_response_queue
+    sess.tts_request_queue = voice_bundle.tts_request_queue
+    sess.tts_response_queue = voice_bundle.tts_response_queue
+    sess.stt = voice_bundle.stt
+    sess.tts = voice_bundle.tts
+    sess.stt_tasks = voice_bundle.stt_tasks
+    sess.tts_tasks = voice_bundle.tts_tasks
+    sess.voice_config = voice_bundle.voice_config
 
 
 def collect_call_audio_metrics(sess: CallSession) -> dict[str, Any]:
@@ -130,7 +138,7 @@ async def terminate_telephony_voice(
     async with sess.termination_lock:
         if sess.termination_requested:
             return False
-        sess.termination_requested = True
+        sess.termination_state = CallTerminationState.REQUESTED
         sess.ended_reason = ended_reason
 
         session_state = (
@@ -177,7 +185,7 @@ async def terminate_telephony_voice(
         else:
             if isinstance(result, TelephonyControlAccepted):
                 return True
-            sess.extra_data["termination_failure_code"] = result.failure_code
+            sess.extra_data.termination_failure_code = result.failure_code
             logger.error(
                 "Carrier termination was not accepted call=%s failure_code=%s.",
                 sess.call_sid,
@@ -426,10 +434,10 @@ def maybe_initialize_telephony_recorder(
     if _compliance_plan(sess.voice_config).recording_consent_required:
         # Notification is attempted before the greeting, but recording is the
         # primary flow and begins independently.
-        sess.recording_consent_state = "pending"
+        sess.recording_consent_state = RecordingDisclosureState.PENDING
         return
 
-    sess.recording_consent_state = "not_required"
+    sess.recording_consent_state = RecordingDisclosureState.NOT_REQUIRED
 
 
 def _build_telephony_recorder(
@@ -438,13 +446,10 @@ def _build_telephony_recorder(
 ) -> None:
     from eylo.pipelines.voice.recording import AudioRecorder
 
-    input_format = telephony_manager.get_config() or {}
-    output_format = telephony_manager.get_output_format() or {}
-
-    user_sample_rate = int(input_format.get("sample_rate", 8000))
-    user_encoding = str(input_format.get("encoding", "pcm_s16le"))
-    agent_sample_rate = int(output_format.get("sample_rate", 8000))
-    agent_encoding = str(output_format.get("encoding", "pcm_s16le"))
+    if sess.tts is None or sess.organization_id is None or sess.conversation_id is None:
+        raise RuntimeError("Telephony recording requires call identity and TTS media.")
+    input_format = SpeechTransportFormat.model_validate(telephony_manager.get_config())
+    output_format = sess.tts.consumer_audio_format
 
     sess.audio_recorder = AudioRecorder(
         organization_id=sess.organization_id,
@@ -458,10 +463,10 @@ def _build_telephony_recorder(
             if sess.voice_config
             else None
         ),
-        user_sample_rate=user_sample_rate,
-        agent_sample_rate=agent_sample_rate,
-        user_encoding=user_encoding,
-        agent_encoding=agent_encoding,
+        user_sample_rate=input_format.sample_rate,
+        agent_sample_rate=output_format.sample_rate,
+        user_encoding=input_format.encoding.value,
+        agent_encoding=output_format.encoding,
     )
 
     logger.info(
@@ -546,25 +551,33 @@ async def start_telephony_voice_session(
 async def teardown_voice_pipeline_bundle(
     voice_bundle: VoicePipelineBundle | None,
 ) -> None:
+    """Roll back startup without cancelling the final-transcript consumer early.
+
+    Synthesis is stopped, not played out on a failed call. Recognition closes
+    before its writer, and both providers get a cleanup attempt even if another
+    step fails. Queue draining is bounded and does not imply durable persistence.
+    """
     if not voice_bundle:
         return
 
     from eylo.runtime.tasks import teardown_long_running_tasks, teardown_queues
 
-    await teardown_long_running_tasks(
-        {**voice_bundle.stt_tasks, **voice_bundle.tts_tasks}
-    )
-    await teardown_queues(
-        [
-            voice_bundle.stt_response_queue,
-            voice_bundle.stt_request_queue,
-            voice_bundle.tts_response_queue,
-            voice_bundle.tts_request_queue,
-        ],
-        join_timeout=1,
-    )
-    await voice_bundle.stt.disconnect()
-    await voice_bundle.tts.disconnect()
+    try:
+        try:
+            await teardown_long_running_tasks(voice_bundle.tts_tasks)
+        finally:
+            await voice_bundle.stt.disconnect()
+    finally:
+        try:
+            await teardown_queues(
+                [voice_bundle.stt_response_queue, voice_bundle.stt_request_queue],
+                join_timeout=_ROLLBACK_TRANSCRIPT_DRAIN_SECONDS,
+            )
+        finally:
+            try:
+                await teardown_long_running_tasks(voice_bundle.stt_tasks)
+            finally:
+                await voice_bundle.tts.disconnect()
 
 
 def build_stt_config(
@@ -572,13 +585,13 @@ def build_stt_config(
     telephony_manager: TelephonyRealtime,
     voice_config: VoiceConfig | None,
     resolved_stt: ResolvedSTT,
-) -> tuple[dict[str, Any], str]:
+) -> tuple[dict[str, object], str]:
     if voice_config is None:
         raise RuntimeError("Published Voice Config is required for telephony STT.")
     stt_config = build_stt_runtime_config(
         voice_config,
         resolved_stt,
-        transport=telephony_manager.get_config(),
+        transport=SpeechTransportFormat.model_validate(telephony_manager.get_config()),
     )
     return stt_config, resolved_stt.provider.value
 
@@ -588,22 +601,21 @@ def build_tts_config(
     telephony_manager: TelephonyRealtime,
     voice_config: VoiceConfig | None,
     resolved_tts: ResolvedTTS,
-) -> dict[str, Any]:
+) -> TTSConfig:
     del voice_config
-    transport_config: dict[str, object] = {}
+    transport_config: SpeechTransportFormat | None = None
     if resolved_tts.provider is TTSProviders.AMAZON_POLLY:
         # Polly can emit carrier-rate PCM directly. The carrier codec remains
         # a separate target and is applied by StreamingAudioTranscoder.
         carrier_format = TTSAudioFormat.from_mapping(
             telephony_manager.get_output_format()
         )
-        transport_config.update(
+        transport_config = SpeechTransportFormat(
             sample_rate=carrier_format.sample_rate,
-            encoding="pcm_s16le",
+            encoding=SpeechTransportEncoding.PCM_S16LE,
         )
-    return build_tts_runtime_config(
-        resolved_tts,
-        transport=transport_config,
+    return TTSConfig.model_validate(
+        build_tts_runtime_config(resolved_tts, transport=transport_config)
     )
 
 
@@ -624,6 +636,9 @@ async def init_voice_pipeline(
             db=voice_config_session,
         )
 
+    runtime_identity = DecomposedVoiceRuntimeIdentity.from_resolved(
+        resolved_stt, resolved_tts
+    )
     stt_config, stt_vendor = build_stt_config(
         telephony_manager=telephony_manager,
         voice_config=voice_config,
@@ -636,10 +651,10 @@ async def init_voice_pipeline(
         resolved_tts=resolved_tts,
     )
 
-    stt_request_queue = asyncio.Queue()
-    stt_response_queue = asyncio.Queue()
-    tts_request_queue = asyncio.Queue()
-    tts_response_queue = asyncio.Queue()
+    stt_request_queue: asyncio.Queue[bytes] = asyncio.Queue()
+    stt_response_queue: asyncio.Queue[VoiceTranscriptInput] = asyncio.Queue()
+    tts_request_queue: asyncio.Queue[TTSRequest] = asyncio.Queue()
+    tts_response_queue: asyncio.Queue[bytes] = asyncio.Queue()
 
     stt = STTRealtime(
         organization_id=organization_id,
@@ -647,41 +662,31 @@ async def init_voice_pipeline(
         consumer_queue=stt_response_queue,
         stt_config=stt_config,
         stt_vendor=stt_vendor,
-        api_key=resolved_stt.secret,
     )
-    stt_tasks = {"stt_initialize": asyncio.create_task(stt.initialize())}
-
     tts = TTSRealtime(
         organization_id=organization_id,
         session_id=call_sid,
         consumer_queue=tts_response_queue,
         tts_config=tts_config,
-        api_key=resolved_tts.secret,
+        consumer_audio_format=TTSAudioFormat.from_mapping(
+            telephony_manager.get_output_format()
+        ),
     )
-    tts_audio_transcoder = StreamingAudioTranscoder(
-        source=tts.output_audio_format,
-        target=TTSAudioFormat.from_mapping(telephony_manager.get_output_format()),
-    )
+    # Validate both managers and their media before starting either provider.
+    stt_tasks = {"stt_initialize": asyncio.create_task(stt.initialize())}
     tts_tasks = {"tts_initialize": asyncio.create_task(tts.initialize())}
 
     return VoicePipelineBundle(
         voice_config=voice_config,
-        stt_config=stt_config,
-        stt_vendor=stt_vendor,
-        tts_config=tts_config,
         stt_request_queue=stt_request_queue,
         stt_response_queue=stt_response_queue,
         tts_request_queue=tts_request_queue,
         tts_response_queue=tts_response_queue,
         stt=stt,
         tts=tts,
-        tts_audio_transcoder=tts_audio_transcoder,
         stt_tasks=stt_tasks,
         tts_tasks=tts_tasks,
-        runtime_identity=DecomposedVoiceRuntimeIdentity.from_resolved(
-            resolved_stt,
-            resolved_tts,
-        ),
+        runtime_identity=runtime_identity,
     )
 
 
@@ -749,8 +754,6 @@ def start_transcriptor(
 
     async def on_interrupt() -> None:
         await live_turn_runner.interrupt()
-        if sess.tts_audio_transcoder is not None:
-            sess.tts_audio_transcoder.reset()
         logger.info("Triggering telephony interruption for stream %s", stream_sid)
         result = await telephony_manager.handle_interruption(stream_sid or "")
         if result.failure_code:

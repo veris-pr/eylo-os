@@ -26,7 +26,7 @@ from eylo.modules.agent_runs.domain import AgentRunStepKind, AgentRunStepStatus
 from eylo.modules.agent_runs.models import AgentRunStepModel
 from eylo.modules.provider_configs.errors import NotConfiguredError
 from eylo.modules.sandbox.access import SandboxAccessError
-from eylo.pipelines.outbound.durable_execution import DurableStepContext
+from eylo.pipelines.outbound.durable_execution import CommandStepContext
 from eylo.pipelines.sandbox.sessions import (
     acquire,
     discard_live_run_sessions,
@@ -137,7 +137,7 @@ async def execute_agent_sandbox_tool(
     agent_id: UUID,
     agent_run_id: UUID,
     tool_command_id: UUID,
-    durable_context: DurableStepContext,
+    durable_context: CommandStepContext,
 ) -> SandboxToolExecutionOutcome:
     """Execute one published sandbox tool under the current AgentRun."""
     active_run_id = current_agent_run_id()

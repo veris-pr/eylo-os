@@ -31,6 +31,11 @@ class FrameworkMetadata(BaseModel):
     Framework metadata is schema-backed. Subsystems should define focused
     subclasses for known fields; this base remains extensible so older persisted
     metadata and integration-provided annotations can round-trip safely.
+
+    Framework metadata fields explicitly preserve those subclasses during
+    serialization. Only transportable metadata belongs here; runtime dependencies
+    belong in RunContext.local_context. Subclass-private fields must be excluded
+    by their owner, and normal Pydantic include/exclude rules still apply.
     """
 
     model_config = ConfigDict(

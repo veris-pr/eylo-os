@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any
+from enum import StrEnum
+from typing import Any, Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from eylo.modules.integrations_v2.domain.enums import ToolEffect
 
@@ -14,8 +15,33 @@ from .definition import vendor
 
 MAX_BODY_CHARS = 6_000
 MAX_PARTS = 50
+ADMIN_REPLY_AUTHOR_TYPE = "admin"
+
+
+class IntercomConversationState(StrEnum):
+    """Native conversation states accepted by the curated search tool."""
+
+    OPEN = "open"
+    CLOSED = "closed"
+    SNOOZED = "snoozed"
+
+    @classmethod
+    def _missing_(cls, value: object) -> Self | None:
+        if not isinstance(value, str):
+            return None
+        normalized = value.strip().casefold()
+        return next((state for state in cls if state.value == normalized), None)
+
+
+class IntercomMessageType(StrEnum):
+    """Admin reply choices; NOTE must never be sent as a customer comment."""
+
+    COMMENT = "comment"
+    NOTE = "note"
+
+
 # Part types that carry something a person said, as opposed to state changes.
-_SPEECH = frozenset({"comment", "note"})
+_SPEECH = frozenset(message_type.value for message_type in IntercomMessageType)
 
 
 class FindContactInput(BaseModel):
@@ -26,8 +52,16 @@ class SearchConversationsInput(BaseModel):
     contact_email: str | None = Field(
         default=None, description="Only this person's conversations."
     )
-    state: str | None = Field(default=None, description="One of open, closed, snoozed.")
+    state: IntercomConversationState | None = Field(
+        default=None, description="Only conversations with this native state."
+    )
     limit: int = Field(default=20, ge=1, le=50)
+
+    @field_validator("state", mode="before")
+    @classmethod
+    def empty_filter_is_absent(cls, value: object) -> object:
+        """Preserve empty-string omission without accepting whitespace-only input."""
+        return None if value == "" else value
 
 
 class GetConversationInput(BaseModel):
@@ -102,12 +136,9 @@ async def search_conversations(
             {"field": "contact_ids", "operator": "=", "value": contact.get("id")}
         )
     if payload.state:
-        state = payload.state.strip().casefold()
-        if state not in {"open", "closed", "snoozed"}:
-            raise VendorToolError(
-                "state_invalid", "state must be open, closed, or snoozed."
-            )
-        filters.append({"field": "state", "operator": "=", "value": state})
+        filters.append(
+            {"field": "state", "operator": "=", "value": payload.state.value}
+        )
     if not filters:
         raise VendorToolError(
             "search_unbounded", "Give a contact email or a state to search by."
@@ -185,7 +216,7 @@ async def get_conversation(
             {
                 "author": _author(part.get("author")),
                 "body": _clip(part.get("body")),
-                "visible_to_customer": part_type == "comment",
+                "visible_to_customer": part_type == IntercomMessageType.COMMENT.value,
                 "created_at": part.get("created_at"),
                 "is_opening_message": False,
             }
@@ -217,7 +248,11 @@ async def reply_to_conversation(
         conversation_id=payload.conversation_id,
         body=payload.body,
         admin_id=payload.admin_id,
-        message_type="comment" if payload.visible_to_customer else "note",
+        message_type=(
+            IntercomMessageType.COMMENT
+            if payload.visible_to_customer
+            else IntercomMessageType.NOTE
+        ),
     )
 
 
@@ -239,7 +274,7 @@ async def add_note(payload: AddNoteInput, ctx: VendorToolContext) -> dict[str, A
         conversation_id=payload.conversation_id,
         body=payload.body,
         admin_id=payload.admin_id,
-        message_type="note",
+        message_type=IntercomMessageType.NOTE,
     )
 
 
@@ -249,22 +284,22 @@ async def _reply(
     conversation_id: str,
     body: str,
     admin_id: str,
-    message_type: str,
+    message_type: IntercomMessageType,
 ) -> dict[str, Any]:
     response = await ctx.mutate(
         f"/conversations/{conversation_id}/reply",
         json={
-            "type": "admin",
+            "type": ADMIN_REPLY_AUTHOR_TYPE,
             "admin_id": admin_id,
-            "message_type": message_type,
+            "message_type": message_type.value,
             "body": body,
         },
     )
     replied = _object(response.data)
     return {
         "conversation_id": replied.get("id") or conversation_id,
-        "message_type": message_type,
-        "visible_to_customer": message_type == "comment",
+        "message_type": message_type.value,
+        "visible_to_customer": message_type is IntercomMessageType.COMMENT,
         "state": replied.get("state"),
     }
 

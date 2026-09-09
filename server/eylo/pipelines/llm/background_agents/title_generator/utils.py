@@ -5,19 +5,22 @@ worker logic to improve modularity and reduce the main file's length.
 """
 
 import logging
-from typing import Dict, List, Optional
+from typing import Final, Optional
 from uuid import UUID
 
 from eylo.modules.agents.schemas.indb import AgentInDb
 from eylo.modules.llm_configs.domain import ResolvedLLM
 
-from ..framework_prompt import run_background_prompt_agent
+from ..framework_prompt import BackgroundPrompt, run_background_prompt_agent
 
 logger = logging.getLogger(__name__)
 
+FALLBACK_TITLE_MAX_LENGTH: Final = 100
+TITLE_MAX_LENGTH: Final = 255
+
 
 def generate_fallback_title(
-    content: str, conversation_id: str, max_len: int = 100
+    content: str, conversation_id: str, max_len: int = FALLBACK_TITLE_MAX_LENGTH
 ) -> str:
     """Generates a fallback title by truncating the given content."""
     fallback_title = content[:max_len]
@@ -29,7 +32,7 @@ def generate_fallback_title(
 
 
 def ensure_title_max_length(
-    title: str, conversation_id: str, max_db_len: int = 255
+    title: str, conversation_id: str, max_db_len: int = TITLE_MAX_LENGTH
 ) -> str:
     """Ensures the title does not exceed the maximum database length."""
     if len(title) > max_db_len:
@@ -43,8 +46,7 @@ def ensure_title_max_length(
 
 
 async def call_llm_for_title_generation(
-    system_prompt: str,
-    llm_messages: List[Dict[str, str]],
+    prompt: BackgroundPrompt,
     agent: AgentInDb,
     resolved: ResolvedLLM,
     conversation_id: UUID,
@@ -53,8 +55,7 @@ async def call_llm_for_title_generation(
     try:
         title_result = await run_background_prompt_agent(
             agent_name="title_generator",
-            system_prompt=system_prompt,
-            user_content=_single_user_content(llm_messages),
+            prompt=prompt,
             sender_id=agent.id,
             conversation_id=conversation_id,
             resolved=resolved,
@@ -73,12 +74,3 @@ async def call_llm_for_title_generation(
         )
 
     return None
-
-
-def _single_user_content(llm_messages: List[Dict[str, str]]) -> str:
-    """Return the user prompt content expected by the background agent helper."""
-    return "\n".join(
-        message["content"]
-        for message in llm_messages
-        if message.get("role") == "user" and message.get("content")
-    )

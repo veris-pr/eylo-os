@@ -7,10 +7,19 @@ vendor-specific objects.
 
 from __future__ import annotations
 
-import enum
-from typing import Any
+from enum import Enum
+from typing import Annotated, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    StrictBool,
+    StrictBytes,
+    StrictStr,
+    TypeAdapter,
+)
 
 from eylo.common.contracts.conversation import REALTIME_MESSAGE_SOURCE
 
@@ -22,7 +31,7 @@ REALTIME_SOURCE = REALTIME_MESSAGE_SOURCE
 VENDOR_OUTPUT_SAMPLE_RATE = 24000
 
 
-class RealtimeEventType(enum.Enum):
+class RealtimeEventType(str, Enum):
     AUDIO_DATA = "audio_data"
     USER_SPEECH_STARTED = "user_speech_started"
     INPUT_TRANSCRIPT = "input_transcript"
@@ -35,80 +44,114 @@ class RealtimeEventType(enum.Enum):
     ERROR = "error"
 
 
-class RealtimeEvent(BaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-    type: RealtimeEventType
+class _RealtimeEvent(BaseModel):
+    """Closed normalized envelope; event identity cannot drift from its payload."""
+
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        revalidate_instances="always",
+        allow_inf_nan=False,
+        hide_input_in_errors=True,
+    )
 
 
-class AudioDataEvent(RealtimeEvent):
-    """Audio chunk from vendor speech output. Both vendors output PCM 24kHz 16-bit mono."""
+class AudioDataEvent(_RealtimeEvent):
+    """Raw PCM S16LE mono output; sample_rate describes the actual vendor bytes."""
 
-    type: RealtimeEventType = RealtimeEventType.AUDIO_DATA
-    audio: bytes = b""
-    sample_rate: int = VENDOR_OUTPUT_SAMPLE_RATE
+    type: Literal[RealtimeEventType.AUDIO_DATA] = RealtimeEventType.AUDIO_DATA
+    audio: StrictBytes = b""
+    sample_rate: int = Field(default=VENDOR_OUTPUT_SAMPLE_RATE, strict=True, gt=0)
 
 
-class UserSpeechStartedEvent(RealtimeEvent):
+class UserSpeechStartedEvent(_RealtimeEvent):
     """The provider detected user speech; this is not always an interruption."""
 
-    type: RealtimeEventType = RealtimeEventType.USER_SPEECH_STARTED
+    type: Literal[RealtimeEventType.USER_SPEECH_STARTED] = (
+        RealtimeEventType.USER_SPEECH_STARTED
+    )
 
 
-class InputTranscriptEvent(RealtimeEvent):
+class InputTranscriptEvent(_RealtimeEvent):
     """User speech transcription from the vendor."""
 
-    type: RealtimeEventType = RealtimeEventType.INPUT_TRANSCRIPT
-    text: str = ""
-    is_final: bool = False
+    type: Literal[RealtimeEventType.INPUT_TRANSCRIPT] = (
+        RealtimeEventType.INPUT_TRANSCRIPT
+    )
+    text: StrictStr = ""
+    is_final: StrictBool = False
 
 
-class OutputTranscriptEvent(RealtimeEvent):
+class OutputTranscriptEvent(_RealtimeEvent):
     """Model speech transcription from the vendor."""
 
-    type: RealtimeEventType = RealtimeEventType.OUTPUT_TRANSCRIPT
-    text: str = ""
-    is_final: bool = False
+    type: Literal[RealtimeEventType.OUTPUT_TRANSCRIPT] = (
+        RealtimeEventType.OUTPUT_TRANSCRIPT
+    )
+    text: StrictStr = ""
+    is_final: StrictBool = False
 
 
-class ToolCallEvent(RealtimeEvent):
+class ToolCallEvent(_RealtimeEvent):
     """Vendor requests tool execution."""
 
-    type: RealtimeEventType = RealtimeEventType.TOOL_CALL
-    tool_call_id: str = ""
-    tool_name: str = ""
-    arguments: dict[str, Any] = Field(default_factory=dict)
+    type: Literal[RealtimeEventType.TOOL_CALL] = RealtimeEventType.TOOL_CALL
+    tool_call_id: StrictStr = ""
+    tool_name: StrictStr = ""
+    arguments: dict[str, JsonValue] = Field(default_factory=dict)
 
 
-class InterruptionEvent(RealtimeEvent):
+class InterruptionEvent(_RealtimeEvent):
     """User interrupted model speech (VAD-detected)."""
 
-    type: RealtimeEventType = RealtimeEventType.INTERRUPTION
+    type: Literal[RealtimeEventType.INTERRUPTION] = RealtimeEventType.INTERRUPTION
 
 
-class TurnCompleteEvent(RealtimeEvent):
+class TurnCompleteEvent(_RealtimeEvent):
     """Model finished a full response turn."""
 
-    type: RealtimeEventType = RealtimeEventType.TURN_COMPLETE
+    type: Literal[RealtimeEventType.TURN_COMPLETE] = RealtimeEventType.TURN_COMPLETE
 
 
-class SessionStartedEvent(RealtimeEvent):
+class SessionStartedEvent(_RealtimeEvent):
     """Vendor session is ready to receive audio."""
 
-    type: RealtimeEventType = RealtimeEventType.SESSION_STARTED
-    session_id: str = ""
+    type: Literal[RealtimeEventType.SESSION_STARTED] = RealtimeEventType.SESSION_STARTED
+    session_id: StrictStr = ""
 
 
-class GoAwayEvent(RealtimeEvent):
+class GoAwayEvent(_RealtimeEvent):
     """Vendor signals imminent disconnection — reconnect now."""
 
-    type: RealtimeEventType = RealtimeEventType.GO_AWAY
-    time_left_ms: int = 0
+    type: Literal[RealtimeEventType.GO_AWAY] = RealtimeEventType.GO_AWAY
+    time_left_ms: int = Field(default=0, strict=True, ge=0)
 
 
-class ErrorEvent(RealtimeEvent):
+class ErrorEvent(_RealtimeEvent):
     """Vendor-side error."""
 
-    type: RealtimeEventType = RealtimeEventType.ERROR
-    message: str = ""
-    code: str = ""
-    is_recoverable: bool = True
+    type: Literal[RealtimeEventType.ERROR] = RealtimeEventType.ERROR
+    message: StrictStr = ""
+    code: StrictStr = ""
+    is_recoverable: StrictBool = True
+
+
+RealtimeEvent: TypeAlias = Annotated[
+    AudioDataEvent
+    | UserSpeechStartedEvent
+    | InputTranscriptEvent
+    | OutputTranscriptEvent
+    | ToolCallEvent
+    | InterruptionEvent
+    | TurnCompleteEvent
+    | SessionStartedEvent
+    | GoAwayEvent
+    | ErrorEvent,
+    Field(discriminator="type"),
+]
+_REALTIME_EVENT = TypeAdapter(RealtimeEvent)
+
+
+def validate_realtime_event(value: object) -> RealtimeEvent:
+    """Revalidate adapter output before any event-driven platform effect."""
+    return _REALTIME_EVENT.validate_python(value)

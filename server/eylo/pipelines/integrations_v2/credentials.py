@@ -13,7 +13,6 @@ from __future__ import annotations
 import base64
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
 
 from eylo.common.http_egress import (
     HttpEgressPolicyError,
@@ -51,7 +50,7 @@ class VendorWireAuth:
 def build_vendor_wire_auth(
     *,
     auth_kind: VendorAuthKind,
-    credentials: Mapping[str, Any] | None,
+    credentials: Mapping[str, object] | None,
     origin: HttpOrigin,
     api_key_placement: ApiKeyPlacement | None = None,
 ) -> VendorWireAuth:
@@ -132,7 +131,7 @@ def _query(origin: HttpOrigin, values: dict[str, str]) -> VendorWireAuth:
         ) from error
 
 
-def _required(values: Mapping[str, Any], name: str) -> str:
+def _required(values: Mapping[str, object], name: str) -> str:
     raw = values.get(name)
     if not isinstance(raw, str):
         raise CredentialUnavailableError(

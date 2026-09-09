@@ -7,6 +7,9 @@ from eylo.sockets.llm.schemas import (
     LLMContentType,
     LLMResponse,
     LLMTextBlock,
+    LLMTextContent,
+    LLMThinkingContent,
+    LLMToolContent,
     LLMToolUseBlock,
     LLMUsageInfo,
 )
@@ -23,6 +26,9 @@ __all__ = [
     "LLMContentBlock",
     "LLMContentType",
     "LLMTextBlock",
+    "LLMTextContent",
+    "LLMThinkingContent",
+    "LLMToolContent",
     "LLMToolUseBlock",
     "LLMUsageInfo",
     # Vendor adapters

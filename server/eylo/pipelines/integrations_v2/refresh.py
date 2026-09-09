@@ -9,6 +9,8 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 from uuid import UUID
 
+from pydantic import JsonValue
+
 from eylo.common.database import (
     register_ephemeral_event_post_txn,
     start_transaction,
@@ -65,7 +67,7 @@ class RefreshOutcome:
 @dataclass(frozen=True, slots=True)
 class _RenewedCredential:
     connection: ExternalConnectionInDb
-    credentials: dict[str, object]
+    credentials: dict[str, JsonValue]
     expires_at: datetime | None
 
 

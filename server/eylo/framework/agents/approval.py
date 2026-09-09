@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import Enum
 from uuid import UUID, uuid4
 
-from pydantic import Field
+from pydantic import ConfigDict, Field, JsonValue, StrictStr
 
 from .common import FrozenFrameworkModel, JsonObject
 
@@ -48,18 +48,24 @@ class ApprovalDecisionKind(str, Enum):
 class ApprovalRequest(FrozenFrameworkModel):
     """Permission request for one concrete risky action."""
 
+    model_config = ConfigDict(
+        allow_inf_nan=False,
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+    )
+
     id: UUID = Field(default_factory=uuid4)
     durable_run_id: UUID
     requested_by_agent_id: UUID | None = None
     action_kind: ApprovalActionKind
-    action_summary: str
-    action_payload_redacted: JsonObject = Field(default_factory=dict)
+    action_summary: StrictStr
+    action_payload_redacted: dict[str, JsonValue] = Field(default_factory=dict)
     risk_level: RiskLevel = RiskLevel.MEDIUM
-    policy_reason: str
+    policy_reason: StrictStr
     expires_at: str | None = None
     status: ApprovalRequestStatus = ApprovalRequestStatus.PENDING
     resume_checkpoint_id: UUID | None = None
-    metadata: JsonObject = Field(default_factory=dict)
+    metadata: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 class ApprovalDecision(FrozenFrameworkModel):

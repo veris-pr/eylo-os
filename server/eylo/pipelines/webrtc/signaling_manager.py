@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 from aiortc import RTCIceCandidate
 
 from eylo.common.config import settings
+from eylo.common.contracts.voice import BrowserVoiceTerminationReason
 from eylo.common.contracts.websocket import WEBRTC_SIGNALING_VERSION
 from eylo.pipelines.webrtc.agent_peer import AgentPeerClient
 from eylo.pipelines.webrtc.config import (
@@ -132,7 +133,7 @@ class WebRTCSignalingManager:
                     "iceServers": browser_ice_servers(session.ice_servers),
                 }
 
-        await self._terminal_cleanup(key, "prepare_failed")
+        await self._terminal_cleanup(key, BrowserVoiceTerminationReason.PREPARE_FAILED)
         if failure is None:
             raise WebRTCSignalingError("prepare_failed")
         raise failure
@@ -264,7 +265,7 @@ class WebRTCSignalingManager:
 
         if failure is not None:
             if cleanup_on_failure:
-                await self._terminal_cleanup(key, "offer_failed")
+                await self._terminal_cleanup(key, BrowserVoiceTerminationReason.OFFER_FAILED)
             raise failure
 
     async def handle_candidate(
@@ -436,7 +437,9 @@ class WebRTCSignalingManager:
         )
         return True
 
-    async def _terminal_cleanup(self, key: WebRTCSessionKey, reason: str) -> None:
+    async def _terminal_cleanup(
+        self, key: WebRTCSessionKey, reason: BrowserVoiceTerminationReason
+    ) -> None:
         session = self._sessions.get(key)
         terminal_callback = (
             session.session_state.voice_terminal_callback if session else None
@@ -444,7 +447,7 @@ class WebRTCSignalingManager:
         cleaned = await self.cleanup_session(
             key.organization_id,
             key.session_id,
-            reason=reason,
+            reason=reason.value,
             notify_client=True,
         )
         if cleaned and terminal_callback is not None:
@@ -463,7 +466,9 @@ class WebRTCSignalingManager:
             session = self._sessions.get(key)
             if session is None or session.negotiation_id != negotiation_id:
                 return
-            await self._terminal_cleanup(key, "negotiation_timeout")
+            await self._terminal_cleanup(
+                key, BrowserVoiceTerminationReason.NEGOTIATION_TIMEOUT
+            )
         except asyncio.CancelledError:
             raise
 

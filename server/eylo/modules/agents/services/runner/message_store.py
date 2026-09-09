@@ -99,9 +99,7 @@ class MessageStore:
         voice_meta = _voice_message_meta(run_ctx)
 
         for content in llm_response.content:
-            content_type = LLMContentType(content.type)
-
-            if content_type == LLMContentType.TEXT:
+            if content.type == LLMContentType.TEXT:
                 # Status stays PROCESSING — hooks manage the COMPLETED transition
                 message_content = AssistantMessageContent(
                     role=MessageKind.ASSISTANT.value.lower(),
@@ -124,7 +122,7 @@ class MessageStore:
                 )
                 created_messages.append(message)
 
-            elif content_type == LLMContentType.TOOL_USE:
+            elif content.type == LLMContentType.TOOL_USE:
                 request_status = RequestStatus.AWAITING_TOOL_RESULTS
                 external_id = content.content.id or content.id or llm_response.id
                 message_content = ToolUseMessageContent(
@@ -153,7 +151,7 @@ class MessageStore:
                 )
                 created_messages.append(message)
             else:
-                logger.warning(f"Unsupported content type: {content_type}")
+                logger.warning(f"Unsupported content type: {content.type}")
 
         await get_transaction().commit()
         return created_messages

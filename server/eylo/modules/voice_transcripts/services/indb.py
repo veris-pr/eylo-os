@@ -92,7 +92,7 @@ class VoiceTranscriptService(EyloBaseService[VoiceSessionInDb]):
         if created.user_session_id is not None:
             await file_user_session_fact(
                 self.repository.db_session,
-                organization_id=created.organization_id,
+                organization_id=data.organization_id,
                 user_session_id=created.user_session_id,
                 subject_type="voice.session",
                 subject_id=created.id,
@@ -484,10 +484,7 @@ class VoiceTranscriptService(EyloBaseService[VoiceSessionInDb]):
             return None
         text = MessageService.get_message_content(message.content)
         started_at_ms = _duration_ms(session.started_at, message.created_at)
-        duration_ms = None
-        if message.meta and hasattr(message.meta, "get"):
-            raw_duration = message.meta.get("duration_ms")
-            duration_ms = int(raw_duration) if raw_duration is not None else None
+        duration_ms = message.meta.duration_ms if message.meta is not None else None
         tool_name, tool_call_id, tool_input, tool_output = _extract_tool_fields(message)
         speech_outcome = (
             _speech_outcome(message) if role is VoiceSegmentRole.ASSISTANT else None
@@ -513,11 +510,7 @@ class VoiceTranscriptService(EyloBaseService[VoiceSessionInDb]):
             tool_call_id=tool_call_id,
             tool_input=tool_input,
             tool_output=tool_output,
-            meta={
-                "message_kind": message.kind.value
-                if hasattr(message.kind, "value")
-                else str(message.kind)
-            },
+            meta={"message_kind": message.kind.value},
         )
 
 
@@ -530,11 +523,11 @@ def _classify_message(
     VoiceAudioTrackKind | None,
 ]:
     meta_source = None
-    if message.meta and hasattr(message.meta, "get"):
-        meta_source = message.meta.get("source")
+    if message.meta is not None:
+        meta_source = message.meta.source
     source = (
         VoiceSegmentSource.REALTIME
-        if meta_source == "realtime"
+        if meta_source == VoiceSegmentSource.REALTIME.value
         else VoiceSegmentSource.MESSAGE
     )
     if message.kind == MessageKind.USER:
@@ -562,23 +555,19 @@ def _classify_message(
 
 
 def _speech_outcome(message: MessageInDb) -> VoiceSpeechOutcome | None:
-    meta = message.meta if message.meta and hasattr(message.meta, "get") else None
-    explicit = meta.get("speech_turn_outcome") if meta else None
-    if explicit is not None:
-        return VoiceSpeechOutcome(str(explicit))
-    status = (
-        message.request_status.value
-        if hasattr(message.request_status, "value")
-        else str(message.request_status)
-        if message.request_status is not None
-        else None
-    )
-    return {
-        RequestStatus.COMPLETED.value: VoiceSpeechOutcome.DRAINED,
-        RequestStatus.INTERRUPTED.value: VoiceSpeechOutcome.INTERRUPTED,
-        RequestStatus.FAILED.value: VoiceSpeechOutcome.FAILED,
-        RequestStatus.SKIPPED.value: VoiceSpeechOutcome.CANCELLED,
-    }.get(status)
+    if message.meta is not None and message.meta.speech_turn_outcome is not None:
+        return message.meta.speech_turn_outcome
+    match message.request_status:
+        case RequestStatus.COMPLETED:
+            return VoiceSpeechOutcome.DRAINED
+        case RequestStatus.INTERRUPTED:
+            return VoiceSpeechOutcome.INTERRUPTED
+        case RequestStatus.FAILED:
+            return VoiceSpeechOutcome.FAILED
+        case RequestStatus.SKIPPED:
+            return VoiceSpeechOutcome.CANCELLED
+        case _:
+            return None
 
 
 def _duration_ms(start: datetime | None, end: datetime | None) -> int | None:

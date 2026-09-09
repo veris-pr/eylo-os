@@ -7,7 +7,8 @@ used in the main LLM pipeline (see base.py sort_request_groups).
 
 import logging
 from dataclasses import dataclass, field
-from typing import List, Literal, Optional, Tuple
+from datetime import datetime
+from typing import List, Optional
 from uuid import UUID
 
 from eylo.common.context_compaction import context_messages
@@ -21,7 +22,13 @@ from eylo.modules.conversations.schemas.messages import (
 from eylo.modules.llm_configs.catalog import LLMModels
 from eylo.modules.llm_configs.domain import ResolvedLLM
 
-from ..framework_prompt import run_background_prompt_agent
+from ..framework_prompt import BackgroundPrompt, run_background_prompt_agent
+from .constants import (
+    DEFAULT_GROUP_THRESHOLD,
+    DEFAULT_TOKEN_THRESHOLD,
+    FALLBACK_CHARACTERS_PER_TOKEN,
+    ContextManagementTrigger,
+)
 from .token_counter import get_token_counter
 
 logger = logging.getLogger(__name__)
@@ -53,7 +60,7 @@ class MessageGroup:
         )
 
     @property
-    def earliest_at(self):
+    def earliest_at(self) -> datetime:
         return min(m.created_at for m in self.messages)
 
     def flat_messages(self) -> List[MessageInDb]:
@@ -223,7 +230,7 @@ async def count_conversation_tokens(
     try:
         counter = get_token_counter(vendor=vendor, model=model)
         tokens = counter.count_context_tokens(compacted_context)
-        return sum(tokens.values())
+        return tokens.total_tokens
     except Exception as error:
         logger.error(
             "Counting conversation tokens failed error_type=%s",
@@ -234,10 +241,8 @@ async def count_conversation_tokens(
         # is a list of typed blocks, so `str()` counts the repr scaffolding
         # (`[TextContent(type='text', text=...)]`) as if it were prompt text
         # and over-estimates every message on this fallback path.
-        total_chars = sum(
-            len(msg.get_text_content()) if msg.content else 0 for msg in messages
-        )
-        estimated_tokens = total_chars // 4
+        total_chars = sum(len(msg.get_text_content() or "") for msg in messages)
+        estimated_tokens = total_chars // FALLBACK_CHARACTERS_PER_TOKEN
         logger.warning(
             f"Using character-based estimate: {estimated_tokens} tokens for {len(messages)} messages"
         )
@@ -246,7 +251,7 @@ async def count_conversation_tokens(
 
 def _count_groups_since_last_summary(
     groups: List[MessageGroup],
-) -> Tuple[int, Optional[int]]:
+) -> int:
     """Count user-initiated groups since the last SUMMARY group.
 
     Only groups with a ``request_id`` (user turns) are counted.
@@ -254,7 +259,7 @@ def _count_groups_since_last_summary(
     they are system-generated and shouldn't inflate the trigger count.
 
     Returns:
-        (count_since_summary, index_of_last_summary_or_None)
+        Number of user-initiated groups after the last summary.
 
     """
     last_summary_idx: Optional[int] = None
@@ -267,23 +272,23 @@ def _count_groups_since_last_summary(
         return g.request_id is not None
 
     if last_summary_idx is None:
-        return len([g for g in groups if _is_user_initiated(g)]), None
+        return len([g for g in groups if _is_user_initiated(g)])
 
     groups_after = groups[last_summary_idx + 1 :]
-    return len([g for g in groups_after if _is_user_initiated(g)]), last_summary_idx
+    return len([g for g in groups_after if _is_user_initiated(g)])
 
 
-def should_trigger_context_management(
+def context_management_trigger(
     current_tokens: int,
     max_tokens: int,
-    tokens_threshold: float = 0.7,
+    tokens_threshold: float = DEFAULT_TOKEN_THRESHOLD,
     messages: Optional[List[MessageInDb]] = None,
-    group_threshold: int = 20,
-) -> Tuple[bool, Literal["tokens", "groups"]]:
+    group_threshold: int = DEFAULT_GROUP_THRESHOLD,
+) -> ContextManagementTrigger:
     """Decide whether context management should run."""
     # --- Token-based trigger ---
     if max_tokens <= 0:
-        return False, "tokens"
+        return ContextManagementTrigger.NOT_REQUIRED
 
     utilization = current_tokens / max_tokens
     token_trigger = utilization >= tokens_threshold
@@ -295,15 +300,15 @@ def should_trigger_context_management(
     )
 
     if token_trigger:
-        return True, "tokens"
+        return ContextManagementTrigger.TOKENS
 
     # --- Group-based trigger ---
     messages = messages or []
     if not messages:
-        return False, "tokens"
+        return ContextManagementTrigger.NOT_REQUIRED
 
     groups = group_messages_by_request(messages)
-    groups_since, _ = _count_groups_since_last_summary(groups)
+    groups_since = _count_groups_since_last_summary(groups)
 
     logger.debug(
         f"Request groups since last summary: {groups_since} "
@@ -314,9 +319,9 @@ def should_trigger_context_management(
         logger.debug(
             f"Group count {groups_since} >= threshold {group_threshold} -> TRIGGER"
         )
-        return True, "groups"
+        return ContextManagementTrigger.GROUPS
 
-    return False, "groups"
+    return ContextManagementTrigger.NOT_REQUIRED
 
 
 async def summarize_messages_with_llm(
@@ -337,7 +342,7 @@ async def summarize_messages_with_llm(
 
     """
     # Build conversation text
-    message_lines = []
+    message_lines: list[str] = []
     for message in messages:
         # Skip SYSTEM messages in summary (they're metadata)
         if message.kind == MessageKind.SYSTEM:
@@ -489,8 +494,9 @@ Before finalizing, verify:
 
         result = await run_background_prompt_agent(
             agent_name="summary_generator",
-            system_prompt=system_prompt,
-            user_content=conversation_text,
+            prompt=BackgroundPrompt(
+                system_prompt=system_prompt, user_content=conversation_text
+            ),
             sender_id=agent.id,
             conversation_id=conversation_id,
             resolved=resolved,

@@ -1,355 +1,279 @@
-"""Gladia Speech-to-Text implementation.
-
-WebSocket-based real-time transcription with confidence scores.
-Supports partial and final transcripts with high accuracy.
-"""
+"""Own one Gladia Live v2 session, buffered audio, final output and socket cleanup."""
 
 from __future__ import annotations
 
 import asyncio
-import audioop
-import json
-import logging
-from dataclasses import dataclass
-from typing import AsyncIterator, Literal
+import ssl
+from collections.abc import AsyncIterator
+from enum import StrEnum
 
-import numpy as np
-import websockets
-from websockets.asyncio.client import ClientConnection
+from pydantic import ValidationError
+from websockets.asyncio.client import ClientConnection, connect
+from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidStatus
 
-from eylo.sockets.voice.audio import AudioFrame
+from eylo.sockets.stt.exceptions import (
+    STTConfigurationError,
+    STTConnectionCleanupFailed,
+    STTConnectionClosed,
+    STTConnectionFailureKind,
+    STTConnectionRetryUnsafe,
+    STTFinalizationFailed,
+)
+from eylo.sockets.voice.vendors.gladia.session import (
+    create_gladia_session,
+    gladia_http_failure_kind,
+)
+from eylo.sockets.voice.vendors.gladia.wire import (
+    PCM_SAMPLE_BYTES,
+    GladiaConfig,
+    GladiaEvent,
+    GladiaLiveSession,
+    GladiaMessageType,
+    GladiaStopRecording,
+    GladiaTranscript,
+    parse_gladia_event,
+)
 
-logger = logging.getLogger(__name__)
-
-GLADIA_WS_URL = "wss://api.gladia.io/audio/text/audio-transcription"
-
-
-@dataclass
-class GladiaConfig:
-    """Configuration for Gladia STT."""
-
-    api_key: str
-    """Gladia API key."""
-
-    language: str = "en"
-    """Language code (e.g., 'en', 'es', 'fr')."""
-
-    sample_rate: int = 16000
-    """Audio sample rate in Hz."""
-
-    encoding: Literal["wav", "pcm"] = "wav"
-    """Audio encoding format."""
-
-    buffer_size_seconds: float = 0.1
-    """Buffer size for audio chunks (seconds)."""
-
-
-@dataclass
-class TranscriptEvent:
-    """Event emitted by Gladia STT stream."""
-
-    type: Literal["PARTIAL", "FINAL", "ERROR"]
-    """Type of transcript event."""
-
-    text: str
-    """Transcribed text content."""
-
-    confidence: float
-    """Confidence score (0.0 to 1.0)."""
-
-    is_final: bool
-    """Whether this is a final transcript."""
-
-    language: str = ""
-    """Detected language code."""
+_FINAL_RESULT_TIMEOUT_SECONDS = 2.0
+_SOCKET_CLOSE_TIMEOUT_SECONDS = 2.0
+_CLEANUP_TIMEOUT_SECONDS = 5.0
+_NATIVE_QUEUE_CAPACITY = 16
 
 
-class GladiaSTTStream:
-    """Stream for processing audio and receiving transcripts from Gladia."""
+class _AttemptState(StrEnum):
+    NEW = "new"
+    CREATING = "creating"
+    CREATED = "created"
+    READY = "ready"
+    ENDED = "ended"
+    FAILED = "failed"
 
-    def __init__(
-        self,
-        *,
-        config: GladiaConfig,
-    ) -> None:
-        """Initialize Gladia STT stream.
 
-        Args:
-            config: Configuration for Gladia STT
+class _PinnedConnect(connect):
+    """Keep the token on the validated URL; verified against websockets 15.0.1."""
 
-        """
+    def process_redirect(self, exc: Exception) -> Exception:
+        return exc
+
+
+def _startup_failure_kind(error: Exception) -> STTConnectionFailureKind:
+    if isinstance(error, InvalidStatus):
+        return gladia_http_failure_kind(error.response.status_code)
+    if isinstance(error, ssl.SSLError):
+        return STTConnectionFailureKind.TLS
+    if isinstance(error, TimeoutError):
+        return STTConnectionFailureKind.TIMEOUT
+    if isinstance(error, OSError):
+        return STTConnectionFailureKind.NETWORK
+    return STTConnectionFailureKind.PROTOCOL
+
+
+class GladiaSTTStream(AsyncIterator[GladiaTranscript]):
+    """The adapter owns the reader; this attempt owns POST uncertainty and disposal."""
+
+    def __init__(self, *, config: GladiaConfig) -> None:
         self._config = config
-        self._queue: asyncio.Queue[TranscriptEvent] = asyncio.Queue()
-        self._closed = False
+        self._state = _AttemptState.NEW
+        self._session: GladiaLiveSession | None = None
         self._ws: ClientConnection | None = None
-        self._sender_task: asyncio.Task | None = None
-        self._receiver_task: asyncio.Task | None = None
-        self._audio_queue: asyncio.Queue[bytes] = asyncio.Queue()
         self._buffer = bytearray()
+        self._send_lock = asyncio.Lock()
+        self._finished = asyncio.Event()
+        self._physical_close_started = asyncio.Event()
+        self._stop_task: asyncio.Task[None] | None = None
+        self._close_task: asyncio.Task[None] | None = None
 
-    async def _sender_loop(self, ws: ClientConnection) -> None:
-        """Send audio data to Gladia WebSocket."""
-        try:
-            while not self._closed:
-                try:
-                    data = await asyncio.wait_for(self._audio_queue.get(), timeout=5.0)
-                    await ws.send(
-                        json.dumps(
-                            {
-                                "x_gladia_key": self._config.api_key,
-                                "frames": self._encode_audio(data),
-                            }
-                        )
-                    )
-                except asyncio.TimeoutError:
-                    continue
-                except Exception as error:
-                    logger.error(
-                        "Gladia audio send failed error_type=%s",
-                        type(error).__name__,
-                    )
-                    break
-        except Exception as error:
-            logger.error(
-                "Gladia sender loop failed error_type=%s",
-                type(error).__name__,
-            )
-        finally:
-            logger.debug("Gladia sender loop terminated")
-
-    async def _receiver_loop(self, ws: ClientConnection) -> None:
-        """Receive transcripts from Gladia WebSocket."""
-        try:
-            while not self._closed:
-                try:
-                    result_str = await ws.recv()
-                    data = json.loads(result_str)
-
-                    if "error" in data and data["error"]:
-                        error_msg = str(data["error"])
-                        logger.error("Gladia STT provider error")
-                        await self._queue.put(
-                            TranscriptEvent(
-                                type="ERROR",
-                                text=error_msg,
-                                confidence=0.0,
-                                is_final=False,
-                            )
-                        )
-                        continue
-
-                    if data:
-                        is_final = data.get("type") == "final"
-                        transcription = data.get("transcription", "")
-                        confidence = data.get("confidence", 1.0)
-                        language = data.get("language", "")
-
-                        if transcription:
-                            event = TranscriptEvent(
-                                type="FINAL" if is_final else "PARTIAL",
-                                text=transcription,
-                                confidence=confidence,
-                                is_final=is_final,
-                                language=language,
-                            )
-                            await self._queue.put(event)
-
-                except websockets.exceptions.ConnectionClosedError:
-                    logger.debug("Gladia connection closed")
-                    break
-                except Exception as error:
-                    logger.error(
-                        "Gladia receive failed error_type=%s",
-                        type(error).__name__,
-                    )
-                    break
-        except Exception as error:
-            logger.error(
-                "Gladia receiver loop failed error_type=%s",
-                type(error).__name__,
-            )
-        finally:
-            logger.debug("Gladia receiver loop terminated")
-
-    def _encode_audio(self, data: bytes) -> str:
-        """Encode audio data as base64 for Gladia API."""
-        import base64
-
-        return base64.b64encode(data).decode("utf-8")
+    @property
+    def can_replace(self) -> bool:
+        """Only an acknowledged session end establishes a clean new-session boundary."""
+        return self._state is _AttemptState.ENDED
 
     async def start(self) -> None:
-        """Start the WebSocket connection and processing tasks."""
-        if self._ws:
-            logger.warning("Stream already started")
-            return
-
-        try:
-            self._ws = await websockets.connect(GLADIA_WS_URL)
-
-            # Send initial configuration
-            await self._ws.send(
-                json.dumps(
-                    {
-                        "x_gladia_key": self._config.api_key,
-                        "sample_rate": self._config.sample_rate,
-                        "encoding": self._config.encoding,
-                    }
-                )
+        if self._state is not _AttemptState.NEW or self._close_task is not None:
+            raise STTConnectionRetryUnsafe(
+                "Gladia session creation cannot be repeated for this attempt."
             )
-
-            # Start sender and receiver tasks
-            self._sender_task = asyncio.create_task(self._sender_loop(self._ws))
-            self._receiver_task = asyncio.create_task(self._receiver_loop(self._ws))
-
-            logger.info("Gladia STT stream started")
-
-        except Exception as error:
-            logger.error(
-                "Gladia stream start failed error_type=%s",
-                type(error).__name__,
-            )
-            raise
-
-    def push_frame(self, frame: AudioFrame) -> None:
-        """Push an audio frame for transcription.
-
-        Args:
-            frame: AudioFrame to process
-
-        """
-        if self._closed:
-            raise RuntimeError("Stream is closed")
-
-        # Convert frame data to bytes
-        if isinstance(frame.data, np.ndarray):
-            data = frame.data.tobytes()
-        else:
-            data = bytes(frame.data)
-
-        # Handle MULAW encoding if needed
-        if hasattr(frame, "format") and frame.format == "mulaw":
-            data = audioop.ulaw2lin(data, 1)
-
-        self._buffer.extend(data)
-
-        # Send when buffer reaches threshold
-        buffer_threshold = int(
-            self._config.buffer_size_seconds * self._config.sample_rate * 2
+        self._state = _AttemptState.CREATING
+        self._session = await create_gladia_session(
+            self._config.live_request(), api_key=self._config.api_key
         )
-        if len(self._buffer) >= buffer_threshold:
-            self._audio_queue.put_nowait(bytes(self._buffer))
-            self._buffer.clear()
+        self._state = _AttemptState.CREATED
+        try:
+            self._ws = await _PinnedConnect(
+                self._session.url.get_secret_value(),
+                close_timeout=_SOCKET_CLOSE_TIMEOUT_SECONDS,
+                max_queue=_NATIVE_QUEUE_CAPACITY,
+            )
+            event = await self._receive_native()
+        except (ConnectionClosed, InvalidHandshake, OSError, TimeoutError) as error:
+            raise STTConnectionRetryUnsafe(
+                "Gladia session could not start.",
+                kind=_startup_failure_kind(error),
+            ) from None
+        if event.type is not GladiaMessageType.START_SESSION:
+            raise STTConnectionRetryUnsafe(
+                "Gladia did not acknowledge session startup.",
+                kind=STTConnectionFailureKind.PROTOCOL,
+            )
+        self._state = _AttemptState.READY
+
+    async def _receive_native(self) -> GladiaEvent:
+        ws, session = self._ws, self._session
+        if ws is None or session is None:
+            raise STTConnectionClosed("Gladia session is unavailable.")
+        try:
+            event = parse_gladia_event(await ws.recv())
+        except ValidationError:
+            raise STTConnectionRetryUnsafe(
+                "Gladia returned an invalid or failed event.",
+                kind=STTConnectionFailureKind.PROTOCOL,
+            ) from None
+        if event.session_id != session.id:
+            raise STTConnectionRetryUnsafe(
+                "Gladia event belongs to a different session.",
+                kind=STTConnectionFailureKind.PROTOCOL,
+            )
+        return event
+
+    async def send_audio(self, audio: bytes) -> None:
+        async with self._send_lock:
+            if (
+                self._state is not _AttemptState.READY
+                or self._close_task is not None
+                or self._finished.is_set()
+            ):
+                raise STTConnectionClosed("Gladia STT is not accepting audio.")
+            if len(audio) % PCM_SAMPLE_BYTES:
+                raise STTConfigurationError(
+                    "Gladia audio must contain whole PCM16 samples."
+                )
+            self._buffer.extend(audio)
+            if len(self._buffer) >= self._config.buffer_threshold:
+                await self._send_buffer()
+
+    async def _send_buffer(self) -> None:
+        ws = self._ws
+        if ws is None:
+            raise STTConnectionClosed("Gladia socket is unavailable.")
+        if not self._buffer:
+            return
+        try:
+            await ws.send(bytes(self._buffer))
+        except BaseException as error:
+            # Cancellation may arrive after the socket accepted these bytes.
+            # A failed send must never be replayed by shutdown's tail flush.
+            self._state = _AttemptState.FAILED
+            self._finished.set()
+            if isinstance(error, ConnectionClosed):
+                raise STTConnectionRetryUnsafe(
+                    "Gladia audio transport closed; the write outcome is unknown.",
+                    kind=STTConnectionFailureKind.PROTOCOL,
+                ) from None
+            raise
+        self._buffer.clear()
+
+    async def __anext__(self) -> GladiaTranscript:
+        while not self._finished.is_set():
+            try:
+                event = await self._receive_native()
+            except Exception as error:
+                self._state = _AttemptState.FAILED
+                self._finished.set()
+                if isinstance(error, ConnectionClosed):
+                    if self._physical_close_started.is_set():
+                        # Forced local close wakes recv; the close owner retains
+                        # the original finalization failure instead of replacing it.
+                        raise StopAsyncIteration from None
+                    raise STTConnectionRetryUnsafe(
+                        "Gladia closed without a complete session end.",
+                        kind=STTConnectionFailureKind.PROTOCOL,
+                    ) from None
+                raise
+            if isinstance(event, GladiaTranscript):
+                return event
+            if event.type is GladiaMessageType.END_SESSION:
+                self._finished.set()
+                if self._stop_task is None:
+                    self._state = _AttemptState.FAILED
+                    raise STTConnectionRetryUnsafe(
+                        "Gladia ended the session before recording was stopped.",
+                        kind=STTConnectionFailureKind.PROTOCOL,
+                    )
+                self._state = _AttemptState.ENDED
+                break
+            if event.type is GladiaMessageType.START_SESSION:
+                self._state = _AttemptState.FAILED
+                self._finished.set()
+                raise STTConnectionRetryUnsafe(
+                    "Gladia repeated its session acknowledgement.",
+                    kind=STTConnectionFailureKind.PROTOCOL,
+                )
+        raise StopAsyncIteration
+
+    async def _stop_recording(self, ws: ClientConnection) -> None:
+        async with self._send_lock:
+            await self._send_buffer()
+            await ws.send(GladiaStopRecording().model_dump_json())
 
     async def aclose(self) -> None:
-        """Close the stream and cleanup resources."""
-        if self._closed:
-            return
-
-        self._closed = True
-
-        # Cancel tasks
-        if self._sender_task and not self._sender_task.done():
-            self._sender_task.cancel()
-        if self._receiver_task and not self._receiver_task.done():
-            self._receiver_task.cancel()
-
-        # Wait for tasks to complete
-        tasks = []
-        if self._sender_task:
-            tasks.append(self._sender_task)
-        if self._receiver_task:
-            tasks.append(self._receiver_task)
-
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-
-        # Close WebSocket
-        if self._ws:
-            await self._ws.close()
-
-        logger.info("Gladia STT stream closed")
-
-    def __aiter__(self) -> AsyncIterator[TranscriptEvent]:
-        """Make the stream async iterable."""
-        return self
-
-    async def __anext__(self) -> TranscriptEvent:
-        """Get next transcript event."""
-        if self._closed and self._queue.empty():
-            raise StopAsyncIteration
-
+        """A cancelled caller cannot abandon the cleanup task or replace its attempt."""
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._close())
+            self._close_task.add_done_callback(_observe_task)
         try:
-            event = await asyncio.wait_for(self._queue.get(), timeout=1.0)
-            return event
-        except asyncio.TimeoutError:
-            if self._closed:
-                raise StopAsyncIteration
-            # Continue waiting
-            return await self.__anext__()
+            async with asyncio.timeout(_CLEANUP_TIMEOUT_SECONDS):
+                await asyncio.shield(self._close_task)
+        except TimeoutError as error:
+            raise STTConnectionCleanupFailed(
+                "Gladia socket cleanup did not complete."
+            ) from error
+
+    async def _close(self) -> None:
+        ws = self._ws
+        if ws is None:
+            return
+        finalization_error: Exception | None = None
+        try:
+            if self._state is _AttemptState.READY and not self._finished.is_set():
+                try:
+                    async with asyncio.timeout(_FINAL_RESULT_TIMEOUT_SECONDS):
+                        self._stop_task = asyncio.create_task(self._stop_recording(ws))
+                        self._stop_task.add_done_callback(_observe_task)
+                        await asyncio.shield(self._stop_task)
+                        await self._finished.wait()
+                except Exception as error:
+                    finalization_error = error
+        finally:
+            try:
+                self._physical_close_started.set()
+                await ws.close()
+                await ws.wait_closed()
+            except Exception as error:
+                raise STTConnectionCleanupFailed(
+                    "Gladia socket cleanup failed."
+                ) from error
+            finally:
+                stop = self._stop_task
+                if stop is not None:
+                    if not stop.done():
+                        stop.cancel()
+                    await asyncio.gather(stop, return_exceptions=True)
+        if finalization_error is not None:
+            raise STTFinalizationFailed(
+                "Gladia closed before final output completed."
+            ) from finalization_error
 
 
 class GladiaSTT:
-    """Gladia Speech-to-Text service."""
+    """Construct one resource owner from frozen resolved settings."""
 
-    def __init__(
-        self,
-        *,
-        api_key: str,
-        language: str = "en",
-        sample_rate: int = 16000,
-        encoding: Literal["wav", "pcm"] = "wav",
-        buffer_size_seconds: float = 0.1,
-    ) -> None:
-        """Initialize Gladia STT.
+    def __init__(self, config: GladiaConfig) -> None:
+        self.config = GladiaConfig.model_validate(config)
 
-        Args:
-            api_key: Gladia API key
-            language: Language code (default: 'en')
-            sample_rate: Audio sample rate in Hz (default: 16000)
-            encoding: Audio encoding format (default: 'wav')
-            buffer_size_seconds: Buffer size for audio chunks (default: 0.1)
+    def stream(self) -> GladiaSTTStream:
+        return GladiaSTTStream(config=self.config)
 
-        """
-        self._config = GladiaConfig(
-            api_key=api_key,
-            language=language,
-            sample_rate=sample_rate,
-            encoding=encoding,
-            buffer_size_seconds=buffer_size_seconds,
-        )
 
-    @property
-    def model(self) -> str:
-        """Get model name."""
-        return "gladia"
-
-    @property
-    def provider(self) -> str:
-        """Get provider name."""
-        return "Gladia"
-
-    def stream(
-        self,
-        *,
-        language: str | None = None,
-        sample_rate: int | None = None,
-    ) -> GladiaSTTStream:
-        """Create a new stream for transcription.
-
-        Args:
-            language: Override language code
-            sample_rate: Override sample rate
-
-        Returns:
-            GladiaSTTStream for processing audio
-
-        """
-        config = GladiaConfig(
-            api_key=self._config.api_key,
-            language=language or self._config.language,
-            sample_rate=sample_rate or self._config.sample_rate,
-            encoding=self._config.encoding,
-            buffer_size_seconds=self._config.buffer_size_seconds,
-        )
-
-        return GladiaSTTStream(config=config)
+def _observe_task(task: asyncio.Task[None]) -> None:
+    if not task.cancelled():
+        task.exception()

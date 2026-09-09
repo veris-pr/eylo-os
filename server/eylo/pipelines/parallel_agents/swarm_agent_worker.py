@@ -8,10 +8,16 @@ instruction becomes the user message.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, replace
+from typing import Final
 from uuid import UUID, uuid4
 
+from pydantic import JsonValue, TypeAdapter
+
+from eylo.common.contracts.llm_runtime import LLMInferenceConfig
 from eylo.common.database import start_transaction
 from eylo.modules.agent_runs.budgets import meter_current_agent_run_usage
+from eylo.modules.agents.domain import ResolvedExecutableAgent
 from eylo.modules.agents.services.tool_execution_utils import (
     ToolDispatchError,
     ToolInputValidationError,
@@ -19,8 +25,8 @@ from eylo.modules.agents.services.tool_execution_utils import (
     resolve_model_tool,
 )
 from eylo.modules.conversations.schemas.messages import MessageKind
+from eylo.modules.llm_configs.domain import ResolvedLLM
 from eylo.modules.parallel_agents.schemas import TaskContent, WorkerResult
-from eylo.modules.tools.schemas.indb import ToolInDb
 from eylo.pipelines.llm.runtime import (
     build_llm_adapter,
     resolve_background_agent,
@@ -30,14 +36,29 @@ from eylo.pipelines.llm.runtime import (
     tool_result_messages,
     tool_uses,
 )
+from eylo.pipelines.parallel_agents.context import (
+    AgentTaskConversationContext,
+    build_task_conversation_context,
+)
 
 logger = logging.getLogger(__name__)
 
-MAX_ITERATIONS = 5
-MODEL_SAFE_TOOL_ERROR = "Error: Tool execution failed."
+MAX_ITERATIONS: Final = 5
+MODEL_SAFE_TOOL_ERROR: Final = "Error: Tool execution failed."
 
 # Tools that workers must never call
-BLOCKED_TOOL_PREFIXES = ("handoff__", "spawn_task_fnf")
+BLOCKED_TOOL_PREFIXES: Final = ("handoff__", "spawn_task_fnf")
+
+type SwarmToolResult = str | dict[str, JsonValue] | list[JsonValue]
+_TOOL_RESULT = TypeAdapter(SwarmToolResult)
+
+
+@dataclass(frozen=True, slots=True)
+class SwarmWorkerRuntime:
+    """One exact topology member and its resolved model authority."""
+
+    executable: ResolvedExecutableAgent
+    llm: ResolvedLLM
 
 
 class SwarmAgentWorker:
@@ -53,15 +74,19 @@ class SwarmAgentWorker:
         task_content: TaskContent,
         organization_id: UUID,
         conversation_id: UUID,
-    ):
+    ) -> None:
         self.task_content = task_content
         self.organization_id = organization_id
         self.conversation_id = conversation_id
-        self._cached_ctx = None
+        self._cached_ctx: AgentTaskConversationContext | None = None
 
     async def run(self) -> WorkerResult:
         """Execute the swarm agent's ReAct loop and return result."""
-        agent, tools, resolved, system_prompt = await self._load_agent_and_tools()
+        runtime = await self._load_agent_and_tools()
+        agent = runtime.executable.agent
+        tools = list(runtime.executable.tools)
+        resolved = runtime.llm
+        self._cached_ctx = None
 
         adapter = build_llm_adapter(resolved)
         request_id = uuid4()
@@ -79,9 +104,9 @@ class SwarmAgentWorker:
         for iteration in range(MAX_ITERATIONS):
             response = await adapter.run_inference(
                 messages=messages,
-                system_prompt=system_prompt,
+                system_prompt=runtime.executable.system_prompt or "",
                 tools=tools,
-                llm_config=resolved.generation.to_storage(),
+                llm_config=LLMInferenceConfig(generation=resolved.generation),
             )
             usage = response.usage
             await meter_current_agent_run_usage(
@@ -104,13 +129,13 @@ class SwarmAgentWorker:
                     sender_id=agent.id,
                     conversation_id=self.conversation_id,
                     request_id=request_id,
-                    response_content=response.content,
+                    response=response,
                 )
             )
-            results = []
+            results: list[SwarmToolResult] = []
             for tool_use in requested_tools:
                 results.append(
-                    await self._execute_tool(tool_use.name, tool_use.input, tools)
+                    await self._execute_tool(tool_use.name, tool_use.input, runtime)
                 )
             messages.extend(
                 tool_result_messages(
@@ -144,7 +169,7 @@ class SwarmAgentWorker:
             iterations_used=MAX_ITERATIONS,
         )
 
-    async def _load_agent_and_tools(self):
+    async def _load_agent_and_tools(self) -> SwarmWorkerRuntime:
         """Load the exact filed swarm agent revision and its exact tools."""
         async with start_transaction(ro=True):
             from eylo.modules.templates.domain import TemplateConsumerKind
@@ -190,14 +215,16 @@ class SwarmAgentWorker:
 
         if not executable.system_prompt:
             raise ValueError("Swarm agent revision has no authored instructions.")
-        return agent, tools, resolved, executable.system_prompt
+        return SwarmWorkerRuntime(
+            executable=replace(executable, tools=tuple(tools)), llm=resolved
+        )
 
     async def _execute_tool(
         self,
         tool_name: str,
-        tool_input: dict,
-        tools: list[ToolInDb],
-    ) -> str | dict | list:
+        tool_input: dict[str, JsonValue],
+        runtime: SwarmWorkerRuntime,
+    ) -> SwarmToolResult:
         """Resolve the advertised name, then dispatch by the exact stored kind."""
         # Enforce blocklist at execution time — the LLM may hallucinate
         # tool names that were filtered from its tool list
@@ -206,7 +233,7 @@ class SwarmAgentWorker:
             return MODEL_SAFE_TOOL_ERROR
 
         try:
-            tool = resolve_model_tool(tools, tool_name)
+            tool = resolve_model_tool(runtime.executable.tools, tool_name)
         except ToolDispatchError as error:
             logger.warning(
                 "Worker tool resolution rejected error_type=%s",
@@ -215,8 +242,9 @@ class SwarmAgentWorker:
             return MODEL_SAFE_TOOL_ERROR
 
         try:
-            ctx = await self._get_conversation_context()
-            return await execute_exact_tool(tool, tool_input, ctx)
+            ctx = await self._get_conversation_context(runtime.executable)
+            result = await execute_exact_tool(tool, tool_input, ctx)
+            return _TOOL_RESULT.validate_python(result, strict=True)
         except ToolInputValidationError:
             logger.warning(
                 "Tool input rejected tool=%s@%s code=input_invalid",
@@ -241,21 +269,21 @@ class SwarmAgentWorker:
             )
             return MODEL_SAFE_TOOL_ERROR
 
-    async def _get_conversation_context(self):
-        """Get or build a ConversationContext for tool execution (cached)."""
+    async def _get_conversation_context(
+        self, executable: ResolvedExecutableAgent
+    ) -> AgentTaskConversationContext:
+        """Cache the worker's exact actor, never the parent's tool authority."""
         if self._cached_ctx is not None:
+            actor = self._cached_ctx.execution_participant
+            if (
+                actor.agent_id != executable.ref.definition_id
+                or actor.agent_revision != executable.ref.revision
+            ):
+                raise ValueError("Swarm tool context changed its execution authority.")
             return self._cached_ctx
-
-        from eylo.modules.conversations.services.conversations import (
-            ConversationService,
+        self._cached_ctx = await build_task_conversation_context(
+            organization_id=self.organization_id,
+            conversation_id=self.conversation_id,
+            executable=executable,
         )
-        from eylo.pipelines.conversation.context import (
-            ConversationContextService,
-        )
-
-        async with start_transaction(ro=True):
-            conversation = await ConversationService().get_(self.conversation_id)
-            self._cached_ctx = await ConversationContextService().build(
-                conversation=conversation
-            )
         return self._cached_ctx

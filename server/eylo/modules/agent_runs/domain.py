@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from enum import Enum
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict, Field
+
 
 class InitiatingPrincipalKind(str, Enum):
     """Durable authority kinds that may initiate agent work."""
@@ -58,6 +60,14 @@ class AgentRunStepKind(str, Enum):
     ARTIFACT_EXPORT = "artifact_export"
 
 
+class AgentRunTranscriptKind(str, Enum):
+    """Private replay row kinds; values preserve the persisted JSON contract."""
+
+    ASSISTANT_TEXT = "assistant_text"
+    TOOL_CALL = "tool_call"
+    TOOL_RESULT = "tool_result"
+
+
 class AgentRunStepStatus(str, Enum):
     """Product/audit state for one run step."""
 
@@ -75,6 +85,13 @@ class AgentInputRequestKind(str, Enum):
     APPROVAL = "approval"
 
 
+class AgentApprovalDecision(str, Enum):
+    """A human's decision about one persisted product approval request."""
+
+    APPROVE = "approve"
+    REJECT = "reject"
+
+
 class AgentInputRequestStatus(str, Enum):
     """No expiry exists: a request resolves only by answer or cancellation."""
 
@@ -90,6 +107,20 @@ class ExecutionBudgetDimension(str, Enum):
     TOKENS = "tokens"
     ACTIVE_TIME = "active_time"
     COST = "cost"
+
+
+class ExecutionTokenUsage(BaseModel):
+    """Exact input/output consumption validated before budget storage changes."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
+
+    input_tokens: int = Field(ge=0, strict=True)
+    output_tokens: int = Field(ge=0, strict=True)
+
+    @property
+    def total_tokens(self) -> int:
+        """Keep reservation accounting independent of vendor detail counters."""
+        return self.input_tokens + self.output_tokens
 
 
 class ExecutionBudgetError(Exception):
@@ -156,9 +187,15 @@ def validate_lifecycle_outcome(
         )
 
 
-@dataclass(frozen=True, slots=True)
-class InitiatingPrincipalRef:
+class InitiatingPrincipalRef(BaseModel):
     """Organization-bearing authority reloaded on every work claim."""
+
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+    )
 
     organization_id: UUID
     kind: InitiatingPrincipalKind

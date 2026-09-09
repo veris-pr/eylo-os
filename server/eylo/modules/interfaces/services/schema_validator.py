@@ -3,6 +3,7 @@
 import hashlib
 import json
 import logging
+from collections.abc import Mapping
 from typing import Any, Dict, List
 
 from pydantic import ValidationError
@@ -13,42 +14,37 @@ from eylo.modules.interfaces.schemas.api import (
     COMPOUND_MAX_DEPTH,
     INTERACTIVE_COMPONENT_TYPES,
     LAYOUT_COMPONENT_TYPES,
-    CompoundWidgetNode,
     CompoundWidgetPayload,
     WidgetAlertPayload,
     WidgetButtonGroupPayload,
     WidgetCardListPayload,
     WidgetCatalogEntry,
     WidgetDatePickerPayload,
-    WidgetDividerProps,
     WidgetFormPayload,
     WidgetImagePayload,
     WidgetProgressPayload,
-    WidgetRowProps,
-    WidgetSectionProps,
-    WidgetStackProps,
     WidgetTextPayload,
 )
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Payload validation cache — deterministic, in-process, bounded LRU dict.
+# Payload validation cache — deterministic, in-process, bounded insertion order.
 # Keyed by MD5 of the JSON-serialized payload so identical component trees
 # skip Pydantic + tree-integrity re-validation.
 # ---------------------------------------------------------------------------
 
 _VALIDATION_CACHE_MAX = 64
-_validation_cache: Dict[str, Any] = {}
+_validation_cache: dict[str, CompoundWidgetPayload] = {}
 
 
-def _payload_cache_key(raw: Dict[str, Any]) -> str:
+def _payload_cache_key(raw: Mapping[str, object]) -> str:
     """Deterministic hash of a compound widget payload dict."""
-    serialized = json.dumps(raw, sort_keys=True, default=str)
+    serialized = json.dumps(raw, sort_keys=True, allow_nan=False)
     return hashlib.md5(serialized.encode()).hexdigest()
 
 
-def _infer_unambiguous_root(raw: Dict[str, Any]) -> Dict[str, Any]:
+def _infer_unambiguous_root(raw: Mapping[str, object]) -> Mapping[str, object]:
     """Fill an omitted root only when the adjacency list identifies one."""
     if raw.get("root"):
         return raw
@@ -95,12 +91,6 @@ class CompoundWidgetSchemaValidatorService:
             "text": WidgetTextPayload,
             "image": WidgetImagePayload,
             "progress": WidgetProgressPayload,
-        }
-        self._layout_props_map = {
-            "stack": WidgetStackProps,
-            "row": WidgetRowProps,
-            "section": WidgetSectionProps,
-            "divider": WidgetDividerProps,
         }
 
     def _build_catalog(self) -> Dict[str, WidgetCatalogEntry]:
@@ -568,21 +558,25 @@ class CompoundWidgetSchemaValidatorService:
             ),
         }
 
-    def validate_compound_payload(self, raw: Dict[str, Any]) -> CompoundWidgetPayload:
+    def validate_compound_payload(
+        self, raw: Mapping[str, object]
+    ) -> CompoundWidgetPayload:
         """Parse and validate a full compound widget payload.
 
         Results are cached by payload hash — identical component trees skip
         re-validation.  Cache holds up to 64 recent payloads in-process.
+        Return detached copies so caller mutation cannot alter subsequent results.
+        Hash only JSON data; unsupported objects must not impersonate valid input.
 
-        1. Pydantic structural validation (IDs, root, cycles, depth, orphans)
-        2. Per-node component+props validation against the typed schema
+        The shared discriminated contract retains each validated props model
+        and enforces IDs, root, cycles, depth, and orphan constraints.
         """
         normalized = _infer_unambiguous_root(raw)
         cache_key = _payload_cache_key(normalized)
         cached = _validation_cache.get(cache_key)
         if cached is not None:
             logger.debug("compound validation cache hit: %s", cache_key[:16])
-            return cached
+            return cached.model_copy(deep=True)
 
         try:
             payload = CompoundWidgetPayload.model_validate(normalized)
@@ -590,48 +584,12 @@ class CompoundWidgetSchemaValidatorService:
             hint = self._build_compound_validation_hint(exc)
             raise ValueError(hint) from exc
 
-        # Validate each node's props against its component schema
-        for node in payload.components:
-            self._validate_node(node)
-
-        _validation_cache[cache_key] = payload
+        _validation_cache[cache_key] = payload.model_copy(deep=True)
         # Evict oldest entry if over capacity
         if len(_validation_cache) > _VALIDATION_CACHE_MAX:
             _validation_cache.pop(next(iter(_validation_cache)))
 
         return payload
-
-    def _validate_node(self, node: CompoundWidgetNode) -> None:
-        """Validate a single compound node's props against its component schema."""
-        if node.component in self._layout_props_map:
-            props_model = self._layout_props_map[node.component]
-            try:
-                props_model.model_validate(node.props)
-            except ValidationError as exc:
-                raise ValueError(
-                    f"Layout component '{node.id}' (type '{node.component}') "
-                    f"has invalid props: {exc}"
-                ) from exc
-        elif node.component in self._content_schema_map:
-            payload_model = self._content_schema_map[node.component]
-            try:
-                payload_model.model_validate(
-                    {"component": node.component, "props": node.props}
-                )
-            except ValidationError as exc:
-                raise ValueError(
-                    f"Component '{node.id}' (type '{node.component}') "
-                    f"has invalid props: {exc}"
-                ) from exc
-        else:
-            supported = sorted(
-                set(self._content_schema_map.keys())
-                | set(self._layout_props_map.keys())
-            )
-            raise ValueError(
-                f"Component '{node.id}' has unknown type '{node.component}'. "
-                f"Valid types: {', '.join(supported)}"
-            )
 
     def _build_compound_validation_hint(self, exc: ValidationError) -> str:
         """Build an LLM-actionable error for compound structural failures."""
@@ -877,7 +835,7 @@ Return:
 - ONLY layout components may have children
 - ALL children must reference valid component IDs
 - Each child has exactly one parent
-- At most one interactive component: {', '.join(sorted(INTERACTIVE_COMPONENT_TYPES))}
+- At most one interactive component: {", ".join(sorted(INTERACTIVE_COMPONENT_TYPES))}
 - The structure MUST be a valid tree:
   - No cycles
   - Exactly one root
@@ -1077,7 +1035,7 @@ Produce a valid, complete UI tree that can be rendered without errors. Keep ordi
 
         # Compact interactive component reference
         for entry in self._catalog.values():
-            props_schema = entry.json_schema.get("properties", {}).get("props", {})
+            props_schema = entry.props_schema
             section = self._format_component_section(entry, props_schema)
             sections.append(section)
 
@@ -1171,9 +1129,9 @@ Produce a valid, complete UI tree that can be rendered without errors. Keep ordi
 
         # One-line per interactive component
         for entry in self._catalog.values():
-            props_schema = entry.json_schema.get("properties", {}).get("props", {})
-            required = props_schema.get("required", [])
-            req_str = ", ".join(required) if required else "none"
+            req_str = (
+                ", ".join(entry.required_props) if entry.required_props else "none"
+            )
             sections.append(
                 f"- {entry.component}: {entry.description} Required props: {req_str}."
             )
@@ -1231,7 +1189,7 @@ Produce a valid, complete UI tree that can be rendered without errors. Keep ordi
         sections.append("")
         sections.append("## Interactive Content Components")
         for entry in self._catalog.values():
-            props_schema = entry.json_schema.get("properties", {}).get("props", {})
+            props_schema = entry.props_schema
             section = self._format_component_section_verbose(entry, props_schema)
             sections.append("")
             sections.append(section)

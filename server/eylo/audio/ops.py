@@ -108,6 +108,12 @@ class StreamingResampler:
             dtype="int16",
         )
 
+    def finish(self) -> bytes:
+        """Emit buffered output once, then prepare for the next unrelated stream."""
+        tail = self._stream.resample_chunk(np.empty(0, dtype=np.int16), last=True)
+        self.reset()
+        return tail.tobytes()
+
 
 # ---------------------------------------------------------------------------
 # O(1) amortized audio chunk buffer

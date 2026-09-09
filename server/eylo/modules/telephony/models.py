@@ -17,6 +17,9 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
+from sqlalchemy import (
+    Enum as SAEnum,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -25,7 +28,7 @@ from eylo.common.models import EyloOrganizationModel
 from eylo.modules.agents.models import AgentsModel
 from eylo.modules.telephony.schemas import CallDirection, CallStatus, PhoneNumberStatus
 
-from .constants import APP_DB_PREFIX
+from .constants import APP_DB_PREFIX, CallOpenerDeliveryStatus, CallTransferStatus
 
 
 class PhoneNumberModel(EyloOrganizationModel):
@@ -249,11 +252,18 @@ class TelephonyCallModel(EyloOrganizationModel):
     media_claimed_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    opener_delivery_status: Mapped[str] = mapped_column(
-        String(32),
+    opener_delivery_status: Mapped[CallOpenerDeliveryStatus] = mapped_column(
+        SAEnum(
+            CallOpenerDeliveryStatus,
+            native_enum=False,
+            create_constraint=False,
+            length=32,
+            values_callable=lambda enum: [member.value for member in enum],
+            validate_strings=True,
+        ),
         nullable=False,
-        default="not_requested",
-        server_default="not_requested",
+        default=CallOpenerDeliveryStatus.NOT_REQUESTED,
+        server_default=CallOpenerDeliveryStatus.NOT_REQUESTED.value,
     )
     opener_delivered_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -267,8 +277,18 @@ class TelephonyCallModel(EyloOrganizationModel):
     transcript_id: Mapped[Optional[UUID]] = mapped_column(nullable=True, index=True)
     transcript_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
-    transfer_status: Mapped[str] = mapped_column(
-        String(32), nullable=False, default="none", server_default="none"
+    transfer_status: Mapped[CallTransferStatus] = mapped_column(
+        SAEnum(
+            CallTransferStatus,
+            native_enum=False,
+            create_constraint=False,
+            length=32,
+            values_callable=lambda enum: [member.value for member in enum],
+            validate_strings=True,
+        ),
+        nullable=False,
+        default=CallTransferStatus.NONE,
+        server_default=CallTransferStatus.NONE.value,
     )
     transfer_to: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     transfer_reason: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)

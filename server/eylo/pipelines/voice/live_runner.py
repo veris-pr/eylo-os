@@ -8,6 +8,9 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
+from pydantic import ValidationError
+
+from eylo.common.contracts.conversation import HANDOFF_TOOL_PREFIX
 from eylo.common.database import start_transaction
 from eylo.events.py_events.agent_lifecycle import AgentLifecycleEmitter
 from eylo.events.schema.py_events.base import (
@@ -19,45 +22,56 @@ from eylo.events.schema.py_events.base import (
     AgentToolResponseEvent,
 )
 from eylo.framework.agents.agent import AgentSpec
-from eylo.framework.agents.config import RunConfig
-from eylo.framework.agents.context import RunInput, RunMessage
-from eylo.framework.agents.hooks import RunHooks
-from eylo.framework.agents.items import RunItem, RunItemKind
+from eylo.framework.agents.config import RunConfig, RunStreaming
+from eylo.framework.agents.context import RunContext, RunInput, RunMessage
+from eylo.framework.agents.hooks import RunCallbacks, RunHooks
+from eylo.framework.agents.items import (
+    RunItem,
+    RunItemKind,
+    RunToolCallItem,
+    RunToolResultItem,
+)
 from eylo.framework.agents.model import Model
 from eylo.framework.agents.result import RunResult, RunStatus
 from eylo.framework.agents.runner import FrameworkRunner
 from eylo.framework.agents.tool import ToolCall, ToolExecutor, ToolResult
+from eylo.modules.conversations.schemas.conversations import ConversationContext
 from eylo.modules.conversations.schemas.messages import (
     MessageContentKind,
     MessageKind,
     MessageMeta,
 )
 from eylo.modules.conversations.services.conversations import ConversationService
-from eylo.modules.llm_configs.wiring import build_llm_config_resolver
+from eylo.modules.llm_configs.wiring import resolve_pinned_llm
 from eylo.modules.voice_transcripts.constants import (
     VoiceRuntimeMode,
     VoiceSpeechOutcome,
 )
+from eylo.pipelines.agent_execution_context import PlatformRunState
 from eylo.pipelines.conversation.context import ConversationContextService
 from eylo.pipelines.conversation.conversation_runner import ExistingConversationModel
 from eylo.pipelines.conversation.domain import (
-    ExistingRunInputMetadata,
     ExistingRunMessageMetadata,
     ExistingToolCallMetadata,
     ExistingToolResultMetadata,
     agent_spec_from_context,
     run_input_from_context,
 )
+from eylo.pipelines.conversation.handoff import (
+    completed_handoffs,
+    handoff_metadata_from,
+)
+from eylo.pipelines.llm.runtime import to_llm_inference_mode
 from eylo.pipelines.llm.streaming_tts import (
     VoiceTextSegment,
     complete_voice_sessions_for_response,
     deliver_voice_text_segment,
     prepare_voice_sessions_for_inference,
 )
+from eylo.pipelines.llm.voice_text import VoiceTextPhase
 from eylo.pipelines.voice.live_buffer import (
     LiveVoiceBuffer,
     LiveVoiceDraft,
-    LiveVoiceItem,
     LiveVoiceItemKind,
 )
 from eylo.pipelines.voice.live_transcript import schedule_live_message_transcripts
@@ -68,18 +82,25 @@ from eylo.pipelines.voice.tool_executor import (
 )
 
 if TYPE_CHECKING:
-    from eylo.modules.conversations.schemas.conversations import ConversationContext
     from eylo.pipelines.websocket.schemas import WSSessionState
 
 logger = logging.getLogger(__name__)
 
-LiveVoiceModelFactory = Callable[[dict[str, Any], RunConfig], Model]
+LiveVoiceModelFactory = Callable[
+    [PlatformRunState[ConversationContext], RunConfig], Model
+]
+
+
+class LiveVoiceHistoryError(ValueError):
+    """A capture cannot supply a truthful, paired model/tool history."""
 
 
 class LiveVoiceLifecycleHooks(RunHooks):
     """Project one decomposed voice turn onto the shared agent lifecycle."""
 
-    def __init__(self, *, local_context: dict[str, Any], request_id: UUID) -> None:
+    def __init__(
+        self, *, local_context: PlatformRunState[ConversationContext], request_id: UUID
+    ) -> None:
         self._local_context = local_context
         self._request_id = request_id
         self._events = AgentLifecycleEmitter()
@@ -88,7 +109,7 @@ class LiveVoiceLifecycleHooks(RunHooks):
 
     @property
     def current_context(self) -> ConversationContext:
-        return self._local_context["conversation_context"]
+        return self._local_context.conversation_context
 
     async def on_agent_start(self, context, agent: AgentSpec) -> None:
         if self._started:
@@ -259,7 +280,7 @@ class LiveVoiceTurnRunner:
             return
         self._buffer.mark_speech_outcome(
             normalized_request_id,
-            outcome.value,
+            outcome,
         )
         status = {
             VoiceSpeechOutcome.DRAINED: VoiceRequestStatus.COMPLETED,
@@ -309,9 +330,10 @@ class LiveVoiceTurnRunner:
         identity = self._buffer.identity
         snapshot = await self._buffer.snapshot()
         live_messages = tuple(
-            _run_message_from_live_item(item)
+            message
             for item in snapshot.items
             if captured_sequence is None or item.sequence <= captured_sequence
+            if (message := _run_message_from_voice_item(item)) is not None
         )
         transient_messages = (
             *live_messages,
@@ -323,6 +345,8 @@ class LiveVoiceTurnRunner:
                 identity.organization_id,
                 identity.conversation_id,
             )
+            if conversation is None:
+                raise ValueError("Live voice conversation is unavailable.")
             context_service = ConversationContextService(db)
             context = await context_service.build(conversation=conversation)
             from eylo.common.contracts.tool_availability import ToolRuntimeFact
@@ -339,39 +363,29 @@ class LiveVoiceTurnRunner:
                 },
             )
             agent = without_live_sandbox_agent_tools(agent_spec_from_context(context))
-            base_input = run_input_from_context(context)
+            base_input = run_input_from_context(context, request_id=request_id)
             run_input = base_input.model_copy(
                 update={
                     "messages": (*base_input.messages, *transient_messages),
                     "tools": agent.tools,
-                    "metadata": ExistingRunInputMetadata.model_validate(
-                        base_input.metadata
-                    ).model_copy(
-                        update={
-                            "organization_id": str(identity.organization_id),
-                            "request_id": str(request_id),
-                        }
-                    ),
                 }
             )
-            run_config = RunConfig(stream=True)
-            local_context: dict[str, Any] = {
-                "conversation_context": context,
-                "live_voice_identity": identity,
-            }
+            run_config = RunConfig(stream=RunStreaming.ENABLED)
+            local_context = PlatformRunState(
+                conversation_context=context,
+                live_voice_identity=identity,
+            )
 
             async def refresh_after_handoff(
-                run_context,
+                run_context: RunContext,
                 current_input: RunInput,
                 tool_results: tuple[ToolResult, ...],
             ) -> RunInput:
-                if not any(
-                    result.metadata.get("handoff_context_changed")
-                    or result.metadata.get("handoff_occurred")
-                    for result in tool_results
-                ):
+                if not completed_handoffs(tool_results):
                     return current_input
-                refreshed = await context_service.build(conversation=conversation)
+                refreshed = await context_service.build(
+                    conversation=local_context.conversation_context.conversation
+                )
                 await refresh_context_tool_availability(
                     refreshed,
                     session=db,
@@ -380,13 +394,11 @@ class LiveVoiceTurnRunner:
                         ToolRuntimeFact.ACTIVE_VOICE_SESSION,
                     },
                 )
-                local_context["conversation_context"] = refreshed
+                local_context.conversation_context = refreshed
                 next_agent = without_live_sandbox_agent_tools(
                     agent_spec_from_context(refreshed)
                 )
-                if run_context.current_agent.id != next_agent.id and any(
-                    result.metadata.get("handoff_occurred") for result in tool_results
-                ):
+                if run_context.current_agent.id != next_agent.id:
                     run_context.record_handoff(next_agent)
                 else:
                     run_context.current_agent = next_agent
@@ -398,8 +410,7 @@ class LiveVoiceTurnRunner:
                     }
                 )
 
-            local_context["after_tool_results"] = refresh_after_handoff
-            model = self._build_model(local_context, run_config, db)
+            model = self._build_model(local_context, run_config)
             lifecycle_hooks = LiveVoiceLifecycleHooks(
                 local_context=local_context,
                 request_id=request_id,
@@ -410,6 +421,7 @@ class LiveVoiceTurnRunner:
                     model,
                     tool_executor=self._tool_executor,
                     hooks=lifecycle_hooks,
+                    callbacks=RunCallbacks(after_tool_results=refresh_after_handoff),
                 ).run(
                     agent,
                     run_input,
@@ -423,16 +435,21 @@ class LiveVoiceTurnRunner:
                 await lifecycle_hooks.finish(AgentLifecycleOutcome.FAILED)
                 raise
 
-        drafts, response_messages = _response_capture(
-            result,
-            request_id=request_id,
-            context=context,
-        )
-        if drafts:
-            appended = await self._buffer.append_turn(drafts)
-            schedule_live_message_transcripts(identity, appended)
-            if not appended:
-                self._fallback_messages.extend(response_messages)
+        try:
+            drafts, response_messages = _response_capture(
+                result,
+                request_id=request_id,
+                context=context,
+            )
+        except (ValidationError, LiveVoiceHistoryError):
+            await self._buffer.reject_capture()
+            logger.error("Decomposed voice capture contains invalid data.")
+        else:
+            if drafts:
+                appended = await self._buffer.append_turn(drafts)
+                schedule_live_message_transcripts(identity, appended)
+                if not appended:
+                    self._fallback_messages.extend(response_messages)
         if result.status in {
             RunStatus.WAITING_FOR_INPUT,
             RunStatus.WAITING_FOR_APPROVAL,
@@ -465,16 +482,15 @@ class LiveVoiceTurnRunner:
 
     def _build_model(
         self,
-        local_context: dict[str, Any],
+        local_context: PlatformRunState[ConversationContext],
         config: RunConfig,
-        db,
     ) -> Model:
         if self._model_factory is not None:
             return self._model_factory(local_context, config)
         return ExistingConversationModel(
             local_context,
-            llm_resolver=build_llm_config_resolver(db),
-            stream=config.stream,
+            llm_resolver=resolve_pinned_llm,
+            inference_mode=to_llm_inference_mode(config.stream),
         )
 
     def _mark_request(
@@ -497,62 +513,92 @@ class LiveVoiceTurnRunner:
             )
 
 
-def _run_message_from_live_item(item: LiveVoiceItem) -> RunMessage:
+def _run_message_from_voice_item(item: LiveVoiceDraft) -> RunMessage | None:
+    """Project agent history; platform policy speech is not a model exchange."""
     request_id = item.request_id
+    if item.kind is LiveVoiceItemKind.SYSTEM_SPEECH:
+        return None
     if item.kind is LiveVoiceItemKind.USER_TRANSCRIPT:
         return _plain_run_message(
             role="user",
-            content=str(item.payload),
+            content=_voice_text(item),
             kind=MessageKind.USER,
             request_id=request_id,
         )
     if item.kind is LiveVoiceItemKind.ASSISTANT_TRANSCRIPT:
         return _plain_run_message(
             role="assistant",
-            content=str(item.payload),
+            content=_voice_text(item),
             kind=MessageKind.ASSISTANT,
             request_id=request_id,
         )
     if item.kind is LiveVoiceItemKind.DTMF:
         return _plain_run_message(
             role="user",
-            content=f"DTMF digits: {item.payload}",
+            content=f"DTMF digits: {_voice_text(item)}",
             kind=MessageKind.USER,
             request_id=request_id,
         )
     if item.kind is LiveVoiceItemKind.TOOL_CALL:
-        arguments = item.payload if isinstance(item.payload, dict) else {}
+        if (
+            not item.tool_call_id
+            or not item.tool_name
+            or not isinstance(item.payload, dict)
+        ):
+            raise LiveVoiceHistoryError(
+                "Voice tool call identity or arguments are invalid."
+            )
+        call = ToolCall(
+            id=item.tool_call_id,
+            name=item.tool_name,
+            arguments=item.payload,
+        )
         return RunMessage(
             role="assistant",
             content="",
             metadata=ExistingRunMessageMetadata(
                 kind=MessageKind.TOOL_USE,
                 content_kind=MessageContentKind.TOOL,
-                request_id=str(request_id) if request_id else None,
+                request_id=request_id,
                 meta=MessageMeta(),
                 tool_call=ExistingToolCallMetadata(
-                    id=item.tool_call_id or "unknown",
-                    name=item.tool_name or "unknown",
-                    arguments=arguments,
+                    id=call.id,
+                    name=call.name,
+                    arguments=call.arguments,
                 ),
             ),
         )
+    if not item.tool_call_id or item.is_error is None:
+        raise LiveVoiceHistoryError(
+            "Voice tool result identity or outcome is unavailable."
+        )
+    result = ToolResult(
+        tool_call_id=item.tool_call_id,
+        content=item.payload,
+        is_error=item.is_error,
+    )
     return RunMessage(
         role="tool",
         content=_content_text(item.payload),
         metadata=ExistingRunMessageMetadata(
             kind=MessageKind.TOOL_RESULT,
             content_kind=MessageContentKind.TOOL,
-            request_id=str(request_id) if request_id else None,
+            request_id=request_id,
             meta=MessageMeta(),
             tool_result=ExistingToolResultMetadata(
-                tool_call_id=item.tool_call_id or "unknown",
+                tool_call_id=result.tool_call_id,
                 name=item.tool_name,
-                is_error=bool(item.is_error),
-                content=item.payload,
+                is_error=result.is_error,
+                content=result.content,
             ),
         ),
     )
+
+
+def _voice_text(item: LiveVoiceDraft) -> str:
+    if not isinstance(item.payload, str):
+        raise LiveVoiceHistoryError("Voice speech history requires text.")
+    return item.payload
 
 
 def _plain_run_message(
@@ -568,7 +614,7 @@ def _plain_run_message(
         metadata=ExistingRunMessageMetadata(
             kind=kind,
             content_kind=MessageContentKind.TEXT,
-            request_id=str(request_id) if request_id else None,
+            request_id=request_id,
             meta=MessageMeta(),
         ),
     )
@@ -580,6 +626,8 @@ def _response_capture(
     request_id: UUID,
     context: ConversationContext,
 ) -> tuple[list[LiveVoiceDraft], list[RunMessage]]:
+    """Capture native live results, advancing attribution after each proven switch."""
+    result = RunResult.model_validate(result)
     agent_participant = context.get_primary_agent()
     participant_id = agent_participant.id if agent_participant else None
     drafts: list[LiveVoiceDraft] = []
@@ -595,7 +643,28 @@ def _response_capture(
         if draft is None:
             continue
         drafts.append(draft)
-        messages.append(_run_message_from_draft(draft))
+        message = _run_message_from_voice_item(draft)
+        if message is not None:
+            messages.append(message)
+        if isinstance(item, RunToolResultItem):
+            try:
+                handoff = handoff_metadata_from(item.payload)
+            except (ValueError, TypeError) as error:
+                raise LiveVoiceHistoryError(
+                    "Voice handoff metadata is invalid."
+                ) from error
+            if handoff is not None and handoff.target_participant_id is not None:
+                participant_id = handoff.target_participant_id
+            elif (
+                handoff is None
+                and not item.payload.is_error
+                and tool_names[item.payload.tool_call_id].startswith(
+                    HANDOFF_TOOL_PREFIX
+                )
+            ):
+                raise LiveVoiceHistoryError(
+                    "Voice handoff capture lacks its switch identity."
+                )
     return drafts, messages
 
 
@@ -613,31 +682,34 @@ def _draft_from_run_item(
             participant_id=participant_id,
             request_id=request_id,
         )
-    if item.kind is RunItemKind.TOOL_CALL:
-        call_id = str(item.payload.get("id") or "unknown")
-        name = str(item.payload.get("name") or "unknown")
-        arguments = item.payload.get("arguments")
-        tool_names[call_id] = name
+    if isinstance(item, RunToolCallItem):
+        call = item.payload
+        tool_names[call.id] = call.name
         return LiveVoiceDraft(
             kind=LiveVoiceItemKind.TOOL_CALL,
-            payload=arguments if isinstance(arguments, dict) else {},
+            payload=call.arguments,
             participant_id=participant_id,
             request_id=request_id,
-            tool_call_id=call_id,
-            tool_name=name,
+            tool_call_id=call.id,
+            tool_name=call.name,
         )
-    if item.kind is RunItemKind.TOOL_RESULT:
-        call_id = str(item.payload.get("tool_call_id") or "unknown")
-        content = item.payload.get("content", "")
+    if isinstance(item, RunToolResultItem):
+        result = item.payload
+        name = tool_names.get(result.tool_call_id)
+        if name is None:
+            raise LiveVoiceHistoryError(
+                "Voice tool result has no matching captured call."
+            )
+        content = result.content
         payload = content if isinstance(content, (str, dict)) else {"content": content}
         return LiveVoiceDraft(
             kind=LiveVoiceItemKind.TOOL_RESULT,
             payload=payload,
             participant_id=participant_id,
             request_id=request_id,
-            tool_call_id=call_id,
-            tool_name=tool_names.get(call_id),
-            is_error=bool(item.payload.get("is_error")),
+            tool_call_id=result.tool_call_id,
+            tool_name=name,
+            is_error=result.is_error,
         )
     if item.kind in {RunItemKind.INPUT_REQUEST, RunItemKind.APPROVAL_REQUEST}:
         if item.message:
@@ -648,20 +720,6 @@ def _draft_from_run_item(
                 request_id=request_id,
             )
     return None
-
-
-def _run_message_from_draft(draft: LiveVoiceDraft) -> RunMessage:
-    item = LiveVoiceItem(
-        sequence=0,
-        kind=draft.kind,
-        payload=draft.payload,
-        participant_id=draft.participant_id,
-        request_id=draft.request_id,
-        tool_call_id=draft.tool_call_id,
-        tool_name=draft.tool_name,
-        is_error=draft.is_error,
-    )
-    return _run_message_from_live_item(item)
 
 
 def _content_text(content: object) -> str:
@@ -676,16 +734,15 @@ async def _emit_text(
     request_id: UUID,
     content: str,
 ) -> None:
-    turn_id = str(uuid4())
-    metadata = {"turn_id": turn_id, "request_id": str(request_id)}
+    turn_id = uuid4()
     await deliver_voice_text_segment(
         VoiceTextSegment(
             organization_id=organization_id,
             conversation_id=conversation_id,
             text=content,
-            is_complete=False,
-            turn_id=metadata["turn_id"],
-            request_id=metadata["request_id"],
+            phase=VoiceTextPhase.PARTIAL,
+            turn_id=turn_id,
+            request_id=request_id,
         )
     )
     await deliver_voice_text_segment(
@@ -693,9 +750,9 @@ async def _emit_text(
             organization_id=organization_id,
             conversation_id=conversation_id,
             text="",
-            is_complete=True,
-            turn_id=metadata["turn_id"],
-            request_id=metadata["request_id"],
+            phase=VoiceTextPhase.COMPLETE,
+            turn_id=turn_id,
+            request_id=request_id,
         )
     )
 

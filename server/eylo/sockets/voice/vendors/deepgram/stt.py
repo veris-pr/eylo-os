@@ -1,379 +1,333 @@
-"""Deepgram STT - WebSocket streaming speech recognition.
-
-Deepgram provides industry-leading speech recognition with Nova-2 and Nova-3
-models. This implementation uses WebSocket streaming for real-time transcription.
-
-Based on: livekit-plugins-deepgram/livekit/plugins/deepgram/stt.py
-"""
+"""Own Deepgram Listen v1 acquisition, bounded output, PCM writes and terminal drain."""
 
 from __future__ import annotations
 
 import asyncio
-import json
-import logging
-from dataclasses import dataclass
-from typing import Literal
+from enum import StrEnum
+from typing import NoReturn
+from uuid import uuid4
 
 import aiohttp
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from eylo.sockets.voice.audio import AudioByteStream, AudioFrame
-from eylo.sockets.voice.types import NOT_GIVEN, NotGivenOr
-
-logger = logging.getLogger(__name__)
-
-# Deepgram models
-DeepgramModels = Literal[
-    "nova-2",
-    "nova-2-general",
-    "nova-2-meeting",
-    "nova-2-phonecall",
-    "nova-2-voicemail",
-    "nova-2-finance",
-    "nova-2-conversationalai",
-    "nova-2-video",
-    "nova-2-medical",
-    "nova-2-drivethru",
-    "nova-2-automotive",
-    "nova-3",
-    "nova-3-general",
-    "nova-3-medical",
-]
-
-# Deepgram languages (subset of most common)
-DeepgramLanguages = Literal[
-    "en",
-    "en-US",
-    "en-GB",
-    "en-AU",
-    "en-NZ",
-    "en-IN",
-    "es",
-    "es-419",
-    "fr",
-    "fr-CA",
-    "de",
-    "pt",
-    "pt-BR",
-    "zh",
-    "zh-CN",
-    "zh-TW",
-    "ja",
-    "ko",
-    "hi",
-    "it",
-    "nl",
-    "ru",
-    "sv",
-    "pl",
-    "tr",
-    "uk",
-    "id",
-    "ms",
-    "th",
-    "vi",
-]
+from eylo.sockets.voice.vendors.deepgram.stt_wire import (
+    DeepgramControl,
+    DeepgramEvent,
+    DeepgramListenQuery,
+    DeepgramMessage,
+    DeepgramMetadata,
+    DeepgramResults,
+    parse_deepgram_event,
+)
 
 DEFAULT_BASE_URL = "wss://api.deepgram.com/v1/listen"
 SAMPLE_RATE = 16000
+_CONNECT_TIMEOUT_SECONDS = 10.0
+_CLOSE_TIMEOUT_SECONDS = 5.0
+_KEEPALIVE_SECONDS = 4.0
+_AUDIO_CHUNK_SECONDS = 0.05
+_OUTPUT_QUEUE_CAPACITY = 1000
+_PCM_BYTES_PER_SAMPLE = 2
 
 
-@dataclass
-class STTOptions:
-    """Deepgram STT configuration."""
+class STTOptions(BaseModel):
+    """Immutable native material; credentials never enter repr, query or serialization."""
 
-    model: str
-    language: str
-    interim_results: bool
-    punctuate: bool
-    smart_format: bool
-    sample_rate: int
-    api_key: str
-    endpoint_url: str
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
+
+    query: DeepgramListenQuery
+    api_key: SecretStr = Field(min_length=1, repr=False, exclude=True)
+
+
+class DeepgramStreamState(StrEnum):
+    """A failed stream is terminal; the STT factory owns bounded recovery."""
+
+    NEW = "new"
+    OPEN = "open"
+    CLOSING = "closing"
+    CLOSED = "closed"
+
+
+class DeepgramStreamError(RuntimeError):
+    """Native recognition or transport failed without an implicit reconnect."""
 
 
 class DeepgramSTT:
-    """Deepgram STT using Nova models via WebSocket streaming."""
+    """Create isolated streams; close only the HTTP session acquired by this client."""
 
     def __init__(
         self,
         *,
-        model: DeepgramModels | str = "nova-2",
-        language: DeepgramLanguages | str = "en-US",
+        model: str,
+        language: str,
+        api_key: str,
+        sample_rate: int = SAMPLE_RATE,
         interim_results: bool = True,
         punctuate: bool = True,
         smart_format: bool = False,
-        sample_rate: int = SAMPLE_RATE,
-        api_key: NotGivenOr[str] = NOT_GIVEN,
-        base_url: str = DEFAULT_BASE_URL,
+        vad_events: bool = True,
+        endpointing: int | bool | None = None,
+        utterance_end_ms: int | None = None,
         http_session: aiohttp.ClientSession | None = None,
     ) -> None:
-        if api_key is NOT_GIVEN or not api_key:
-            raise ValueError("Deepgram api_key is required.")
-
-        self._session = http_session
         self._opts = STTOptions(
-            model=model,
-            language=language,
-            interim_results=interim_results,
-            punctuate=punctuate,
-            smart_format=smart_format,
-            sample_rate=sample_rate,
+            query=DeepgramListenQuery(
+                model=model,
+                language=language,
+                sample_rate=sample_rate,
+                interim_results=interim_results,
+                punctuate=punctuate,
+                smart_format=smart_format,
+                vad_events=vad_events,
+                endpointing=endpointing,
+                utterance_end_ms=utterance_end_ms,
+            ),
             api_key=api_key,
-            endpoint_url=base_url,
         )
+        self._session = http_session
+        self._owns_session = http_session is None
 
     @property
     def model(self) -> str:
-        """Get the STT model being used."""
-        return self._opts.model
+        return self._opts.query.model
 
     @property
     def provider(self) -> str:
-        """Get the provider name."""
         return "Deepgram"
 
     @property
     def sample_rate(self) -> int:
-        """Get the audio sample rate."""
-        return self._opts.sample_rate
-
-    def _ensure_session(self) -> aiohttp.ClientSession:
-        """Get or create HTTP session."""
-        if not self._session:
-            self._session = aiohttp.ClientSession()
-        return self._session
+        return self._opts.query.sample_rate
 
     def stream(self) -> DeepgramSTTStream:
-        """Create a streaming STT session."""
-        return DeepgramSTTStream(
-            opts=self._opts,
-            http_session=self._ensure_session(),
-        )
+        """Create an unopened stream; connect awaits the actual WebSocket upgrade."""
+        if self._session is None:
+            self._session = aiohttp.ClientSession()
+        return DeepgramSTTStream(opts=self._opts, http_session=self._session)
 
     async def aclose(self) -> None:
-        """Close HTTP session if owned by this instance."""
-        if self._session:
-            await self._session.close()
-            self._session = None
+        if self._owns_session and self._session is not None:
+            session, self._session = self._session, None
+            await session.close()
 
 
 class DeepgramSTTStream:
-    """Deepgram WebSocket streaming STT session.
-
-    Manages WebSocket connection to Deepgram for real-time transcription.
-    Automatically handles reconnection, keepalive messages, and audio chunking.
-    """
-
-    _KEEPALIVE_MSG = json.dumps({"type": "KeepAlive"})
-    _CLOSE_MSG = json.dumps({"type": "CloseStream"})
+    """One task group owns reads/KeepAlive; serialized writes preserve PCM/control order."""
 
     def __init__(
-        self,
-        *,
-        opts: STTOptions,
-        http_session: aiohttp.ClientSession,
+        self, *, opts: STTOptions, http_session: aiohttp.ClientSession
     ) -> None:
         self._opts = opts
         self._session = http_session
         self._ws: aiohttp.ClientWebSocketResponse | None = None
-        self._reconnect_event = asyncio.Event()
-        self._closed = False
+        self._state = DeepgramStreamState.NEW
+        self._failure: Exception | None = None
+        self._task: asyncio.Task[None] | None = None
+        self._lifecycle_lock = asyncio.Lock()
+        self._send_lock = asyncio.Lock()
+        self._output_queue: asyncio.Queue[DeepgramEvent | None] = asyncio.Queue(
+            maxsize=_OUTPUT_QUEUE_CAPACITY
+        )
+        self._output_closed = False
+        self.request_id: str | None = None
+        # Local correlation remains stable even before native request metadata arrives.
+        self.session_id = str(uuid4())
+        self._audio = AudioByteStream(
+            sample_rate=opts.query.sample_rate,
+            num_channels=1,
+            samples_per_channel=max(
+                1, round(opts.query.sample_rate * _AUDIO_CHUNK_SECONDS)
+            ),
+        )
 
-        # Audio input queue
-        self._input_queue: asyncio.Queue[AudioFrame | None] = asyncio.Queue()
+    @property
+    def is_connected(self) -> bool:
+        return self._state is DeepgramStreamState.OPEN and self._failure is None
 
-        # Transcription output queue
-        self._output_queue: asyncio.Queue[dict | None] = asyncio.Queue()
+    async def connect(self) -> None:
+        async with self._lifecycle_lock:
+            if self.is_connected:
+                return
+            if self._state is not DeepgramStreamState.NEW:
+                raise DeepgramStreamError("Deepgram stream cannot be reopened.")
+            try:
+                async with asyncio.timeout(_CONNECT_TIMEOUT_SECONDS):
+                    self._ws = await self._session.ws_connect(
+                        DEFAULT_BASE_URL,
+                        params=self._opts.query.query_parameters(),
+                        headers={
+                            "Authorization": f"Token {self._opts.api_key.get_secret_value()}"
+                        },
+                    )
+            except BaseException:
+                self._state = DeepgramStreamState.CLOSED
+                await self._close_socket()
+                self._finish_output()
+                raise
+            self._state = DeepgramStreamState.OPEN
+            self._task = asyncio.create_task(self._run())
 
-        # Start background task
-        self._task = asyncio.create_task(self._run())
+    def _require_open(self) -> aiohttp.ClientWebSocketResponse:
+        if self._failure is not None:
+            raise self._failure
+        if not self.is_connected or self._ws is None:
+            raise DeepgramStreamError("Deepgram stream is not open.")
+        return self._ws
 
     async def push_audio(self, frame: AudioFrame) -> None:
-        """Push audio frame for transcription.
+        """Reject mismatched PCM; socket writes provide backpressure without an input queue."""
+        if (
+            frame.sample_rate != self._opts.query.sample_rate
+            or frame.num_channels != 1
+            or len(frame.data) != frame.samples_per_channel * _PCM_BYTES_PER_SAMPLE
+        ):
+            raise ValueError("Deepgram requires matching mono 16-bit PCM frames.")
+        async with self._send_lock:
+            ws = self._require_open()
+            try:
+                for chunk in self._audio.write(frame.data):
+                    await ws.send_bytes(chunk.data)
+            except BaseException:
+                self._failure = DeepgramStreamError("Deepgram audio send failed.")
+                raise
 
-        Args:
-            frame: AudioFrame to transcribe.
-
-        """
-        if not self._closed:
-            await self._input_queue.put(frame)
+    async def _flush_audio(self, ws: aiohttp.ClientWebSocketResponse) -> None:
+        for chunk in self._audio.flush():
+            await ws.send_bytes(chunk.data)
 
     async def flush(self) -> None:
-        """Flush any pending audio and get final transcription."""
-        if not self._closed:
-            await self._input_queue.put(None)  # Sentinel for flush
-
-    def __aiter__(self):
-        """Async iterator for transcription events."""
-        return self
-
-    async def __anext__(self) -> dict:
-        """Get next transcription event.
-
-        Returns:
-            dict with transcription data.
-
-        Raises:
-            StopAsyncIteration when stream is closed.
-
-        """
-        event = await self._output_queue.get()
-        if event is None:
-            raise StopAsyncIteration
-        return event
-
-    async def _connect_ws(self) -> aiohttp.ClientWebSocketResponse:
-        """Connect to Deepgram WebSocket."""
-        # Build WebSocket URL with parameters
-        params = {
-            "model": self._opts.model,
-            "language": self._opts.language,
-            "punctuate": str(self._opts.punctuate).lower(),
-            "smart_format": str(self._opts.smart_format).lower(),
-            "interim_results": str(self._opts.interim_results).lower(),
-            "encoding": "linear16",
-            "sample_rate": self._opts.sample_rate,
-            "channels": 1,
-            "vad_events": "true",
-        }
-
-        # Build URL
-        url = self._opts.endpoint_url
-        if "?" in url:
-            url += "&"
-        else:
-            url += "?"
-        url += "&".join(f"{k}={v}" for k, v in params.items())
-
-        # Connect
-        try:
-            ws = await asyncio.wait_for(
-                self._session.ws_connect(
-                    url,
-                    headers={"Authorization": f"Token {self._opts.api_key}"},
-                ),
-                timeout=10.0,
-            )
-            return ws
-        except Exception as error:
-            raise RuntimeError("Failed to connect to Deepgram.") from error
-
-    async def _run(self) -> None:
-        """Main streaming loop with reconnection logic."""
-
-        async def keepalive_task(ws: aiohttp.ClientWebSocketResponse) -> None:
-            """Send periodic keepalive messages."""
+        """Finalize buffered audio without closing; a from_finalize reply is not guaranteed."""
+        async with self._send_lock:
+            ws = self._require_open()
             try:
-                if "flux" in self._opts.model.lower():
-                    logger.info("Flux: Skipping keepalive task")
-                    return
+                await self._flush_audio(ws)
+                await ws.send_str(
+                    DeepgramControl(type=DeepgramMessage.FINALIZE).model_dump_json()
+                )
+            except BaseException:
+                self._failure = DeepgramStreamError("Deepgram finalization failed.")
+                raise
 
-                while True:
-                    await ws.send_str(self._KEEPALIVE_MSG)
-                    await asyncio.sleep(5)
-            except Exception:
+    async def _keepalive(self) -> None:
+        """Listen v1 needs JSON KeepAlive frames, not just WebSocket ping/pong."""
+        while True:
+            await asyncio.sleep(_KEEPALIVE_SECONDS)
+            async with self._send_lock:
+                if not self.is_connected:
+                    return
+                await self._require_open().send_str(
+                    DeepgramControl(type=DeepgramMessage.KEEP_ALIVE).model_dump_json()
+                )
+
+    async def _read(self, ws: aiohttp.ClientWebSocketResponse) -> None:
+        while True:
+            message = await ws.receive()
+            if message.type in {
+                aiohttp.WSMsgType.CLOSE,
+                aiohttp.WSMsgType.CLOSED,
+                aiohttp.WSMsgType.CLOSING,
+                aiohttp.WSMsgType.ERROR,
+            }:
+                raise DeepgramStreamError(
+                    "Deepgram closed without terminal recognition metadata."
+                )
+            if message.type is not aiohttp.WSMsgType.TEXT:
+                continue
+            event = parse_deepgram_event(message.data)
+            if isinstance(event, DeepgramMetadata):
+                self.request_id = event.request_id
+            elif isinstance(event, DeepgramResults) and event.metadata is not None:
+                self.request_id = event.metadata.request_id or self.request_id
+            await self._output_queue.put(event)
+            if isinstance(event, DeepgramMetadata):
                 return
 
-        async def send_task(ws: aiohttp.ClientWebSocketResponse) -> None:
-            """Send audio to Deepgram."""
-            # Audio chunking - 50ms chunks for optimal performance
-            audio_bstream = AudioByteStream(
-                sample_rate=self._opts.sample_rate,
-                num_channels=1,
-                samples_per_channel=self._opts.sample_rate // 20,  # 50ms
-            )
-
-            while True:
-                frame = await self._input_queue.get()
-
-                if frame is None:  # Flush sentinel
-                    # Get remaining chunks
-                    chunks = audio_bstream.flush()
-                    for chunk in chunks:
-                        await ws.send_bytes(chunk.data)
-                    continue
-
-                # Buffer frame and get 50ms chunks
-                chunks = audio_bstream.write(frame.data)
-                for chunk in chunks:
-                    await ws.send_bytes(chunk.data)
-
-        async def recv_task(ws: aiohttp.ClientWebSocketResponse) -> None:
-            """Receive transcriptions from Deepgram."""
-            while True:
-                msg = await ws.receive()
-
-                if msg.type in (
-                    aiohttp.WSMsgType.CLOSED,
-                    aiohttp.WSMsgType.CLOSE,
-                    aiohttp.WSMsgType.CLOSING,
-                ):
-                    if self._closed:
-                        return
-                    raise RuntimeError("Deepgram connection closed unexpectedly")
-
-                if msg.type == aiohttp.WSMsgType.TEXT:
-                    data = json.loads(msg.data)
-                    await self._output_queue.put(data)
-
-        # Main reconnection loop
-        while not self._closed:
-            try:
-                ws = await self._connect_ws()
-                self._ws = ws
-
-                # Start tasks
-                tasks = [
-                    asyncio.create_task(keepalive_task(ws)),
-                    asyncio.create_task(send_task(ws)),
-                    asyncio.create_task(recv_task(ws)),
-                ]
-
-                wait_reconnect_task = asyncio.create_task(self._reconnect_event.wait())
-
+    async def _run(self) -> None:
+        try:
+            if self._ws is None:
+                raise DeepgramStreamError("Deepgram socket was not acquired.")
+            async with asyncio.TaskGroup() as group:
+                keepalive = group.create_task(self._keepalive())
                 try:
-                    done, _ = await asyncio.wait(
-                        tasks + [wait_reconnect_task],
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
-
-                    # Check for exceptions
-                    for task in done:
-                        if task != wait_reconnect_task and not task.cancelled():
-                            task.result()  # Raise exception if any
-
-                    if wait_reconnect_task not in done:
-                        break  # Normal termination
-
-                    self._reconnect_event.clear()
+                    await self._read(self._ws)
                 finally:
-                    # Cancel all tasks
-                    for task in tasks + [wait_reconnect_task]:
-                        if not task.done():
-                            task.cancel()
-                    await asyncio.gather(
-                        *tasks, wait_reconnect_task, return_exceptions=True
-                    )
-            except Exception:
-                if self._closed:
-                    break
-                # Wait before reconnecting
-                await asyncio.sleep(1)
+                    keepalive.cancel()
+        except Exception as error:
+            self._failure = error
+        finally:
+            self._state = DeepgramStreamState.CLOSED
+            try:
+                await self._close_socket()
             finally:
-                if ws and not ws.closed:
-                    await ws.close()
+                self._finish_output()
 
-        # Signal end of stream
-        await self._output_queue.put(None)
+    def __aiter__(self) -> DeepgramSTTStream:
+        return self
+
+    async def __anext__(self) -> DeepgramEvent:
+        if self._output_closed and self._output_queue.empty():
+            self._raise_terminal()
+        event = await self._output_queue.get()
+        self._output_queue.task_done()
+        if event is not None:
+            return event
+        self._raise_terminal()
+
+    def _raise_terminal(self) -> NoReturn:
+        if self._failure is not None:
+            raise self._failure
+        raise StopAsyncIteration
+
+    def _finish_output(self) -> None:
+        if self._output_closed:
+            return
+        self._output_closed = True
+        try:
+            self._output_queue.put_nowait(None)
+        except asyncio.QueueFull:
+            # Accepted output stays intact; empty reads observe terminal state directly.
+            pass
+
+    async def _close_socket(self) -> None:
+        if self._ws is not None and not self._ws.closed:
+            try:
+                async with asyncio.timeout(_CLOSE_TIMEOUT_SECONDS):
+                    await self._ws.close()
+            except Exception as error:
+                self._failure = self._failure or error
 
     async def aclose(self) -> None:
-        """Close the stream and clean up resources."""
-        self._closed = True
-        self._reconnect_event.set()
-
-        if self._task and not self._task.done():
-            await self._task
-
-        if self._ws and not self._ws.closed:
-            await self._ws.send_str(self._CLOSE_MSG)
-            await self._ws.close()
+        """Send CloseStream before closing; bounded final-result drain, then join all tasks."""
+        async with self._lifecycle_lock:
+            try:
+                if self.is_connected:
+                    self._state = DeepgramStreamState.CLOSING
+                    try:
+                        async with asyncio.timeout(_CLOSE_TIMEOUT_SECONDS):
+                            async with self._send_lock:
+                                if self._ws is not None:
+                                    await self._flush_audio(self._ws)
+                                    await self._ws.send_str(
+                                        DeepgramControl(
+                                            type=DeepgramMessage.CLOSE_STREAM
+                                        ).model_dump_json()
+                                    )
+                            if self._task is not None:
+                                await asyncio.shield(self._task)
+                    except TimeoutError:
+                        self._failure = self._failure or DeepgramStreamError(
+                            "Deepgram terminal metadata timed out."
+                        )
+                    except Exception as error:
+                        self._failure = self._failure or error
+            finally:
+                if self._task is not None:
+                    if not self._task.done():
+                        self._task.cancel()
+                    await asyncio.gather(self._task, return_exceptions=True)
+                try:
+                    await self._close_socket()
+                finally:
+                    self._state = DeepgramStreamState.CLOSED
+                    self._finish_output()

@@ -10,7 +10,12 @@ from typing import Optional
 
 from eylo.modules.conversations.schemas.conversations import ConversationContext
 from eylo.modules.conversations.schemas.messages import MessageKind
-from eylo.modules.parallel_agents.schemas import SpawnTaskFnfInput, SpawnTaskFnfResult
+from eylo.modules.parallel_agents.schemas import (
+    SpawnTaskFnfInput,
+    SpawnTaskFnfResult,
+    TaskDispatchStatus,
+)
+from eylo.pipelines.agent_execution_context import PlatformExecutionContext
 from eylo.pipelines.parallel_agents.task_dispatcher import TaskDispatcher
 
 
@@ -18,7 +23,7 @@ async def spawn_task_fnf(
     instruction: str,
     swarm_id: Optional[str] = None,
     *,
-    ctx: ConversationContext,
+    ctx: PlatformExecutionContext,
 ) -> str:
     """Dispatch a background task to a swarm agent or bare LLM.
 
@@ -36,6 +41,15 @@ async def spawn_task_fnf(
         JSON string with task_id, status, and instruction echo.
 
     """
+    if not isinstance(ctx, ConversationContext):
+        return SpawnTaskFnfResult(
+            task_id="",
+            status=TaskDispatchStatus.ERROR,
+            instruction=instruction,
+            swarm_id=swarm_id,
+            error="Parallel task dispatch requires a persisted conversation.",
+        ).model_dump_json()
+
     # Get request_id from the latest user message
     latest_user_message = next(
         (

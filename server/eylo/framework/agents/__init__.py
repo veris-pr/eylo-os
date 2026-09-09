@@ -12,7 +12,7 @@ from .approval import (
     ApprovalRequestStatus,
     RiskLevel,
 )
-from .config import RunConfig
+from .config import RunConfig, RunPromptCaching, RunStreaming, RunTracing
 from .context import RunContext, RunInput, RunMessage
 from .durable import (
     DurableInterruption,
@@ -20,6 +20,7 @@ from .durable import (
     DurableRunKind,
     DurableRunStatus,
     InputRequest,
+    InputRequestDetails,
     InputRequestStatus,
     ProgressUpdate,
     RunCheckpoint,
@@ -31,6 +32,7 @@ from .errors import (
     MaxTurnsExceededError,
     RunTimeoutError,
     SandboxPolicyError,
+    ToolResultIdentityError,
 )
 from .feature import (
     FeatureAgentBinding,
@@ -46,17 +48,38 @@ from .guardrail import (
     GuardrailStage,
 )
 from .handoff import HandoffResult, HandoffSpec
-from .hooks import RunHooks
-from .items import RunItem, RunItemKind
+from .hooks import RunCallbacks, RunHooks
+from .interruptions import (
+    RunApprovalInterruption,
+    RunInputInterruption,
+    ToolApprovalContinuation,
+    ToolContinuationKind,
+    ToolInputContinuation,
+    ToolInputRequestMetadata,
+)
+from .items import (
+    RunApprovalRequestItem,
+    RunInputRequestItem,
+    RunItem,
+    RunItemKind,
+    RunMessageItem,
+    RunMessagePayload,
+    RunSignalItem,
+    RunToolCallItem,
+    RunToolResultItem,
+)
 from .model import (
     Model,
     ModelBlockKind,
     ModelOutputBlock,
+    ModelReasoningBlock,
     ModelResponse,
     ModelSettings,
+    ModelTextBlock,
+    ModelToolCallBlock,
     ModelUsage,
 )
-from .result import RunResult, RunStatus
+from .result import RunFailureCode, RunFailureMetadata, RunResult, RunStatus
 from .runner import FrameworkRunner
 from .sandbox import (
     SandboxActionDecision,
@@ -122,24 +145,48 @@ __all__ = [
     "HandoffResult",
     "HandoffSpec",
     "InputRequest",
+    "InputRequestDetails",
     "InputRequestStatus",
     "MaxTurnsExceededError",
     "Model",
     "ModelBlockKind",
     "ModelOutputBlock",
+    "ModelReasoningBlock",
+    "ModelTextBlock",
+    "ModelToolCallBlock",
     "ModelResponse",
     "ModelSettings",
     "ModelUsage",
     "ProgressUpdate",
     "RiskLevel",
+    "RunCallbacks",
+    "RunApprovalInterruption",
+    "RunInputInterruption",
+    "RunApprovalRequestItem",
+    "RunInputRequestItem",
+    "RunMessageItem",
+    "RunMessagePayload",
+    "ToolApprovalContinuation",
+    "ToolContinuationKind",
+    "ToolInputContinuation",
+    "ToolInputRequestMetadata",
     "RunCheckpoint",
     "RunConfig",
+    "RunPromptCaching",
+    "RunStreaming",
+    "RunTracing",
     "RunContext",
     "RunHooks",
     "RunInput",
     "RunItem",
     "RunItemKind",
+    "RunSignalItem",
+    "RunToolCallItem",
+    "RunToolResultItem",
+    "ToolResultIdentityError",
     "RunMessage",
+    "RunFailureCode",
+    "RunFailureMetadata",
     "RunResult",
     "RunStatus",
     "RunTimeoutError",

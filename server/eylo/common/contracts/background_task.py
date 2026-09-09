@@ -1,9 +1,25 @@
 """Shared persisted background-task envelopes and runtime policy."""
 
+from enum import Enum
 from typing import Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
+
+
+class BackgroundTaskOutcome(str, Enum):
+    """Successful task pickup either performed work or deliberately skipped it."""
+
+    COMPLETED = "completed"
+    SKIPPED = "skipped"
+
+
+class ParallelTaskKind(str, Enum):
+    """Execution arms represented by the existing persisted task envelope."""
+
+    LLM_TASK = "llm_task"
+    SWARM_AGENT = "swarm_agent"
+    BACKGROUND_AGENT = "background_agent"
 
 
 class TaskExecutionAuthorityMismatch(ValueError):
@@ -45,27 +61,34 @@ class TaskContent(BaseModel):
         )
         swarm_ref_present = all(value is not None for value in swarm_ref_values)
         if any(value is not None for value in swarm_ref_values) != swarm_ref_present:
-            raise ValueError(
-                "Swarm topology and agent revision refs must be complete."
-            )
+            raise ValueError("Swarm topology and agent revision refs must be complete.")
         if (self.swarm_id is not None) != swarm_ref_present:
-            raise ValueError(
-                "Swarm tasks require exact topology and agent revisions."
-            )
+            raise ValueError("Swarm tasks require exact topology and agent revisions.")
         if (self.background_agent_id is None) != (
             self.background_agent_revision is None
         ):
-            raise ValueError(
-                "Background tasks require an exact agent id and revision."
-            )
+            raise ValueError("Background tasks require an exact agent id and revision.")
         if self.swarm_id is not None and self.background_agent_id is not None:
             raise ValueError("A task cannot target both swarm and background agents.")
-        if self.swarm_id is None and self.background_agent_id is None and (
-            self.llm_provider_config_id is None
-            or self.llm_provider_config_revision is None
+        if (
+            self.swarm_id is None
+            and self.background_agent_id is None
+            and (
+                self.llm_provider_config_id is None
+                or self.llm_provider_config_revision is None
+            )
         ):
             raise ValueError("Bare LLM tasks require pinned LLM authority.")
         return self
+
+    @property
+    def task_kind(self) -> ParallelTaskKind:
+        """Derive routing from validated references, not a second mutable flag."""
+        if self.background_agent_id is not None:
+            return ParallelTaskKind.BACKGROUND_AGENT
+        if self.swarm_id is not None:
+            return ParallelTaskKind.SWARM_AGENT
+        return ParallelTaskKind.LLM_TASK
 
     def execution_agent_ref(self) -> tuple[UUID, int]:
         """Return the exact agent revision this task asks a worker to execute."""

@@ -3,32 +3,62 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
+from eylo.common.contracts.background_task import BackgroundTaskOutcome
 from eylo.common.database import start_transaction
-from eylo.modules.llm_configs.wiring import build_llm_config_resolver
+from eylo.framework.agents.common import FrameworkMetadata
+from eylo.framework.agents.config import RunConfig
+from eylo.framework.agents.context import RunInput
+from eylo.framework.agents.result import RunResult
+from eylo.modules.agents.schemas.indb import AgentInDb
+from eylo.modules.conversations.schemas.conversations import ConversationContext
+from eylo.modules.llm_configs.wiring import resolve_pinned_llm
 from eylo.modules.parallel_agents.schemas import TaskContent, WorkerResult
 from eylo.pipelines.outbound.durable_execution import DurableStepContext
+from eylo.pipelines.parallel_agents.context import build_task_conversation_context
+
+if TYPE_CHECKING:
+    from eylo.framework.agents.agent import AgentSpec
+    from eylo.modules.agents.domain import ResolvedExecutableAgent
+    from eylo.pipelines.agent_execution_context import PlatformRunState
+    from eylo.pipelines.conversation.conversation_runner import (
+        ExistingConversationModel,
+    )
 
 logger = logging.getLogger(__name__)
 
+BACKGROUND_MAX_HANDOFFS: Final = 0
 
-def background_run_config(stored_config=None):
-    """A `RunConfig` for a background run. `max_handoffs` is always 0, forced.
 
-    Budget is **not** per-agent configurable today. An earlier version read a
-    `run_config` attribute off the agent's `llm_overrides`, which has six
-    fields and no such attribute — so it always fell back to defaults while the
-    docstring claimed otherwise. Nothing on the agent record can express a run
-    budget yet; adding one is a schema change, not a lookup.
+class BackgroundTaskMessageMetadata(FrameworkMetadata):
+    """The dispatched task correlation attached to its transient user message."""
 
-    `stored_config` is honoured when a caller passes one explicitly, which is
-    what lets tests prove the handoff override wins over stored configuration.
+    request_id: str
+
+
+class BackgroundTaskInputMetadata(FrameworkMetadata):
+    """Conversation and task identity carried through the framework boundary."""
+
+    conversation_id: str
+    request_id: str
+
+
+def background_run_config(stored_config: RunConfig | None = None) -> RunConfig:
+    """Copy settings with the background-run handoff convention.
+
+    Agent provider overrides do not contain run budgets. Only an explicitly
+    supplied RunConfig can change the other runner limits here. The framework's
+    max_handoffs field is reserved; background handoff refusal belongs to the
+    published-agent/tool policies, not this configuration value.
     """
-    from eylo.framework.agents.config import RunConfig
-
-    base = stored_config if stored_config is not None else RunConfig()
-    return base.model_copy(update={"max_handoffs": 0})
+    base = (
+        RunConfig.model_validate(stored_config)
+        if stored_config is not None
+        else RunConfig()
+    )
+    return base.model_copy(update={"max_handoffs": BACKGROUND_MAX_HANDOFFS})
 
 
 class BackgroundAgentWorker:
@@ -83,44 +113,45 @@ class BackgroundAgentWorker:
 
         return await self._run_prompt_agent(resolved)
 
-    async def _run_implementation(self, agent) -> WorkerResult:
-        """Hand off to first-party code, which owns its own side effect.
-
-        The implementation decides whether the work was needed — it is the only
-        thing that can, since the threshold is its own business rule. `False`
-        means it looked and found nothing to do, which is `SKIPPED` rather than
-        a failure: the dispatcher never deduplicates, so redundant tasks are an
-        expected outcome, not an error.
-        """
+    async def _run_implementation(self, agent: AgentInDb) -> WorkerResult:
+        """Keep execution authority distinct from the conversation being processed."""
         from eylo.pipelines.conversation.background_implementations import (
             run_implementation,
         )
 
+        implementation = agent.implementation
+        if implementation is None:
+            raise ValueError("Background agent does not name an implementation.")
         context = await self._conversation_context()
-        did_work = await run_implementation(agent.implementation, context)
+        outcome = await run_implementation(agent=agent, context=context)
 
         return WorkerResult(
-            text="" if did_work else "No work required.",
-            model_used=agent.implementation,
+            text=""
+            if outcome is BackgroundTaskOutcome.COMPLETED
+            else "No work required.",
+            model_used=implementation,
             iterations_used=1,
-            outcome="completed" if did_work else "skipped",
+            outcome=outcome,
         )
 
-    async def _run_prompt_agent(self, resolved) -> WorkerResult:
-        """Run a prompt-only background agent and return its text.
+    async def _run_prompt_agent(
+        self, resolved: ResolvedExecutableAgent
+    ) -> WorkerResult:
+        """Run the exact background agent and its explicit tools without handoffs.
 
-        No side effect beyond the `TASK_RESULT` message the caller writes —
-        that is the whole of what a tenant-created background agent may do.
+        Model/tool exchange uses the durable transcript. The current shared
+        tool and transcript implementations still require the enclosing DB
+        session. Model config resolution reuses it without retaining the session.
         """
+        from eylo.framework.agents.hooks import RunCallbacks
         from eylo.framework.agents.runner import FrameworkRunner
+        from eylo.pipelines.agent_execution_context import PlatformRunState
 
-        agent = resolved.agent
-        context = await self._conversation_context()
-        context.primary_agent = agent
-        context.tools = list(resolved.tools)
-        context.handoff_agents = []
-        context.handoff_agent_tools = {}
-        context.system_prompt = resolved.system_prompt or ""
+        context = await build_task_conversation_context(
+            organization_id=self.organization_id,
+            conversation_id=self.conversation_id,
+            executable=resolved,
+        )
         run_config = background_run_config()
         spec = self._agent_spec(resolved)
 
@@ -134,38 +165,35 @@ class BackgroundAgentWorker:
             PlatformToolExecutor,
         )
 
-        async with start_transaction() as session:
+        async with start_transaction():
             transcript = AgentRunTranscript(
                 organization_id=self.organization_id,
                 agent_run_id=self.agent_run_id,
             )
             replay = await transcript.replay()
-            local_context = {
-                "conversation_context": context,
-                "agent_run_id": self.agent_run_id,
-                "durable_context": self.durable_context,
-                "tool_use_messages": {},
-            }
+            local_context: PlatformRunState[ConversationContext] = PlatformRunState(
+                conversation_context=context,
+                agent_run_id=self.agent_run_id,
+                durable_context=self.durable_context,
+            )
             bridge = AgentRunTranscriptBridge(
                 transcript=transcript,
                 local_context=local_context,
                 command_ids=replay.command_ids,
             )
-            local_context.update(
-                {
-                    "after_model_response": bridge.after_model_response,
-                    "before_tool_call": bridge.before_tool_call,
-                    "after_tool_result": bridge.after_tool_result,
-                }
-            )
             model = PendingToolCallsModel(
-                self._build_model(local_context, session),
+                self._build_model(local_context),
                 agent_run_id=self.agent_run_id,
                 pending_calls=replay.pending_calls,
             )
             runner = FrameworkRunner(
                 model,
                 tool_executor=PlatformToolExecutor(),
+                callbacks=RunCallbacks(
+                    after_model_response=bridge.after_model_response,
+                    before_tool_call=bridge.before_tool_call,
+                    after_tool_result=bridge.after_tool_result,
+                ),
             )
             result = await runner.run(
                 spec,
@@ -188,16 +216,11 @@ class BackgroundAgentWorker:
             text=_result_text(result),
             model_used=_model_of(result, spec),
             iterations_used=len(result.model_responses or ()),
-            outcome="completed",
+            outcome=BackgroundTaskOutcome.COMPLETED,
         )
 
-    async def _conversation_context(self):
-        """The conversation as the built-ins already expect to receive it.
-
-        Built the same way the live path builds it, so an implementation sees
-        no difference between running under dispatch and running under the old
-        fan-out — which is what makes the pre-migration behaviour the oracle.
-        """
+    async def _conversation_context(self) -> ConversationContext:
+        """Load the conversation snapshot in an owned read transaction."""
         from eylo.modules.conversations.services.conversations import (
             ConversationService,
         )
@@ -210,13 +233,8 @@ class BackgroundAgentWorker:
             return await ConversationContextService().build(conversation)
 
     @staticmethod
-    def _agent_spec(resolved):
-        """An `AgentSpec` with handoffs forced empty.
-
-        Not `handoffs=context.handoff_agents` filtered, and not a default —
-        the tuple is empty unconditionally, so no stored configuration and no
-        future caller can reintroduce chaining.
-        """
+    def _agent_spec(resolved: ResolvedExecutableAgent) -> AgentSpec:
+        """Expose the exact revision's tools; background runs never hand off."""
         from eylo.pipelines.conversation.domain import (
             agent_spec_from_indb,
             tool_spec_from_indb,
@@ -225,7 +243,12 @@ class BackgroundAgentWorker:
         tools = tuple(tool_spec_from_indb(tool) for tool in resolved.tools)
         return agent_spec_from_indb(resolved.agent, tools=tools, handoffs=())
 
-    def _build_run_input(self, resolved, context, spec):
+    def _build_run_input(
+        self,
+        resolved: ResolvedExecutableAgent,
+        context: ConversationContext,
+        spec: AgentSpec,
+    ) -> RunInput:
         """LLM-visible input for a prompt-only background run."""
         from eylo.framework.agents.context import RunInput, RunMessage
         from eylo.pipelines.conversation.domain import run_message_from_indb
@@ -241,17 +264,22 @@ class BackgroundAgentWorker:
                 RunMessage(
                     role="user",
                     content=self.task_content.instruction,
-                    metadata={"request_id": str(self.task_message_id)},
+                    metadata=BackgroundTaskMessageMetadata(
+                        request_id=str(self.task_message_id)
+                    ),
                 ),
             ),
             tools=spec.tools,
-            metadata={
-                "conversation_id": str(self.conversation_id),
-                "request_id": str(self.task_message_id),
-            },
+            metadata=BackgroundTaskInputMetadata(
+                conversation_id=str(self.conversation_id),
+                request_id=str(self.task_message_id),
+            ),
         )
 
-    def _build_model(self, context, db):
+    def _build_model(
+        self,
+        context: PlatformRunState[ConversationContext],
+    ) -> ExistingConversationModel[ConversationContext]:
         """The vendor adapter. Raises NotConfiguredError if none resolves."""
         from eylo.pipelines.conversation.conversation_runner import (
             ExistingConversationModel,
@@ -259,28 +287,22 @@ class BackgroundAgentWorker:
 
         return ExistingConversationModel(
             context,
-            llm_resolver=build_llm_config_resolver(db),
+            llm_resolver=resolve_pinned_llm,
         )
 
 
-def _result_text(result) -> str:
-    """The last text the model produced.
-
-    Reads `block.content`, not `block.text` — an earlier version used the
-    latter, which `ModelOutputBlock` does not have, so every prompt-only run
-    would have reported empty output even once it stopped raising. Only TEXT
-    blocks qualify: a tool-use block's content is a JSON object, not a reply.
-    """
+def _result_text(result: RunResult) -> str:
+    """Return the first text block from the latest response that contains text."""
     from eylo.framework.agents.model import ModelBlockKind
 
     for response in reversed(result.model_responses or ()):
         for block in response.blocks or ():
-            if block.kind is ModelBlockKind.TEXT and isinstance(block.content, str):
+            if block.kind is ModelBlockKind.TEXT:
                 return block.content
     return ""
 
 
-def _model_of(result, spec) -> str:
+def _model_of(result: RunResult, spec: AgentSpec) -> str:
     if result.model_responses:
         return result.model_responses[-1].model
     return spec.model_settings.model or "unknown"

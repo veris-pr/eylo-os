@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime
-from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from eylo.common.contracts.message_content import (
@@ -14,12 +13,6 @@ from eylo.common.contracts.message_content import (
     UserMessageContent,
 )
 from eylo.common.contracts.messages import MessageContentKind, MessageKind, MessageMeta
-from eylo.common.contracts.voice import (
-    VOICE_MESSAGE_META_RUNTIME_MODE,
-    VOICE_MESSAGE_META_SESSION_ID,
-    VOICE_MESSAGE_META_SESSION_ROW_ID,
-    VOICE_MESSAGE_META_SOURCE_SEQUENCE,
-)
 from eylo.common.contracts.websocket import WsEventAction
 from eylo.common.schemas import EyloBaseApiSchema
 from eylo.modules.voice_transcripts.constants import VoiceRuntimeMode
@@ -120,7 +113,7 @@ def _message_payload(
     identity: LiveVoiceBufferIdentity,
     item: LiveVoiceItem,
 ) -> LiveMessageTranscript | None:
-    if not isinstance(item.payload, str):
+    if identity.voice_session_id is None or not isinstance(item.payload, str):
         return None
     if item.kind is LiveVoiceItemKind.USER_TRANSCRIPT:
         participant_id = identity.contact_participant_id
@@ -140,20 +133,20 @@ def _message_payload(
         NAMESPACE_URL,
         f"eylo:live-transcript:{identity.organization_id}:{external_id}",
     )
-    meta: dict[str, Any] = {
-        "transient": True,
-        VOICE_MESSAGE_META_SESSION_ID: identity.session_id,
-        VOICE_MESSAGE_META_SESSION_ROW_ID: str(identity.voice_session_id),
-        VOICE_MESSAGE_META_RUNTIME_MODE: identity.runtime_mode.value,
-        VOICE_MESSAGE_META_SOURCE_SEQUENCE: item.sequence,
-    }
+    meta = MessageMeta(
+        transient=True,
+        voice_session_id=identity.session_id,
+        voice_session_row_id=identity.voice_session_id,
+        voice_runtime_mode=identity.runtime_mode,
+        voice_source_sequence=item.sequence,
+    )
     return LiveMessageTranscript(
         id=transient_id,
         conversation_id=identity.conversation_id,
         sender_participant_id=participant_id,
         kind=kind,
         content=content,
-        meta=MessageMeta.model_validate(meta),
+        meta=meta,
         external_id=external_id,
         request_id=item.request_id,
         created_at=item.occurred_at,

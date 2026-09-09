@@ -190,6 +190,12 @@ type ConversationCreate = {
 The service always sends new SDK conversations as `WIDGET`; callers cannot use
 the `channel` field to impersonate another transport.
 
+Conversation and message `context` values must be JSON objects. Nested values may
+be strings, finite numbers, booleans, null, arrays or objects; `NaN`, infinities and
+non-JSON objects are rejected. Context remains customer data and cannot override
+session transport, voice-mode facts or authorization. The server strips HTML and
+applies its existing size/depth limits before adding context to prompts.
+
 `listConversations()` returns a count, not the rows. Read the hydrated rows
 from `sdk.store.conversationStore.list_()` and subscribe to the
 `conversations` key. `loadMoreMessages()` returns rows directly because the
@@ -436,6 +442,27 @@ parents, tree depth, component count, and the one-interactive-component limit.
 A response must name the exact parent widget message and match its generated
 component, action, and offered values. Registration validates data; rendering
 remains the host UI's responsibility.
+
+The backend accepts these response shapes. `widget_message_id` must identify the
+parent widget; `parentMessageId` on the message request must identify the same row.
+
+| Component | Required action | `data` |
+| --- | --- | --- |
+| `form` | `submit` or `cancel` | Object keyed by generated field names; finite JSON values only |
+| `button_group` | `select` | `{ "value": "…", "label": "…" }` matching an offered button |
+| `card_list` | `submit` | `{ "selectedIds": ["…"] }` with nonempty, unique offered IDs |
+| `date_picker` | `submit` | `{ "<generated field name>": "<date/time value>" }` |
+
+Unknown envelope fields and malformed component/action/data combinations are
+rejected before DB work with a 422 response. The existing 64 KiB serialized-data
+ceiling remains in force. Valid shape does not grant access: the server checks
+the authenticated conversation/contact, parent widget, generated field rules,
+offered values and selection mode before filing a message and AgentRun. Cancelled
+forms do not require completed fields, but still cannot submit unknown field names.
+
+The SDK's boolean send result acknowledges transport submission, not successful
+server validation. Both the SDK's wrapped `{ role: "user", content: … }` response
+and the flat response envelope are accepted; storage uses the wrapped form.
 
 ## Preact bundle globals
 

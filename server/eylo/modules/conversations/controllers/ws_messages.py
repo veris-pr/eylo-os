@@ -8,8 +8,10 @@ from uuid import UUID
 import arrow
 import nh3 as bleach
 from fastapi import status
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from eylo.common.contracts.messages import MessageInteraction, MessageMeta
 from eylo.common.contracts.websocket import (
     WsEventAction,
     WsRequestEvent,
@@ -27,8 +29,8 @@ from eylo.modules.agent_runs.domain import (
 )
 from eylo.modules.conversations.exceptions import ConversationNotFound
 from eylo.modules.conversations.schemas.message_content import (
+    UserMessageContent,
     WidgetResponseMessageContent,
-    normalize_widget_response_message_content,
 )
 from eylo.modules.conversations.schemas.messages import (
     MessageApiResponseSchema,
@@ -106,6 +108,33 @@ def _budget_rejection_response(
         data={
             "capability": "agent_execution",
             "message": "Agent execution is temporarily unavailable.",
+        },
+        organization_id=ctx.organization_id,
+        session_id=ctx.session_id,
+        request_id=request_id,
+    )
+
+
+def _invalid_message_response(
+    error: ValidationError | WidgetResponseRejected,
+    *,
+    ctx: SessionContext,
+    request_id: str | None,
+) -> WsResponse:
+    """Reject client input without logging submitted values or validation details."""
+    logger.info(
+        "Message input rejected request_id=%s error_type=%s",
+        request_id,
+        type(error).__name__,
+    )
+    return WsResponse(
+        status=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        kind=WsEventAction.ERROR,
+        data={
+            "message": (
+                "The submitted message or interaction is invalid. "
+                "Check your input and try again."
+            )
         },
         organization_id=ctx.organization_id,
         session_id=ctx.session_id,
@@ -197,8 +226,14 @@ class MessageWsController:
     ) -> Optional[WsResponse]:
         """Handle text and structured widget response message events."""
         try:
-            request = WsMessageEvent.model_validate(event.data or {})
-            if not contact_id:
+            try:
+                request = WsMessageEvent.model_validate(event.data or {})
+            except ValidationError as error:
+                return _invalid_message_response(
+                    error, ctx=ctx, request_id=event.request_id
+                )
+            user_session_id = ctx.user_session_id
+            if contact_id is None or user_session_id is None:
                 return await self._conversation_not_found(event, ctx)
             if not ctx.allows_conversation(request.conversation_id):
                 return await self._conversation_not_found(event, ctx)
@@ -248,7 +283,11 @@ class MessageWsController:
                 ),
                 None,
             )
-            if not agent_participant:
+            if (
+                agent_participant is None
+                or agent_participant.agent_id is None
+                or agent_participant.agent_revision is None
+            ):
                 return await self._conversation_not_found(event, ctx)
             message_indb = None
             if (
@@ -261,18 +300,18 @@ class MessageWsController:
                 await user_sessions.require_contact_session(
                     organization_id=ctx.organization_id,
                     contact_id=contact_id,
-                    user_session_id=ctx.user_session_id,
+                    user_session_id=user_session_id,
                 )
                 conversation_link_created = await user_sessions.link_conversation(
                     organization_id=ctx.organization_id,
-                    user_session_id=ctx.user_session_id,
+                    user_session_id=user_session_id,
                     conversation_id=conversation_indb.id,
                 )
                 if conversation_link_created:
                     await file_user_session_fact(
                         db,
                         organization_id=ctx.organization_id,
-                        user_session_id=ctx.user_session_id,
+                        user_session_id=user_session_id,
                         subject_type="conversation",
                         subject_id=conversation_indb.id,
                         event_type="conversation.continued",
@@ -281,55 +320,55 @@ class MessageWsController:
                             "agent_id": str(agent_participant.agent_id),
                         },
                     )
-                message_content: dict
+                message_content: UserMessageContent | WidgetResponseMessageContent
                 if request.content_kind == MessageContentKind.WIDGET_RESPONSE:
-                    message_content = normalize_widget_response_message_content(
-                        request.content or {}
-                    )
-                    widget_response = WidgetResponseMessageContent.model_validate(
-                        message_content
-                    )
+                    if request.content is None:
+                        raise WidgetResponseRejected(
+                            "A widget response requires content."
+                        )
+                    message_content = request.content
                     await require_valid_widget_response(
                         db,
                         conversation_id=conversation_indb.id,
                         parent_message_id=request.parent_message_id,
-                        response=widget_response,
+                        response=message_content,
                     )
                 else:
-                    message_content = {
-                        "role": MessageKind.USER.value.lower(),
-                        "content": request.text,
-                    }
+                    message_content = UserMessageContent(content=request.text or "")
 
                 message = MessageCreate(
                     conversation_id=conversation_indb.id,
-                    user_session_id=ctx.user_session_id,
+                    user_session_id=user_session_id,
                     sender_participant_id=contact_participant.id,
                     kind=MessageKind.USER,
                     content_kind=request.content_kind,
                     content=message_content,
                     parent_message_id=request.parent_message_id,
                     external_id=event.request_id,
-                    meta={
-                        "context": sanitize_context(request.context) or {},
-                        "role": MessageKind.USER.value.lower(),
-                        "message": {
-                            "content": (
-                                [{"kind": "TEXT", "value": request.text}]
-                                if request.content_kind == MessageContentKind.TEXT
-                                else [
-                                    {
-                                        "kind": request.content_kind.value,
-                                        "value": request.content,
-                                    }
-                                ]
-                            )
-                        },
-                        "interaction": {
-                            "channel": ctx.channel.value,
-                            "is_voice": ctx.is_voice,
-                        },
-                    },
+                    meta=MessageMeta.model_validate(
+                        {
+                            "context": sanitize_context(request.context) or {},
+                            "role": MessageKind.USER.value.lower(),
+                            "message": {
+                                "content": (
+                                    [{"kind": "TEXT", "value": request.text}]
+                                    if request.content_kind == MessageContentKind.TEXT
+                                    else [
+                                        {
+                                            "kind": request.content_kind.value,
+                                            "value": message_content.model_dump(
+                                                mode="json"
+                                            ),
+                                        }
+                                    ]
+                                )
+                            },
+                            "interaction": MessageInteraction(
+                                channel=ctx.channel,
+                                is_voice=ctx.is_voice,
+                            ),
+                        }
+                    ),
                     created_at=arrow.utcnow().datetime,
                 )
                 goal = self.message_service.get_message_content(message.content)
@@ -382,23 +421,8 @@ class MessageWsController:
                 request_id=event.request_id,
             )
         except WidgetResponseRejected as error:
-            logger.info(
-                "Widget response rejected request_id=%s reason=%s",
-                event.request_id,
-                str(error),
-            )
-            return WsResponse(
-                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                kind=WsEventAction.ERROR,
-                data={
-                    "message": (
-                        "This interaction is no longer valid. "
-                        "Refresh the conversation and try again."
-                    )
-                },
-                organization_id=ctx.organization_id,
-                session_id=ctx.session_id,
-                request_id=event.request_id,
+            return _invalid_message_response(
+                error, ctx=ctx, request_id=event.request_id
             )
         except NotConfiguredError as error:
             return _not_configured_response(

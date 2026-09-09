@@ -7,6 +7,7 @@ from typing import List, Optional, Self
 from uuid import UUID
 
 from pydantic import (
+    BaseModel,
     ConfigDict,
     Field,
     SkipValidation,
@@ -14,6 +15,7 @@ from pydantic import (
     model_validator,
 )
 
+from eylo.common.outbound import OutboundAttemptState
 from eylo.common.schemas import (
     EyloBaseApiSchema,
     EyloBaseOrganizationModelSchema,
@@ -21,6 +23,10 @@ from eylo.common.schemas import (
     EyloBaseResponseSchema,
     EyloBaseSchema,
     PaginatedResponseSchema,
+)
+from eylo.modules.telephony.constants import (
+    CallOpenerDeliveryStatus,
+    CallTransferStatus,
 )
 from eylo.modules.telephony.provider_config_domain import (
     TelephonyOperation,
@@ -56,6 +62,27 @@ class CallStatus(str, Enum):
     NO_ANSWER = "no-answer"
     FAILED = "failed"
     CANCELED = "canceled"
+
+
+class OutboundCallResult(BaseModel):
+    """Committed initiation outcome, not the eventual status of the phone call.
+
+    Keep IDs and effect state typed until the caller's serialization boundary.
+    Retry requests propagate separately from the outbound execution authority.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    call_id: UUID
+    call_sid: str | None
+    status: OutboundAttemptState
+    failure_code: str | None
+    outbound_attempt_id: UUID
+    agent_revision: int
+    provider: TelephonyProvider
+    provider_config_id: UUID
+    provider_config_revision: int
+    from_number: str
 
 
 class PhoneNumberInDb(EyloBaseOrganizationModelSchema):
@@ -157,14 +184,14 @@ class TelephonyCallInDb(EyloBaseOrganizationModelSchema):
     duration_seconds: Optional[int] = None
     provider_status: Optional[str] = None
     media_claimed_at: Optional[datetime] = None
-    opener_delivery_status: str = "not_requested"
+    opener_delivery_status: CallOpenerDeliveryStatus = CallOpenerDeliveryStatus.NOT_REQUESTED
     opener_delivered_at: Optional[datetime] = None
     status_history: list[dict] = Field(default_factory=list)
     recording_id: Optional[UUID] = None
     recording_url: Optional[str] = None
     transcript_id: Optional[UUID] = None
     transcript_url: Optional[str] = None
-    transfer_status: str = "none"
+    transfer_status: CallTransferStatus = CallTransferStatus.NONE
     transfer_to: Optional[str] = None
     transfer_reason: Optional[str] = None
     transferred_at: Optional[datetime] = None
@@ -223,9 +250,9 @@ class TelephonyCallApiResponseSchema(EyloBaseResponseSchema):
     ended_at: Optional[datetime] = None
     duration_seconds: Optional[int] = None
     provider_status: Optional[str] = None
-    opener_delivery_status: str
+    opener_delivery_status: CallOpenerDeliveryStatus
     opener_delivered_at: Optional[datetime] = None
-    transfer_status: str
+    transfer_status: CallTransferStatus
     transfer_to: Optional[str] = None
     transfer_reason: Optional[str] = None
     transferred_at: Optional[datetime] = None

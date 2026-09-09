@@ -6,8 +6,7 @@ same pattern as STT and TTS managers.
 """
 
 import logging
-from collections.abc import Mapping
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Dict, Optional
 from uuid import UUID
 
 from fastapi import WebSocket
@@ -19,8 +18,10 @@ from eylo.sockets.telephony.base import (
     CarrierMediaStatus,
     InboundMediaMessage,
     OutboundMediaMessage,
+    TelephonyConfig,
     TelephonyControlResult,
     TelephonyMessageParser,
+    TelephonyProvider,
 )
 from eylo.sockets.telephony.factory import TelephonyFactory
 
@@ -40,7 +41,7 @@ class TelephonyRealtime:
     def __init__(
         self,
         websocket: WebSocket,
-        provider: Literal["twilio", "plivo", "vonage", "exotel"],
+        provider: TelephonyProvider,
     ):
         """Initialize only the untrusted provider parser.
 
@@ -62,22 +63,21 @@ class TelephonyRealtime:
         *,
         organization_id: UUID,
         session_id: str,
-        telephony_config: Mapping[str, object],
+        telephony_config: TelephonyConfig,
     ) -> None:
         """Attach the authenticated adapter for the resolved config revision."""
         if self._telephony_service is not None:
             raise RuntimeError("Telephony realtime adapter is already active.")
-        service = TelephonyFactory(
-            provider=self._provider,
-            telephony_config=telephony_config,
-        ).service
+        if telephony_config.provider is not self._provider:
+            raise ValueError("Telephony config differs from the authenticated carrier.")
+        service = TelephonyFactory(telephony_config).service
         service.set_websocket(self._websocket)
         self._organization_id = organization_id
         self._session_id = session_id
         self._telephony_service = service
 
     @property
-    def provider(self) -> str:
+    def provider(self) -> TelephonyProvider:
         """Get the telephony provider name.
 
         Returns:
@@ -262,20 +262,20 @@ class TelephonyRealtime:
         return self._telephony_service
 
 
-def _create_message_parser(provider: str) -> TelephonyMessageParser:
-    if provider == "twilio":
+def _create_message_parser(provider: TelephonyProvider) -> TelephonyMessageParser:
+    if provider is TelephonyProvider.TWILIO:
         from eylo.sockets.telephony.twilio.service import TwilioMessageParser
 
         return TwilioMessageParser()
-    if provider == "plivo":
+    if provider is TelephonyProvider.PLIVO:
         from eylo.sockets.telephony.plivo.service import PlivoMessageParser
 
         return PlivoMessageParser()
-    if provider == "vonage":
+    if provider is TelephonyProvider.VONAGE:
         from eylo.sockets.telephony.vonage.service import VonageMessageParser
 
         return VonageMessageParser()
-    if provider == "exotel":
+    if provider is TelephonyProvider.EXOTEL:
         from eylo.sockets.telephony.exotel.service import ExotelMessageParser
 
         return ExotelMessageParser()

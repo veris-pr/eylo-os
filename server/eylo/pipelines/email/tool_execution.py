@@ -14,12 +14,12 @@ from eylo.common.outbound import (
     OutboundOwnerKind,
 )
 from eylo.modules.provider_configs.errors import NotConfiguredError
-from eylo.pipelines.outbound.durable_execution import DurableStepContext
+from eylo.pipelines.outbound.durable_execution import CommandStepContext
 
 from .delivery import EmailDeliveryUnsupported, send_organization_email
 
 if TYPE_CHECKING:
-    from eylo.modules.conversations.schemas.conversations import ConversationContext
+    from eylo.pipelines.agent_execution_context import PlatformExecutionContext
     from eylo.sockets.email.sendgrid import SendGridHttpTransport
 
 SEND_EMAIL_TOOL_NAME = "send_email"
@@ -44,9 +44,9 @@ class EmailToolExecutionOutcome:
 async def execute_agent_email_tool(
     *,
     tool_input: Mapping[str, Any],
-    conversation_context: ConversationContext,
+    conversation_context: PlatformExecutionContext,
     tool_use_message_id: UUID,
-    durable_context: DurableStepContext,
+    durable_context: CommandStepContext,
     sendgrid_transport: SendGridHttpTransport | None = None,
 ) -> EmailToolExecutionOutcome:
     """Send once under the committed TOOL_USE message and exact agent grant."""

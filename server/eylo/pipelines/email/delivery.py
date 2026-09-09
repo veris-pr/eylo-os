@@ -20,7 +20,7 @@ from eylo.modules.email_configs.domain import EmailProviderConfig
 from eylo.modules.email_configs.wiring import build_email_config_resolver
 from eylo.pipelines.email.config import build_email_runtime_config
 from eylo.pipelines.outbound.durable_execution import (
-    DurableStepContext,
+    CommandStepContext,
     OutboundExecutionReceipt,
     execute_outbound_attempt,
 )
@@ -115,7 +115,7 @@ async def send_organization_email(
     subject: str,
     text_body: str | None = None,
     html_body: str | None = None,
-    durable_context: DurableStepContext | None = None,
+    durable_context: CommandStepContext | None = None,
     sendgrid_transport: SendGridHttpTransport | None = None,
 ) -> EmailDeliveryResult:
     """Deliver one logical email under a stable owner and exact config revision."""

@@ -26,6 +26,7 @@ from eylo.modules.tools.schemas.executors.mcp import MCP_PROTOCOL_VERSION
 
 MCP_SERVER_CONFIG_KEY = "mcp_server"
 MCP_TRANSPORT_PROFILE = "streamable_http"
+_ENCRYPTION_PURPOSE = "mcp"
 _RESERVED_PROTOCOL_HEADERS = frozenset(
     {
         "accept",
@@ -168,7 +169,7 @@ def _context(
     return EncryptionContext(
         organization_id=organization_id,
         config_id=server_id,
-        capability="mcp",
+        capability=_ENCRYPTION_PURPOSE,
         revision=revision,
     )
 

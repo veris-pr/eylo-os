@@ -12,12 +12,21 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from functools import partial
-from typing import Any
+from typing import Any, Final, Literal
 from uuid import UUID, uuid4
 
 import arrow
 from fastapi import status
 
+from eylo.common.contracts.provider_config import Capability
+from eylo.common.contracts.speech_runtime import (
+    SpeechTransportEncoding,
+    SpeechTransportFormat,
+)
+from eylo.common.contracts.voice import (
+    BrowserVoiceTerminationReason,
+    RecordingDisclosureState,
+)
 from eylo.common.contracts.websocket import build_ws_error_response
 from eylo.common.database import start_transaction
 from eylo.common.redaction import redact_logs
@@ -45,6 +54,7 @@ from eylo.modules.voice_transcripts.schemas.indb import VoiceSessionCreate
 from eylo.modules.voice_transcripts.services.indb import VoiceTranscriptService
 from eylo.pipelines.session_timeline import try_file_runtime_fact
 from eylo.pipelines.voice import consent
+from eylo.pipelines.voice.audio_transport import BROWSER_OUTPUT_AUDIO_FORMAT
 from eylo.pipelines.voice.filler import FillerPhraseManager
 from eylo.pipelines.voice.interaction_config import apply_voice_interaction_config
 from eylo.pipelines.voice.interaction_state import VoiceInteractionState
@@ -83,12 +93,17 @@ from eylo.pipelines.websocket.schemas import (
     WsResponse,
 )
 from eylo.pipelines.websocket.singleton import S_ws_manager
+from eylo.sockets.tts.schemas import TTSConfig, normalize_tts_config
 
 logger = logging.getLogger(__name__)
 
 
 _LATENCY_METRIC_KEYS = ("first_audio_latency_seconds", "time_to_first_byte_seconds")
 _VOICE_PROVIDER_STARTUP_TIMEOUT_SECONDS = 15.0
+_VOICE_PROVIDER_FAILURE_REASONS: Final = {
+    Capability.STT: BrowserVoiceTerminationReason.STT_RUNTIME_FAILED,
+    Capability.TTS: BrowserVoiceTerminationReason.TTS_RUNTIME_FAILED,
+}
 
 
 async def _record_voice_provider_fact(
@@ -250,41 +265,6 @@ async def _send_realtime_ready_signals(
         )
 
 
-def _get_browser_tts_audio_metadata(
-    voice_config: VoiceConfig | None,
-    tts_config: dict[str, Any] | None = None,
-) -> tuple[int, str]:
-    if voice_config and voice_config.realtime_provider_config_id:
-        return 16000, "pcm_s16le"
-
-    if tts_config is None:
-        return 16000, "pcm_s16le"
-    voice_provider_dump = tts_config
-
-    vendor = voice_provider_dump.get("vendor")
-    output_format = voice_provider_dump.get("output_format") or {}
-    if isinstance(output_format, str):
-        if output_format.startswith("pcm_"):
-            _, sample_rate = output_format.split("_", 1)
-            if sample_rate.isdigit():
-                return int(sample_rate), "pcm_s16le"
-    if isinstance(output_format, dict):
-        sample_rate = output_format.get("sample_rate")
-        encoding = output_format.get("encoding")
-        if isinstance(sample_rate, int):
-            return sample_rate, str(encoding or "pcm_s16le")
-
-    vendor_defaults: dict[str, tuple[int, str]] = {
-        "cartesia": (16000, "pcm_s16le"),
-        "elevenlabs": (16000, "pcm_s16le"),
-        "sarvam": (
-            int(voice_provider_dump.get("speech_sample_rate") or 16000),
-            "pcm_s16le",
-        ),
-    }
-    return vendor_defaults.get(vendor, (16000, "pcm_s16le"))
-
-
 def _compliance_plan(voice_config: VoiceConfig | None) -> CompliancePlan:
     """The agent's CompliancePlan, or schema defaults when unconfigured."""
     return voice_config.compliance if voice_config else CompliancePlan()
@@ -354,7 +334,7 @@ async def _start_browser_voice_session(
     realtime_vendor = realtime_model = None
     if resolved_realtime is not None:
         realtime_vendor = resolved_realtime.provider.value
-        realtime_model = str(resolved_realtime.config["model"])
+        realtime_model = resolved_realtime.config.model
 
     async with start_transaction():
         voice_session = await VoiceTranscriptService().start_session(
@@ -434,7 +414,6 @@ def _maybe_initialize_recorder(
     session_state: WSSessionState,
     conversation_id: UUID,
     voice_config: VoiceConfig | None,
-    tts_config: dict[str, Any] | None = None,
     *,
     recording_session_id: str | None = None,
 ) -> None:
@@ -455,7 +434,6 @@ def _maybe_initialize_recorder(
             session_state,
             conversation_id,
             voice_config,
-            tts_config=tts_config,
             recording_session_id=recording_session_id,
         )
 
@@ -472,10 +450,10 @@ def _maybe_initialize_recorder(
     if _compliance_plan(voice_config).recording_consent_required:
         # Notification is attempted before the greeting, but it is not a data
         # control and cannot interrupt the primary recording flow.
-        session_state.recording_consent_state = "pending"
+        session_state.recording_consent_state = RecordingDisclosureState.PENDING
         return
 
-    session_state.recording_consent_state = "not_required"
+    session_state.recording_consent_state = RecordingDisclosureState.NOT_REQUIRED
 
 
 def _build_recorder(
@@ -483,15 +461,9 @@ def _build_recorder(
     conversation_id: UUID,
     voice_config: VoiceConfig | None,
     *,
-    tts_config: dict[str, Any] | None = None,
     recording_session_id: str | None = None,
 ) -> None:
     from eylo.pipelines.voice.recording import AudioRecorder
-
-    agent_sample_rate, agent_encoding = _get_browser_tts_audio_metadata(
-        voice_config,
-        tts_config,
-    )
 
     session_state.audio_recorder = AudioRecorder(
         organization_id=session_state.organization_id,
@@ -504,15 +476,15 @@ def _build_recorder(
             voice_config.storage_provider_config_revision if voice_config else None
         ),
         user_sample_rate=session_state.stt_encoding_info.sample_rate,
-        agent_sample_rate=agent_sample_rate,
+        agent_sample_rate=BROWSER_OUTPUT_AUDIO_FORMAT.sample_rate,
         user_encoding=session_state.stt_encoding_info.encoding,
-        agent_encoding=agent_encoding,
+        agent_encoding=BROWSER_OUTPUT_AUDIO_FORMAT.encoding,
     )
     logger.info(
         "Voice recorder initialized organization_id=%s (user=%dHz, agent=%dHz)",
         session_state.organization_id,
         session_state.stt_encoding_info.sample_rate,
-        agent_sample_rate,
+        BROWSER_OUTPUT_AUDIO_FORMAT.sample_rate,
     )
 
 
@@ -531,8 +503,11 @@ async def cleanup_audio_services(ctx: SessionContext) -> None:
             ctx.organization_id,
             type(error).__name__,
         )
-    ended_reason = ctx.ws.voice_termination_reason or "voice_cleanup_without_reason"
-    audio_metrics["termination_reason"] = ended_reason
+    ended_reason = (
+        ctx.ws.voice_termination_reason
+        or BrowserVoiceTerminationReason.VOICE_CLEANUP_WITHOUT_REASON
+    )
+    audio_metrics["termination_reason"] = ended_reason.value
     voice_transcript_session_started = ctx.ws.voice_transcript_session_started
     voice_session_id = ctx.ws.voice_session_id
     voice_transcript_runtime_mode = ctx.ws.voice_transcript_runtime_mode
@@ -702,7 +677,7 @@ async def cleanup_audio_services(ctx: SessionContext) -> None:
                 voice_session_id=voice_session_id,
                 runtime_mode=runtime_mode,
                 ended_at=ended_at,
-                ended_reason=ended_reason,
+                ended_reason=ended_reason.value,
                 status=browser_voice_session_status(ended_reason),
                 metrics=audio_metrics or None,
             ),
@@ -779,7 +754,7 @@ def _is_browser_speech_active(session_state: WSSessionState) -> bool:
 async def terminate_browser_voice(
     ctx: SessionContext,
     *,
-    reason: str,
+    reason: BrowserVoiceTerminationReason,
     notify_client: bool,
     source: VoiceRequestSource | None = None,
     final_message: str | None = None,
@@ -803,7 +778,7 @@ async def terminate_browser_voice(
 async def request_browser_voice_termination(
     ctx: SessionContext,
     *,
-    reason: str,
+    reason: BrowserVoiceTerminationReason,
     notify_client: bool,
     source: VoiceRequestSource | None = None,
     final_message: str | None = None,
@@ -824,7 +799,7 @@ async def request_browser_voice_termination(
 async def _ensure_browser_voice_termination(
     ctx: SessionContext,
     *,
-    reason: str,
+    reason: BrowserVoiceTerminationReason,
     notify_client: bool,
     source: VoiceRequestSource | None,
     final_message: str | None,
@@ -864,7 +839,7 @@ async def _ensure_browser_voice_termination(
 async def _run_browser_voice_termination(
     ctx: SessionContext,
     *,
-    reason: str,
+    reason: BrowserVoiceTerminationReason,
     notify_client: bool,
     source: VoiceRequestSource | None,
     final_message: str | None,
@@ -903,7 +878,7 @@ async def _run_browser_voice_termination(
         await S_webrtc_signaling.cleanup_session(
             ctx.organization_id,
             ctx.session_id,
-            reason=reason,
+            reason=reason.value,
             notify_client=notify_client,
         )
     except Exception as error:
@@ -940,7 +915,7 @@ def _consume_browser_voice_termination_result(task: asyncio.Task[bool]) -> None:
 
 async def _terminate_browser_from_transport(
     ctx: SessionContext,
-    reason: str,
+    reason: BrowserVoiceTerminationReason,
 ) -> None:
     await terminate_browser_voice(
         ctx,
@@ -956,7 +931,7 @@ async def _terminate_browser_from_end_call_phrase(
 ) -> None:
     await terminate_browser_voice(
         ctx,
-        reason="user_end_call_phrase",
+        reason=BrowserVoiceTerminationReason.USER_END_CALL_PHRASE,
         notify_client=True,
         source=VoiceRequestSource.END_CALL,
         final_message=final_message,
@@ -971,41 +946,23 @@ async def _initialize_realtime_mode(
     resolved_realtime: ResolvedRealtime,
     conversation_control: ConversationControl,
 ) -> None:
+    from eylo.pipelines.voice.provider_runtime import build_realtime_session_config
     from eylo.pipelines.voice.realtime import (
         RealtimeInteractionCallbacks,
         RealtimeManager,
     )
-    from eylo.sockets.realtime.config import RealtimeSessionConfig
 
     if session_state.voice_call_id is None:
         raise RuntimeError("Realtime voice call identity is not initialized.")
-    provider_config = resolved_realtime.config
-    config = RealtimeSessionConfig.model_validate(
-        {
-            "organization_id": session_state.organization_id,
-            "conversation_id": conversation_id,
-            "agent_id": session_state.agent_id,
-            "session_id": session_state.voice_call_id,
-            "voice_session_row_id": session_state.voice_session_id,
-            "vendor": resolved_realtime.provider.value,
-            "model": provider_config["model"],
-            "voice": provider_config["voice"],
-            "temperature": provider_config.get("temperature"),
-            "top_p": provider_config.get("top_p"),
-            "max_tokens": provider_config.get("max_tokens"),
-            "input_transcription_model": provider_config.get(
-                "input_transcription_model"
-            ),
-            "vad_threshold": provider_config.get("vad_threshold"),
-            "vad_silence_ms": provider_config.get("vad_silence_ms"),
-            "endpointing_sensitivity": provider_config.get("endpointing_sensitivity"),
-            "is_context_compression_enabled": provider_config.get(
-                "context_compression_enabled"
-            ),
-            "context_compression_trigger_tokens": provider_config.get(
-                "context_compression_trigger_tokens"
-            ),
-        }
+    if session_state.agent_id is None:
+        raise RuntimeError("Realtime agent identity is not initialized.")
+    config = build_realtime_session_config(
+        resolved_realtime,
+        organization_id=session_state.organization_id,
+        conversation_id=conversation_id,
+        agent_id=session_state.agent_id,
+        session_id=session_state.voice_call_id,
+        voice_session_row_id=session_state.voice_session_id,
     )
 
     session_state.tts_response_queue = asyncio.Queue()
@@ -1013,13 +970,13 @@ async def _initialize_realtime_mode(
     if session_state.live_voice_buffer is None:
         raise RuntimeError("Realtime voice buffer is not initialized.")
 
-    async def _on_realtime_teardown(reason: str) -> None:
+    async def _on_realtime_teardown(reason: BrowserVoiceTerminationReason) -> None:
         failed = reason in {
-            "realtime_transport_error",
-            "realtime_transport_ended",
-            "realtime_reconnect_failed",
-            "realtime_vendor_error",
-            "realtime_handoff_failed",
+            BrowserVoiceTerminationReason.REALTIME_TRANSPORT_ERROR,
+            BrowserVoiceTerminationReason.REALTIME_TRANSPORT_ENDED,
+            BrowserVoiceTerminationReason.REALTIME_RECONNECT_FAILED,
+            BrowserVoiceTerminationReason.REALTIME_VENDOR_ERROR,
+            BrowserVoiceTerminationReason.REALTIME_HANDOFF_FAILED,
         }
         payload = {
             "message": (
@@ -1185,7 +1142,7 @@ async def _initialize_stt_service(
     _watch_voice_provider_task(
         session_state,
         stt_task,
-        provider_kind="stt",
+        provider_kind=Capability.STT,
         vendor=stt_vendor,
     )
     logger.info("STT service initialized successfully")
@@ -1193,13 +1150,15 @@ async def _initialize_stt_service(
 
 async def _initialize_tts_service(
     session_state: WSSessionState,
-    tts_config: dict[str, Any] | None,
+    tts_config: TTSConfig | dict[str, object] | None,
     *,
     tts_api_key: str | None = None,
 ) -> bool:
     if tts_config is None:
         logger.info("TTS is disabled for this session - STT-only mode")
         return False
+
+    runtime_config = normalize_tts_config(tts_config)
 
     logger.info("TTS is enabled for this session - initializing TTS services")
 
@@ -1211,7 +1170,7 @@ async def _initialize_tts_service(
         id(session_state.tts_response_queue),
     )
 
-    audio_recorder = getattr(session_state, "audio_recorder", None)
+    audio_recorder = session_state.audio_recorder
     on_audio_chunk = audio_recorder.record_agent if audio_recorder else None
 
     def on_playback_started() -> None:
@@ -1224,22 +1183,23 @@ async def _initialize_tts_service(
         organization_id=session_state.organization_id,
         session_id=session_state.session_id,
         consumer_queue=session_state.tts_response_queue,
-        tts_config=tts_config,
+        tts_config=runtime_config,
         on_audio_chunk=on_audio_chunk,
         on_playback_started=on_playback_started,
         on_playback_finished=on_playback_finished,
         api_key=tts_api_key,
+        consumer_audio_format=BROWSER_OUTPUT_AUDIO_FORMAT,
     )
 
     session_state.tts_socket = tts_manager
     session_state.tts_manager = tts_manager
 
-    tts_task = asyncio.create_task(session_state.tts_manager.initialize())
+    tts_task = asyncio.create_task(tts_manager.initialize())
     session_state.tts_session_tasks["tts_initialize"] = tts_task
     try:
         await _wait_for_provider_ready(
             task=tts_task,
-            is_ready=lambda: session_state.tts_manager.is_connected,
+            is_ready=lambda: tts_manager.is_connected,
             provider_kind="TTS",
         )
     except Exception:
@@ -1247,7 +1207,7 @@ async def _initialize_tts_service(
             session_state,
             provider_kind="tts",
             state="failed",
-            vendor=str(tts_config["vendor"]),
+            vendor=runtime_config.vendor.value,
         )
         await _cancel_failed_provider_startup(tts_task)
         session_state.tts_session_tasks.pop("tts_initialize", None)
@@ -1261,13 +1221,13 @@ async def _initialize_tts_service(
         session_state,
         provider_kind="tts",
         state="connected",
-        vendor=str(tts_config["vendor"]),
+        vendor=runtime_config.vendor.value,
     )
     _watch_voice_provider_task(
         session_state,
         tts_task,
-        provider_kind="tts",
-        vendor=str(tts_config["vendor"]),
+        provider_kind=Capability.TTS,
+        vendor=runtime_config.vendor.value,
     )
     logger.info(
         "TTS manager initialized organization_id=%s",
@@ -1280,7 +1240,7 @@ def _watch_voice_provider_task(
     session_state: WSSessionState,
     task: asyncio.Task[None],
     *,
-    provider_kind: str,
+    provider_kind: Literal[Capability.STT, Capability.TTS],
     vendor: str | None = None,
 ) -> None:
     """Terminate the call when an already-ready provider fails at runtime."""
@@ -1297,22 +1257,23 @@ def _watch_voice_provider_task(
         if callback is None:
             logger.error(
                 "%s runtime failed without a terminal callback error_type=%s",
-                provider_kind.upper(),
+                provider_kind.value.upper(),
                 type(error).__name__,
             )
             return
+
         async def record_and_terminate() -> None:
             await _record_voice_provider_fact(
                 session_state,
-                provider_kind=provider_kind,
+                provider_kind=provider_kind.value,
                 state="failed",
                 vendor=vendor,
             )
-            await callback(f"{provider_kind}_runtime_failed")
+            await callback(_VOICE_PROVIDER_FAILURE_REASONS[provider_kind])
 
         termination = asyncio.create_task(
             record_and_terminate(),
-            name=f"{provider_kind}-runtime-termination",
+            name=f"{provider_kind.value}-runtime-termination",
         )
         termination.add_done_callback(_consume_provider_termination_result)
 
@@ -1407,7 +1368,7 @@ async def _enforce_max_duration(
         )
         await terminate_browser_voice(
             ctx,
-            reason="max_duration",
+            reason=BrowserVoiceTerminationReason.MAX_DURATION,
             notify_client=True,
             source=VoiceRequestSource.MAX_DURATION,
             final_message=end_call_message,
@@ -1450,7 +1411,7 @@ async def _monitor_silence(
         )
         await terminate_browser_voice(
             ctx,
-            reason="silence_timeout",
+            reason=BrowserVoiceTerminationReason.SILENCE_TIMEOUT,
             notify_client=True,
             source=VoiceRequestSource.SILENCE,
             final_message=end_call_message,
@@ -1476,6 +1437,9 @@ async def _start_browser_interaction_policies(
 ) -> None:
     """Start provider-neutral disclosure, greeting, and timing policies."""
     session_state = ctx.ws
+    assert session_state is not None, (
+        "Browser voice policies require a WebSocket session."
+    )
 
     if consent.is_pending(session_state):
 
@@ -1695,16 +1659,20 @@ async def handle_audio_config(
                     voice_config,
                     db=voice_runtime_db,
                 )
-            stt_transport: dict[str, object] = {}
-            tts_transport: dict[str, object] = {}
+            stt_transport: SpeechTransportFormat | None = None
+            tts_transport: SpeechTransportFormat | None = None
             if resolved_stt.provider is STTProviders.AMAZON_TRANSCRIBE:
                 # Browser media is normalized to signed 16-bit mono PCM at
                 # 16 kHz before it reaches STT. This is a transport fact, not
                 # an operator-configurable provider default.
-                stt_transport.update(sample_rate=16000, encoding="pcm_s16le")
+                stt_transport = SpeechTransportFormat(
+                    sample_rate=16000, encoding=SpeechTransportEncoding.PCM_S16LE
+                )
             if resolved_tts.provider is TTSProviders.AMAZON_POLLY:
                 # The browser output track and recorder consume 16 kHz PCM.
-                tts_transport.update(sample_rate=16000, encoding="pcm_s16le")
+                tts_transport = SpeechTransportFormat(
+                    sample_rate=16000, encoding=SpeechTransportEncoding.PCM_S16LE
+                )
             stt_config = build_stt_runtime_config(
                 voice_config,
                 resolved_stt,
@@ -1736,10 +1704,11 @@ async def handle_audio_config(
         )
 
         if resolved_realtime is not None:
+            from eylo.sockets.realtime.config import RealtimeVendor
             from eylo.sockets.realtime.factory import RealtimeFactory
 
             RealtimeFactory.validate(
-                resolved_realtime.provider.value,
+                RealtimeVendor(resolved_realtime.provider.value),
                 resolved_realtime,
             )
 
@@ -1759,7 +1728,6 @@ async def handle_audio_config(
             ctx.ws,
             conversation_uuid,
             voice_config,
-            tts_config,
             recording_session_id=voice_call_id,
         )
         ctx.voice_session_id = await _start_browser_voice_session(
@@ -1805,13 +1773,11 @@ async def handle_audio_config(
             await _initialize_stt_service(
                 ctx.ws,
                 stt_config,
-                stt_api_key=resolved_stt.secret,
             )
 
             await _initialize_tts_service(
                 ctx.ws,
                 tts_config,
-                tts_api_key=resolved_tts.secret,
             )
 
             live_buffer = ctx.ws.live_voice_buffer
@@ -1880,7 +1846,7 @@ async def handle_audio_config(
             try:
                 await terminate_browser_voice(
                     ctx,
-                    reason="voice_configuration_failed",
+                    reason=BrowserVoiceTerminationReason.VOICE_CONFIGURATION_FAILED,
                     notify_client=False,
                 )
             except Exception as cleanup_error:
@@ -1911,7 +1877,7 @@ async def handle_audio_config(
             try:
                 await terminate_browser_voice(
                     ctx,
-                    reason="voice_initialization_failed",
+                    reason=BrowserVoiceTerminationReason.VOICE_INITIALIZATION_FAILED,
                     notify_client=False,
                 )
             except Exception as cleanup_error:

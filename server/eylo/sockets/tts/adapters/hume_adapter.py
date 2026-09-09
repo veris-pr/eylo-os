@@ -1,306 +1,362 @@
-"""Hume AI TTS adapter for the production TTS manager.
+"""Own Hume TTS stream input, validated PCM output and per-turn teardown."""
 
-Bridges Hume's Octave WebSocket streaming TTS to the interface expected
-by TTSRealtime/TTSFactory.
-
-Hume Octave is an emotionally intelligent TTS system that understands
-text both emotionally and semantically. Supports voice design via prompting,
-multi-lingual output, and ultra-low latency streaming (~100ms).
-
-Connection lifecycle:
-- connect() establishes WebSocket to wss://api.hume.ai/v0/tts/stream/input
-- Background receiver loop decodes base64 audio and pushes to response queue
-- handle_interruption() drains the queue
-"""
+from __future__ import annotations
 
 import asyncio
-import base64
-import json
 import logging
-from typing import Optional
+from typing import Self
+from urllib.parse import urlencode
 
-import websockets
-from websockets.asyncio.client import ClientConnection
+from pydantic import Field, StrictFloat, StrictInt, model_validator
+from websockets.asyncio.client import ClientConnection, connect
+from websockets.exceptions import ConnectionClosed
+from websockets.frames import CloseCode
 
+from eylo.common.contracts.speech_runtime import (
+    SpeechOption,
+    SpeechOptionState,
+    SpeechText,
+)
+from eylo.sockets.tts.adapters.config import TTSAdapterConfig
+from eylo.sockets.tts.adapters.hume_wire import (
+    HUME_API_KEY_HEADER,
+    HUME_PCM_ENCODING,
+    HUME_SAMPLE_RATE,
+    HUME_STREAM_URL,
+    HumeAudioOutput,
+    HumeEndInput,
+    HumeOutputError,
+    HumeStreamState,
+    HumeText,
+    HumeVersion,
+    HumeVoice,
+    parse_output,
+    version_for_model,
+)
 from eylo.sockets.tts.base import TTSVendorAdapter
 from eylo.sockets.tts.exceptions import TTSConnectionClosed, TTSConnectionFailed
-from eylo.sockets.tts.schemas import TTSCapabilities, TTSConfig
+from eylo.sockets.tts.schemas import TTSCapabilities, TTSConfig, TTSProvider
 
 logger = logging.getLogger(__name__)
-
 _DEFAULT_SPEED = 1.0
 _DEFAULT_FORMAT = "pcm"
-_DEFAULT_SAMPLE_RATE = 24000
-_WS_URL = "wss://api.hume.ai/v0/tts/stream/input"
+# Bound tracking even if a peer never terminates the snippets it announces.
+_MAX_PENDING_SNIPPETS = 1024
 
 
-class HumeTTSConfig:
-    """Configuration for Hume TTS adapter."""
+class HumeTTSConfig(TTSAdapterConfig):
+    """Native settings; language/rate are legacy inputs, not Hume wire options.
 
-    def __init__(
-        self,
-        *,
-        model: str,
-        voice: str | None = None,
-        voice_description: str | None = None,
-        language: str,
-        speed: float = _DEFAULT_SPEED,
-        format: str = _DEFAULT_FORMAT,
-        sample_rate: int = _DEFAULT_SAMPLE_RATE,
-        instant_mode: bool = True,
-        api_key: str,
-        **kwargs,
-    ):
-        self.model = model
-        self.voice = voice
-        self.voice_description = voice_description
-        self.language = language
-        self.speed = speed
-        self.format = format
-        self.sample_rate = sample_rate
-        self.instant_mode = instant_mode
-        self.api_key = api_key
+    The native endpoint has no language/rate selector and emits fixed 48 kHz
+    PCM. Consumers must use output_audio_format for any transport conversion.
+    """
 
-        if not self.api_key:
-            raise ValueError("Hume TTS api_key is required.")
+    provider = TTSProvider.HUME
+    model: SpeechText
+    voice: SpeechText | None = None
+    voice_description: SpeechText | None = None
+    language: SpeechText
+    speed: StrictFloat = Field(default=_DEFAULT_SPEED, gt=0)
+    format: SpeechText = _DEFAULT_FORMAT
+    sample_rate: StrictInt = Field(default=HUME_SAMPLE_RATE, gt=0)
+    instant_mode: SpeechOption = SpeechOptionState.ENABLED
+
+    @model_validator(mode="after")
+    def require_supported_input(self) -> Self:
+        version = version_for_model(self.model)
+        if self.voice is None:
+            if self.voice_description is None:
+                raise ValueError("Hume TTS requires a voice or voice description.")
+            if version is HumeVersion.OCTAVE_2:
+                raise ValueError("Hume Octave 2 requires a saved voice.")
+            if self.instant_mode is SpeechOptionState.ENABLED:
+                raise ValueError("Hume voice design requires instant mode disabled.")
+        if self.format.lower() != _DEFAULT_FORMAT:
+            raise ValueError("Hume TTS must emit PCM for realtime voice.")
+        return self
 
 
 class HumeTTSAdapter(TTSVendorAdapter):
-    """Adapter bridging Hume Octave WebSocket TTS to the TTSFactory interface.
+    """One native socket per turn; only drained end-input completes synthesis.
 
-    Maintains a persistent WebSocket connection to Hume's streaming endpoint.
-    Text is sent as utterance messages with voice/model config.
-    Audio arrives as base64-encoded JSON messages.
+    No background receiver or lossy audio queue. Poll cancellation leaves recv
+    intact; interruption detaches the old socket before waiting for its close.
     """
 
-    def __init__(self, config: HumeTTSConfig):
-        if config.format.lower() != "pcm":
-            raise ValueError("Hume TTS must emit PCM for realtime voice.")
-        # Feed the contract config up from the vendor config. getattr with
-        # fallbacks because vendor configs disagree — deepgram has no voice,
-        # murf calls it voice_id, openai carries no sample_rate. Unset keys
-        # are omitted: passing None would override a field default with an
-        # invalid value.
-        _contract = {
-            "model": getattr(config, "model", None),
-            "voice": getattr(config, "voice", None)
-            or getattr(config, "voice_id", None),
-            "sample_rate": getattr(config, "sample_rate", None),
-            "encoding": "pcm_s16le",
-        }
+    def __init__(self, config: HumeTTSConfig) -> None:
+        config = HumeTTSConfig.model_validate(config)
+        self._config = config
         super().__init__(
             TTSConfig(
-                vendor="hume",
-                **{k: v for k, v in _contract.items() if v is not None},
+                vendor=TTSProvider.HUME,
+                model=config.model,
+                voice=config.voice,
+                sample_rate=HUME_SAMPLE_RATE,
+                encoding=HUME_PCM_ENCODING,
             )
         )
-        self._config = config
-        self._response_queue: asyncio.Queue = asyncio.Queue(maxsize=500)
-        self._ws: Optional[ClientConnection] = None
-        self._connected = False
-        self._recv_task: Optional[asyncio.Task] = None
-        self._consecutive_errors = 0
+        self._ws: ClientConnection | None = None
+        self._state = HumeStreamState.DISCONNECTED
+        self._stream_available = asyncio.Event()
+        self._lifecycle_lock = asyncio.Lock()
+        self._closing_tasks: set[asyncio.Task[None]] = set()
+        self._turn_complete = False
+        self._completion_error: TTSConnectionFailed | None = None
+        self._unfinished_snippets: set[tuple[str, str]] = set()
+        self._received_audio = False
 
     def _build_ws_url(self) -> str:
-        """Build WebSocket URL with API key auth."""
-        return f"{_WS_URL}?api_key={self._config.api_key}"
+        # The SDK supports header authentication; credentials never enter URLs.
+        params = {
+            "version": version_for_model(self._config.model).value,
+            "format_type": _DEFAULT_FORMAT,
+            "no_binary": "true",
+            "strip_headers": "true",
+            "instant_mode": (
+                "true"
+                if self._config.instant_mode is SpeechOptionState.ENABLED
+                else "false"
+            ),
+        }
+        return f"{HUME_STREAM_URL}?{urlencode(params)}"
 
-    async def connect(self):
-        """Connect to Hume TTS WebSocket.
-
-        Raises TTSConnectionFailed if connection cannot be established.
-        """
-        try:
-            url = self._build_ws_url()
-            self._ws = await asyncio.wait_for(
-                websockets.connect(url),
-                timeout=10.0,
-            )
-            self._connected = True
-            self._recv_task = asyncio.create_task(self._receive_loop())
-            logger.info(
-                "Hume TTS adapter connected (model=%s, voice=%s)",
-                self._config.model,
-                self._config.voice or self._config.voice_description,
-            )
+    async def connect(self) -> Self:
+        async with self._lifecycle_lock:
+            if self._ws is None:
+                await self._open_stream()
             return self
-        except asyncio.TimeoutError:
-            raise TTSConnectionFailed("Hume TTS: Connection timed out.")
-        except Exception as error:
-            raise TTSConnectionFailed("Hume TTS: Failed to connect.") from error
 
-    async def _receive_loop(self):
-        """Background loop reading audio from Hume WebSocket.
-
-        Hume sends JSON messages with base64-encoded audio in the 'audio' field.
-        """
+    async def _open_stream(self) -> None:
+        """Acquire under the lifecycle lock; no await after taking ownership."""
         try:
-            async for message in self._ws:
-                if not self._connected:
-                    break
-
-                if not isinstance(message, str):
-                    continue
-
-                try:
-                    data = json.loads(message)
-
-                    # Handle error messages
-                    if "error" in data:
-                        logger.error("Hume TTS provider error")
-                        self._consecutive_errors += 1
-                        if self._consecutive_errors >= 3:
-                            raise TTSConnectionClosed(
-                                f"Hume TTS: {self._consecutive_errors} errors"
-                            )
-                        continue
-
-                    # Handle audio
-                    if "audio" in data:
-                        audio_bytes = base64.b64decode(data["audio"])
-                        try:
-                            self._response_queue.put_nowait(audio_bytes)
-                        except asyncio.QueueFull:
-                            logger.warning(
-                                "Hume TTS response queue full, dropping chunk"
-                            )
-                        self._consecutive_errors = 0
-
-                except json.JSONDecodeError:
-                    continue
-
-        except websockets.exceptions.ConnectionClosed:
-            logger.info("Hume TTS WebSocket closed")
-        except TTSConnectionClosed:
-            raise
-        except asyncio.CancelledError:
-            raise
-        except Exception as error:
-            logger.error(
-                "Hume TTS receive loop failed error_type=%s",
-                type(error).__name__,
+            ws = await connect(
+                self._build_ws_url(),
+                additional_headers={HUME_API_KEY_HEADER: self._config.api_key},
+                open_timeout=self._retry_options.timeout_seconds,
+                close_timeout=self._retry_options.timeout_seconds,
             )
-
-    async def disconnect(self):
-        """Close WebSocket connection."""
-        self._connected = False
-
-        if self._recv_task and not self._recv_task.done():
-            self._recv_task.cancel()
-            try:
-                await self._recv_task
-            except asyncio.CancelledError:
-                pass
-
-        if self._ws:
-            await self._ws.close()
-            self._ws = None
-
-        logger.info("Hume TTS adapter disconnected")
+        except asyncio.CancelledError:
+            self._state = HumeStreamState.DISCONNECTED
+            self._stream_available.set()
+            raise
+        except Exception:
+            self._state = HumeStreamState.FAILED
+            self._completion_error = TTSConnectionFailed("Hume connection failed.")
+            self._stream_available.set()
+            raise self._completion_error from None
+        self._ws = ws
+        self._state = HumeStreamState.READY
+        self._completion_error = None
+        self._turn_complete = False
+        self._received_audio = False
+        self._unfinished_snippets.clear()
+        self._stream_available.set()
 
     async def send_text(self, text: str) -> None:
-        """Send text for synthesis via WebSocket.
-
-        Constructs Hume's utterance message format with voice and model config.
-        """
-        if not self._connected or not self._ws:
-            raise TTSConnectionFailed("Not connected. Call connect() first.")
-        if not text or not text.strip():
+        if isinstance(text, str) and not text.strip():
             return
+        message = HumeText(
+            text=text,
+            speed=self._config.speed,
+            voice=HumeVoice(name=self._config.voice) if self._config.voice else None,
+            description=self._config.voice_description,
+        )
+        async with self._lifecycle_lock:
+            if self._completion_error is not None:
+                raise self._completion_error
+            if self._state is HumeStreamState.DISCONNECTED:
+                raise TTSConnectionClosed("Hume TTS is not connected.")
+            if self._state is HumeStreamState.DRAINING:
+                raise TTSConnectionFailed("Hume previous turn is still draining.")
+            if self._ws is None:
+                await self._open_stream()
+            self._state = HumeStreamState.STREAMING
+            self._turn_complete = False
+            await self._send(message)
 
+    async def _send(self, message: HumeText | HumeEndInput) -> None:
+        ws = self._ws
+        if ws is None:
+            raise TTSConnectionClosed("Hume TTS is not connected.")
         try:
-            # Build utterance
-            utterance = {
-                "type": "utterance",
-                "text": text,
-                "language": self._config.language,
-                "speed": self._config.speed,
-            }
-
-            # Voice config
-            if self._config.voice:
-                utterance["voice"] = {"name": self._config.voice}
-            elif self._config.voice_description:
-                utterance["voice"] = {"description": self._config.voice_description}
-
-            message = {
-                "model": self._config.model,
-                "format": self._config.format,
-                "instant_mode": self._config.instant_mode,
-                "utterances": [utterance],
-            }
-
-            await self._ws.send(json.dumps(message))
-            self._consecutive_errors = 0
-        except Exception as error:
-            logger.error(
-                "Hume TTS send failed error_type=%s",
-                type(error).__name__,
-            )
-            self._consecutive_errors += 1
-            if self._consecutive_errors >= 3:
-                raise TTSConnectionClosed(
-                    f"Hume TTS: {self._consecutive_errors} send failures"
-                )
-
-    async def receive_audio(self) -> Optional[bytes]:
-        """Get next audio chunk from the response queue."""
-        try:
-            chunk = await asyncio.wait_for(self._response_queue.get(), timeout=0.1)
-            return chunk
-        except asyncio.TimeoutError:
-            return None
+            await ws.send(message.model_dump_json(exclude_none=True))
+        except asyncio.CancelledError:
+            self._fail(ws, TTSConnectionFailed("Hume send cancelled."))
+            raise
+        except Exception:
+            error = TTSConnectionFailed("Hume send failed.")
+            self._fail(ws, error)
+            raise error from None
 
     async def flush(self) -> None:
-        """No explicit flush protocol for Hume — each utterance is self-contained."""
-        pass
+        """Hume close forces buffered synthesis and closes after draining it."""
+        async with self._lifecycle_lock:
+            if self._state is HumeStreamState.STREAMING:
+                self._state = HumeStreamState.DRAINING
+                await self._send(HumeEndInput())
 
-    async def handle_interruption(self):
-        """Drain response queue to stop playback."""
-        while not self._response_queue.empty():
-            try:
-                self._response_queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
+    async def receive_audio(self) -> bytes | None:
+        if self._state is HumeStreamState.DISCONNECTED:
+            return None
+        await self._stream_available.wait()
+        ws = self._ws
+        if ws is None:
+            if self._completion_error is not None:
+                raise self._completion_error
+            return None
+        try:
+            raw = await ws.recv()
+            if self._ws is not ws:
+                return None
+            if not isinstance(raw, str):
+                raise HumeOutputError("Unexpected Hume binary output.")
+            output = parse_output(raw)
+            if not isinstance(output, HumeAudioOutput):
+                return None
+            if self._state not in (HumeStreamState.STREAMING, HumeStreamState.DRAINING):
+                raise HumeOutputError("Unexpected Hume audio before input.")
+            audio = output.audio_bytes()
+            identity = (output.request_id, output.snippet_id)
+            if output.is_last_chunk:
+                self._unfinished_snippets.discard(identity)
+            else:
+                self._unfinished_snippets.add(identity)
+                if len(self._unfinished_snippets) > _MAX_PENDING_SNIPPETS:
+                    raise HumeOutputError("Hume pending snippet limit exceeded.")
+            self._received_audio = self._received_audio or bool(audio)
+            return audio or None
+        except ConnectionClosed as error:
+            if self._ws is not ws:
+                return None
+            if (
+                error.rcvd is not None
+                and error.rcvd.code == CloseCode.NORMAL_CLOSURE
+                and self._state is HumeStreamState.DRAINING
+                and self._received_audio
+                and not self._unfinished_snippets
+            ):
+                self._ws = None
+                self._state = HumeStreamState.READY
+                self._turn_complete = True
+                self._stream_available.clear()
+                self._start_close(ws)
+                return None
+            failure = HumeOutputError("Hume stream ended before completion.")
+            self._fail(ws, failure)
+            raise failure from None
+        except HumeOutputError as error:
+            self._fail(ws, error)
+            raise
+        except Exception:
+            if self._ws is not ws:
+                return None
+            failure = HumeOutputError("Hume receive failed.")
+            self._fail(ws, failure)
+            raise failure from None
+        # No await between recv and classification: polling cancellation cannot
+        # consume and silently discard a frame, or retire a healthy stream.
 
-    async def keepalive(self):
-        """Send a ping to keep the WebSocket alive."""
-        if self._ws:
-            try:
-                await self._ws.ping()
-            except Exception:
-                pass
+    def _fail(self, ws: ClientConnection, error: TTSConnectionFailed) -> None:
+        if self._ws is ws:
+            self._ws = None
+            self._state = HumeStreamState.FAILED
+            self._completion_error = error
+            self._turn_complete = False
+            self._stream_available.set()
+        self._start_close(ws)
+
+    def _start_close(self, ws: ClientConnection) -> asyncio.Task[None]:
+        task = asyncio.create_task(ws.close())
+        self._closing_tasks.add(task)
+        task.add_done_callback(self._closed)
+        return task
+
+    def _closed(self, task: asyncio.Task[None]) -> None:
+        self._closing_tasks.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            logger.warning("Hume close failed")
+
+    async def _close(self, ws: ClientConnection) -> None:
+        try:
+            await asyncio.shield(self._start_close(ws))
+        except Exception:
+            # Callback retrieves the error; cleanup must not mask the cause.
+            pass
+
+    async def handle_interruption(self) -> None:
+        async with self._lifecycle_lock:
+            if not self.is_connected:
+                return
+            ws, self._ws = self._ws, None
+            self._state = HumeStreamState.READY
+            self._turn_complete = True
+            self._stream_available.clear()
+            self._unfinished_snippets.clear()
+            if ws is not None:
+                await self._close(ws)
+
+    async def disconnect(self) -> None:
+        async with self._lifecycle_lock:
+            ws, self._ws = self._ws, None
+            self._state = HumeStreamState.DISCONNECTED
+            self._stream_available.set()
+            if ws is not None:
+                await self._close(ws)
+            if self._closing_tasks:
+                closing = asyncio.gather(
+                    *self._closing_tasks,
+                    return_exceptions=True,
+                )
+                await asyncio.shield(closing)
+
+    async def keepalive(self) -> None:
+        async with self._lifecycle_lock:
+            ws = self._ws
+            if ws is not None and self._state in (
+                HumeStreamState.READY,
+                HumeStreamState.STREAMING,
+            ):
+                try:
+                    await ws.ping()
+                except Exception:
+                    error = TTSConnectionFailed("Hume keepalive failed.")
+                    self._fail(ws, error)
+                    raise error from None
 
     @property
     def sample_rate(self) -> int:
-        return self._config.sample_rate
+        return HUME_SAMPLE_RATE
 
     @property
     def provider(self) -> str:
-        return "hume"
-
-    @property
-    def is_connected(self) -> bool:
-        return bool(getattr(self, "_connected", False))
+        return TTSProvider.HUME.value
 
     @property
     def model(self) -> str:
-        return str(getattr(self._config, "model", "") or "")
+        return self._config.model
+
+    @property
+    def is_connected(self) -> bool:
+        return self._state not in (HumeStreamState.DISCONNECTED, HumeStreamState.FAILED)
+
+    @property
+    def is_turn_complete(self) -> bool:
+        return self._turn_complete
+
+    @property
+    def turn_completion_error(self) -> TTSConnectionFailed | None:
+        return self._completion_error
 
     @property
     def capabilities(self) -> TTSCapabilities:
-        """Derived from this adapter's own behaviour, not from memory.
-
-        Confirm a False against vendor documentation before relying on it —
-        under-claiming makes a caller skip a feature, over-claiming breaks it.
-        """
         return TTSCapabilities(
             streaming=True,
             batch_synthesize=False,
             native_interruption=False,
             aligned_transcript=False,
-            emotion_control=False,
+            emotion_control=True,
             speed_control=True,
             voice_cloning=False,
             context_continuity=False,
+            sample_rates=(HUME_SAMPLE_RATE,),
         )

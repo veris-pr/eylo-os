@@ -1,10 +1,8 @@
 """Deepgram Nova STT vendor."""
 
-from .stt import DeepgramLanguages, DeepgramModels, DeepgramSTT, DeepgramSTTStream
+from .stt import DeepgramSTT, DeepgramSTTStream
 
 __all__ = [
     "DeepgramSTT",
     "DeepgramSTTStream",
-    "DeepgramModels",
-    "DeepgramLanguages",
 ]

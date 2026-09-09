@@ -1,0 +1,7483 @@
+# Python typing and literal-removal plan
+
+Status: implementation started; existing-enum cleanup, browser voice termination,
+recording disclosure, telephony opener/transfer typing, and four curated vendors'
+closed tool-input choices implemented. All eight LLM branches now have locally
+verified native request/response paths. Canonical response content and progress
+metadata have validated contracts; framework metadata serialization and critical
+callback contracts, shared run state, conversation/approval resume identity, MCP
+mutation authority, and durable-agent heartbeat ownership are locally verified.
+Objective completion and scheduled/objective call capture now use owned contracts.
+Telephony config resolution, explicit factories, and four carriers' credential
+consumers are locally verified; the voice caller import regression is fixed.
+Memory completion, embedding injection, and verification ports now have checked
+contracts through formation and reconciliation callers; broader memory storage
+and durable-job typing remains pending.
+Widget responses and conversation prompt projections now have typed contracts
+through SDK submission, DB filing/readback, memory-query selection and framework
+input. Persisted interaction facts, finite message extensions and client-context
+validation, voice duration and terminal speech outcomes now have typed boundaries;
+session composition now validates construction and assignments without unrestricted
+enrichment. Live voice capture and post-call projection now use validated models;
+canonical failure codes retain their enum through DB readback and API output.
+Framework tool observations now retain typed payloads through voice history and
+durable replay; exact result correlation and private item serialization are
+locally verified. Framework model blocks now retain typed text/reasoning/tool
+variants through execution and replay; JSON history snapshots and same-response
+tool-exchange ordering are locally verified through all eight LLM history formats.
+Active message/input/approval observations and their pause continuations now have
+typed contracts through runner output, durable filing/readback and voice capture.
+Callback references use frozen Pydantic models and remain excluded from snapshots.
+Reserved observation kinds without active producers remain finite JSON envelopes.
+Product wait readback, approval decisions and all three resume continuation
+projections now retain validated objects; pending/null answer semantics and
+refusal before capacity reacquisition are locally verified.
+Durable task locators, principal/claim snapshots, terminal receipts and human-input
+wake notifications now use validated models. The real Absurd/PostgreSQL path was
+verified through input suspension, an answer while the worker was stopped, and
+graceful worker restart/resumption; general checkpoint payload typing remains open.
+Reported usage, numeric model settings and budget meter inputs now have strict
+contracts. SDK-to-budget and terminal message DB readback are locally verified;
+missing usage remains distinct from a reported zero. Vendor stream assemblers,
+shared tool buffers and Gemini replay now use validated Pydantic contracts; all
+eight native SDK branches have repeated response and teardown checks. Effective
+LLM generation, overrides, provider material and pinned runtime config now use
+validated Pydantic contracts; encrypted persistence and revision readback are
+locally verified. LLM verification now uses detached typed input/receipts,
+native response validation, and short revision-checked DB transactions; all eight
+SDK paths and authenticated API/DB outcomes are locally verified. Framework run
+limits, copied settings, mutable context assignments and failure metadata now have
+checked contracts. Framework control modes and their pipeline translations now use
+owned enums; inactive settings carry explicit schema warnings. Ordered LLM-to-voice
+segments and correlation now have validated Pydantic contracts. Platform agent/tool
+identity metadata, conversation request correlation, and tool-message payloads are
+validated through approval, live history, refresh and replay projections.
+Generated next-turn tool history and scheduled/objective resumed exchanges now use
+shared owned models, with private annotations excluded and native history format
+parity verified. Terminal tool decisions, conversation completion/pause projections,
+and objective completion/readback now have typed contracts with controlled-path
+verification. Handoff outcomes, reference agreement and transcript attribution now
+have validated contracts. Normalized realtime events and callbacks are locally
+verified, including Gemini SDK translation. Realtime session snapshots and native
+capability projections now use validated models and owned enums through browser
+setup, verification and all three adapters. Effective realtime material now has
+typed inference settings and credential variants, with shared session construction
+and org/config identity agreement. STT/TTS material now has typed inference and
+credential variants, shared verification/runtime composition and transport-only
+media overrides. Requested config/revision agreement is checked for all three
+voice capabilities. The stored voice carrier now has typed Pydantic settings,
+private immutable secrets and explicit storage serialization; all 24 providers'
+CRUD handoff/resolution contracts are locally verified. Remaining native STT/TTS factory
+options remain open. ElevenLabs TTS now has native Pydantic wire contracts,
+per-turn stream ownership and verified failure propagation through the TTS queue
+runtime. Cartesia TTS now has native Pydantic contracts, context-scoped output
+filtering, explicit finalization/cancellation and configured speed forwarding.
+TTS factory dispatch uses its owned provider enum and returns the shared adapter
+contract. Flat/nested TTS settings now normalize deterministically, and the seven
+previously plain native config classes use frozen Pydantic models. The voice
+runner carries the normalized object into factory construction. Hume now has
+native request/output contracts, explicit end-input and per-turn stream ownership;
+its fixed 48 kHz output is verified through the TTS queue path. Browser playback
+and recording now share an explicit 16 kHz consumer contract, with native-format
+conversion, resampler finalization and interruption reset locally verified.
+Carrier conversion now shares TTS completion ownership; realtime output pins
+actual turn format, flushes completion and discards interrupted/shutdown tails.
+The carrier handoff is a Pydantic model with excluded live handles. Local audio,
+setup and carrier-serialization checks pass; live provider/browser QA, reconnect
+continuity and broader response correlation remain pending.
+Call sessions now use validated Pydantic handles, immutable registry identity,
+typed product metadata and explicit lifecycle modes. Stale removal, cancellation,
+setup rollback and all four carriers' audio regressions are locally verified.
+Canonical STT outcomes now remain validated objects through factory/runtime queues,
+debounce and transcript handling. DTMF controls have a separate pipeline-owned
+contract; batches retain segment identities and timing. Backpressure, terminal
+child failures, cancellation and partial-startup cleanup are locally verified.
+Native response contracts have replaced the intermediate adapter dict envelope;
+the unused bridge is removed. Native configuration and lifecycle work remain open.
+AssemblyAI, Cartesia, Speechmatics and Deepgram Listen v1 STT now have native
+Pydantic request/response contracts;
+acknowledgements, finality, errors, credentials and terminal iteration have
+controlled-path checks. Cartesia deltas retain their spacing through factory,
+debounce, the live transcript buffer and the agent callback. PCM encoding aliases
+are translated at the vendor boundary, not passed through as vendor wire values.
+Shared STT config, retry settings, capabilities and metrics now use Pydantic.
+Factory/runtime configuration retains enum identity, strict values, native-option
+privacy and retry settings across construction. Capabilities use adapter-owned
+declarations. Vendor input codec is no longer confused with incoming transport
+encoding. Retry settings now control bounded connection/readiness attempts and
+explicit reconnect establishment, with cleanup before another attempt. Active
+stream recovery and uncertain audio replay remain open. Eight WebSocket-based
+adapters now translate HTTP/network establishment failures into socket-owned
+failure kinds. AWS now has validated native options, exact SDK stream types,
+owned partial-startup/cleanup tasks, observed early SDK failures, and typed native
+error/EOF translation. Request/session IDs no longer masquerade as segment IDs.
+AWS physical transport disposal now uses an owned HTTP/2 connection and has passed
+local SDK/CRT socket checks. Signed input EOF now preserves final output through
+factory/runtime forwarding, debounce and a live telephony rollback consumer.
+Failed-start rollback keeps that consumer alive and attempts both provider closes.
+Google STT now uses a frozen Pydantic config and the actual async SDK request and
+response types. Local native TLS/gRPC checks cover readiness, EOF-only final
+output, error propagation, verification, backpressure and cancellation. Factory
+supervision preserves terminal reader failures instead of restarting a reader on
+the same failed RPC. Canonical post-call persistence, live AWS/Google acceptance
+and remaining native protocol failure classification remain open; these slices
+do not establish complete voice lifecycle correctness.
+Other generic provider envelopes and remaining native STT/TTS request/response/lifecycle
+contracts still need completion.
+Shared voice-task supervision now uses bound coroutine factories and typed task
+registries; restart vetoes, child cancellation, acknowledgement-only queue drain
+and STT parent cancellation are locally verified. Speech text/finalize requests,
+Redis routing and queue consumption now retain validated Pydantic contracts;
+policy capture, turn replacement and complete-response finalization are locally
+verified. Native adapter cleanup and broader concurrent lifecycle contracts remain open.
+OpenAI realtime now uses native request/event models
+through frame validation, tool correlation and normalized manager capture. Nova
+now has owned JSON wire/state contracts inside native SDK streams, including
+content/tool correlation, EOF and cancellation-safe cleanup. Other producer
+metadata, native STT/TTS requests/events and caller payloads remain open.
+Budget task scopes and outstanding-capacity snapshots now use validated Pydantic
+models; nesting, task isolation and cancellation restoration are locally verified.
+Remaining known producer extension schemas and provider flows are open.
+Remaining caller payloads and other platform flows are still pending. Scoped gates
+are not whole-platform completion, and native transport fixtures are not live vendor QA.
+
+Reviewed on 2026-09-07 against `5ab44c09`. This is a maintainer work plan, not a
+claim that every proposed contract is already implemented. The progress section
+below distinguishes completed slices from the original review findings.
+
+## End goal
+
+Closed domain choices remain typed from their producer to their consumer.
+Named limits explain their purpose and units. Platform-owned payloads and known
+vendor request/response shapes have explicit fields instead of requiring callers
+to remember dictionary keys. This includes every provider and vendor in the
+platform, not just SOR or curated integrations.
+
+Acceptance criteria:
+
+- Closed states, modes, outcomes, and failure categories use their owner's enum.
+- Internal callers retain enum/object types; serialization happens at boundaries.
+- Meaningful limits have one named owner. Equal numbers do not imply shared policy.
+- Persisted and public values retain their existing spelling and meaning.
+- Refactored paths pass type checking and source-to-sink verification.
+- Dynamic customer/vendor fields remain supported. No new default provider/model.
+- Types respect platform, product/profile, vendor, and standalone-framework
+  boundaries; fewer duplicate literals must not mean tighter cross-domain coupling.
+- Every executable vendor operation has a checked request, response/event, error,
+  and consumer contract, including authentication, verification, discovery,
+  pagination, callbacks, streaming, and durable readback where applicable.
+- Existing SDK types retain their precision inside adapters. A typed config,
+  agent input, or final canonical object alone does not satisfy this requirement.
+- Work is selected by complete data flows and their dependencies. Literal/`Any`
+  searches are secondary omission checks, never the implementation sequence.
+
+## Evidence and limits
+
+The following is the pre-implementation review baseline. See implementation
+progress for subsequent checks.
+
+- AST inventory: **1,212 first-party Python files** under `server/eylo`, `cli`,
+  and `server/scripts`; dependencies, hidden directories, and build/cache output
+  excluded. Candidate patterns include string comparisons, open dictionaries,
+  boolean annotations, literal annotations, and numeric policy arguments.
+- Targeted manual traces cover voice, telephony, campaigns, provider factories,
+  curated integrations, retrieval, events, SOR, sandbox, scheduling, aggregate
+  responses, and the local verification hooks.
+- Existing Pyrefly project check: **1,172 diagnostics, 19 suppressed**. The largest
+  reported categories were argument types (430), missing attributes (338), and
+  overload matching (67). This is not a count of confirmed runtime bugs or of
+  issues attributable to literals. Environment/stub issues require separate triage.
+- A focused check of five candidate files reported two diagnostics, both in
+  `pipelines/knowledgebase/query.py`: the boolean scope-parse sentinel and the
+  `BaseException` result of `asyncio.gather(return_exceptions=True)` are not fully
+  narrowed before consumption.
+- This is broad static coverage plus selected full-path inspection, not a manual
+  review of every function. No live vendor, worker-crash, DB, or browser QA was run.
+- Review-artifact checks: documentation verification passed (46 pages, 252 local
+  links); `git diff --check` passed. Only this plan and its documentation-index
+  link were added; Python behavior and runtime state were not changed.
+
+Commands executed from `server/`, through the repository's `rtk` wrapper:
+
+```bash
+rtk proxy .venv/bin/pyrefly check --output-format omit-errors --count-errors=10 --summary
+rtk proxy .venv/bin/pyrefly check --output-format min-text \
+  eylo/pipelines/telephony/sessions.py \
+  eylo/modules/conversations/schemas/aggregates.py \
+  eylo/pipelines/integrations_v2/vendors/github/tools.py \
+  eylo/pipelines/knowledgebase/query.py \
+  eylo/sockets/stt/factory.py
+```
+
+The broad scan also found substantial existing typed contracts. In particular,
+the framework, AgentRun lifecycle, outbound effect outcomes, memory results, and
+SOR canonical/command payloads are foundations to reuse, not replace.
+
+## Choose the right replacement
+
+| Meaning | Replacement | Boundary rule |
+| --- | --- | --- |
+| Closed state, mode, operation, policy | Owner-defined `StrEnum`/existing string enum | Validate incoming string once; use enum internally. |
+| Vendor-defined integer code with a closed known set | Vendor-owned `IntEnum` | Translate at the adapter; define an explicit unknown-value policy. |
+| Timeout, byte cap, batch size, queue capacity | Descriptive `Final` constant or existing effective config | Include units; name the policy, not the number. |
+| Fixed payload with known fields | Pydantic model, frozen for immutable values | Validate on ingress/readback; serialize on egress. Internal placement alone does not justify a dataclass. |
+| Action-dependent fields | Discriminated union of action-specific objects | Keep `Literal[Enum.MEMBER]` tags where useful. |
+| Dictionary required by an SDK/API | Existing SDK type or `TypedDict` | Convert at the gateway; a `TypedDict` alone does not validate input. |
+| Custom fields, schema-defined mappings, user text, arbitrary model IDs | Bounded JSON/string with appropriate validation | Do not invent an enum for an open value space. |
+| Intrinsic predicate | `bool` | Keep predicates such as `is_empty`; do not encode a mode in flags. |
+
+User clarification (2026-09-08): Pydantic is already part of the platform. Prefer
+it for internal data contracts as well as ingress/egress models; retain dataclasses
+only for a specific documented requirement. Preserve ownership, mutability,
+live-resource identity and snapshot exclusion during conversion. Previously
+verified dataclass increments are not exempt: revisit them along their data flows,
+without treating a blanket decorator replacement as correctness evidence.
+
+Constants alone do not improve type safety. `STATUS_FAILED = "failed"` passed
+through `status: str` still permits any other string. Likewise,
+`class StateKey(Enum): STATUS = "status"` does not make `dict[str, Any]` a typed
+result. Prefer `result.status: ResultStatus`.
+
+Do not create a platform-wide `constants.py` containing unrelated vocabularies.
+Domain enums belong to the owning module/product. Genuine module/socket
+contracts belong in `common/contracts`; vendor wire vocabulary belongs to its
+adapter. `framework/` keeps its own types and zero `eylo.*` imports. Integration
+and SOR adapters must not import each other's domain enums just because both
+implement the same vendor.
+
+### Required ownership boundary
+
+User clarification: platform and vendor types must respect their separate
+boundaries. This requirement governs every finding and implementation slice.
+
+| Owner | Owns | Does not export inward |
+| --- | --- | --- |
+| Platform domain | Canonical lifecycle, outcomes, policies, events, and domain value objects | Dependencies on vendor enums, SDK models, or vendor error semantics. |
+| Shared capability contract | Vendor-neutral inputs/results and protocols genuinely used across module/socket boundaries | A union of every vendor's private payload or options. |
+| Product or SOR profile | Its canonical entities, relationships, tools, and workflow semantics | Assumptions that one vendor's entity/state vocabulary is universal. |
+| Vendor adapter | Wire enums/codes, request/response models, SDK types, endpoint/scope constants, and vendor limits | SDK objects or vendor-specific state types in canonical domain signatures. |
+| Pipeline | Config resolution, orchestration, and explicit translation between platform contexts | Vendor protocol logic or a new competing definition of domain state. |
+| Standalone framework | Its own runtime and tool contracts | Imports from `eylo.*`; platform translation stays outside it. |
+
+Required translation paths:
+
+- Inbound: vendor payload → vendor validation → adapter mapping → canonical
+  capability/profile object → platform policy and persistence.
+- Outbound: canonical command → adapter mapping → vendor request object → wire.
+- Failures: vendor code/exception → adapter classification → canonical failure
+  contract → platform retry/recovery policy. Preserve original vendor detail in
+  an explicit, safe diagnostic field when needed.
+
+Equal spellings do not make types interchangeable. Two enums named `Status` may
+represent different lifecycles; map them explicitly rather than aliasing them or
+casting one to the other. Unknown vendor values need an explicit handling policy,
+not a fabricated canonical state or silently successful fallback.
+
+Curated integrations are deliberately vendor-specific: their public tool input
+contracts may expose vendor choices owned by that integration. This does not
+authorize those types to leak into neutral SOR tools or the core agent runtime.
+Vendor configuration DTOs can likewise expose supported options without exposing
+SDK classes or making platform policy depend on vendor-private types.
+
+Platform budgets and vendor limits retain separate constants/config ownership,
+even when numerically equal. An adapter translates or reports an unsupported
+capability; it does not redefine the platform's voice, retry, or data policy.
+
+## Findings and recommended changes
+
+Priority means refactor order, not incident severity. The risks below describe
+what weak contracts allow; they are not claims that each risk has occurred.
+
+### A1. Voice termination and recording disclosure lose their types
+
+Evidence:
+[lifecycle policy](../../server/eylo/pipelines/voice/lifecycle_policy.py),
+[browser pipeline](../../server/eylo/pipelines/voice/browser.py),
+[realtime pipeline](../../server/eylo/pipelines/voice/realtime.py),
+[WebSocket state](../../server/eylo/pipelines/websocket/schemas.py), and
+[telephony session](../../server/eylo/pipelines/telephony/sessions.py).
+
+- `browser_voice_session_status(reason: str | None)` classifies a raw-string set
+  of normal endings. Producers use strings such as `silence_timeout`,
+  `max_duration`, and `realtime_transport_ended`. An unrecognized spelling takes
+  the failed-session branch.
+- WebSocket recording disclosure is a `Literal`, while `CallSession` stores a
+  plain string; [consent handling](../../server/eylo/pipelines/voice/consent.py)
+  compares and assigns those strings across both runtime shapes.
+- Session callbacks, runtime mode, direction, and provider identity also lose
+  specific types. `CallSession.voice_config` and several collaborators use `Any`.
+
+Plan: a shared voice termination vocabulary and disclosure-state enum across
+the browser/carrier session boundary; reuse `VoiceRuntimeMode`. Retain the
+existing [telephony end-reason contract](../../server/eylo/common/contracts/telephony.py)
+and explicitly map voice reasons to it rather than silently renaming persisted
+telephony outcomes. Use narrow session protocols for shared operations.
+
+Verify: every current termination producer has a deliberate classification;
+normal hangup, timeout, provider failure, interruption, and disclosure still
+produce the same session/API/widget outcomes. Disclosure must not block recording.
+
+### A2. Call lifecycle and campaign dispatch use string/dictionary protocols
+
+Evidence: [call model](../../server/eylo/modules/telephony/models.py),
+[lifecycle writers](../../server/eylo/modules/telephony/lifecycle.py),
+[campaign voice adapter](../../server/eylo/products/campaigns/channels/voice.py),
+and [scheduled call actions](../../server/eylo/pipelines/telephony/scheduled_actions.py).
+
+- `opener_delivery_status` has a closed DB check constraint but a `Mapped[str]`
+  annotation. `transfer_status` is also a string; lifecycle functions repeat its
+  accepted values in transition guards.
+- Campaign recovery checks `provider_status == "initiation-unknown"`; dispatch
+  reads `response["status"]` and compares `unknown`/`succeeded`.
+- The platform already has typed
+  [outbound outcomes and attempt states](../../server/eylo/common/outbound.py).
+
+Plan: owner-defined opener/transfer state enums; a typed call-initiation outcome
+consumed by campaign and scheduled dispatch. Preserve the distinction between
+canonical call state, outbound effect outcome, and raw provider-native status.
+Do not force arbitrary vendor status/error text into a closed platform enum.
+
+Verify: accepted, rejected, retryable, unknown, transferred, and cancelled flows;
+especially that an unknown external effect is not accidentally retried. Read
+historical rows before tightening persistence validation.
+
+### A3. Agent tool choices are sometimes prose rather than schema constraints
+
+Evidence: curated
+[GitHub](../../server/eylo/pipelines/integrations_v2/vendors/github/tools.py),
+[Freshdesk](../../server/eylo/pipelines/integrations_v2/vendors/freshdesk/tools.py),
+[GitLab](../../server/eylo/pipelines/integrations_v2/vendors/gitlab/tools.py), and
+[Intercom](../../server/eylo/pipelines/integrations_v2/vendors/intercom/tools.py) inputs.
+
+- GitHub `SearchIssuesInput.state` and `ListPullRequestsInput.state` are `str`;
+  their descriptions list `open, closed, or all`. `_state()` validates later.
+  The input schema cannot provide an enum from this annotation.
+- Freshdesk repeats string status/priority names and integer wire-code mappings.
+- Other curated tools contain similar manually validated query choices.
+
+Plan: vendor-owned input enums, distinguishing a query filter's `all` from an
+entity's actual lifecycle states; integer wire-code enums where appropriate.
+Keep user-defined Jira workflow names, IDs, labels, and custom properties open.
+Also cover typed vendor requests, response envelopes/nested entities, errors,
+and curated results for every registered vendor. Define output objects rather
+than constants for JSON keys. The four completed input-enum slices below are
+partial A3 work, not completed vendor typing. Follow the flow schedule below.
+
+Verify: tool JSON Schema advertises exactly the supported choices; invalid input
+is rejected before vendor I/O; preserve current normalization of accepted input.
+Compare request serialization and mutation receipts. Consult current official
+vendor docs before changing supported value sets, scopes, or request shapes.
+
+### A4. Error categories and retry decisions need owner-defined contracts
+
+Evidence: [event delivery service](../../server/eylo/events/durable/service.py),
+[event workflow](../../server/eylo/events/durable/workflow.py),
+[reranking errors](../../server/eylo/common/contracts/reranking.py), and
+[storage errors](../../server/eylo/sockets/storage/base.py).
+
+- `EventDeliveryService.record_failure(error_code: str, permanent: bool)` validates
+  a fixed three-string set which its workflow also repeats.
+- Socket exceptions commonly combine an untyped `code` with a retry-policy flag.
+
+Plan: begin with `EventDeliveryFailureCode` and a named retry disposition at that
+boundary. Extend the pattern to provider errors by capability, not one global
+error enum. Keep user-facing explanation and original vendor code separate from
+the platform failure category. Reuse existing exception subclasses when they
+already express the distinction.
+
+Verify: transient/terminal/unknown outcomes retain their retry, dead-letter, and
+operator-message behavior. Do not reinterpret cancellation as retryable failure.
+
+### A5. Durable job inputs and saved results need typed readback
+
+Evidence: [event workflow](../../server/eylo/events/durable/workflow.py),
+[scheduled run result](../../server/eylo/pipelines/scheduler/durable_execution.py),
+[sandbox execution](../../server/eylo/pipelines/sandbox/tool_execution.py), and
+[AgentRun persistence](../../server/eylo/modules/agent_runs/models.py).
+
+- Event workflow parameters are a dictionary manually parsed into two UUIDs.
+- `_run_result()` builds a bare dictionary with a `scheduled_agent` discriminator.
+- `SandboxToolAction` already has an enum but mixes optional exec/read/write
+  fields. Its outcomes still expose open `content`/`metadata` dictionaries.
+- Typed AgentRun lifecycle fields coexist with open artifact/owner-kind fields.
+
+Plan: per-workflow input/result objects and validated persistence decoders;
+action-specific sandbox input variants. Type only platform-owned receipt fields;
+keep genuinely arbitrary model output in an explicit bounded JSON field.
+
+The existing [DB JSON serializer](../../server/eylo/common/database.py) can encode
+Pydantic-compatible objects. It does **not** reconstruct those objects when JSONB
+is read, validate historical dictionaries, or cover external SDK serialization.
+Both directions need an explicit contract. Preserve checkpoint keys, fingerprints,
+task names, versions, and already-enqueued payload compatibility.
+
+Verify: enqueue → claim → serialize → load → resume → public result, including old
+payloads, malformed payload refusal, cancellation, retry, and output-size limits.
+
+### B1. Provider identity and effective config lose existing enum types
+
+Evidence: [STT schemas](../../server/eylo/sockets/stt/schemas.py),
+[STT factory](../../server/eylo/sockets/stt/factory.py),
+[embedding factory](../../server/eylo/sockets/embedding/factory.py), and
+[reranking factory](../../server/eylo/sockets/reranking/factory.py).
+
+- `STTProvider`, `STTEncoding`, `STTTurnDetection`, and `STTEndpointingMode` exist,
+  but `STTConfig` stores those choices as strings, often defaulting to `.value`.
+- Factories dispatch on strings and reconstruct dictionaries from effective config.
+
+Plan: carry existing enums through the effective config and factory; use typed
+vendor-option objects for known fields. Preserve an explicit validated extension
+map only where custom options are supported. Continue through each adapter's
+request builders, SDK/HTTP responses, streaming messages, error mapping, and
+consumer: stopping at the factory leaves the important wire boundary untyped.
+Apply this to all capability vendors in the scope ledger below. Existing typed
+SDK models should be retained rather than wrapped in redundant local copies.
+
+Verify: configure → verify → bind → resolve → construct → execute → close for each
+changed adapter. Keep credentials inside the adapter boundary and preserve config
+revision/fingerprint semantics. Do not turn arbitrary model or voice IDs into a
+closed enum, or replace an explicit factory with reflective registration.
+
+### B2. Retrieval results and observations need typed fields
+
+Evidence: [KB query](../../server/eylo/pipelines/knowledgebase/query.py),
+[memory application](../../server/eylo/pipelines/memory/application.py), and
+[ranking metadata](../../server/eylo/common/contracts/reranking.py).
+
+- `_Search` annotates knowledgebase, adapter, and scopes as `Any`.
+- KB results are dictionaries carrying a temporary `_local_observation` object
+  which the outer wrapper removes. `_parse_scopes()` returns a list, `None`, or
+  a boolean sentinel; the annotation admits `True` although only `False` is emitted.
+- `RankingState` is typed, but shared reason codes and domain failure codes are not.
+
+Plan: typed search context, query hits/result, and a separate internal result plus
+observation object. Use explicit valid/invalid parsing or a local parsing exception
+converted to the existing public refusal result. Use owner-defined ranking reason
+codes where the set is closed. Keep KB/memory ownership and grants separate.
+
+Verify: invalid scope does not widen access; top-k, citations, partial provider
+failure, reranking fallback, and observation emission remain equivalent. Resolve
+the two observed narrowing diagnostics without swallowing `CancelledError`.
+
+### B3. Event vocabulary is repeated between emitters and timeline projection
+
+Evidence: [session publisher](../../server/eylo/modules/user_sessions/service.py),
+[timeline catalog](../../server/eylo/modules/user_sessions/timeline.py), and
+[agent lifecycle listener](../../server/eylo/listeners/py_events/agent_lifecycle.py).
+
+Plan: owner-defined event names and typed payloads shared by emitters and catalog
+registration. Stop manually reconstructing closed lifecycle names in consumer
+loops. Preserve existing event strings, legacy payload readability, and the
+distinction between durable delivery and ephemeral notification.
+
+Verify: each registered producer has a timeline definition; old and new payloads
+render the same category/label/status. A typed name must not change ordering,
+transaction, or durability guarantees.
+
+### B4. Aggregate/API schemas erase domain types before client generation
+
+Evidence: [conversation aggregates](../../server/eylo/modules/conversations/schemas/aggregates.py)
+declare `AgentSummary.status: str` and `MessageSummary.kind: str` while other fields
+already use domain enums.
+
+Plan: carry the owning enum into aggregate DTOs. Repeat for provider, connection,
+session, and job projections after locating the owning type. Keep serializer
+values unchanged and regenerate the console/CLI contract when schemas change.
+
+Verify: enum appears in OpenAPI and generated client types; real list/detail
+responses validate; UI labels/casing remain presentation concerns.
+
+### B5. Onboarding form vocabulary and policy flags
+
+Evidence: [field schema](../../server/eylo/modules/provider_onboarding/schemas.py)
+uses typed `Literal` choices for `kind` and `target`, but
+[catalog helpers](../../server/eylo/modules/provider_onboarding/catalog.py) accept
+plain strings. The schema also validates duplicated `target`/`secret` information.
+
+Plan: shared field-kind/target enums through builders and consumers; avoid
+weakening existing `Literal` validation. Review flags individually: modes,
+capabilities, and retry policies merit enums; intrinsic field predicates such as
+`required` and `multiline` do not automatically need a lifecycle enum. Derive
+redundant internal properties where possible while retaining the API shape.
+
+Verify: catalog-to-schema parity, conditional fields, secret placement, and the
+existing provider form behavior. Public or stored boolean-to-enum migrations
+require a separately specified compatibility change, not an incidental cleanup.
+
+### B6. Finish SOR boundary cleanup without undoing typed canonical data
+
+Evidence: [command payload validation](../../server/eylo/sor/runtime/command_payloads.py),
+[Confluence adapter](../../server/eylo/sor/knowledge/vendors/confluence.py), and
+[HubSpot adapter](../../server/eylo/sor/crm/vendors/hubspot.py).
+
+The prior SOR work is present: canonical/command objects and explicit validation.
+Remaining candidates include adapter vendor-key comparisons, response limits,
+fixed wire vocabulary, and lifecycle strings. Discovered fields and mapping paths
+are intentionally data-driven; the remaining dictionary count is not evidence
+that canonical payload typing failed.
+
+Plan: preserve typed registries and canonical/command payloads; type known vendor
+request/response fields before their source-record mapping as well as remaining
+closed choices. Include discovery, sync pages, exact-record fetch, mutations,
+webhook registration/delivery, OAuth, and cursor/checkpoint readback. Keep raw
+vendor JSON localized to parsing and an explicit bounded extension map for
+custom fields, configured mapping paths, or forward-compatible provenance.
+Do not generate a key enum for every discovered field or import curated tool
+schemas into SOR canonical contracts.
+
+Verify: catalog/payload parity, cursor round trips, custom mappings, canonical
+projection, relation intents/resolution, command serialization, and agent tools.
+
+### C1. Name operational limits and units
+
+| Current location/value | Proposed ownership |
+| --- | --- |
+| `common/database.py`: `pool_recycle=3600` | Named DB pool recycle seconds, or existing DB settings owner if operator-configurable. |
+| `modules/auth/services/session_service.py`: `timedelta(days=7)` | Named auth-session lifetime; preserve current duration. |
+| `events/durable/workflow.py`: `heartbeat(seconds=120)` | Reuse the durable claim timeout if it is the same lease policy; otherwise name the event-specific policy. |
+| `jobs/sor.py`: six recovery calls with `limit=100` | Named per-scan recovery batch policy, not an implied global concurrency cap. |
+| `pipelines/scheduler/durable_execution.py`: `65536` result bytes | `MAX_SCHEDULED_AGENT_RESULT_BYTES`, shared with its validator/error description. |
+| Integration OAuth exchange and refresh: `response_body_limit=262_144` | One OAuth response byte limit owned by that HTTP boundary. |
+| Confluence: `response_body_limit=8_388_608` | Vendor-specific response byte cap. |
+| STT/TTS queues, polling, frame timing, sample rates | Named queue/pacing policies and typed audio formats; do not unify vendor-specific rates merely because values match. |
+
+Already-good examples: `DURABLE_CLAIM_TIMEOUT_SECONDS`,
+`DURABLE_HEARTBEAT_INTERVAL_SECONDS`, outbound field-length limits,
+`MAX_RERANK_CANDIDATES_PER_KNOWLEDGEBASE`, and sandbox byte/path/time limits.
+Retain mathematical constants, indexing `0`/`1`, regex syntax, and fixed SDK
+wire keys when naming would not add meaning. Prefer standard HTTP status types
+over creating a second private HTTP code vocabulary.
+
+Verify: exact old values and units; boundary-minus-one/at/plus-one checks;
+unchanged retry/timeout behavior. Naming a limit does not authorize changing it.
+
+### C2. Use existing enum members directly and enforce the types
+
+Examples already have the right enum but compare serialized text:
+
+- [Conversation runner](../../server/eylo/pipelines/conversation/conversation_runner.py):
+  `result.status.value == "timed_out"` / `"max_turns_exceeded"`.
+- [Agent lifecycle listener](../../server/eylo/listeners/py_events/agent_lifecycle.py):
+  `event.outcome.value == "failed"`.
+- [Memory pgvector adapter](../../server/eylo/sockets/memory/vendors/pgvector.py):
+  `message.role.value == "user"`.
+
+These are small, low-risk slices: compare enum members and keep `.value` at the
+wire boundary. Do not cast a plain DB string and pretend it became an enum.
+
+The project already pins Pyrefly in
+[pyproject.toml](../../server/pyproject.toml), but
+[local hooks](../../.pre-commit-config.yaml) run Python lint/import checks rather
+than a Python type-check gate. Add scoped checks after each slice is clean;
+expand toward the full project. Do not suppress all 1,172 diagnostics or claim a
+clean baseline from a reduced error count alone. `Any`-heavy code may pass while
+remaining weakly typed, so review producer/consumer annotations too.
+
+## Review conclusions by axis
+
+1. **DDD boundaries:** vocabularies need a clear owner. Reusing common contracts
+   is useful; importing a domain module into a socket to reuse its enum is not.
+2. **Architecture fit:** extend existing explicit factories, Pydantic contracts,
+   dataclasses, and DTO projections. No generic schema engine or global enum registry.
+3. **Data flow:** the biggest gaps are early serialization, unvalidated readback,
+   duplicate state dictionaries, and policy represented by open strings/flags.
+4. **Plan alignment:** SOR established the desired canonical-object approach. This
+   request extends it platform-wide; it does not authorize new product behavior,
+   replacing integrations, or changing persistence history.
+5. **Maintainability:** reducing literal count is not the success metric. A reader
+   should discover allowed values and required fields from a type, and a checker
+   should catch an invalid caller before execution.
+
+Security/performance constraints: preserve tenant/grant filters, refusal behavior,
+secret redaction, and short transactions. Validate at boundaries, not on every
+audio frame or repeatedly inside large SOR record loops. Enum/object conversion
+must not add vendor I/O or turn bounded JSON into unrestricted payloads.
+
+## Ordered implementation backlog
+
+### Scope clarification: every vendor request and response
+
+On 2026-09-07 the user clarified that request/response type definitions apply to
+**all vendors and providers in the platform**. Plan the work sequentially through
+product data flows, not by searching for random literals. This schedule supersedes
+the earlier enum-first order; completed A1/A2 and partial A3 work is retained.
+A4/A5 and B1–B6 are worked at each flow's boundary, not postponed until all enums
+have been converted.
+
+The gap is not simply missing annotations. For example,
+[Freshdesk `_ticket_view`](../../server/eylo/pipelines/integrations_v2/vendors/freshdesk/tools.py)
+looks up a root-level `email` after testing `requester_id`, while `get_ticket`
+does not request requester embedding. Freshdesk documents requester email as
+additional requester data, not part of the default ticket response
+([official reference](https://developers.freshdesk.com/api/#view_a_ticket)).
+Typing an invented optional `email` field would preserve the mistake. Each field
+needs documented provenance and an operation that actually retrieves it.
+
+### Inspection evidence and limits for this expansion
+
+The planning pass followed the conversation runner and capability resolvers into
+explicit factories, then examined representative adapter and sink paths:
+
+- `FrameworkConversationRunner`/model adapter → LLM resolution → `LLMFactory` →
+  native message transformation → `LLMResponse` → framework response/messages.
+  [OpenAI](../../server/eylo/sockets/llm/vendors/openai.py) already imports SDK
+  request/response types, but its message transformation exposes a broad
+  dictionary return type and usage normalization takes `Any`.
+- Curated registry → `execute_curated_tool` → input validation → auth →
+  `GuardedVendorClient` → vendor handler → curated output/attempt receipt.
+  Freshdesk inputs are typed; its wire bodies and response projections are not.
+- KB/memory resolver → embedding/reranking adapter → retrieval result. The
+  [Bedrock embedding adapter](../../server/eylo/sockets/embedding/vendors/bedrock.py)
+  has typed config and vector validation but builds/reads native JSON dictionaries.
+- Pinned voice config → STT/TTS factories or realtime factory → adapter events →
+  voice manager. SDK-typed Gemini Live events already map to neutral events;
+  [Deepgram TTS](../../server/eylo/sockets/tts/adapters/deepgram_adapter.py) still
+  parses JSON control messages with dictionary keys. Binary audio is a different
+  contract from those control messages.
+- SOR registry → `SorSyncWorkflow._fetch_page` → adapter → encoded page →
+  `_decode_page` → `_commit_page` → canonical projection/relationships. Vendor
+  downloading and DB commit are separate. Freshdesk SOR's `_external_record`
+  consumes raw mappings before typed canonical normalization. Existing canonical
+  typing does not prove native response typing.
+- Webhook ingestion verifies raw request bytes, parses vendor delivery, commits
+  receipt/signals, then spawns work. Email delivery and MCP mutations use the
+  outbound receipt authority. Storage/sandbox resolvers already expose useful
+  typed interfaces; their SDK/protocol responses still need operation-level review.
+
+The scope ledger below is verified against executable factory/registry wiring,
+not a claim that every vendor method was manually reviewed. This expansion is
+planning-only: no live provider calls, DB changes, dependency upgrades, or runtime
+code edits. Latest vendor/SDK documentation and field-by-field verification remain
+mandatory before implementing each vendor slice. Existing protocol versions must
+be checked against their matching official docs; using current docs does not
+authorize silently upgrading the protocol.
+
+### Scope ledger: nothing implicitly excluded
+
+Provider identity below names an implementation/configuration path, not live QA
+coverage. A completed config or enum slice leaves request/response work pending.
+Inspect all actual factory branches, including compatibility adapters and SDK
+wrappers reached through them; do not declare a provider done from its catalog row.
+
+| Capability | All current provider paths in scope | Executable authority |
+| --- | --- | --- |
+| LLM | Anthropic; Bedrock; Cerebras; Gemini; Groq; OpenAI; OpenAI Responses; Sarvam | [LLM factory](../../server/eylo/sockets/llm/factory.py) |
+| STT | Amazon Transcribe; AssemblyAI; Cartesia; Deepgram; Deepgram Flux; Gladia; Google; Rev AI; Sarvam; Speechmatics | [STT factory](../../server/eylo/sockets/stt/factory.py) |
+| TTS | Amazon Polly; Cartesia; Deepgram; ElevenLabs; Groq; Hume; Murf; OpenAI; Rime; Sarvam; Smallest AI | [TTS factory](../../server/eylo/sockets/tts/factory.py) |
+| Realtime | Amazon Nova Sonic; Gemini Live; OpenAI Realtime | [Realtime factory](../../server/eylo/sockets/realtime/factory.py) |
+| WebRTC credentials | Metered; Turnix | [STUN/TURN factory](../../server/eylo/sockets/stun_turn/factory.py) |
+| Telephony | Twilio; Plivo; Vonage; Exotel | [Telephony factory](../../server/eylo/sockets/telephony/factory.py) |
+| Email | SMTP; SendGrid | [Email factory](../../server/eylo/sockets/email/factory.py) |
+| Storage | S3; local filesystem | [Storage factory](../../server/eylo/sockets/storage/factory.py) |
+| Embedding | Bedrock; OpenAI-compatible; Voyage | [Embedding factory](../../server/eylo/sockets/embedding/factory.py) |
+| Reranking | Bedrock; Cohere; Voyage | [Reranking factory](../../server/eylo/sockets/reranking/factory.py) |
+| Memory | PostgreSQL/pgvector, including its configured LLM and embedding dependencies | [Memory resolver](../../server/eylo/pipelines/memory/resolver.py) |
+| Sandbox | Docker | [Sandbox resolver](../../server/eylo/pipelines/sandbox/resolver.py) |
+
+Additional adapter surfaces are equally in scope:
+
+- **Curated integrations:** all 29 entries in
+  [`_VENDOR_MODULES`](../../server/eylo/pipelines/integrations_v2/registry.py):
+  Airtable, Asana, Calendly, Confluence, Dropbox, Freshdesk, GitHub, GitLab, Gmail,
+  Google Calendar, Google Docs, Google Drive, Google Sheets, Google Tasks,
+  HubSpot, Intercom, Jira, Linear, Notion, Outlook, PagerDuty, Pipedrive, Sentry,
+  Shopify, Slack, Stripe, Typeform, Zendesk, Zoom. Include every registered tool,
+  not only the four vendors already receiving input enums.
+- **SOR:** all 11 executable profile/vendor registrations in
+  [`get_sor_registry`](../../server/eylo/sor/runtime/catalog.py): CRM—HubSpot,
+  Salesforce; ticketing—Jira, Linear, GitHub; support—Zendesk, Intercom, Freshdesk;
+  knowledge—Confluence, Notion, Linear Documents. Linear's two profiles and the
+  curated/SOR implementations of the same vendor require distinct consumer proofs.
+- **KB storage:** PostgreSQL FTS and pgvector through the
+  [KB resolver](../../server/eylo/pipelines/knowledgebase/resolver.py). These are
+  not the SOR knowledge profile and must not be conflated with it.
+- **MCP:** initialize, tool discovery/pagination, call results/errors, and session
+  lifecycle through [MCP execution](../../server/eylo/pipelines/mcp/execution.py)
+  and the [client](../../server/eylo/sockets/mcp/client.py). Dynamic server tool
+  arguments/results follow their advertised schemas; don't invent static classes
+  for unknown tools. The known MCP protocol envelope remains typed.
+- **Cross-cutting protocol paths:** provider verification/discovery and credential
+  resolution; integration/SOR OAuth exchange, refresh, revocation where implemented;
+  webhook registration, renewal, verification, ingress, and delivery; HTTP, SDK,
+  streaming, binary/media, XML/form, and local/DB responses as applicable.
+- **Future/planned vendors:** the same definition of done applies when they become
+  executable. This work does not implement roadmap-only SOR/messaging vendors or
+  assert support merely because a candidate exists in a catalog.
+
+### Repeatable vertical slice for one vendor operation
+
+Complete these steps in order, then move to the next operation/vendor. Known
+contracts may be reused, but a shared SDK does not prove all vendors using it
+have identical fields, error bodies, usage, or stream semantics.
+
+1. **Trace:** name the public/tool/job entrypoint, authority resolver, adapter
+   method, transport, parser, mapper, consumer, and persistence/event/API sinks.
+   Follow calls in both directions; include verification/background callers.
+2. **Document:** record the implemented API/SDK version, official operation docs,
+   request/response examples, field provenance, and current compatibility behavior.
+   Cover path/query/header/body, success, pagination, error, and callback shapes.
+3. **Define:** reuse the neutral domain result and existing precise SDK type;
+   add a vendor-owned request/response schema only where one is missing. Model
+   nested objects and tagged variants, not a dictionary with enum keys. Keep
+   request and response models distinct where the vendor distinguishes them.
+4. **Translate outbound:** construct typed requests from validated domain inputs;
+   serialize at SDK/HTTP dispatch with intentional aliases, omission/null behavior,
+   ordering, bytes, and numeric values. Preserve request fingerprints and receipts.
+5. **Translate inbound:** validate raw responses once before mapping, or use the
+   SDK's already validated result. Keep required, optional, nullable, and absent
+   fields distinct. Translate native failures before platform retry decisions.
+6. **Carry through:** retain types into the actual consumer, events, and stored
+   result. Explicitly decode DB JSON/checkpoints on readback; the DB serializer
+   only solves writing. Keep historical payload compatibility deliberate.
+7. **Prove:** run function-level request/parse/map/round-trip checks plus scoped
+   type checking; inspect the runnable product path and its sinks. Record live
+   QA separately from substituted transports. Remove temporary probes before commit.
+
+For each operation, record a compact evidence row in this plan as it is completed:
+`entrypoint; provider/method; version/docs; request type; response/event type;
+error type; canonical consumer; saved/public result; checks; unexercised branches`.
+Until that row is supported, its status is **pending**, even if its config or
+input enum is complete. This is a documentation ledger, not a new runtime registry.
+
+Contract rules for all slices:
+
+- Raw JSON belongs only at decoding/encoding and explicit bounded extension
+  fields. Open model IDs, discovered custom fields, GraphQL selections, and user
+  content are not closed enums. Known consumed fields use attributes.
+- Request validation must reject programmer mistakes without silently dropping
+  fields. Response parsing tolerates documented extension fields without making
+  required fields optional or inventing a successful default. Specify unknown
+  event/status handling per vendor; don't reject valid custom status values merely
+  because input tools expose a smaller built-in set.
+- Preserve precise SDK request/response types where available. For dict-based SDK
+  arguments, `TypedDict` can express the SDK call; it is not runtime validation of
+  network JSON. Do not weaken a model back to `Any` at the next function.
+- Use vendor-local tagged models for structured stream control/events. Binary
+  audio/files stay bytes/streams with format/size metadata; don't wrap or repeatedly
+  validate every audio frame with a JSON model. Bound parsing and allocation cost.
+- Validate signatures against original webhook bytes before conversion. Keep
+  secrets, provider-controlled error bodies, and sensitive data out of model reprs,
+  validation-error logs, and public projections. Preserve origin and path policy.
+- A malformed response after a mutation may follow an accepted external effect.
+  Record/classify that result through the existing outbound authority; never let a
+  new schema exception trigger a duplicate send or hide the effect's known state.
+- Typed nested data does not authorize extra lookups. Any enrichment—such as
+  requester email—must identify the documented retrieval path, bounds, additional
+  API cost, and missing/forbidden-data behavior. Avoid N+1 and vendor I/O in DB
+  transactions. Semantic corrections are separate from exact-parity refactors.
+- Compare before/after request count, page/batch size, parser allocation/time,
+  response size, and transaction duration for the affected flow. For voice, also
+  compare event throughput and buffering/teardown latency with representative
+  binary streams. Preserve existing bounds; don't invent a platform-wide numeric
+  performance target or claim live latency from an in-process substitute.
+
+### Flow-based execution schedule
+
+Each row is a milestone containing operation-sized slices, **not** one large
+refactor. Define a slice's contracts before changing its producers and consumers.
+Repeat its entire path for every provider in the scope ledger; reuse already
+proven contracts without repeating unrelated reviews.
+
+| Order | Flow, starting point, and dependency | Complete path / first slice | Acceptance and QA gate |
+| --- | --- | --- | --- |
+| F0 | Per-flow setup and field provenance; start now | Onboarding/config or installation/source authority → verification/auth → effective config. Start with Freshdesk's existing tool entrypoint and declared auth; B5/B1 work follows each provider. | Explicit operation/type inventory; matching-version docs; no inferred provider or widened grant. |
+| F1 | Freshdesk curated vertical slice; depends on F0 | `execute_curated_tool` → Freshdesk `get_ticket` → typed ticket/requester/conversation response → curated result. Then search, create, update, reply, private note, errors, and receipts. | Documented requester provenance, absent/null behavior, no hidden N+1; serialized request parity; no replay after an accepted mutation. |
+| F2 | Text agent inference; after the pilot contract pattern | Conversation `generate` → pinned LLM resolver → factory → messages/tools/request → SDK response or stream → `LLMResponse` → framework messages/tool calls/usage. Start with OpenAI SDK type preservation, then every LLM branch, including background prompt callers. | Text and tool turns, stream assembly/final response, refusal/error/usage, history/cache compatibility, cancellation and closed clients. No vendor types in the framework. |
+| F3 | Agent external tools; depends on F2 for live agent QA | Curated `PlatformToolExecutor` dispatch → grant/auth → remaining vendor handlers → response/results → durable receipt → agent continuation. Resolve the recorded GitLab path-policy finding before its named-project QA. MCP is a separate protocol slice in the same tool flow. | Every registered tool inventoried; OAuth/refresh and pagination included; isolation, error/output serialization, approval/effect safety, and real conversation projection. |
+| F4 | File/object I/O; before KB uploads and recording completion | [Storage runtime](../../server/eylo/pipelines/storage/runtime.py) → S3/local adapter → write/read/stat/delete/signing outcomes → `StorageLocator`/owner projection. Start with one upload and readback. | Byte/stream integrity, root/org/resource namespace, response/error validation, exact pinned location, cleanup, no signed URL/credential leakage. |
+| F5 | Retrieval and learning; depends on F2/F4 where used | Embedding request → indexed vectors; reranking request → ranked indices; KB ingestion/query/reindex and memory remember/recall/refresh/forget/formation/reconciliation → grants/owners → results, citations, observations and durable readback. Start with Bedrock embedding → KB ingestion/query. | Every embedding/reranker and both KB stores covered; count/dimension/index validation, finite numbers, top-k/citation/source identity, config-revision parity, memory expiry/conflicts, cancellation and fail-closed grants. |
+| F6 | SOR native-to-canonical loop; reuse established HTTP/storage seams | Source auth/discovery → sync page or exact fetch → vendor response model → `SorExternalRecord` → canonical object/relations → grid/detail/agent read; agent command → vendor request/result → receipt → resync. Start with Freshdesk support, then the other registered profile/vendors. | Every selected stream and command covered; custom mapping and links survive; pagination/checkpoint/restart, dependency DAG and eventual relation resolution; no extra I/O or long transactions. |
+| F6a | SOR change ingress; follows each F6 vendor, not an afterthought | Register/renew webhook or existing poll-only path → raw signature verification → typed vendor delivery → signal/receipt → exact fetch or stream sync → same projection. Include OAuth exchange/refresh and reauth outcomes for that source. | Event identity/account routing, deduplication, delete vs update, stale/reordered events, malformed delivery, expired credentials, no sync feedback loop. Don't invent webhook support for poll-only vendors. |
+| F7 | Browser voice; depends on F2/F4 | WebRTC credential fetch/SDP/ICE → pinned voice config → STT request/events → transcript → LLM → TTS request/audio/control events → playback. Start with one complete decomposed pipeline, then every STT/TTS branch. | Typed session/config/event queues; live transcript, completion vs playback drain, interruptions, silence timing, disconnect, and recording result; browser and server projections agree. |
+| F7a | Realtime voice; shares F7 transport/sinks | Realtime factory → session setup/audio/tools/update → native stream variants → `RealtimeEvent` → manager/tool dispatcher/playback/transcript/teardown. One complete vendor at a time. | All three realtime vendors; tool-call IDs, audio formats, turn completion, interruption/resumption, usage/errors, teardown; primary voice config remains fixed across handoff. |
+| F8 | Carrier and message delivery products; uses F7 voice/F4 storage | Telephony initiation/callback/media/control → call lifecycle/recordings/campaign and scheduled outcomes; email `send_organization_email` → SMTP/SendGrid request/result → receipt → tool/campaign result. First preserve typed call initiation through a carrier response. | All four carriers and both email providers; callback auth/form/XML/JSON mapping, accepted vs delivered vs unknown, cancellation/transfer, short transactions, no accidental resend. |
+| F9 | Durable agent sandbox work; depends on F2/F3/F4 | Agent/tool/job → sandbox authority → Docker create/exec/read/write/export/restore/destroy → typed results/checkpoint/artifacts → release/wait/resume. Follow scheduler, AgentRun and outbound task payloads at the same time. | Vendor response/session identity, bounded binary/exit results, grant recheck, checkpoint compatibility, cancellation/restart/lease loss, cleanup; waiting releases runtime capacity. |
+| F10 | Cross-flow completeness and gates; not deferred consumer implementation | Reconcile every factory/registry operation against the evidence ledger; inspect remaining event/aggregate/job projections and policy limits (B3/B4/C1). | Every branch has evidence or an explicit blocker; no config-only completion; documentation/type/client checks, no new suppressions, all affected product sinks exercised when runnable. |
+
+Suggested order within remaining curated vendors: complete the support family
+(Zendesk, Intercom after Freshdesk), issue/project family (GitHub, GitLab, Jira,
+Linear, Asana), CRM (HubSpot, Pipedrive), documents/files/tables (Confluence,
+Notion, Dropbox, Google Drive/Docs/Sheets, Airtable), communication/scheduling
+(Gmail, Outlook, Slack, Google Calendar/Tasks, Calendly, Zoom), then operational/
+commerce/forms (PagerDuty, Sentry, Shopify, Stripe, Typeform). All remain pending
+for full request/response coverage. Grouping aids review, not shared vendor models.
+
+For SOR, finish each profile's read/sync/write/webhook cycle before moving on:
+support → ticketing → CRM → knowledge. Use existing configured Jira, Confluence,
+Linear, HubSpot, and Zendesk for bounded live QA when still available; configuration
+presence must be rechecked, and a vendor without credentials is not live-verified.
+
+Do not freeze independent work when one vendor's live QA lacks credentials.
+Record that vendor's exact missing proof and continue the next complete slice.
+Do not convert this schedule into a platform-wide rewrite before exercising the
+first vendor path.
+
+Likely scope: local enum comparisons are small; each state/result/factory slice
+is medium and may cross several files. The whole-platform effort is deliberately
+not one refactor or one review. Run the five-axis review at major runtime/tool/
+retrieval milestones; ordinary slices need focused verification, not repeated
+full-platform reviews.
+
+### Approval and external-input boundaries
+
+- The user approved beginning implementation after the review and clarified that
+  platform/vendor type ownership is mandatory. Only the completed slices below
+  have been applied; this is not completion of the whole-platform backlog.
+- The latest request authorizes this all-vendor plan expansion. It does not by
+  itself authorize live external mutations, provider configuration changes, a
+  protocol upgrade, stricter historical-data rejection, or a deployment.
+- No credentials are needed for the inventory, typing baseline, or serialization
+  probes. Live provider QA later uses the existing configured development org.
+- Any real external mutation or user media/OAuth interaction needs the appropriate
+  QA authority/input; don't manufacture provider coverage from mocks.
+- Historical unexpected DB/job values need a deliberate compatibility decision
+  before stricter validation is deployed.
+- A storage-shape change needs a new incremental migration. No migration reset,
+  DB reset, history compression, dependency upgrade, or deployment is implied.
+
+### Definition of done for each slice
+
+- [ ] Each new type/constant has a declared owner; imports respect that boundary.
+- [ ] Every used operation/variant is in the evidence ledger, with matching-version
+  vendor documentation and actual field provenance, not only a config/input model.
+- [ ] Request body/query/path/header and response/error/event types cover the
+  operation; SDK types are reused without leaking or being erased at the next call.
+- [ ] Adapter mappings cover known vendor values and an explicit unknown-value
+  path; domain signatures do not depend on vendor SDK/private types.
+- [ ] Producer, transformations, consumer, DB/job readback, and public projection traced.
+- [ ] Existing values preserved, including casing, JSON keys, omission/null semantics,
+  hashes, config revisions, and task/checkpoint identities.
+- [ ] Invalid/unknown input handling specified at the appropriate boundary.
+- [ ] Scoped type check passes; no broad `Any`, casts, ignores, or magic-key constants
+  added to make errors disappear.
+- [ ] Exact changed branch verified with real domain types and boundary-sized probes.
+- [ ] Public/runtime path exercised when runnable; missing live QA explicitly recorded.
+- [ ] Temporary function checks cover valid, missing, nullable, malformed, and
+  extension fields plus serialization/readback. Product behavior changes receive
+  human review before new behavioral assertions are authored; prior review may
+  cover unchanged behavior. Neither mock QA nor type checking counts as live proof.
+- [ ] Relevant lint/docs/client checks pass; temporary probes removed before commit.
+- [ ] No new cross-layer dependency, transaction extension, or per-frame validation cost.
+
+The initial completed sequence was direct enum reuse, voice termination, and
+telephony outcomes. The F0–F10 flow schedule now governs remaining work; the
+following progress entries retain the evidence and limitations of earlier slices.
+
+## Implementation progress
+
+### Completed: direct enum reuse
+
+- Conversation terminal responses compare `RunStatus` members and accept a typed
+  `RunResult`; the standalone framework remains independent.
+- Agent completion listeners compare `AgentLifecycleOutcome` directly.
+- Memory query selection compares the shared `MemoryMessageRole`, without adding
+  a module import to the pgvector adapter.
+- Executed QA: all eight run statuses, both lifecycle outcomes, latest-user query
+  selection, assistant-only fallback, and empty-exchange refusal.
+
+### Completed: browser termination contract, first part of A1
+
+- Added `BrowserVoiceTerminationReason` with the 28 existing terminal observations.
+- Updated WebSocket runtime state and its shared structural port, browser and
+  realtime callbacks, WebRTC peer/signaling translation, client hangup, disconnect,
+  and the browser end-call tool path.
+- Kept telephony's `CallEndedReason` separate. No vendor SDK/private types were
+  added to common contracts; native peer/ICE strings remain inside their mapping.
+- Replaced dynamic STT/TTS failure strings with an explicit capability-to-reason
+  map. Signaling and transcript sinks still receive the exact existing strings.
+- Added a local pre-commit/pre-push type-check gate for the two shared contracts
+  and lifecycle policy. This gate does not claim the larger pipelines are clean.
+
+Executed QA used the real session models and termination orchestration with
+in-process substitutes for signaling, provider notification, and persistence sinks:
+
+- All 28 reasons retain their serialized value and previous status classification.
+- Each reason reaches signaling and transcript sinks; recorder finalization and
+  terminal persistence occur once; repeated termination preserves the first reason.
+- Cancellation of an awaiting caller does not cancel the session-owned teardown;
+  a second caller joins it without duplicate cleanup.
+- STT/TTS task failure callbacks receive typed reasons; peer terminal delivery is
+  idempotent; unknown internal enum input is rejected by the session schema.
+- Native peer/ICE mappings preserve known values and do not invent a mapping for
+  an unknown state.
+
+Verification: repository Python lint passed. Shared contracts, lifecycle policy,
+and the completion listener have zero scoped Pyrefly diagnostics. The broader
+voice file group went from 158 pre-existing diagnostics to 147 after declaring
+termination fields on the shared session port. The runner/listener/memory file
+group remains at its pre-existing 65 diagnostics. No suppressions were added.
+
+Final project check: 1,161 diagnostics, down from 1,172; the existing 19
+suppressions are unchanged. Documentation verification passed (46 pages, 252
+links), `git diff --check` passed, and pre-commit configuration validation plus
+the new voice-contract hook passed when triggered by a browser pipeline change.
+
+Milestone review:
+
+1. DDD boundaries: framework types stay independent; the memory socket imports
+   its neutral contract; browser and telephony termination types remain separate.
+2. Architecture fit: the existing session owner still owns teardown. The shared
+   structural port declares its existing fields; no new runtime authority exists.
+3. Data flow: producer-to-callback-to-session-to-signaling/transcript paths retain
+   old values, first-reason selection, cancellation, and single-finalization behavior.
+4. Plan alignment: only enum reuse and the browser termination part of A1 are
+   complete. Recording disclosure, telephony states, and later slices remain open.
+5. Clean code: explicit mappings replace string construction; no casts, new
+   suppressions, dependencies, DB operations, or per-audio-frame validation were added.
+
+Not exercised: live provider sessions, microphone/WebRTC media, real DB writes,
+or worker/restart QA. No deployment, migration, DB reset, or commit was performed.
+
+### Existing policy finding, not changed by this refactor
+
+`agent_ended_call` is produced by the browser end-call tool but is absent from the
+classifier's normal-ending set. It therefore records `VoiceSessionStatus.FAILED`.
+The enum parity probe confirms this is pre-existing behavior. Resolving that
+classification is a separate behavior change, not part of the value-preserving
+typing slice; do not accidentally change it while extracting enums.
+
+### Next slices
+
+1. A2 is complete for the planned opener, transfer, and call-initiation contracts.
+   A3 now covers GitHub, Freshdesk, GitLab, and Intercom's identified closed
+   choices, not their full vendor request/response contracts. F1's Freshdesk
+   curated-tool contracts are now implemented and locally verified below;
+   live Freshdesk QA remains unavailable without a configured installation.
+2. Follow F2–F10 for the rest of the platform. Carry A4/A5 errors/durable readback
+   and B1–B6 config/retrieval/event/SOR work with each affected flow. The recorded
+   GitLab named-project transport finding remains open and gates that QA path.
+3. A1's termination/disclosure contracts are complete, not every session field
+   or provider event. Widen local typing gates only as each owner/consumer slice
+   passes; preserve the earlier baseline rather than claiming global completion.
+
+### F1: Freshdesk curated-tool contracts implemented; live QA pending
+
+Scope: six curated tools in
+`server/eylo/pipelines/integrations_v2/vendors/freshdesk/`. This does not mark
+the separate Freshdesk SOR adapter, remaining curated vendors, or the rest of
+the provider plane complete.
+
+**RCA and corrected data flow**
+
+- The earlier enum-only work validated agent choices but left vendor payloads
+  untyped. Its synthetic replies did not prove which endpoint actually provided
+  a field. `requester_id and email` lost documented nested requester email;
+  requester email was also interpolated into an undocumented search-index field.
+- Baseline probes reproduced both defects and a third: HTTP 404 with `{}` was
+  projected as a successful ticket with a null ID. Malformed list members were
+  silently dropped. These are runtime defects, not annotation-only findings.
+- `schemas.py` now owns consumed Freshdesk v2 requests, responses, nested
+  requester/conversation objects, error envelopes, enums, limits, and results.
+  Request construction rejects unknown fields; response parsing tolerates
+  unrelated vendor fields but rejects malformed consumed fields. Existing
+  status/priority normalization and unknown native numeric response codes remain.
+- Agent input → typed vendor request → existing guarded HTTP client → typed
+  vendor response → typed projection → JSON tool result. SDK/platform contracts
+  do not import these Freshdesk types. No SDK replacement or new dependency.
+- List/detail request requester embedding and use `requester.email`, checking
+  its ID against `requester_id`. Index/mutation responses lacking embedding return
+  null email. No speculative root-email fallback, contact N+1, or enrichment
+  read after a mutation.
+- Email filters use the documented list endpoint; status/priority filters use
+  the index when email is absent. Combined requester filters scan at most ten
+  list pages. Indexed reads paginate in 30-item pages up to the requested limit.
+  Results expose coverage; tool guidance states the recent-ticket window and
+  index lag. This is a deliberate correction beyond behavior-preserving typing.
+- Conversation mapping uses private/incoming/source fields rather than treating
+  every non-private entry as an outgoing reply. Private-note responses must
+  confirm private visibility. Read/update/conversation IDs are checked against
+  the requested ticket. Errors are sanitized and never interpreted as success.
+- Mutation JSON field order, numeric enum encoding, empty-tag omission, null
+  omission, operation sequencing, and fingerprint construction remain unchanged.
+  Parsing occurs after the outbound owner records its send outcome; it does not
+  introduce a retry authority or move provider I/O inside a transaction.
+
+**Verification and limits**
+
+- Freshdesk v2 primary API documentation checked for embedding, ticket listing,
+  search supported fields/page limits, mutations, conversations, and errors.
+  Installed Pydantic is 2.11.10. Wire booleans retain their vendor meaning;
+  existing public boolean inputs/outputs were not replaced incompatibly.
+- 113 executor/contract checks passed across six tools, 12 registry/agent/Bedrock
+  schema projections, and 61 mutation dispatches with fingerprint assertions.
+  Includes malformed/missing/null data, unknown codes, combined/paged filters,
+  scan bounds, source/requester mismatches, private/public/incoming messages,
+  sanitized failures, disabled grants, invalid inputs, and cancellation.
+- Four mutation types passed an additional checkpoint replay probe: four sends,
+  four replays, zero duplicate sends. The actual outbound execution/readback
+  functions ran; DB persistence and checkpoint storage were substituted.
+  Existing limitation: the shared client does not persist the vendor response
+  body, so replay returns `vendor_outcome_unknown`, not a reconstructed success.
+  That remains a shared F3/A5 readback concern, not a new regression.
+- The initial QA probe incorrectly looked for credentials in public headers;
+  source inspection confirmed they stay in origin-bound headers until transport
+  attachment. The probe was corrected; no credential-boundary change was made.
+- Focused review, sequentially: DDD ownership → architecture fit → complete
+  data flow → plan/behavior drift → readability, security, and bounds. The review
+  added private-note visibility confirmation; no new cross-domain coupling.
+- Scoped Pyrefly and full server/CLI Ruff checks passed. The local curated-tool
+  typing hook now covers the entire Freshdesk adapter folder.
+- Read-only development DB check found **zero active Freshdesk installations**.
+  Vendor HTTP, grant resolution, and persistence were substituted in local QA;
+  this is not live Freshdesk, widget/LLM conversation, or DB durability proof.
+  Human product review and live account QA remain pending. No operator data,
+  credentials, migrations, Git history, or running services were changed.
+
+### F2 in progress: typed inference config and OpenAI request boundary
+
+**Connected changes; not completion of F2**
+
+- Resolver output was already immutable and typed, but all four callers converted
+  `generation` to a storage dictionary before inference. `LLMGenerationConfig`
+  now describes the read-only domain value; `LLMInferenceConfig` carries that
+  exact value and an enum cache policy. The domain still owns validation; common
+  contracts and sockets do not import module or framework types.
+- Conversation generation (including streaming/fallback), background prompt
+  helpers, swarm workers, and memory extraction pass the typed value. Every one
+  of the eight factory branches accepts it. Persistence/API schemas, provider
+  revision checks, model choices, configured defaults, and metering are unchanged.
+- Base inference is an awaited `LLMResponse`; streaming returns an async generator
+  whose owner must close it.
+  SDK-client/transform methods no longer impose `Any`/dictionary contracts on all
+  vendors. Read-only tool collections use `Sequence[ToolRecord]`, avoiding list
+  invariance at the swarm boundary. The optional streaming fallback handles an
+  unsupported call at iterator creation as well as first iteration.
+- OpenAI Chat Completions builds native message/content/function-call/tool and
+  streaming/non-streaming request parameter types. Platform image MIME metadata
+  is no longer forwarded as an undocumented field inside `image_url`. The
+  shared OpenAI-family declaration projection returns SDK `FunctionDefinition`;
+  Responses and realtime retain their existing API-specific envelope.
+- Gemini constructs `GenerateContentConfig` from named attributes instead of
+  untyped keyword expansion. Groq/Cerebras retain their existing model-specific
+  behavior. Dead dictionary overrides for reasoning flags and Gemini safety
+  were not publicly configurable: the domain's allowed field set never admitted
+  them. No new native setting, model default, safety policy, or provider fallback
+  was introduced. A later native-options feature needs an explicit domain/UI
+  contract, not hidden dictionary keys.
+
+**Evidence**
+
+- Installed dependencies inspected: OpenAI 2.14.0, Anthropic 0.75.0,
+  google-genai 1.56.0, Groq 1.1.1, Cerebras SDK 1.67.0, Sarvam 0.1.28.
+  [Official OpenAI function-calling documentation](https://developers.openai.com/api/docs/guides/function-calling)
+  and installed generated SDK definitions ground the request types. No dependency
+  upgrade or model migration was performed.
+- 94 config/wire checks passed across all eight factories. Seven used real SDK
+  clients and HTTP transports with substituted responses, including Bedrock's
+  signed request path; Gemini checked native config construction. Explicit limits,
+  omitted values, zero temperature, readonly settings, tool request construction,
+  and text/usage normalization were exercised. Missing mandatory max tokens fail.
+- 17 additional checks passed through six real OpenAI SDK HTTP operations:
+  streaming text plus fragmented tool arguments, call identity, usage-only tail,
+  cache/reasoning counters, and complete/delta projections; background prompt,
+  memory completion, swarm worker, conversation generator, and non-streaming
+  fallback callers. Image request shape excludes platform-only MIME metadata.
+- Caller QA substituted resolution/context/agent loading where DB state would be
+  needed. This is function/adapter data-flow evidence, not widget, live-provider,
+  full durable-run, or persistence proof. Test-owned HTTP clients were closed;
+  that does not prove production adapter cleanup, which remains pending below.
+- Scoped Pyrefly passes for runtime contracts/config, OpenAI request/utility,
+  pipeline adapter construction, and background prompt caller. A local pre-commit
+  gate covers that proven scope, not all of F2. Full server/CLI Ruff passes.
+
+**Native Groq slice: implementation and local verification**
+
+- RCA reproduced with the installed SDK: streamed tool arguments containing only
+  `{` became an executable tool call with `{}` input; the HTTP client remained
+  open. JSON fallback and dictionary-based accumulation had erased the distinction
+  between incomplete output and a valid no-argument call. Inheriting OpenAI's
+  client/response contract also hid a different vendor SDK behind incompatible
+  override annotations.
+- Groq now inherits only the neutral adapter. Requests, message parts, tools,
+  completions, usage, and chunks use Groq 1.1.1's native SDK contracts. Named
+  generation fields and existing GPT-OSS/Qwen behavior remain unchanged. Optional
+  tool arguments are not rewritten to OpenAI strict-mode requirements.
+- `groq_responses.py` owns typed failure/finish enums and stream/tool accumulators.
+  SDK-parsed values are validated before normalization; SDK-supported coercion
+  occurs before that check. Function input must be a finite JSON object, with
+  stable/nonempty identity and a matching terminal reason. EOF, malformed input,
+  duplicate IDs, conflicting deltas, and `x_groq.error` cannot authorize a tool
+  call. The entire batch is validated before exposure. Diagnostics omit payloads.
+- The invocation owns the SDK client and stream with async context managers.
+  The conversation runner closes its async generator in `finally`, including
+  failures/cancellation between yielded chunks. The shared base and concrete
+  streaming annotations now express that closeable contract. Final Groq output
+  is yielded only after resources close. The neutral history validator's existing
+  duplicate-call guard applies; its consecutive-user merge uses the message's
+  null-safe text accessor. No OpenAI-specific history override is copied.
+- String tool output moved into neutral `sockets/llm/tool_content.py`; OpenAI,
+  Responses, and Groq reuse its unchanged text/TOON behavior without importing
+  another vendor's SDK.
+- Evidence: **301 local assertions** pass with real Groq SDK clients and
+  substituted HTTP transports. These cover text and tool responses, interleaved
+  argument fragments, usage-only tails, canonical image/tool-result history,
+  optional schema fields, malformed/native error variants, finite numbers,
+  cancellation before/after the first response, timeout, early generator close,
+  and listener failure/cancellation. All four actual caller functions were
+  exercised with resolution/context/DB loading substituted; each client's close
+  was observed. A malformed streamed call does not trigger a second non-stream
+  request. Existing 94 configuration and 17 OpenAI/caller checks also pass.
+- Source: [Groq local tool calling](https://console.groq.com/docs/tool-use/local-tool-calling),
+  [Groq API reference](https://console.groq.com/docs/api-reference), and the installed
+  SDK's generated request/response models, client overloads, and async stream
+  context manager. No SDK upgrade was needed. Its request `TypedDict` permits an
+  optional stream flag whereas the union overload requires a boolean; the adapter
+  passes named typed fields and an explicit operation flag without a cast.
+- The local type hook now includes the native Groq files and neutral serializer.
+  Scoped Pyrefly and full server/CLI Ruff pass. The broader LLM/caller check still
+  reports **84 diagnostics, one suppression**; this is not whole-F2 completion.
+  No live vendor, widget, operator DB, durable sink, or worker QA is claimed.
+
+**Native Cerebras and Sarvam slices: implementation and local verification**
+
+- Cerebras RCA reproduced before the fix: a property named `minItems` disappeared
+  during schema cleanup, incomplete arguments became `{}`, and the native HTTP
+  client remained open. OpenAI inheritance plus dictionary traversal hid both
+  vendor response differences and schema-node boundaries.
+- Cerebras now uses SDK 1.67.0 request types and native completion/chunk/error
+  unions. Adapter-owned enums and validation handle terminal reasons, optional
+  chunk deltas, tool indexes, usage, and error variants. Its documented reasoning
+  token extension is narrowly modeled because the pinned SDK's usage-details
+  declaration omits that field. Schema cleanup preserves property/definition
+  names, annotation values, and the original required/optional distinction.
+  Existing GLM settings and the outer 429 retry policy remain; Retry-After accepts
+  bounded seconds or HTTP dates. SDK retries remain a separate existing layer.
+- A real SDK probe revealed another issue: `AsyncCerebras.__init__` creates a
+  synchronous client for TCP warming by default. Profiling traced the blocked
+  time to that client's HTTP retries, not the apparent async header lookup.
+  The adapter sets the public `warm_tcp_connection=False` option. A guard probe
+  proves the synchronous constructor is not called. No SDK upgrade was needed.
+- Verification correction: earlier Cerebras HTTP substitutes did not intercept
+  that hidden warmup. They used dummy keys, not operator credentials. All
+  Cerebras probes were rerun with warmup disabled; native response fixtures now
+  include the SDK-required fingerprint and timing fields. The all-eight-provider
+  request probe also passed again. Those results, not the earlier apparently
+  isolated run, are the current evidence.
+- Sarvam RCA: its SDK's user message is text, but the OpenAI proxy passed a
+  content-block array. Its native async iterator and client ownership were also
+  hidden behind `Any`. The adapter now builds native request TypedDicts, projects
+  text/tool-result history, and explicitly rejects image content before opening
+  a client. Native completion/chunk models are validated; SDK aliases admitting
+  `Any` for finish reasons are narrowed to a vendor enum. SDK validation failures
+  are translated without including raw payloads in diagnostics.
+- Sarvam 0.1.28 has no public client close method. The adapter owns the supplied
+  HTTP client and closes the SDK's async generator before that client. Groq and
+  Cerebras use native async context managers. All three emit final results only
+  after cleanup. Their shared neutral `ToolCallBuffer` validates stable/nonempty
+  IDs/names, finite object arguments, and the whole batch; vendor terminal-state
+  checks remain local. No vendor enum or SDK type moved into domains/framework.
+- Evidence: **291 Cerebras native-path checks**, **55 Cerebras schema/retry
+  checks**, and **353 Sarvam native-path checks** passed. Native probes exercised
+  actual SDK serialization/parsing, canonical history, stream fragments, usage,
+  invalid/unknown states, malformed tools, all four caller functions, cancellation
+  before/after the first chunk, timeout, early close, and caller/listener failure.
+  HTTP/provider responses and DB-dependent caller loading were substituted.
+  Groq's **301**, configuration's **94**, and OpenAI/caller's **17** checks passed
+  again after the shared-buffer extraction. No temporary probe files are shipped.
+- Sources: [Cerebras tool use](https://inference-docs.cerebras.ai/capabilities/tool-use),
+  [structured outputs](https://inference-docs.cerebras.ai/capabilities/structured-outputs),
+  [chat API](https://inference-docs.cerebras.ai/api-reference/chat-completions),
+  [Sarvam chat API](https://docs.sarvam.ai/api-reference/chat/chat-completions),
+  and the pinned SDK request, response, client-construction, and streaming source.
+  Current Sarvam documentation differs from the pinned SDK/catalog's model set;
+  model availability needs the planned catalog/live-verification pass. This
+  typing slice does not silently migrate models or claim current live coverage.
+- The local type gate now includes both native adapters/response modules. The
+  expanded scoped check passes; the broader LLM/caller check still reports
+  **82 diagnostics**, down from 84. Remaining files are not considered typed
+  merely because a narrow gate passes. This is not F2 or platform completion.
+  The exact configured hook command, full server/CLI Ruff, documentation/link/
+  diagram verification, and whitespace checks also pass.
+- No live vendor, widget, durable sink, worker, or operator DB QA is claimed.
+  No deployed service, provider config, dependency version, migration, Git
+  history, or configured vendor state was changed.
+
+**Native OpenAI Chat slice: implementation and local verification**
+
+- RCA reproduced through SDK 2.14.0: missing arguments and missing terminal
+  events exposed executable `{}` calls; a malformed sibling was skipped after
+  a valid call had already been exposed. Clients remained open. The shared strict
+  schema converter also mutated nested input properties and missed definitions
+  and union branches. Dictionary accumulation and shallow copying hid these
+  contract violations.
+- Chat Completions now uses native completion/chunk/usage types, an adapter-owned
+  finish/error enum, and a typed stream accumulator. Native function/custom-tool
+  variants, deprecated function calls, refusal output, stable identities, terminal
+  reasons, and usage-only tails are handled explicitly. The neutral tool buffer
+  validates the entire batch before any tool is exposed. Refusals use the existing
+  Responses adapter's `[Refusal]` text representation and cannot authorize tools.
+- Invocation-scoped async context managers close the SDK client and stream on
+  success, failure, timeout, cancellation, and early generator close. Existing
+  tool-progress envelopes are retained after terminal batch validation and resource
+  cleanup; their content lists do not alias later progress. The final response's
+  `streaming: false` shape remains unchanged. All four real caller functions were
+  exercised with DB/context resolution substituted.
+- The shared OpenAI function-schema converter accepts typed JSON, descends only
+  schema nodes, and covers definitions, unions, nullable objects, and nested
+  arrays. It does not mutate canonical input schemas, annotation data, or property
+  names. Existing all-properties-required strict behavior remains; it preserves
+  declared nullability rather than inventing nullable platform fields. Native SDK
+  request types own the final `parameters` projection. No SDK/model upgrade or
+  API/storage contract change was made.
+- Evidence: **353 native Chat checks** passed across 65 SDK HTTP operations,
+  seven cleanup paths, and four actual callers. **37 shared-schema checks** passed
+  through actual Chat/Responses SDK requests and realtime session-update sending.
+  The **94 all-provider config checks** and **18 OpenAI/caller checks** also passed.
+  Caller fixtures now allocate one HTTP client per invocation, matching production
+  ownership. HTTP responses, WebSocket sending, and DB-dependent loading were
+  substituted; this is not live-provider, widget, voice, durable-sink, or DB QA.
+- Sources: pinned SDK 2.14.0 generated request/response/stream classes,
+  [OpenAI function calling](https://developers.openai.com/api/docs/guides/function-calling),
+  and [Chat Completions reference](https://developers.openai.com/api/reference/python/resources/chat/subresources/completions/methods/create).
+  These checks verify schema projection, not universal support for every JSON
+  Schema keyword or current live model availability.
+- The local type gate includes `openai_chat_responses.py`. This is a scoped slice,
+  not completion of F2 or platform-wide typing. Remaining response and caller
+  contracts still need the ordered work below.
+
+**Native OpenAI Responses slice: implementation and local verification**
+
+- Baseline SDK reproduction confirmed that malformed function JSON became `{}`,
+  a failed response could expose tools, and streams without a terminal response
+  still exposed calls. An ordinary streamed function call was duplicated under
+  its separate output-item and call IDs. Clients remained open. Reflection and
+  fallback dictionaries concealed the API's native event and identity contracts.
+- Native request TypedDicts now cover instructions, user/image input, prior
+  assistant text, function calls/results, function declarations, generation
+  settings, and streaming. Prior assistant text uses `EasyInputMessage` rather
+  than a partial output message missing its required vendor ID/status. Image
+  detail explicitly uses the SDK/API's existing `auto` behavior; platform MIME
+  metadata is not sent. No configured model or generation value is invented.
+- `openai_response_events.py` owns typed native event validation, lifecycle/error
+  enums, item identity, terminal output normalization, and progress projection.
+  A discriminated native SDK event union validates the boundary; no `Any`,
+  reflection, unchecked cast, or diagnostic suppression is needed in these files.
+  SDK parsing can coerce values before this validation, as with the other adapters.
+- The complete terminal response is the sole tool-output authority. Function
+  argument deltas are advisory progress, not another executable accumulator.
+  Output indexes/item IDs and function call IDs stay distinct and stable. The
+  entire final batch is validated before exposure. A failed, incomplete, refused,
+  malformed, or unsupported tool result cannot execute. Text-only incomplete
+  responses retain the native max-token/content-filter distinction; native
+  reasoning output stays hidden while its token usage is accounted.
+- Async ownership covers the SDK client and stream, including cancellation during
+  request creation and between caller yields. Existing tool-progress envelopes
+  and final metadata remain, emitted after full validation and cleanup. The
+  duplicated history override was removed in favor of the shared validator and
+  its existing duplicate-call guard. Config, provider resolution, grants, and
+  framework tool-execution policy retain their original owners.
+- Evidence: **452 native SDK assertions**, 85 SDK HTTP operations, seven cleanup
+  paths, and all four caller functions passed. Coverage includes interleaved
+  item/call IDs, terminal-only tool authority, malformed/unknown output, refusals,
+  usage, incomplete reasons, history serialization, resource closure, and no
+  non-stream fallback on invalid output. Chat's **353**, shared-schema's **37**,
+  all-provider config's **94**, and OpenAI/caller's **18** checks passed again.
+  Provider responses and DB-dependent resolution/loading were substituted.
+- Sources: pinned OpenAI SDK 2.14.0 request/event/response models,
+  [Responses API reference](https://developers.openai.com/api/reference/python/resources/responses/methods/create),
+  and [streaming Responses](https://developers.openai.com/api/docs/guides/streaming-responses).
+  Current documentation includes newer models/features than the pinned SDK;
+  this slice does not upgrade either the dependency or model catalog.
+- Focused milestone review followed DDD boundaries, architectural fit, data flow,
+  plan adherence, then readability/security/performance. SDK types remain in
+  adapters; there are no new DB/network paths or authorization shortcuts. Existing
+  framework/canonical-response typing gaps are not hidden by this scoped gate.
+  The broader LLM/caller baseline is **77 diagnostics**, down from 82; F2 remains
+  in progress. Native enum/SDK support is not a claim of live-provider support.
+- The expanded local type hook passes with **zero errors**. Full server/CLI Ruff,
+  documentation/link/diagram verification, and whitespace checks pass. Performance
+  review was source inspection, not a load benchmark. No temporary probes are
+  included in the repository.
+- No live vendor, widget, voice, durable sink, operator DB, or deployed-service
+  QA was run. Human product review and live agent QA remain milestone gates;
+  the ephemeral checks above establish function/adapter contracts only.
+
+**Native Anthropic/Bedrock slice: implementation and local verification**
+
+- Reproduced through pinned Anthropic SDK **0.75.0**, including Bedrock's real
+  SigV4 signing and binary event decoder: missing/truncated tool arguments and
+  missing terminal events exposed executable calls, clients remained open, and
+  prompt caching mutated nested caller input. The old enriched-stream accumulator
+  treated a stopped block as a completed executable call, before validating the
+  message or other calls.
+- Native request contracts now cover messages, tools, images, and generation
+  settings. Required config is checked before opening a client. Bedrock retains
+  its native transport and credentials while sharing the actual Claude Messages
+  protocol. There are no cross-vendor OpenAI types, unchecked casts, suppression
+  directives, or first-party `Any` annotations in the three changed adapter files.
+- A discriminated native event union and vendor-owned stream/stop/error enums
+  replace open accumulator dictionaries. Raw input fragments remain distinct from
+  the initial empty tool placeholder. Every block must close and the message must
+  reach `message_stop` with a compatible reason before any tool is exposed.
+  Finite JSON and duplicate-ID validation cover the whole batch. Incomplete,
+  refused, malformed, or unsupported tool batches cannot execute.
+- Text/thinking progress snapshots exclude tools. Existing tool-completion
+  envelopes use independent prefix lists after full validation and resource
+  cleanup. Text-only refusal/token-limit/stop-sequence outcomes remain visible.
+  Redacted thinking is opaque and omitted from text; signatures are not rendered.
+  Hosted tools and `pause_turn` are not supported. Signed extended-thinking
+  persistence/replay is not implemented or claimed by this slice.
+- Async client/stream ownership covers success, vendor errors, timeout, cancellation
+  before response creation, cancellation during reads/caller handling, and early
+  close. Cumulative usage updates all available input/output/cache counts without
+  mutating prior progress. Prompt caching preserves its existing four-breakpoint
+  policy and no longer mutates inputs or marks empty text.
+- Native image inputs distinguish HTTP(S) URLs and base64 data URLs. Direct Claude
+  supports both; Bedrock rejects remote URLs before client allocation. Inline data
+  is translated to the native MIME/base64 source shape. This adds no URL fetch,
+  filesystem read, MIME sniffing, image-content validation, or resizing behavior.
+- Evidence: **1,392 assertions**, **189 SDK HTTP operations**, seven cleanup paths
+  per vendor, and eight additional operations through the four real caller
+  functions (conversation, background prompt, memory completer, swarm worker).
+  All **94 provider-config checks** also passed. Responses/streams and DB-dependent
+  context/loading were substituted; native SDK clients and binary decoding were
+  exercised. SDK parsing may coerce input before strict revalidation; static types
+  and these probes do not establish raw-wire strictness or live-provider support.
+- Sources: installed SDK request models, response/event classes, stream accumulator
+  and Bedrock decoder; [Claude streaming](https://platform.claude.com/docs/en/build-with-claude/streaming),
+  [tool-input accumulation](https://platform.claude.com/docs/en/agents-and-tools/tool-use/fine-grained-tool-streaming),
+  [prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching),
+  [Claude images](https://platform.claude.com/docs/en/build-with-claude/vision), and
+  [Bedrock request/response](https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-anthropic-claude-messages-request-response.html).
+  Current vendor docs contain newer features than SDK 0.75.0; no dependency/model
+  catalog upgrade or new optional feature was inferred from them.
+- Milestone review ran sequentially: DDD ownership, architectural fit, source-to-sink
+  data flow, plan adherence, then readability/security/performance. No module,
+  framework, authorization, retry-policy, DB, or deployment ownership moved.
+  Review removed full-batch aliasing from progress lists. Performance inspection
+  confirmed bounded index handling rather than scanning up to an external index;
+  no load benchmark was run.
+- The broader LLM/caller type baseline is **63 diagnostics**, down from 77.
+  The expanded scoped hook checks Anthropic, Bedrock, and their response helper;
+  it is not a platform-wide passing gate. The hook passed with zero errors;
+  full server/CLI Ruff, documentation validation (46 pages, 275 local links,
+  47 diagrams), and whitespace checks passed. No probes are added to the repository.
+
+**Shared batched tool-result history: implemented and locally verified**
+
+- The old validator tracked one identity per row; Anthropic/Bedrock and Gemini
+  serialized only the first result. Conversation-to-framework conversion also
+  selected `parsed.content[0]`. Reproduced independently at both boundaries:
+  two vendor call IDs yielded one result; three persisted results yielded one
+  framework result. The earlier one-result-per-row assumption was narrower than
+  the canonical `ToolResultMessageContent` contract.
+- Shared identity access uses canonical message accessors, not `hasattr` or dict
+  key guessing. A batch is accepted atomically only when every nonblank, unique
+  ID matches a pending call. A bad sibling consumes none of the pending set.
+  Cleanup retains completed pairs and removes unresolved calls in a linear pass.
+  The newest pending group no longer bypasses validation, and normalization
+  copies caller-owned messages before text merging. Completeness reports are
+  immutable typed objects and count identities, not rows.
+- The conversation bridge preserves batched results in typed pipeline-owned
+  metadata and reconstructs the original result row. Existing singular metadata
+  remains supported for framework-generated/live results. The context-refresh
+  check examines every result ID before deciding whether transient replay is
+  needed. No SDK type moved into framework/domain contracts, and no DB schema
+  changed. Common message grouping now imports the common canonical schema
+  directly instead of passing through the conversation-module re-export.
+- Anthropic/Bedrock emit all result blocks. Gemini emits native function call/
+  response parts with separate IDs/names, using the matching call as the name
+  authority. JSON-encoded arrays/scalars are wrapped in an object; they no longer
+  drop the whole result batch. Native serialization failures abort preparation
+  rather than silently removing half a pair. Target: pinned/installed
+  `google-genai==1.56.0`; fields verified in its native `FunctionCall` and
+  `FunctionResponse` models and the
+  [Gemini API schema](https://ai.google.dev/api/caching#FunctionResponse).
+- Function evidence: **2,563 history assertions across eight adapters**,
+  **88 conversation-bridge assertions**, and **64 SDK/caller assertions**
+  (eight direct SDK operations and six operations through the conversation
+  caller and two-iteration swarm worker). Coverage includes result permutations
+  and partitions, completed/failed/pending states, atomic rejection, late results,
+  request exclusion, input ownership, compaction, explicit metadata decoding,
+  duplicate-replay prevention, prompt caching, and streaming/nonstreaming input.
+  SDK HTTP/Bedrock binary transports, DB context, and tool execution were
+  substituted. These are not live-provider or persisted-product QA claims.
+- The seven completed native-adapter regression suites pass **3,142 assertions**:
+  OpenAI Chat 353, Responses 452, Groq 301, Cerebras 291, Sarvam 353, and
+  Anthropic/Bedrock 1,392. These include all four actual caller functions with
+  substituted transport/context. Provider-config wire checks pass **94**.
+  Shared base, grouping, and bridge files join the scoped pre-commit type gate.
+  That expanded check passes with zero errors. The broader LLM/caller probe
+  remains non-passing at **57 diagnostics**, down from 63; it is not a
+  platform-wide passing type gate.
+- Full server/CLI Ruff, documentation validation (46 pages, 275 local links,
+  47 diagrams), and whitespace checks pass. No frontend API or UI contract changed.
+- Milestone review ran in order: DDD boundaries, architectural fit, data flow,
+  plan adherence, readability/security/performance. It caught the upstream
+  conversation truncation and Gemini scalar-response loss; both are corrected.
+  Local function probes are temporary, with no committed test suite.
+
+**Framework metadata serialization follow-up: reproduced, not fixed here**
+
+- `RunMessage.metadata` is annotated as `FrameworkMetadata`. Default Pydantic
+  `RunMessage.model_dump_json()` drops fields declared by a metadata subclass.
+  A round-trip probe lost both tool-call and result metadata. In-memory bridging
+  and explicit decoding of the owning metadata schema pass; those are distinct
+  claims. No actual persisted `RunInput` consumer was established in this slice.
+- Trace all framework metadata producers, serialization/checkpoint consumers,
+  subtype preservation, and intentional secret exclusions before changing the
+  shared serialization contract. This remains assigned to the F2 framework/
+  caller-contract work; do not paper over it with unchecked casts or broadly
+  enabling arbitrary serialization without checking the data boundary.
+- Live vendor, widget, voice, durable-sink, and operator-DB QA remain unrun.
+  No configured accounts, DB data, migrations, dependency pins, Git history, or
+  deployed services changed. F2 and the platform-wide goal remain active.
+
+**Next ordered F2 slices**
+
+1. Gemini native response/stream assembly and per-part replay are now implemented
+   and locally verified in the milestone below. Together with OpenAI
+   Chat/Responses, Anthropic/Bedrock, Groq, Cerebras, and Sarvam, this covers the
+   eight factory branches. Keep SDK-specific variants out of shared contracts;
+   configured-account QA remains separate from these native transport proofs.
+2. Preserve native SDK response/stream variants and typed accumulators throughout
+   each adapter. Remove remaining `Any`, reflection-based field access, and
+   suppressions on these known shapes; validate malformed/incomplete tool inputs
+   and stream terminal/refusal/error outcomes without authorizing a tool call.
+3. Retain invocation ownership proven for Chat/Responses/Anthropic/Bedrock/Groq/Cerebras/Sarvam
+   and Gemini while replacing the remaining response handling;
+   close each client/stream on success,
+   failure, timeout, early iterator close, and cancellation. Retain existing
+   retry/usage authority; test slow or abrupt disconnects with SDK transports.
+4. Type canonical `LLMResponse` content and metadata with their producers and
+   framework/tool/usage consumers, preserving vendor-owned SDK contracts. Broad
+   LLM/caller type checks
+   still have unresolved errors; the scoped gate is not global completion.
+5. Run the milestone review and configured-org live agent/widget QA after the
+   connected native paths are implemented. Continue other independent work when
+   a vendor account is unavailable; don't invent live coverage.
+
+The platform-wide typing goal remains active. No operator data, credentials,
+migrations, Git history, running services, or external vendor state changed.
+
+**Gemini request/lifecycle slice: implemented and locally verified**
+
+- Target remains declared, locked, and installed `google-genai==1.56.0`.
+  Native request types replace dictionary-built content, roles, parts, tool
+  declarations, and generation config. Tool schemas use the SDK's JSON Schema
+  field without stripping constraints or silently skipping conversion failures.
+  No SDK type crosses into framework/module policy.
+- The async entrypoint previously invoked the synchronous SDK; a native HTTP
+  probe confirmed a sync request and no explicit client close. Both inference
+  paths now prepare/validate first and scope the SDK's two transports and stream
+  generators. Nonstreaming normalization runs after resource cleanup. The
+  hardcoded `ThinkingLevel.MINIMAL` request was removed; no replacement default
+  or model-specific policy was invented. Automatic tool execution stays disabled.
+- Sources: installed `google.genai.client`, `models`, `_api_client`, and `types`;
+  [native SDK lifecycle and tool declarations](https://googleapis.github.io/python-genai/)
+  and [ProtoJSON field-name rules](https://protobuf.dev/programming-guides/json/#field-names-as-json-keys).
+  SDK 1.56.0 emits `parameters_json_schema` in Developer API declarations; the
+  probe validates the actual native wire shape, not a guessed camel-case field.
+  Current Gemini thinking docs chiefly describe Interactions, a different API;
+  this slice does not migrate APIs or upgrade packages.
+- Evidence: **93 request/lifecycle assertions**, **36 caller assertions** across
+  background prompt, memory completer, swarm, and conversation (both inference
+  modes); **16 assertions over six real loopback TCP connections**. HTTPX and
+  aiohttp both close sockets on early iterator close, cancellation while reading,
+  and cancellation before the response. Vendor HTTP errors, malformed JSON,
+  timeout, failed normalization, and caller/listener failure also release owned
+  transports. SDK-managed transports were exercised; externally injected clients
+  intentionally remain the injector's responsibility in the SDK.
+- **2,563 shared history assertions** and **94 provider-config wire checks** pass
+  again. Caller context, token delivery, and vendor responses were substituted;
+  loopback is a protocol fixture, not a live Google service. No operator DB,
+  published-agent, widget, voice, durable-sink, or external tool-effect QA is claimed.
+- Scope split followed the data-flow trace: thought signatures also cross the
+  platform/framework message envelope. Do not declare Gemini complete based on
+  request typing or resource cleanup. A native chunk probe still reproduces
+  two tool chunks replacing each other at part index zero, premature executable
+  progress, and a content-less terminal chunk losing both finish state and usage.
+  Nonstreaming native IDs and per-part signature retention also remain to fix.
+  Next slice must update producers, replay consumers, and all affected callers
+  together, without replaying filtered-out calls from saved metadata.
+- The existing scoped LLM hook remains the gate for completed native adapters;
+  Gemini is not added yet. The current broader LLM/caller probe reports
+  **55 diagnostics**, including one in Gemini's old response metadata path.
+  Zero scoped diagnostics is not a platform-wide passing type check.
+- The scoped hook, full server/CLI Ruff, documentation validation (46 pages,
+  276 local links, 47 diagrams), and whitespace checks pass. This is an
+  independently verified slice, not the full Gemini milestone review. No
+  committed probes, dependencies, migrations, deployed services, or operator
+  data were changed.
+
+**Gemini response/replay milestone: implemented and locally verified**
+
+Confirmed causes and connected fixes:
+
+- Chunk-local part indexes restarted at zero. Two function-call chunks replaced
+  each other; executable progress could precede complete argument validation.
+  The new native `GeminiStream` accumulates parts in arrival order and validates
+  the entire tool batch after terminal completion and transport cleanup. Missing
+  termination, duplicate IDs, malformed/non-finite input, truncated calls, and
+  unsupported native content do not expose a valid prefix for execution.
+- Content-less terminal/usage chunks were skipped. Native response ID, model
+  version, terminal state, safety ratings, cache/reasoning counts, and final usage
+  now survive normalization. Progress snapshots do not mutate prior usage.
+- A global signature was attached to regenerated parts; nonstreaming responses
+  and transient swarm rows lost signatures. `GeminiReplay` retains original native
+  parts with opaque signature bytes, serialized by pinned SDK 1.56.0. Canonical
+  call IDs are stable; generated internal IDs are not injected into original
+  native calls that did not have an ID.
+- A response can contain parallel calls separated by text, while framework rows
+  interleave calls/results. Every produced text/tool row now carries its original
+  response-block index. Gemini groups retained calls before their results within
+  that response, keeps text/thinking parts separate, and checks replay against
+  the actual canonical row. Repeated equal text does not select the wrong signed
+  part. The shared validator's incomplete-pair cleanup is retained; Gemini's
+  overrides allow text between pending calls only for the same saved response.
+- `response_messages` now accepts the complete `LLMResponse`; its actual swarm
+  caller passes it through. Conversation persistence and framework continuation
+  both preserve block indexes. Final message metadata retains the last model
+  response only when a successful, tool-free response exactly matches final text.
+  Error, transformed, and tool-generated outcomes cannot borrow unrelated replay.
+
+Authoritative scope:
+
+- Installed native SDK models and serialization were checked alongside the
+  [GenerateContent API](https://ai.google.dev/api/generate-content),
+  [GenerateContent function calling](https://ai.google.dev/gemini-api/docs/generate-content/function-calling),
+  [GenerateContent thinking](https://ai.google.dev/gemini-api/docs/generate-content/thinking),
+  and [thought-signature ordering](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/thought-signatures).
+  Vertex-only partial argument fields are explicitly refused by this Developer
+  API adapter; no SDK/API/model/credential change was bundled into the repair.
+- No fake signature or bypass marker is generated. Historical rows that never
+  stored original signed parts cannot be repaired by guessing. Live Gemini
+  acceptance of retained/reduced histories still needs configured-account QA.
+
+Executed evidence:
+
+1. **175 native response/replay assertions**: nonstreaming/streaming SDK HTTP
+   fixtures, parallel batches, JSON byte round trips, exact request-body parts,
+   persisted framework metadata, filtered calls, repeated text, text between calls,
+   changed/tampered replay, refusals, negative usage, and malformed streams.
+   Non-finite arguments were also tested directly on native SDK objects, because
+   Pydantic's JSON serializer turns those synthetic values into null before HTTP.
+2. **42 two-turn caller assertions / six SDK calls**: the actual swarm loop and
+   both conversation inference modes retain signatures, execute the expected
+   substituted tools, send both calls together, and produce final text/usage.
+3. Previous request/lifecycle **93**, caller lifecycle **36**, shared history
+   **2,563** across eight adapters, framework bridge **88**, native SDK/caller
+   history **64**, and provider-config wire **94** checks pass again.
+4. Real local TCP cleanup: **16 assertions / six connections**, native HTTPX and
+   aiohttp, covering early exit, cancellation during reads, and cancellation
+   before a response. Every fixture observed the socket close.
+
+Milestone review, in required order:
+
+1. DDD boundaries: native Parts and replay schema stay in the Gemini adapter;
+   framework metadata carries only neutral response/block identity. No forbidden
+   module/socket or framework/platform import was added.
+2. Architecture: existing message metadata transports replay; no new table,
+   cache, coordinator, default model, or automatic tool executor was introduced.
+3. Data flow: native response → canonical blocks → framework/transient/persisted
+   metadata → retained history → actual SDK request is exercised. The additional
+   interleaved-text cleanup bug was reproduced and corrected during this trace.
+4. Plan adherence: finishes the locally runnable Gemini slice; F2 still includes
+   canonical response unions, framework serialization, and caller contracts.
+   F3–F10 remain active work, not claims inferred from adapter coverage.
+5. Maintainability/security/performance: dictionary accumulators and reflection
+   on known SDK fields are gone. No raw vendor payload enters error messages;
+   malformed/filtered records cannot restore hidden tool calls. No DB or network
+   operation was added to history conversion. Large-history benchmarking was not
+   performed; retaining full response metadata follows the existing persistence
+   envelope and is not claimed as a memory optimization.
+
+The expanded local type hook includes Gemini and the transient message helper
+with **zero diagnostics**. Broader LLM/caller checking is **54 diagnostics**, down
+from 55; the remaining caller/serialization errors stay in F2. Ruff, documentation
+validation, and whitespace checks pass. All vendor bodies, tool effects, context
+resolution, and delivery sinks were substitutes except the local TCP transports.
+No live Google account, operator DB, published-agent/widget/voice session, durable
+sink, or external mutation was exercised. No deployment, migration, dependency,
+commit, or operator-data change; probes remain ephemeral.
+
+**Canonical LLM content: implemented and locally verified**
+
+- Cause: `LLMContentBlock.content: Any` let the discriminator disagree with its
+  payload. Callers compensated with string/dictionary/reflection fallbacks;
+  annotations alone did not guarantee which content was safe to display or execute.
+- `LLMContentBlock` is now a discriminated union of `LLMTextContent`,
+  `LLMThinkingContent`, and `LLMToolContent`. Producers construct concrete variants;
+  parsing a saved response validates the same union. The JSON envelope retains
+  `type`, `content`, and `id`; the Python union itself is no longer a constructor.
+- Text and thinking carry `LLMTextBlock`. Tool content carries `LLMToolUseBlock`
+  with nonblank identity, matching optional outer ID, and finite JSON arguments.
+  Arbitrary Python objects, mislabeled payloads, and unknown fields are rejected.
+  Envelope fields are frozen; nested tool-argument dictionaries are not claimed
+  to be deeply immutable.
+- Removed the unused image-output enum value: none of the eight current adapters
+  produces it. This does not change user image inputs, their separate message
+  contracts, or existing native-adapter refusals of unsupported output.
+- All native producers, transient swarm messages, conversation/framework
+  conversions, background-prompt extraction, tool-batch extraction, and the module
+  message writer use concrete payload fields. Shared tool-batch validation still
+  happens before executable output is exposed; no second tool authority was added.
+
+Executed evidence:
+
+- **49 canonical contract assertions**: union discrimination, JSON readback,
+  frozen tags, malformed/non-finite arguments, identity mismatch, caller text/tool
+  extraction, framework-kind translation, and original replay-block indexes.
+- Native SDK transport regressions: Anthropic/Bedrock **1,392**, OpenAI Chat
+  **353**, Responses **452**, Groq **301**, Cerebras **291**, Sarvam **353**, and
+  Gemini response/replay **175** plus two-turn callers **42**. Fixtures use pinned
+  SDKs, not live vendor accounts. Earlier probe invocations using the obsolete
+  `response_content` argument were corrected to the current complete-response
+  signature without changing expected outcomes.
+- Shared history **2,563** assertions across eight adapters, framework bridge
+  **88**, and native SDK/caller history **64** pass with concrete union fixtures.
+- No production `LLMContentBlock(...)` constructor or image-output enum reference
+  remains. The expanded LLM type hook includes the canonical response file and
+  passes; the broader LLM/caller baseline remains **54 diagnostics**, not zero.
+
+This is an internal contract slice, not live product QA. No operator DB, worker,
+widget, external tool mutation, migration, dependency, deployment, or commit was
+changed. Response metadata was not covered by the content-union slice; the
+following increment addresses that separate boundary.
+
+**Canonical LLM metadata: implemented and locally verified**
+
+- Shared `LLMResponseMetadata` owns validated stream flags and a discriminated
+  text/thinking/tool-completion delta. Callers use `LLMResponsePhase` rather than
+  interpreting raw dictionaries. Existing `streaming`/`final` wire predicates and
+  their terminal interpretation remain compatible; the derived phase is not an
+  extra persisted field or a second execution authority.
+- Vendor completion DTOs own finish reasons, status, fingerprint, timing, safety,
+  and signed Gemini replay. SDK types stay in adapters; the common metadata
+  boundary accepts only JSON extensions, rejects non-finite values, and does not
+  expose a generic dictionary-style `.get` compatibility API.
+- Every native producer constructs the typed envelope. Conversation/voice
+  streaming reads typed text deltas only; thinking and tool notifications do not
+  become speech. The framework conversion explicitly serializes neutral JSON.
+  Whole-batch tool validation, transport cleanup, and replay identity are unchanged.
+- Serialization preserves omitted flags, vendor nulls, and nested include/exclude
+  selections. This uses the pinned **Pydantic 2.11.10** environment and its
+  [documented serialization hooks](https://docs.pydantic.dev/2.11/concepts/serialization/)
+  plus runtime validation of [extra fields](https://docs.pydantic.dev/2.11/api/config/#pydantic.config.ConfigDict.extra).
+  No dependency version or global duck-typing serialization setting changed.
+
+Executed: **97 metadata assertions**, **49 content assertions**, all eight native
+adapter regressions from the preceding milestone, Gemini two-turn callers **42**,
+and native SDK/caller history **64**. The scoped type gate passes; the broader
+LLM/caller probe remains **54 diagnostics**. Full server/CLI Ruff also passes.
+No live vendor account, operator DB, worker, widget, or external mutation was used.
+
+Dependency limitation: requesting only part of a nested discriminated union with
+`include` emits serialization warnings in Pydantic 2.11.10. A minimal plain model
+without Eylo code reproduces it. The metadata probe records **12 warnings** for
+six partial-selection cases and verifies their exact output; full dumps and
+exclusions are warning-free. No production warning filter was added. The normal
+adapter/replay flows do not use this partial-selection operation.
+
+**Framework metadata and critical callback boundary: implemented, locally verified**
+
+- Reproduced metadata loss through an actual `RunInput` containing message and
+  tool metadata subclasses: direct owner dumps retained fields; nested framework
+  dumps serialized only the base schema. This is a default snapshot contract
+  defect, not evidence that existing DB rows lost data.
+- All ten explicit framework metadata fields use scoped `SerializeAsAny`.
+  Owner exclusions, `SecretStr` masking, and caller include/exclude remain effective.
+  Unrelated nested model fields retain normal declared-schema serialization; no
+  global duck-typing override was added. Runtime-only `RunContext.local_context`
+  stays accessible during execution and is excluded from all snapshots.
+- `RunCallbacks` owns four typed critical operations, independent of mutable
+  `local_context`. Conversation, background, scheduled, sandbox/objective, and live
+  voice producers now bind operations on `FrameworkRunner`. Callback failures still
+  stop the run; cancellation escapes; `RunHooks` remain best-effort observers. No
+  new execution lane, persistence authority, or framework-to-platform import.
+- Actual conversation callback and durable transcript-bridge signatures now name
+  `RunContext` and `RunInput`. Callback wiring is immutable and shared safely across
+  runner invocations; each invocation retains its own runtime context.
+- Executed **106 metadata assertions**, **299 callback assertions**, conversation
+  bridge regressions **88**, native SDK/caller history **64**, and Gemini two-turn
+  callers **42**. Callback QA covers every callback failure/cancellation position,
+  ordered durable command/result recording, streamed entrypoints, invalid refresh
+  results, observer failures, approval/disabled-tool policy, terminal tool output,
+  and eight concurrent runs. Provider/DB effects are
+  substituted; these checks do not establish live vendor or worker recovery health.
+
+The callback-path type baseline improved from **51 to 48 diagnostics**. The full
+framework-directory probe still reports **14** pre-existing diagnostics in
+guardrail/session protocol stubs and sandbox runtime fields; the scoped hook does
+not conceal or certify those files.
+
+Milestone review followed DDD boundaries, architecture fit, source-to-sink flow,
+plan adherence, then readability/security/performance. No new blocking finding in
+this slice. Framework imports independently of the platform; the expanded local
+type hook and server/CLI Ruff pass. Runtime state typing remains explicit debt,
+not a dictionary compatibility shim hidden behind the callback contract.
+
+**Run-state boundary and SOR wait: implemented, locally verified**
+
+- `PlatformRunState` owns command IDs, a typed execution context, and separate
+  command-step/durable-wait authority. `ConversationRunState` alone holds full
+  tool-use rows, active user message, persistence cursor, and last-message ID.
+  `AgentRunToolCommandRef` and `LiveVoiceToolCommandRef` are removed; callers
+  pass actual UUID command identities instead of message-shaped stand-ins.
+- Conversation run/resume, background, scheduled, objective, live voice, and
+  realtime tool dispatch use the same typed state boundary. Scheduled/objective
+  scope and participant objects replace `SimpleNamespace`; no DB row or default
+  provider is fabricated. Shared model/gateway annotations recognize both actual
+  conversation and non-conversation contexts. Handoffs require a real conversation.
+- `execute_exact_tool` forwards generic caller-owned context unchanged; it does
+  not inspect that context or import pipeline types. The dynamic registered-tool
+  callable registry and its per-tool context requirements still need their own
+  typed contract pass. This generic pass-through is not certification of that registry.
+- Reproduced a real SOR caller/API mismatch: `execute_sor_mutation_tool` passed
+  raw Absurd `step_name`/`timeout` arguments to `AgentRunWorkflowContext.await_event`,
+  which requires keyword-only `event_name`/`key`/`version`. The pending-command
+  branch raised `TypeError` before reaching the engine wait. Fixed the caller and
+  protocol; the workflow wrapper retains versioned checkpoint IDs and indefinite
+  waits. No DB transaction spans that wait. This is an executed local reproduction,
+  not a claim of a newly observed failure in the operator DB.
+- `CommandStepContext` is the step-only port for email, telephony, MCP,
+  integrations, sandbox commands, and recording effects. Live voice never acquires
+  event-wait authority. SOR and sandbox dispatch require a durable run separately.
+- SOR tool-schema factories return their actual base types with typed payload
+  fields. All **54 catalog tool JSON schemas** match their pre-change form.
+- Local QA: **78 run-state assertions**, **52 actual resume-path assertions**,
+  **284 SOR schema/wait-flow assertions**, and **299 callback regressions**.
+  Covers ordered persisted message links, cursor progression, context replacement,
+  command-map isolation, already-recorded resume results, approved/rejected/missing
+  command cases, exact tenant/run/source receipts, early/foreign receipts,
+  indefinite waits outside transactions, and cancellation. Fixtures use actual
+  domain models; DB/provider effects are substituted. Initial fixture failures
+  were corrected against the real enum, constructor, pinning, and external-ID
+  contracts; product validation was not relaxed.
+- Re-ran all eight native LLM branches (**3,317 assertions**), metadata roundtrip
+  **106**, conversation bridge **88**, native SDK/caller history **64**, and
+  Gemini two-turn callers **42**. These are local native-transport checks, not
+  live provider, worker-crash, or real-DB recovery QA.
+- Expanded local LLM/framework/caller gate: **47 files**, no unsuppressed errors.
+  One pre-existing suppression remains on dynamic SOR declaration-function
+  metadata; no new suppression was introduced. The expanded touched-caller probe
+  still reports **23** diagnostics in MCP optional authority narrowing, objective
+  outcome/heartbeat helpers, scheduled heartbeat helpers, and telephony credential
+  factories. These files remain explicit debt, not certified by the scoped gate.
+- Milestone review: DDD ownership, architecture fit, source-to-sink flow, plan
+  adherence, then readability/security/performance. No new blocking finding in
+  this slice. No external I/O, transaction expansion, schema migration, or vendor
+  policy change was added by the run-state refactor.
+
+**Durable caller contracts: implemented, locally verified**
+
+- MCP mutation dispatch now narrows each required authority field explicitly.
+  The previous combined `any(...)` guard already refused missing authority at
+  runtime, but did not preserve its type for the mutation executor. Read-only
+  dispatch still needs no mutation receipt; no authorization policy was widened.
+- Reproduced two defects in all four copied Agent-run heartbeat helpers:
+  `create_task` rejected a `Future` although the signature promised `Awaitable`;
+  simultaneous heartbeat/child failure left the child exception uncollected.
+  `pipelines/agent_run_heartbeat.py` now owns the operation for conversation,
+  schedule, objective, and parallel-task executors. It accepts the declared
+  awaitable, retains the 120-second claim extension and 30-second check interval,
+  caps waits to the remaining active-time budget, and retrieves the child outcome
+  on every exit. Cleanup failure does not mask the authoritative heartbeat error.
+  The runtime's outer claim-renewal loop remains distinct from this budget check.
+- `AgentRunToolCapture` replaces transient last-response dictionaries in scheduled
+  and objective runs. Removed the unused captured response field; tool-call IDs
+  remain correlated with the framework pause/completion before persistence.
+- `ObjectiveCompletion` validates outcome/result/reason through one shared
+  parser, used by both the control-tool response and canonical-result projection.
+  Neither string coercion nor unchecked casts conceal malformed reasons. The two
+  agent-visible control-tool schemas and continuation envelopes are unchanged.
+- Parallel task origins explicitly refuse absent text before calling the typed
+  JSON parser. The same domain refusal is retained, before any repository access.
+- Local QA: **28 heartbeat assertions**, **27 MCP authority/receipt assertions**,
+  **45 objective/capture assertions**, and the missing parallel-task payload probe.
+  Includes actual framework completion/input pause and actual workflow-context
+  budget/claim calls; DB/outbound/provider operations are substituted. Re-ran
+  **78 run-state**, **52 resume**, and **299 callback** assertions.
+- Local hook now checks **54 files**, zero unsuppressed diagnostics. The existing
+  dynamic SOR declaration metadata suppression remains; no suppression was added.
+  The same expanded caller probe fell from **23 to 11** diagnostics, all in
+  telephony provider/credential construction. That is scoped progress, not a
+  whole-platform type-check result.
+- Verification gates: full server/CLI Ruff, pre-commit config validation, and
+  `git diff --check` passed. Documentation verification passed: **46 pages,
+  277 links, 89 packages, 1,128 Python modules, 5,839 docstrings, 47 diagrams**.
+- Milestone review, in order: DDD boundaries, architecture fit, source-to-sink
+  flow, plan adherence, then readability/security/performance. No new blocker in
+  this slice. No new dependencies, worker lane, DB transaction, external effect,
+  or persistence migration. Live provider/DB, worker-crash, and browser QA were
+  not run; this does not certify those paths.
+
+**Telephony execution config and caller imports: implemented, locally verified**
+
+- One pipeline translation carries the validated organization config into four
+  immutable socket-owned settings models. Required fields retain exact types;
+  missing, blank, malformed, extra, and wrong-carrier settings are refused before
+  client use. Secret values are absent from config representations and validation
+  error text. No module/socket import boundary or provider-enum ownership changed.
+- Replaced reflective factory selection and the `extra_config` dictionary with
+  explicit service branches. Migrated verification, call control, number search/
+  purchase client construction, and authenticated media activation. Exotel uses
+  canonical `application_id` and `api_host`; stored/API fields are unchanged.
+- Narrowed nullable Plivo/Vonage clients and aligned Vonage `end_call`/`send_dtmf`
+  keyword parameters with the base service contract. Media query enrichment keeps
+  the same result for every tested query subset and pre-populated metadata case.
+- **Confirmed regression found during caller QA:** `LiveVoiceModelFactory`
+  evaluated `ConversationContext` at import time while its import was under
+  `TYPE_CHECKING`. Importing the telephony media route failed with `NameError`.
+  Static checks and config-only probes did not exercise that boundary. The type
+  now has a runtime import; the exact failing import passes. Added a local runtime
+  import hook rather than treating a clean type check as sufficient evidence.
+- Local function/contract QA: **271 config/factory assertions** across all four
+  carriers, **1,097 caller assertions** including 1,024 metadata parity cases,
+  and **78 assertions** across 12 Exotel/Vonage create/end/DTMF success/cancellation
+  invocations. Real classes, client constructors, JWT signing, and request builders
+  ran; provider HTTP/SDK effects and config resolution I/O were substituted.
+  HTTP sessions closed on tested success/failure/cancellation paths. This does not
+  claim live carrier operation, provider-account cleanup, or durable DB execution.
+- Expanded caller verification: **81 modules import successfully**; the same
+  **81-file type check has zero unsuppressed diagnostics**, with one pre-existing
+  SOR declaration-metadata suppression. The prior 11 telephony diagnostics are
+  resolved. The telephony hook expands from seven to **22 files**; other existing
+  scoped hooks remain in place. Whole-platform typing is still incomplete.
+- Milestone review, in order: DDD boundaries; architecture fit; config-to-client/
+  request and authenticated-media data flow; plan adherence; readability,
+  security, and performance. The import defect above is fixed. No new query,
+  external effect, long transaction, dependency, provider default, migration,
+  deployment, or API schema change was introduced by this slice.
+- Remaining telephony work includes native request/response, error, number-search
+  result, and media-event contracts. Typed settings are not a substitute for them.
+  Live vendor, worker-crash, DB, browser, and real call QA were not run.
+- Final gates passed: all four scoped type-hook commands, the new runtime import
+  hook, full server/CLI Ruff, pre-commit configuration validation, and
+  `git diff --check`. Documentation verification passed: **46 pages, 278 links,
+  89 packages, 1,129 Python modules, 5,840 docstrings, 47 diagrams**. No console,
+  widget, or static API schema change in this slice; their builds were not rerun.
+
+**Background built-ins and one-shot worker: implemented, locally verified**
+
+- Followed `BackgroundAgentWorker._run_implementation` through the implementation
+  registry, title/summary generators, resolved provider, actual native SDK request,
+  result normalization, and message/result projection. Kept platform prompts and
+  task outcomes separate from vendor envelopes and durable lifecycle states.
+- **Confirmed pre-existing defect:** the token counter returned components plus a
+  total; its consumer summed all values, doubling estimates. A typed component
+  breakdown now exposes one derived total. The reproduced 30-token input formerly
+  returned 60; it now returns 30. Character-estimate fallback also handles nullable
+  extracted text.
+- **Confirmed pre-existing authority defect:** the worker resolved an exact
+  background agent, then discarded it when entering the built-in implementation.
+  The generator used the conversation's primary agent instead. The executing agent
+  now travels through the registry to generation. Summary window accounting still
+  uses the conversation model; the generator's config is resolved only after work
+  is selected. Missing summary contact/agent context skips before inference.
+- Typed generation overrides, prompt inputs, compaction triggers, worker outcomes,
+  and persisted summary metadata replace positional/dictionary interpretation.
+  Existing prompt instructions, thresholds, output caps, complete recent-group
+  preservation, cumulative cursor keys, and outcome wire values are retained.
+  No API or database schema change is required.
+- **Regression caught before completion:** the one-shot worker imports the prompt
+  runner through `pipelines/llm/runtime.py`; it still passed the old keywords and
+  raised `TypeError`. Migrated that caller and the re-export. A stale summary
+  package `__all__` entry also named the removed trigger helper; it is corrected.
+  Both callers and declared exports now participate in local gates.
+- Function/contract QA: **253 assertions** across 19 built-in implementation
+  scenarios; **182 assertions** for threshold/config/metadata contracts plus ten
+  one-shot worker cases; **72 assertions** across six completion-projection cases.
+  Total: **507 assertions**. Tests use actual schemas, worker functions, SDK
+  request/response handling, client closure, and cursor readback. HTTP, resolver,
+  Redis mutex, metering, and DB I/O are substituted where stated. Success,
+  empty output, missing authority, provider failure, cancellation, and persistence
+  failure paths were exercised. These probes do not establish real DB rollback,
+  distributed mutex safety, live vendor behavior, or human product acceptance.
+- Expanded checks: **94 modules import**, including declared exports; the same
+  **94-file type scope reports zero unsuppressed diagnostics**, with one
+  pre-existing SOR suppression. Full server/CLI Ruff passes. Added all changed
+  background callers to the existing LLM type hook, preserving the eight native
+  adapter branches. Whole-platform typing remains incomplete.
+- Milestone review order: DDD ownership; architecture fit; producer-to-native-to-
+  message data flow; plan adherence; readability, security, performance. The
+  consumer/export regressions above are fixed. Existing long-running coordination
+  findings below prevent claiming the whole background subsystem complete.
+- Next background slices, before closing F2:
+  1. `BackgroundAgentWorker._run_prompt_agent` still wraps replay, model/tool
+     execution, and callbacks in one transaction and carries its session into
+     model construction. Type that complete caller flow, shorten transaction
+     ownership, and verify tools/transcript/wait recovery.
+  2. `ConversationLock` uses a 60-second value-`1` Redis mutex without renewal
+     or token-checked release. An expired owner can delete a successor's lock.
+     Resolve ownership/lifetime semantics and test actual Redis expiry/cancellation;
+     mocked lock-scope QA above does not prove this safe.
+  3. `get_max_tokens_for_model` retains a partial model table and a blanket
+     200,000-token fallback for other catalog models. Verify capacities against
+     authoritative vendor definitions before changing that policy.
+  4. Continue task-result metadata, memory and swarm caller contracts, then the
+     remaining provider request/response flows F3–F10. Do not infer native wire
+     completeness from typed settings or a narrow passing check.
+- No operator DB, provider configuration, service, migration, Git history, or
+  deployment changed. Live agent/browser QA and human product review remain unrun.
+- Final gates passed: all five local type/import hook commands, pre-commit config
+  validation, full server/CLI Ruff, formatting of the 17 changed Python files,
+  and `git diff --check`. Three source-parity checks confirm the title, summary,
+  and one-shot instruction literals are unchanged. Documentation validation:
+  **46 pages, 279 links, 89 packages, 1,130 Python modules, 5,845 docstrings,
+  47 diagrams**. No UI surface changed in this slice; console/widget builds were
+  not rerun.
+
+**Prompt-only background worker and private replay: implemented, locally verified**
+
+- Traced `BackgroundAgentWorker.run` through exact revision resolution,
+  conversation snapshot, `FrameworkRunner`, `AgentRunTranscriptBridge`,
+  `ExistingConversationModel`, the native SDK, and `WorkerResult`. Worker inputs,
+  executable agent, model construction, result extraction, and task metadata now
+  use their actual contracts. Handoffs remain disabled; no provider is inferred.
+- Private transcript envelopes are typed as assistant text, tool call, or tool
+  result. The row-kind enum belongs to `modules/agent_runs/domain.py`; the
+  pipeline owns framework/persistence translation. Nested tool arguments/results
+  remain dynamic at their declared boundary. No discriminator, column, enum type,
+  migration, or stored JSON shape is added. Invalid owned envelopes fail closed;
+  private validation inputs are excluded from formatted exception chains.
+- **Confirmed pre-existing replay defect:** `_message_from_row` restored tool
+  history without `request_id`; `with_replay_messages` appended it unchanged.
+  Native history grouping rejected completed-call replay with `missing request_id`
+  before HTTP. Fresh transient tool messages already carried that identity, so
+  fresh-run-only checks missed the restore path. Reproduced using the HEAD parser
+  and join functions against the same worker/native fixture, then verified the
+  fix. The join now applies the current input's validated request ID, preserving
+  original conversation messages, row IDs, and durable command IDs.
+- Function/contract QA: **157 assertions** for typed rows, JSON round trips,
+  byte bounds, malformed payloads, request correlation, command persistence,
+  callbacks, result lookup, and safe errors; **210 assertions** across eight
+  actual worker/framework/native-SDK cases; **22 assertions** through the actual
+  scheduled/objective input constructors and native message projection.
+  Total: **389 assertions**. Cases include fresh text/tool use, pending and
+  completed replay, provider refusal, model/tool cancellation, and invalid replay.
+  Completed replay made one native request and no tool invocation; pending replay
+  made one native request after one invocation with the original command ID.
+- Verification substitutes HTTP, DB I/O, resolver, and tool effects. It uses real
+  domain/ORM/Pydantic objects, actual framework control flow and callbacks, and the
+  installed native SDK. It does **not** establish real DB concurrency/rollback,
+  worker-crash recovery, live provider behavior, or human product acceptance.
+- Milestone review sequence: DDD ownership; architecture fit; persisted/private
+  history to native request data flow; plan adherence; readability/security/
+  performance. Fixed the replay identity defect and validation-error disclosure
+  identified above. No new query per replay row, external effect, dependency,
+  runtime authority, deployment, or operator-data change was introduced.
+- **Transaction correction remains required; initial slice scope was too narrow.**
+  Removing only the worker's outer `start_transaction` would break shared
+  collaborators that call `get_transaction()` or retain its resolver. Resolve
+  these prerequisites coherently, before removing the caller's session:
+  1. `ExistingConversationModel.generate` / LLM config wiring: stop capturing a
+     resolver session. The callable boundary below is implemented; its own read
+     scope ends before inference when there is no caller transaction. Existing
+     outer transactions are still reused until prerequisites 2–4 are completed.
+  2. `AgentRunTranscript`: separate owned replay/read/write transactions and
+     preserve commit-before-effect command identity, including scheduled/objective
+     consumers. Existing explicit commits do not guarantee subsequent reads stay
+     outside a transaction.
+  3. System-tool availability and each owning tool pipeline: hydrate authority in
+     short transactions; release them before vendor calls or durable waits.
+     Curated/MCP execution and registered tools still use the ambient session.
+     Wrapping an entire vendor operation in a smaller-looking transaction is not
+     the fix.
+  4. Remove the outer worker transaction after those boundaries are independently
+     runnable, then verify real DB transaction lifetime and cancellation/recovery.
+- Continue the Redis mutex lifetime, model-capacity catalog, task-result metadata,
+  memory completer, and swarm caller work listed above. The passing scoped type
+  checks do not mean platform-wide hardening or the background subsystem is done.
+- Final local checks passed: **95 modules imported** with declared exports;
+  **95-file type scope** reports zero unsuppressed diagnostics (one pre-existing
+  SOR suppression); all five local type/import hook commands; full server/CLI
+  Ruff; formatting of the five changed Python files; pre-commit config validation;
+  and `git diff --check`. The Agent-run domain vocabulary joins the existing LLM
+  type gate, without introducing CI.
+- Existing native-adapter probes passed **3,317 assertions** across eight branches;
+  run-state, resume, and callback probes passed **429 assertions**. The native
+  harnesses initially still used the old background-prompt keywords; only their
+  inputs were updated to the current `BackgroundPrompt` contract, preserving
+  assertions. These are local substituted-transport checks, not live vendor QA.
+  Documentation validation passed: **46 pages, 279 links, 89 packages, 1,130 Python
+  modules, 5,857 docstrings, 47 diagrams**. Console/widget builds were not rerun:
+  this slice changes no UI or public API schema.
+
+#### Shared LLM model construction and pinned reads — verified local slice
+
+- Updated all five default construction paths: conversation, live voice,
+  prompt-only background, scheduled, and objective runners. The model accepts
+  the domain-owned `ResolvePinnedLLM` callable, not a concrete resolver holding
+  a session. Each invocation resolves current context and exact config ID/revision.
+  Explicit resolver and model-factory injection remain supported.
+- Removed the unused second generation-override dictionary. Framework
+  `ModelSettings` translates directly to `LLMOverrides`; invalid models retain
+  the sanitized `NotConfiguredError` contract. Caching uses
+  `LLMPromptCaching`, streaming uses the pipeline-owned `LLMInferenceMode`.
+  Framework settings, provider schemas, and persisted JSON remain unchanged.
+- **Corrected the draft's transaction strategy before completion.** Unconditionally
+  opening a second session while a runner holds its outer connection could
+  exhaust the pool under concurrent load. `resolve_pinned_llm` now reuses an
+  active caller-owned session without committing, rolling back, or closing it.
+  When no caller session exists, it owns a short read-only scope, closes it on
+  success/failure/cancellation, and returns an immutable `ResolvedLLM`.
+  `current_transaction` is the non-allocating common DB accessor.
+- This is a prerequisite, **not completion of the long-transaction correction**.
+  Existing outer runner transactions still span native/tool work. Do not infer
+  that a scoped config helper releases a transaction owned by someone else.
+- Function QA: **259 assertions**, **14 native SDK requests over recorded HTTP**.
+  Real transaction-context management, config wiring/resolver/domain translation,
+  model generation, and scheduled/objective default runners are exercised.
+  Checks cover one-slot session allocation, caller ownership, read-only cleanup,
+  cancellation, exact authority forwarding, immutable secret-bearing values,
+  caching precedence, both inference modes, and preserved injection seams.
+  DB selection, HTTP, and durable persistence effects are substituted; no claim
+  of real PostgreSQL pool/load/concurrency or live vendor QA.
+- Existing local regressions passed: **389** private transcript/worker/replay
+  assertions, **3,317** native-adapter assertions across eight branches, and
+  **429** run-state/resume/callback assertions. Harness inputs were updated to
+  the callable resolver contract; existing product expectations were retained.
+- Sequential milestone review: DDD ownership; architecture fit; caller →
+  framework settings → pinned config → native request/response flow; plan drift;
+  clean code/security/performance. The nested-session risk above changed the
+  draft. No new vendor default, authorization grant, database migration, UI/API
+  schema, permanent test suite, or deployment is introduced.
+- Expanded the local LLM gate to config domain/wiring: **97 scoped files**, zero
+  unsuppressed diagnostics (one existing SOR suppression). **98 modules** import
+  with declared exports. A separate check of `common/database.py` reports two
+  pre-existing errors: synchronous `sessionmaker` with an async engine, and
+  raw-string `AsyncSession.execute` for the application name. Those source
+  expressions match HEAD; no new suppression was added. Resolve them with the
+  shared transaction/session hardening, not by hiding them in this gate.
+- Next: give private transcript reads/writes owned short transactions, preserve
+  commit-before-effect and replay identity across all consumers; then untangle
+  tool availability/effects and remove the remaining outer runner transactions.
+  Continue the remaining caller and provider-native DTO flows in the full plan.
+- Final checks: all five local type/import hook commands, full server/CLI Ruff,
+  formatting for the nine changed Python files, pre-commit config validation,
+  and `git diff --check` passed. Documentation validation: **46 pages, 279 links,
+  89 packages, 1,130 Python modules, 5,862 docstrings, 47 diagrams**. No UI build,
+  API regeneration, live provider call, DB migration, deployment, or commit ran.
+
+#### Shared DB session contracts and post-commit ownership — verified slice
+
+This prerequisite precedes independently scoped transcript operations. The
+previous slice identified the async factory and raw SQL diagnostics; tracing the
+real session lifecycle exposed related correctness defects rather than merely
+annotation gaps.
+
+- Replaced synchronous `sessionmaker` plus an untyped forwarding wrapper with
+  native `async_sessionmaker[AsyncSession]`. The context manager and FastAPI
+  dependency yield a real session; `with_transaction` preserves arguments/results
+  through `ParamSpec` and `Awaitable`. The unused fallback generator was removed.
+- Native transaction events own typed `BaseModel` notification batches. Before
+  the fix, manual rollback left queued events available to a later commit;
+  savepoint boundaries bypassed the wrapper. Successful savepoints now transfer
+  their batch to the parent, and rollback discards only abandoned batches.
+  Explicit outer commits publish once. Listeners inherit neither writer session
+  nor writer event queue. In-process delivery remains best-effort, not durable.
+- Final commit previously suppressed `PendingRollbackError`, making a failed
+  transaction appear successful. Commit failures now propagate. Nested cleanup
+  restores both context variables even if session close fails. This does not
+  claim that repeated cancellation or rollback transport failures can never mask
+  another exception; those fault combinations were not part of this proof.
+- Application names now use bound, transaction-local PostgreSQL `set_config`;
+  the previous raw string was rejected by SQLAlchemy before execution. Read-only
+  transactions use explicit SQL text. Connection settings do not leak through
+  the pool. SQL logging retains shapes/counts without parameter values.
+- Source evidence: installed SQLAlchemy **2.0.45** matched the lockfile and QA
+  image. Its native transaction hooks and async-session integration were checked
+  against [SQLAlchemy's async event documentation](https://docs.sqlalchemy.org/en/20/orm/extensions/asyncio.html#using-events-with-the-asyncio-extension).
+  Bound transaction-local settings follow [PostgreSQL 17 configuration functions](https://www.postgresql.org/docs/17/functions-admin.html#FUNCTIONS-ADMIN-SET).
+  No dependency upgrade or schema change.
+
+Executed PostgreSQL/asyncpg QA: **194 assertions**, **39 committed rows**, **40
+observed events**, and **30 concurrent writers** using a two-connection pool.
+The runner imported current checkout source, not the image's baked source.
+The database was disposable, network-isolated, memory-backed, and used dummy
+credentials; no configured organization/provider data was touched.
+
+1. Root and nested-savepoint commit/rollback, ancestor rollback, separate owned
+   nested sessions, explicit transaction-object commits, registration before SQL,
+   and no duplicate publication.
+2. Actual deferred-constraint commit failure, body failure, in-flight SQL
+   cancellation, simulated pending-rollback and session-close failures.
+3. Read-only write rejection, quoted application-name binding, pooled setting
+   isolation, wrapped callable signature, and per-task context isolation.
+4. Event callbacks opened independent read scopes and observed committed rows.
+   Final stored rows matched successful writes; rolled-back/error/cancelled rows
+   were absent and zero connections remained checked out.
+
+An additional **12 assertions** used the actual Eylo/Pyventus emitter with a
+probe subscriber. It opened an independent read scope and saw the committed row;
+an actual duplicate ORM flush followed by final commit raised
+`PendingRollbackError`. No failed/rolled-back event reached the subscriber.
+Source inspection confirms that conversation/message/participant DB listeners
+already own read scopes; SOR/knowledge/memory observers log bounded facts without
+DB access. Real product subscribers over WebSockets, live vendor calls, full HTTP
+routes, worker crashes, and distributed delivery were not exercised here.
+
+Existing regressions passed **4,394 assertions**: 259 shared model/resolver,
+389 private transcript/worker/replay, 429 run-state/callback, and 3,317 native
+adapter assertions. The scoped model harness now supplies a native `AsyncSession`
+subclass with substituted DB selection; no product expectation was relaxed to
+retain the removed wrapper. Combined with PostgreSQL/Pyventus checks, this slice
+executed **4,600 assertions**. These counts describe the probe scope, not full
+platform or live-provider coverage.
+
+Sequential milestone review:
+
+1. DDD: sessions and transactions remain infrastructure-owned; product payloads
+   are accepted as `BaseModel` without importing their owning modules.
+2. Architecture: preserves the context manager/decorator entrypoints, explicit
+   transaction ownership, and best-effort local event authority. No new event
+   service, outbox, dependency, or alternate session fallback.
+3. Data flow: write → native transaction outcome → event batch → detached
+   listener read was exercised on real PostgreSQL; rollback/savepoint/commit
+   identity was checked independently from vendor transport fixtures.
+4. Plan: this prerequisite fixes demonstrated lifecycle bugs exposed by the
+   typing work. It does not complete transcript/tool scoping, shorten the outer
+   agent-run transactions, or establish platform-wide type completeness.
+5. Maintainability/security/performance: no DB-module casts or suppressions;
+   two instance-owned hooks are removed on close. Queues are transaction-local,
+   names are bound, log values stay private, and the pool is returned after
+   concurrency/cancellation. No extra query is added to ordinary unnamed scopes.
+
+Final local checks passed: all five type/import hooks, **98 scoped Python files**
+with zero unsuppressed diagnostics (one existing SOR suppression), **98 module
+imports**, full server/CLI Ruff, formatting, and `git diff --check`. Documentation
+validation passed: 46 pages, 279 links, 89 packages, 1,130 Python modules, 5,861
+docstrings, 47 diagrams. No permanent test suite, migration, deployment, UI/API
+change, or commit. Console/widget builds were not repeated because their sources
+and public schemas did not change.
+
+#### Memory completion and dependency ports — verified slice
+
+This completes the memory LLM-caller contract within F2, not the whole F5 memory
+data flow. Formation, reconciliation, and config verification share
+`MemoryTextCompleter`: keyword-only `system`/`user` inputs and an awaited text
+result. Document and query embedding callables have separate signatures. The
+pgvector adapter receives a native `AsyncSession` factory; verification owns a
+structural embedding port and uses domain-owned `ResolvedLLM` authority. SDK
+requests, responses, and credentials remain inside the selected LLM adapter.
+
+- Current versus pinned dependency resolution uses a private enum; persisted
+  values, public schemas, revision selection, and policy are unchanged.
+- Local imports alias the existing `MemoryError` as `MemoryProviderError`.
+  A reduced Pyrefly 0.38.2 reproduction incorrectly treated raised `MemoryError`
+  construction as Python's builtin exception. The alias resolves that diagnostic
+  without renaming the domain class, changing exception identity, suppressing a
+  check, or upgrading a dependency.
+- Native session typing exposed three generic SQL result consumers. Formation
+  persistence, expiry, and deletion now narrow to `CursorResult` before using
+  row count; the existing ambiguous/conflicting-write refusals remain intact.
+  Operation application also narrows an already-required target ID before lookup.
+  Remaining raw SQL rows, extractor JSON, and untyped durable helpers stay in F5.
+- Six-file baseline: 32 diagnostics; adding the reconciliation consumer exposed
+  three more. All seven files now pass the scoped check. This is not evidence
+  that every helper in those files has been fully typed.
+
+Executed contract/function QA: **98 assertions**, including **10 native OpenAI
+SDK HTTP requests** through recorded transports. It exercised keyword-only
+invocation, generation limits, prompt formation, selected vendor error identity,
+empty/tool-bearing response refusal, usage accounting, budget failure, timeout,
+cancellation, and client cleanup. Real formation/reconciliation parsers mapped
+model indices to platform identities. Resolver current/pinned authority and the
+actual verifier's embedding/completion/read path were exercised. Native SQLite
+`CursorResult` fixtures checked accepted/rejected row counts and session cleanup.
+DB selection/persistence, embedding I/O, and durable steps were substituted;
+this was not live-provider or PostgreSQL memory-persistence QA.
+
+Static contract probes accepted real runtime/verifier/session composition and
+rejected eight diagnostics across invalid result types, keyword names, missing
+arguments, positional invocation, and swapped document/query inputs. One runtime
+probe initially assumed a provider string instead of the real enum value; the
+probe was corrected to the selected provider authority, with no product change.
+
+Existing regression probes passed **4,394 assertions**, including **3,317 native
+adapter assertions across all eight factory branches**. Combined with the new
+probe: **4,492 runtime assertions**. All five local type/import hooks, full
+server/CLI Ruff, seven-file formatting, pre-commit config validation, and
+`git diff --check` passed. The LLM hook now includes these seven memory files;
+it reports zero errors and retains one pre-existing SOR suppression.
+The expanded milestone import probe loaded **105 modules** and checked their
+declared exports. Documentation validation passed: 46 pages, 279 links, 89
+packages, 1,130 Python modules, 5,863 docstrings, and 47 diagrams. The three
+temporary static probe files and their empty temporary directory were removed.
+
+Sequential milestone review:
+
+1. DDD: callable contracts are vendor-neutral; memory verification owns its
+   dependency port. No socket/module imports cross their boundary.
+2. Architecture: existing factory, revision authority, parser, and durable task
+   paths remain the execution authorities; no second memory runtime or fallback.
+3. Data flow: selected config → native SDK → metering → validated text → typed
+   operation/proposal is exercised with real types. Provider calls and parser
+   failures are not mistaken for committed DB effects.
+4. Plan: this is F2 caller hardening. Native embedding/reranking requests,
+   persisted memory rows, and durable lifecycle contracts remain in F5.
+5. Maintainability/security/performance: no casts, broad callable arguments,
+   ignored diagnostics, new dependencies, new DB queries, or expanded privileges.
+   Types supplement—not replace—runtime authority and response checks.
+
+The transcript prerequisite remains open. Source tracing found that
+`resume_agent_run_in_transaction` holds the AgentRun row lock while scheduled
+and objective runners execute. Moving transcript writes alone to another session
+could wait on that same lock. Resume, transcript, and tool transaction ownership
+must change together; no temporary borrowed-session mode was introduced then.
+At that milestone, the transcript's duplicate-correlation lookup also preceded
+its run lock. The later transcript/tool-preparation slice below reproduces and
+fixes that race; caller transaction ownership remains open. Neither issue was
+fixed by this memory work.
+
+No operator DB changes, live vendor calls, worker recovery QA, UI/API changes,
+migrations, deployments, or commits ran. Temporary probes are local working
+tools, not a shipped test suite.
+
+#### Swarm caller authority — actor binding verified; shared dispatch pending
+
+The F2 trace reached `SwarmAgentWorker._load_agent_and_tools` → `_execute_tool` →
+`_get_conversation_context` → `kb_query`. Before this fix, the model used the
+task's exact topology member and tools, but tool context was rebuilt from the
+conversation's primary participant. `kb_query` took `ctx.primary_agent` as its
+grant authority. The cached context was not bound to the selected worker member.
+
+A local reproduction passed **11 diagnostic assertions** through the real worker,
+exact system-tool dispatcher, knowledge tool, and memory actor validator. The
+knowledge-query I/O and conversation lookup/build were substituted. It observed
+the parent agent at the query boundary while the task targeted another member.
+This proves incorrect authority propagation, not observed disclosure from a live
+KB or a cross-organization bypass. Parent grants could be used instead of the
+target's grants. The original author's reasoning is not established by source.
+
+Replacing only `ctx.primary_agent` was also checked: memory's actual actor guard
+rejects the unchanged primary participant with `Memory agent provenance is
+unavailable.` The prompt background worker performed that replacement too,
+so both callers belong in this identity review. Do not invent participant IDs,
+change the live conversation's primary agent, or weaken the memory provenance
+check to satisfy a type annotation.
+
+TODO/status for this coupled caller slice:
+
+1. **Done:** Define the exact task execution authority independently of conversation
+   presentation: selected agent/revision, explicit tools, permitted contact/
+   conversation context, and valid actor/provenance.
+2. **Actor binding done:** Resolve the actual participant authority for task tools;
+   keep selection and runtime provenance consistent without borrowing the
+   parent's grants. Preserve pinned voice policy and primary-participant state.
+3. **Done:** Type the loader result, cached context, tool arguments, and result
+   boundary. The initial six-file check had 37 diagnostics: one cache assignment
+   and 36 downstream errors from an ORM class annotated as an instance.
+4. **Open:** Reuse the shared tool execution paths where applicable. The current direct
+   dispatcher executes only system/local tools, while the advertised set can
+   include other kinds; approvals, durable receipts, and recovery must retain
+   their existing authorities rather than receive a second implementation.
+5. **Verified within the bounds below:** Parent-only versus target-only KB grants,
+   actual memory actor/scope validation, blocked/unmapped tools, cancellation,
+   pinned revisions, and unchanged persisted primary conversation state. Full
+   memory write/reconciliation and live widget/vendor QA remain unrun here.
+
+Implemented actor slice:
+
+- `SwarmWorkerRuntime` holds one exact executable agent and resolved LLM. Tool
+  input/results use JSON value contracts; invalid runtime outputs become the
+  existing safe tool failure. Cancellation still propagates.
+- `ConversationParticipantService.ensure_agent_actor` reuses or creates an actual
+  participant for the exact agent/revision. The conversation lock serializes
+  this path with handoff. Creation is non-primary and emits the existing event
+  only after commit; rollback does not publish it.
+- `AgentTaskConversationContext` validates the actor against the selected agent,
+  organization, conversation, and participant list. Its task-local actor getter
+  does not rewrite persisted flags. Both task workers use this DB-only builder;
+  no parent model, memory provider, or voice config is resolved then relabelled.
+- The existing transient result formatter now accepts a read-only `Sequence`,
+  matching its actual use and allowing typed result collections without casts.
+
+QA: **186 assertions** passed against an isolated PostgreSQL 17 instance migrated
+through real Alembic `eylo0012`. Twenty-four concurrent context builds with a
+two-connection pool reused one actor row. Actor/handoff concurrency, transaction
+rollback, cancellation while waiting for a lock, invalid identity/revision,
+foreign-org rejection, and post-commit event registration passed. Native OpenAI
+SDK → real system-tool dispatch → real PostgreSQL grants/FTS → correlated native
+tool result returned only the target's content. The parent's separate query
+returned only its own content. Topology/config resolution and metering were
+substituted at typed ports; HTTP used recorded transport. Memory's real scope
+and actor guards ran, but memory persistence and live provider calls did not.
+
+The QA runner initially selected source baked into its image instead of the
+read-only checkout mount. Setting its working directory and asserting the loaded
+package path fixed the harness; the passing run used current source. Another
+setup attempt used ORM `create_all`, which omits a migration-owned enum; real
+Alembic migrations replaced that setup. Neither issue required product changes.
+
+Prompt background regression coverage passed **234 assertions**, including
+pending/completed replay, tool cancellation, HTTP failure, and unchanged source
+context. The native-adapter probes were updated from old tuple loader stubs to
+real `SwarmWorkerRuntime` objects without weakening response expectations:
+**3,317 assertions** passed across eight factory branches. Other caller/runtime
+probes passed **965 assertions**. Combined executed runtime assertions: **4,702**.
+The expanded import probe loaded **109 modules** and checked declared exports.
+All five type/import hooks and full server/CLI Ruff passed; the six actor files
+have zero type errors. The LLM hook retains one pre-existing SOR suppression.
+
+Sequential milestone review: DDD keeps participant persistence in its module and
+task composition in pipelines; SDK types do not cross into domain services.
+Data flow preserves explicit tool grants and actor provenance. Lock ownership is
+DB-only; native model/query boundaries observed no checked-out actor-build DB
+connection. The participant listener and widget consumer were inspected: they
+publish/store participant data rather than perform a handoff. Browser delivery
+was not exercised. The actor slice meets its scope, not the full caller plan.
+
+The synthetic DB was removed after QA. No operator DB changes, source migrations,
+deployments, live vendor calls, or commits ran. Shared swarm dispatch and the
+resume/transcript transaction ownership remain required follow-ups, not accepted
+release exceptions or work completed by this actor fix.
+
+#### Transcript and tool preparation — verified prerequisite, not runner completion
+
+The F2 shared-dispatch trace reached two implicit dependencies: availability and
+MCP preparation required a caller-owned transaction; transcript writes checked
+duplicate identity before acquiring the run lock. Removing the outer runner
+transaction without resolving these dependencies would break execution.
+
+Completed in this slice:
+
+1. `AgentRunTranscript._append` now locks the organization-owned run before
+   correlation lookup. The real-PostgreSQL baseline synchronized two misses and
+   reproduced one `IntegrityError`. After the fix, 24 simultaneous identical
+   writers reuse one row; 24 distinct writes get contiguous sequence numbers.
+   Different content under one identity remains an error. Wrong/deleted owners,
+   rollback, cancellation while waiting for the lock, and pool release passed.
+2. Transcript JSON validation now checks the original Python representation for
+   non-finite numbers. Pydantic 2.11.10 matches the lockfile and installed runtime;
+   its documented [non-finite serialization default](https://docs.pydantic.dev/2.11/api/config/#pydantic.config.ConfigDict.ser_json_inf_nan)
+   changed NaN/infinity to null before the existing guard. A parent serialization
+   setting alone did not fix independently serialized framework metadata. The
+   final guard checks original arguments, results, and metadata without changing
+   valid JSON encoding. Circular payload failures use the same safe domain error.
+3. Tool availability now consumes typed scope/agent contracts. Direct email and
+   memory fields replace constructed `getattr` keys. Existing partial overrides
+   and exact revision semantics are preserved. Explicit session wins over ambient;
+   without either, the function owns a read-only scope and publishes facts after
+   it exits. Failure/cancellation preserve the previous facts. Borrowed sessions
+   are neither committed nor closed.
+4. MCP preparation validates a `Mapping[str, object]` into JSON values before
+   config lookup or network work; no framework-wide cast or SDK type was added.
+   It resolves the encrypted exact server revision in an owned read-only scope
+   when there is no ambient session, then invokes the native MCP client outside
+   that owned scope. Borrowed-session behavior remains explicit. Missing/revoked/
+   foreign revisions and unsupported effects fail closed; mutations still require
+   the existing durable command context.
+
+Executed function/contract QA:
+
+- Isolated PostgreSQL 17, real migrations through `eylo0012`, two-connection pool:
+  **21 transcript**, **32 availability**, and **65 MCP** assertions. Configs and
+  secrets were synthetic; actual persistence, decryption, revision lookup, native
+  MCP request/response handling and egress models ran. MCP HTTP transport was
+  recorded, not live. Both owned and borrowed DB lifetimes were observed at send.
+- **44** non-finite/finite payload assertions plus a circular-input refusal probe.
+  **157** existing transcript, **22** scheduled/objective replay, and **299** typed
+  callback assertions passed. The transcript mock's lookup order was updated to
+  owner-first; expected replay/content/commit outcomes were not weakened.
+- **3,317** native LLM adapter regression assertions passed across eight factory
+  branches, using recorded transports. These are not new live-vendor results.
+- Both availability files are now included in the existing local LLM contract
+  hook. All five type/import hooks pass; the LLM hook retains its existing one
+  SOR suppression. Full server/CLI Ruff and four-file formatting pass.
+  The 109-module import probe, pre-commit config validation, and whitespace check
+  passed. Documentation verification passed: 46 pages, 280 links, 89 packages,
+  1,131 Python modules, 5,873 docstrings, and 47 diagrams.
+
+Milestone review, sequentially: DDD keeps config/grant data in modules and
+composition in pipelines; framework types remain vendor-neutral. Existing
+transactions, factories and receipt authorities are reused. Data-flow checks
+cover persisted identity and actual encrypted config → native protocol → typed
+result. No new migration, vendor behavior, grant, fallback, dependency, or public
+API was introduced. Validation adds a pre-DB traversal; no extra provider call
+was introduced. Locks still belong to the caller transaction.
+
+Remaining dependencies, in order:
+
+1. Trace curated grant/auth preparation and remaining registered system tools;
+   make their DB-only preparation independent of long-running outer transactions.
+2. Coordinate resume lifecycle, transcript persistence, and runner result writes;
+   do not move transcript writes into another session while resume holds the
+   same run lock. Scheduled/objective/background outer scopes are still open work.
+3. Route swarm execution through the shared framework/tool dispatcher, preserving
+   task actor identity, approval waits, durable receipts and replay. Then finish
+   F2 caller coverage and continue F3–F10 in the agreed provider data-flow order.
+
+These probes do not establish live widget behavior, vendor interoperability,
+durable crash/restart recovery, or human-reviewed product acceptance. No operator
+DB changes, source migrations, deployments, or commits were made. The isolated
+synthetic QA DB/container was removed; absence was verified. No probe files or
+shipped test suite were added.
+
+#### Curated-tool preparation — verified F2 prerequisite
+
+Trace: `PlatformToolExecutor` → `execute_curated_tool` → module policy grant →
+scoped external connection → decrypted origin-bound auth → registered vendor
+handler → guarded HTTP request → outbound receipt/result. This follows the
+agreed data-flow order; it does not mark the full F2/F3 contract work complete.
+
+Baseline findings and fixes:
+
+1. Both policy and connection lookup implicitly required an outer transaction.
+   The no-session baseline reproduced `TransactionContextError` before dispatch.
+   Each DB-only preparation step now owns a read-only transaction when no service
+   or ambient session is supplied. Explicit services are used for both lookups;
+   borrowed sessions are never committed or closed. Module services still own
+   policy and return DTOs, not ORM rows. Vendor I/O follows owned-scope exit.
+2. `execution_mode` and installation `auth_kind` were annotated enums but used
+   plain string ORM columns. The service also assigned `.value` to enum-typed
+   attributes. Non-native SQLAlchemy enums now preserve the existing VARCHAR(32)
+   representation, values and check constraints while returning enum members on
+   fresh readback. Service writes use enum members. No migration was required.
+3. Disabled-tool refusals incorrectly set `approval_required=True`. The baseline
+   reproduced this metadata defect; no evidence showed that this flag itself
+   starts a durable wait. Only `ToolApprovalRequiredError` now sets it. Disabled
+   tools retain `tool_execution_blocked`, with no vendor call.
+4. Arguments/results used broad `Any` at the executor boundary. Arguments now
+   enter as `Mapping[str, object]`, validate as finite JSON, then use each vendor
+   input model's existing normalization. Results/metadata carry JSON values;
+   non-JSON handler output returns safe `tool_result_invalid` without retrying a
+   possibly completed effect. Credential mapping values are `object`, narrowed
+   by the existing wire-auth validation, rather than unchecked `Any`.
+5. Credential resolution verifies connection organization against the grant
+   before decryption and uses the authoritative grant organization in its cipher
+   context. Existing vendor/auth/instance/scope/expiry checks remain. The old
+   docstring incorrectly claimed inline refresh; this function refuses expiring
+   credentials and performs no refresh HTTP operation.
+
+Executed function/contract QA:
+
+- **91 assertions** against isolated PostgreSQL 17 with real migrations through
+  `eylo0012`, synthetic encrypted credentials, real repositories/services, and
+  the actual registered GitHub search handler and guarded HTTP request model.
+  Recorded transport observed no owned DB checkout at vendor send. Checks covered
+  exact organization/contact auth headers, personal-account preference, missing/
+  foreign/deleted tools and installations, revoked-account fallback, expiry,
+  scopes, malformed module DTOs, injected services without an ambient context,
+  caller rollback, input/result refusal, cancellation and egress/timeout errors.
+- A synthetic mutation handler used the real outbound DB path: one succeeded
+  receipt, `send_count=1`, followed by invalid result reporting. Replaying its
+  command checkpoint did not resend; the existing response-reconstruction limit
+  returned `vendor_outcome_unknown`. This is not an Absurd crash/restart test.
+- **84 assertions** covered all wire-auth kinds, both API-key placements, invalid
+  credentials, finite JSON, arbitrary Python objects and cycles. **299** existing
+  callback regression assertions passed. The **109-module** import probe passed.
+- All five local type/import hooks pass; the curated hook now includes these five
+  preparation/model/service files. The LLM hook retains its existing one SOR
+  suppression. Full server/CLI Ruff, five-file formatting, pre-commit config and
+  whitespace validation passed. Documentation validation passed: 46 pages,
+  280 links, 89 packages, 1,131 modules, 5,873 docstrings and 47 diagrams.
+- Isolated `alembic check`: no new upgrade operations. Existing FK-cycle and
+  unrecognized vector-type comparison warnings remain; this is not a claim that
+  Alembic exhaustively validates those unrelated objects. The first fixture run
+  passed a UUID to string-typed `ParticipantInDb.entity_id`; correcting the probe
+  to the actual contract required no product change.
+
+Sequential milestone review:
+
+1. DDD boundaries: module policy and DTOs remain authoritative; credential
+   translation and execution orchestration stay in pipelines.
+2. Architecture fit: existing transactions, enum persistence pattern, registry,
+   egress and receipt authorities are reused; no new execution lane or catalog.
+3. Data flow: preparation, exact auth, denial/error/cancellation, actual request
+   construction and receipt sinks were exercised, not only a handler stub.
+4. Plan alignment: this removes curated preparation's dependency on an outer
+   transaction, not the outer runner transactions themselves. All F0–F10 work
+   remains in scope; broader vendor request/response models are not completed by
+   the JSON envelope validation.
+5. Maintainability/security/performance: no casts, suppression, dependency,
+   permission or retry was added. JSON validation adds bounded-by-input traversal;
+   it is not a new payload-size budget. DB query selection and vendor request
+   count are unchanged. No extra provider lookup/refresh or secret output.
+
+Next: finish remaining registered system-tool preparation, then coordinate
+resume locks, transcript/result writes and shared swarm dispatch. Full curated
+vendor schemas, error-code enums and registry callable typing remain in F3;
+continue through F10 in the established order. Live vendor/widget QA and human
+product review were not performed in this slice. No operator DB, source migration,
+deployment or commit changed. The isolated tmpfs QA DB/container was removed and
+absence verified; no temporary probe files were added to the repository.
+
+#### Parallel-task filing — verified F2 prerequisite
+
+Trace: exact registered system tool / conversation background attachment →
+published topology and agent refs → task content and manifest → message filing,
+budget reservation and AgentRun → Absurd binding → worker-origin validation →
+task-result message and terminal AgentRun projection.
+
+Completed this slice:
+
+1. Corrected the initial diagnosis: `TaskDispatcher` construction does not acquire
+   a DB session. The no-session baseline fails during actual filing's user-session
+   lookup in `BaseORMRepository.db_session`. Filing now owns a short transaction
+   when none exists; topology and attachment resolution own read-only scopes.
+   Existing caller sessions are reused. Filing preserves the legacy explicit
+   commit-before-spawn contract, not a claim that borrowed writes never commit.
+2. `ParallelTaskKind` derives from the already validated task references.
+   `TaskDispatchStatus`, `ParallelTaskManifest` and `ParallelTaskMetadata` replace
+   independent string/dictionary inputs. Existing JSON keys, enum spellings,
+   optional-key omission and independent request lifecycles are preserved.
+3. Worker readback validates the persisted manifest's shape and matches its
+   conversation, task kind and source revision against the immutable task.
+   The registered tool explicitly refuses non-conversation execution scopes.
+4. Real DB QA exposed an existing retry defect: a stable background filing key
+   was paired with a freshly supplied request UUID. The service correctly refused
+   that changed input. The dispatcher now leaves ID allocation to the filing
+   service. Task status is mutable execution output and no longer prevents reuse
+   of an otherwise identical PENDING task filing. Other message kinds retain
+   their status comparison; changed content and authority still conflict.
+5. Background dispatch counts only successful filings, not `None` results.
+   The message service's existing organization refusal now explicitly narrows
+   `None`; its retry comparator consumes the real `MessagesModel` type.
+
+Executed verification:
+
+- **164 assertions** using isolated PostgreSQL 17, actual migrations through
+  `eylo0012`, synthetic organizations/config revisions/budgets/published agents,
+  real topology/attachment resolution, message services/repositories and native
+  Absurd spawn/binding. All three task arms passed manifest readback. Exact tool
+  dispatch covered invalid inputs, disabled policy and non-conversation refusal.
+- Sequential and concurrent retries produced one message/run/task binding.
+  Processing/completed status did not prevent retry reuse; changed instructions
+  still conflicted. Cross-organization context was refused. Owned scope failures
+  and cancellation rolled back both product rows and pending events. Spawn
+  failure retained the unbound run; subsequent native spawn bound it once.
+- Terminal persistence used real product claim acquisition and recorded worker
+  outputs for all three arms. Result messages retained conversation/parent/run
+  links and worker kind; runs completed. These are not live LLM executions or
+  worker-process crash/restart tests.
+- All five existing local type/import hooks pass; task dispatch, background
+  dispatch and message services were added to the LLM hook. Direct checking of
+  `spawn_task_fnf.py` still reports its two pre-existing dynamic callable-metadata
+  assignments. No suppression was added; registry callable contracts remain open.
+  The callback regression probe passed **299 assertions**. Full server/CLI Ruff
+  and changed-file formatting passed.
+- Initial probe errors were corrected without weakening product validation:
+  missing conversation title, omitted synthetic execution budget, and incorrect
+  probe UUID/principal-field references. Successful results above come from the
+  corrected full probe, not those incomplete runs.
+
+Sequential milestone review:
+
+1. DDD: shared task routing stays in common contracts, task-owned persistence
+   envelopes in the parallel-agent module, orchestration in pipelines. The
+   framework and vendors acquire no platform imports.
+2. Architecture: existing message/AgentRun budget/Absurd authorities are reused.
+   No new scheduler, default config, table, migration or execution lane.
+3. Data flow: actual DB filing, exact refs, retries, transaction exit, native
+   binding and terminal sinks were exercised. The retry fix is backed by the
+   reproduced conflict; a constructor assumption was explicitly rejected.
+4. Plan: this is prerequisite preparation work, not completed F2 or F0–F10.
+   Handoff and generated-widget persistence, coordinated outer-runner transaction
+   removal, shared swarm dispatch and remaining vendor schemas stay in scope.
+5. Maintainability/security/performance: derived routing avoids a second flag;
+   typed manifest comparisons preserve tenant/source/target authority. No new
+   dependency, cast, ignore, vendor request or secret output. Borrowed session
+   commit semantics remain explicit until outer-runner work is coordinated.
+
+Live widget/vendor QA and human product review remain pending. No operator DB,
+migration history, deployment, commit or persistent probe file was changed.
+The 109-module import probe and documentation validation passed (46 pages,
+280 links, 89 packages, 1,131 modules, 5,879 docstrings and 47 diagrams). The
+isolated tmpfs QA DB/container was removed; absence was verified.
+
+#### Handoff contracts and caller refresh — verified F2 prerequisite
+
+Trace: generated handoff declaration → framework/native call → pinned swarm
+resolution → expected-primary participant switch → typed outcome → complete
+context rebuild → native prompt/tools update and attributed transcript.
+
+Completed:
+
+1. `HandoffInput` validates optional continuation text. `HandoffState` replaces
+   independently stored success/error/loop flags; compatibility flags derive
+   from one outcome. Successful outcomes require a matching target agent and
+   participant revision. Existing history and per-turn limits have named
+   constants; non-text input is refused, absent/null/empty text remains accepted.
+2. `execute_handoff` owns a short DB-only transaction when needed and explicitly
+   passes its session to topology and participant services. Borrowed sessions
+   are neither committed nor closed. No participant/primary-agent mutation is
+   applied to the caller's context; both callers rebuild it after persistence.
+3. Caller QA exposed a missing generated-tool arm in the stricter metadata
+   projection: handoff declarations were unrevisioned `LOCAL` tools. The
+   conversation-owned `HandoffTool` and pipeline-owned handoff metadata now
+   identify the target agent revision. Ordinary unrevisioned local tools remain
+   refused. No tool row, fake tool revision or prefix-based exemption was added.
+4. Realtime's failed-rebuild fallback relied on the removed partial mutation.
+   It now uses the existing `REALTIME_HANDOFF_FAILED` teardown, like native
+   session-update failure, rather than continuing with mixed authority.
+5. Realtime dispatch returned dictionaries/lists where `_ToolInteraction` and
+   the adapter contract require text. Structured results now become JSON text
+   once at dispatch; existing text and the list-content envelope are preserved.
+
+Executed function/data-flow verification:
+
+- **236 assertions** on isolated PostgreSQL 17 with real migrations through
+  `eylo0012`, synthetic published agents, instruction templates, provider refs
+  and a pinned swarm. Real services/repositories and both text/realtime callers
+  exercised persistence and full context rebuilding. Native I/O was recorded,
+  not sent to a live provider.
+- Refusals cover missing topology, foreign organization, nonmember/same-agent
+  targets, wrong source revision, malformed text, and handoff limits/loops.
+  A stale context cannot replace the selected primary. Concurrent stale
+  requests produce one successful switch and one refusal/error, not two
+  primaries. Owned failure, cancellation and failed commit roll back writes and
+  pending events. Borrowed changes stay invisible until their owner commits.
+- Text metadata and realtime buffering preserve the initiating participant.
+  Successful rebuild updates agent/dispatcher/participant context; the provider
+  receives only new prompt/tools, never a replacement voice. Rebuild and native
+  update failures execute real teardown against recorded provider I/O and do
+  not send a continuation result. Structured Unicode/dict/list/empty results
+  reach both the buffer and adapter as text.
+- Generated declarations carry agent authority; ordinary local tools still
+  require a published tool revision. Invalid generated revisions are refused.
+  **299 callback assertions**, **109 module imports**, all five local type/import
+  hooks, full server/CLI Ruff, and changed-file formatting pass. The existing
+  LLM type hook now also checks batch execution and realtime dispatch; no new
+  suppression was added.
+- Direct checks still report two pre-existing diagnostics in `realtime.py`
+  (event-handler variance and Awaitable/create_task) and two in conversation
+  schemas (required-org override and message reconstruction). These remain
+  open; no full-file/full-platform typing-complete claim is made.
+- Early fixture runs omitted authored instructions and then the explicit
+  template variable schema. Both were corrected in synthetic data; product
+  validation was not weakened. The generated-tool failure was a real caller
+  defect, fixed before the successful complete run.
+
+Sequential milestone review:
+
+1. DDD: generated handoff identity belongs to conversations; outcome and
+   framework translation belong to pipelines. Vendor and framework imports
+   retain their boundaries.
+2. Architecture: existing topology, locks, transaction/events, context rebuild
+   and voice teardown remain authoritative. No new execution lane or DB schema.
+3. Data flow: actual caller construction caught the missing generated-tool arm;
+   real rollback/concurrency/context and transcript paths were verified, not
+   only an isolated dispatch stub.
+4. Plan: completes another F2 prerequisite, not all F2 or F0–F10. Generated-widget
+   persistence, coordinated outer-runner scopes and remaining provider contracts
+   remain open in dependency order.
+5. Maintainability/security/performance: named states and explicit projections
+   replace flag combinations and revision assumptions. Existing tenant/revision
+   checks and query bounds remain. JSON output adds one serialization, not a
+   provider lookup or retry. No cast, suppression, dependency or secret output.
+
+No operator DB, migration history, deployment or commit changed. Live widget/
+vendor QA and human product review remain pending; these probes do not establish
+worker-process recovery or spoken-audio quality. No probe files were added to
+the repository. The disposable QA DB/container was removed; absence was verified.
+Documentation validation passed: 46 pages, 280 links, 89 packages, 1,131 Python
+modules, 5,885 docstrings and 47 diagrams. `git diff --check` also passed.
+
+#### Generated-widget input and transaction contracts — verified F2 increment
+
+Trace: registry schema → exact model-visible tool dispatch → widget validation →
+conversation message service → PostgreSQL and post-commit event → typed terminal
+artifact and interactive-response readback.
+
+Completed:
+
+1. The interfaces domain now owns `CompoundComponentKind`, strict tool input
+   models and `WidgetDeliveryReceipt`. The catalog's existing 12 component names
+   derive from that enum. Nested unknown input fields are refused rather than
+   silently dropped; JSON-string props and unambiguous-root inference remain.
+   Tables remain Markdown, not a widget component.
+2. Cross-domain widget orchestration moved from the tools module into
+   `pipelines/system_tools/compound_render_widget.py`. Explicit registration
+   preserves the public slug, deterministic tool identity and widget-only
+   requirement. No compatibility shim or second registration remains.
+3. Validation precedes persistence. The pipeline owns a short DB-only transaction
+   when none exists, or borrows the caller's session without committing/closing
+   it. It no longer appends an uncommitted message to caller-owned history.
+   Conversation services retain event ownership and parent/request attribution.
+4. Framework terminal-artifact handling validates the receipt's status, UUID,
+   root and permitted fields. The function's return annotation now admits its
+   actual JSON receipt, not only its plain-text fallback.
+5. A reproduced validator-cache defect returned shared mutable objects: changing
+   one result changed later validation results for the original input. Entries
+   and returned hits are now detached copies. Hashing rejects unsupported
+   non-JSON objects and non-finite numbers instead of coercing them with `str`.
+
+Executed function/data-flow verification:
+
+- **182 assertions** with isolated PostgreSQL 17, existing migrations through
+  `eylo0012`, and synthetic published-agent/provider/template data. Real registry,
+  message service/repository, transaction/event handling, framework execution and
+  interactive-response resolver were exercised. No vendor HTTP was invoked.
+- All 12 component payloads survived registry → persistence → message readback.
+  All four interactive families resolved back to their typed response contracts.
+  Parent/request/sender IDs, compatibility metadata and terminal-artifact IDs
+  match the stored message. Invalid receipts cannot declare a terminal response.
+- Owned and borrowed commit, rollback, cancellation, failed commit, two concurrent
+  invocations, unavailable widgets, absent agent participant, malformed payloads
+  and non-conversation execution were covered. Rollback/failure leaves no row or
+  event; borrowed events remain deferred until commit. Caller history stays a
+  snapshot throughout these paths.
+- **27 local contract assertions** cover schema/catalog parity, strict fields,
+  unsupported components, receipt validation, mutable-cache isolation and
+  non-JSON input refusal. **299 callback regression assertions**, **109 module
+  imports**, all five local type/import hooks, full server/CLI Ruff and formatting
+  pass. The existing LLM hook now covers widget schemas, validator and pipeline.
+  No new diagnostic suppression was added.
+- Initial fixture runs omitted provider-revision verification/config data,
+  passed a slug instead of the enriched model-visible name, and assumed every
+  component had a catalog example. These were probe mistakes: corrected using
+  actual models/catalogs without weakening product checks. The successful full
+  run includes explicit text/image/progress samples alongside catalog examples.
+
+Sequential milestone review:
+
+1. DDD: interfaces owns input/result schemas; conversations owns persistence;
+   pipelines owns orchestration and framework translation. Framework/vendor
+   imports retain their boundaries.
+2. Architecture: existing registration, transaction and event authorities are
+   reused. No new API, vendor, scheduler, table, migration or execution lane.
+3. Data flow: actual DB and caller paths verify persistence/readback and failure
+   semantics. This is not a claim of live browser delivery or provider QA.
+4. Plan: this completes an F2 increment, not F2 or F0–F10. Remaining work includes
+   typed canonical component props/message metadata, generated-widget durable
+   run/transcript linkage, coordinated outer-runner transaction scopes, shared
+   swarm dispatch, and F3–F10 vendor request/response flows. Existing dictionary
+   shapes inside stored widget payloads are not declared fully hardened.
+5. Maintainability/security/performance: one explicit pipeline replaces hidden
+   cross-module persistence. Existing tree depth/component limits and safe-URL
+   checks remain. Cache copy cost is bounded by the existing payload/cache
+   limits; no benchmark claim is made. Function metadata uses the registry's
+   existing validated extension, not a callable wrapper or type suppression.
+
+No operator DB, migration history, deployment or commit changed. No probe files
+were added. Live browser/vendor QA and human product review remain pending.
+The disposable tmpfs QA DB/container was removed; absence was verified.
+Documentation validation passed: 46 pages, 280 links, 89 packages, 1,132 Python
+modules, 5,886 docstrings and 47 diagrams. `git diff --check` passed.
+
+
+#### Canonical widget content — verified F2 increment
+
+Trace: tool JSON-string props → shared discriminated component contract →
+conversation message/metadata serialization → PostgreSQL → message history →
+interactive parent authorization → SDK parser and generated console types.
+
+RCA and correction:
+
+- The former validator parsed props into a component model but discarded that
+  model, retaining the original dictionary. Reproduced an image width remaining
+  a string after the image schema had validated it as an integer.
+- The stored-message contracts independently declared arbitrary dictionaries,
+  losing component-specific types again at persistence/readback.
+- `common/contracts/widgets.py` now owns provider-neutral component kinds,
+  props and single/compound payloads. Each compound node is discriminated by
+  its component kind. Interfaces reexports the existing public names and owns
+  catalog/tool input/receipt contracts; no common-to-module import was added.
+  This supersedes the previous increment's placement of the component enum.
+- Existing closed widget choices are named enums with unchanged wire values.
+  Component payloads retain the typed props model through validation, persistence
+  and readback. The extra per-node parse-and-discard validator was removed.
+- Nested serialization preserves SDK aliases such as `submitLabel`,
+  `defaultValue` and `currentStep`. Canonical output includes model defaults
+  and optional nulls; the actual SDK parser accepts them. Tables remain unsupported.
+- The generated OpenAPI/console contract now exposes the component unions and
+  per-component props instead of unstructured stored-widget dictionaries.
+
+Executed verification:
+
+- **222 isolated PostgreSQL assertions**: all 12 component families, real
+  registration/dispatch, message service/repository, nested JSON serialization,
+  post-commit events, terminal artifacts, owned/borrowed transactions, rollback,
+  failed commit, cancellation and concurrent writes. The four interactive
+  families also exercised persisted-parent authorization, valid submissions,
+  missing/wrong parents, wrong conversations, wrong components/actions and
+  invalid response values.
+- **89 canonical function assertions**: single/compound round-trips, retained
+  model types, numeric normalization, JSON-string/object parity, nested
+  non-finite data refusal, invalid props/components/tree references, and all
+  three existing tool-description variants.
+- **30 actual SDK parser assertions**: serialized output for all 12 components
+  plus a nested layout; single-component validation and malformed-input refusal.
+  The existing SDK catalog and validation code ran without replacement.
+- The previous **27 widget input/cache/receipt checks**, **299 callback
+  regression checks**, **109 module imports**, all five local type/import hooks,
+  full server/CLI Ruff and changed-file formatting pass. The shared widget
+  contracts and response consumer were added to the local type gate; no new
+  suppression was introduced.
+- API types regenerated from the current app on an ephemeral loopback server
+  with lifespan disabled. Console lint/typecheck/build and SDK/Preact builds
+  pass. The console build reports its large-chunk warning; this slice does not
+  establish bundle-size or runtime-rendering performance.
+
+Sequential milestone review:
+
+1. DDD: common owns neutral content, interfaces owns its catalog and tools,
+   conversations owns persistence, pipelines owns orchestration/authorization.
+   Vendor SDKs and framework remain outside these common contracts.
+2. Architecture: one content contract serves creation and readback; aliases,
+   explicit registry, tree limits and transaction/event authorities are reused.
+3. Data flow: real DB and SDK parsing demonstrate matching producer/consumer
+   shapes. Valid supported historic wire shapes are covered by serialization
+   probes, not by an audit of operator data.
+4. Plan: another F2 increment only. User-response dictionaries, compatibility
+   metadata, durable generated-widget linkage, outer-runner transaction scopes
+   and the remaining F3–F10 vendor flows are not declared complete.
+5. Maintainability/security/performance: removed duplicate loose envelopes and
+   throwaway prop parsing. Component fields are locally navigable; no extra DB
+   query or vendor call was added. Historical malformed/unsupported widget rows
+   previously accepted by loose message schemas now fail strict readback.
+   A read-only compatibility preflight and explicit repair/fallback decision are
+   required before deployment; no operator data was silently rewritten.
+
+No live vendor, browser interaction, operator DB mutation, deployment, migration
+history rewrite or commit is claimed. The exact disposable tmpfs QA container was
+removed and absence verified. The temporary schema server was stopped after
+generation; existing services are unchanged. Documentation validation passed:
+46 pages, 280 links, 89 packages, 1,133 Python modules, 5,896 docstrings and
+47 diagrams. Changed-file formatting and `git diff --check` pass.
+
+
+
+#### Pydantic execution contexts — verified F2 design correction
+
+User clarification: Pydantic is the platform default for internal data contracts
+as well as transport boundaries. The earlier automatic “internal → dataclass”
+rule was a design choice, not a required capability. The replacement table and
+`AGENTS.md` now record the corrected rule; prior dataclass increments remain
+subject to flow-by-flow reassessment.
+
+Completed:
+
+1. `AgentExecutionScope` and `AgentExecutionParticipant` are frozen Pydantic
+   models with explicit fields and unknown-field refusal. UUID/field validation
+   now runs at construction; frozen does not imply deep immutability of JSON.
+2. `AgentExecutionContext` and generic `PlatformRunState` are mutable Pydantic
+   models with assignment validation. `ConversationRunState` was converted in
+   the same slice because it inherits the shared run state.
+3. Real command/workflow ports remain behavioral protocols. Runtime-checkable
+   protocols plus Pydantic `InstanceOf` retain their actual objects and reject
+   values lacking the appropriate port. A command-only live voice context is
+   not accepted as the stronger durable event-wait context.
+4. Live workflow/command objects and hooks are excluded from schema/dump output.
+   Hydrated conversation content and in-flight message references are excluded
+   from run-state dumps; framework `RunContext.local_context` remains excluded
+   entirely. Durable replay still uses its own explicit persistence contracts.
+5. Concrete schema imports replace type-checking-only names where Pydantic needs
+   runtime field definitions. Four fresh-process import orders and the actual
+   application import verify that this did not introduce an import cycle.
+   No cross-layer model registry or broad arbitrary-types exemption was added.
+
+Executed function/data-flow evidence:
+
+- **341 isolated PostgreSQL/context assertions**, including the previous 222
+  widget persistence/authorization checks and 119 context-specific checks.
+  Typed construction/readback, frozen identities, mutable assignments, invalid
+  fields, generic specialization, object identity, schema/dump exclusion,
+  command/durable step precedence, exact workflow wrapper execution, and
+  exception/cancellation propagation passed.
+- **236 handoff/voice** and **164 parallel task-dispatch** PostgreSQL assertions
+  passed on separate synthetic organization data in the same disposable DB.
+  Existing migrations were applied only to that isolated tmpfs database.
+- **299 callback regression assertions**, **109 imports**, all five local
+  type/import hooks, full server/CLI Ruff and affected-file formatting pass.
+  Live-voice identity construction and shallow copies preserve the same object.
+  Runtime-only context models do not appear in the current public OpenAPI schema.
+- The first expanded probe failed because a local import shadowed an earlier
+  `PlatformRunState` reference. The probe import was corrected; product code and
+  assertions were not weakened. An exploratory `InstanceOf` around a generic
+  union was rejected by Pydantic at class construction; the actual context field
+  uses the correctly bounded model generic, while `InstanceOf` applies only to
+  concrete runtime ports/hooks.
+- Full-project Pyrefly remains **889 errors, 7 suppressed**. This is current
+  incomplete-platform evidence, not a claim of a newly green project or a
+  before/after count attributable to this slice. Existing scoped hooks retain
+  their prior suppression; this conversion introduces none.
+
+Sequential milestone review:
+
+1. DDD ownership: identity/context/run state remain pipeline-owned; behavioral
+   ports stay at their existing outbound execution boundary. The framework has
+   no platform import.
+2. Architecture: shared state and its conversation subclass use one model
+   mechanism. Live-resource ports are not serializable request/response models.
+3. Data flow: checked real persisted messages, dispatch, handoff, voice callers
+   and runtime-instance preservation. Assignment validation does not intercept
+   in-place mutations inside a list/dict; static item types still apply.
+4. Plan alignment: this implements the user's Pydantic-first correction for the
+   execution-context flow only. Other dataclasses, response/metadata contracts,
+   durable linkage, outer-runner transactions and F3–F10 remain open.
+5. Maintainability/security/performance: no ad-hoc dict or `Any` replacement,
+   synthetic provider, authorization expansion, new query, or dependency upgrade.
+   Type/schema validation is additional work; no performance improvement is
+   claimed. Frozen identity and mutable runtime semantics remain distinct.
+
+Target/runtime evidence: installed Pydantic **2.11.10**, checked against
+[2.11 instance validation](https://docs.pydantic.dev/2.11/api/functional_validators/#pydantic.functional_validators.InstanceOf)
+and [field exclusion](https://docs.pydantic.dev/2.11/concepts/serialization/#model-and-field-level-include-and-exclude).
+No live vendor/browser, worker-process crash recovery, operator DB mutation,
+deployment, migration-history rewrite or commit is claimed. Console/widget
+sources and public endpoint schemas are unchanged; their builds were not repeated
+for this runtime-only slice. The exact disposable QA container/data were removed;
+absence was verified. Documentation validation passed: 46 pages, 280 links,
+89 packages, 1,133 Python modules, 5,896 docstrings and 47 diagrams.
+
+
+#### Widget responses and conversation prompt projection — verified F2 continuation
+
+This continues the original F0–F10 scope, including the Pydantic-first clarification;
+it does not redefine completion around the widget or a scoped type gate.
+
+Response contracts and filing:
+
+1. `common/contracts/widget_responses.py` owns the four interactive response
+   variants, component/action enums, UUID parent identity, fixed button/card
+   shapes and a 64 KiB serialized-data ceiling. Generated form/date field names
+   remain dynamic. Unknown fields, non-finite numbers and non-JSON objects are
+   rejected; no scalar coercion is used for fixed string selections.
+2. `WsMessageEvent` normalizes flat/wrapped submissions into the same canonical
+   object. `MessageWsController` passes it through conversation/parent authorization
+   and atomic message/run filing. Compatibility metadata stores canonical content,
+   not an additional unvalidated client copy. Invalid request parsing returns a
+   safe 422; unrelated internal validation errors still use the server-error path.
+3. The parent-locked pipeline retains offered-value checks, required fields,
+   selection cardinality and date/pattern validation. A valid schema does not
+   confer authority. Published-agent, organization, contact and user-session
+   checks, budget reservation, post-commit dispatch and replay ownership remain.
+4. Agent history round-trips the typed response through framework snapshots and
+   back to platform content. No extra search tool, component or DB column was added.
+
+The next consumer exposed a real data-flow defect: `_latest_user_text` treated
+every user content body as a text-block list. A stored date-picker submission
+produced a **zero-length recall query**, although its canonical text was 170
+characters. A conversation with older text could recall against that older input
+instead. The helper now narrows `UserMessageContent`/`WidgetResponseMessageContent`
+and uses their canonical text methods. No unchecked `getattr` or cast remains.
+
+`pipelines/conversation/prompt_context.py` owns frozen Pydantic projections for
+agent details, independent interaction facts, recalled facts, conflict pairs and
+the final runtime context. Memory levels/UUIDs remain typed until serialization;
+the exact two unresolved claims and recall order are retained. Only documented
+prompt fields are projected: no source scope owners, provenance, arbitrary vendor
+metadata or credentials. Customer context remains finite JSON. The authored
+instructions, untrusted-context delimiter, HTML escaping, ISO UTC offset and
+optional-memory failure/cancellation behavior remain unchanged.
+
+Verification executed against current source on 2026-09-08:
+
+- **291 response function checks:** flat/wrapped inputs, required tags, invalid
+  component/action pairs, all form field kinds/date modes, finite JSON, byte
+  boundaries, canonical serialization and malformed-input rejection before DB IO.
+- **595 PostgreSQL checks**, rerun on the isolated `response_typeqa` database:
+  published-agent/widget production, response authorization, atomic message/run
+  filing, commit failure, cancellation, post-commit dispatch, replay/concurrent
+  deduplication and canonical readback/history. Expected error paths were injected;
+  durable worker publication was observed through a controlled port, not a worker.
+- **70 SDK checks:** actual `MessageService` submission/decoding of ten canonical
+  DB payloads. The resulting native SDK frames then passed the real controller,
+  ORM persistence, context hydration and `RunInput` projection in **111 checks**.
+  Memory recall used a controlled port returning actual `MemoryRecall` instances;
+  its query now matches the latest structured submission. No browser/network or
+  live embedding/reranking/LLM operation is inferred from this probe.
+- **154 prompt function checks:** three memory levels, empty/fact-only/conflict-only
+  recalls, conflict-pair preservation, explicit field projection, all interaction
+  fact combinations, timestamp/JSON/unknown-field refusal, escaping, current-message
+  selection, missing capability, optional failure and cancellation propagation.
+- All **five local typed/import hooks** pass. `context.py` and `prompt_context.py`
+  are included in the existing LLM/caller gate. Full server/CLI Ruff passes.
+  Full Pyrefly is **882 errors, 7 suppressed**, down from 883 before the prompt
+  change (889 before the response change). No suppression was added.
+- Console lint, TypeScript and production build pass; SDK and Preact builds pass.
+  The console retains its existing >500 kB chunk warnings. Documentation validation
+  passes: 46 pages, 280 links, 89 packages, 1,135 Python modules, 5,904 docstrings
+  and 47 diagrams. `git diff --check` passes.
+
+One milestone review covered DDD ownership, architecture fit, source-to-sink
+semantics, plan alignment, readability, security and performance. The verified
+recall defect was fixed at the content boundary. New projections issue no DB
+queries or provider calls and preserve the existing recall limit. No performance
+improvement is claimed; validation and projection allocate typed objects.
+
+Compatibility/release limits:
+
+- Actions are now required; malformed historical response rows (missing actions,
+  display-only components, extra fields or invalid JSON values) need a read-only
+  compatibility preflight before deployment. No operator data repair is authorized
+  or claimed. Valid current SDK flat/wrapped payloads retain their wire shape.
+- Prompt projections reject non-JSON context and non-boolean interaction facts.
+  Full persisted `MessageMeta`, request-context sanitization and voice-origin
+  metadata typing remain follow-up boundaries, not complete merely because the
+  final prompt model is typed. Memory's existing query limits still apply; this
+  change does not truncate oversized inputs or claim all large forms can be recalled.
+- Human review of the updated recall behavior, live browser/provider QA and
+  worker-process crash recovery remain unrun. No deployment, operator DB change,
+  schema/history rewrite, dependency upgrade or commit occurred.
+
+The exact disposable QA container and its synthetic tmpfs database were removed;
+container absence was verified. The temporary loopback-only OpenAPI server was
+stopped and its listener absence verified. No operator service was stopped.
+
+#### Persisted interaction metadata and transcript facts — verified F2 continuation
+
+The original F0–F10 objective remains open. This slice follows session facts and
+client context through request parsing, message filing/readback, runtime selection,
+LLM history enrichment and voice-segment projection.
+
+Implemented contracts:
+
+- `MessageInteraction` is a frozen Pydantic model. `SessionChannel` is owned by
+  the neutral session contract and re-exported by session schemas. The WebSocket
+  controller stamps channel/voice facts from server context, not customer JSON.
+- `MessageMeta` validates interaction/audio facts, finite JSON context/extensions,
+  nonnegative integer `duration_ms`, and the existing `VoiceSpeechOutcome` enum.
+  Absent fields remain absent during serialization; explicit null remains null.
+  Compatibility dictionary access emits JSON while typed consumers use attributes.
+- Conversation/message request schemas require finite JSON object context. The
+  sanitizer retains existing valid-JSON output, depth and size policies, removes
+  implicit Python-object stringification and stops logging customer keys/paths.
+  HTML stripping is not a prompt-injection defense; context remains untrusted.
+- Required message enums reject null and unknown values before the permissive
+  shared enum base can invent a member. Optional status/feedback still accept null.
+- Transcript projection reads typed duration/outcome fields and matches terminal
+  `RequestStatus` members without string conversion. Missing explicit outcomes
+  retain the existing status fallback. The session-start fact writer uses the
+  validated creation authority rather than an optional field on the generic DTO.
+
+Confirmed failures and causes:
+
+1. Untyped `interaction.is_voice="false"` and `is_audio="false"` selected voice;
+   an interaction list reached an attribute error. Validation now precedes selection.
+2. `MessageCreate(kind=None)` produced a synthetic `MessageKind.None`. The required
+   validator no longer bypasses enum-membership validation for null.
+3. Transcript `int(raw_duration)` crashed on a list/dict and converted `True` or
+   `1.9` to `1 ms`. The metadata boundary now refuses those values. A local enum-key
+   lookup attempted during this fix failed because `CaseInSensitiveEnum` is
+   unhashable; explicit matching fixes the consumer without changing that base.
+
+Executed evidence on 2026-09-08:
+
+- **763 metadata/context function checks:** exact valid sanitizer parity,
+  absent/null fields, JSON serialization, channel/voice combinations, invalid
+  values, required/optional enums, history enrichment and invalid WS input refusal
+  before a transaction or durable publication.
+- **211 duration/outcome checks:** integer boundaries, malformed values, assignment
+  refusal, every request status × explicit speech outcome, incomplete assistant
+  refusal and existing source classification. **120 voice-producer checks** verify
+  live and post-call message shapes across three runtime modes and all outcomes.
+- **453 isolated PostgreSQL checks:** 42 channel/metadata combinations through
+  actual messages and published-agent context construction, malformed historical
+  JSON refusal, 24 voice-message/segment projections, idempotent projection and
+  exact persisted duration/outcome readback. **5 additional checks** exercise the
+  real user-session fact writer and its organization/subject authority.
+- **595 existing PostgreSQL widget regressions** pass: atomic message/run filing,
+  authorization, budget refusal, commit failure, cancellation, post-commit dispatch,
+  replay and concurrent deduplication. All DB data is synthetic in an isolated
+  tmpfs container. Memory/provider calls and durable publication use controlled
+  ports where specified; these checks do not prove live vendors or worker recovery.
+- The five local typed/import hooks pass; the voice hook now checks the transcript
+  service and triggers for transcript changes. Full Pyrefly reports **873 errors,
+  7 suppressed**. No suppression was added. The whole platform is not type-clean.
+
+One sequential milestone review covered DDD ownership, architecture fit,
+source-to-sink semantics, plan alignment, readability, security and performance.
+No new DB query, vendor call, transport policy or dependency was introduced.
+Validation allocates typed objects; no throughput improvement is claimed.
+
+Compatibility and remaining work:
+
+- Malformed historical metadata (including numeric-string/fractional/boolean
+  durations) requires read-only preflight and an explicit repair decision before
+  deployment. No operator data was read or rewritten, and no deployment is claimed.
+- Generic extension JSON is not a substitute for producer-owned schemas. Voice
+  identity/provenance, framework/parallel metadata and tool payloads remain open.
+  Pydantic assignment validation does not intercept in-place dictionary/list edits.
+- `SessionContext.enrich(**kwargs)` bypassed validation through `model_copy`;
+  the following continuation resolves that upstream composition boundary.
+  The remaining provider data flows, live QA and F3–F10 stay in scope.
+
+#### Session hydration and generated metadata schemas — verified F2 continuation
+
+The full platform objective remains active. This continuation also closes two
+metadata verification findings left by the preceding slice.
+
+Confirmed causes and changes:
+
+1. `SessionContext.enrich` accepted invalid channel/UUID values and a negative
+   authorized Agent revision. Its untyped keyword dictionary went directly to
+   `model_copy`, bypassing validators. The sole caller, `for_webrtc`, now constructs
+   every field explicitly and validates it; the unrestricted helper is removed.
+   Inherited scope and restriction values are preserved, not recomputed from a peer.
+2. Direct session-field assignment also bypassed validation. `SessionContext` now
+   forbids unknown fields and validates assignments. It stays mutable because the
+   browser runtime assigns its durable voice session ID after creation.
+3. Runtime ports use `InstanceOf` instead of a model-wide arbitrary-type allowance.
+   Auth/WebSocket/call/peer references are excluded from dump/repr/schema output,
+   without serializing or copying their live resources. Protocol checks establish
+   interface presence, not deep validation of mutable implementation fields.
+4. The metadata wrap serializer's dictionary return annotation erased named fields
+   from output JSON Schema. The Pydantic JSON-schema hook copies the model schema
+   without the serializer override and retains finite-JSON extension semantics.
+   Runtime serialization still preserves absence versus explicit null.
+5. An after-validator refused a non-JSON metadata extension assignment only after
+   it had mutated the object. Validation now precedes assignment; rejection leaves
+   the old value intact. This does not intercept in-place list/dict mutation.
+
+No auth policy, DB schema, routing channel, query, vendor call, worker lifecycle,
+or dependency version changed. Pydantic remains pinned at 2.11.10. The schema hook
+uses its documented extension point, not a generated-client patch:
+[Pydantic JSON Schema customization](https://docs.pydantic.dev/2.11/concepts/json_schema/#implementing-__get_pydantic_json_schema__).
+
+Executed function and integration evidence:
+
+- **176 session-hydration checks** use actual `AuthSessionInDb`, `WSSessionState`,
+  `CallSession` and `WebRTCSession` classes: construction, HTTP dependency injection,
+  identity retention, channel/voice predicates, restriction preservation, explicit
+  voice-ID precedence, malformed assignment/construction refusal, dump/schema
+  exclusions, and rejected enrichment of an already-corrupt scalar context.
+- **58 metadata schema/assignment checks** cover validation/output schemas, nested
+  message and application OpenAPI projections, omission semantics and rejection
+  without partial extension mutation. Generated console types now name interaction,
+  audio, duration, speech outcome and context fields while retaining extensions.
+- Re-ran **763 metadata/context**, **211 duration/outcome**, and **120 producer**
+  function checks after the schema/assignment changes.
+- Re-ran **453 PostgreSQL metadata/transcript checks** and the **595 existing
+  widget filing regressions** against the exact isolated synthetic database.
+  A further **597 checks** replace the test's direct context construction with
+  the real WebSocket hydrator, auth DTO and live WebSocket state, then execute
+  the same message/run filing and refusal paths.
+  Controlled provider, memory and publication ports remain as previously described;
+  this is not live vendor, browser audio or worker-crash verification.
+- All five scoped Python type/import hooks pass. The session service and HTTP
+  dependency join the existing LLM/runtime gate. Full-project Pyrefly remains
+  **873 errors, 7 suppressed**; none were hidden to pass this slice. The schema and
+  hydration defects reproduced even when their scoped static gate was green.
+- Console API types were regenerated from a temporary loopback-only server with
+  dummy settings and lifespan startup disabled. Console lint, TypeScript and Vite
+  build pass; the existing large-chunk warning remains.
+- SDK and Preact builds pass. Full Python lint, changed-source formatting,
+  documentation validation (46 pages, 280 links, 47 diagrams), and diff whitespace
+  checks pass. No test/probe files were added to the repository.
+
+Milestone review, in repository order:
+
+1. **DDD boundaries:** session composition owns validation; neutral ports retain
+   live resources without importing pipeline implementations into modules.
+2. **Architecture fit:** existing factories and Pydantic contracts remain the
+   authorities. No replacement session lifecycle or generic update engine is added.
+3. **Data flow:** authenticated context → explicit hydration → message facts → DB
+   readback → runtime/transcript/API projection. Identity, null/absence semantics
+   and restrictions survive the changed boundaries. Serializing runtime ports is
+   intentionally unsupported; these models are not public DTOs.
+4. **Plan alignment:** completes the identified F2 hydration/schema increment,
+   not F2 or F0–F10. Corrected stale comments claiming telephony/WebRTC helpers had
+   production callers; only HTTP and WebSocket hydrators are currently wired.
+5. **Maintainability/security/performance:** no unrestricted application update
+   helper, extra DB reads, frame-loop validation or resource cloning. Auth and live
+   resource references are not exported. Validation does not establish authorization,
+   and context scalar fields still must not be published as a public response.
+
+Remaining work follows the same full data-flow plan: producer-owned metadata and
+tool payloads, background identity/memory/swarm caller gaps, then F3–F10's native
+provider operations and session implementations. Historical-data preflight and live
+QA remain release requirements, not claims established by synthetic fixtures.
+The exact synthetic tmpfs DB container was removed and its absence verified.
+The temporary schema process exited and its listener is absent. No operator DB,
+provider config, service, migration, deployment or Git history was changed.
+
+#### Voice-message provenance and durable fact readback — verified F2 continuation
+
+This continues the full F0–F10 goal. It does not complete F2 or the separate
+voice-buffer/native-provider work in F7.
+
+Evidence and RCA:
+
+- Before this change, a `MessageInDb` with `voice_session_row_id="not-a-uuid"`,
+  an unknown runtime mode and a boolean source sequence passed construction and
+  qualified for a voice fact. Known platform fields were treated as arbitrary
+  JSON; the consumer deferred UUID parsing until after filing. This was a
+  synthetic reproduction, not a claim about a production call.
+- `MessageMeta` now owns optional transport-local session text, durable session
+  UUID, `VoiceRuntimeMode`, positive integer sequence/redaction revision, strict
+  transient flag and source text. Missing fields and explicit nulls remain
+  distinct. Transport-local session IDs are deliberately not UUID-constrained.
+- `VoiceRuntimeMode` now lives in the neutral voice contract and is re-exported
+  as the same class from the transcript module. Existing DB/wire values remain
+  unchanged; there is no competing runtime-mode enum.
+- Live/post-call producers construct typed metadata directly. The fact filer
+  accepts `MessageInDb`; request-status transitions validate ORM readback before
+  filing. The consumer uses typed session identity and retains its exact
+  organization/conversation/session lookup and row lock.
+- Consumer validation failures have safe fixed messages. The durable workflow
+  already stores generic failure codes; this does not claim a demonstrated
+  sensitive-data leak in its persisted delivery errors.
+- Python-mode UUID output exposed a real mismatch in the metadata serializer's
+  JSON-only return annotation. Its return type now includes UUID; JSON output
+  still contains strings. A warning-as-error regression verifies both modes.
+- The initial new QA probe incorrectly expected individual canonical-message
+  creation to deduplicate. That API makes no such promise. The corrected probe
+  tests fact/consumer idempotency and whole-call replay at their actual owners;
+  no production behavior was changed to satisfy the mistaken expectation.
+
+Executed evidence on the current checkout:
+
+- 1,009 provenance validation, assignment, final-class selection, timestamp and
+  schema checks; 120 existing live/post-call producer checks; two missing-session
+  producer guards; UUID Python/JSON serialization with warnings treated as errors.
+- Existing metadata regressions: 763 input/output checks, 211 duration/outcome
+  checks (including the 45 duration cases), and 58 generated-schema checks.
+- A new, isolated PostgreSQL 17/pgvector tmpfs database upgraded through
+  `eylo0012`. No operator database or real provider was used.
+- 595 existing real-model DB regressions; 221 new fact/receipt/segment checks
+  covering all three runtime modes, terminal status changes, replay, safe malformed
+  readback, foreign organization, wrong conversation, absent session and rollback.
+- 104 full live-buffer → post-call projection checks cover browser-decomposed,
+  browser-realtime and telephony modes, storage/no-storage, ephemeral live deltas,
+  canonical message/segment counts and whole-call replay. Delivery was captured at
+  the existing async broadcast seam; these are not human/browser voice-call tests.
+- Console types regenerated from a temporary current-code API with lifespan off.
+  Console lint/TypeScript/Vite and SDK/Preact builds passed. Vite retains its existing
+  large-chunk warning. Python lint and documentation verification passed.
+- All five configured type/import hooks passed. The voice hook now covers the
+  changed producers, fact filer, status service and consumer. Whole-platform
+  Pyrefly reports **870 errors, seven suppressed**, down from 873; no suppression
+  was added. A green scoped gate is not whole-platform completion.
+- `alembic check` found no new operations. Existing mutually dependent FK and
+  unrecognized vector introspection warnings limit that comparison; no migration
+  file was modified or generated.
+
+Milestone review, in order:
+
+1. **DDD boundaries:** neutral contracts own shared vocabulary; domain services
+   own filing/status rules; pipelines retain cross-domain session authorization.
+2. **Architecture fit:** existing outbox, message API and projection state machine
+   remain the authorities. No second replay mechanism or lifecycle was introduced.
+3. **Data flow:** typed producer → existing JSON layout → ORM readback → immutable
+   fact → exact session lookup → segment. Raw live presentation remains ephemeral;
+   durable filing uses canonical post-call content. Types do not prove ownership.
+4. **Plan alignment:** advances producer metadata in F2 without excluding the
+   remaining vendor/provider flows or the Pydantic-first correction.
+5. **Maintainability/security/performance:** removed duck-typed metadata parsing
+   and magic-key access in this flow; no extra queries, vendor calls, resource
+   cloning or transaction expansion. Invalid history is refused, not repaired
+   silently. Nested container mutation remains outside assignment validation.
+
+Remaining: raw live-buffer/snapshot payloads and dataclasses, post-call result and
+error contracts, other producer metadata, tool-content unions, and all outstanding
+F0–F10 flows. The legacy `MessageStore` context helper has no discovered production
+callers and was not represented as a verified runtime path. Historical operator
+data preflight, live vendor QA and human voice interaction remain unexecuted here.
+The exact disposable QA container was stopped and removed; its absence was
+verified. The temporary API process exited and its loopback listener is absent.
+Only synthetic QA data was discarded. No operator data, configured providers,
+running development services, migration files or Git history were changed.
+
+#### Live capture and canonical projection — verified F2 continuation
+
+The active worktree already contained the live-buffer Pydantic conversion. This
+continuation completed its post-call consumer and verification rather than
+assuming that changing the producer alone completed the flow.
+
+Reproduced defect: a valid `VoiceSpeechOutcome.DRAINED` reached `_speech_outcome`,
+which called `str(enum)` and attempted to parse the qualified enum name as its
+wire value. A valid assistant item therefore failed canonical projection. The
+earlier dataclass consumer had relied on string input; the producer conversion
+exposed that assumption. The fix preserves the enum through the consumer.
+
+Implemented and verified:
+
+1. Live capture identity, draft, item and snapshot contracts validate UUIDs,
+   outcomes, aware timestamps, counts, JSON payloads and completeness. Captured
+   payloads are detached from caller-owned containers; append results and
+   snapshots cannot mutate the buffer. Raw fields are excluded from generic
+   dumps and repr output, including explicit dump includes.
+2. Decomposed and realtime producers mark malformed capture incomplete without
+   converting secondary capture validation into call teardown. Realtime policy
+   speech retains its existing system-only transcript semantics. The shared
+   draft formatter no longer fabricates an item with sequence zero.
+3. `_CanonicalItem`, `_ParticipantAuthority` and `VoiceProjectionResult` use
+   Pydantic. Redacted payloads retain validated JSON types and terminal speech
+   outcomes. `_message_content` returns the existing canonical content union;
+   participant resolution has an explicit `AsyncSession` contract.
+4. `VoiceCanonicalFailureCode` belongs to the voice-transcript module. All 17
+   existing code spellings are preserved through build errors, terminal writes,
+   internal readback and API schemas. Persistence remains the existing string
+   column; no migration is required. Unknown saved codes now fail validation.
+5. The console contract was regenerated from a temporary running API; the
+   existing camel-case `canonicalFailureCode` property references the enum.
+   The local voice type hook now includes the capture, projection and schema
+   files. No new type suppression was added.
+
+Executed evidence:
+
+- 192 buffer/projection function checks: all runtime/outcome combinations,
+  malformed/non-finite values, container isolation, capacities, concurrent
+  append ordering, latest-request speech updates, seal/discard and typed failures.
+- 120 existing live/post-call producer checks; 24 actual `RealtimeManager`
+  capture checks with delivery substituted. Invalid argument/metadata capture
+  leaves the manager open with no teardown tasks. No provider connection opened.
+- Disposable PostgreSQL: existing 595 conversation/widget checks, 221 voice-fact
+  checks and 104 projection/replay checks passed. A further 397 sink checks cover
+  12 runtime/outcome combinations, redaction of speech/tool input, system-only
+  policy segments, eight failure paths per runtime, rollback without partial
+  messages/segments, API projection and exact owner refusals.
+- Existing migrations applied through `eylo0012` to the disposable DB.
+  `alembic check` detected no new operations. Existing FK-cycle and pgvector
+  reflection warnings limit that introspection; no model/DDL change was made.
+- All five local typed/import hooks, full Python lint, documentation checks,
+  console lint/type/build, SDK build and Preact build passed. The console retains
+  its large-chunk build warning. Full-project Pyrefly remains **870 errors,
+  seven suppressed**, unchanged from this continuation's baseline.
+
+Probe corrections: the first hook invocation used the server cwd while its
+harness expects the repository root; it was rerun from the correct cwd. The
+first OpenAPI assertion assumed snake-case; inspecting the schema's declared
+serialization alias confirmed camel-case and the corrected assertion passed.
+Neither failure required a production-code workaround.
+
+Milestone review, in order:
+
+1. DDD ownership: capture remains pipeline-local; persisted canonical failure
+   vocabulary belongs to the transcript domain; shared speech enums stay neutral.
+2. Architecture fit: existing buffers, post-call transaction and durable-fact
+   authority remain; no raw payload is added to checkpoints or event storage.
+3. Data flow: terminal enum → capture → redaction → message/segment → API/replay
+   is exercised with real models and PostgreSQL. Failed projection rolls back
+   before recording its content-free failure state.
+4. Plan alignment: this finishes the live-capture/projection increment, not F2
+   or the platform-wide goal. Known framework/tool payloads and F3–F10 remain.
+5. Maintainability/security/performance: duplicated dataclass fields and string
+   error dispatch are removed. Validation runs per captured item/turn, not audio
+   frame. Existing item/byte limits remain; no vendor I/O or query was added.
+
+Limits: no live provider, human voice interaction, operator-history preflight,
+worker-crash test or full realtime event-dispatch proof. Two baseline diagnostics
+remain in realtime handler/callback dispatch and are not suppressed. Framework
+tool-item parsing still contains guessed IDs/default dictionaries and must be
+replaced at its producer/consumer boundary; the buffer cannot establish that
+upstream contract. Session metadata, realtime resources and remaining provider
+flows are still open. No deployment, operator DB change, migration rewrite,
+commit or history reset was performed.
+
+Cleanup: `eylo-typeqa-voice-capture-20260908-b74d` was stopped and removed;
+its absence was verified. Its data lived only in tmpfs. The temporary API exited
+and port 53988 no longer has a listener. No probe files were added to the repo.
+
+#### Tool observations and durable replay — verified F2 continuation
+
+This continues the full F0–F10 goal, not a replacement completion target.
+
+Trace: normalized model blocks → `ToolCall` → `FrameworkRunner` → tool executor
+→ `ToolResult` → typed `RunItem` → voice capture/history. The parallel durable
+path is callback → `AgentRunTranscriptBridge` → transcript rows → replayed
+framework messages/pending calls. Both paths reuse the framework's own tool
+contracts; neither imports vendor models into the framework.
+
+Reproduced defects before editing:
+
+- An empty tool-call item became `tool_call_id="unknown"`,
+  `tool_name="unknown"`, and empty arguments in live voice history.
+- `SYSTEM_SPEECH` fell through to tool-result construction. The next model could
+  receive a policy check as an orphan tool result with an invented ID.
+- The framework accepted a result whose `tool_call_id` differed from its call.
+  The durable writer similarly correlated by the call while storing the result's
+  different ID. Typed outer objects alone did not protect that relationship.
+
+Changes:
+
+- `framework/agents/items.py`: discriminated call/result/non-tool variants reuse
+  `ToolCall` and `ToolResult`. The emitted JSON fields remain unchanged; private
+  tool metadata is removed before the serializer sees it. Tool payloads are
+  excluded from repr, and copied/decoded items are revalidated.
+- `framework/agents/tool.py`: nonblank string identities, finite JSON arguments
+  and results, and strict error predicates. Dynamic JSON fields remain supported.
+- `framework/agents/runner.py`: validates executor output before completion
+  callbacks. Malformed/foreign results take the existing execution-failure path
+  with a paired error for the real call, not an orphan or false completion.
+  `ToolExecutionOutcome` is now a frozen Pydantic model.
+- `pipelines/voice/live_runner.py`: consumes typed payloads, refuses orphan
+  results, and omits platform speech from model history while retaining it in
+  raw capture. Capture validation failures keep the existing secondary-failure
+  handling and do not close the call.
+- `pipelines/agent_run_transcript.py`: Pydantic call capture/replay models;
+  mismatch refusal; a same-run/org persisted call is required before recording
+  completion; kind/payload/correlation are checked on readback.
+- The sandbox argv reader accepts a read-only mapping, preserving its existing
+  input validation while accepting the newly precise argument value type.
+
+Verification on the current checkout:
+
+- **195 function checks** cover malformed identities/JSON/predicates, item union tags,
+  serialization include/exclude behavior, private metadata containing runtime
+  objects, copied-instance revalidation, normal multi-tool runs, disabled and
+  approval-gated tools, failed output pairing, voice policy exclusion, typed
+  capture assignment, and durable row correlation validation.
+- **56 PostgreSQL checks:** an isolated container was migrated from empty through `eylo0012`.
+  Real framework callbacks/ORM/services filed and read back transcript rows.
+  Checks covered execution with persisted command IDs, JSON round-trip,
+  capture/history projection, eight concurrent duplicate response writers,
+  eight duplicate result writers, pending-call recovery across sessions, result
+  mismatch/orphan refusal, payload ceilings, rollback of corrupted readback,
+  orphaned stored-result refusal in both read paths, malformed-output pending
+  recovery, and cross-org read/write isolation. Synthetic model/tool outputs only; no
+  vendor calls or operator configuration changes.
+- **120 existing voice-message producer checks** passed. All five local typed/import
+  hooks passed; the LLM hook retains one pre-existing suppression. The whole
+  project remains at 870 diagnostics with seven suppressions, matching the prior
+  baseline. These are not 870 confirmed runtime bugs.
+- App import and OpenAPI generation passed. Changed private framework/transcript
+  models are not public API components; no generated-client or migration change
+  is needed for this increment.
+
+Milestone review, in repository-required order:
+
+1. DDD boundaries: framework owns tool contracts/item tags; AgentRun owns persisted
+   row kinds; the pipeline validates/translates the relationship. No new framework
+   dependency on platform or vendor modules.
+2. Architecture fit: existing callbacks, transcript authority, capture buffer,
+   and replay path remain in use. No second persistence/execution lane.
+3. Data flow: construction, execution failure, capture, serialization, persistence,
+   idempotent concurrent retries, and readback exercised with actual types.
+4. Plan alignment: advances F2 without excluding non-tool signals or F3–F10.
+   New runtime-value models use Pydantic under the user's explicit preference.
+5. Clean code/security/performance: no string-key parsing of tool run items;
+   no invented IDs; no private metadata serialization/repr; no per-row replay
+   query. The added completion lookup is DB-only. Inherited caller-owned
+   transaction lifetimes are separate debt, not remediated by this increment.
+
+Cleanup: `eylo-typeqa-tool-replay-20260908-c91f` and its tmpfs-only synthetic DB
+were stopped/removed; absence was verified. Existing Eylo services remained
+running with their prior uptime. No probe files were written into the repository.
+
+Limits: not live-provider, human voice/widget, worker-crash, or historical
+operator-transcript QA. Generic non-tool observations, framework extension
+metadata, remaining model-block payloads, and the remaining provider flows are
+not complete. No hosted CI or permanent test suite was added.
+
+#### Model blocks and provider-bound history — verified F2 continuation
+
+The full F0–F10 scope remains unchanged. This increment traces canonical LLM
+responses → framework blocks → tool execution → conversation/durable persistence
+→ readback and next-turn history → the eight existing LLM adapter formats.
+
+Reproduced findings:
+
+- `ModelOutputBlock.content: str | dict` erased the discriminated canonical
+  contract. Malformed text was dropped by the framework but stringified by
+  persistence. Duplicate tool IDs could alias command/result maps.
+- Framework history snapshots used Python-mode `model_dump()`. Their block
+  tuples failed the stricter JSON-only `MessageMeta` contract when the next model
+  call rebuilt transient messages. Keeping the final DTO strict exposed a
+  producer serialization error; weakening the DTO would hide it.
+- Persisted text following a tool block was filed before tool execution. The
+  common history state machine treated that text as an abandoned tool sequence,
+  removing the call and then rejecting its actual result. Transient history
+  already paired calls/results, so checking that path alone missed this defect.
+
+Implementation:
+
+- `framework/agents/model.py`: frozen, revalidated text/reasoning/tool variants;
+  exact `ToolCall` payloads; unique command identities per response; private
+  annotations excluded from tool-block snapshots and repr.
+- `framework/agents/runner.py`: validate model returns before callbacks/effects;
+  consume typed block payloads; JSON-mode snapshots for next-turn history.
+- Conversation persistence, terminal replay, durable pending-call replay, and
+  background result extraction consume those concrete contracts directly.
+  The old permissive text coercion and repeated tool dictionary parsing are gone.
+- `sockets/llm/history.py`: socket-owned, typed subset projection of the existing
+  response identity. Same-response text is deferred until pending results in
+  provider history only, scoped to conversation/request/speaker. It never changes
+  stored messages or weakens orphan/incomplete/duplicate handling. The existing
+  state machine remains the final sequence validator.
+- `ToolCallCompleteness` now uses Pydantic with immutable sets and strict,
+  nonnegative counts. The local LLM typing hook includes the new history module.
+
+Verification:
+
+- 117 model-block function checks: discriminators, malformed input, duplicate
+  IDs, copied-instance validation, JSON round-trip, private metadata, callback
+  refusal, tool/text ordering, reasoning exclusion, terminal replay and background
+  extraction. The existing 195 tool-observation checks also passed.
+- 105 history/count function checks: sequential/parallel and batched results,
+  response/request/conversation/speaker isolation, missing or malformed identity,
+  interruption boundaries, no mutation, repeatability, incomplete/orphan refusal,
+  and Pydantic count validation.
+- 165 checks against an empty disposable PostgreSQL DB migrated through
+  `eylo0012`: real message services/callbacks, ordered writes and command IDs,
+  conversation/API DTO readback, next-turn reconstruction, durable replay,
+  concurrent idempotency and tenant isolation. Both transient and persisted
+  histories passed all eight local adapters: Anthropic, Bedrock, OpenAI Chat,
+  OpenAI Responses, Gemini, Groq, Cerebras, and Sarvam. Vendor network clients
+  were forbidden in these formatter checks; these are not live API claims.
+- A probe initially confused raw SQLAlchemy Text/JSONB values with parsed
+  `MessageInDb` fields. Correcting the probe to use the real DTO exposed the two
+  actual history defects above. No production schema was altered to fit a probe.
+- All five local typed/import hooks, Ruff, documentation verification and
+  `git diff --check` passed. App import/OpenAPI generation passed; the changed
+  private models are absent from public components, so no API-client or DB
+  migration change was needed. No frontend files changed in this increment.
+
+Cleanup: `eylo-typeqa-model-blocks-20260908-d42a` was verified to have no persistent
+mounts or host ports, then stopped and removed. Its tmpfs-only synthetic DB was
+discarded; absence was verified. Existing Eylo services retained their prior
+uptime. No operator data, credentials, migrations, Git history or deployment was
+changed; no permanent probes/test suite were added.
+
+Review in required order:
+
+1. DDD: framework owns block/call types; pipelines translate canonical output;
+   the socket owns its history projection. No framework imports from `eylo.*`,
+   no module/socket cross-imports, and no vendor SDK types in framework contracts.
+2. Architecture: existing callbacks, persistence authority and history validator
+   remain in place. No duplicate execution or new durable work lane.
+3. Data flow: valid content reaches the same stored wire fields and all eight
+   history formats; malformed model returns do not execute tools or file messages.
+4. Plan: continues F2 and honors the Pydantic preference. It does not remove
+   non-tool signal schemas, callback/runtime dataclass revisits, or F3–F10.
+5. Clean code/security/performance: no content key guessing; typed identity
+   projections explicitly ignore unrelated snapshot fields. History ordering is
+   linear in rows/result entries and performs no DB/network work. Private call
+   annotations are omitted before serialization. No new policy defaults.
+
+Limits: no live-vendor, human widget/voice, worker-crash or historical operator-data
+QA. The whole-platform baseline remains 870 diagnostics with seven suppressions;
+these are not 870 confirmed runtime defects. Model settings/usage, generic signal
+payloads, remaining metadata producers, runtime dataclasses and the remaining
+vendor/provider flows still need their own source-to-sink increments.
+
+#### Active run signals and pause continuations — verified F2 continuation
+
+Trace: model text / stored tool policy / objective input / sandbox approval →
+framework items and result → conversation, objective and scheduled pause
+projections → product request and message JSON → readback, answer and resume.
+The framework has active producers for message, input-request and approval-request
+items only. No payload fields were invented for reserved handoff, progress, token,
+artifact or error observations without producers.
+
+Implemented:
+
+1. `RunMessageItem`, `RunInputRequestItem` and `RunApprovalRequestItem` replace the
+   generic dictionary branch for active observations. Message content is strict
+   text; request kinds cannot be interchanged through the generic fallback.
+2. `InputRequestDetails` shares question/schema fields with the existing durable
+   `InputRequest` without inventing a persisted ID at tool execution time.
+   `ApprovalRequest` remains the canonical approval contract. Its redacted payload
+   and metadata, plus input response schemas, accept finite JSON only.
+3. Framework-owned `ToolContinuationKind` and typed continuations preserve the
+   existing `tool_input` / `tool_approval` wire tags and exact nonblank call ID.
+   `RunInputInterruption` / `RunApprovalInterruption` retain these objects through
+   runner outcomes. Pause status and request kind are validated together.
+4. `RunResult` validates pause metadata on construction and JSON readback. Missing,
+   mismatched and unknown fields fail closed. Existing metadata objects are
+   inspected as field maps rather than via attribute parsing that could silently
+   discard unknown fields. No live workflow port belongs in a pause snapshot.
+5. Objective and sandbox producers retain typed request objects. Conversation,
+   objective and scheduled pipelines consume named fields and serialize at the
+   product persistence boundary. Terminal message metadata explicitly uses JSON
+   serialization, including nested request and continuation values. Existing
+   prompt fallback text and exact captured-call checks are preserved.
+6. `RunCallbacks` is a frozen Pydantic model; callback identities remain unchanged
+   and are excluded from repr, dumps and JSON Schema. Callback errors still fail
+   the run; cancellation still propagates. Runtime callable validation does not
+   prove callable signatures; static gates and actual invocation checks do.
+7. `SandboxProvider` protocol methods now have explicit stub bodies. This resolves
+   six existing missing-return type diagnostics without altering vendor execution.
+   The local LLM/framework hook now covers approval, durable, interruption and
+   sandbox-runtime contracts as well.
+
+Executed verification:
+
+- **166** new signal/callback function assertions: all active branches, strict
+  values, JSON round-trips, unknown fields, kind/status mismatch, copied-instance
+  validation, callback identity/exclusion, four callback phases, failure and
+  cancellation. Objective and scheduled projections reject foreign call captures.
+- **195** prior tool-item, **117** model-block and **105** history assertions pass.
+  Signal fixtures now construct concrete typed variants; their original voice
+  output assertions remain intact.
+- **324** disposable PostgreSQL assertions: prior **165** ORM/replay/all-eight-LLM
+  history-format checks plus **159** assertions over nine pause cases. Input,
+  stored-policy approval and sandbox approval each pass all three product pause
+  projections, real request filing, message/API serialization, tenant refusal,
+  answer and resume. Reservations use the real budget service; external wake-event
+  publication is replaced by a recorder. This is not an actual worker restart.
+- Probe-only defects were corrected: missing response ID, obsolete signal
+  constructors, missing imports and missing budget reservation setup. Runtime
+  validation was not loosened to accommodate incomplete fixtures.
+- All five local typed/import hooks pass. Whole-project Pyrefly reports **862**
+  diagnostics / seven suppressions across **1,229** modules, down from 870; this
+  remains an incomplete global typing baseline, not a runtime defect count.
+- Application import/OpenAPI generation passes with **564** components; private
+  signal and callback models are not public API components. No migration or
+  generated console-schema update is required by this increment.
+
+Milestone review, in repository order:
+
+1. DDD boundaries: framework contracts import no platform modules or sockets;
+   product request ownership and budget authority remain outside the framework.
+2. Architecture fit: observations and continuation state are data models;
+   callback and provider behavior remains callable/protocol-owned, not serialized.
+3. Data flow: producers, JSON sinks, readback and resume were exercised with real
+   ORM/Pydantic objects; unknown metadata refusal was tightened during review.
+4. Plan adherence: this closes active signal dictionaries and one callback
+   dataclass flow only. It does not complete F2, F3–F10 or platform type hardening.
+5. Readability/security/performance: no guessed payload schemas, new defaults,
+   network operations, schema resets or per-item DB queries were introduced.
+   Pause validation is bounded by existing request/persistence limits, not applied
+   to every audio packet. Live callback objects remain outside generic snapshots.
+
+Limits and next work: no live vendor, human widget/voice, worker-crash or operator
+historical-data QA. The next increment below covers product `AgentRunWaitState`,
+answer/approval and resume continuations. Remaining framework metadata, model
+settings/usage and F3–F10 provider flows remain pending. Reserved observation
+envelopes remain finite JSON until their actual producers define the contract.
+The full original goal stays open.
+
+#### Human answers and product continuations — verified F2 continuation
+
+Trace: framework pause → product request JSON → answer command → DB readback →
+capacity reacquisition → conversation/objective/scheduled resume → tool result
+and transcript replay. The implementation retains existing wire tags and fields;
+it does not change request ownership, approval policy or indefinite-wait behavior.
+
+Implemented:
+
+- `AgentApprovalDecision` belongs to the AgentRun domain, separate from framework
+  approval vocabulary. `AgentApprovalResponse` validates its closed decision and
+  optional text comment; internal consumers no longer parse dictionary keys.
+- The wait dataclass is replaced by a discriminated Pydantic `AgentRunWaitState`
+  union. Input answers remain dynamic JSON; approvals retain their response model.
+  Pending and answered states are checked, including answered JSON null.
+- Service readback validates snapshots and returns `AgentRunConflict` for invalid
+  data. Resume validates before changing lifecycle or reacquiring capacity. All
+  three resume consumers refuse pending snapshots before effects.
+- Pipeline-owned `RunContinuation`, `ObjectiveRunContinuation` and
+  `ScheduledRunContinuation` replace the three ad-hoc continuation readers.
+  Request kind, framework pause kind and captured tool IDs must agree; unknown
+  fields, missing state and mixed product snapshots are rejected. The module owns
+  JSON persistence without importing framework contracts.
+- Negative checks exposed a Pydantic 2.11.10 schema-reuse difference: direct model
+  validation rejected non-finite JSON numbers while the wait union parser accepted
+  them. An explicit finite-JSON validator now covers both continuation and answer
+  fields. This was a new-slice defect found and fixed before completion.
+- Response-schema validation uses the supported `jsonschema.validate` entrypoint
+  with `Draft202012Validator` explicitly selected. It rechecks the persisted schema
+  as well as the answer, resolving an existing generated-validator/protocol typing
+  diagnostic without a cast or suppression. See the version-matched
+  [jsonschema 4.26.0 contract](https://python-jsonschema.readthedocs.io/en/v4.26.0/validate/).
+- The local typed hook includes the wait models, AgentRun service and continuation
+  pipeline. No migration, dependency upgrade or public response-schema change.
+
+Executed verification:
+
+- **148** wait/answer function assertions, **118** continuation assertions and
+  **166** previous signal/callback assertions pass. Coverage includes discriminated
+  JSON readback, null/pending distinctions, copied invalid instances, finite JSON,
+  unknown fields, schema mismatch, exact IDs and frozen field reassignment.
+- **563** disposable PostgreSQL assertions pass: previous **165** replay/history
+  checks plus twelve pause/resume cases (input, JSON-null input, approved policy,
+  rejected sandbox approval across all three product projections). Real request,
+  message, public DTO, budget and transcript paths were exercised. Repeat answers,
+  cross-org refusal and malformed approval refusal before capacity reacquisition
+  were checked. Controlled tool and checkpoint ports replace external execution;
+  this is not live vendor or worker-restart QA.
+- All five local typed/import hooks pass. Whole-project Pyrefly: **861** diagnostics,
+  seven suppressions, **1,231** modules; down from 862, not a clean global check.
+- One continuation probe initially omitted required approval fixture fields; the
+  fixture was corrected, without loosening the production schema.
+- Previous **195** tool-item, **117** model-block and **105** history assertions
+  also pass. Total function assertions for this increment: **849**.
+- Final Ruff, seven-file formatting check and `git diff --check` pass.
+  Application import/OpenAPI generation passes with **564** components; the new
+  private models are not public components. Documentation verification passes:
+  46 pages, 280 links, 90 packages, 1,139 modules, 5,962 docstrings and 47 diagrams.
+  The verifier caught the missing pipeline-catalog entry; it was added and rechecked.
+- Disposable container `eylo-typeqa-run-signals-20260908-e31b` was verified as
+  tmpfs-only with no published DB port or persistent volume, then stopped and
+  removed after the final 563-check run. Absence was verified. Synthetic data is
+  discarded and reproducible from the probes; no operator data was touched.
+  Probes ran through stdin and are not retained as repository test files.
+
+Milestone review, in repository order:
+
+1. DDD: module contracts own answers; pipeline contracts translate framework pauses.
+   No new module/socket coupling or framework import of platform code.
+2. Architecture fit: no second persistence authority, table or resume mechanism.
+   Continuation-specific semantics stay outside the AgentRun module.
+3. Data flow: original JSON spellings are retained through filing and readback;
+   no queries or external work were added inside transactions. Capacity, request
+   and transcript effects were checked against real PostgreSQL.
+4. Plan adherence: this advances F2, not the full F0–F10 objective. Live vendor,
+   worker and remaining provider/metadata contracts are explicitly open.
+5. Clean code and safety: named objects replace remembered keys; generic schemas
+   and answers remain dynamic only where allowed. Approval comment/rejection
+   semantics remain; malformed approval errors use one safe domain message.
+
+This is implementation/function-QA evidence, not new human product acceptance or
+whole-platform completion.
+
+Next: durable workflow claim/receipt and wake-event payload contracts, remaining
+framework metadata/settings/usage, then the existing F3–F10 provider-flow sequence.
+Operator historical data, live vendor, widget/voice and worker-crash QA remain
+unrun in this increment. No deployment, commit or operator DB mutation occurred.
+
+#### Durable claims, receipts and wake events — verified F2 continuation
+
+Contract-first trace: `AgentRunAbsurdAdapter.spawn_run` → IDs-only engine payload →
+`AgentRunWorkflow.execute` → authoritative PostgreSQL claim → product executor →
+terminal receipt. The second path is committed `answer_input_request` → typed wake
+notification → conversation/objective/scheduled resume → DB answer and capacity.
+
+Implemented:
+
+- `AgentRunTaskParams` validates the closed organization/run locator; unknown
+  fields and malformed identifiers fail before a claim. Valid wire keys, UUID
+  strings, workflow name, idempotency key and receipt format are unchanged.
+- `InitiatingPrincipalRef`, `AgentRunExecutionClaim`, `AgentRunWorkflowReceipt`,
+  `AgentRunRegistrationHealth` and `AgentRunTaskBinding` are Pydantic data contracts.
+  Claims validate revision types and finite manifest JSON. Product-specific
+  manifest interpretation stays in pipelines; this is not a universal manifest
+  schema. Receipts reuse the domain lifecycle/outcome rules and cannot represent
+  a nonterminal result. Registration/binding booleans remain intrinsic predicates,
+  not newly invented modes.
+- `AgentRunInputEvent` owns the three-ID wake payload. The answer producer passes
+  the object; the Absurd adapter serializes it. All three resume validators reuse
+  its exact matching rule, including rejection of extra fields, foreign IDs,
+  UUID objects or alternate UUID spellings on the wire. Human answers never enter
+  the engine event. Product-specific refusal classes/messages are preserved.
+- General `AgentRunWorkflowContext.await_event` returns `object`, not `Any` or a
+  falsely universal input-event type. SOR command waits retain their own receipt
+  readback path. The SDK's generic checkpoint/replay result contract is unchanged
+  and remains part of the subsequent durable-runtime review.
+- Existing local typed hooks now include workflow and adapter contracts.
+
+Executed verification:
+
+- **231 function assertions**: task parsing, frozen models, nested principal
+  revalidation, manifest isolation/finite JSON, all lifecycle/outcome combinations,
+  three-product wake matching, spawn/binding idempotency, publication cleanup,
+  terminal workflow replay, budget failure and invalid-input refusal.
+- **596 PostgreSQL/SDK assertions**: 563 existing answer/resume, transcript and
+  provider-history checks plus 33 claim/queue checks. Actual claim functions verify
+  published revision identity, current principal, cross-org refusal, premature
+  binding refusal, cancellation, terminal replay and released capacity.
+- Actual Absurd **0.5.0** executed the registered workflow with two configured
+  worker lanes. A synthetic executor persisted an input wait, suspended, released
+  capacity, accepted a committed answer while the worker was stopped, then resumed
+  after worker restart and persisted the expected terminal product/engine results.
+  Only product model/tool behavior was substituted. This proves graceful worker
+  stop/restart, not process-kill recovery or concurrent workload fairness.
+- The first SDK probe failed because the temporary harness called
+  `current_transaction.get()` instead of the actual `current_transaction()` API.
+  The error was reproduced and localized to the probe; no production workaround
+  was added. Its exact task was cancelled in the disposable DB before retrying.
+  The corrected readiness check requires a persisted input request as well as
+  engine `sleeping` state, distinguishing a wait from retry backoff.
+- Five local typed/import hooks pass. Whole-project Pyrefly remains at **861
+  diagnostics, seven suppressed**; this is not a clean-platform claim. Python
+  lint passes. Six prior function probes pass again: 148 wait, 118 continuation,
+  166 signal/callback, 195 tool-item, 117 model-block and 105 history assertions.
+  Together with the new 231 assertions, this is **1,080 function assertions**.
+- App import/OpenAPI passes with 564 components; private workflow models do not
+  enter the public schema. Eight changed Python files pass formatting; diff
+  whitespace checks pass. Documentation validation passes: 46 pages, 280 links,
+  90 packages, 1,139 modules, 5,966 docstrings and 47 diagrams.
+- Removed the verified tmpfs-only database container
+  `eylo-typeqa-workflow-20260908-c74a` after QA; it had no host ports or persistent
+  volume. No operator database or configured development service was changed.
+
+Milestone review, in order:
+
+1. DDD: AgentRun owns execution/wake vocabulary; product manifests stay in
+   pipelines. No vendor type or framework dependency moved into a domain contract.
+2. Architecture fit: data snapshots use Pydantic; the live workflow/context and
+   SDK resource owners remain behavior classes. No parallel execution authority.
+3. Data flow: unchanged queue wire format, actual DB authority reload, committed
+   answer before publication and canonical terminal output outside engine receipts.
+4. Plan alignment: advances the original F2 flow and Pydantic-first clarification;
+   does not complete F2 or omit F3–F10. Public API and provider contracts are unchanged.
+5. Maintainability/security/performance: shared wake validation replaces three
+   remembered dict contracts; safe error messages hide malformed payload content.
+   No additional DB query, external call inside a transaction, retry policy or
+   migration. Manifest validation operates on the existing DB-bounded snapshot.
+
+Next: remaining framework metadata/settings/usage and durable runtime/step payloads,
+then the existing F3–F10 provider-flow sequence. Live vendor, widget/voice, operator
+historical data and process-crash QA were not run for this increment. No deployment,
+operator DB mutation, commit or retained test suite.
+
+#### Usage accounting and numeric settings — verified F2 continuation
+
+Trace: configured `ModelSettings` → pinned organization provider resolution →
+native response/usage → `LLMUsageInfo` → budget meter → framework `ModelUsage` →
+terminal message metadata → `MessageService` → PostgreSQL → typed readback.
+Memory formation/reconciliation use their own domain reservation identities.
+
+RCA and changes:
+
+- `LLMUsageInfo` previously defaulted missing primary counts to zero and accepted
+  coercible values. Both primary fields are now required strict nonnegative
+  integers; optional detail counts have the same numeric constraint. A legitimate
+  zero report remains valid. Revalidation catches malformed copy-built instances.
+- All eight executable LLM branches use the checked normalizers; Bedrock shares
+  the Anthropic normalizer. Invalid usage maps to each adapter's existing typed
+  response error without embedding the native payload in the exception.
+- Cerebras no longer manufactures primary zeros for partial reports. Present
+  consumed counters are checked even when another primary counter is missing.
+  Gemini retains native partial updates and produces canonical usage only once
+  both primary counts are known. Cumulative updates replace counts, not add them.
+- `ModelUsage` validates all five counters and preserves zero initialization for
+  accumulators and synthetic replay. `FrameworkTerminalMessageMeta.usage` retains
+  that object until JSON serialization rather than accepting arbitrary count keys.
+- `ModelSettings` validates configured revision/token/top-k integers and bounded
+  temperature/top-p values. `ExistingConversationModel.generate` revalidates before
+  credential resolution, including copy-built settings. No model/provider default
+  or new configuration policy was introduced.
+- `ExecutionTokenUsage` belongs to the AgentRun domain. Agent and memory meters
+  validate it before acquiring a transaction. Reservation locks, cross-org checks,
+  cumulative memory replay, pricing and commit-before-budget-refusal are unchanged.
+  The local LLM/framework type hook now includes `budgets.py`.
+- The three remaining accounting dataclasses are frozen Pydantic contracts:
+  `_ExecutionBudgetScope`, `_MemoryExecutionBudgetScope` and `_ActiveCapacity`.
+  Scope IDs and memory kind must have their domain types before ContextVar binding;
+  capacity values are strict nonnegative integers. Context managers have explicit
+  iterator contracts. No scope precedence, lifetime or capacity formula changed.
+
+Executed verification:
+
+- **521 function assertions** cover strict counts/settings, required versus absent
+  usage, optional details, JSON round trips, frozen/copy-built values, all native
+  normalizers, Gemini cumulative updates, terminal metadata and refusal before
+  transaction acquisition or credential resolution.
+- **157 PostgreSQL/SDK assertions** cover actual pinned config resolution, OpenAI
+  SDK request/response parsing in streaming and single-response modes, background
+  prompt consumption, budget storage, eight concurrent increments, foreign-org
+  refusal and memory formation/reconciliation replay. Vendor transport asserts no
+  active DB transaction. Known, zero, missing, malformed and over-budget reports
+  exercise their distinct outcomes; SDK clients close on success and refusal.
+- Successful outputs pass through the terminal metadata producer and actual
+  `MessageService` into PostgreSQL, then `MessageInDb` and the metadata owner's
+  model on readback. This is function/integration evidence, not a complete widget
+  or worker-driven conversation QA run. No actual vendor was contacted.
+- **91 scope/capacity assertions** cover construction, frozen fields, invalid
+  identity refusal before binding, capacity measurement, nested run/memory routing,
+  task isolation and restoration after exceptions/cancellation. The 157-check DB
+  flow passed again after converting these contracts.
+- **222 prior function assertions** pass again: 117 model-block and 105 history
+  assertions. Together with this increment's checks: **834 function assertions**.
+- Five local typed/import hooks pass; the LLM hook retains one existing
+  suppression. Focused usage/settings checks have zero errors. Whole-project
+  Pyrefly remains **861 diagnostics, seven suppressed**. Python lint passes.
+- Temporary probe mistakes were corrected against the real contracts: missing
+  request ID, wrong `MemoryLevel` import, omitted required retry limit, and an
+  assumption that assistant content was a single block. No product workaround
+  was added for these errors. Cerebras SDK construction itself can coerce values;
+  malformed-instance checks use copied native objects. These checks cannot recover
+  raw wire distinctions already erased by an SDK's parser.
+- App import/OpenAPI passes with 564 components; accounting contracts remain
+  private. No generated API contract update is required. Removed the verified
+  tmpfs-only `eylo-typeqa-usage-20260908-d92f` database container and its synthetic
+  data, then confirmed the container absent. It had no host ports or persistent
+  mounts; no operator data was changed.
+
+Milestone review, in order:
+
+1. DDD: native usage remains vendor-owned; shared normalized usage, standalone
+   framework totals and domain accounting each retain their own contract.
+2. Architecture fit: no SDK, socket or framework dependency was added to budget
+   domain types; no additional execution authority, migration or dependency.
+3. Data flow: primary counts no longer silently change missing → zero. Existing
+   output refusal, explicit zero, replay totals and JSON field names are preserved.
+4. Plan alignment: advances F2 and Pydantic-first requirements; not whole-platform
+   completion. Non-numeric settings, metadata and F3–F10 remain in scope.
+5. Maintainability/security/performance: bounded numeric checks replace implicit
+   coercion; exceptions exclude malformed input. No new DB query or external I/O
+   inside a transaction; detail counters do not change the existing cost formula.
+
+At that checkpoint, vendor stream-state dataclasses, other framework settings/
+metadata, general durable step payloads and the original F3–F10 flows remained.
+The following increment addresses stream state. Live provider, operator
+historical-data, widget/voice and process-crash QA were not run here.
+
+#### Native stream state — verified F2 continuation
+
+Trace: native SDK response/event → vendor-owned assembler → complete canonical
+response/tool batch → existing framework consumers. Gemini retained message
+metadata also passes through its verified replay object before native history.
+
+Changes:
+
+- Seven stream assemblers now use Pydantic instead of dataclasses: OpenAI Chat,
+  OpenAI Responses, Groq, Sarvam, Cerebras, Anthropic and Gemini. Bedrock shares
+  the Anthropic assembler. Strict construction, forbidden extras and assignment
+  validation retain the existing mutable lifecycle and per-instance collections.
+- `ToolCallBuffer` uses the same internal contract policy; argument text is
+  excluded from repr. Empty partial fields remain valid during assembly, not as
+  executable calls. Finite JSON, complete identity and whole-batch duplicate
+  checks still run before tool exposure.
+- `GeminiMessageReplay` is a frozen Pydantic value. All 22 constructor sites for
+  these nine contracts use named arguments, including retained replay. Native
+  `Part` types and signatures stay inside the Gemini boundary.
+- Removed unnecessary empty-string fallbacks from the pending Cerebras
+  completion conversion. The installed SDK requires completed-call ID, name
+  and arguments; optional streaming fragments are a different contract. Missing
+  completed fields are rejected rather than normalized.
+- No SDK client, task, connection or callback owner was converted. No common
+  vendor state machine or new persistence representation was introduced.
+
+Executed verification:
+
+- **201 function assertions** cover strict construction/assignment, unknown
+  fields, per-instance collection isolation, frozen replay, fragmented tools,
+  finite JSON, duplicate/mismatched IDs, every assembler's terminal output,
+  early EOF, malformed batches, cumulative usage and Gemini signature replay.
+- **275 native SDK/transport assertions**, across **56 scenarios**: each of the
+  eight branches executes single-response, complete stream, malformed output,
+  early EOF, consumer close, task cancellation and transport interruption.
+  These call the real adapters and installed SDKs with controlled HTTP responses;
+  Bedrock uses AWS event-stream framing through its native decoder and signer.
+  Tool output is not exposed before resource cleanup; unfinished paths expose
+  no executable tool batch. They are not live-vendor or full-agent QA.
+- Gemini's supplied-client versus owned-client cleanup differs by SDK contract.
+  The transport fixture uses SDK-owned clients. Its nested response iterator
+  does not immediately mark the mock wire closed on consumer close; the owned
+  clients do close. A separate loopback HTTP server verified actual connection
+  EOF on both consumer disconnect and task cancellation, using the SDK's normal
+  transport selection. No production workaround was needed for the mock flag.
+- Previous usage (521), framework block (117) and history (105) assertions pass
+  again: **1,219 function/transport assertions** including this increment's
+  201 and 275. The two real-connection cases are additional. No DB probe was
+  repeated because this increment changes only transient vendor assembly and
+  replay construction; earlier DB evidence is recorded separately above.
+- Nine-model/22-caller AST checks confirm keyword construction and no new
+  module/framework imports at the vendor boundary. Eight changed files pass
+  focused Pyrefly and formatting. Five local typed/import hooks and full Python
+  lint pass. Whole-project Pyrefly remains **861 errors, seven suppressed**.
+  App/OpenAPI generation passes with 564 components; these models remain private.
+  Documentation verification passes: 46 pages, 280 links and 47 diagrams;
+  `git diff --check` passes.
+- A local current-code timing sample of 1,000 native text chunks per assembler
+  measured OpenAI Chat 13.86 ms, Groq 13.20 ms, Sarvam 19.60 ms and Cerebras
+  14.10 ms on Python 3.13.2/Pydantic 2.11.10. This excludes transport and is not
+  a before/after regression comparison or a provider-latency claim.
+- Probe corrections followed installed SDK/source evidence: Cerebras fingerprint
+  and completed-field requirements, premature fixture `[DONE]`, Gemini client
+  ownership and existing timestamp enrichment. No product fallback was added
+  to accommodate an invalid fixture. No test files were added to the repo.
+
+Milestone review, in order:
+
+1. DDD: native events and stream state remain vendor-owned; the shared buffer
+   handles only common tool assembly. Framework and module boundaries are intact.
+2. Architecture fit: internal data contracts use Pydantic; resource ownership
+   stays with adapters. No new dependency, DB model, public schema or workflow.
+3. Data flow: text may stream early, but terminal validation owns execution.
+   Native signatures, usage and response identities survive the conversion.
+   Container mutation still relies on ingress/final validation, not a false
+   claim of deep validation from `validate_assignment` or `frozen`.
+4. Plan alignment: advances F2 and the explicit Pydantic-first clarification.
+   Does not complete F2 or substitute a dataclass sweep for the F3–F10 flows.
+5. Maintainability/security/performance: named construction removes positional
+   ambiguity; typed failures retain safe messages. No new I/O, query, retry,
+   parser pass over the complete accumulated history or execution authority.
+   Broader throughput and baseline comparison remain outside this measurement.
+
+At that checkpoint, effective LLM config/overrides, other framework settings/
+metadata, general durable step payloads, and the original F3–F10 flows remained.
+The following increment addresses effective LLM config. No deployment, operator
+DB change, live vendor invocation, widget QA, migration or commit occurred.
+
+#### Effective LLM config — verified F2 continuation
+
+Trace: API-owned config fields → LLM config service → encrypted revision storage
+→ latest/pinned resolver → generation overrides → neutral inference config →
+native adapter request → usage/message persistence. Readiness and organization
+authority still come from the existing provider-config service.
+
+Changes:
+
+- Replaced `LLMInferenceConfig`, `LLMGenerationSettings`, `LLMOverrides`,
+  `LLMProviderConfig` and `ResolvedLLM` dataclasses with frozen Pydantic models.
+  The old structural generation protocol is now a concrete neutral model.
+  Common scalar fields validate shape; provider/model compatibility and
+  supported overrides remain domain policy. No socket imports a module.
+- Shared config values use strict validation, forbidden extras and instance
+  revalidation. Applying overrides constructs a validated result rather than
+  using unchecked `model_copy(update=...)`. Previously created/copied nested
+  models cannot bypass scalar or provider validation at these boundaries.
+- Renamed the stored-config entrypoint to `LLMProviderConfig.from_storage` and
+  updated all four service callers. This avoids overriding Pydantic's deprecated
+  `validate` method. Config storage keys, provider spelling, model IDs, optional
+  settings, supported override selection and explicit-model policy are unchanged.
+- Credentials retain copied read-only mappings and are excluded from repr and
+  both Python/JSON model dumps, including nested resolved models. Dumps are not
+  credential restore formats. Revision/UUID/authority fields remain strict;
+  intrinsic readiness/grant booleans keep their existing meaning.
+- Structural validation failures become safe `InvalidLLMConfig` errors, so
+  existing service/resolver/controller translation still applies. A milestone
+  probe also found that invalid model strings appeared in chained enum errors;
+  model/provider rejection now suppresses that input-bearing cause without
+  changing the public domain message. No actual credential exposure was observed.
+- Added service/resolver files to the existing local LLM type gate. No SDK client,
+  connection, DB aggregate, verifier result, public API schema or migration changed.
+
+Executed verification:
+
+- **100 before/after function assertions** across all eight providers have
+  identical stored/configured/override output. Explicit edge cases retain empty
+  override behavior, list-to-tuple stops, numeric limits, unknown-field refusal,
+  secret-copy isolation and ignored unsupported overrides.
+- **349 hardening/service/resolver assertions** cover malformed and unchecked
+  nested models, immutable fields/secrets, dump/schema exclusion, safe exception
+  chains, UUID/revision/flag types, invalid input refused before persistence,
+  latest/pinned resolver failures, all eight factories and generation parameters.
+  Service persistence collaborators in this set are controlled fixtures.
+- Repeated **201 assembler** and **275 native SDK/transport assertions**, covering
+  all eight branches' single/complete/malformed/incomplete/close/cancel/error
+  cases. This is **925 function/transport assertions**, not live vendor QA.
+- **269 real PostgreSQL assertions**: eight providers' real service create/update,
+  encrypted credential readback, masked public projection, old/new pinned
+  revisions, exact tenant ownership and rejected updates producing no revision.
+  The same probe exercises real agent/background request construction through
+  a native OpenAI SDK with synthetic HTTP responses, budget effects, terminal
+  message filing/readback and memory usage replay. Vendor calls run without an
+  active DB transaction. This is service-level DB QA, not HTTP/login/widget QA.
+- Existing migrations upgraded an isolated tmpfs DB to `eylo0012`. It exposed no
+  host port and mounted no operator data. The QA container and its synthetic
+  data were removed; absence was checked. No operator DB/service was changed.
+- Focused Pyrefly, five typed/import hooks, full Python lint, app/OpenAPI and
+  caller imports pass. OpenAPI remains 564 components with config values private.
+  Whole-project Pyrefly remains **861 errors, seven suppressed**; this is not a
+  platform-wide clean-typecheck claim.
+- A same-process median over five batches of 1,000 config-create/resolve calls
+  measured **16.50 ms before** and **32.45 ms after**, using the exact prior
+  dataclass source and current Pydantic source. This measures local validation
+  overhead only, roughly 16 microseconds added per call, not DB/vendor latency.
+
+Milestone review, in order:
+
+1. DDD: neutral scalar contracts remain shared; provider policy stays in the LLM
+   config module. Behavioral factory/resolver ports remain protocols.
+2. Architecture fit: one validated config path serves conversation, background,
+   parallel-agent and memory callers. No new credentials, default model, transport
+   layer, migration or execution authority.
+3. Data flow: normalized storage and pinned revision meaning survive round-trip;
+   invalid copies are refused, credentials remain inaccessible to generic dumps,
+   and external request execution remains outside owned DB transactions.
+4. Plan alignment: advances the Pydantic-first F2 correction, not whole-platform
+   completion. Verification result dataclasses, general provider aggregates,
+   remaining framework metadata/settings and F3–F10 are still in scope.
+5. Maintainability/security/performance: field validation is shared instead of
+   manually repeated post-init assignments. Safe errors retain domain translation.
+   No new queries or I/O; measured local validation overhead is reported above.
+
+Target: installed and locked Pydantic **2.11.10**. Relevant contracts:
+[instance revalidation](https://docs.pydantic.dev/2.11/api/config/#pydantic.config.ConfigDict.revalidate_instances),
+[frozen models](https://docs.pydantic.dev/2.11/concepts/models/#faux-immutability),
+and [field serialization exclusion](https://docs.pydantic.dev/2.11/concepts/serialization/#model-and-field-level-include-and-exclude).
+Private dataclass equality/hash behavior is not a cache API; no consumer relies
+on these values as cache keys. No persistent test suite or fixture was added.
+
+#### LLM verification — verified F2 boundary completion
+
+The previous verifier discarded native SDK responses: an OpenAI HTTP 200 with
+`{}` was reproduced as a successful verification. Its module-owned SDK calls
+also ran under the route's request-scoped DB transaction. This was not a claim
+about a live vendor outage; the response defect was reproduced with the real
+installed OpenAI SDK and controlled HTTP transport.
+
+Completed contract and ownership corrections:
+
+1. `common/contracts/llm_verification.py` owns frozen, validated detached input
+   and provider/model receipts. Secret maps are copied, read-only, and excluded
+   from representation and serialization. The module's revisioned result uses
+   a strict positive revision and timezone-aware verification timestamp.
+2. `sockets/llm/verification.py` owns native SDK creation, request/response types,
+   cleanup and safe error translation. The generic timeout helper preserves its
+   awaited response type. Every branch runs its existing native inference
+   response validator before returning a receipt. Valid token-limited responses
+   remain acceptable without requiring literal “OK” output.
+3. `pipelines/llm/config_verification.py` resolves detached config in a read
+   transaction, closes it before vendor I/O, then conditionally marks the same
+   revision in a short write transaction. It refuses an enclosing transaction,
+   malformed receipts and receipts for a different provider/model. A concurrent
+   edit cannot mark the new revision verified; deletion cannot be resurrected.
+4. The config module exposes the verification use-case protocol. The HTTP verify
+   route has a separate non-transactional controller dependency; CRUD retains
+   its owned transaction. Public provider/model spelling and camelCase
+   `verifiedAt` are unchanged. The existing bearer-auth resolver is exercised,
+   not replaced by an authentication stub in the DB/API probe.
+5. Gemini uses its documented explicit async and sync close operations. This
+   removes the installed SDK's invalid async context-manager annotation from
+   the path without suppressing it or changing dependencies. Cerebras explicitly
+   requests non-streaming output and closes/refuses an unexpected native stream.
+
+Executed evidence:
+
+- **440 assertions / 56 native SDK scenarios** across OpenAI Chat, Responses,
+  Anthropic, Bedrock, Groq, Cerebras, Gemini and Sarvam: success, token-limit
+  completion, empty malformed response, auth error, transport failure, timeout
+  and cancellation. Request model/token limits, safe errors and owned client
+  closure are checked. These are controlled transports, not live vendor QA.
+- **16 boundary assertions:** forged input revalidation before SDK construction,
+  absent credentials and the native Cerebras stream/result union refusal.
+- **223 authenticated API/PostgreSQL assertions:** all eight providers pass
+  create → bearer auth → config resolution → actual native SDK → verified
+  revision write → readback. Checks cover encrypted storage, stable API aliases,
+  foreign-org 404, unauthenticated refusal, invalid IDs, malformed/error/timeout/
+  cancellation outcomes, concurrent edit and deletion, two simultaneous probes,
+  forged receipts and an enclosing transaction. The connection pool has zero
+  checked-out DB connections at single-probe vendor request entry.
+- Existing **349 effective-config**, **201 stream-state**, and **275 native
+  inference transport** assertions pass. All five local typed/import hooks pass;
+  no new suppression is introduced. Full-project Pyrefly remains **860 errors,
+  7 suppressed**, versus the preceding 861-error checkpoint; this is not a
+  whole-platform green check. Server/CLI Ruff and six-file formatting pass.
+- The application imports and produces OpenAPI with **564 components**. No
+  public schema or frontend source changed for this slice.
+- Documentation verification passes: 46 pages, 282 links, 90 packages, 1,142
+  Python modules, 5,986 docstrings and 47 diagrams. `alembic check` reports no
+  new upgrade operations on the disposable DB; existing FK-cycle and vector-type
+  introspection warnings limit that schema comparison, so it is not proof of
+  complete constraint/vector parity.
+
+Probe corrections and additional findings:
+
+- Early probes omitted required `max_tokens`, seeded a password-less member,
+  used snake_case API keys, reused a unique config name and injected an externally
+  owned Gemini HTTP client. They were corrected against real contracts; no
+  product assertions or response validation were weakened. Gemini teardown is
+  checked with SDK-owned transports, matching the production construction path.
+- **Open F0/F10 auth-schema follow-up:** `MemberModel.password` is nullable but
+  `MemberModelSchema.password` is annotated as `str`. A real null-password row
+  fails read-schema validation (`password`, `string_type`); bearer auth translates
+  that into 401. Trace invitation/password-setup/login and member projections
+  before fixing nullability and its consumers together. The API probe uses
+  complete password-based members and does not claim this mismatch is fixed.
+- The existing Passlib/bcrypt version-introspection warning occurs while hashing
+  synthetic member passwords; hashing and bearer auth still complete. No auth
+  dependency upgrade is included in this LLM flow.
+
+Sequential milestone review:
+
+1. DDD boundaries: SDKs stay in sockets; config/revision policy stays in modules;
+   the pipeline composes them. Shared values contain no SDK or ORM types.
+2. Architecture fit: one verification use-case port, no additional task authority,
+   vendor defaults, retries, persistence tables or transport implementation.
+3. Data flow: detached encrypted-config readback → SDK-native validation → typed
+   receipt → revision-checked write → unchanged HTTP projection. Invalid and
+   cancelled probes do not persist a success; genuine revision races fail closed.
+4. Plan alignment: completes verification within F2, not F2 as a whole or F3–F10.
+   General provider aggregates, remaining framework settings/metadata and every
+   outstanding vendor operation remain in scope.
+5. Readability/security/performance: explicit fields replace result dataclasses;
+   existing validators avoid parallel wire schemas; secrets and response text
+   stay out of receipts. Vendor latency no longer holds a checked-out DB
+   connection. No provider latency or throughput improvement is claimed.
+
+Target: Pydantic 2.11.10, OpenAI 2.14.0, Anthropic 0.75.0, Google GenAI 1.56.0,
+Groq 1.1.1, Cerebras 1.67.0 and Sarvam 0.1.28, verified from the installed
+environment. Gemini close semantics were checked against its
+[versioned SDK source](https://github.com/googleapis/python-genai/blob/v1.56.0/google/genai/client.py).
+Existing migrations through `eylo0012` were applied only to a disposable tmpfs
+database with no host ports or mounts. That QA container and its synthetic data
+were removed after verification, and container absence was checked. Operator data, live vendor credentials,
+containers and migration history were not changed. Human browser/product review
+and live vendor verification are not claimed; no persistent test suite was added.
+
+#### Framework run settings and failures — verified F2 continuation
+
+Trace: run config / agent spec → conversation run or resume wrapper → framework
+context → model/tool loop and handoff assignments → typed failure result → JSON
+readback and terminal-message projection. Framework contracts remain independent
+of platform/provider imports.
+
+RCA and implementation:
+
+- `RunConfig` accepted boolean/text counts, an infinite timeout, and opaque values
+  in its JSON annotation field. A copied config with `max_turns=True` completed a
+  model call; a copied agent containing `max_tokens=True` also reached the model.
+  Initial Pydantic construction alone did not validate later unchecked copies.
+- Limits now use strict finite numbers, named existing defaults and instance
+  revalidation. Metadata and reasoning extensions retain dynamic vendor keys but
+  require finite JSON values. Framework model/vendor names remain open strings;
+  platform-owned provider catalogs are not imported into the framework.
+- Conversation run/resume validates config before hydration or resumed effects.
+  The framework uses the validated context config, not the caller's original
+  object. `AgentSpec` revalidates settings; `RunContext` validates assignments and
+  records the validated agent on handoff. Live dependency identity/exclusion and
+  mutable run progress are preserved. Background config overrides validate the
+  caller's settings before applying the existing no-handoff value.
+- `RunFailureCode` / `RunFailureMetadata` replace the runner's fixed failure dict.
+  Existing wire keys/values remain unchanged; status/category disagreements are
+  refused. Historical annotations without an owned failure code still round-trip.
+- Milestone review caught a new exclusion regression: flattening a metadata
+  subclass into the base model turned excluded fields into serializable extras.
+  Revalidation now preserves typed subclasses; promoting a generic envelope uses
+  its serialization exclusions. Private sentinel probes prove exclusion through
+  result output and the actual terminal-message projection. This was fixed before
+  completion; no deployment or real private data was involved.
+- Six pre-existing protocol diagnostics were docstring-only method bodies in
+  `Guardrail` and `Session`; explicit interface stubs now match their contracts.
+  The local LLM type hook checks the entire framework-agent package rather than
+  an incomplete list of individual files.
+
+Executed verification:
+
+- **259 function assertions**: strict/bounded values, unchanged defaults, JSON
+  readback, copied/constructed instances, assignment rollback, nested annotation
+  detachment, live dependency identity, background overrides, model/tool turns,
+  valid/invalid handoffs, guardrail failures, exact turn-limit effects, timeout,
+  cancellation cleanup, approval replay and wrapper refusal before DB hydration.
+- Failure checks cover enum restoration, safe exception classification, status
+  mismatch, copied results, extra public annotations, private subclass fields and
+  a subclass that disables ordinary instance revalidation.
+- Existing checks passed: 349 effective-config, 117 model-block, 201 stream-state,
+  and 275 native SDK transport assertions across 56 scenarios / eight adapters.
+  Transports are controlled fixtures, not live vendor operations.
+- Full framework package plus changed callers: zero Pyrefly diagnostics. All five
+  local type/import gates passed. Full project: **854 diagnostics, 7 suppressed**
+  (previously 860); full-platform type hardening is not complete.
+- Full server/CLI Ruff and app OpenAPI generation passed (564 schemas).
+  Local `RunContext` construction medians were 8.95 / 11.39 / 28.54 microseconds
+  with 0 / 100 / 1,000 tool specs (five repeats of 1,000 constructions). This is
+  synthetic construction timing, not provider latency or product throughput.
+
+Pydantic 2.11.10's frozen-assignment error is created outside its configured
+validator and can still show the assigned value. The initial probe incorrectly
+assumed `hide_input_in_errors` covered that path; its source was inspected and the
+frozen-mutation check now asserts refusal separately. This is not a promise that
+arbitrary Pydantic errors are safe to expose; framework failures serialize only
+safe classification. No dependency change or blanket exception suppression.
+
+Review completed in the required order: DDD ownership, architecture fit,
+source-to-sink flow, plan alignment, then maintainability/security/performance.
+No additional DB query or provider call was introduced. This slice does not prove
+historical operator-data compatibility, live vendor behavior, browser/voice UX or
+worker recovery; no DB, provider config, deployment, migration or Git history was
+changed. No retained test suite or hosted automation was added.
+
+At this checkpoint, framework mode booleans and unsupported-setting disclosure
+remained open. The continuation below resolves those contracts; it does not
+implement the reserved features. Other producer metadata and caller payloads
+remain in F2, followed by the existing F3–F10 sequence.
+
+#### Framework modes and ordered speech contracts — verified F2 continuation
+
+Trace: process settings → conversation/scheduled/objective run config → framework
+model settings → pipeline translation → single/streaming inference → ordered
+speech segments → org/conversation-scoped transport delivery. Live-voice terminal
+prompts share the same delivery contract.
+
+- `RunStreaming`, `RunPromptCaching`, and reserved `RunTracing` are distinct
+  framework enums. Python callers cannot substitute booleans, another enum family,
+  or truthiness. Existing boolean JSON snapshots still round-trip. Numeric aliases
+  such as JSON `1` are rejected; Pydantic's native enum parsing alone accepted them.
+- Pipeline translations exhaust the owning enum. No platform import entered the
+  standalone framework, no vendor fallback was added, and cache override precedence
+  is unchanged. Scheduled/objective runs remain non-streaming; conversation process
+  settings and live-voice streaming retain their previous behavior.
+- `max_handoffs`, `handoff_lookback_window`, and `tracing_enabled` now have explicit
+  experimental schema descriptions. They do not enforce handoff limits/history or
+  tracing policy. Background config documentation no longer implies that the
+  unused handoff count itself prevents handoffs.
+- The next source-to-sink trace reproduced integer speech text and string
+  `"false"` completion being accepted by a dataclass, plus opaque request objects
+  being stringified into IDs. `pipelines/llm/voice_text.py` now owns frozen Pydantic
+  correlation/segment models and `VoiceTextPhase`. Delivery revalidates copy-built
+  inputs before side effects. UUIDs remain typed until the existing transport
+  string boundary; null correlation remains supported. The framework still does
+  not import platform speech contracts.
+- Streaming, terminal message and live prompt producers use the same objects.
+  Text-before-finalize, whitespace handling, final text plus completion, secondary
+  state-failure isolation, cancellation and transport error behavior are preserved.
+  Filler/session state policy and WebSocket payload typing beyond this delivery
+  boundary remain part of the later voice flow.
+
+Executed verification:
+
+- 271 framework settings/failure assertions rerun successfully.
+- 352 mode/producer assertions: enum-family refusal, boolean JSON compatibility,
+  numeric-alias refusal, schema markers, hooks independent of tracing, real
+  conversation-model translation/projection, cache override matrix, stream closure,
+  live model construction, actual scheduled/objective framework turns, and the
+  conversation durable executor's four environment-setting combinations.
+- 127 speech-contract assertions: strict fields, JSON readback, copied-value
+  refusal before effects, null correlation, exact scoped text/finalize payloads,
+  three producer paths, repeated final response, secondary state failure and
+  cancellation and transport-failure propagation. I/O ports were substituted;
+  no microphone, TTS vendor or browser
+  playback was exercised. Probe fixture omissions were corrected against actual
+  participant/agent/result schemas, not by relaxing production validation.
+- Existing 349 effective-config, 117 model-block, 201 stream-state, and 275 native
+  transport assertions passed across all eight LLM adapters / 56 scenarios.
+- All five local type/import gates and full Python lint passed. The LLM gate now
+  includes speech correlation and routing. Whole-project Pyrefly remains at
+  854 diagnostics, 7 suppressed: unchanged, not whole-platform completion.
+- Documentation verification passed (46 pages, 282 links, 1,143 Python modules,
+  5,999 docstrings, 47 diagrams). App import/OpenAPI generation passed with
+  564 schemas; AST inspection found no platform imports in the framework.
+  Eleven-file formatting and `git diff --check` passed.
+
+Milestone review, in order: (1) framework/pipeline/vendor ownership is preserved;
+(2) existing factories and direct ordered delivery remain the composition points;
+(3) the verified contracts reach actual model response and transport projections;
+(4) the changes follow F2 and the Pydantic-first clarification, without claiming
+F3–F10 complete; (5) no extra I/O, retry, queue, suppression or dependency was added.
+Segments are validated per delivery unit, not per binary audio frame. Model
+validation is not proof of live provider or distributed delivery behavior.
+
+No operator DB, provider config, migration, deployment or Git history was changed.
+No retained tests or hosted CI were added. The following continuation addresses
+the next agent/tool/run metadata projection path; F2 remains open before F3–F10.
+
+#### Agent/tool identity and message metadata — verified F2 continuation
+
+The producer/consumer trace confirmed five gaps: arbitrary agent-status text,
+boolean revisions coerced to integers, malformed explicit tool IDs silently
+replaced by generated IDs, UUID tool IDs omitted from approval output, and opaque
+request/payload objects accepted until later stringification or serialization.
+
+Implemented:
+
+- `conversation/domain.py`: platform-owned `AgentStatus`, UUID tool/MCP/request/
+  conversation identities, strict positive tool/target-agent revisions, nonblank
+  deployed definition keys, and explicit platform-to-framework enum mappings.
+  The four existing tool boundaries and three execution modes retain their wire
+  values. Handoffs remain distinct from persisted tool revisions.
+- `run_input_from_context` now accepts the request identity directly and includes
+  organization identity from its owning context. Conversation/live-voice callers
+  no longer overwrite typed metadata with JSON strings using unchecked copies.
+- Known tool-call metadata uses the existing framework `ToolIdentity` contract
+  and finite JSON arguments. Result metadata uses strict error predicates and
+  finite JSON, including valid scalars/nulls and ordered batches. Invalid or
+  copy-corrupted calls/results are refused before model-message projection.
+- `conversation_runner.py`: Pydantic framework-only tool records; explicit IDs
+  are validated while genuinely absent IDs still receive deterministic org-scoped
+  UUIDs. Request IDs are parsed without invoking arbitrary object stringification.
+  Handoff refresh validates counts, preserves UUIDs/extensions and excludes private
+  fields. Error text does not echo invalid supplied identities.
+- Framework approval output handles native UUIDs and restored string snapshots,
+  preserving exact revisions and redacted argument names/counts. Booleans cannot
+  masquerade as approval revisions. The framework imports no platform types.
+- Live-voice filters now accept typed framework/platform tool collections and
+  preserve the input element type and identity. Private replay associates UUID
+  request identity without changing command IDs or transcript ownership.
+
+Executed evidence:
+
+- 414 focused function assertions: 213 identity/policy checks, 187 request/message/
+  replay checks, 14 refresh/error-privacy checks. Includes the actual framework
+  loop for AUTO/DISABLED/REQUIRES_APPROVAL before and after snapshot restoration,
+  handoff/code-defined/MCP projections, batched result round-trips, live-voice
+  drafts, private replay to model-facing DTOs, and the actual refresh callback.
+  The model, DB/context-service and delivery ports were controlled. No vendor
+  mutation, operator DB write, actual microphone call, or worker crash was run.
+- Existing 352 framework-mode/producer and 127 ordered-speech assertions passed.
+  Existing 349 effective-config, 117 model-block, 201 stream-state, and 275 native
+  SDK transport assertions passed (eight adapters, 56 transport scenarios).
+- All five local type/import gates, full server/CLI Ruff, six-file formatting,
+  app import/OpenAPI (564 schemas), and `git diff --check` passed. Whole-project
+  Pyrefly remains at 854 diagnostics, 7 suppressed; it is not a passing global gate.
+- Probe fixture errors were corrected against actual schemas: `MessageInDb`
+  exposes conversation linkage rather than an organization field; replay requires
+  explicit pending-call/command collections; framework-generated result metadata
+  is decoded via its real consumer. Production models were not weakened.
+
+Milestone review, performed sequentially:
+
+1. DDD: platform identity/policy translation remains in the pipeline. Framework
+   metadata stays extensible without importing platform or vendor vocabulary.
+2. Architecture: existing published-tool projections, approval gates, conversation
+   hydration and transcript mechanisms remain authoritative; no new registry or
+   persistence layer was added.
+3. Data flow: native and JSON-restored identities reach approval and message
+   projections intact. Tool arguments/results reject opaque/nonfinite data.
+   Refresh keeps request correlation and excluded-field privacy. Real DB effects
+   and live provider operation were not exercised by these controlled-port probes.
+4. Plan alignment: this advances the original F2 flow and Pydantic-first decision;
+   it does not complete F2 or exclude F3–F10 from the objective.
+5. Maintainability/security/performance: explicit enums replace coercive object
+   adapters; schemas replace an identity dictionary and one dataclass. No added
+   DB/vendor call, retry, queue, dependency, type suppression, or hosted CI.
+   JSON validation occurs at metadata/message boundaries, not binary audio frames.
+
+Next F2 path at that checkpoint: framework-generated `_append_tool_messages` metadata and scheduled/
+objective resumed exchanges → conversation/durable consumers → persisted/public
+projections. Remaining generic metadata envelopes, canonical tool-content DTOs,
+framework-only control outputs and caller payloads still need owner-defined types.
+Then continue the unchanged F3–F10 provider data-flow sequence. No migration,
+operator configuration, deployment, commit or Git history change occurred.
+
+#### Generated and resumed tool history — verified F2 continuation
+
+The last conversational turn confirmed the existing Pydantic execution-context
+correction without editing code. This continuation resumed the unfinished history
+contract; the full F0–F10 objective remains unchanged.
+
+Source-to-sink changes:
+
+1. `framework/agents/history.py` owns generated text/call/result metadata,
+   named public tool-result data, response provenance and the exact exchange
+   builder. The runner retains block order, skips calls without completed results,
+   and updates the same transient-message count on the original metadata subtype.
+2. Model provenance has one `ModelResponse` authority. Serialization regenerates
+   the legacy flattened and duplicate response fields. Explicit provenance
+   readback validates `model_response`; compatibility copies cannot replace it.
+   Existing generic message envelopes remain extensible and are not claimed to
+   reconstruct every producer-specific metadata type automatically.
+3. `agent_run_transcript.append_resumed_tool_exchange` replaces duplicate
+   scheduled/objective helpers. It does not change transcript persistence or
+   transient ownership. Normal-loop structured result text remains key-sorted;
+   resumed result text preserves insertion order, matching the prior paths.
+4. Invocation history drops executor metadata in memory and serialization.
+   Objective resume previously serialized the whole call, unlike the normal and
+   scheduled paths. Only invocation fields now cross that boundary. Result
+   provenance still excludes terminal-only output and owner-excluded fields.
+5. Conversation consumers explicitly translate the named framework result and
+   validate typed provenance before producing `MessageInDb`. Message content
+   parameters use the existing content union. The ignored `organization_id`
+   constructor argument was removed: it is not a `MessageInDb` field. This does
+   not remove an authorization check; organization scope belongs to the owning
+   conversation/context and persistence operations, not that ignored DTO keyword.
+6. Framework request correlation accepts caller-owned strings/UUIDs; it does not
+   import platform identity policy. Scheduled/objective and conversation consumers
+   enforce platform UUID correlation. Invalid opaque objects are not stringified
+   into apparently valid identities.
+
+Executed evidence (installed Pydantic 2.11.10):
+
+- **557 history assertions:** compare the actual pre-slice functions against the
+  new functions; mixed text/reasoning/two-tool responses, complete/incomplete
+  batches, native/JSON-restored inputs, correlation, content/readback, serializer
+  include/exclude behavior, private fields, malformed copied models and mismatched
+  results. Objective parity excludes only its intentionally removed call metadata.
+- **40 native-format/loop assertions:** all eight real LLM history formatters
+  receive identical pre/post-refactor messages; the real two-turn framework loop
+  executes both commands once and reaches those formatters through its callback.
+  Approval still stops before execution. Vendor generation and tool effects use
+  controlled dependencies; no live vendor request was sent.
+- **18 boundary/constructor assertions:** malformed copied provenance and result
+  bodies are refused; owned metadata JSON projections round-trip; all generated
+  message constructor keywords exist in the real `MessageInDb` schema.
+- Regression probes: **414** identity/message/refresh assertions, **117** model
+  block assertions, **352** framework mode/producer assertions and **127** ordered
+  voice-text assertions pass. Two model-block assertions were updated to inspect
+  typed attributes rather than the removed internal dictionary representation;
+  their call/result ordering expectations are unchanged.
+- A local seven-message construction plus JSON projection probe (median of five
+  runs of 100 iterations) measured **0.186 ms before / 0.429 ms after** per turn.
+  This measures local validation/projection overhead only, not service latency.
+- Five local type/import hooks and focused checking of all seven changed Python
+  files pass. Full Python lint and `git diff --check` pass. Full-project Pyrefly
+  remains **854 errors, 7 suppressed**; these are still open, not a clean baseline
+  redefinition.
+
+Probe corrections: one initial assertion incorrectly expected excluded private
+metadata to survive JSON round-trip; the actual contract preserves only its
+public projection. A fixture initially inserted a string through unchecked copy
+into a UUID-owned model; it now uses validated construction. Neither correction
+relaxed production validation or changed a public expectation.
+
+Milestone review, in order:
+
+1. DDD: framework owns invocation/history data; pipelines own UUID authority,
+   conversation translation and durable replay. No inward platform/vendor imports.
+2. Architecture: reused existing runner, transcript, metadata and message contracts;
+   no new execution lane, persistence table, dependency or serializer registry.
+3. Data flow: all three producers reach their real message consumers and all eight
+   native formatters. Order, correlation and public snapshots are verified. DB
+   writes, worker crashes and live provider execution were not exercised here.
+4. Plan alignment: closes this generated/resumed-history increment only. Broader
+   metadata readback, canonical tool-content DTOs, terminal/control payloads,
+   caller schemas and the F3–F10 provider sequence remain in scope and open.
+5. Maintainability/security/performance: duplicated builders and response-meta
+   classes were removed; private annotations are excluded; constructor fields are
+   real. No extra DB/vendor calls, retries, locks or per-audio-frame validation.
+
+Next F2 flow at that checkpoint: terminal tool output and `FrameworkTerminalMessageMeta` → run
+completion/pause projections → durable and conversation readback → LLM history.
+Then remaining canonical tool-content and caller contracts, followed by the
+unchanged F3–F10 provider sequence. No DB mutation, migration, deployment, commit,
+Git-history change or permanent probe file was made.
+
+#### Terminal tool control and persisted completion — verified F2 continuation
+
+Trace: widget/handoff/objective executor → framework `ToolResult` → loop decision
+→ `RunResult` → conversation message or objective summary → typed JSON readback.
+
+RCA reproduced before editing: `terminal_response="false"`, `1`, or a nonempty
+object all ended a run because the loop tested metadata truthiness. Final-message
+controls were also appended to a dictionary after its model had been validated.
+This was a controlled reproduction, not evidence that a live vendor emitted those
+malformed controls.
+
+Implemented contracts:
+
+1. Framework-owned completion enums accept native members or exact legacy boolean
+   snapshots. Typed executor metadata validates control/output/artifact fields
+   before result callbacks. Completed-run metadata requires the exact command ID
+   and completion status; failure and pause controls cannot masquerade as success.
+2. Widgets retain the existing receipt and reuse the already-delivered message.
+   The framework owns only an opaque artifact reference. Conversation code owns
+   UUID validation and the existing conversation, request, message-kind, presence,
+   and Agent-run binding checks. Handoff circuit-breaker outcomes retain their
+   behavior; their other metadata fields and `HandoffOutcome` remain a next slice.
+3. `pipelines/conversation/completion.py` owns final-message and durable-summary
+   projections. Canonical run metadata is typed; legacy top-level controls are
+   generated only from its serialized public fields. Private subtype exclusions,
+   nested field selection, null handling and replay eligibility remain intact.
+4. Objective completion and framework turns replace their dataclasses with frozen
+   Pydantic models. Captured invocation identity still selects the completion
+   command. Reason whitespace and the existing unachievable-reason requirement
+   are preserved. Persisted output is finite JSON, bounded by the existing exact
+   65,536-byte UTF-8 result limit.
+
+Executed evidence:
+
+- **312 contract assertions:** strict controls, invalid aliases and copied models,
+  native/JSON restoration, all run statuses, private fields, before/after final
+  metadata parity, replay null handling, nested include/exclude and summaries.
+- **80 producer/runner assertions:** actual platform widget producer and receipts,
+  all five handoff outcomes, real framework completion/continue branches, safe
+  malformed-result callbacks, objective control execution, pauses, delegation,
+  cancellation and artifact authority. Vendor/effect dependencies were controlled.
+- **160 persistence-projection assertions:** all run statuses with and without a
+  durable run, real message DTOs with controlled service/transaction ports,
+  pause/finish calls, widget reuse, foreign Agent-run refusal, cancellation,
+  typed summary readback and exact encoded-size boundaries. No real DB write.
+- Existing regression probes pass: **615** generated/resumed-history assertions
+  including all eight native history formatters, **414** identity/message/refresh,
+  **117** model blocks, **352** framework modes/producers and **127** voice-text.
+  These are function/regression checks, not new human-approved behavioral coverage.
+- Seven changed Python files typecheck cleanly. All five type/import hooks, full
+  server/CLI Ruff, formatting, app import/OpenAPI (564 schemas) and diff checks
+  pass. Whole-project Pyrefly remains **854 errors, 7 suppressed**, still open.
+
+Review corrections: a replay parity gap added null model fields; the field
+serializer now preserves the old replay shape without stripping canonical
+metadata nulls. Nested compatibility-mirror selections now use Pydantic's normal
+selection behavior. Probe fixtures were corrected to the actual `Model.generate`
+signature and registered/qualified widget-tool identity; production availability
+and validation were not bypassed or weakened.
+
+Milestone review, in order:
+
+1. DDD: framework control remains vendor/platform-neutral; conversation identity
+   and objective lifecycle projections remain at their existing pipeline owners.
+2. Architecture: no new persistence lane, provider, registry or resource owner.
+3. Data flow: command decisions reach typed sinks/readback with existing wire
+   shapes and authorization checks; malformed values fail before result callbacks.
+4. Plan: closes this F2 increment only. Remaining tool-content DTOs, handoff and
+   caller metadata, followed by the F3–F10 provider sequence, are still open.
+5. Maintainability/security/performance: named controls and models replace raw
+   keys/tuples/dataclasses; private fields stay excluded. No additional DB/vendor
+   calls, locks or retries. No service-latency claim is made from these probes.
+
+No deployment, live vendor request, worker-crash QA, microphone/UI QA, migration,
+operator data change, commit, history rewrite or permanent probe was performed.
+
+#### Handoff and normalized realtime boundaries — verified continuation
+
+Trace: pinned handoff execution → typed outcome → tool result → text refresh or
+live-voice capture. Realtime continuation: native vendor event → normalized
+discriminated union → manager dispatch → playback, transcript, tool or teardown.
+
+Corrections and contracts:
+
+- `HandoffOutcome` and `HandoffResult` now validate the outcome, target Agent,
+  participant and matching published revision. Dispatch still owns authorization.
+  `HandoffToolMetadata` generates the existing snapshot flags from a typed outcome;
+  mismatched flags, result status and target mirrors are rejected before refresh.
+- Decomposed capture previously attributed the whole turn to its initial Agent.
+  Capture now advances attribution after each validated successful handoff, while
+  retaining the source for that handoff's invocation/result. Missing switch identity
+  is an explicit capture error, not permission to guess. Public snapshots that omit
+  private tool metadata are not a substitute for native live capture.
+- All ten normalized realtime events have exact discriminators and strict fields.
+  The manager revalidates native/copied events before dispatch; arbitrary objects,
+  nonfinite tool arguments, and mismatched tags cannot drive effects. Unsupported
+  audio rates cannot enter the fixed 24→16 kHz converter.
+- Interaction callbacks are frozen Pydantic values excluded from serialization.
+  End-call scheduling now accepts its declared Awaitable contract, including a
+  Future or Task; completion, failure and cancellation are consumed by its owner.
+- Gemini translation uses `google-genai` 1.56.0 native response fields. The old
+  nonexistent `time_left_ms` lookup is replaced by `time_left` seconds-to-ms
+  conversion. Transcript fragments remain append-only: SDK `finished` must not
+  become the normalized replacement-text flag. Optional SDK lists are handled.
+
+Executed evidence: **348 handoff assertions** (164 contracts, 138 producer/capture
+paths, 46 pinned-dispatch/framework-loop checks); **362 realtime assertions**
+(all ten variants, native Gemini messages, recorded OpenAI/Nova transports,
+dispatch, transcript fragments, interruption/audio effects and callback cleanup).
+Existing terminal/history/metadata/mode/model-block/voice-text regressions passed
+**2,177 assertions**. These use controlled service, transaction and transport
+ports; they do not prove live DB commits, vendor calls or microphone behavior.
+
+All five existing local type/import gates passed. Whole-project Pyrefly decreased
+from **854 to 850 errors**, with **7 suppressed**; the goal remains open. App
+import/OpenAPI passed with 564 schemas. Local per-event cost, median of five
+100,000-iteration samples with 960-byte PCM: construction 0.605 microseconds,
+native revalidation 1.147 microseconds. This is not a service-latency benchmark.
+
+Milestone review, performed in order:
+
+1. DDD: handoff product identity stays in pipelines; normalized events stay in
+   sockets; SDK objects stay in the Gemini adapter. Framework imports stay neutral.
+2. Architecture: existing dispatch, pinned voice authority and resource ownership
+   remain; no second state machine, persistence lane or credential authority.
+3. Data flow: exact wire parity, malformed-result refusal, actor transitions,
+   duration units, fragment accumulation, audio rates and teardown were checked.
+4. Plan: advances F2 and the connected F7a boundary. Canonical tool-content,
+   realtime session/provider material and the remaining F3–F10 flows stay open.
+5. Maintainability/security/performance: explicit variants replace generic handlers;
+   callback failures log types only. No additional DB/vendor calls, dependency
+   change, casts or type suppressions. Hot-path validation cost is measured above.
+
+No live provider/DB mutation, deployment, migration, UI QA, commit, history rewrite
+or permanent probe file. Next: realtime session/capability contracts, then each
+vendor's remaining request/response flow and its effective provider material.
+
+#### Realtime session and capability contracts — verified F7a continuation
+
+Trace: configured provider → browser/verification/capability builder → normalized
+session snapshot → explicit factory → adapter setup/update → public capability
+projection. This continues the connected realtime flow, not a dataclass sweep.
+
+Baseline reproduction established three defects: `max_tokens=True` became `1`,
+post-construction assignments escaped validation, and an OpenAI update changed the
+prompt before rejecting its unsupported temperature. Gemini also disconnected
+before validating a proposed replacement. No live incident is inferred from these
+controlled inputs.
+
+- Session config is frozen Pydantic with strict finite numeric settings, positive
+  counts/durations and explicit vendor, endpointing and compression choices.
+  `updated()` validates a complete replacement; original snapshots stay unchanged.
+  Factory, manager and adapter construction revalidate copied snapshots. Tool
+  records retain their live identity through an explicit instance-checked port.
+- All three adapters validate updates before mutation/disconnect/send. OpenAI
+  commits local replacement only after send succeeds; this is not a vendor
+  acknowledgement or distributed-transaction guarantee. Gemini/Nova retain the
+  existing reconnect lifecycle, with invalid replacements refused before closing.
+- Capabilities use a frozen Pydantic model, support enums and a session-update enum.
+  Native callers compare enum members; public projections retain exact existing
+  booleans, mode strings and rate arrays. STT's separate representation is unchanged.
+- Nova setup reads named typed fields directly, removing reflective getters.
+  Required settings are checked before sending; endpointing serializes its native
+  value, not the Python enum name. Provider-specific catalog/range policy remains
+  with the existing module/adapter owners.
+
+Executed: **417 config/adapter/projection assertions**, plus **30 browser setup
+assertions** using actual session state, context, manager, factory and adapter
+constructors for all three vendors. DB context/fact services and connection I/O
+were substituted. **363 normalized-event assertions** and **348 handoff assertions**
+passed again. The extra event assertion checks direct config mutation is now refused.
+All five expanded local type/import hooks pass; full Pyrefly remains **850 errors,
+7 suppressed**. Browser orchestration contributes 133 known diagnostics and is not
+claimed clean; no diagnostic points at the changed realtime contracts.
+
+Continuation review checked (1) module-to-socket enum translation, (2) preserved
+factory/resource ownership, (3) all setup/update/projection consumers and failure
+effects, (4) F7a alignment with the full F0–F10 goal, and (5) local readability and
+wire compatibility without new dependencies, casts, suppressions or network work.
+Frozen models are shallow: tool objects remain live references and do not become
+persisted or authorized merely by passing config validation.
+
+Final gates: full server/CLI Ruff, selected formatting and `git diff --check`
+passed. App/OpenAPI: 564 schemas. Documentation verification: 46 pages, 282 links,
+90 packages, 1,146 Python modules, 6,046 docstrings and 47 diagrams.
+
+Still open: effective realtime provider settings/credentials, native OpenAI/Nova
+request/response schemas and state, broader browser-session typing, then the
+remaining F2 caller and F3–F10 flows. No live vendor/DB operation, UI QA, deployment,
+migration, commit, history rewrite or permanent probe was performed.
+
+#### Effective realtime provider material — verified F7a continuation
+
+Trace: voice-config create/read → effective current/pinned provider record →
+`ResolvedRealtime` → browser/verification/capability session builder → explicit
+factory → selected adapter. All three realtime branches use the same field-based
+projection; this is not a broad dataclass or string-replacement sweep.
+
+Baseline constructor probes reproduced two defects: a frozen resolved dataclass
+still allowed its settings dict to mutate, and `from_provider_config()` accepted
+caller org/config IDs that disagreed with its effective record. Evidence is local
+constructor behavior, not a demonstrated live tenant leak. Resolution now rejects
+those mismatches, including a non-realtime capability, before returning material.
+
+- `RealtimeInferenceConfig` owns strict finite scalar settings and the existing
+  endpointing/compression enums. Session config inherits these fields rather than
+  maintaining another copy. Provider-specific catalog/range policy stays in the
+  voice-config module; module/socket provider enums remain separate.
+- `ResolvedRealtime` is frozen Pydantic with strict IDs, revision and predicates;
+  nested settings and credentials revalidate copied instances. Credentials use
+  explicit API-key/AWS models and are excluded from repr and serialization.
+  The factory reads typed credential fields, never guessed secret keys.
+- Runtime hydration translates the persisted compression name once. Stored
+  settings/secret JSON remains unchanged, including optional values and normalized
+  AWS region behavior. The generic `VoiceProviderConfig` storage carrier remains a
+  mapping-based dataclass pending its connected STT/TTS work; hydration revalidates
+  it rather than assuming its earlier validation still holds.
+- One pipeline-owned `build_realtime_session_config()` replaces the three repeated
+  dictionary projections. It checks org agreement and preserves the configured
+  model, voice, generation and turn-detection fields. Browser initialization now
+  explicitly refuses a missing agent identity before allocating session resources.
+- Current/pinned resolver error translation, grant/ready predicates, feature gate,
+  factory selection, verification timeout and teardown ownership remain unchanged.
+
+Executed: **360 resolved-contract/flow assertions**, **417 existing realtime
+config/adapter assertions**, **363 event/control assertions**, and **39 browser
+initialization assertions** — **1,179** total. Fixtures use real domain, service,
+resolver, session, manager and adapter constructors; persistence and network ports
+are substituted. Coverage includes stored-field parity, pinned revision forwarding,
+malformed values, identity mismatches, copied-invalid credentials, secret exclusion,
+and verification success/failure/cancellation cleanup. Function-contract checks are
+not live-provider, database, microphone or human product QA.
+
+One milestone review checked, in order: (1) DDD import boundaries, (2) shared
+inference ownership and pipeline composition, (3) all producers/consumers and
+secret/error projections, (4) F7a alignment without narrowing the F0–F10 goal, and
+(5) readability, removed mapping access and bounded startup-only validation.
+No SDK, dependency, DB operation or per-audio-packet work was added.
+
+Five expanded type/import hooks pass. Whole-project Pyrefly remains **850 errors,
+7 suppressed**; broader browser/session work remains open. App/OpenAPI imports
+with **564 schemas**. No casts or diagnostic suppressions were added.
+Full server/CLI Ruff and `git diff --check` pass. Eight selected files pass format
+checking; `browser.py` retains two verified pre-existing formatting differences
+outside this increment and its **133** baseline diagnostics. Documentation checks:
+46 pages, 282 links, 90 packages, 1,146 Python modules, 6,052 docstrings, 47 diagrams.
+
+Next at that checkpoint: native realtime OpenAI/Nova request/response schemas and state, then remaining
+F7 provider and F2 caller flows in the established F0–F10 plan. No deployment,
+migration, DB mutation, commit, history rewrite or permanent probe file.
+
+#### Native OpenAI realtime wire contracts — verified F7a continuation
+
+Trace: configured session/tools/audio → native SDK client event → WebSocket JSON →
+validated native server event → adapter stream correlation → normalized realtime
+event → manager dispatch → transcript capture, audio playback/recording or tool
+execution scheduling. The same parser validates credential-verification acks.
+
+Target: installed and pinned OpenAI **2.14.0**, Pydantic **2.11.10**. Inspected SDK
+request/event classes and the current [official function-calling flow](https://developers.openai.com/api/docs/guides/realtime-conversations#function-calling).
+No model, dependency, provider setting, public schema or DB contract was upgraded.
+
+Baseline probes reproduced malformed function JSON being replaced with an
+executable empty argument object, and a valid `code: null` vendor error failing
+normalized-event construction. Those were unchecked wire-read assumptions, not
+required fallback behavior. They are now refused/preserved respectively.
+
+- `openai_wire.py` reuses SDK event models in an explicit discriminated union.
+  The adapter-owned session notification adds the server ID absent from the SDK's
+  shared request type. Terminal notifications require an ID, terminal status and
+  output collection; an empty response object is not completion evidence.
+- Unknown/unused event types remain ignorable. The three existing legacy audio
+  labels normalize once at ingress. Known events require their native fields;
+  missing transcripts, IDs and acknowledgements are not synthesized.
+- JSON parsing rejects non-object inputs, non-finite constants and overflowing
+  exponents before SDK/model consumption. A probe caught Pydantic JSON adapter
+  configuration not rejecting `NaN`; relying on a later normalized-model failure
+  would have left the boundary inconsistent. Base64 is validated too.
+- Requests use native SDK objects, including session/VAD/audio settings, partial
+  updates, flat function declarations and tool-result continuation. They are
+  revalidated before serialization. Omission, empty instructions and empty tool
+  lists preserve their previous meaning; failed sends retain the old config.
+  The configured model is URL-encoded as one query parameter, not interpolated
+  into query syntax.
+- Pending tool state uses Pydantic identities tied to response and item IDs.
+  Argument completion must match that identity before dispatch. Consumed or
+  terminal-response identities are released; output-item completion does not
+  reinsert already-consumed calls. Disconnect clears state even when close raises.
+
+Executed: **267 native wire/function assertions**, plus **12 additional
+native-to-manager capture assertions** (the latter harness also reruns 269 base
+contract assertions). Recorded transport input reaches the real manager, live
+transcript buffer, resampler, playback queue and recording tap. The tool executor,
+transcript publication and fatal teardown effects are controlled ports; actual
+dispatch/task ownership is exercised. Invalid arguments cause fatal teardown and
+never invoke the tool executor. Existing **417 config** and **363 event/control**
+assertions also pass; native fixtures now include required vendor fields instead
+of private minimal dictionaries. Output expectations were retained.
+
+Performance probe: JSON parse plus audio-event normalization for a 960-byte PCM
+frame, median of five runs of 10,000 iterations, measured **7.755 μs before** and
+**15.573 μs after** on the local environment. This measures validation overhead,
+not provider latency, microphone quality or production throughput.
+
+One milestone review, in order: (1) vendor/platform/framework import boundaries,
+(2) native schema ownership within the existing socket, (3) request/event/tool
+and error paths through manager sinks, (4) F7a alignment without narrowing F0–F10,
+(5) readability, nullable/error handling, state lifetime and measured hot-path
+cost. No casts, `Any`, diagnostic suppressions, new task lane or DB work added.
+Five type/import hooks pass; the new parser is included in the voice hook.
+Whole-project Pyrefly remains **850 errors, 7 suppressed**; scoped gates do not
+prove whole-platform completion. App/OpenAPI import retains **564 schemas**.
+Full server/CLI lint and changed-source format checks pass.
+Documentation verification passes: 46 pages, 282 links, 90 packages, 1,147 Python
+modules, 6,061 docstrings and 47 diagrams. `git diff --check` passes.
+
+Remaining: native Nova wire schemas/state, connected STT/TTS provider material,
+other F2 producers/callers and F3–F10 flows. This is recorded-transport function
+verification, not live OpenAI/microphone/UI QA or human acceptance. No deployment,
+migration, operator DB mutation, commit, history rewrite or persistent probe.
+
+#### Native Nova Sonic wire and stream contracts — verified F7a continuation
+
+Trace: configured inference/voice/tools → typed JSON input events → native SDK
+input chunks → SDK output/error union → validated Nova event → content/tool
+identity → normalized event → real manager dispatch → transcript, audio and tool
+sinks. Reconnect history and cancellation cleanup are part of this same flow.
+
+Target checked on 2026-09-08: pinned/installed AWS Bedrock Runtime **0.7.0**,
+Smithy Core **0.6.0**, Pydantic **2.11.10**. Inspected the installed duplex stream,
+receiver EOF contract and output variant definitions alongside AWS's
+[input events](https://docs.aws.amazon.com/nova/latest/nova2-userguide/sonic-input-events.html)
+and [output events](https://docs.aws.amazon.com/nova/latest/nova2-userguide/sonic-output-events.html).
+No dependency, model, provider configuration, API schema or DB change.
+
+Baseline function probes reproduced three defects despite the adapter's previous
+zero-error scoped type check: malformed JSON became an executable empty argument
+object; SDK EOF `None` caused another receive; cancellation during preamble setup
+left the opened stream attached and unclosed. Loose dictionaries, `Any` and
+reflection obscured the actual SDK contracts. These were implementation gaps,
+not product-approved fallback or lifecycle behavior.
+
+- `amazon_nova_sonic_wire.py` owns explicit request, response, nested metadata,
+  usage and protocol-failure contracts. Vendor enums stay inside the socket.
+  Tool JSON Schema/argument contents remain legitimately dynamic JSON objects.
+  Known responses require native identifiers and fields; unknown event names are
+  ignored. A wrapper containing multiple events is rejected, not partially read.
+- Native SDK generic stream/result types replace `Any`. SDK error variants use
+  explicit type branches, not class-name parsing or reflective attribute access.
+  Public normalized errors retain safe codes, without raw vendor message data.
+- Content state retains validated start metadata. Prompt/session/completion and
+  content type must agree before audio, text or tools are consumed. Requested
+  output rate remains 24 kHz. Malformed base64 follows the existing recoverable
+  audio-error path; malformed tool JSON is fatal and cannot execute a tool.
+  Non-object, non-finite and overflowing numeric tool arguments are refused.
+- Actual `completionStart`/usage notifications provide session identity. No
+  fabricated `sessionStart` output or invented JSON error event is needed.
+  Final versus speculative text, policy-input suppression and first-user replay
+  preserve their existing semantics. Tool results require a pending call, retain
+  the existing JSON result envelope and use one ordered content batch.
+- EOF returns to the manager's existing transport-ended lifecycle. Late reads
+  after disconnect/generation replacement cannot produce effects.
+  Output acquisition, receives and close operations each retain their real
+  result type. Cancellation does not reach AWS CRT response futures.
+  Failed setup also closes a subsequently acquired output receiver.
+  Caller close wait is bounded at ten seconds; a stalled SDK close remains
+  tracked, shielded and reported as unfinished background cleanup, not success.
+
+Executed: **696 native contract/function assertions**, plus **14 additional
+native-to-manager assertions** (the manager harness also runs 269 base contract
+assertions). Real SDK chunk/stream classes and the actual manager, live buffer,
+resampler, playback queue, recording tap and tool task scheduling are exercised.
+Network, tool execution, transcript publication and terminal owner effects are
+controlled ports. EOF also runs through the real manager event loop to its
+transport-ended teardown call. Late output acquisition and caller cancellation
+tests confirm eventual receiver close without cancelling SDK futures.
+
+Existing **417 config**, **363 event/control**, **360 resolved-material** and
+**267 OpenAI-native** checks pass. Nova fixtures now contain the documented
+identities/content metadata and actual SDK error variants; normalized output
+expectations are preserved. No permanent test suite or temporary probe file.
+
+Performance: parsing/normalizing a 960-byte PCM frame, median of five runs of
+10,000 iterations, measured **6.055 μs before**, **14.441 μs after** locally.
+This includes strict validation/content correlation, not network, microphone,
+production load or end-to-end latency.
+
+One milestone review followed the required order: (1) DDD/vendor/framework
+boundaries, (2) fit within the existing socket/manager, (3) source-to-sink data and
+cleanup ownership, (4) F7a alignment and Pydantic-first correction without
+narrowing F0–F10, (5) readability, safe errors, state lifetime and measured
+hot-path cost. Its late-receiver cleanup finding was fixed and rechecked.
+No casts, new `Any`, suppressions, DB transactions or task lane were added.
+
+Five expanded type/import hooks pass; the new wire module is in the voice hook.
+Whole-project Pyrefly remains **850 errors, 7 suppressed**. App/OpenAPI imports
+with **564 schemas**. Full server/CLI lint and changed-source formatting pass.
+Documentation verification passes: 46 pages, 282 links, 90 packages, 1,148 Python
+modules, 6,071 docstrings and 47 diagrams. Changed-source format checks and
+`git diff --check` pass.
+This is local recorded-transport verification, not live AWS, microphone/UI QA or
+new human product acceptance. The whole-platform goal remains active.
+
+Next: connected STT/TTS provider material and native provider flows, remaining
+F2 producer/caller contracts, and the rest of F3–F10. No deployment, migration,
+operator DB mutation, commit, history rewrite or dependency upgrade.
+
+### F7 progress: resolved STT/TTS material and shared construction
+
+`common/contracts/speech_runtime.py` defines frozen Pydantic inference settings,
+explicit option policies preserving existing JSON booleans, private credential
+variants and a transport-only media contract. Provider-specific field membership,
+requirements and overlapping native field types stay in `voice_configs/domain.py`.
+`ResolvedSTT`/`ResolvedTTS` are validated models, not mutable mapping carriers.
+Their secrets are excluded from nested representations/dumps and serialized only
+at the existing adapter handoff. Stored settings retain their existing shape.
+
+Resolution checks effective org/config/capability agreement and the requested
+pinned revision. The same config/revision guard now covers realtime resolution.
+Verification, capability inspection and browser/carrier construction share the
+pipeline builders. Media overrides cannot replace credentials, model or language.
+Runtime identity retains the owning provider enums and refuses mixed-org pairs.
+
+Baseline function probes reproduced internal mismatched material acceptance and
+unrestricted transport replacement of model/API key. Milestone review additionally
+reproduced provider-incompatible `style`/`pitch` values reaching native constructors,
+unnormalized copied AWS settings reaching runtime and a mismatched realtime pin
+being accepted. These are internal contract weaknesses, not a demonstrated public
+authorization bypass. Fixes reject those values before persistence/composition.
+Provider typing follows [ElevenLabs settings](https://elevenlabs.io/docs/api-reference/voices/settings/get)
+and [Murf customization](https://murf.ai/api/docs/capabilities/text-to-speech/speech-customization);
+no vendor feature, model default or dependency was added.
+
+Function QA: **1,245 material checks**, **21 real adapter constructors**,
+**380 verification/capability/carrier checks**, and the existing **360 realtime
+resolution checks** pass. Google construction uses a generated local service
+account fixture and closes its transport; no token exchange or vendor request.
+DB/service and connection ports are substituted. One initial realtime fixture
+omitted required Nova settings; correcting the fixture exercised the intended
+pin guard without weakening production validation.
+
+One milestone review proceeded through DDD ownership, architecture fit, complete
+material data flow, plan/Pydantic alignment, then maintainability/security/cost.
+Validation is at config construction, not per audio packet; no DB transaction or
+network call was added. Focused type checking and full server/CLI lint pass.
+The generic stored carrier, native STT/TTS options/wire/events and remaining
+F0–F10 requirements are still open. No DB mutation, migration, deployment,
+dependency upgrade, commit, permanent probe or history rewrite.
+
+### F7 progress: provider-config encryption and persistence
+
+2026-09-09: the full `provider_configs` package and external-credential envelope
+functions pass the expanded local type gate. `EncryptionContext` is frozen and
+revalidated, with strict UUIDs, a caller-owned purpose label and positive revision.
+Cipher payloads return finite JSON; provider secret validation remains at provider
+readback. ORM config/metadata columns retain JSONB storage with precise value types.
+Repository writes revalidate aggregates and use `UPDATE RETURNING` to verify the
+affected identity, without changing their transaction ownership or lock predicates.
+
+Two function-boundary defects were reproduced during this slice:
+
+- Direct `JsonValue` JSON parsing accepted NaN/Infinity despite `allow_inf_nan=False`.
+  Decrypted JSON and config snapshot imports now run Python-side finite validation.
+- `decrypt_field()` decoded UTF-8 outside its error boundary. Authenticated malformed
+  bytes now raise value-free `SecretDecryptionError`; text encryption also rejects
+  invalid input types/encoding through its established error class.
+
+Verification:
+
+- 212 cipher/boundary assertions: independent legacy/new AES-GCM interoperability
+  for all 12 capabilities plus MCP/external-connection purposes; real MCP and
+  external-account composition callers; cross-owner/revision rejection; malformed
+  envelopes/JSON/UTF-8; JSON snapshot and ORM validation; no-write invalid copies.
+- Existing 76 provider lifecycle assertions pass.
+- 19 PostgreSQL assertions execute the current source in an isolated process using
+  session-private tables cloned from the active schema. Create, verify, rename,
+  update/revision readback, current/pinned resolution, disable/delete and no-match
+  update handling pass. Tables are confirmed temporary before writes and absent
+  after rollback. No public operator rows, schema, services or credentials changed.
+- The initial isolated DB probe omitted `register_models()` and failed before
+  insertion; using the required runtime registration resolved the probe setup.
+
+Follow-on work is explicit: the broader caller type check reports 26 remaining
+errors in MCP header narrowing and Integration V2 OAuth refresh ownership/error
+metadata/expiry parsing. The newly narrowed credential output is carried through
+`_RenewedCredential`; the rest of refresh typing is not claimed complete. Audit
+other direct `JsonValue` JSON import paths for the reproduced finite-number gap.
+Browser acceptance and the full F0–F10 goal remain open.
+
+### F7 progress: shared provider-config aggregate and snapshot
+
+`ProviderConfig` and `EffectiveProviderConfig` now use frozen, revalidated Pydantic
+models. The foundation owns the finite JSON envelope, strict identifiers,
+revisions, predicate flags and timezone-aware verification timestamps; individual
+capability modules still own settings meaning and vendor selection. Existing
+predicates remain booleans; no new mode or state machine was introduced.
+
+Lifecycle reconstruction validates both the original and changed material.
+Credentials remain explicit inputs to encryption, excluded from model dumps and
+representations. Outer mappings are read-only; validation copies nested JSON but
+does not recursively freeze it. Native JSON arrays remain arrays. The LLM update
+service explicitly widens incoming patch data only before its existing domain
+validator, rather than treating an unparsed patch as validated stored settings.
+
+Locally verified:
+
+- 76 function assertions: create, rename, update/secret patch, verification,
+  disable/delete, stale revisions, current/pinned resolution and refusal paths.
+- Real repository formation, ORM models and AES-GCM encryption/readback, including
+  mismatched org/revision rejection. Session I/O was substituted; no DB writes.
+- Private serialization, nested input isolation, JSON round-trips, strict flags,
+  invalid nested values and unsafe-copy revalidation without serialization warnings.
+- The existing 363-check voice carrier matrix passes through all 24 providers.
+- A dedicated local type gate covers the foundation aggregate and resolution
+  service; the five existing type/import gates and backend Ruff also pass.
+
+No operator data, DB schema or deployment changed. Repository-wide and encryption
+context typing were completed in the follow-on slice above. Console/widget HTTP endpoints respond, but browser
+navigation is blocked by the Mac lock screen; this is not live acceptance of the
+new source. Full F0–F10 completion remains open.
+
+### F7 progress: typed stored voice carrier
+
+2026-09-09: `VoiceProviderConfig` no longer uses a dataclass with mutable setting
+dictionaries. It retains an STT/TTS inference model or module-owned realtime
+settings object. The latter separates transport region from model inference;
+vendor wire types still belong to sockets. Plaintext secrets use an immutable
+mapping excluded from repr/dumps. Copied settings are revalidated before any
+serialization, so invalid copied values fail without serializer warnings exposing
+their contents.
+
+`from_storage()` owns stored-shape validation and normalization. The old factory
+name `validate()` conflicted with Pydantic's inherited signature; the type gate
+caught that mismatch, and every first-party caller was renamed rather than adding
+a suppression. Runtime resolution keeps typed settings. Create/update serialize
+only at `to_storage_config()`, preserving existing JSON keys and explicit values.
+An update now persists the validated normalized projection when settings change;
+a name-only update does not rewrite settings. No migration or operator-data write
+was performed for this change.
+
+Executed verification:
+
+- **363 function assertions**, covering all 10 STT, 11 TTS and 3 realtime providers:
+  stored round-trip parity, immutable settings/secrets, independent serialization,
+  secret-free dumps, kind agreement, invalid numeric/key/secret inputs, copied
+  model rejection, exact CRUD service handoffs and runtime resolution. Private
+  credentials must be supplied separately when restoring a JSON snapshot; all
+  24 setting variants pass that round-trip. Snapshot serialization omits unset
+  cross-provider fields instead of introducing unsupported explicit nulls.
+- **24 native capability projections** through the actual inspection function;
+  config retrieval is substituted, not adapter construction or serialization.
+- Existing **1,245 speech-material assertions**, **21 native constructors**, and
+  **142 shared STT data-flow assertions** pass with the renamed storage entrypoint.
+- The realtime fixtures were corrected to meet the existing domain contract
+  (required Nova settings, OpenAI transcription model, no OpenAI temperature).
+  These fixture mistakes were not changes to provider policy.
+
+These checks execute functions with controlled persistence/provider boundaries.
+They do not prove encrypted DB round-trip or live browser/provider acceptance of
+the current source. General provider-config foundation typing and the full F0–F10
+goal remain open.
+
+### F7 progress: ElevenLabs TTS native boundary and failure propagation
+
+Completed the connected flow: resolved TTS material → existing factory → immutable
+native input/options → typed initialization/text/end-input JSON → validated audio
+and final frames → real TTS queues → consumer bytes, recording tap and correlated
+speech outcome. Vendor wire types and stream state remain in the socket; platform
+policy, org/config lookup and events remain outside it. No SDK dependency added:
+verification used installed `websockets` 15.0.1 and Pydantic 2.11.10.
+
+Reproduced and fixed:
+
+- Final frames dropped their audio; truthy strings could complete a turn and
+  malformed base64 could become empty audio. Known fields now validate before
+  effects; vendor extension fields remain unconsumed.
+- Failed initialization left an acquired socket open. Setup/send cancellation,
+  failures, final output and interruption now retain explicit cleanup ownership.
+- A closed/interrupted single-context stream could not serve the next turn.
+  The adapter now finishes native input explicitly and lazily opens the next
+  stream with the same configured provider material. Late old frames are ignored.
+- The first pending change used a space plus `flush`; source review did not
+  establish that buffer flush guarantees a terminal response. That assumption was
+  removed. Empty-text end-input follows the vendor's documented stream lifecycle;
+  native cross-turn context continuity is consequently not advertised.
+- A malformed frame caused the TTS supervisor to repeatedly restart its failed
+  reader while playback remained pending. Read/send/keepalive/client failures now
+  stop the runtime, emit one correlated failed outcome and propagate to its owner.
+  Runtime cancellation also propagates after cleanup; speech is not replayed.
+- Shared teardown skipped already-failed tasks, producing uncollected exceptions.
+  It now accepts a typed task mapping, cancels children together, collects finished
+  failures, skips its caller and preserves caller cancellation.
+
+Sources: [ElevenLabs stream lifecycle](https://elevenlabs.io/docs/eleven-api/guides/how-to/websockets/realtime-tts),
+[native request implementation](https://github.com/elevenlabs/elevenlabs-python/blob/main/src/elevenlabs/realtime_tts.py),
+[websockets 15.0.1 receive/close](https://websockets.readthedocs.io/en/15.0.1/reference/asyncio/client.html),
+and [Python 3.13 task ownership](https://docs.python.org/3.13/library/asyncio-task.html).
+
+Function verification: **167 native/pipeline checks**, **24 real local WebSocket
+checks**, **21 running-supervisor failure/cancellation checks**, and **10 shared
+teardown checks**. The local listener used an ephemeral loopback port, dummy
+credentials and the real `ClientConnection`; it was closed after verification.
+Read/send/keepalive failures were also injected into the running queue path,
+not only checked through a completion helper. No live vendor, TLS, microphone,
+operator UI or DB behavior is claimed. Human voice QA remains required.
+
+Regression checks: **1,245 speech-material checks**, **21 real adapter
+constructors**, and **380 verification/capability/carrier checks** pass. The first
+pipeline fixture used nested factory credentials; production supplies the shared
+builder's serialized shape. The corrected probe uses that builder. The generic
+factory's inconsistent nested-options contract remains part of its unfinished
+typing work; production validation was not weakened to accept the fixture.
+
+Local parsing/translation measurement: median of five 10,000-frame runs with
+960-byte PCM, including fixture JSON generation, was about **9.46 µs/frame**
+afterward versus **9.65 µs/frame** before. This does not establish live throughput
+or provider latency. Per-turn handshakes are an explicit cost of this supported
+single-context path; multi-context synthesis is not implemented here.
+
+Milestone review order: DDD ownership → architecture fit → source-to-sink data
+flow and cleanup → plan/Pydantic alignment → readability, security and cost.
+The review found the supervisor failure-propagation gap; the real queue probe
+reproduced it before correction. No runtime schema suppression or unchecked cast
+was added. Voice pre-commit coverage now includes the native adapter/wire/base.
+
+Final gates: all five scoped type/import hooks pass; the existing LLM hook still
+reports its one pre-existing suppression. Full server/CLI Ruff, affected-file
+format checks, `git diff --check`, documentation verification (46 pages,
+282 links, 1,150 Python modules, 6,102 docstrings, 47 diagrams), and app/OpenAPI
+generation (564 schemas) pass. Whole-project Pyrefly remains **849 errors and
+7 suppressions**; it is not a green platform-wide gate. The TTS manager still has
+12 diagnostics and the shared monitor has one error/three suppressions.
+
+Still open: generic STT/TTS factory options, TTS queue payloads and supervisor
+types, shared monitor/restart-condition contracts, the remaining provider native
+flows and F0–F10 requirements. This milestone does not complete the platform goal.
+No migration, deployment, operator-data mutation, dependency upgrade, commit,
+history rewrite or permanent test/probe was introduced.
+
+### F7 progress: shared voice-task supervision contracts
+
+The preceding question-only exchange confirmed the Pydantic execution-context
+choice without implementation progress. This continuation revalidated the live
+worktree and advanced the pending supervisor boundary; the full F0–F10 objective
+remains unchanged.
+
+`runtime/tasks.py` now accepts bound zero-argument coroutine factories and
+`Task[None]` registries. Restart/ignore policies accept immutable collections
+without type suppressions. The separate arbitrary argument dictionaries are
+removed; their only caller was WebSocket scaffolding whose six dictionaries were
+always empty. Actual task ownership remains in the STT/TTS factory/managers.
+All three remaining monitor call sites use the precise factory/task contracts.
+The STT debounce timer also retains its real `Task[None] | None` type.
+
+Queue draining uses a behavioral protocol containing only `join()` and `qsize()`.
+It can wait for heterogeneous queues without erasing or inspecting their payload
+types. The existing per-queue timeout now has a named seconds constant; drain
+does not consume, discard or acknowledge work on the producer's behalf. These
+are executable resource ports, not data records requiring a Pydantic model.
+
+Reproduced and fixed with actual asyncio tasks:
+
+- A false restart predicate still restarted the failed task: the old loop never
+  assigned false to its accumulator. Predicate failures also left restart enabled.
+  Each supplied predicate must now permit restart; false or an exception vetoes it.
+- A cancelled child raised `CancelledError` out of the monitor because
+  `.exception()` ran before `.cancelled()`. Cancelled children now retain their
+  identity without cancelling the supervisor or being restarted.
+- Full STT caller QA found `_run()` swallowing its own cancellation, so
+  `initialize()` completed successfully after its owner cancelled it. Cancellation
+  now propagates after the existing cleanup. Debounce timer reset semantics are
+  unchanged, and no audio replay or retry category was added.
+
+Target: installed Python **3.13.2**. The distinction between task cancellation and
+inspection follows [Python task results](https://docs.python.org/3.13/library/asyncio-task.html#asyncio.Task.exception);
+draining follows [queue acknowledgements](https://docs.python.org/3.13/library/asyncio-queue.html#asyncio.Queue.join).
+
+Function verification: **254 monitor/drain checks**, **15 real STT
+factory/manager caller checks**, the existing **21 running TTS failure/cancellation
+checks**, **10 teardown checks**, and **167 ElevenLabs native/pipeline checks**.
+Coverage includes restart/ignore precedence, exception subclasses, veto/error
+predicates, cancelled/pending/successful/missing-definition children, replacement
+identity, eager task creation, parent cancellation, queue timeout/nonconsumption,
+and safe error logging. The STT probe executes actual factory/manager functions,
+normalized events, consumer queues and task monitoring with a controlled adapter
+port; it is not live vendor, DB, microphone or UI QA.
+
+Milestone review, sequentially: (1) shared runtime ports import only standard
+library types; vendor errors remain caller-owned, (2) no new execution lane or
+resource owner, (3) real registry replacement, consumer output and cancellation
+were checked together, (4) this completes the supervisor slice, not the generic
+speech payload/native-provider backlog, (5) simpler branching removes dead
+scaffolding and suppressions without new I/O or per-audio-frame work. Factory
+registration/cleanup and native response contracts still need their F7 work;
+clean scoped type checks do not prove those broad areas are hardened.
+
+Gates: all five scoped type/import hooks pass, with the pre-existing single LLM
+hook suppression. The voice hook now includes the shared monitor, STT factory
+and STT runtime. Full Python Ruff, affected-file formatting, `git diff --check`,
+documentation validation (46 pages, 282 links, 1,150 modules, 6,105 docstrings,
+47 diagrams), and app/OpenAPI generation (564 schemas) pass. Whole-project
+Pyrefly is **846 errors / 4 suppressed**, down from **849 / 7**. TTS manager's
+12 diagnostics and the WebSocket input-union mismatch remain open.
+
+Next: TTS request producers → session routing → typed queue items → supervisor
+and consumer/recording; then generic factory options and remaining native speech
+request/response flows. No operator data, migration, deployment, dependency,
+commit, history or permanent test/probe changes.
+
+### F7 progress: typed speech payloads through routing and playback
+
+The question-only turn verified that execution-context models already use
+Pydantic; it did not change the implementation. This continuation finished the
+in-progress speech input boundary while retaining the full F0–F10 scope.
+
+- `pipelines/voice/tts_payloads.py` owns immutable text/finalize models and their
+  discriminated union, request UUID, opaque turn label, and policy source enum.
+  Policy speech requires a request identity. Finalize cannot carry text.
+- Redis serialization uses `ConversationTTSRequest`; the listener accepts JSON
+  text/bytes, validates before session lookup, and rejects malformed frames
+  individually. Subsequent valid frames continue through the same listener.
+- Session routing uses resource protocols with actual request-state results and
+  collection semantics. The real TTS method's parameter name now agrees with the
+  queue protocol. Both org and conversation remain part of routing authority.
+- LLM, filler, policy, disclosure and carrier-opener producers construct those
+  same objects. Filler uses the actual session/TTS interfaces instead of probing
+  a removed private turn field; its task registry retains `Task[None]`.
+- TTS requests, audio responses and consumer queues retain their payload types.
+  Active/queued correlation uses owned objects, not independent dictionary keys.
+  Metrics use the existing `TTSMetricsSnapshot`; snapshot mutation cannot alter
+  runtime counters, and delivered-response count is now incremented.
+
+Reproduced fixes:
+
+1. Turn replacement called the full user-interruption path, which discarded the
+   new response's already-queued finalize marker. Replacement now interrupts only
+   current synthesis/output; explicit user interruption still clears pending input.
+2. Non-streamed assistant messages supplied text without finalization. They now
+   use the complete `VoiceTextSegment` path, retaining message/request identity.
+3. Invalid text could enter the queue. Input is now revalidated before admission;
+   a queue-full drop no longer changes the accepted queued request's identity.
+4. A union-level `TypeAdapter` error included invalid input despite model-level
+   hidden-input config. The outer adapter now hides inputs in its error string too.
+
+Executed function checks: **67 payload/routing/queue assertions**, **23 producer
+assertions**, **167 existing ElevenLabs native/pipeline assertions**, and **21
+existing manager failure/cancellation assertions**. The routing probe uses the
+real Redis serializer/listener, session lookup, `WSSessionState`, request states,
+live buffer, native adapter, consumer queue and recording callback. Redis/network
+ports are controlled, not live services. Producer checks include persisted-message
+schema construction, partial/complete ordering, ignored user messages, filler,
+single policy capture, notification state, and the real opener observer with its
+DB effect replaced. No microphone, browser, carrier, live vendor or operator DB QA.
+
+Sequential milestone review: (1) speech routing types stay in pipelines and native
+types stay in sockets, (2) no new runtime/event authority or provider default,
+(3) validation/correlation/capture/audio/terminal outcomes are checked together,
+(4) this advances F7 without declaring all native provider flows complete,
+(5) no new dependency, I/O, cast or suppression; old string/dict queue compatibility
+and private-field fallback are removed. No public endpoint schema change.
+
+Scoped type checking and all five local type/import hooks pass; the voice hook
+now includes payloads, routing, TTS manager and filler. Full Ruff, affected-file
+formatting and diff checks pass. Documentation validation reports 46 pages,
+283 links, 1,151 modules, 6,117 docstrings and 47 diagrams; app/OpenAPI generation
+passes with 564 schemas. Whole-project Pyrefly: **827 errors / 4 suppressed**,
+previously **846 / 4**.
+The two remaining `websocket/manager.py` diagnostics belong to contact-event JSON
+decoding and the disconnect return contract, not the now-checked speech route.
+
+Next: native TTS factory/options and remaining STT/TTS request/response branches,
+including concurrent interruption/send/receive and cancellation ownership; then
+the existing F2/F3–F10 backlog. Queue admission still uses its existing drop policy;
+caller-visible admission receipts and complete backpressure/lifecycle semantics
+are not proven by these checks. Filler config and live carrier session payloads
+also remain in that flow. No migration, DB mutation, deployment, dependency upgrade,
+commit, history change or permanent probe file.
+
+### F7 progress: Cartesia native contracts and shared TTS factory interface
+
+The preceding question-only turn verified the existing Pydantic execution-context
+correction; it made no implementation progress. This slice continues the full
+F0–F10 scope through factory → native Cartesia → TTS queue → audio/outcome sinks.
+No dataclass substitution or cross-owner wire union was introduced.
+
+Baseline reproduction with the actual Cartesia adapter and controlled transport:
+
+- Eylo finalization sent a vendor flush without ending the native context.
+- Interruption sent final input rather than native cancellation.
+- Old-context audio reached the caller after replacement speech started.
+- Old-context completion incorrectly completed the replacement turn.
+
+RCA: dictionary payloads hid the distinction between platform finalization and
+vendor flushing; the receiver did not validate the context that owned an output.
+The capability/config trace also found that exposed speed was never sent.
+
+Implemented:
+
+1. `sockets/tts/adapters/cartesia_wire.py`: frozen native input/options/media,
+   generation/cancel requests, response variants, and owned state/kind enums.
+   Unknown fields on outbound config are refused; unused inbound extensions are
+   discarded. Consumed booleans, finite speed, sample rate, context and base64
+   are checked. Native diagnostics never include speech or credentials.
+2. `cartesia_contract_adapter.py`: explicit end-of-input; native cancel; fresh
+   context per utterance; stale audio/error/done filtering before payload effects.
+   Generation settings remain fixed within a context. Speed now reaches
+   `generation_config.speed`. This does not guarantee support on every model:
+   Cartesia documents Sonic 3.5 speed control as unavailable. No new model default
+   or fallback was introduced.
+3. Typed native `ClientConnection`, serialized input/lifecycle operations,
+   cancellation-safe polling, uncertain-send retirement, detached bounded close
+   tasks and safe terminal errors. No await occurs between consuming a frame and
+   its identity check/projection, avoiding loss while waiting for a send lock.
+4. `sockets/tts/factory.py`: reuse `TTSProvider` instead of a duplicate literal
+   union; yield the shared `TTSVendorAdapter` rather than a native handle.
+   Invalid vendor types fail before string normalization. The existing serialized
+   options carrier and wider factory startup-cleanup semantics remain open.
+5. The voice pre-commit/pre-push type gate now includes the factory and both
+   Cartesia native modules. The provider architecture reference follows the flow.
+
+Executed function/data-flow QA:
+
+- **202** Cartesia contract/lifecycle/queue assertions: valid/invalid settings,
+  strict wire controls, all consumed output variants, unknown extensions, stale
+  frames, repeated turns, EOF, send errors/cancellation, receive timeouts, close
+  cancellation, and actual `TTSRealtime` playback/recording/failed-outcome sinks.
+- **13** native WebSocket loopback assertions: actual installed client/server,
+  header credentials, unchanged API version, cancellation, stale frames, repeated
+  speech and cleanup on a single socket. The initial sandbox bind denial was an
+  environment limit; the same localhost-only probe passed with approved access.
+- **69** shared factory assertions across all 11 TTS branches: canonical adapter
+  return, normal/error cleanup and bounded retry; native connection operations
+  substituted. This caught and corrected the numeric-vendor `AttributeError`.
+- **1,245** resolved-material and **380** verification/capability/carrier caller
+  assertions, including all 21 actual STT/TTS constructors.
+- Existing adjacent probes: **167** ElevenLabs native, **67** speech routing/queue,
+  **23** producer and **21** manager-failure assertions passed.
+
+These are function-contract and controlled dependency-path checks, not live
+Cartesia QA or human acceptance of voice UX. No operator credentials, DB writes,
+UI changes, migration, dependency upgrade, deployment, commit or permanent probe.
+
+Milestone review, performed sequentially:
+
+1. DDD ownership: Cartesia vocabulary stays in its socket; platform request and
+   conversation identity remain pipeline-owned. No module/socket import crossing.
+2. Architecture fit: existing explicit factory and canonical adapter port retained;
+   no new queue, retry authority, generic schema framework or provider default.
+3. Data flow: resolved model/voice/media/speed → typed wire → matching-context
+   bytes → consumer/recording; malformed/error output → failed speech outcome.
+4. Plan alignment: advances F7 and Pydantic-first internal contracts; remaining
+   vendors, factory options, F2/F3–F10 and global concurrent playback correlation
+   are not waived by this slice.
+5. Readability/security/performance: native choices are explicit; raw payloads
+   do not leak through errors; native receive buffers/timeouts remain bounded.
+   Local valid-frame processing measured **5.68 µs median** over five batches of
+   10,000 frames with 960-byte decoded PCM. This excludes network/audio latency.
+
+Five scoped type/import hooks and full Ruff pass. Whole-project Pyrefly:
+**825 errors / 4 suppressed**, previously **827 / 4**. Public schema unchanged.
+
+Version evidence: Pydantic **2.11.10**, websockets **15.0.1**; Cartesia API version
+remains **2025-04-16**. References: [context finalization/cancellation](https://docs.cartesia.ai/use-the-api/tts-websocket/contexts),
+[nonterminal flushing](https://docs.cartesia.ai/use-the-api/tts-websocket/context-flushing-and-flush-i-ds),
+[versioned ID-voice wire reference](https://docs.cartesia.ai/2024-06-10/api-reference/tts/websocket),
+[generation controls](https://docs.cartesia.ai/build-with-cartesia/capability-guides/volume-speed-emotion),
+and [native transport/cancellation contract](https://websockets.readthedocs.io/en/15.0/reference/asyncio/client.html).
+The current default Cartesia reference has a newer voice shape; this slice did
+not silently upgrade the pinned request protocol. Live acceptance remains unrun.
+
+Next: complete native config/options and remaining TTS/STT adapters in data-flow
+order; preserve shared factory/caller gates. Broader interruption/send/receive
+correlation, queue admission/backpressure and factory startup cancellation still
+need their own connected-path verification. Then continue the full F2/F3–F10 plan.
+
+### F7 progress: deterministic TTS config projection and native config models
+
+Continued the full F0–F10 objective after confirming the execution-context
+Pydantic correction remains in the worktree. This is construction-path hardening,
+not completion of native speech protocols or platform-wide typing.
+
+Confirmed baseline with actual factories and constructors, without network I/O:
+
+- Cartesia selected a stale nested API key over the factory's explicit replacement.
+- OpenAI silently discarded nested `speed` and used its default.
+- OpenAI accepted `speed=True` as a native config value.
+
+RCA: normalized config, nested options and a second flattened dictionary were
+competing authorities. Seven constructors accepted unvalidated `**kwargs`; their
+annotations neither rejected bad values nor protected against misspelled options.
+
+Implemented:
+
+1. Normalize nested/flat values once. Reject conflicting duplicates and nested
+   provider/retry fields. Apply explicit API-key replacement to the resulting
+   credential. Revalidate copied config/retry objects before serialization; do
+   not emit Pydantic serializer warnings containing invalid input values.
+2. Preserve explicit nested media settings over implicit defaults, but reject
+   conflicts with explicitly supplied media fields. Pin vendor identity to the
+   existing socket enum; reject malformed provider identifiers and non-object
+   config values. Runtime config errors have a named safe exception.
+3. Replace OpenAI, Deepgram, Groq, Rime, Smallest, Hume and Murf config containers
+   with adapter-owned frozen Pydantic models. `TTSAdapterConfig` shares only
+   native validation/projection mechanics, not vendor fields or factory selection.
+   Unknown native options fail; private API keys are excluded from repr/dumps.
+4. Replace constructor `getattr` field guessing with explicit typed accesses.
+   Voice/speaker aliases derive from one stored value. Hume/Smallest policy flags
+   use `SpeechOptionState`, projected to JSON booleans only at native send.
+5. Pass the typed normalized config from `TTSRealtime` to its factory. Remove the
+   runner's redundant config dictionary. Mapping ingress/egress types use `object`
+   at the validation boundary instead of factory `Any`; open carrier fields are
+   still pending and are not treated as complete native schemas.
+6. Add shared config/schema/error files to the existing local voice type hook.
+   No hosted CI, DB/schema changes, dependency upgrades or deployment changes.
+
+Function QA:
+
+- **495 checks:** seven native config models; valid/invalid fields, unknown keys,
+  revalidation after unchecked copies, safe errors, private output, enum policies,
+  flat/nested parity, conflicting keys, explicit credential replacement, media
+  aliases, optional fields, and immutable native snapshots. Actual send methods
+  were exercised with controlled HTTP/WebSocket transports and close assertions.
+- Existing constructor/hydration probes: **1,245 checks / 21 STT+TTS constructors**.
+  Verification/capability caller probes: **380 checks**. All **11** TTS factory
+  branches passed **69** construction/connection/cleanup assertions with native
+  connection methods substituted.
+- Cartesia **202** and ElevenLabs **167** native/queue regression checks passed.
+  Shared voice-routing **67**, producer **23**, and failed-runtime **21** checks
+  passed again after the final runner change.
+- Shared changed config/factory types and all five local type/import hooks pass.
+  Whole-project Pyrefly remains **825 errors / 4 suppressed**; the seven native
+  adapter files still contain **16** broader stream/payload/lifecycle diagnostics.
+  This is not a clean platform or full-native-adapter typecheck.
+- Full server/CLI Ruff and documentation verification passed. Documentation
+  verifier: 46 pages, 283 links, 1,153 Python modules, 6,139 docstrings, 47 diagrams.
+  App import/OpenAPI generation passed: **245 paths / 564 schemas**, with dummy
+  local settings and no operator DB or external-provider calls.
+
+Milestone review, in repository order:
+
+1. DDD: platform settings and credential resolution remain outside sockets;
+   vendor fields remain in each adapter. No module/socket cross-import added.
+2. Architecture: explicit factory branches retained. No reflection-based vendor
+   discovery, alternate scheduler, fallback vendor/model or credential source.
+3. Data flow: construction → native send → controlled transport/queue and close
+   were exercised. Shared-type tightening exposed a dictionary-based provider
+   lookup in the voice runner; it now reads the typed enum directly.
+4. Plan: advances F7 and the Pydantic-first requirement without closing F2/F3–F10.
+   No live vendor, operator DB, human voice/widget or provider-auth QA was run.
+5. Readability/security/performance: removed permissive constructors and duplicated
+   voice aliases; validation runs at construction, not per audio frame. No new I/O,
+   retry behavior, background work or type suppression was added.
+
+Next: complete the open carrier and Polly/Sarvam options, then native request,
+response and lifecycle contracts for the remaining TTS/STT adapters. The Hume
+compatibility concern raised in this slice was investigated in the following
+increment; browser media ownership remains a required downstream correction.
+Factory startup cancellation, broader turn correlation and all remaining F0–F10
+requirements remain active. Private native models do not prove that every generic
+carrier/snapshot is secret-safe.
+
+### F7 progress: Hume native wire and turn contracts
+
+Sources checked on 2026-09-08: Hume's streaming quickstart/reference and Python
+SDK commit `84e24b3be3e8e53df94bf23c28d9191aaa1217c0`; installed Pydantic
+2.11.10 and websockets 15.0.1. No dependency update or SDK installation.
+
+Confirmed RCA:
+
+1. The adapter sent an HTTP-shaped utterance-list body to a WebSocket expecting
+   top-level `PublishTts` fields. It omitted native version/format query options.
+2. `flush()` was a no-op. Native `close` forces remaining synthesis and ends the
+   stream; a snippet-level `is_last_chunk` is not whole-turn completion.
+3. The receiver silently ignored binary/invalid JSON, dropped audio when its
+   queue filled, and could swallow send failures or leave failed tasks unseen.
+   Interruption emptied only the local queue, not the still-producing stream.
+4. The adapter reported configured 24 kHz rather than native fixed 48 kHz.
+   The baseline probe exercised the actual sender/finalizer and format property
+   without network calls. Vendor rejection was not reproduced with credentials.
+
+Implemented:
+
+- Frozen Pydantic text/voice/end-input and consumed audio/timestamp models; owned
+  version, response-kind and lifecycle enums. Strict base64/PCM alignment and
+  completion fields; safe named errors, without vendor error bodies.
+- Explicit configured-model-to-version mapping; PCM and JSON-only negotiation;
+  header authentication, speed and description forwarding. Unknown models,
+  invalid voice-design/instant-mode combinations and non-PCM requests fail early.
+- One native socket per turn. End-input drains before normal closure is treated
+  as completion; incomplete snippets, abnormal/early close and empty output fail.
+  No background audio receiver/queue. Socket backpressure replaces dropped chunks.
+- Interruption detaches before close; late old-stream output cannot affect a new
+  stream. Poll cancellation is harmless; failed/cancelled sends retire the stream.
+  Close tasks remain owned through caller cancellation, with bounded native close.
+  Pending snippet tracking has a named bound and rejects rather than truncates.
+- Actual output and capability sample rates are 48 kHz. No operator data, config
+  records, migrations, deployment, credentials or external vendor state changed.
+- Hume adapter/wire files added to the local voice type hook. No suppressions.
+
+Executed checks:
+
+- **240 native function assertions:** config, wire fields, privacy, failures,
+  multi-snippet completion, repeated turns, stale output, polling/send/close
+  cancellation, concurrent acquisition, bounded tracking and real factory branch.
+- **18 pipeline assertions:** real resolved material → runtime config → factory
+  → native adapter → task/queue manager → PCM consumer/recording callbacks and
+  drained outcomes, across three turns. Only the external WebSocket was replaced.
+- **9 real WebSocket loopback assertions:** actual client/server handshake,
+  header/query placement, PCM output, three turns and native close behavior.
+  The temporary localhost listener closed afterward; this is not live Hume QA.
+- **495** seven-config checks, **1,245** material/constructor checks across 21
+  speech adapters, **380** verification/capability caller checks, and **69**
+  all-vendor TTS factory checks pass. Hume probe inputs now use a documented model
+  and permitted voice-design mode, rather than the old synthetic `octave` value.
+- Both Hume files and all five local type/import hooks pass. Whole-project
+  Pyrefly: **822 errors / 4 suppressed**, down from 825; platform completion is
+  still unproven. Full server/CLI Ruff and app import/OpenAPI generation pass
+  (**245 paths / 564 schemas**). No generated public client changes needed.
+- Native validation plus base64 decoding: **6.202 microseconds median/frame**
+  over five runs of 10,000 synthetic 1,920-byte PCM frames in the local interpreter.
+  This excludes network, synthesis, rendering and end-to-end latency.
+- The first pipeline probe incorrectly treated recording bytes as chunk objects;
+  its metadata assertion now observes the actual chunk constructor. A subsequent
+  fixture byte-escape typo was corrected. Neither required product-code changes.
+
+Sequential milestone review:
+
+1. **DDD boundaries:** native wire, version mapping and resource ownership stay in
+   the Hume adapter. No module/socket import or framework dependency added.
+2. **Architecture:** the explicit factory and TTS port remain authoritative.
+   No alternate queue, default voice/model or replay after an uncertain send.
+3. **Data flow:** native and queue paths pass, but source-to-browser tracing found
+   an unresolved consumer mismatch. `_get_browser_tts_audio_metadata` returns
+   16 kHz for Hume, while the adapter returns 48 kHz. Browser `OutgoingAudioTrack`
+   writes raw queue bytes into a fixed 16 kHz buffer. The recorder mismatch was
+   reproduced through the real helper and factory; browser playback is source
+   evidence, not a performed microphone/browser test. Telephony instead constructs
+   its transcoder from `tts.output_audio_format`.
+4. **Plan alignment:** Pydantic-first and vendor-owned wire contracts advance F7.
+   This is not completion of Hume onboarding, browser voice, or F0–F10.
+5. **Readability/security/performance:** removed guessed dictionary responses,
+   the error counter and lossy detached receiver. No plaintext key in URL/errors;
+   output metadata is explicit. Bounded backpressure/cleanup; no new dependency.
+
+Next required work, before claiming browser voice support:
+
+1. **Implemented below:** give browser playback/recording a typed actual-audio-format contract from the
+   adapter, with explicit conversion to transport format. Remove vendor/default
+   guessing and verify native output → conversion → playback and recording.
+2. Reconcile Hume onboarding: no native language/rate selector; distinguish custom
+   versus Hume library voices; reflect version and instant-mode constraints in
+   configuration UX without inventing a default voice or silently changing data.
+3. Finish remaining native speech adapters, generic carrier and lifecycle/correlation
+   contracts, then the rest of the unchanged platform-wide plan. Human voice QA
+   and live Hume verification remain pending; no positive browser-release verdict.
+
+### F7 progress: canonical STT events and transcript queue ownership
+
+The complete F0–F10 goal remains active. This slice follows provider-adapter
+output through the factory, runtime queue, debounce, live transcript buffer and
+voice-policy callbacks. It does not complete native provider wire/config typing.
+
+Confirmed RCA and impact:
+
+- Repeated dictionary translators inferred finality differently and collapsed
+  speech/activity/error events into transcript fallbacks. A flattened metadata
+  projection could overwrite canonical fields instead of preserving their owner.
+- Full queues discarded events upstream of the transcript consumer. Clearing a
+  debounce buffer before downstream acceptance could also lose final text.
+- The shared task monitor restarts explicitly eligible failures but does not
+  propagate every terminal child failure. Neither STT owner observed those
+  stopped children, allowing a failed receiver to leave a seemingly live runtime.
+
+Implemented:
+
+1. `STTEvent`, `TimedWord`, `RecognitionUsage` and `STTError` are Pydantic models.
+   Provider identity is an enum; finality derives from the event kind. Missing
+   confidence/usage remains distinct from zero. Connection acknowledgements do
+   not become speech. Vendor metadata cannot replace control fields.
+2. The nine dictionary-based adapters validate an explicit intermediate envelope;
+   Amazon projects its real SDK result directly. Native word/entity dictionaries
+   retained in extension metadata are not claimed as fully typed vendor schemas.
+3. `VoiceTranscriptInput` distinguishes recognition, completed DTMF and final
+   batches. DTMF completion is an enum; sequence reuse checks the actual live
+   buffer's kind, digits and sequence. STT metadata cannot grant that authority.
+4. Both queues await downstream acceptance. Debounce retains each complete event,
+   clears only after acceptance, and exposes timer failures. Acquired input is
+   acknowledged by its processing owner. This is live backpressure, not durable
+   delivery across process death.
+5. Factory/runtime owners observe terminal children after permitted restarts.
+   Connection loops retain the adapter they opened. Startup failure/cancellation
+   closes partially acquired resources; teardown joins owned tasks even when
+   provider close fails. Bounded final delivery still closes the provider and
+   retains an unaccepted batch in memory.
+
+Executed function checks (controlled I/O, no vendor calls or DB writes):
+
+- `STT-TYPED-FLOW-QA-OK`: **449 checks**, all ten real constructors, nine actual
+  adapter receive paths, the Amazon SDK result, normalization, invalid inputs,
+  metadata, queue backpressure, debounce, live-buffer/DTMF correlation,
+  interruption, end-call dispatch and cancellation acknowledgement.
+- `STT-LIFECYCLE-QA-OK`: **37 checks** through the actual factory and runtime
+  supervisors. Covers full queues, receiver/forwarder/timer failure, normal
+  child termination, audio forwarding, cancellation, close failure and partial
+  startup cleanup.
+- Repeated call-session **88**, carrier audio **64**, browser audio **118** and
+  resolved speech-material **1,245** checks pass. Native constructor coverage
+  includes ten STT and eleven TTS adapters; it does not establish live operation.
+- Full backend Ruff passes. Whole-platform Pyrefly: **790 errors, 4 suppressed**,
+  compared with the preceding **810** baseline. Remaining errors are still work;
+  an STT-scoped green gate is not platform-wide completion.
+
+Milestone review, in order:
+
+1. **DDD boundaries:** no module/pipeline imports from the STT socket. Vendor
+   translation stays in adapters; DTMF authority and voice policy stay in pipelines.
+2. **Architecture fit:** existing factory, runtime and transcript owners remain;
+   there is no new event store, duplicate execution authority or second UI state.
+3. **Data flow:** exact event meanings, optional metadata and final segments
+   survive the reviewed path; failure/cancellation is observed by the owner.
+4. **Plan alignment:** native provider schemas, generic config and remaining
+   platform flows are explicitly unfinished. Public spellings are not rewritten.
+5. **Clean code/security/performance:** canonical control fields are separate
+   from vendor metadata, typed queues expose mismatches, logs use event kinds and
+   lengths, and bounded queues apply backpressure. No new DB transactions,
+   external effects, dependencies or persistent probes were introduced.
+
+The following native slices replace the intermediate envelope for AssemblyAI,
+Cartesia and Speechmatics. Other adapters still require native-contract
+work. Live provider/browser QA remains pending; controlled probes are not a
+release verdict.
+
+### F7 progress: native AssemblyAI and Cartesia STT contracts
+
+The full F0–F10 objective remains active. This slice follows configured material
+through native wire I/O, canonical events, queue ownership and transcript consumers.
+It does not upgrade dependencies, reset operator data or deploy services.
+
+Confirmed findings and fixes:
+
+- AssemblyAI connection acknowledgement previously became speech activity, final
+  formatting could produce duplicate turns, and transcript confidence was invented.
+  Native Begin/Turn/SpeechStarted/Termination/Error models now keep these meanings
+  separate. Connection readiness waits for Begin; configured-model echo must agree.
+  Formatting-enabled turns become final only at the formatted result. Native word
+  confidence and endpoint confidence remain distinct from absent transcript confidence.
+- AssemblyAI request/config models preserve configured keyterms as a JSON array,
+  including commas inside a phrase. PCM buffer duration uses actual sample counts.
+  ForceEndpoint flushes buffered input. Close retains native final frames and joins
+  children; immediate cancellation before worker startup now wakes iteration, and
+  repeated reads after EOF remain terminal. A reproduced union-validation error
+  exposed malformed transcript content; the TypeAdapter now hides input in errors.
+- Cartesia's adapter discarded errors, invented confidence and made flush a no-op.
+  Native transcript/flush/done/error models now feed the canonical event directly.
+  The typed command enum distinguishes nonterminal `finalize` from terminal `close`.
+  Both send buffered PCM first. Finalize leaves the connection usable for another
+  turn; close waits within a bound for native final output and acknowledgement.
+- Cartesia no longer has an unbounded detached audio-input queue or a second
+  adapter response queue. Writes await socket acceptance; one native reader has a
+  bounded output queue. Borrowed HTTP sessions remain caller-owned. Credentials
+  use the documented header, and query values are URL-encoded without changing
+  the pinned `2026-03-01` API version or choosing a new/default model.
+- Cartesia final chunks are deltas, not independent sentences. The socket-owned
+  `STTTranscriptForm` enum carries that distinction; `FinalTranscriptBatch` joins
+  same-provider/same-session deltas exactly, without inserting spaces or stripping
+  their edges. Independent segments keep their existing separator behavior.
+  Vendor request IDs identify the connection and are not chunk deduplication keys.
+- An actual factory probe reproduced loss of an immediate vendor error: native
+  socket closure made the factory stop before reading queued output. Adapter
+  delivery now remains active through terminal output/EOF consumption. Sender
+  failure still invalidates input immediately.
+- A runtime-to-factory probe exposed canonical `linear16` reaching APIs that name
+  the same PCM representation `pcm_s16le`. Both adapters now explicitly translate
+  the canonical alias before native validation; unsupported encodings still fail.
+
+Authoritative protocol references:
+[AssemblyAI streaming](https://www.assemblyai.com/docs/streaming/api-spec/streaming-websocket),
+[AssemblyAI message sequence](https://www.assemblyai.com/docs/streaming/message-sequence),
+and [Cartesia STT 2026-03-01](https://docs.cartesia.ai/2026-03-01/api-reference/stt/websocket).
+The latest Cartesia documentation was also checked; its newer API version and
+additional models were not silently adopted by this typing change.
+
+Executed evidence, using actual native readers/senders and controlled transports:
+
+- AssemblyAI: **84 function checks**, including typed malformed-input rejection,
+  private error strings, Begin readiness, formatting/finality, raw PCM, keyterms,
+  failure propagation, repeated EOF and bounded cleanup.
+- Cartesia: **89 function checks**. Native connection, PCM/finalize/close, queued errors and exact delta
+  text are exercised through the real factory, STT runtime, transcript writer,
+  live buffer and agent callback. Public live projection scheduling is replaced
+  by a controlled port; this does not claim a DB or browser round trip.
+- Shared STT flow: **380 checks**. AssemblyAI and Cartesia now use actual native
+  response fixtures, replacing the old impossible generic-envelope fixtures for
+  those branches. Their larger native probes are separate, not omitted coverage.
+- STT lifecycle: **37 checks**. Speech material/21 native constructors:
+  **1,245 checks**. Full Python lint and all five typed/import hooks pass.
+- Whole-platform Pyrefly: **768 errors, 4 suppressed**, compared with **790**
+  before native STT work and **773** after the first AssemblyAI increment.
+  These remain open work, not accepted exceptions or a platform completion claim.
+
+Milestone review, in the required order:
+
+1. **DDD boundaries:** native contracts remain inside vendor sockets; canonical
+   transcript form belongs to STT; batching, live capture and agent callbacks stay
+   pipeline-owned. An AST import check passed across eight affected native files.
+2. **Architecture fit:** existing factory/runtime owners and public adapter methods
+   remain. Typed connection acquisition replaces false readiness; no additional
+   durable authority, vendor fallback or event store was introduced.
+3. **Data flow:** native error-to-factory delivery and exact transcript-to-live-sink
+   probes reproduced and verified fixes missed by constructor-only checks.
+4. **Plan alignment:** Pydantic replaces native dataclass/open-dict contracts;
+   vendor enums do not leak into platform policy. The complete inventory remains
+   open, including existing SDK types and unconverted native adapters.
+5. **Clean code/security/performance:** native fields are accessed as objects,
+   secrets stay outside URLs/representations, malformed consumed data fails at
+   ingress, and Cartesia input/output ownership is bounded. No live latency or
+   throughput claim follows from controlled function checks.
+
+Speechmatics is addressed by the next milestone below. Remaining work includes
+the other STT/TTS adapters; common STT
+config/capability/metrics dataclasses and carrier payloads; broader concurrent
+connect/disconnect ownership; AssemblyAI native queue bounds; and end-to-end final
+delivery during whole-call teardown. Retaining final frames in a native queue does
+not prove delivery after upper-level consumers stop. Live provider/browser QA and
+human review of changed voice behavior remain pending. All other F0–F10 work stays
+in scope.
+
+### F7 progress: native Speechmatics STT contracts
+
+The full F0–F10 objective remains active. No deployment, operator DB changes,
+dependency upgrades or live provider calls were performed in this slice.
+
+RCA and changes:
+
+- A local probe reproduced a complete sentence becoming only its first word.
+  The old translator selected `results[0].alternatives[0]` instead of the complete
+  transcript; speaker lookup also used the wrong nesting level. Native Pydantic
+  response objects now project the complete formatted text, all words, real
+  word-level speakers and audio-relative timing. Mixed-speaker segments are not
+  labelled as one speaker. Native entity forms remain available as metadata.
+- Unknown transcript confidence remains unknown. Partial word confidence is not
+  meaningful in this protocol and is not promoted to canonical confidence.
+  Optional end-of-utterance times remain absent rather than being invented or
+  causing rejection. Final text uses the existing delta contract for exact joins.
+- Task creation previously masqueraded as connection readiness; audio dequeued
+  before acknowledgement could be discarded. Connect now awaits RecognitionStarted.
+  Typed PCM/config/vocabulary requests replace the dataclass and open dictionaries.
+  Flush uses ForceEndOfUtterance; close sends EndOfStream with the exact count of
+  binary chunks sent, including the final partial chunk.
+- A single native reader replaces two response queues and silent reconnect loops.
+  Binary writes apply socket backpressure; output is bounded. Close drains within
+  a deadline, joins the reader and makes repeated EOF terminal. Native final
+  output stays readable; owned/borrowed HTTP lifetimes are separate. Concurrent
+  adapter connects are serialized. Unsupported audio formats fail before sending.
+
+Reference: [Speechmatics Realtime v2](https://docs.speechmatics.com/api-ref/realtime-transcription-websocket).
+The existing language-based provider selection remains; this slice does not add
+a default model tier, translation, multichannel audio or another provider option.
+
+Executed evidence:
+
+- **104 native/function-flow checks**, using actual parsers, WebSocket sender and
+  reader, adapter, factory, STT runtime, transcript writer, live buffer and agent
+  callback. Controlled network ports replace vendor I/O; live projection scheduling
+  is substituted. Covers malformed input/privacy, entities, full text, mixed
+  speakers, early audio, handshake failure/timeout/cancellation, immediate queued
+  errors, explicit finalization, exact close count, abrupt/cancelled close and a
+  full queue. Missing optional vendor IDs use local fragment correlation without
+  inventing a provider request ID.
+- **346 shared STT checks**; Speechmatics now uses native response fixtures rather
+  than its former impossible generic envelope. The larger native checks above
+  cover the removed intermediate-fixture cases at the actual owning boundary.
+- **37 lifecycle checks** and **1,245 material checks / 21 real STT/TTS constructors**.
+- AssemblyAI **84** and Cartesia **89** native regression checks pass unchanged.
+  App import/OpenAPI remains **245 paths / 564 schemas**; the added word speaker
+  field is not an operator API schema. Documentation, formatting and diff checks pass.
+- All five scoped type/import hooks and full Python lint pass. Whole-platform
+  Pyrefly reports **765 errors, 4 suppressed**, down from the preceding **768**;
+  these remaining errors are unresolved work, not accepted exceptions.
+
+Milestone review, sequentially:
+
+1. **DDD boundaries:** native request/response enums stay in the vendor socket;
+   `TimedWord.speaker_id` is canonical STT data. Import/AST checks confirm no module
+   or pipeline dependencies in the native/adapter files.
+2. **Architecture fit:** existing factory, runtime and pipeline remain the owners;
+   no new durable authority or retry mechanism was introduced.
+3. **Data flow:** full text, connection correlation and speakers survive batching;
+   exact text reaches live capture and the agent callback. Review corrected overly
+   strict optional EOU/entity fields against the vendor reference.
+4. **Plan alignment:** consumed native contracts now use Pydantic, finite enums and
+   meaningful constants; unused model/language aliases were removed with no callers.
+5. **Clean code/security/performance:** named terminal errors replace silent retry;
+   sensitive text is excluded from representations and validation errors, the key
+   remains header-only, and output/input ownership is bounded. No throughput or
+   live-provider readiness claim follows from these checks.
+
+Remaining: other native STT/TTS paths, shared STT configuration/capability/metrics
+dataclasses, broader voice typing, whole-call final-drain delivery, live vendor and
+browser QA, and human review of changed voice behavior. Native final frames kept
+during close do not prove delivery after upper-level call consumers have stopped.
+The rest of F0–F10 remains in scope.
+
+### F7 progress: native Deepgram Listen v1 STT contracts
+
+The complete F0–F10 goal remains active. This slice changes no operator DB rows,
+migrations, deployments, dependencies or credentials. Flux v2 remains separate.
+
+RCA and implementation:
+
+- Reproduced discarded `UtteranceEnd.last_word_end`, with the adapter assigning
+  zero to the event's wall-clock timestamp instead. Native response models now
+  keep audio-relative times distinct; canonical timing uses milliseconds and
+  word timing retains seconds. Full segments, native request IDs and real usage
+  survive translation. Absent confidence stays absent.
+- Configured `endpointing`, `utterance_end_ms` and `vad_events` never reached
+  the old native options. Frozen Pydantic query/config models now forward them,
+  encode query values and keep the key header-only. Native validation rejects
+  invalid PCM, durations and detection combinations. Factory-generated defaults
+  no longer add an utterance delay when interim results were explicitly disabled.
+- Segment finality is no longer inferred from speech-final alone. Final endpoint
+  text uses the existing END_OF_TURN contract; provisional text stays provisional.
+  Metadata becomes reported usage rather than being dropped.
+- The old stream created tasks before connection acquisition, retried silently,
+  had unbounded input/output queues and did not send a functioning Finalize.
+  CloseStream was sent after normal socket cleanup. The replacement awaits the
+  upgrade, writes PCM with backpressure, bounds the response queue, and uses one
+  task group for the reader and JSON KeepAlive. The existing factory owns retry.
+- Finalize keeps the stream open; CloseStream precedes bounded terminal metadata
+  drain. Timeout, cancellation, failed upgrade, failed KeepAlive and malformed
+  responses close resources and join native tasks. EOF is repeatably terminal;
+  accepted output remains readable after physical closure. Borrowed HTTP sessions
+  stay caller-owned. Unused model/language Literal aliases were removed.
+
+Vendor references: [Listen v1](https://developers.deepgram.com/reference/speech-to-text/listen-streaming),
+[endpointing/finality](https://developers.deepgram.com/docs/understand-endpointing-interim-results),
+[utterance end](https://developers.deepgram.com/docs/utterance-end),
+[Finalize](https://developers.deepgram.com/docs/finalize),
+[CloseStream](https://developers.deepgram.com/docs/close-stream), and
+[KeepAlive](https://developers.deepgram.com/docs/audio-keep-alive).
+
+Executed evidence:
+
+- **112 native function/data-flow checks**: parser/config, exact transcript and
+  timing, zero/absent confidence and usage, provisional/final/end distinctions,
+  strict numeric inputs, privacy, PCM chunking, explicit flush/close, readiness,
+  failed/timeout/cancelled upgrade, KeepAlive failure, malformed/abrupt closure,
+  bounded/full output queues, borrowed sessions and stable terminal output.
+  Actual factory, STT runtime, transcript writer, live buffer and agent callback
+  execute with controlled transport and substituted live-projection scheduling.
+- **Real aiohttp loopback transport** verified encoded query isolation, header
+  auth, PCM bytes, Finalize, response parsing and CloseStream/metadata cleanup.
+  The initial sandbox denied binding; the authorized localhost-only retry passed.
+  This is not a live Deepgram provider or microphone test.
+- **321 shared STT checks**, **37 lifecycle checks**, and **1,245 material checks
+  through 21 real STT/TTS constructors** pass. The shared probe now provides
+  native Deepgram objects, replacing the removed generic private method seam.
+  Probe-only missing-method/local-import failures were corrected; no production
+  compatibility method was restored to accommodate stale fixtures.
+- All five scoped type/import hooks pass. Full Ruff, formatting and diff checks
+  pass. Whole-platform Pyrefly reports **757 errors, 4 suppressed**, down from
+  **765** before this slice. Outstanding errors remain remediation work.
+- Documentation validation passes (**46 pages, 284 links, 47 diagrams**); app
+  import/OpenAPI remains **245 paths / 564 schemas**. No operator API schema
+  changed and no frontend regeneration was needed.
+
+Sequential milestone review:
+
+1. **DDD:** vendor enums/requests/responses stay in the socket. AST checks confirm
+   no module/pipeline imports or Any/Dict/dataclass contracts in the four files.
+2. **Architecture:** factory recovery and pipeline voice policy remain unchanged
+   owners; no new generic stream framework or durable-work authority was added.
+3. **Data flow:** configured material reaches the query; native text, timings and
+   request correlation reach debounce/live capture/agent callback. Native close
+   output remains readable. Whole-call teardown delivery is still unproven.
+4. **Plan:** Pydantic objects replace native dictionary parsing and dataclasses;
+   finite native vocabulary is enumerated, operational limits are named. The full
+   platform objective has not been reduced to this adapter.
+5. **Clean code/security/performance:** strict consumed fields, private repr and
+   validation errors, fixed vendor origin, encoded query and bounded resources.
+   Review reproduced Literal[1] accepting booleans/floats; an explicit exact-int
+   validator now rejects those inputs. No new dependency or throughput claim.
+
+Remaining: other native STT/TTS implementations; shared STT config, capability and
+metrics dataclasses; broader voice typing; whole-call final-drain delivery; live
+vendor/browser QA and human review. All other F0–F10 work stays in scope.
+
+### F7 progress: shared STT config, capability and metrics contracts
+
+The preceding question-only turn verified the existing Pydantic execution-context
+change. This continuation advances the original F0–F10 goal; it does not close F7.
+
+Reproduced before editing with the actual config, factory and runtime constructors:
+unchecked boolean/numeric config, numeric vocabulary coerced to text, nested native
+options nested a second time, factory/config encoding disagreement, retry values
+dropped during runtime handoff, negative byte/invented event metrics, and duplicate
+factory capability claims disagreeing with the selected adapter.
+
+Changes:
+
+- `STTConfig` / `RetryOptions` are frozen Pydantic models with strict finite numeric
+  fields, validated text, owned provider/media/mode enums, common speech-option
+  policies and explicit JSON-only native options. Normal model dumps and reprs
+  exclude the private native envelope. Explicit handoff revalidates even copied
+  or subsequently mutated inputs and emits safe configuration errors.
+- Flat/nested input converges through one normalization path. Duplicate conflicts
+  and reserved nested routing/retry fields are refused; resolved credentials remain
+  authoritative. The runtime retains `factory.config`, including retry values and
+  validated debounce milliseconds, rather than flattening and reconstructing it.
+- `STTCapabilities` uses explicit support enums; all ten adapter declarations were
+  updated while retaining boolean JSON values. Factory inspection delegates to its
+  selected adapter, removing the drifting duplicate table. This constructs but
+  does not connect the adapter; it is not live certification of every declaration.
+- `STTMetricsSnapshot` validates mutable counts and event kinds. Failed byte-count
+  or event-kind validation leaves counters untouched; timestamps are monotonic
+  seconds, not human dates. Factory/runtime projections keep their existing keys.
+- Data-flow review rejected a generic `input_audio_codec`/`encoding` equivalence
+  guard: Sarvam converts incoming mu-law to native PCM, so both values must survive
+  independently. A real adapter byte-level check proves that conversion still works.
+  Listen utterance delay likewise no longer becomes Flux end-of-turn timeout.
+
+Verification:
+
+- **388 shared contract checks** cover malformed values, direct construction,
+  copied/nested input, secrets, round trips, enum JSON, retry preservation, metrics,
+  capability parity, provider selection and Sarvam audio conversion.
+- **321 shared STT flow**, **37 lifecycle**, **112 Deepgram**, **84 AssemblyAI**,
+  **89 Cartesia**, **104 Speechmatics**, and **1,245 material checks / 21 real
+  STT/TTS constructors** pass with controlled I/O. Two earlier native probes used
+  boolean capability assertions; they now compare enum members with unchanged
+  expected support. A Sarvam probe helper name was corrected after checking the
+  actual method; no runtime compatibility shim was added.
+- All five scoped type/import hooks pass. Whole-platform Pyrefly remains
+  **757 errors / four suppressed**; that is neither a new regression nor completion.
+- The real aiohttp localhost WebSocket probe passes query encoding, dummy-key
+  authorization, PCM/finalize, transcript/metadata and close. It contacts no vendor.
+  Full Ruff, affected formatting, diff whitespace and documentation checks pass
+  (**46 pages / 284 links / 47 diagrams**). App import/OpenAPI generation passes
+  with **245 paths / 564 schemas**, unchanged; no frontend regeneration is needed.
+- Reviewed sequentially: DDD ownership, architectural fit, source-to-native data
+  flow, original plan/Pydantic alignment, then readability/security/cost. No new
+  provider, default model, dependency, DB migration or deployment was introduced.
+
+At that milestone, `RetryOptions` was preserved but not enforced. The next slice
+below fixes connection establishment and removes the unused base-adapter copy.
+The current STT manager still reconnects once on selected send failures, and the
+shared task supervisor owns its existing restart behavior. Resolve those through
+the lifecycle flow, rather than claiming that Pydantic validation implements it.
+Other native STT/TTS requests/responses and configuration semantics, whole-call
+final drain, live vendor/widget acceptance, and remaining F0–F10 work stay open.
+
+### F7 progress: STT connection-attempt ownership and typed cleanup failure
+
+The previous question-only exchange verified the current Pydantic context models.
+This continuation implements the next established F7 lifecycle gap; the full
+platform-wide F0–F10 goal remains active.
+
+RCA and scope:
+
+- A controlled real-factory probe reproduced ignored `max_retry`: one failing
+  connection stopped despite a configured additional attempt. Source inspection
+  confirmed that connect/readiness had no factory deadline and reconnect ignored
+  cleanup errors before opening another connection.
+- Retaining a typed setting without an execution consumer was incomplete contract
+  adherence. This slice changes establishment, not permission to replay audio or
+  a new general-purpose recovery framework.
+
+Implemented:
+
+- The existing immutable `RetryOptions` now defines additional attempts, per-attempt
+  connect/readiness seconds and post-cleanup delay seconds. The factory owns this
+  policy for startup and explicit reconnect establishment.
+- At this milestone, only `STTConnectionFailed` and `TimeoutError` entered the attempt loop. Other errors
+  stop immediately after cleanup. Vendor-native error classification remains
+  incomplete; these exception names are not proof of transient vendor failure.
+- Every failed attempt awaits cleanup before another connection. Cleanup has a
+  separate named ten-second cooperative deadline. `STTConnectionCleanupFailed`
+  distinguishes unsafe retry from ordinary establishment failure. Failed close
+  retains the factory handle; explicit reconnect no longer ignores close errors.
+- Cancellation propagates through connect, readiness, backoff and cleanup, including
+  a repeated cancellation. Deadline/cancellation checks prevent a returning adapter
+  that swallowed cancellation from being accepted as ready. Coroutines that block
+  or never return still require native lifecycle remediation; Python cannot forcibly
+  stop them safely.
+- Removed the unused base-adapter retry holder and five stale comments asserting
+  nonexistent retry helpers. All ten adapters still construct through the existing
+  explicit factory. Reader tasks start only after readiness; no audio is sent by
+  this retry loop. Connection-body failures do not reenter startup retries.
+
+Verification:
+
+- **84 connection-attempt function/effect checks** cover exact retry limits,
+  timeout/readiness, cleanup failure/hang, cancellable delay, repeated cancellation,
+  swallowed deadline/caller cancellation, explicit reconnect, safe handle retention
+  and no orphaned factory tasks. A review probe reproduced swallowed timeout followed
+  by not-ready return; checking the deadline before polling closes that stall.
+- **Nine actual runtime/factory checks** cover recovered startup state emission,
+  caller cancellation and safe `STTConnectionCleanupFailed` error projection.
+  A failed first attempt does not emit a premature ready or fatal error state.
+- The real aiohttp localhost WebSocket path passes **timeout → native cleanup →
+  second connection → PCM → factory transcript → close**. It uses dummy credentials
+  and no vendor. The probe initially assumed a failed handshake had started a reader;
+  inspection confirmed `_task` is legitimately `None` before upgrade. Its assertions
+  now check closed HTTP resources and optional task completion. Audio assertions
+  respect native PCM chunking rather than assuming one network frame per input.
+- Existing **388 shared contracts**, **321 STT flow**, **37 lifecycle**, **112
+  Deepgram**, **84 AssemblyAI**, **89 Cartesia**, **104 Speechmatics**, and **1,245
+  speech material checks / 21 constructors** pass with controlled I/O.
+- The four owned STT contract/factory files pass scoped Pyrefly with **zero errors**;
+  all five scoped type/import hooks pass. Whole-platform Pyrefly remains **757
+  errors / four suppressed**, not completion. AST inspection confirms no new
+  module/pipeline imports or `Any`/dataclass carriers in those four files.
+- Full Ruff, STT formatting, whitespace and documentation gates pass. App import
+  and OpenAPI generation retain **245 paths / 564 schemas**. No public schema,
+  frontend, dependency, migration, operator DB or deployment change was needed.
+
+One sequential milestone review:
+
+1. **DDD boundaries:** immutable retry input and typed cleanup error stay socket-owned;
+   no domain, credentials lookup or DB policy moved into the factory.
+2. **Architecture fit:** reuse the existing factory and adapter protocol, remove the
+   unused base copy, and leave product voice policy in the pipeline. No new queue,
+   retry framework, default provider or model was introduced.
+3. **Data flow:** resolved config → validated factory config → attempt/readiness →
+   cleanup/retry → reader → runtime state. Cleanup timeout is not caught as an
+   ordinary connection timeout; uncertain closure cannot open another connection.
+4. **Plan alignment:** this fixes the previously documented inert retry settings;
+   it does not certify active-stream recovery or replace the full F0–F10 objective.
+5. **Clean code/security/cost:** named time units and a distinct cleanup exception
+   replace magic polling and ignored failures. Logs contain counts/error types,
+   not credentials or audio. Attempts are sequential and config-bounded; cooperative
+   cleanup has an independent limit. Cancellation is not converted into retry.
+
+Remaining at this milestone, continued by the classification slice below:
+
+1. Translate native connection failures into explicit transient/terminal contracts;
+   existing `STTConnectionFailed` wrappers may also include permanent vendor refusal.
+2. Resolve one in-flight reconnect owner across runtime sends, factory supervisors
+   and native loops (including Flux, Sarvam and Google's stream implementation).
+   Recreate/retain readers correctly and serialize concurrent reconnect requests.
+3. Replace the runtime's error-text matching and broad connection-error replay with
+   a typed not-sent outcome; do not replay uncertain audio writes.
+4. Finish native STT/TTS typing and lifecycle cleanup, whole-call terminal drain,
+   real vendor/widget acceptance and the remaining full-platform F0–F10 work.
+
+These are working function checks, not new human-accepted behavioral baselines.
+No permanent test files were added; live vendor/browser QA remains unrun here.
+
+### F7 progress: typed WebSocket STT establishment failures
+
+The full platform-wide F0–F10 goal remains active. This slice completes the
+HTTP/WebSocket establishment translation through eight adapters, not all native
+STT lifecycle or response typing.
+
+RCA and contract:
+
+- A controlled native `InvalidStatus(401)` reproduction returned `UNKNOWN` from
+  both Flux and Sarvam. Earlier code wrapped all connection exceptions in the same
+  failure type; the newly typed factory could not recover transient cases without
+  knowing their cause. Other adapters leaked the native handshake exception.
+- `STTConnectionFailureKind` now distinguishes transport, timeout, service refusal,
+  authentication, authorization, request, rate limit, quota, TLS, protocol and
+  unknown causes. Constructor input must be an enum, not a string. The factory
+  retries only network/timeout/service-unavailable kinds and its own timeout.
+- `connection_errors.py` owns the HTTP/WebSocket representation boundary. Deepgram
+  Listen, Flux, Speechmatics, AssemblyAI, Cartesia, Sarvam, Gladia and RevAI use it
+  from their real native-connect branches. Six streaming adapters close before
+  translation; Flux/Sarvam rely on the WebSocket library's failed-handshake cleanup.
+- TLS errors take precedence over network-error base classes. Unknown/mixed errors
+  remain terminal; no message matching, class-name matching or arbitrary cause-chain
+  unwrapping is used. Only a directly documented handshake EOF cause is recognized.
+- Adapter cleanup failures have a separate terminal exception. This closes the
+  newly examined case where cleanup itself times out and could otherwise look like
+  a retryable connection timeout after a second cleanup call. Cancellation remains
+  cancellation, including when cleanup also fails. Existing native implementations
+  that swallow cleanup failures still need lifecycle work; this cannot prove a
+  close whose owner hides its outcome.
+- HTTP 429 is classified but not retried by this fixed-delay loop. Adding a label
+  is not an implementation of provider backoff/admission. Retry logs expose only
+  bounded counts and the socket-owned failure category.
+
+Verification on 2026-09-08:
+
+- **255 failure-contract/function checks** cover native HTTP/WebSocket types,
+  refusal versus transient categories, DNS/OS/TLS distinctions, unknown failures,
+  enum enforcement, cancellation identity, every failure kind's factory attempt
+  count, all eight adapter entrypoints and cleanup failures in six native streams.
+- Real localhost aiohttp tests: 401/403/429 each make one request; 503 makes two,
+  then PCM reaches the native stream and a final transcript reaches the factory
+  consumer. Captured HTTP sessions/readers close. No remote vendor or operator DB
+  was used. The initial local fixture omitted Deepgram terminal metadata; the
+  corrected fixture supplies the native terminal message and asserts no successful
+  stream failure instead of ignoring the teardown log.
+- Existing **84 startup**, **9 runtime/startup**, **388 shared contracts**, **321
+  STT flow**, **37 lifecycle**, **112 Deepgram**, **84 AssemblyAI**, **89 Cartesia**,
+  **104 Speechmatics**, and **1,245 speech material / 21 constructor** checks pass.
+  Two timeout function expectations were deliberately updated from raw TimeoutError
+  to `STTConnectionFailed(TIMEOUT)`, asserting the native cause and unchanged cleanup.
+  No product acceptance expectations or permanent test files were introduced.
+- Seven owned error/factory/native-adapter files pass scoped Pyrefly; all five
+  scoped type/import hooks pass. Whole-platform Pyrefly remains **757 errors / four
+  suppressed**, so this is progress, not completion. Full Ruff passes.
+- All **18 STT files** pass formatting; whitespace and documentation gates pass
+  (**46 pages, 284 links, 1,161 Python modules, 6,146 docstrings, 47 diagrams**).
+  App import/OpenAPI generation retain **245 paths / 564 schemas**. No dependency,
+  public API, migration, frontend, operator DB, commit or deployment change occurred.
+
+Sequential milestone review:
+
+1. **DDD boundaries:** HTTP/library exceptions remain adapter-owned. Failure kinds
+   and establishment policy remain socket-owned; no module/DB or product policy
+   imports were added.
+2. **Architecture fit:** one existing factory chooses bounded attempts. The shared
+   adapter helper absorbs classification and cleanup-error precedence without adding
+   a retry framework or taking ownership of voice policy.
+3. **Data flow:** native refusal → typed failure → cleanup → factory decision;
+   successful retry → actual PCM → native response → canonical factory queue. Unknown
+   failures, auth and uncertain cleanup cannot authorize another attempt.
+4. **Plan alignment:** fixes the established classification gap. The runtime's
+   error-text replay, independent reconnect owners and remaining vendor contracts
+   are still explicit work, not implicitly certified by scoped checks.
+5. **Readability/security/performance:** named HTTP/OS constants, typed callable
+   cleanup, no new casts or broad payload objects, safe error messages, sequential
+   bounded attempts. Third-party native exception causes stay diagnostic context;
+   no response bodies or credentials are copied into the new messages/log fields.
+
+Remaining at this HTTP/WebSocket milestone (continued by the AWS slice below):
+
+1. AWS Transcribe native lifecycle/types. The installed Smithy `DuplexEventStream.close()`
+   awaits output again before closing input. The adapter currently clears a partial
+   handle on `await_output()` failure and swallows close failure. Fix and test these
+   paths before admitting retryable AWS failures. Do not rewrite SDK-owned dataclasses.
+2. Google native streaming readiness/errors/cleanup. Its adapter currently marks
+   connected when launching the reader, not when the vendor accepts the stream.
+3. Unify in-flight recovery across native loops, factory supervisors and runtime
+   send paths, with serialized reconnect and reader ownership. Use a typed not-sent
+   outcome; never infer replay safety from a connection exception.
+4. Finish every remaining native STT/TTS and platform F0–F10 contract, full call
+   final drain, then real vendor/widget acceptance. Nothing in this slice claims
+   these broader paths complete.
+
+Sources: [websockets 15.0.1 retry classification](https://websockets.readthedocs.io/en/15.0.1/reference/asyncio/client.html#websockets.asyncio.client.process_exception),
+[Amazon Transcribe streaming errors](https://docs.aws.amazon.com/transcribe/latest/APIReference/API_streaming_StartStreamTranscription.html#API_streaming_StartStreamTranscription_Errors),
+and installed aiohttp 3.14.3 / smithy-core 0.6.0 / Transcribe SDK 0.7.0 source.
+The current AWS docs describe concurrent-stream quota as a typical limit failure;
+the installed modeled exception's older description emphasizes duration. Neither
+justifies treating every quota refusal as a generic immediate network retry.
+
+### F7 progress: AWS Transcribe native contracts and owned partial streams
+
+The full F0–F10 end goal remains active. This slice follows resolved settings →
+native request/signing → event stream → canonical transcript/factory → cleanup.
+
+Confirmed RCA and impact:
+
+- `Any` config and stream fields obscured the native SDK contract. The adapter
+  discarded a stream when `await_output()` failed. A function probe against the
+  installed `DuplexEventStream` proves its `close()` rethrows output failure before
+  calling input close. Swallowed cleanup exceptions then implied false success.
+- smithy-core 0.6.0 starts an internal request task. A pre-transmit failure such as
+  a missing identity resolver can finish that task without resolving the future
+  awaited by `duplex_stream()`. Startup waited until timeout and the task failure
+  was unobserved. The probe now exercises that actual SDK branch without HTTP I/O.
+- AWS's extensible enums accept unknown strings. An annotation alone did not
+  enforce the request's supported language/stabilization choices.
+- `EventReceiver.receive()` returns `None` at EOF, not necessarily
+  `StopAsyncIteration`. The old adapter treated EOF as an error, collapsed native
+  error variants and could mark disconnected before the factory read a failure.
+- `ResultId` identifies a transcript segment, not the HTTP request. The old
+  projection used it as `provider_request_id`, omitted word speaker labels and
+  attributed mixed-speaker results to the first speaker.
+
+Implemented:
+
+1. `AmazonTranscribeAdapterConfig` validates consumed options, supported sample
+   rates, installed SDK language/stabilization choices and explicit speaker policy.
+   Secret fields are hidden/excluded; optional shared settings stay outside the
+   native request. No new provider/model default or SDK dataclass replacement.
+2. `AmazonTranscribeStream` owns exact `DuplexEventStream`, `EventReceiver`, output
+   and task types. Its SDK interceptor observes early request-task failure through
+   a public hook. The per-call plugin avoids losing observer identity to the SDK's
+   config deep copy. There is no global monkey-patch, private SDK attribute access
+   or dependency change.
+3. Startup, send and receive waits are shielded from caller cancellation. Cleanup
+   waits for an outstanding write, closes input, settles startup/reads and closes
+   output. Partial/late handles remain owned. Its five-second caller deadline leaves
+   late cleanup tracked; failed or incomplete cleanup blocks replacement. Adapter
+   connect/disconnect calls serialize one native lifecycle.
+4. `STTConnectionRetryUnsafe` distinguishes a known error cause from permission to
+   retry. Native AWS establishment errors preserve their diagnostic category but
+   do not add service-error retries to the factory. The existing factory-owned
+   timeout path still requires successful cleanup and remains a separate policy.
+5. Queued transcripts and pending terminal errors remain factory-readable. EOF,
+   native modeled exceptions and unknown event variants have distinct handling.
+   Request/session IDs come from native output; result/channel IDs use a validated
+   metadata object. Word speakers survive translation; ambiguous segment speakers
+   stay absent.
+
+Verification on 2026-09-08:
+
+- **107 AWS function/effect checks**: strict config, unknown SDK enum choices,
+  secret privacy, real partial-stream close regression, PCM/event types, EOF,
+  native modeled errors, late startup, send/read cancellation, timeout retention,
+  both-side cleanup failures, concurrent entrypoints and unsafe retry refusal.
+- Full installed SDK path with a controlled HTTP transport: actual serialization,
+  SigV4 signing, signed PCM input, binary event decoding, canonical factory queue,
+  response identities, HTTP 503 and input EOF. The factory consumes terminal quota
+  errors as errors, not an unnoticed disconnected state. No real AWS endpoint,
+  CRT network callback, browser, operator credentials or operator DB was exercised.
+- Existing **255 failure**, **84 startup**, **388 shared contracts**, **321 STT
+  flow**, and **1,245 speech material / 21 constructor** checks pass.
+- Four changed owner files pass scoped Pyrefly. All five type/import hooks, full
+  Ruff, STT formatting, documentation and app import/OpenAPI checks pass.
+  Whole-platform Pyrefly remains **757 errors / four suppressed**. These results
+  are scoped progress, not platform completion or live vendor acceptance.
+
+Sequential milestone review:
+
+1. **DDD boundaries:** native enums, requests, events and observer stay in the
+   adapter. Socket-owned errors control factory retry; no module/DB imports.
+2. **Architecture fit:** the stream owner hides an actual SDK ownership gap, not
+   a second retry engine. Existing factory and neutral speech-option contracts remain.
+3. **Data flow:** real SDK sign/encode/decode and factory delivery are covered;
+   review additionally fixed pending terminal-error visibility and request/segment
+   identity confusion. Native SDK response types are not replaced with loose JSON.
+4. **Plan alignment:** completes this native contract/partial-stream slice, not
+   all AWS resource disposal, final drain or overall voice lifecycle.
+5. **Clean code/security/performance:** explicit task types, no casts/ignores or
+   credential snapshots, safe public errors, one serialized sender/lifecycle and
+   bounded caller cleanup. Native operations may remain pending after that bound;
+   retention prevents unsafe replacement but is not forced physical disposal.
+
+Next:
+
+1. Resolve physical CRT transport ownership/termination and final transcript drain
+   using supported, version-verified APIs. The installed transport exposes no public
+   pool `close()`. Do not enable native AWS service-error retries or claim all
+   resources close until this is resolved and tested against actual transport.
+2. Google request/event types, accepted-stream readiness and native resource ownership.
+3. Shared in-flight recovery and typed not-sent outcomes, then remaining STT/TTS and
+   F0–F10 flows. Uncertain audio writes still must not be replayed based on exception
+   text. Live vendor/widget QA and human product acceptance remain unrun for this slice.
+
+Sources: [AWS streaming request/errors](https://docs.aws.amazon.com/transcribe/latest/APIReference/API_streaming_StartStreamTranscription.html),
+[AWS result identity/timing](https://docs.aws.amazon.com/transcribe/latest/APIReference/API_streaming_Result.html),
+[SDK operation contract](https://docs.aws.amazon.com/sdk-for-python/v1/reference/clients/transcribe-streaming/operations/start_stream_transcription/),
+and installed aws-sdk-transcribe-streaming 0.7.0 / smithy-core 0.6.0 source.
+Current online SDK docs differ in client/config naming; implementation and probes
+use the installed signatures, not an uninstalled release's close method.
+
+### F7 progress: AWS physical transport ownership
+
+This continues the preceding AWS slice; the complete F0–F10 goal remains active.
+
+Confirmed source/effect findings:
+
+- The SDK's default transport hides its connection pool and has no public close
+  method. Its generic CRT async stream has an empty request-body implementation
+  in installed awscrt 0.32.2. A direct function probe confirms that method does not
+  consume input. Earlier controlled-transport QA bypassed this native body writer;
+  those results did not prove PCM reached a socket.
+- Native header waiters can remain pending when a connection fails before headers.
+  Native chunk EOF can also accompany failed completion. Both need explicit
+  completion ownership, not a cast or an optimistic disconnected flag.
+
+Implemented in `amazon_transcribe_transport.py` and `amazon_transcribe_stream.py`:
+
+1. An adapter-owned transport implements the SDK's public transport contract and
+   uses `AIOHttp2ClientConnection` / `AIOHttp2ClientStream`. Signing, endpoint
+   resolution, request serialization and binary event coding remain SDK-owned.
+   A per-call plugin installs the transport after config deepcopy.
+2. Exact native connection, request, body, writer and completion types replace
+   hidden ownership. Request and close waiters are shielded; late acquisition is
+   retained and closed. The public input iterator captures the native writer task
+   so its failures are observed without inspecting private task/pool attributes.
+3. Event cleanup gets a two-second grace period, then physical shutdown wakes
+   outstanding I/O. The five-second caller deadline still reports incomplete
+   cleanup and retains its operation. Shutdown's completed future proves disposal;
+   a shutdown error reason is not confused with an unclosed connection.
+4. HTTPS/certificate verification remain required. Header names/control characters
+   are checked before CRT. Repeated headers, signed path/query and body bytes retain
+   their meaning. Manual response flow control bounds native buffering.
+
+Verification on 2026-09-08:
+
+- 23 transport function checks: invalid headers/body/scheme, one-attempt ownership,
+  idempotent close and the installed generic-body regression reproduction.
+- Real local TLS/HTTP2 transport: PCM bytes, repeated headers, path/query, normal
+  EOF, hanging peer, cancellation before headers and abrupt peer shutdown.
+- Delayed real connection acquisition: cancelling setup and cleanup waiters does
+  not discard the late socket; repeated close joins its shutdown, and no request
+  is sent after closing begins.
+- Full installed SDK → CRT → adapter → factory path: actual SigV4, signed PCM,
+  binary transcript decoding and identity projection; normal/hanging close, HTTP
+  503, pre-header cancellation and abrupt shutdown. No unobserved task errors.
+- Existing 107 AWS, 255 failure, 84 startup, 388 shared-config, 321 STT-flow and
+  1,245 speech-material checks pass, including 21 native constructors. The older
+  STT-flow probe initially failed because it still expected a segment ID as a
+  request ID. Its function assertion now checks the previously corrected contract;
+  production identity behavior was not changed to satisfy the stale probe.
+- Scoped Pyrefly is clean; whole-platform remains 757 errors / four suppressed.
+  Full Ruff, five type/import hooks and documentation checks pass.
+
+Sequential review: DDD boundaries remain inside the socket adapter; architecture
+uses the SDK extension point rather than a second signing/retry engine; real socket
+data flow now supplements controlled transport checks; plan scope remains full
+platform hardening; cleanup/cancellation and bounded buffering were checked as part
+of the same milestone. No dependency, DB, migration, operator configuration, API,
+UI, deployment or Git history changes.
+
+Still required: final transcript drain/delivery at disconnect, Google native
+readiness/ownership, safe in-flight recovery, the remaining F0–F10 contracts and
+live vendor/widget QA. Local TLS fixtures use dummy credentials and an ephemeral
+CA; they do not establish AWS service acceptance or human product acceptance.
+
+Source evidence: installed aws-sdk-transcribe-streaming 0.7.0, smithy-core 0.6.0,
+smithy-http 0.4.3 and awscrt 0.32.2; [CRT shutdown completion](https://awslabs.github.io/aws-crt-python/api/http.html#awscrt.http.HttpClientConnectionBase.shutdown_future).
+
+### F7 progress: typed final-output ownership and startup rollback
+
+This follows the AWS physical-transport slice. The full F0–F10 objective remains
+active; this is not a platform-wide completion claim.
+
+Confirmed RCA:
+
+- A real local TLS/HTTP2 peer emitted its only final transcript after the installed
+  AWS SDK sent signed input EOF. The old adapter stopped its receiver before EOF:
+  factory context exit delivered zero events. Earlier transcripts emitted before
+  close did not exercise that boundary.
+- Factory/runtime task shutdown could stop forwarding before final provider output
+  and debounce were delivered. Keeping separate child references also risked
+  reading stale handles after the shared supervisor replaced a failed task.
+- Telephony's failed-start `teardown_voice_pipeline_bundle` cancelled the transcript
+  writer before STT close. Its function reproduction produced an empty consumer
+  sink. An STT cleanup exception also skipped TTS disconnect. This is specifically
+  the setup rollback path: normal telephony `_drain_voice_pipeline` and browser
+  cleanup already close STT before draining transcript queues. The earlier broad
+  suspicion about normal telephony ordering was not supported by caller tracing.
+
+Implemented contracts:
+
+1. AWS `finish_input()` sends EOF once without disposing the readable output.
+   Adapter close keeps receiving within a bounded final-result deadline, then
+   disposes the native stream even when final output fails. Previously observed
+   native errors are not relabelled as newly occurring finalization errors.
+2. `STTFinalizationFailed` distinguishes incomplete output from incomplete resource
+   cleanup and does not authorize retries. Factory forwarding retains an acquired
+   event until queue acceptance, uses a bounded delivery wait and refuses to
+   replace undelivered output. Its shutdown reads the supervisor's current task
+   registry, not duplicate cached child references.
+3. Runtime disconnect drains accepted factory events and final debounce while the
+   response writer is alive. Closing rejects new audio/reconnect admission. Owned
+   disconnect tasks are shielded and their terminal exceptions observed.
+4. Startup rollback stops synthesis work, closes recognition with its consumer
+   alive, bounds transcript queue drain, then stops recognition tasks. Nested
+   cleanup ensures TTS disconnect is attempted after preceding failure/cancellation.
+   Missing consumers do not imply delivery; their queue timeout stays visible.
+
+Verification on 2026-09-08:
+
+- Final-at-EOF reproduction failed before the fix; the same actual SDK/CRT path
+  now delivers the final event once through the factory.
+- Four actual local SDK/HTTP2 runtime cases pass: immediate output, debounced
+  output, bounded blocked downstream with retained batch, and parent cancellation.
+  Socket shutdown completion and no unobserved task exceptions are checked.
+- 17 factory ownership checks pass, including backpressure, supervisor replacement,
+  refusal of reconnect after close and refusal to replace undelivered output.
+- Six rollback function cases pass: normal, finalization failure, cancellation,
+  resource-close error, absent writer and absent bundle. Actual SDK/CRT EOF also
+  reaches a running rollback consumer before its task ends; both provider closes
+  are checked. These are function/effect proofs, not live carrier or DB proofs.
+- Full Ruff and affected formatting pass; six STT files have zero scoped Pyrefly
+  errors. Whole-platform baseline remains 757 errors / four suppressed. Telephony
+  voice retains four pre-existing diagnostics: the optional background-config
+  protocol mismatch and nullable references captured by the silence callback.
+  All five existing typed-contract/import hooks pass.
+
+Milestone review sequence: DDD ownership remains adapter → factory → pipeline;
+architecture keeps native SDK data inside the adapter and live handles out of
+Pydantic serialization; data-flow review covers EOF, forwarding, cancellation and
+rollback consumers; plan alignment preserves all F0–F10 requirements; readability
+and resource review keep one task registry, named deadlines, explicit errors and
+no new dependencies, DB writes, migrations, credentials or network destinations.
+
+Next dependencies: canonical transcript/post-call sinks and outer cancellation
+coverage, Google native readiness/ownership, safe in-flight audio recovery, then
+remaining provider/product contracts. No claim of durable final-delivery across
+process death, live vendor acceptance or human product acceptance is made.
+
+### F7 progress: Google native STT contracts and terminal failure ownership
+
+Verified locally on 2026-09-09; this is not live vendor or browser acceptance.
+
+RCA:
+
+1. The old implementation passed an async generator as the only argument to
+   synchronous `SpeechClient.streaming_recognize`. Installed 2.35.0 requires
+   separate config and request arguments. A no-network call reproduced `TypeError`;
+   the adapter's background retry loop hid failure behind optimistic readiness.
+2. Google output was reduced to dictionaries, losing native type checking and
+   treating omitted confidence as a measured zero. Configured word timestamps
+   were not forwarded to recognition settings.
+3. A real local gRPC authentication refusal exposed a shared factory issue:
+   restarting a reader did not recreate the failed RPC, and supervision/cleanup
+   could replace its cause with generic task-stop or finalization failures.
+4. A full-queue sender probe exposed the complementary boundary: receive errors
+   were classified, but a failed sender could leak `GoogleAPICallError` outside
+   the adapter. The same socket-owned classification now covers both directions.
+
+Implemented contracts:
+
+- `GoogleSTTConfig` is frozen Pydantic. Model/language remain required, extensible
+  vendor identifiers; no replacement defaults. Credentials are excluded, then
+  parsed only for the native credential constructor. SDK types remain native.
+- `SpeechAsyncClient` owns the RPC/channel for one attempt. Native requests send
+  config first, then PCM16 bytes. SDK connection establishment precedes readiness;
+  it is not a claim of a transcript or successful vendor authorization.
+- Native response conversion retains text spacing, finality, word timing,
+  detected language and metadata. Confidence/stability absence is explicit.
+- Bounded input/output queues and owned EOF/cleanup tasks retain resource
+  ownership. Full-queue senders wake when the RPC ends; caller cancellation does
+  not abandon provider cleanup. Channel-close cancellation is stream EOF, not
+  cancellation of the parent reader. A real parent cancellation still propagates.
+- Factory readers no longer self-restart on terminal provider errors. Original
+  typed failures survive forwarding/cleanup; incomplete final output remains
+  distinct from failure to prove physical resource disposal.
+
+Executed checks:
+
+- **57 Google function/contract checks:** config, native requests/responses,
+  credentials, confidence/timing, status codes and SDK exception classification.
+- **Four native TLS/gRPC runtime cases:** normal EOF-only final response, hung
+  finalization, authentication refusal and caller cancellation. The final response
+  reaches `FinalTranscriptBatch`; native channels reach shutdown.
+- **Five native verification cases:** success, three authentication refusals and
+  a hang through `VoiceRuntimeVerifier`; failed RPCs never report verified.
+- **Four backpressure/startup cases plus the sender error boundary:** RPC EOF,
+  RPC failure, cancelled blocked sender and cancelled startup. No second queued
+  audio item is accepted after the ended RPC; close tasks are joined.
+- Existing **84 startup**, **255 failure**, **37 lifecycle**, **17 finalization**,
+  **1,245 speech material** checks and **21 native constructors** pass. The shared
+  STT source-to-consumer probe now has **287 checks**: Google's former synthetic
+  dictionary cases were replaced by native protobuf checks, supplemented by the
+  dedicated Google checks above, not retained as a false native-path proof.
+- The four native AWS SDK/CRT final-output regression cases pass after the shared
+  factory changes. The Google/native/factory type gate reports zero errors; full
+  Ruff and scoped formatting pass. Whole-platform Pyrefly still reports **754
+  errors, 4 suppressed**; full F0–F10 completion remains unproven.
+- Native cancellation leaves no pending asyncio tasks after local channel/server
+  shutdown. All five local typed-contract/import hooks pass; the voice gate now
+  includes the native Google package and triggers on its changes.
+
+Milestone review, sequential:
+
+1. **DDD boundaries:** native SDK/credentials remain socket-owned; common and
+   pipeline consumers receive canonical events/errors. No module imports added
+   to sockets, no ORM or tenant policy moved into the adapter.
+2. **Architecture fit:** existing factory and runtime remain the owners; no new
+   scheduler, durable lane or implicit reconnect authority.
+3. **Data flow:** checked config → native RPC → canonical event → factory/runtime
+   batch, plus verifier and shutdown error paths. DB transcript sinks are not
+   claimed by these fixtures.
+4. **Plan alignment:** follows F7's request/response/error/consumer flow and the
+   user's Pydantic preference; removed obsolete private dataclass/SDK-wrapper
+   assumptions from probes. The other platform flows remain open.
+5. **Clean code/security/performance:** removed unused language/model aliases and
+   misleading feature prose; bounded queues, typed options/errors, no blocking
+   sync RPC loop or hidden infinite retry. TLS fixtures use a local trusted CA,
+   never disabled certificate verification; no real credentials or vendor writes.
+
+Sources: [Speech v1 contracts](https://docs.cloud.google.com/speech-to-text/docs/reference/rpc/google.cloud.speech.v1),
+[async client](https://docs.cloud.google.com/python/docs/reference/speech/latest/google.cloud.speech_v1.services.speech.SpeechAsyncClient),
+installed `google-cloud-speech` 2.35.0 native signatures and channel lifecycle.
+
+Still required: live Google/vendor acceptance, full call transcript persistence
+and cancellation QA, safe in-flight recovery/replay semantics, remaining native
+STT/TTS operations and the rest of F0–F10. No DB, migration, dependency, deployment
+or Git-history changes were made for this slice.
+
+### F7 progress: Rev AI native contracts and EOF ownership
+
+Verified locally on 2026-09-09. This advances F7, not full F0–F10 completion.
+
+RCA and changes:
+
+- The old query omitted configured language and concatenated credentials without
+  encoding. A no-network probe demonstrated both defects. Frozen vendor config
+  now builds the native query explicitly and encodes credential values.
+- Native hypotheses were flattened through dictionary events. Partial words lost
+  separators and confidence was fabricated. Discriminated Pydantic responses now
+  translate directly into canonical events, retaining native timing and job ID.
+- Startup reported readiness before the native acknowledgement; teardown sent an
+  unsupported `CloseStream` message and cancelled readers. The stream now waits
+  for `connected`, sends binary PCM with transport backpressure, then sends `EOS`
+  and drains final output before closing. Native close codes become typed errors.
+- During this slice, execution caught `model=None` crossing into `STTEvent.model`,
+  whose absence convention is an empty string. Corrected the producer rather
+  than widening the shared contract. Static checking alone missed this boundary.
+
+Executed evidence:
+
+- 54 config/query/parser/conversion/error contract checks.
+- Seven real local TLS/WebSocket factory/runtime cases: normal EOF final output,
+  parent cancellation, finalization timeout, authentication refusal, invalid
+  acknowledgement, mid-stream refusal and malformed output. Successful output
+  reaches `FinalTranscriptBatch`; local teardown leaves no pending asyncio tasks.
+- Three actual `VoiceRuntimeVerifier` cases: success, authentication refusal and
+  hung finalization. These fixtures do not contact Rev AI.
+- 253 shared STT source-to-consumer checks, 259 failure checks, 37 lifecycle checks,
+  17 finalization checks, 1,245 speech-material checks and 21 native constructors.
+  The shared probe replaces obsolete Rev AI dictionary cases with native models;
+  failed-cleanup checks now assert retained failure rather than an implicit retry.
+- Full Ruff and scoped formatting pass. The native Rev AI package is included in
+  the local voice typing hook. Whole-platform Pyrefly: 753 errors, 4 suppressed;
+  unrelated platform work remains open.
+
+Milestone review, in order:
+
+1. DDD: vendor wire types and credentials stay in sockets; pipelines consume the
+   existing canonical transcript/error contracts. No new cross-module dependency.
+2. Architecture: existing adapter/factory/runtime retain ownership; no new worker,
+   retry lane, provider default or product policy.
+3. Data flow: query → acknowledged WebSocket → native hypothesis → canonical event
+   → runtime batch, plus verification and teardown. DB sinks are not proven here.
+4. Plan: follows the accepted request/response typing and Pydantic-first scope.
+   Live provider/widget acceptance and remaining F0–F10 work are still required.
+5. Readability/security/performance: removes recursive polling and unbounded audio
+   queuing; uses explicit native enums, encoded credentials and bounded cleanup.
+   TLS fixtures trust a local CA; certificate verification was not disabled.
+
+Browser QA: admin and widget return HTTP 200 on ports 5173 and 5174. Browser
+automation is blocked by the locked Mac; login, agent/tool use and admin
+conversation inspection remain pending. Existing org/provider data is unchanged.
+
+Sources: [Rev AI requests](https://docs.rev.ai/api/streaming/requests),
+[responses](https://docs.rev.ai/api/streaming/responses),
+[close codes](https://docs.rev.ai/api/streaming), installed websockets 15.0.1.
+No DB, migration, dependency, deployment, commit or Git-history changes.
+
+### F7 progress: Gladia V2 session, audio and native response boundary
+
+2026-09-09: wired into the local adapter and verified with controlled native
+HTTPS/WebSocket peers. No deployed image or operator configuration changed.
+
+Source review found the V1 implementation omits configured language, fabricates
+absent confidence and cancels readers without a terminal drain. Gladia's current
+V2 API uses the language codes already exposed by our catalog, but requires a
+session-creation POST before the WebSocket. Its migration guide and current init
+reference disagree on model availability: the current reference defines
+`solaria-1`, whereas the older guide says to omit model. This slice does not add
+or claim a configured model; the request omits it and canonical output leaves
+model identity unspecified.
+
+Implemented contracts:
+
+- `gladia/wire.py`: frozen request/session models, native sample-rate and encoding
+  enums, typed transcript/lifecycle union and a terminal recording command.
+  Request only transcripts, lifecycle and errors; do not enable extra products.
+- `gladia/session.py`: actual HTTPX session-creation function, ten-second overall
+  deadline, 64 KiB response bound, no redirects or automatic retries. HTTP and
+  transport failures become terminal socket categories. Cancellation preserves
+  uncertainty about whether the remote POST succeeded.
+- `gladia_events.py`: native transcript → canonical STT event, preserving text,
+  confidence absence/zero, relative timing, word details, language, session and
+  utterance identities. Channel number is not a speaker ID.
+- The returned token-bearing URL is excluded from model dumps/repr and restricted
+  to the documented `wss://api.gladia.io/v2/live` destination and one token query.
+  The WebSocket connection refuses redirects, including same-origin redirects.
+- `gladia/stt.py`: one resource-owning class per session attempt. Readiness follows
+  the matching `start_session` acknowledgement, not merely socket acquisition.
+  PCM writes are awaited; shutdown flushes the buffered tail, sends the typed
+  `stop_recording` command and drains final output through `end_session`.
+  A cancelled/failed send invalidates the attempt, so cleanup cannot replay audio
+  whose acceptance is unknown. No in-stream flush command is invented.
+- `gladia_adapter.py`: typed native → canonical conversion and a bounded output
+  queue replace the V1 dictionary bridge. Pending output/error survives shutdown;
+  an unresolved POST/session outcome refuses replacement, including after a
+  factory-owned startup timeout. Physical closure and final-output success are
+  distinct; cleanup retains one observed owner task.
+
+Executed locally:
+
+- 61 request/response/conversion checks, 114 config checks and 176 session-function
+  checks with real HTTPX and controlled transport: status refusals, malformed and
+  oversized responses, deadlines, caller cancellation, one POST and client close.
+- Six real local TLS factory/runtime cases: binary PCM and buffered-tail delivery,
+  partial/final output, parent cancellation, finalization timeout, auth refusal,
+  invalid readiness and missing session-end handling.
+- Four native startup cases: POST timeout, acknowledgement timeout, foreign
+  session ID and redirect refusal. Each made exactly one session POST; none
+  emitted readiness. Four actual config-verifier cases cover normal closure,
+  auth refusal, hanging finalization and invalid acknowledgement.
+- Cancelled-send regression: simulated acceptance followed by cancellation now
+  produces one audio send, not a second send during cleanup. This is a controlled
+  send-boundary proof, not a claim of remote receipt.
+- Shared flow probe: 221 assertions after replacing the old Gladia generic-dict
+  cases with native events; failure probe: 239 assertions for the seven other
+  WebSocket adapters. Gladia startup coverage now uses its actual two-step native
+  protocol rather than an obsolete one-step stream double.
+
+The complete native package and adapter are in the local voice typing gate.
+These proofs do not establish live Gladia account acceptance, canonical DB writes
+or widget/browser behavior.
+
+Milestone review, sequentially: (1) vendor wire types stay socket-owned, canonical
+STT types cross the pipeline; (2) factories/config verification use the same new
+adapter, without DB or module access inside it; (3) settings → POST → native
+stream → canonical output → final batch and teardown were exercised; (4) this
+advances F7 without closing F0–F10; (5) explicit enums, frozen data, ordinary
+resource owners, bounded queues, secret-safe errors and no uncertain replay
+replace the old unbounded/dictionary path. Review exposed and the regression
+reproduced the cancelled-send replay before the fix above.
+
+Next dependencies, retaining the full F0–F10 objective:
+
+1. Continue the remaining native STT/TTS providers and source-to-sink F7 work;
+   do not substitute the canonical event fixture for vendor-specific wire QA.
+2. Run configured-org widget/admin QA after the Mac is unlocked; no credential or
+   provider data reset is needed.
+
+Sources: [migration](https://docs.gladia.io/chapters/live-stt/migration-from-v1),
+[current init contract](https://docs.gladia.io/api-reference/v2/live/init),
+[WebSocket messages](https://docs.gladia.io/api-reference/v2/live/websocket).
+Target local dependencies: HTTPX 0.28.1, websockets 15.0.1; no dependency changes.
+
+### F7 progress: Sarvam legacy STT config and native messages
+
+2026-09-09: typed config/request/response path wired locally. This is **not** a
+complete lifecycle or live-provider acceptance claim and does not close F7.
+
+The actual old parser was exercised with an SDK-shaped response. It stripped
+transcript whitespace and discarded native request ID, language and metrics;
+an error envelope returned `None`. The adapter also advertised interim results
+although its configured `/speech-to-text/ws` endpoint emits final utterances.
+The original author's reasoning is unknown; the implementation used a generic
+dictionary bridge instead of the vendor envelope contract.
+
+Implemented:
+
+- Frozen `SarvamSTTConfig`, secret-safe key fields, explicit sample-rate/source
+  encoding enums and shared speech-option enums with unchanged boolean JSON.
+  Invalid encodings no longer fall back silently to PCM. Existing known aliases
+  still normalize. The adapter no longer mutates interruption policy; the voice
+  pipeline owns that policy. A single speech-state enum replaces overlapping
+  speech-active/interrupted booleans.
+- Typed connection query; installed SDK `AudioMessage`, `AudioData` and
+  `SttFlushSignal` construct outbound messages. No request/model/endpoint upgrade.
+- Vendor-local `sarvam_wire.py` validates a discriminated transcript/VAD/error
+  union. SDK 0.1.28 has `Any` in message/signal kinds and an untagged data union;
+  using that union alone does not enforce envelope/data correspondence.
+- `sarvam_events.py` retains native text, ID, language and duration metrics.
+  Language probability is not transcript confidence; audio duration is not an
+  absolute audio offset. Native `occured_at`/aware timestamp values remain event
+  time, not segment positions. Undocumented timestamp/diarization payloads are
+  not promoted to supported canonical features.
+- Invalid/error responses now raise a safe terminal socket error; provider text
+  and validation inputs are not echoed. The legacy endpoint's interim capability
+  is marked unsupported. SDK-defined error envelopes remain recognized even
+  though the newer endpoint comparison describes legacy errors as close-code-only.
+
+Evidence: 170 config checks, including every µ-law byte against `audioop`;
+67 native-message/adapter checks; five actual local TLS WebSocket cases through
+resolved provider config and the factory-created adapter. Those cases cover
+16 kHz PCM, 8 kHz µ-law conversion, VAD/flush/transcript exchange, vendor errors,
+invalid envelopes and malformed JSON. Shared flow probe now has 183 assertions
+after replacing obsolete generic Sarvam dict cases; 239 startup-failure checks
+and 1,245 speech-material checks/21 native constructors remain passing.
+The Sarvam files are included in the local voice typing hook without suppressions.
+
+**Lifecycle continuation, 2026-09-09:** the actual old receiver swallowed
+`CancelledError`; a controlled close failure was hidden and cleared `_ws`.
+The shared runtime also classified `STTConnectionRetryUnsafe` as retryable because
+it accepted every `STTConnectionError` subclass. These were reproduced before
+changing the affected branches.
+
+- Removed Sarvam's receive-time recursive reconnect. Cancellation propagates;
+  remote close, malformed responses and vendor errors remain terminal.
+- Serialized audio/flush sends. Failed or cancelled delivery retains an unsafe
+  outcome; later input and implicit replacement are refused.
+- One shielded close task survives caller cancellation. Its bounded waiter does
+  not cancel ownership. Physical cleanup failure retains the socket and blocks
+  replacement; repeated disconnect observes the same outcome.
+- The runtime now excludes classified establishment and cleanup errors from
+  audio replay. This is not a claim that every remaining generic-error branch
+  across other vendors already has an explicit not-sent contract.
+- Public flush now emits the SDK-defined frame when enabled. It is a request,
+  not a finalization acknowledgement; disconnect still does not guarantee final
+  transcript draining.
+
+Verification: 29 lifecycle/error-classification function checks; six additional
+real local TLS cases through the adapter/runtime for accepted-then-failed audio,
+cancelled audio delivery, receive cancellation, remote close, cancelled close and
+cancelled handshake. No pending tasks or unhandled task exceptions remained.
+The earlier five native wire cases, 170 config checks, 67 native-message checks,
+183 shared-flow checks and 239 startup-failure checks also passed again. All five
+local typing/import hooks and full backend Ruff passed. No live vendor, DB sink
+or browser conversation is claimed by these fixtures.
+
+Next, before the Sarvam milestone review/acceptance:
+
+1. Complete final-output handling within the documented protocol limit, without
+   inventing an EOF acknowledgement or equating a timer with delivery proof.
+2. Run verifier/final-output probes, then sequential
+   boundary/architecture/data-flow/plan/clean-code review of the complete slice.
+3. Run configured-org browser/admin QA after the Mac is unlocked. Local peers do
+   not prove live account/model availability or canonical DB delivery.
+
+Sources: [legacy WebSocket reference](https://docs.sarvam.ai/api-reference/legacy/speech-to-text/transcribe/ws),
+[streaming guide](https://docs.sarvam.ai/api/api-guides-tutorials/speech-to-text/streaming-api),
+[endpoint comparison](https://docs.sarvam.ai/api/api-guides-tutorials/speech-to-text/which-api-to-use).
+Target: installed `sarvamai` 0.1.28 and `websockets` 15.0.1. Current docs list
+Saaras v3/v4 and a separate realtime endpoint; the existing Saarika v2.5 config
+option is retained, not silently replaced or newly claimed live-compatible.
+Model-catalog reconciliation requires its own config/verification evidence.
+
+### F7 progress: Flux native response path
+
+2026-09-09: the actual parser hid vendor errors as `None` and discarded request
+identity, audio windows and word data. A broad envelope plus dict conversion
+erased those distinctions; the author's original reasoning is unknown.
+
+- `deepgram_flux_wire.py` defines tagged Connected/TurnInfo/Error models, turn
+  event/trigger enums, finite numeric fields and optional paired word timestamps.
+  The existing CloseStream request now also uses a typed model. No SDK dependency
+  was added: this adapter uses the existing `websockets` 15.0.1 transport.
+- `deepgram_flux_events.py` directly maps native turn observations. Updates are
+  partial, eager outcomes are preflight, and confirmed EndOfTurn is final. Native
+  request identity, turn/sequence metadata, words and audio intervals survive;
+  no platform request ID or transcript-wide confidence is fabricated.
+- The voice pipeline retains interruption policy; the adapter no longer maintains
+  overlapping speech/interruption booleans or unreachable eager-final suppression.
+  Explicitly disabled interim results suppress partial observations. No eager
+  query option or speculative LLM generation was enabled by this change.
+- Malformed/error responses now raise safe terminal errors. Flux was the final
+  caller of the generic `adapters/events.py` bridge; it was removed after checking
+  all repository callers. Historical evidence for that bridge is not current
+  native-provider proof.
+
+Verification: 107 wire/conversion/adapter function checks; four real local TLS
+cases through resolved config, factory and runtime queues (normal turns, disabled
+partials, vendor error, malformed input). Eight additional checks feed seven
+native turn events through the actual transcript consumer: only EndOfTurn calls
+the final-transcript callback; DB projection is patched, not verified. The
+current shared STT probe has 142
+checks, replacing obsolete bridge assertions with native Flux fixtures. It fails
+if any catalogued provider lacks a native fixture. All five local typing/import
+hooks, focused typing, full backend Ruff and diff whitespace checks pass.
+No live Deepgram, canonical DB or browser acceptance is claimed here.
+
+2026-09-09 follow-up: the consumed Flux config is now frozen and revalidated at
+adapter construction. Its key uses excluded `SecretStr`; model/audio enums,
+strict sample rates and finite vendor-bounded EOT parameters form an explicit
+raw-audio query serialized with `urlencode`. A pre-change function probe proved
+key disclosure in dumps, mutation, boolean-to-rate coercion and query injection
+through the model string. Native limits now reject those inputs before I/O.
+Existing Eylo threshold/time-out defaults remain unchanged; they are not claimed
+to be vendor defaults. Shared PCM encoding maps explicitly to native linear16.
+Unused native declarations for language, channels, eager threshold and
+interruption policy were removed; shared runtime policy remains outside the query.
+
+Verification: 311 config/query checks (including all 60 native model/encoding/rate
+combinations and the shared factory path), 107 wire checks, four local TLS cases,
+1,245 shared material checks with 21 real STT/TTS constructors, 142 shared STT
+flow checks, 239 startup/failure checks and all five typing/import hooks pass.
+No live Flux or canonical DB acceptance is implied. The catalog still advertises
+`high_vad_sensitivity` for Flux although this adapter sends no corresponding
+native setting; resolve that capability projection before declaring the complete
+config path finished. Container-based audio auto-detection and eager mode are not
+enabled by this change.
+
+Config sources: [configuration](https://developers.deepgram.com/docs/flux/configuration),
+[quickstart](https://developers.deepgram.com/docs/flux/quickstart),
+[raw encoding/rate release](https://developers.deepgram.com/changelog/2025/10/16).
+
+Browser checkpoint: console login and the standalone widget worked in the existing
+Eylo Development org. A real Groq turn persisted two Completed messages
+(`01a0842a-a7e6-72e1-a692-c903afc3e8e8`). A read-only SOR turn found Linear issue
+VER-50 through `issue_search__ee9fc353`; the console displayed its actual request,
+result and final answer, all five messages Completed
+(`01a0842c-908d-7b70-b9f0-21154013c441`). Widget list navigation retained the new
+conversation. No source mutation, provider reconfiguration or DB reset was done.
+These are deployed-runtime smoke checks only: the API container had no checkout
+mount and had been running for four days. Rebuild after implementation, then repeat
+the configured-provider matrix before claiming acceptance of current source.
+
+2026-09-09 ownership follow-up: a local reproduction confirmed swallowed receive
+cancellation, adapter-owned reconnect after remote EOF, discarded failed-close
+handles and further input after an uncertain send. The supported cause was mixed
+retry/resource authority and missing terminal state, not the typed wire parser.
+The original author's reasoning is unknown.
+
+Flux now serializes establishment and input, propagates receive cancellation,
+pins unsafe send/protocol/remote-close failures and removes recursive reconnect.
+One shielded close task remains owned across cancelled/timed-out waiters. Cleanup
+errors retain the socket; an explicit later disconnect may retry physical disposal
+of that same socket without resending application control or opening another
+stream. Failed CloseStream delivery is a finalization failure after physical
+cleanup, not successful completion. Runtime resource owners remain ordinary
+classes; configuration and native data remain Pydantic models.
+
+Verification: 34 ownership function checks; eight real local TLS cases covering
+uncertain/cancelled sends through the real runtime, receive cancellation, remote
+EOF, cancelled/failed cleanup, concurrent establishment and cancelled handshake.
+No pending tasks or unhandled loop errors remained. The existing four native
+TLS-to-factory/queue cases, 311 config, 107 wire, 142 shared STT and 239 startup
+checks also pass. This does not establish readiness acknowledgement, terminal
+buffer draining or live-vendor acceptance.
+
+2026-09-09 readiness follow-up: a function reproduction proved that the adapter
+reported ready without reading Connected and then accepted an unbound request ID
+and duplicate final. It now retains the latest typed Connected/TurnInfo response
+as the stream cursor. A new stream must acknowledge before accepting audio or
+publishing readiness; subsequent turns must match its request ID and have an
+increasing sequence. This is not an invented contiguous-number requirement.
+Duplicate Connected and malformed/error messages are terminal. Disabled interim
+output still advances the native cursor, so filtering cannot bypass validation.
+
+Startup rollback shares the owned close path under the lifecycle lock. Timeout,
+cancellation and invalid acknowledgement close the attempted socket before control
+returns to the factory. Only a fully disposed no-audio timeout can follow the
+factory's existing bounded retry policy; protocol failures remain terminal.
+
+Verification: 54 readiness/identity function assertions and nine native local TLS
+cases (delayed acknowledgement, invalid type, vendor error, malformed response,
+timeout recovery, cancellation, foreign identity, stale sequence and duplicate
+acknowledgement). The retry fixture checks the previous client is CLOSED and no
+longer owned before replacement; remote handler completion is checked separately,
+not assumed to share the client's scheduling order. Eight lifecycle and four
+factory/queue TLS cases still pass; 34 ownership, 311 config, 107 wire, 142 shared
+flow and 239 startup checks pass. Five typing/import hooks and full backend Ruff
+pass. No live Flux or canonical final-transcript acceptance is claimed.
+
+Sources: [native message contract](https://developers.deepgram.com/reference/speech-to-text/listen-flux)
+and [Connected readiness example](https://developers.deepgram.com/docs/flux/quickstart).
+
+2026-09-09 final-output follow-up: a native local TLS reproduction proved that
+closing the socket immediately after CloseStream discards buffered Updates. The
+vendor explicitly emits those Updates then EOF without EndOfTurn. A successful
+WebSocket close therefore did not establish transcript completion.
+
+The adapter now owns one reader and a bounded canonical-output queue. Shutdown
+sends CloseStream once, waits for the reader within a bounded final-drain window,
+then disposes the transport. Requested EOF retains the latest nonempty unfinished
+hypothesis as a stream-final observation, with `finalization_reason=CloseStream`;
+it does not forge a native EndOfTurn or duplicate an already-final turn. Interim
+filtering cannot discard the retained hypothesis. Acquired output remains readable
+after closure, including the pending event when bounded queue backpressure is
+cancelled. The shared factory remains responsible for downstream delivery.
+
+Verification for this follow-up:
+
+- Eight native TLS cases through resolved config, the real factory and voice
+  queues: buffered tail, interim disabled, already-final turn, a second unfinished
+  turn, empty text, unexpected EOF, timeout and invalid tail identity. The fixture
+  exercises EOF without a WebSocket close-status frame as documented by Flux.
+- Seven function cases cover stream-final conversion, pending-output retention
+  under queue backpressure, and the actual live transcript consumer. One buffered
+  final reaches one callback/live-buffer item; DB projection is substituted.
+- Nine native readiness and eight native lifecycle/cancellation regressions pass
+  with the documented CloseStream fixture. Four native wire/factory queue cases,
+  107 wire assertions and 142 shared STT flow assertions pass. No pending tasks or
+  unhandled event-loop errors remained in the native probes. Five typed/import
+  hooks pass.
+
+2026-09-09 capability and milestone review:
+
+- Onboarding no longer offers the inert Flux `high_vad_sensitivity` field.
+  Validation accepts the old saved shape but strips that field from effective
+  config. Six function cases prove input is not mutated, unknown keys still fail,
+  the obsolete key never reaches the native query, and Sarvam is unchanged.
+- The actual capability read path still called `dataclasses.asdict()` after STT
+  capabilities became Pydantic. Reproduced `TypeError`, then corrected the consumer
+  to `model_dump(mode="json")`. All 10 STT and 11 TTS native adapters now pass the
+  real capability projection function with substituted config retrieval. The
+  existing type gate did not detect this runtime-only `asdict` mismatch.
+- Sequential review covered DDD boundaries, architectural fit, source-to-sink
+  data flow, plan adherence and maintainability. Vendor wire types stay inside
+  sockets; modules supply resolved config through the pipeline; the factory owns
+  retries/downstream delivery; the adapter owns native reader/transport cleanup.
+  No network operation or DB transaction was added to capability inspection.
+- Data-flow review found a shutdown race: consuming `_reader_error` could erase
+  the notification before close determined its outcome. A controlled function
+  reproduction proved false success. Close now checks retained `_stream_failure`.
+  The regression and 25 native TLS finalization/readiness/lifecycle cases pass.
+- Review confirms bounded native output, serialized writes and no implicit audio
+  replay. The remaining model-specific optional native features are not claimed
+  or enabled. No dependency, public schema or migration changed in this slice.
+
+The Flux local contract milestone is verified, not live product acceptance. No
+live Flux, browser delivery of this source revision, or canonical DB persistence
+acceptance is claimed. The running API image predates this source. The full F0–F10
+goal remains open; continue generic stored voice carriers and remaining provider
+flows. Dynamic Configure/ForceEndTurn are not enabled by this slice.
+
+Sources: [Listen v2 reference](https://developers.deepgram.com/reference/speech-to-text/listen-flux),
+[turn state semantics](https://developers.deepgram.com/docs/flux/state),
+[CloseStream](https://developers.deepgram.com/docs/flux/close-stream).
+
+### F7 progress: call-session identity and live-resource contracts
+
+The complete F0–F10 end goal remains active. This slice follows carrier setup
+through session publication, tool lookup, event projection and teardown.
+
+Confirmed RCA and impact:
+
+- The registry stored an immutable key but accepted a mutable session identity.
+  A local probe changed the session's organization, then removal left the old
+  entry stranded. Runtime lookup and teardown could disagree about ownership.
+- Removal used the key alone. A local probe removed an old session, registered
+  a replacement with the same key, then repeated old removal: the replacement
+  disappeared. Delayed cleanup could unregister a live call.
+- The session dataclass left transport, recorder, runner and voice config as
+  `Any`, with open task/queue types and arbitrary string metadata. These fields
+  hid consumer-contract errors rather than establishing their validity.
+
+Implemented:
+
+1. `CallSession` and `MediaSessionKey` use Pydantic. Session identity requires
+   organization, carrier and call ID, cannot be reassigned, and rejects unknown
+   fields. Direction uses the existing call-event enum; media setup translates
+   the carrier's direction and socket-provider identity explicitly.
+2. Queues carry their actual producer types; task handles use `Task[None]`.
+   Services, recorder and buffer use concrete instance contracts. The live voice
+   runner supplies teardown's narrow `CallTurnRunner` port, avoiding a circular
+   import of orchestration code. Handles and auth tokens never enter snapshots.
+   STT queue payloads were still dictionaries at this milestone; the subsequent
+   canonical STT milestone above replaces them with `VoiceTranscriptInput`.
+3. Active media, termination-request and finalization states use owned enums.
+   Predicate properties preserve existing read semantics. Intrinsic observations
+   use strict booleans; counters and revisions reject invalid numeric inputs.
+4. `CallSessionMetadata` owns campaign UUIDs, transfer destination and provider
+   termination failure code. Media setup maps actual schema attributes, not
+   `getattr` over string keys. Call creation receives UUIDs directly; event JSON
+   retains the previous names/string representations. Transfer writes typed fields.
+5. Registry removal checks object identity. Duplicate publication and unscoped
+   ambiguity raise named `ValueError` subclasses, preserving existing catch
+   compatibility. Finalization remains retryable after cancellation/failure.
+6. Terminal reason resolution returns its non-null enum; finalization keeps one
+   resolved value through awaited projections. Status mapping returns `CallStatus`.
+   Transfer failure filing uses the immutable session org instead of relying on
+   a local variable whose initialization was only implied by a boolean latch.
+
+Executed QA:
+
+- `CALL-SESSION-CONTRACT-QA-OK`: **88 assertions**, covering frozen identity,
+  invalid/missing-field types, invalid handles/counters/states, excluded runtime
+  data, real runner-port compatibility, independent mutable defaults, scoped
+  lookup, duplicate/ambiguous refusal, stale removal, metadata/event projection,
+  repeated finalization, cancellation, retry, setup rollback and live task drain.
+- `CALL-SESSION-START-QA-OK`: **192 assertions** through the real
+  `_handle_start_event` and rollback for all four carriers, both directions,
+  with/without a canonical call. Real metadata/published-agent/DB-schema objects;
+  provider setup deliberately fails. Provider I/O, DB resolution and the failed
+  status write are substituted. Typed campaign mapping, opener selection and
+  absence of leaked tasks are checked.
+- `CALL-SESSION-CONTROL-QA-OK`: **49 assertions** through real termination,
+  transfer-tool lookup, transfer completion and call-start projection. Covers
+  accepted/rejected/exception/cancelled termination, idempotency and lock release,
+  ASGI media close, typed transfer success/failure metadata, exact org filing and
+  UUID campaign arguments. Carrier control and DB writes are substituted; real
+  conversation/session/event/DB-schema objects are used.
+- Existing carrier media **64** and setup **16** assertions pass after fixtures
+  supply the now-required provider/direction. No other assertions were loosened.
+- Two initial new-probe expectations were corrected against actual contracts:
+  read-only properties raise `AttributeError`, not Pydantic `ValidationError`;
+  queue teardown waits for acknowledgement and does not consume payloads. The
+  task-drain fixture now supplies its owning consumer and acknowledgement.
+
+Milestone review, in order:
+
+1. DDD: live-session ownership remains in the pipeline. Existing domain voice
+   config and socket provider types retain their owners. No module/socket imports
+   of each other or framework-to-platform dependencies were introduced.
+2. Architecture fit: reuses the current registry, locks, voice runner and task
+   teardown. No parallel session manager, queue or persistence model added.
+3. Data flow: authenticated metadata → typed session → registry/voice handoff →
+   event/control fields → instance-owned removal; the changed constructors and
+   cancellation branches are exercised with actual types.
+4. Plan alignment: Pydantic replaces internal dataclasses without claiming
+   whole-platform completion. Native carrier envelopes, browser/WebRTC sessions,
+   STT events, remaining vendors and broader F0–F10 work stay open.
+5. Readability/security/performance: remove unused `audio_profile`, untyped
+   handles and UUID reparsing. No new casts, suppressions or network/DB operations.
+   Registry identity is validated at publication/removal, not per audio sample.
+
+Whole-platform Pyrefly: **810 errors / 4 suppressed**, down from 819, with the
+existing two warnings. Sessions, finalization and media setup report zero errors;
+the larger telephony voice/tool files still have 11 baseline diagnostics. Five
+local type/import hooks pass. Full Python lint, documentation validation
+(46 pages, 283 links, 1,154 modules, 6,155 docstrings, 47 diagrams), app import/
+OpenAPI generation (245 paths, 564 schemas) and `git diff --check` pass.
+Local pre-commit/pre-push telephony typing now includes sessions and finalization.
+No migration, DB write, live provider call, deployment, commit or persistent test
+artifact in this slice. These checks do not prove live voice quality or all
+cross-worker lifecycle behavior.
+
+### F7 progress: carrier and realtime audio lifecycle contracts
+
+End goal remains the complete F0–F10 platform hardening scope. This continuation
+extends media ownership through the carrier and realtime consumers; it does not
+declare STT/TTS, telephony, or the platform complete.
+
+Confirmed baseline:
+
+- A normalized 100 ms realtime turn at 24 kHz emitted only 2,936 of the expected
+  3,200 browser PCM bytes. Another 264 bytes remained in the converter after
+  `TurnCompleteEvent`; interruption also retained a buffered tail.
+- Carrier conversion ran in `tts_producer_task`, downstream of the native TTS
+  completion signal. It could process chunks but never finalize the resampler.
+- The call handoff was a dataclass holding unparameterized queues/tasks and
+  unused plaintext config mappings. Recorder metadata guessed values from
+  carrier dictionaries instead of consuming validated media contracts.
+
+Implemented contracts:
+
+1. `RealtimeManager` owns accepting/suppressed/closed output as an enum. The
+   first nonempty chunk pins a validated source format for the turn. Supported
+   rate, complete PCM samples and same-turn rate agreement are checked before
+   conversion. No per-chunk format-model allocation after the first chunk.
+2. Realtime completion flushes once before awaiting tool work. Interruption
+   discards conversion state; teardown closes output before provider awaits.
+   Late dispatch cannot reopen it. Playback accepts bytes before the recording
+   tap runs, so rejected or empty output is never filed by that tap.
+3. Carrier setup supplies `consumer_audio_format` to `TTSRealtime`; the same
+   manager owns native completion, conversion tail and interruption reset.
+   Removed the separate carrier converter and its duplicate session pointer.
+   Both managers/media validate before initializer tasks are created.
+4. The carrier producer sends ready bytes and records after accepted writes.
+   Comfort audio uses the same target format. Recorder construction requires
+   call identity and checked media instead of guessed defaults.
+5. `VoicePipelineBundle` is frozen Pydantic with typed queues/tasks and
+   `InstanceOf` runtime handles excluded from serialization/schema/repr.
+   Removed unused STT/TTS config copies; TTS construction receives a normalized
+   `TTSConfig`. STT's downstream dictionary envelope and the larger call-session
+   model still require their own complete producer/consumer pass.
+
+Executed function/data-flow QA:
+
+- `REALTIME-AUDIO-LIFECYCLE-QA-OK`: 52 assertions across repeated 16/24 kHz
+  turns, exact output duration, tail flush, no empty chunks, malformed/rate
+  refusal, interruption, queue backpressure, recorder failure, delayed provider
+  close, tool-completion/shutdown race, late dispatch and task cleanup.
+- `CARRIER-AUDIO-LIFECYCLE-QA-OK`: 64 assertions. Real Hume native parser/factory
+  and TTS queue manager feed actual Twilio, Plivo, Exotel and Vonage media
+  serializers through an ASGI WebSocket. Three turns per carrier preserve
+  byte count, recording PCM and duration. Comfort audio, rejected writes and
+  resource cleanup are checked. Only native/network transport I/O is substituted.
+  Plivo's dummy REST credentials fail its client constructor; no REST operation
+  is exercised or claimed by this media-path check.
+- `CARRIER-SETUP-CONTRACT-QA-OK`: 16 assertions through `init_voice_pipeline`
+  using real published-agent/config/material models, with DB resolution and
+  provider initializer I/O substituted. Includes native/consumer formats,
+  shared queue identity, JSON/schema exclusion, frozen/invalid-handle refusal
+  and invalid-format/cross-org-material rejection before initializer task creation.
+- Initial probe fixtures omitted required realtime transcription/buffer fields
+  and incorrectly named an agent status. The real models refused them; probes
+  were corrected from source without weakening product validation. Silence
+  comparison uses a fresh-converter baseline and one-LSB tolerance because the
+  installed resampler emits that noise even with no prior audio.
+
+Milestone review, sequentially:
+
+1. DDD boundaries: adapter-native events remain in sockets; media conversion
+   and its lifecycle are pipeline-owned. No vendor SDK enters domain contracts.
+2. Architecture fit: reuse existing TTS/transcoder ownership; no second turn
+   queue, worker, or platform policy is introduced.
+3. Data flow: normalized native media → conversion → accepted output → recording
+   is exercised, including completion/interrupt/refusal effects and teardown.
+4. Plan alignment: adds runtime Pydantic/enum contracts and verifies their real
+   consumers. Full F0–F10 scope, all vendors, persistence and live QA stay open.
+5. Readability/security/performance: remove duplicate converters/config copies,
+   use named state/error/limits, avoid new casts/suppressions, reuse per-turn
+   conversion, and preserve recording as a secondary effect.
+
+Whole-platform Pyrefly: **819 errors / 4 suppressed**, two warnings (previously
+821 errors / 4 suppressed). Realtime remains clean; telephony setup/lifecycle
+still have 13 baseline diagnostics outside the changed media contract. Broader
+carrier/session dataclasses, STT dictionary events, realtime reconnect continuity
+and response-ID correlation are next work, not hidden behind a green local gate.
+No live vendor, audible browser/phone, DB write, deployment, migration, commit or
+new persistent test artifact in this continuation.
+
+Regression checks: browser media 118, Hume browser queue 18, TTS drain 9,
+ElevenLabs native queue 167 and Cartesia native 202 assertions pass. All five
+local type/import hooks, full Python lint, documentation/link/diagram validation,
+application import/OpenAPI (245 paths / 564 schemas) and `git diff --check` pass.
+No frontend source or public API schema change; frontend builds were not run.
+
+### F7 progress: browser TTS media ownership
+
+Confirmed RCA on 2026-09-08:
+
+- The adapter's actual 48 kHz format and browser recorder's guessed 16 kHz
+  metadata disagreed. Browser playback wrote those native bytes into a fixed
+  16 kHz track. The helper/factory mismatch was reproduced without credentials.
+- The existing SoXR streaming wrapper exposed process/reset but no finalization.
+  A 100 ms, 48 kHz fixture converted to 2,936 bytes instead of 3,200 bytes at
+  16 kHz because the filter retained the tail. Installed SoXR 1.0.0 and official
+  documentation agree on `resample_chunk(..., last=True)` for final output.
+
+Implemented:
+
+- One frozen typed browser output-format value shared by TTS setup, playback,
+  realtime output-rate selection and recorder headers. Deleted the vendor/config
+  rate-guessing helper and its unused recorder input.
+- An explicit optional consumer format on `TTSRealtime`. Native format remains
+  separately observable. Browser setup normalizes config into `TTSConfig`; vendor
+  identity no longer uses dictionary indexing in that function.
+- Native chunk format must agree with the adapter and the converter's pinned
+  source. Converted bytes feed both playback and recording. A full playback queue
+  fails the runtime rather than silently discarding a converted chunk.
+- Streaming resampler/transcoder finalization emits all buffered samples and
+  resets for the next utterance. TTS completion waits for tail publication;
+  interruption/failure resets without publishing the tail.
+- Removed the extra task scheduling boundary between response dequeue and
+  conversion. Completion cannot overtake that locally dequeued chunk. Identity
+  transcoding now checks PCM alignment rather than bypassing validation.
+- Completed native turns wait for queue acknowledgements directly. A resampler
+  tail does not require a second provider poll timeout to finish; identity is
+  rechecked after waits so an old drain cannot complete a replacement turn.
+- Existing voice type hook now covers the transcoder and audio operations.
+
+Executed verification:
+
+- **118 function assertions:** six sample rates, three source codecs, carrier
+  output codecs, exact durations, repeated/empty finalization, interruption reset,
+  native format disagreement, overload refusal, recording/playback byte parity,
+  and WAV header/frame metadata. Temporary recording files were cleaned up.
+- **18 running-pipeline assertions:** resolved material → real Hume adapter →
+  queue manager → converted consumer bytes and recording callbacks; three turns.
+- **8 browser-setup assertions:** real browser initialization, Pydantic config,
+  native/consumer format separation, synthesis and recording duration. Only vendor
+  transport and unrelated DB/session-fact publication were controlled.
+- **9 drain assertions:** final-tail acknowledgement, replacement-turn authority,
+  cancellation without detached tasks, and rejection of a changed native format.
+  Three converted Hume turns also pass with the normal two-second poll timeout.
+- Existing native-output Hume pipeline (**18**), ElevenLabs (**167**), Cartesia
+  (**202**), request routing (**67**), producers (**23**) and failure-path (**21**)
+  probes pass. One generated conversion probe retained an obsolete unconverted
+  fixture assertion; corrected the probe, not production behavior.
+- Targeted TTS/transcoder/audio-ops/realtime type checks and all five existing
+  type/import hooks pass. Whole-platform Pyrefly: **821 errors / 4 suppressed**
+  (two warnings), down from 822. Browser orchestration still has **132** errors;
+  WebRTC media has **15**. These modules are not claimed type-clean.
+- Full server/CLI Ruff, documentation validation and diff whitespace checks pass.
+  App import/OpenAPI generation passes (**245 paths / 564 schemas**). No deployed
+  runtime or frontend/browser build was changed by this Python-only slice.
+
+Sequential milestone review:
+
+1. **DDD:** adapters still own native formats; pipelines own media conversion and
+   browser format. No module/socket imports or framework dependencies added.
+2. **Architecture:** existing factory, queue manager and resampler reused. No new
+   vendor default, provider config, dependency or transport protocol.
+3. **Data flow:** verified native bytes → conversion → playback buffer/WAV writer.
+   Normal completion preserves filter tail; interruption drops it. Carrier and
+   realtime finalization, generic adapter EOF and wider in-flight turn correlation
+   remain required follow-up work, not established by these browser TTS probes.
+4. **Plan:** advances the existing F7 source-to-consumer contract work. Does not
+   redefine platform-wide success or claim all browser session types are clean.
+5. **Readability/performance:** removed guessing and shared one format value;
+   streaming conversion uses existing native SoXR without buffering entire audio.
+   No DB, deployment, credentials, external state, or public API changes.
+
+Next: complete carrier/realtime finalization and audio correlation contracts;
+then remaining native speech/onboarding and the unchanged F0–F10 requirements.
+Human voice acceptance and live Hume QA remain unrun.
+
+Next, in dependency order:
+
+1. **Done:** Replace conversation run-state dictionaries with an owned object. Trace
+   `FrameworkConversationRunner.run/resume/_execute_context` through persistence,
+   `PlatformToolExecutor`, `AgentRunTranscriptBridge`, and voice/durable producers.
+   Type the shared command/message identity separately from persisted content.
+2. **Done:** Type `ExistingConversationModel.current_context` and conversation helpers with
+   the actual context contract. Preserve raw resume-history semantics: do not
+   replace `context.messages` with the enriching/filtering `get_messages()` API.
+   Preserve last-message identity updates after resumed tool-result persistence.
+3. **Done:** Resolve the 11 telephony provider/credential construction diagnostics
+   through module config → pipeline translation → socket factory → call/number
+   clients. Expanded caller/import coverage is recorded above; native telephony
+   wire schemas remain in the corresponding F3–F10 provider flow.
+4. Finish remaining caller payloads and registered-tool context contracts.
+   Built-in title/summary and one-shot worker contracts are locally verified above.
+   Interaction/context metadata and transcript duration/outcome fields are verified
+   above. Session hydration is now verified; next type producer-specific metadata
+   and tool content. Validate known fields at their owner, preserving live resource
+   identity and existing wire shapes rather than validating only a final projection.
+   Finish prompt-only background execution identity, remaining memory storage,
+   and swarm caller contracts; preserve all
+   eight native adapter gates. Then continue F3–F10's provider data-flow order.
+
+The existing SOR mapped-command extra annotation also has a confirmed Pyrefly
+`bad-override` diagnostic; retain it in platform cleanup rather than suppressing it.
+
+### Completed: recording disclosure, remaining contract in A1
+
+- `RecordingDisclosureState` owns the four existing notification values.
+  A narrow structural port lets browser and carrier sessions use the same
+  notification functions without importing each other's concrete session model.
+- Producers, notification transitions, and WebSocket replies retain the existing
+  `recording_consent_state` field and string values. Recorder creation still
+  precedes disclosure; denial, unavailable delivery, and delivery failure do not
+  gate recording. Cancellation still propagates without granting disclosure.
+- The browser policy entrypoint now states its existing non-null session
+  precondition explicitly; no casts or diagnostic suppressions were introduced.
+- QA passed: two real session types, all four states, 14 delivery cases including
+  unavailable/failed/cancelled delivery, two WebSocket reply paths, and four
+  recorder-initialization paths. Recorder/provider delivery were substituted;
+  this is not live audio QA.
+
+### Completed: opener and transfer lifecycle contracts, first part of A2
+
+- Telephony-owned enums retain all four opener states and six transfer states.
+  Opener commands now accept `CallOpenerDeliveryOutcome` instead of an `accepted`
+  boolean; transfer commands accept `CallTransferOutcome`. All current producers
+  and lifecycle writers use the owning enums.
+- SQLAlchemy 2.0.45 non-native enum mapping keeps both columns `VARCHAR(32)`.
+  Existing defaults, stored values, and the opener check constraint are unchanged;
+  no new SQL constraint or PostgreSQL enum is created. ORM validation rejects
+  unrecognized state values instead of treating them as a successful outcome.
+- Read-only preflight against the active development DB found zero telephony
+  call rows. There were no historical state values requiring a conversion there.
+  Other deployments still need historical-value preflight before rollout.
+- QA passed: 24 string-storage round-trips using the actual SQLAlchemy column
+  processors over isolated SQLite storage; PostgreSQL type rendering and Alembic
+  type comparison show no type change. This does not replace a full PostgreSQL
+  migration/constraint test. No migration was generated or applied.
+- Real lifecycle functions and ORM/Pydantic objects passed eight opener and 30
+  transfer transitions with repository/transaction I/O substituted. Duplicate
+  outcomes remain idempotent, incompatible outcomes are refused, and an unknown
+  transfer cannot start another send. Invalid outcome/failure-code combinations
+  and missing call authority were also checked.
+- All 24 public state combinations serialize to existing values. Console types
+  were regenerated from the current application on an isolated loopback server
+  with lifespan startup disabled and dummy infrastructure config. Regeneration
+  also refreshed the already-existing SOR `from_issue`/`to_issue` enum values; no
+  SOR runtime code changed in this slice.
+- The local voice type gate now covers disclosure and carrier session contracts;
+  a separate local gate covers the clean telephony constants/models/schemas/
+  services files. Larger pipeline/lifecycle files still have pre-existing typing
+  debt. Full-project Pyrefly remains at 1,161 diagnostics, 19 suppressed.
+
+Continuation checks: both local type hooks passed on their pipeline trigger paths;
+full Python lint and documentation validation passed (46 pages, 252 links).
+Console lint, TypeScript compilation, and Vite build passed; Vite still reports
+its existing large-chunk warning. The isolated OpenAPI server was stopped after
+generation. No temporary probe files were added to the repository.
+
+Continuation milestone review: platform/vendor ownership is unchanged; canonical
+states survive producer, lifecycle writer, ORM readback, and API projection.
+Transaction scope and external-send authority are unchanged. The work follows
+the A1/A2 split rather than claiming the remaining initiation/durable-dispatch
+work is complete. The enum mappings add no dependencies or audio-frame work.
+
+No carrier call, provider mutation, operator-data write, migration, deployment,
+or commit was performed in these slices.
+
+### Completed: call-initiation results, remaining contract in A2
+
+- `OutboundCallResult` is a frozen telephony-owned contract. It retains UUIDs,
+  the shared `OutboundAttemptState`, and the platform `TelephonyProvider` enum
+  through the call pipeline. No socket-owned enum or SDK object crosses inward.
+- All four consumers were updated: HTTP controller, durable agent tool,
+  scheduled call action, and campaign voice dispatch. Only the existing HTTP,
+  tool metadata, and scheduled result boundaries serialize strings. The public
+  response keys, nulls, status values, and identifier formats are unchanged;
+  no endpoint schema or generated-client change is required for this slice.
+- `CallInitiationMarker` names the four existing interim values written to
+  `provider_status`; writers and campaign recovery share those names. The column
+  remains unrestricted text for native carrier status. The rejection fallback
+  is a telephony-owned constant. No DB validation or stored-value change occurs.
+- A sender captures its already-resolved phone number as a string before the
+  closure, removing one nullable-closure diagnostic without casts or suppression.
+- Retry still raises `OutboundRetryRequested`; it does not become a returned
+  acceptance/rejection. Unknown replay and cancellation behavior are unchanged.
+
+Executed QA:
+
+1. All 28 outbound-state/provider combinations retained identical JSON and
+   round-tripped into typed results. Frozen result mutation was refused.
+2. Thirty consumer cases covered accepted, terminal, and unknown results with
+   and without provider references; stable HTTP idempotency identity; exact
+   agent revision; campaign attempt identity; scheduler late-occurrence output;
+   retry and cancellation propagation through the three durable consumers.
+3. Seven producer/durable cases exercised `VoiceService` and the actual outbound
+   execution functions: accepted, rejected, unknown, retryable, two unknown
+   replays with no new provider send, and cancellation recovery before propagation.
+   Provider send occurred outside the config-read transaction. Dependency
+   resolvers and DB/provider I/O were substituted; no real carrier was contacted.
+4. Actual ORM objects and lifecycle functions passed nine projection/replay
+   transitions and five campaign recovery cases. Terminal events were filed and
+   nudged once; late acceptance preserved an existing native terminal status.
+   Recovery queries retained org, campaign, contact, and attempt filters.
+   Repository/transaction I/O was substituted; this is not PostgreSQL crash QA.
+
+Type baseline: this slice reduced full-project Pyrefly from 1,161 to 1,160
+diagnostics (19 suppressed, unchanged). The seven-file telephony type gate passes
+and now includes HTTP, scheduler, and agent-tool result consumers. Three
+pre-existing diagnostics remain in the broader call-control/campaign pair:
+`_InlineDurableContext` lacks the unused `await_event` protocol member; the factory
+expects vendor-name literals rather than the platform enum value; campaign DTO
+organization identity is optional. Keep these visible for their owning protocol,
+factory, and product-contract slices; no new ignores were added.
+
+A2 milestone review, in order:
+
+1. DDD ownership: shared outbound state is reused; telephony owns its result and
+   interim markers. Native provider values remain adapter-owned/open at storage.
+2. Architecture fit: no new services, execution authority, package, or dependency.
+3. Data flow: receipt → typed result → four consumers → unchanged wire/persisted
+   projections. Intent, transaction, callback, and retry boundaries are unchanged.
+4. Plan alignment: completes A2 only. Broader campaign boolean/result contracts
+   and tool error payloads remain in the ordered backlog, not silently included.
+5. Maintainability/performance: no result-key lookups or status-string comparisons
+   remain in initiation consumers; one small model validation per initiation,
+   no per-frame work, no extra queries, and no new diagnostic suppressions.
+
+Final checks: full Python lint, both local type hooks, documentation validation
+(46 pages, 252 links), and `git diff --check` passed. No UI source or endpoint
+schema changed in this continuation, so console/widget builds were not repeated.
+No deployment, DB change, outbound call, or commit was performed.
+
+### Completed: GitHub and Freshdesk curated inputs, first part of A3
+
+- GitHub issue search and pull-request listing now use `GitHubQueryState`.
+  Its `all` member is a query choice, deliberately separate from entity state.
+  Existing case/whitespace normalization, default `open`, and query strings
+  are preserved.
+- Freshdesk search/create/update use vendor-owned status and priority enums,
+  translated through vendor-owned integer code enums. The existing value set
+  matches the current official Ticket Properties table. Optional search/update
+  empty strings still mean omission; whitespace-only values remain invalid.
+  Create defaults and unknown native values in responses are preserved.
+- The five changed tool inputs advertise enum choices through the registry,
+  Agent tool projection, standalone framework tool specification, and Bedrock
+  tool formatting. No platform/SOR enum, SDK type, or new dependency was added.
+- Intentional error-boundary change: malformed choices now return the existing
+  `tool_input_invalid` result before credential resolution. Previously they
+  reached handler validation and returned `state_invalid`, `status_invalid`,
+  or `priority_invalid`. Tool names, scopes, effects, successful outputs, and
+  wire values are unchanged. The integration reference records the new boundary.
+
+Executed QA used the actual registry, Pydantic models, executor, tool projections,
+origin-bound request builder, and mutation sender. Grant/auth resolution, vendor
+transport, and durable receipt persistence were substituted:
+
+1. GitHub: 24 valid requests, 16 pre-auth refusals, eight schema projections,
+   and both default choices. `all` omits the search state clause but remains
+   the PR-list query value.
+2. Freshdesk: 192 request combinations across search/create/update, 40 pre-auth
+   refusals, 12 schema projections, eight optional-value paths, eight native
+   response projections, and create defaults. All status/priority combinations
+   retain the exact numeric payload/query values.
+3. Freshdesk made 137 durable-attempt dispatches, exactly one per successful
+   mutation invocation. Organization/owner operation identity, idempotency
+   header, and request fingerprint were checked. Retrying the same tool-use
+   owner with normalized-equivalent inputs retained the same attempt spec.
+   This validates the dispatch contract, not persisted receipt deduplication or
+   worker-crash recovery; those execution authorities were not changed.
+
+A3 milestone review, in order:
+
+1. DDD ownership: query choices and numeric codes belong to each curated vendor;
+   canonical platform/SOR states and raw vendor response fields remain separate.
+2. Architecture fit: the existing registry/model/handler pattern owns validation;
+   no global choice hierarchy, service, schema table, or new execution lane.
+3. Data flow: schema → input validation → enum → unchanged request → unchanged
+   result. Invalid inputs cannot resolve credentials or dispatch a vendor send.
+4. Plan alignment: GitHub and Freshdesk only; GitLab/Intercom remain next. This
+   does not claim the wider A3 result-object or A4 error-contract work is done.
+5. Maintainability/performance: removed late string-choice helpers and replaced
+   numeric magic values with named codes. No additional queries, I/O, retries,
+   casts, suppressions, or frame-path work.
+
+Checks: full Python lint, all three scoped local type hooks, documentation
+validation (46 pages, 252 links), and `git diff --check` passed. The new local
+curated-tool hook covers these two clean vendor files and runs when their shared
+integration/tool boundaries change. Full-project Pyrefly is still not clean:
+1,158 diagnostics, 19 suppressed (two fewer nullable response-map diagnostics).
+
+No live vendor operation, DB write, deployment, migration, UI source change, or
+commit. These are executed function/contract probes, not live-agent QA or new
+human-reviewed behavioral coverage. Console/widget builds were not repeated;
+the dynamic tool schemas changed, not a static endpoint/client type. No probe
+files were added to the repository.
+
+### Completed: GitLab and Intercom closed choices, continuation of A3
+
+- GitLab query inputs now use distinct issue and merge-request enums. Both
+  preserve case/whitespace normalization and default `opened`; `all` still
+  omits the state query parameter. `merged` cannot enter issue search. Unknown
+  vendor response states remain open data rather than being revalidated as
+  query choices. The vendor's additional `locked` MR filter remains outside
+  the existing curated subset; adding it is not part of this typing refactor.
+- Intercom search state is validated before credential resolution and contact
+  lookup. Invalid state now yields `tool_input_invalid`, including when a
+  missing contact previously short-circuited the late state validation. Empty
+  optional input still omits the filter; unconstrained search is still refused.
+- Intercom's internal reply function accepts `IntercomMessageType`, not an
+  arbitrary string. Reply construction, durable dispatch, returned visibility,
+  and transcript speech-part filtering use its comment/note choices. The public
+  required `visible_to_customer` boolean and its existing input normalization
+  are unchanged. Replacing that public field requires a deliberate compatibility
+  change; it was not silently bundled into this slice.
+- Vendor choices were checked against official GitLab v4 documentation and the
+  pinned Intercom 2.11 reference. No new vendor permission, endpoint, API version,
+  response field, or provider capability was introduced.
+
+Executed function/contract QA:
+
+1. GitLab: 28 valid numeric-project requests, two default requests, 22 pre-auth
+   refusals, and eight schema projections. Combined text/labels/assignee and
+   target-branch options retain their exact query encoding. All accepted state
+   forms round-trip through Pydantic JSON to the same enum member.
+2. GitLab: 56 named-project variants hit the pre-existing transport refusal
+   described below. They are baseline-failure evidence, not successful vendor
+   requests. The original HEAD `_project` function and current function produce
+   identical paths; the common guard and request builder have no diff.
+3. Intercom: 36 state/contact search flows, 19 pre-auth refusals, six omitted/
+   null/empty-state paths, and four schema projections. Invalid states never
+   dispatch even the first contact lookup. Native unknown response state is
+   preserved, and valid missing contacts still return an empty result.
+4. Intercom: eight mutation dispatches retain comment/note wire values, explicit
+   visibility, author, owner identity, idempotency headers, and request
+   fingerprints. The same artificial tool-use identity produces the same request
+   fingerprint for an equivalent private reply/note. Two transcript projections
+   verify opening/comment/note visibility, ignored state/unknown parts, and the
+   existing 50-part bound.
+
+These probes execute actual models, registry, executor, request construction,
+sender, and projections with grant/auth, vendor, and durable persistence I/O
+substituted. They do not establish live provider operation, persisted receipt
+deduplication, crash recovery, or human-reviewed product behavior.
+
+Continuation milestone review, in order:
+
+1. DDD ownership: GitLab query sets are separate; Intercom owns its native state
+   and message type. No SOR/framework/platform vocabulary was borrowed or merged.
+2. Architecture fit: validation stays in the existing input models; the private
+   reply function consumes a precise enum. Public schemas still project from
+   the registry rather than a second stored catalog.
+3. Data flow: valid values retain request and response semantics; malformed
+   states fail at the model boundary. The GitLab name-to-egress mismatch is
+   explicitly open rather than hidden behind handler-only mocks.
+4. Plan alignment: completes the four initially identified vendors' closed-choice
+   inputs. Broader result objects and remaining vendor contracts are still
+   backlog. At that milestone A4/A5 were next after the transport issue; the
+   later all-vendor clarification now supersedes that order with F0–F10.
+5. Maintainability/security/performance: removed late string-state validation;
+   reply kind cannot be an arbitrary internal string. No new query, retry,
+   resource lifetime, broad enum superclass, cast, or suppression. Per-vendor
+   normalization remains local rather than coupling independent vendors.
+
+Checks: Python lint, documentation validation, and the expanded four-vendor
+local type hook pass. Full-project Pyrefly remains at 1,158 diagnostics with 19
+suppressed; these two vendor files are clean before and after the change.
+No DB changes, migration, deployment, external message, commit, or persistent
+probe file. Console/widget sources and static endpoint schemas are unchanged.
+
+### Open finding: GitLab named-project requests fail at the HTTP boundary
+
+Priority: P2. This is a pre-existing product-path defect, not an enum regression.
+
+- Source: `vendors/gitlab/tools.py::_project` correctly percent-encodes a project
+  path, e.g. `acme/api` → `acme%2Fapi`, for GitLab's project-ID path parameter.
+- Rejection: `GuardedVendorClient._build` creates an `HttpEgressRequest`; its
+  destination policy reaches `common/http_egress.py::_validated_path`, which
+  categorically refuses `%2f` and `%5c`. The executor returns
+  `vendor_request_invalid` before transport send. Numeric IDs pass construction.
+- Impact: all six GitLab tools share `_project`, so named-project operation is
+  blocked at the shared transport boundary. Numeric-ID request construction is
+  proven; live GitLab access was not exercised here.
+- Why this matters for QA: a handler-only mock accepting the encoded path cannot
+  catch the incompatible downstream path policy. Keep the real request model
+  in the next fix's function/data-flow probes.
+
+Proposed next slice, separate from typing:
+
+1. Define an explicit encoded-resource-ID contract for the GitLab route. Keep
+   origin/base-path authority, traversal refusal, redirect checks, and credential
+   pinning intact; do not globally allow encoded separators or double-encode
+   paths to sneak through the existing guard.
+2. Implement the adapter/HTTP-boundary translation only after the security-sensitive
+   contract is agreed. Preserve all other consumers' existing path restrictions.
+3. Exercise group/subgroup/numeric IDs across all six tools through the actual
+   request model, plus traversal, encoded backslash, double-encoding, foreign
+   origin, and credential-boundary refusals. Check mutation fingerprints/replays.
+4. Run live read-only GitLab QA if a configured installation is available; real
+   mutations need separate authority. Continue with the current F0–F10 schedule;
+   A4/A5 contracts accompany each flow rather than forming a disconnected sweep.

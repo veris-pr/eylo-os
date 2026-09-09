@@ -7,16 +7,38 @@ from __future__ import annotations
 
 import abc
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
-from typing import Literal
+from enum import Enum
+from typing import Annotated
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from eylo.common.contracts.tool_record import ToolRecord
 from eylo.sockets.realtime.config import RealtimeSessionConfig
 from eylo.sockets.realtime.events import RealtimeEvent
 
 
-@dataclass(frozen=True, slots=True)
-class RealtimeCapabilities:
+class RealtimeFeatureSupport(Enum):
+    """Native adapter support, serialized as the existing capability booleans."""
+
+    UNSUPPORTED = False
+    SUPPORTED = True
+
+    def __bool__(self) -> bool:
+        raise TypeError("Compare realtime support with its explicit enum member.")
+
+
+class RealtimeSessionUpdateMode(str, Enum):
+    """How an adapter applies a validated session update."""
+
+    IN_PLACE = "in_place"
+    RECONNECT = "reconnect"
+    UNSUPPORTED = "unsupported"
+
+
+RealtimeSampleRate = Annotated[int, Field(strict=True, gt=0)]
+
+
+class RealtimeCapabilities(BaseModel):
     """Native behavior exposed by one realtime adapter.
 
     These facts describe the adapter and vendor path only. They never decide
@@ -24,21 +46,48 @@ class RealtimeCapabilities:
     limits are available.
     """
 
-    full_duplex_audio: bool = True
-    input_transcription: bool = True
-    output_transcription: bool = True
-    native_turn_detection: bool = True
-    native_interruption: bool = True
-    tool_calling: bool = True
-    platform_message_speech: bool = True
-    session_update_mode: Literal["in_place", "reconnect", "unsupported"] = (
-        "unsupported"
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", revalidate_instances="always"
     )
-    voice_selection: bool = True
-    session_resumption: bool = False
-    context_compression: bool = False
-    input_sample_rates: tuple[int, ...] = (16000,)
-    output_sample_rates: tuple[int, ...] = (24000,)
+
+    full_duplex_audio: RealtimeFeatureSupport = RealtimeFeatureSupport.SUPPORTED
+    input_transcription: RealtimeFeatureSupport = RealtimeFeatureSupport.SUPPORTED
+    output_transcription: RealtimeFeatureSupport = RealtimeFeatureSupport.SUPPORTED
+    native_turn_detection: RealtimeFeatureSupport = RealtimeFeatureSupport.SUPPORTED
+    native_interruption: RealtimeFeatureSupport = RealtimeFeatureSupport.SUPPORTED
+    tool_calling: RealtimeFeatureSupport = RealtimeFeatureSupport.SUPPORTED
+    platform_message_speech: RealtimeFeatureSupport = RealtimeFeatureSupport.SUPPORTED
+    session_update_mode: RealtimeSessionUpdateMode = (
+        RealtimeSessionUpdateMode.UNSUPPORTED
+    )
+    voice_selection: RealtimeFeatureSupport = RealtimeFeatureSupport.SUPPORTED
+    session_resumption: RealtimeFeatureSupport = RealtimeFeatureSupport.UNSUPPORTED
+    context_compression: RealtimeFeatureSupport = RealtimeFeatureSupport.UNSUPPORTED
+    input_sample_rates: tuple[RealtimeSampleRate, ...] = (16000,)
+    output_sample_rates: tuple[RealtimeSampleRate, ...] = (24000,)
+
+    @field_validator(
+        "full_duplex_audio",
+        "input_transcription",
+        "output_transcription",
+        "native_turn_detection",
+        "native_interruption",
+        "tool_calling",
+        "platform_message_speech",
+        "voice_selection",
+        "session_resumption",
+        "context_compression",
+        mode="before",
+    )
+    @classmethod
+    def validate_support(cls, value: object) -> RealtimeFeatureSupport:
+        if isinstance(value, RealtimeFeatureSupport):
+            return value
+        if value is True:
+            return RealtimeFeatureSupport.SUPPORTED
+        if value is False:
+            return RealtimeFeatureSupport.UNSUPPORTED
+        raise ValueError("Realtime support requires an explicit choice or boolean.")
 
 
 class RealtimeAdapter(abc.ABC):
@@ -48,7 +97,7 @@ class RealtimeAdapter(abc.ABC):
     """
 
     def __init__(self, config: RealtimeSessionConfig) -> None:
-        self._config = config
+        self._config = RealtimeSessionConfig.model_validate(config)
         self._connected: bool = False
 
     @property
@@ -92,7 +141,7 @@ class RealtimeAdapter(abc.ABC):
         """
 
     @abc.abstractmethod
-    async def receive(self) -> AsyncIterator[RealtimeEvent]:
+    def receive(self) -> AsyncIterator[RealtimeEvent]:
         """Yield normalized events from the vendor.
 
         The manager iterates: ``async for event in adapter.receive(): ...``

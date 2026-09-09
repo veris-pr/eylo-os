@@ -2,36 +2,34 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
-from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from collections.abc import Callable
 from uuid import UUID
 
 from sqlalchemy import select
 
 from eylo.common.config import settings
-from eylo.common.contracts.tool_availability import (
-    ToolAvailabilityFacts,
-    ToolRuntimeFact,
-)
+from eylo.common.contracts.tool_availability import ToolRuntimeFact
 from eylo.common.database import get_transaction, start_transaction
-from eylo.framework.agents.config import RunConfig
+from eylo.framework.agents.config import RunConfig, RunPromptCaching, RunStreaming
 from eylo.framework.agents.context import RunContext, RunInput, RunMessage
+from eylo.framework.agents.hooks import RunCallbacks
+from eylo.framework.agents.interruptions import (
+    RunApprovalInterruption,
+    RunInputInterruption,
+)
 from eylo.framework.agents.model import Model, ModelResponse
 from eylo.framework.agents.result import RunResult, RunStatus
 from eylo.framework.agents.runner import FrameworkRunner
 from eylo.framework.agents.tool import ToolCall, ToolResult
 from eylo.modules.agent_runs.domain import (
+    AgentApprovalDecision,
     AgentInputRequestKind,
     AgentRunLifecycle,
     AgentRunOriginKind,
     AgentRunOutcome,
 )
 from eylo.modules.agent_runs.service import (
-    AgentRunWaitState,
     accept_agent_run_cancellation,
     fail_agent_run,
     finish_agent_run_in_transaction,
@@ -39,35 +37,48 @@ from eylo.modules.agent_runs.service import (
     pause_agent_run_in_transaction,
     resume_agent_run_in_transaction,
 )
+from eylo.modules.agent_runs.waits import (
+    AgentApprovalWaitState,
+    AgentRunInputEvent,
+    AgentRunWaitState,
+)
 from eylo.modules.agent_runs.workflow import (
     AgentRunExecutionClaim,
     AgentRunWorkflowContext,
 )
-from eylo.modules.llm_configs.wiring import build_llm_config_resolver
+from eylo.modules.llm_configs.wiring import resolve_pinned_llm
 from eylo.modules.scheduler.models import ScheduleRevisionModel, ScheduleRunModel
 from eylo.modules.templates.domain import TemplateConsumerKind
+from eylo.pipelines.agent_execution_context import (
+    AgentExecutionContext,
+    AgentExecutionParticipant,
+    AgentExecutionScope,
+    PlatformRunState,
+)
+from eylo.pipelines.agent_run_continuations import (
+    RunToolCallSnapshot,
+    ScheduledRunContinuation,
+    parse_run_continuation,
+)
+from eylo.pipelines.agent_run_heartbeat import run_with_agent_heartbeat
 from eylo.pipelines.agent_run_tools import bind_agent_run_tool_command
 from eylo.pipelines.agent_run_transcript import (
+    AgentRunToolCapture,
     AgentRunTranscript,
     AgentRunTranscriptBridge,
     PendingToolCallsModel,
+    append_resumed_tool_exchange,
     with_replay_messages,
 )
 from eylo.pipelines.agents import build_executable_agent_resolver
 from eylo.pipelines.conversation.conversation_runner import ExistingConversationModel
 from eylo.pipelines.conversation.domain import agent_spec_from_context
 from eylo.pipelines.conversation.tool_executor import PlatformToolExecutor
+from eylo.pipelines.llm.runtime import to_llm_prompt_caching
 from eylo.pipelines.system_tools.availability import (
-    filter_available_system_tools,
     refresh_context_tool_availability,
 )
 
-if TYPE_CHECKING:
-    from eylo.modules.agents.schemas.indb import AgentInDb
-    from eylo.modules.tools.schemas.indb import ToolInDb
-
-_HEARTBEAT_SECONDS = 120
-_HEARTBEAT_INTERVAL_SECONDS = 30
 _PAUSE_STATUSES = {
     RunStatus.WAITING_FOR_INPUT,
     RunStatus.WAITING_FOR_APPROVAL,
@@ -86,44 +97,16 @@ class ScheduledAgentRunCancelled(Exception):
     """The exact schedule revision withdrew its filed work."""
 
 
-@dataclass(slots=True)
-class _ScheduledExecutionContext:
-    """In-memory adapter context; it never creates a conversation or message row."""
-
-    conversation: SimpleNamespace
-    primary_agent: AgentInDb
-    tools: list[ToolInDb]
-    system_prompt: str
-    principal_participant: SimpleNamespace
-    agent_participant: SimpleNamespace
-    messages: list
-    handoff_agents: tuple[AgentInDb, ...] = ()
-    widget_interfaces_enabled: bool = False
-    external_id: str | None = None
-    tool_availability: ToolAvailabilityFacts = field(
-        default_factory=ToolAvailabilityFacts
-    )
-
-    def get_tools(self) -> list[ToolInDb]:
-        return filter_available_system_tools(self.tools, self.tool_availability)
-
-    def get_messages(self) -> list:
-        return self.messages
-
-    def get_primary_contact(self) -> SimpleNamespace:
-        return self.principal_participant
-
-    def get_primary_agent(self) -> SimpleNamespace:
-        return self.agent_participant
-
-
 class ScheduledFrameworkRunner:
     """Resolve exact agent authority and run one non-conversation framework turn."""
 
     def __init__(
         self,
         *,
-        model_factory: Callable[[dict, RunConfig], Model] | None = None,
+        model_factory: Callable[
+            [PlatformRunState[AgentExecutionContext], RunConfig], Model
+        ]
+        | None = None,
         tool_executor=None,
     ) -> None:
         self._model_factory = model_factory
@@ -146,8 +129,12 @@ class ScheduledFrameworkRunner:
         )
         agent = agent_spec_from_context(execution_context)
         config = RunConfig(
-            stream=False,
-            prompt_caching=getattr(settings, "ENABLE_PROMPT_CACHING", False),
+            stream=RunStreaming.DISABLED,
+            prompt_caching=(
+                RunPromptCaching.ENABLED
+                if settings.ENABLE_PROMPT_CACHING
+                else RunPromptCaching.DISABLED
+            ),
         )
         transcript = AgentRunTranscript(
             organization_id=claim.organization_id,
@@ -171,14 +158,13 @@ class ScheduledFrameworkRunner:
                 command_ids=replay.command_ids,
             )
 
-        captured: dict[str, object] = {}
+        captured = AgentRunToolCapture()
 
-        local_context = {
-            "conversation_context": execution_context,
-            "agent_run_id": claim.run_id,
-            "durable_context": workflow_context,
-            "tool_use_messages": {},
-        }
+        local_context = PlatformRunState(
+            conversation_context=execution_context,
+            agent_run_id=claim.run_id,
+            durable_context=workflow_context,
+        )
         bridge = AgentRunTranscriptBridge(
             transcript=transcript,
             local_context=local_context,
@@ -191,8 +177,7 @@ class ScheduledFrameworkRunner:
             response: ModelResponse,
             tool_calls: tuple[ToolCall, ...],
         ) -> None:
-            captured["response"] = response
-            captured["tool_calls"] = tool_calls
+            captured.tool_calls = tool_calls
             await bridge.after_model_response(
                 _context,
                 run_input,
@@ -200,23 +185,13 @@ class ScheduledFrameworkRunner:
                 tool_calls,
             )
 
-        local_context.update(
-            {
-                "after_model_response": capture_model_response,
-                "before_tool_call": bridge.before_tool_call,
-                "after_tool_result": bridge.after_tool_result,
-            }
-        )
         base_model = (
             self._model_factory(local_context, config)
             if self._model_factory is not None
             else ExistingConversationModel(
                 local_context,
-                llm_resolver=build_llm_config_resolver(get_transaction()),
-                model_config_overrides={
-                    "prompt_caching": config.prompt_caching,
-                },
-                stream=False,
+                llm_resolver=resolve_pinned_llm,
+                prompt_caching=to_llm_prompt_caching(config.prompt_caching),
             )
         )
         model = PendingToolCallsModel(
@@ -227,6 +202,11 @@ class ScheduledFrameworkRunner:
         runner = FrameworkRunner(
             model,
             tool_executor=self._tool_executor,
+            callbacks=RunCallbacks(
+                after_model_response=capture_model_response,
+                before_tool_call=bridge.before_tool_call,
+                after_tool_result=bridge.after_tool_result,
+            ),
         )
         result = await runner.run(
             agent,
@@ -254,50 +234,42 @@ class ScheduledFrameworkRunner:
         wait: AgentRunWaitState,
         run_input: RunInput,
         agent,
-        execution_context: _ScheduledExecutionContext,
+        execution_context: AgentExecutionContext,
         config: RunConfig,
         workflow_context: AgentRunWorkflowContext,
         transcript: AgentRunTranscript,
         command_ids: dict[str, UUID],
     ) -> RunInput:
-        scheduled = wait.continuation.get("scheduled")
-        if not isinstance(scheduled, dict):
-            raise ScheduledAgentRunInvalid(
-                "Scheduled AgentRun continuation is missing tool state."
-            )
+        wait.require_answered()
         try:
-            call = ToolCall.model_validate(scheduled["tool_call"])
-        except (KeyError, TypeError, ValueError) as error:
+            continuation = parse_run_continuation(wait, ScheduledRunContinuation)
+        except ValueError as error:
             raise ScheduledAgentRunInvalid(
                 "Scheduled AgentRun continuation contains an invalid tool call."
             ) from error
+        call = continuation.scheduled.tool_call
 
         async def resolve_result() -> dict:
-            if wait.kind is AgentInputRequestKind.APPROVAL:
-                response = wait.response
-                if not isinstance(response, dict):
-                    raise ScheduledAgentRunInvalid(
-                        "Approval response must be an object."
-                    )
-                if response.get("decision") == "reject":
+            if isinstance(wait, AgentApprovalWaitState):
+                response = wait.require_response()
+                if response.decision is AgentApprovalDecision.REJECT:
                     result = ToolResult(
                         tool_call_id=call.id,
                         content="The user rejected this tool action.",
                         is_error=True,
                         metadata={"approval_rejected": True},
                     )
-                elif response.get("decision") == "approve":
+                else:
                     command_id = command_ids.get(call.id)
                     if command_id is None:
                         raise ScheduledAgentRunInvalid(
                             "Approved tool call has no durable command identity."
                         )
-                    local_context = {
-                        "conversation_context": execution_context,
-                        "agent_run_id": claim.run_id,
-                        "durable_context": workflow_context,
-                        "tool_use_messages": {},
-                    }
+                    local_context = PlatformRunState(
+                        conversation_context=execution_context,
+                        agent_run_id=claim.run_id,
+                        durable_context=workflow_context,
+                    )
                     bind_agent_run_tool_command(
                         local_context,
                         call=call,
@@ -311,10 +283,6 @@ class ScheduledFrameworkRunner:
                             local_context=local_context,
                         ),
                         call,
-                    )
-                else:
-                    raise ScheduledAgentRunInvalid(
-                        "Approval decision must be approve or reject."
                     )
             else:
                 result = ToolResult(
@@ -349,7 +317,7 @@ class ScheduledFrameworkRunner:
             raise ScheduledAgentRunInvalid(
                 "Scheduled AgentRun resume result is unavailable."
             )
-        return _append_resumed_tool_exchange(run_input, call, tool_result)
+        return append_resumed_tool_exchange(run_input, call, tool_result)
 
 
 class ScheduledAgentRunExecutor:
@@ -416,7 +384,7 @@ class ScheduledAgentRunExecutor:
                         )
                     )
 
-            await _run_with_heartbeat(context, execute_turn)
+            await run_with_agent_heartbeat(context, execute_turn)
             result = result_holder[0]
             if result.status not in _PAUSE_STATUSES:
                 return
@@ -432,7 +400,7 @@ class ScheduledAgentRunExecutor:
 
 async def _build_execution_context(
     claim: AgentRunExecutionClaim,
-) -> _ScheduledExecutionContext:
+) -> AgentExecutionContext:
     resolver = build_executable_agent_resolver(get_transaction())
     resolved = await resolver.resolve_exact(
         organization_id=claim.organization_id,
@@ -440,7 +408,9 @@ async def _build_execution_context(
         revision=claim.agent_revision,
         consumer_kind=TemplateConsumerKind.BACKGROUND_AGENT,
     )
-    conversation = SimpleNamespace(
+    if claim.origin_schedule_run_id is None:
+        raise ScheduledAgentRunInvalid("Scheduled run has no originating occurrence.")
+    conversation = AgentExecutionScope(
         id=claim.origin_schedule_run_id,
         organization_id=claim.organization_id,
         swarm_id=None,
@@ -448,18 +418,18 @@ async def _build_execution_context(
         channel=None,
         meta={},
     )
-    return _ScheduledExecutionContext(
+    return AgentExecutionContext(
         conversation=conversation,
         primary_agent=resolved.agent,
         tools=list(resolved.tools),
         system_prompt=resolved.system_prompt
         or resolved.agent.description
         or resolved.agent.name,
-        principal_participant=SimpleNamespace(
+        principal_participant=AgentExecutionParticipant(
             id=claim.principal.principal_id,
             entity_id=str(claim.principal.principal_id),
         ),
-        agent_participant=SimpleNamespace(
+        agent_participant=AgentExecutionParticipant(
             id=claim.agent_id,
             entity_id=str(claim.agent_id),
             agent_id=claim.agent_id,
@@ -492,53 +462,11 @@ def _initial_run_input(claim, execution_context, tools) -> RunInput:
     )
 
 
-def _append_resumed_tool_exchange(
-    run_input: RunInput,
-    call: ToolCall,
-    result: ToolResult,
-) -> RunInput:
-    request_id = run_input.metadata.get("request_id")
-    content = (
-        result.content
-        if isinstance(result.content, str)
-        else json.dumps(result.content, ensure_ascii=False, separators=(",", ":"))
-    )
-    messages = (
-        *run_input.messages,
-        RunMessage(
-            role="assistant",
-            content=f"Tool call: {call.name}",
-            metadata={
-                "request_id": request_id,
-                "tool_call": {
-                    "id": call.id,
-                    "name": call.name,
-                    "arguments": call.arguments,
-                },
-            },
-        ),
-        RunMessage(
-            role="tool",
-            content=content,
-            metadata={
-                "request_id": request_id,
-                "tool_result": {
-                    "tool_call_id": result.tool_call_id,
-                    "name": call.name,
-                    "is_error": result.is_error,
-                    "content": result.content,
-                },
-            },
-        ),
-    )
-    return run_input.model_copy(update={"messages": messages})
-
-
 async def _persist_result(
     *,
     claim: AgentRunExecutionClaim,
     result: RunResult,
-    captured: dict[str, object],
+    captured: AgentRunToolCapture,
 ) -> None:
     if result.status in _PAUSE_STATUSES:
         kind, prompt, expected_schema, continuation = _pause_fields(result, captured)
@@ -568,22 +496,21 @@ async def _persist_result(
 
 def _pause_fields(
     result: RunResult,
-    captured: dict[str, object],
+    captured: AgentRunToolCapture,
 ) -> tuple[AgentInputRequestKind, str, dict, dict]:
-    framework = result.metadata.get("continuation")
-    if not isinstance(framework, dict):
+    interruption = result.metadata
+    if not isinstance(interruption, (RunApprovalInterruption, RunInputInterruption)):
         raise ScheduledAgentRunInvalid(
             "Framework pause is missing continuation metadata."
         )
-    calls = captured.get("tool_calls")
-    if not isinstance(calls, tuple):
+    calls = captured.tool_calls
+    if calls is None:
         raise ScheduledAgentRunInvalid("Framework pause has no captured tool call.")
     call = next(
         (
             candidate
             for candidate in calls
-            if isinstance(candidate, ToolCall)
-            and candidate.id == framework.get("tool_call_id")
+            if candidate.id == interruption.continuation.tool_call_id
         ),
         None,
     )
@@ -592,36 +519,37 @@ def _pause_fields(
             "Framework pause continuation differs from its tool call."
         )
 
-    if result.status is RunStatus.WAITING_FOR_APPROVAL:
-        request = result.metadata.get("approval_request")
-        if not isinstance(request, dict):
-            raise ScheduledAgentRunInvalid(
-                "Approval pause is missing request metadata."
-            )
+    if result.status is RunStatus.WAITING_FOR_APPROVAL and isinstance(
+        interruption, RunApprovalInterruption
+    ):
+        approval = interruption.approval_request
+        request = approval
         kind = AgentInputRequestKind.APPROVAL
-        prompt = str(
-            request.get("action_summary")
-            or request.get("policy_reason")
+        prompt = (
+            approval.action_summary
+            or approval.policy_reason
             or "Approve this scheduled agent action?"
         )
         expected_schema = {
             "type": "object",
             "properties": {
-                "decision": {"type": "string", "enum": ["approve", "reject"]},
+                "decision": {
+                    "type": "string",
+                    "enum": [decision.value for decision in AgentApprovalDecision],
+                },
                 "comment": {"type": "string"},
             },
             "required": ["decision"],
             "additionalProperties": False,
         }
-    elif result.status is RunStatus.WAITING_FOR_INPUT:
-        request = result.metadata.get("input_request")
-        if not isinstance(request, dict):
-            raise ScheduledAgentRunInvalid("Input pause is missing request metadata.")
+    elif result.status is RunStatus.WAITING_FOR_INPUT and isinstance(
+        interruption, RunInputInterruption
+    ):
+        details = interruption.input_request
+        request = details
         kind = AgentInputRequestKind.INPUT
-        prompt = str(request.get("prompt") or "Provide the requested information.")
-        expected_schema = request.get("expected_input_schema") or {}
-        if not isinstance(expected_schema, dict):
-            raise ScheduledAgentRunInvalid("Input response schema must be an object.")
+        prompt = details.prompt or "Provide the requested information."
+        expected_schema = details.expected_input_schema
     else:
         raise ScheduledAgentRunInvalid("Framework result is not a pause.")
 
@@ -629,11 +557,11 @@ def _pause_fields(
         kind,
         prompt,
         expected_schema,
-        {
-            "framework": framework,
-            "request": request,
-            "scheduled": {"tool_call": call.model_dump(mode="json")},
-        },
+        ScheduledRunContinuation(
+            framework=interruption.continuation,
+            request=request,
+            scheduled=RunToolCallSnapshot(tool_call=call),
+        ).model_dump(mode="json"),
     )
 
 
@@ -736,43 +664,16 @@ def _validate_resume_event(
     claim: AgentRunExecutionClaim,
     wait: AgentRunWaitState,
 ) -> None:
-    expected = {
-        "organization_id": str(claim.organization_id),
-        "run_id": str(claim.run_id),
-        "request_id": str(wait.request_id),
-    }
-    if payload != expected:
+    try:
+        AgentRunInputEvent(
+            organization_id=claim.organization_id,
+            run_id=claim.run_id,
+            request_id=wait.request_id,
+        ).require_matching_payload(payload)
+    except ValueError:
         raise ScheduledAgentRunInvalid(
             "Durable input event does not match the identified request."
-        )
-
-
-async def _run_with_heartbeat(
-    context: AgentRunWorkflowContext,
-    operation: Callable[[], Awaitable[None]],
-) -> None:
-    operation_task = asyncio.create_task(operation())
-    try:
-        while not operation_task.done():
-            remaining_milliseconds = await context.heartbeat(seconds=_HEARTBEAT_SECONDS)
-            try:
-                await asyncio.wait_for(
-                    asyncio.shield(operation_task),
-                    timeout=min(
-                        _HEARTBEAT_INTERVAL_SECONDS,
-                        max(0.001, remaining_milliseconds / 1000),
-                    ),
-                )
-            except TimeoutError:
-                continue
-        await operation_task
-    finally:
-        if not operation_task.done():
-            operation_task.cancel()
-            try:
-                await operation_task
-            except asyncio.CancelledError:
-                pass
+        ) from None
 
 
 __all__ = ["ScheduledAgentRunExecutor", "ScheduledFrameworkRunner"]

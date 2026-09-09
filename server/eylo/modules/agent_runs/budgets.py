@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +21,7 @@ from eylo.modules.agent_runs.domain import (
     ExecutionBudgetExceeded,
     ExecutionBudgetNotConfigured,
     ExecutionBudgetUnavailable,
+    ExecutionTokenUsage,
     ExecutionUsageNotReported,
 )
 from eylo.modules.agent_runs.models import (
@@ -35,8 +37,13 @@ from eylo.modules.agent_runs.schemas import (
 _MICROUNITS_PER_UNIT = 1_000_000
 
 
-@dataclass(frozen=True, slots=True)
-class _ExecutionBudgetScope:
+class _ExecutionBudgetScope(BaseModel):
+    """Validated run identity bound to one task's accounting context."""
+
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", strict=True, hide_input_in_errors=True
+    )
+
     organization_id: UUID
     run_id: UUID
 
@@ -46,8 +53,13 @@ class _MemoryExecutionKind(str, Enum):
     RECONCILIATION = "reconciliation"
 
 
-@dataclass(frozen=True, slots=True)
-class _MemoryExecutionBudgetScope:
+class _MemoryExecutionBudgetScope(BaseModel):
+    """Memory job identity; extraction and reconciliation never share a scope."""
+
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", strict=True, hide_input_in_errors=True
+    )
+
     organization_id: UUID
     job_id: UUID
     kind: _MemoryExecutionKind
@@ -65,16 +77,23 @@ _current_memory_budget_scope: ContextVar[_MemoryExecutionBudgetScope | None] = (
 )
 
 
-@dataclass(frozen=True, slots=True)
-class _ActiveCapacity:
-    runs: int
-    tokens: int
-    milliseconds: int
-    cost_microunits: int
+class _ActiveCapacity(BaseModel):
+    """Nonnegative outstanding reservations, in the budget owner's units."""
+
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", strict=True, hide_input_in_errors=True
+    )
+
+    runs: int = Field(ge=0)
+    tokens: int = Field(ge=0)
+    milliseconds: int = Field(ge=0)
+    cost_microunits: int = Field(ge=0)
 
 
 @contextmanager
-def agent_run_execution_budget_scope(*, organization_id: UUID, run_id: UUID):
+def agent_run_execution_budget_scope(
+    *, organization_id: UUID, run_id: UUID
+) -> Iterator[None]:
     """Bind nested model calls to the currently executing durable run."""
     token = _current_budget_scope.set(
         _ExecutionBudgetScope(
@@ -93,7 +112,7 @@ def memory_formation_execution_budget_scope(
     *,
     organization_id: UUID,
     job_id: UUID,
-):
+) -> Iterator[None]:
     """Bind one extraction completion to its durable formation reservation."""
     with _memory_execution_budget_scope(
         organization_id=organization_id,
@@ -108,7 +127,7 @@ def memory_reconciliation_execution_budget_scope(
     *,
     organization_id: UUID,
     job_id: UUID,
-):
+) -> Iterator[None]:
     """Bind one proposal completion to its durable reconciliation reservation."""
     with _memory_execution_budget_scope(
         organization_id=organization_id,
@@ -124,7 +143,7 @@ def _memory_execution_budget_scope(
     organization_id: UUID,
     job_id: UUID,
     kind: _MemoryExecutionKind,
-):
+) -> Iterator[None]:
     token = _current_memory_budget_scope.set(
         _MemoryExecutionBudgetScope(
             organization_id=organization_id,
@@ -598,9 +617,8 @@ async def meter_agent_run_usage(
     output_tokens: int,
 ) -> None:
     """Commit exact normalized usage before allowing output to become canonical."""
-    if input_tokens < 0 or output_tokens < 0:
-        raise ValueError("Metered token counts cannot be negative.")
-    token_delta = input_tokens + output_tokens
+    usage = ExecutionTokenUsage(input_tokens=input_tokens, output_tokens=output_tokens)
+    token_delta = usage.total_tokens
     exceeded: ExecutionBudgetDimension | None = None
     async with start_transaction() as session:
         reservation = await _require_reservation(
@@ -668,9 +686,8 @@ async def _meter_memory_execution_usage(
     input_tokens: int,
     output_tokens: int,
 ) -> None:
-    if input_tokens < 0 or output_tokens < 0:
-        raise ValueError("Metered token counts cannot be negative.")
-    token_total = input_tokens + output_tokens
+    usage = ExecutionTokenUsage(input_tokens=input_tokens, output_tokens=output_tokens)
+    token_total = usage.total_tokens
     exceeded: ExecutionBudgetDimension | None = None
     async with start_transaction() as session:
         reservation = await _require_memory_reservation(

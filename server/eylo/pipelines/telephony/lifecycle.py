@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from uuid import UUID
 
 import arrow
 
@@ -17,11 +16,11 @@ from eylo.common.database import start_transaction
 from eylo.events.py_events.emitter import emit_ephemeral
 from eylo.events.schema.py_events.call import (
     CallConnectedEvent,
-    CallDirection,
     CallEndedEvent,
     CallStartedEvent,
     CallTransferredEvent,
 )
+from eylo.modules.telephony.constants import CallOpenerDeliveryStatus
 from eylo.modules.telephony.lifecycle import (
     record_call_started,
     record_call_status,
@@ -36,11 +35,17 @@ from eylo.modules.voice_transcripts.constants import (
 )
 from eylo.modules.voice_transcripts.lifecycle import record_voice_session_ended
 from eylo.pipelines.session_timeline import try_file_runtime_fact
-from eylo.pipelines.telephony.sessions import S_CALLS, CallSession
+from eylo.pipelines.telephony.sessions import (
+    S_CALLS,
+    CallFinalizationState,
+    CallSession,
+    CallSessionState,
+)
 from eylo.pipelines.telephony.voice import collect_call_audio_metrics
 from eylo.pipelines.voice.audio_transport import ComfortAudioStream
 from eylo.pipelines.voice.live_buffer import LiveVoiceDraft, LiveVoiceItemKind
 from eylo.pipelines.voice.post_call import finalize_live_voice_history
+from eylo.pipelines.voice.transcript_inputs import DTMFInput
 from eylo.pipelines.websocket.singleton import S_ws_manager
 from eylo.runtime.tasks import teardown_queues
 from eylo.sockets.telephony.base import CallEndedReason, InboundMediaMessage
@@ -54,16 +59,14 @@ def call_event_kwargs(sess: CallSession, provider: str) -> dict:
     """Build common kwargs for call lifecycle events from a call session."""
     if not sess.provider_config_id or not sess.provider_config_revision:
         raise ValueError("Call session is missing pinned telephony authority.")
-    if sess.provider and sess.provider != provider:
+    if sess.provider.value != provider:
         raise ValueError("Call session provider does not match runtime provider.")
     return {
         "call_sid": sess.call_sid,
         "session_id": sess.auth_session_token or sess.stream_sid or sess.call_sid,
         "organization_id": sess.organization_id,
         "conversation_id": sess.conversation_id,
-        "direction": CallDirection(sess.direction)
-        if sess.direction
-        else CallDirection.INBOUND,
+        "direction": sess.direction,
         "provider": provider,
         "provider_config_id": sess.provider_config_id,
         "provider_config_revision": sess.provider_config_revision,
@@ -71,7 +74,7 @@ def call_event_kwargs(sess: CallSession, provider: str) -> dict:
         "to_number": sess.to_number,
         "agent_id": sess.agent_id,
         "agent_revision": sess.agent_revision,
-        "data": sess.extra_data,
+        "data": sess.extra_data.model_dump(mode="json", exclude_none=True),
     }
 
 
@@ -96,9 +99,9 @@ async def emit_call_started(sess: CallSession, provider: str) -> bool:
             agent_revision=event.agent_revision,
             conversation_id=event.conversation_id,
             user_session_id=sess.user_session_id,
-            campaign_id=_event_uuid(event.data, "campaign_id"),
-            campaign_contact_id=_event_uuid(event.data, "campaign_contact_id"),
-            campaign_attempt_id=_event_uuid(event.data, "campaign_attempt_id"),
+            campaign_id=sess.extra_data.campaign_id,
+            campaign_contact_id=sess.extra_data.campaign_contact_id,
+            campaign_attempt_id=sess.extra_data.campaign_attempt_id,
         )
         sess.call_id = call.id
     except Exception:
@@ -149,17 +152,11 @@ async def handle_inbound_dtmf(
 
     if sess.stt_response_queue:
         await sess.stt_response_queue.put(
-            {
-                "type": "transcript",
-                "transcript": f"DTMF digits: {result.digits}",
-                "is_final": True,
-                "metadata": {
-                    "source": "dtmf",
-                    "digits": result.digits,
-                    "completed_by": result.completed_by,
-                    "live_buffer_sequence": captured_sequence,
-                },
-            }
+            DTMFInput(
+                digits=result.digits,
+                completed_by=result.completed_by,
+                live_buffer_sequence=captured_sequence,
+            )
         )
 
 
@@ -213,7 +210,7 @@ async def tts_producer_task(
         not sess
         or not sess.tts_response_queue
         or not sess.organization_id
-        or not sess.tts_audio_transcoder
+        or not sess.tts
     ):
         raise RuntimeError("TTS carrier producer is missing session state.")
 
@@ -242,13 +239,10 @@ async def tts_producer_task(
                 continue
             try:
                 if audio_chunk:
-                    carrier_audio = sess.tts_audio_transcoder.process(audio_chunk)
-                    if not carrier_audio:
-                        continue
                     await _send_carrier_audio(
                         sess=sess,
                         telephony_manager=telephony_manager,
-                        audio=carrier_audio,
+                        audio=audio_chunk,
                         comfort=False,
                     )
             finally:
@@ -274,14 +268,14 @@ def _telephony_comfort_audio(sess: CallSession):
     config = getattr(session_state, "ambient_noise_config", None)
     if not config or not bool(config.get("enabled", True)):
         return None, session_state
-    if sess.tts_audio_transcoder is None:
+    if sess.tts is None:
         return None, session_state
     amplitude = int(config.get("amplitude", 50))
     if amplitude <= 0:
         return None, session_state
     return (
         ComfortAudioStream(
-            target=sess.tts_audio_transcoder.target,
+            target=sess.tts.consumer_audio_format,
             amplitude=amplitude,
             enabled=True,
         ),
@@ -335,7 +329,11 @@ async def finalize_call_session(
             completed = True
             return sess.manager_closed_ws
         finally:
-            sess.finalized = completed
+            sess.finalization_state = (
+                CallFinalizationState.COMPLETE
+                if completed
+                else CallFinalizationState.PENDING
+            )
             S_CALLS.remove(sess)
 
 
@@ -346,17 +344,17 @@ async def _finalize_call_session_once(
     auth_session_token: str | None,
 ) -> bool:
     """Persist terminal state, then contain every secondary cleanup failure."""
-    sess.is_active = False
-    _resolve_final_ended_reason(sess)
+    sess.state = CallSessionState.ENDED
+    ended_reason = _resolve_final_ended_reason(sess)
 
     duration_seconds = _duration_seconds(sess)
-    terminal_status = map_ended_reason_to_status(sess.ended_reason)
+    terminal_status = map_ended_reason_to_status(ended_reason)
 
     logger.info(
         {
             "message": "Call ended",
             "call_sid": sess.call_sid,
-            "ended_reason": sess.ended_reason.value,
+            "ended_reason": ended_reason.value,
             "terminal_status": terminal_status,
             "duration_seconds": duration_seconds,
         }
@@ -370,10 +368,10 @@ async def _finalize_call_session_once(
         except Exception:
             call_audio_metrics = {}
             logger.error("Could not collect call audio metrics.")
-        call_audio_metrics["termination_reason"] = sess.ended_reason.value
+        call_audio_metrics["termination_reason"] = ended_reason.value
         ended_event = CallEndedEvent(
-            message=f"Call ended: {sess.ended_reason.value}",
-            ended_reason=sess.ended_reason.value,
+            message=f"Call ended: {ended_reason.value}",
+            ended_reason=ended_reason.value,
             terminal_status=terminal_status,
             duration_seconds=duration_seconds,
             **call_event_kwargs(sess, provider),
@@ -439,7 +437,7 @@ async def _finalize_call_session_once(
                 voice_session_id=sess.voice_session_id,
                 runtime_mode=VoiceRuntimeMode.TELEPHONY,
                 ended_at=voice_ended_at,
-                ended_reason=sess.ended_reason.value,
+                ended_reason=ended_reason.value,
                 status=(
                     VoiceSessionStatus.FAILED
                     if terminal_status == CallStatus.FAILED
@@ -470,7 +468,7 @@ async def _finalize_call_session_once(
     failed_provider = {
         CallEndedReason.ERROR_STT_FAILED: "stt",
         CallEndedReason.ERROR_TTS_FAILED: "tts",
-    }.get(sess.ended_reason)
+    }.get(ended_reason)
     if failed_provider and sess.organization_id:
         await try_file_runtime_fact(
             organization_id=sess.organization_id,
@@ -502,7 +500,7 @@ async def _finalize_call_session_once(
                         if terminal_status == CallStatus.FAILED
                         else UserSessionState.ENDED
                     ),
-                    reason=sess.ended_reason.value,
+                    reason=ended_reason.value,
                 )
         except Exception as error:
             terminal_error = terminal_error or error
@@ -533,7 +531,7 @@ async def _persist_transfer_completion(sess: CallSession, provider: str) -> None
         return
     event = CallTransferredEvent(
         message="Call transfer completed",
-        transfer_to=sess.extra_data.get("transfer_to") or "",
+        transfer_to=sess.extra_data.transfer_to or "",
         **call_event_kwargs(sess, provider),
     )
     try:
@@ -571,7 +569,7 @@ async def _settle_pending_opener(sess: CallSession) -> None:
         await record_opener_delivery(
             call_id=sess.call_id,
             organization_id=sess.organization_id,
-            accepted=False,
+            outcome=CallOpenerDeliveryStatus.FAILED,
         )
     except Exception:
         logger.error("Pending outbound opener could not be marked failed.")
@@ -638,13 +636,14 @@ async def _finalize_recording(sess: CallSession) -> None:
     sess.audio_recorder = None
 
 
-def _resolve_final_ended_reason(sess: CallSession) -> None:
+def _resolve_final_ended_reason(sess: CallSession) -> CallEndedReason:
     if sess.ended_reason in (None, CallEndedReason.ERROR_SYSTEM):
         refined = refine_ended_reason_from_tasks(sess)
         if refined:
             sess.ended_reason = refined
     if sess.ended_reason is None:
         sess.ended_reason = CallEndedReason.UNKNOWN
+    return sess.ended_reason
 
 
 def refine_ended_reason_from_tasks(sess: CallSession) -> CallEndedReason | None:
@@ -662,7 +661,7 @@ def refine_ended_reason_from_tasks(sess: CallSession) -> CallEndedReason | None:
     return None
 
 
-def _has_failed_task(tasks: dict[str, asyncio.Task]) -> bool:
+def _has_failed_task(tasks: dict[str, asyncio.Task[None]]) -> bool:
     for name, task in tasks.items():
         if task.done() and not task.cancelled():
             exc = task.exception()
@@ -672,7 +671,7 @@ def _has_failed_task(tasks: dict[str, asyncio.Task]) -> bool:
     return False
 
 
-_ENDED_REASON_TO_STATUS: dict[CallEndedReason, str] = {
+_ENDED_REASON_TO_STATUS: dict[CallEndedReason, CallStatus] = {
     CallEndedReason.CUSTOMER_BUSY: CallStatus.BUSY,
     CallEndedReason.CUSTOMER_DID_NOT_ANSWER: CallStatus.NO_ANSWER,
     CallEndedReason.MANUALLY_CANCELED: CallStatus.CANCELED,
@@ -685,7 +684,7 @@ _ENDED_REASON_TO_STATUS: dict[CallEndedReason, str] = {
 }
 
 
-def map_ended_reason_to_status(ended_reason: CallEndedReason) -> str:
+def map_ended_reason_to_status(ended_reason: CallEndedReason) -> CallStatus:
     """Map a CallEndedReason to the terminal CallStatus for DB persistence."""
     return _ENDED_REASON_TO_STATUS.get(ended_reason, CallStatus.COMPLETED)
 
@@ -694,14 +693,3 @@ def _duration_seconds(sess: CallSession) -> float | None:
     if not sess.started_at:
         return None
     return (arrow.utcnow().datetime - sess.started_at).total_seconds()
-
-
-def _event_uuid(data: dict, key: str) -> UUID | None:
-    value = data.get(key)
-    if value is None:
-        return None
-    try:
-        return UUID(str(value))
-    except (TypeError, ValueError):
-        logger.warning("Call event has invalid %s metadata.", key)
-        return None

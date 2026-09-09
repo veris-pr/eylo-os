@@ -6,6 +6,7 @@ from uuid import UUID
 
 from fastapi import HTTPException, status
 
+from eylo.common.contracts.llm_verification import LLMVerificationError
 from eylo.modules.llm_configs.domain import InvalidLLMConfig
 from eylo.modules.llm_configs.schemas import (
     LLMConfigCreate,
@@ -14,10 +15,7 @@ from eylo.modules.llm_configs.schemas import (
     LLMConfigVerificationResponse,
 )
 from eylo.modules.llm_configs.service import LLMConfigService
-from eylo.modules.llm_configs.verification import (
-    LLMConfigVerificationService,
-    LLMVerificationError,
-)
+from eylo.modules.llm_configs.verification import LLMConfigVerifier
 from eylo.modules.provider_configs.domain import (
     ProviderConfig,
 )
@@ -29,13 +27,8 @@ _Result = TypeVar("_Result")
 class LLMConfigController:
     """Translate authenticated LLM config requests and domain results."""
 
-    def __init__(
-        self,
-        service: LLMConfigService,
-        verification: LLMConfigVerificationService,
-    ):
+    def __init__(self, service: LLMConfigService) -> None:
         self._service = service
-        self._verification = verification
 
     async def create(
         self,
@@ -82,9 +75,7 @@ class LLMConfigController:
                 organization_id=organization_id,
                 config_id=config_id,
                 name=request.name if "name" in supplied_fields else None,
-                config_patch=(
-                    request.config if "config" in supplied_fields else None
-                ),
+                config_patch=(request.config if "config" in supplied_fields else None),
                 secret_patch=(
                     request.secrets if "secrets" in supplied_fields else None
                 ),
@@ -92,6 +83,21 @@ class LLMConfigController:
             )
         )
         return _to_response(config)
+
+    async def delete(self, organization_id: UUID, config_id: UUID) -> None:
+        await _execute(
+            self._service.delete(
+                organization_id=organization_id,
+                config_id=config_id,
+            )
+        )
+
+
+class LLMConfigVerificationController:
+    """Project a detached verification result without owning a request transaction."""
+
+    def __init__(self, verification: LLMConfigVerifier) -> None:
+        self._verification = verification
 
     async def verify(
         self,
@@ -105,18 +111,10 @@ class LLMConfigController:
             )
         )
         return LLMConfigVerificationResponse(
-            provider=result.provider,
-            model=result.model,
+            provider=result.provider.value.lower(),
+            model=result.model.value,
             revision=result.revision,
             verified_at=result.verified_at,
-        )
-
-    async def delete(self, organization_id: UUID, config_id: UUID) -> None:
-        await _execute(
-            self._service.delete(
-                organization_id=organization_id,
-                config_id=config_id,
-            )
         )
 
 

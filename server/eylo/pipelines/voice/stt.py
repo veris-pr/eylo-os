@@ -2,54 +2,44 @@
 
 import asyncio
 import logging
-from typing import Callable
+from collections.abc import Mapping
 from uuid import UUID
 
-import arrow
+from pydantic import JsonValue
 
 from eylo.events.py_events.emitter import emit_ephemeral
 from eylo.events.schema.py_events.voice import STTState, STTStateEvent
-from eylo.runtime.tasks import monitor_long_running_tasks, teardown_long_running_tasks
-from eylo.sockets.stt.events import normalize_stt_event
+from eylo.pipelines.voice.transcript_inputs import (
+    FinalTranscriptBatch,
+    VoiceTranscriptInput,
+)
+from eylo.runtime.tasks import (
+    LongRunningTaskFactory,
+    monitor_long_running_tasks,
+    teardown_long_running_tasks,
+)
 from eylo.sockets.stt.exceptions import (
+    STTConnectionCleanupFailed,
     STTConnectionError,
     STTConnectionFailed,
 )
-from eylo.sockets.stt.factory import STTFactory
+from eylo.sockets.stt.factory import STTFactory, raise_if_stt_task_stopped
 from eylo.sockets.stt.schemas import (
     STTConfig,
     STTEvent,
-    STTEventType,
     STTMetricsSnapshot,
+    STTProvider,
 )
 
-"""STT Realtime Socket Handler with Turn-Based Conversation Support
-
-This module handles the socket connection for real-time speech-to-text (STT) processing
-with enhanced capabilities for turn-based conversations:
-1. Speech activity detection via VAD events
-2. Turn detection through SpeechStarted and UtteranceEnd events
-3. Final transcript collection for completed turns
-4. Queue management with robust error recovery
-"""
-
-
 _KEEPALIVE_INTERVAL = 5  # seconds
+_MILLISECONDS_PER_SECOND = 1000
+_RESPONSE_TASK_NAME = "stt_rt_response"
 
 logger = logging.getLogger(__name__)
 
 
 class STTRealtime:
-    """Real-time speech-to-text service with turn-based conversation support.
-
-    This class manages the communication with the STT service, providing:
-    1. Audio data streaming to Deepgram
-    2. Turn-based conversation handling with proper VAD
-    3. Transcript collection for completed turns
-    4. Queue management with backpressure detection
-    5. Health monitoring and metrics
-    6. Graceful error recovery
-    """
+    """Own recognition queues, final-text debounce, and STT child-task cleanup."""
 
     _REQUEST_QUEUE_TIMEOUT = 5  # seconds
     _MAX_QUEUE_SIZE = 100  # Example maximum size for the queues
@@ -62,40 +52,27 @@ class STTRealtime:
         self,
         organization_id: UUID,
         session_id: str,
-        consumer_queue: asyncio.Queue,
-        stt_config: STTConfig | dict | None = None,
-        stt_vendor: str | None = None,
+        consumer_queue: asyncio.Queue[VoiceTranscriptInput],
+        stt_config: STTConfig | Mapping[str, object] | None = None,
+        stt_vendor: str | STTProvider | None = None,
         *,
         api_key: str | None = None,
-    ):
-        """Initialize the real-time STT service.
-
-        Args:
-            organization_id: Organization ID
-            session_id: Session ID
-            consumer_queue: Queue for responses
-            stt_config: Configuration for the STT service
-            stt_vendor: STT service provider ("deepgram", "deepgram_flux", etc.)
-            api_key: Optional resolved API key from organization-scoped config.
-
-        """
-        self._typed_config = STTConfig.from_mapping(
-            stt_config,
-            vendor=stt_vendor,
-        )
-        self._stt_vendor = self._typed_config.vendor
+    ) -> None:
+        """Retain the factory's validated config; debounce uses milliseconds on input."""
         self._organization_id = organization_id
         self._session_id = session_id
 
         self._respond_back_queue = consumer_queue
 
-        self._stt_service_results = asyncio.Queue(maxsize=self._MAX_QUEUE_SIZE)
+        self._stt_service_results: asyncio.Queue[STTEvent] = asyncio.Queue(
+            maxsize=self._MAX_QUEUE_SIZE
+        )
 
-        stt_config_dict = self._typed_config.to_adapter_config()
-        # Convert incoming wait_ms (milliseconds) to float seconds for asyncio.sleep
-        self._wait_seconds = float(stt_config_dict.get("wait_ms", 0)) / 1000.0
-        self._transcript_buffer = []
-        self._wait_task = None
+        self._transcript_buffer: list[STTEvent] = []
+        self._transcript_lock = asyncio.Lock()
+        self._wait_task: asyncio.Task[None] | None = None
+        self._active_tasks: dict[str, asyncio.Task[None]] = {}
+        self._disconnect_task: asyncio.Task[None] | None = None
         self._metrics = STTMetricsSnapshot()
 
         # Create STT factory
@@ -103,20 +80,18 @@ class STTRealtime:
             organization_id,
             session_id,
             consumer_queue=self._stt_service_results,
-            stt_config=stt_config_dict,
-            stt_vendor=self._stt_vendor,
+            stt_config=stt_config,
+            stt_vendor=stt_vendor,
             api_key=api_key,
         )
+        self._typed_config = self._stt_factory.config
+        self._stt_vendor = self._typed_config.vendor
+        self._wait_seconds = self._typed_config.wait_ms / _MILLISECONDS_PER_SECOND
 
-    def _emit_stt_state(self, state: STTState, message: str, data: dict | None = None):
-        """Helper to emit STT state changes via event system.
-
-        Args:
-            state: STT state enum
-            message: Human-readable status message
-            data: Optional additional data for the event
-
-        """
+    def _emit_stt_state(
+        self, state: STTState, message: str, data: dict[str, JsonValue] | None = None
+    ) -> None:
+        """Observer failure must not interrupt recognition or expose provider errors."""
         try:
             emit_ephemeral(
                 STTStateEvent(
@@ -142,14 +117,21 @@ class STTRealtime:
         return self._stt_factory.is_connected
 
     @property
-    def metrics(self) -> dict:
+    def metrics(self) -> dict[str, JsonValue]:
         """Get current lightweight manager metrics."""
         snapshot = self._metrics.as_dict()
         snapshot["factory"] = self._stt_factory.metrics
         return snapshot
 
+    @property
+    def _response_task(self) -> asyncio.Task[None] | None:
+        return self._active_tasks.get(_RESPONSE_TASK_NAME)
+
     @staticmethod
     def _is_retryable_send_disconnect(error: Exception) -> bool:
+        """Establishment failures and unresolved cleanup never authorize audio replay."""
+        if isinstance(error, (STTConnectionFailed, STTConnectionCleanupFailed)):
+            return False
         if isinstance(error, STTConnectionError):
             return True
         if isinstance(error, RuntimeError):
@@ -163,6 +145,8 @@ class STTRealtime:
             audio_data: Raw audio bytes (typically 16kHz PCM format)
 
         """
+        if self._disconnect_task is not None:
+            raise STTConnectionError("STT runtime is closing; audio was not sent.")
         try:
             self._metrics.mark_audio_sent(len(audio_data))
             await self._stt_factory.service.send_audio(audio_data)
@@ -181,80 +165,45 @@ class STTRealtime:
             self._metrics.mark_reconnect()
             await self._stt_factory.service.send_audio(audio_data)
 
-    async def _await_response(self):
-        """Get the processed response from the response queue."""
-        response = None
+    async def _await_response(self) -> STTEvent | None:
+        """Acquire one result; the forwarding loop owns its acknowledgement."""
         try:
-            response = await asyncio.wait_for(
+            return await asyncio.wait_for(
                 self._stt_service_results.get(),
                 self._REQUEST_QUEUE_TIMEOUT,
             )
-            if response:
-                self._stt_service_results.task_done()
-        except asyncio.TimeoutError:
-            pass
-        except asyncio.QueueEmpty:
-            pass
-        except Exception as error:
-            logger.error(
-                "STT response wait failed error_type=%s",
-                type(error).__name__,
-            )
-            raise
-        return response
+        except TimeoutError:
+            return None
 
     async def _handle_response_for_consumer(self, event: STTEvent) -> None:
-        """Project a canonical STT event onto the websocket voice contract."""
-        self._metrics.mark_event(event.type.value)
-        normalized_response = normalize_stt_event(event)
-        transcript_chars = len(str(normalized_response.get("transcript") or ""))
+        """Forward typed recognition outcomes; debounce only completed text."""
+        self._metrics.mark_event(event.type)
         logger.info(
             "STTRealtime forwarding type=%s final=%s transcript_chars=%d",
-            normalized_response.get("type"),
-            normalized_response.get("is_final"),
-            transcript_chars,
+            event.type.value,
+            event.is_final,
+            len(event.transcript),
         )
-
         if self._wait_seconds <= 0:
-            self._respond_back_queue.put_nowait(normalized_response)
+            await self._respond_back_queue.put(event)
             return
 
-        response_type = normalized_response.get("type")
-        if response_type == "transcript" and normalized_response.get("is_final"):
-            new_segment = normalized_response.get("transcript", "")
-            self._transcript_buffer.append(new_segment)
-            logger.debug(
-                "[STT_WAIT] Added segment chars=%d buffer_segments=%d",
-                len(new_segment),
-                len(self._transcript_buffer),
-            )
-
-            if self._wait_task and not self._wait_task.done():
-                self._wait_task.cancel()
-                logger.debug("[STT_WAIT] Resetting timer on transcript")
-
-            if len(self._transcript_buffer) >= self._MAX_BUFFER_SEGMENTS:
-                logger.warning("[STT_WAIT] Max buffer segments reached. Forcing flush.")
+        if event.is_final and event.transcript:
+            await self._cancel_wait_task()
+            async with self._transcript_lock:
+                self._transcript_buffer.append(event)
+                flush_due = len(self._transcript_buffer) >= self._MAX_BUFFER_SEGMENTS
+            if flush_due:
                 await self._flush_transcript_buffer()
             else:
                 self._wait_task = asyncio.create_task(self._run_wait_timer())
             return
 
-        if response_type == STTEventType.VAD.value:
-            if self._wait_task and not self._wait_task.done():
-                self._wait_task.cancel()
-                logger.debug("[STT_WAIT] Resetting timer on %s", response_type)
-
-            self._wait_task = asyncio.create_task(self._run_wait_timer())
-            logger.info(
-                "[STT_WAIT] VAD event detected. Forwarding immediately "
-                "(buffer size: %d)",
-                len(self._transcript_buffer),
-            )
-            self._respond_back_queue.put_nowait(normalized_response)
-            return
-
-        self._respond_back_queue.put_nowait(normalized_response)
+        if event.is_speech_start or event.is_speech_end:
+            await self._cancel_wait_task()
+            if self._transcript_buffer:
+                self._wait_task = asyncio.create_task(self._run_wait_timer())
+        await self._respond_back_queue.put(event)
 
     async def initialize(self) -> None:
         """Run STT and surface every fatal startup/runtime failure to the client."""
@@ -297,14 +246,17 @@ class STTRealtime:
                 message="STT service connected",
             )
 
-            async def _respond_to_consumer():
+            async def _respond_to_consumer() -> None:
                 """Send processed responses to the client."""
                 try:
                     while True:
                         try:
                             response = await self._await_response()
-                            if response:
-                                await self._handle_response_for_consumer(response)
+                            if response is not None:
+                                try:
+                                    await self._handle_response_for_consumer(response)
+                                finally:
+                                    self._stt_service_results.task_done()
                         except asyncio.TimeoutError:
                             # Timeout waiting for response - continue
                             continue
@@ -319,12 +271,13 @@ class STTRealtime:
                     raise  # Re-raise to trigger task restart
 
             # Dictionary mapping task names to their coroutine functions
-            task_definitions: dict[str, Callable] = {
-                "stt_rt_response": _respond_to_consumer,
+            task_definitions: dict[str, LongRunningTaskFactory] = {
+                _RESPONSE_TASK_NAME: _respond_to_consumer,
             }
 
             # Initialize active tasks dictionary
-            active_tasks: dict[str, asyncio.Task] = {}
+            active_tasks: dict[str, asyncio.Task[None]] = {}
+            self._active_tasks = active_tasks
             for name, coro in task_definitions.items():
                 active_tasks[name] = asyncio.create_task(coro())
 
@@ -336,17 +289,21 @@ class STTRealtime:
                 )
 
                 # Main task monitoring loop
-                while True:
+                while self._disconnect_task is None:
+                    self._stt_factory.raise_if_failed()
+                    if self._wait_task is not None and self._wait_task.done():
+                        self._wait_task.result()
                     await monitor_long_running_tasks(
                         task_definitions=task_definitions,
                         active_tasks=active_tasks,
                         exceptions_to_ignore={asyncio.CancelledError},
                         exceptions_to_restart={STTConnectionFailed},
                     )
+                    raise_if_stt_task_stopped(active_tasks)
                     await asyncio.sleep(self._HEALTH_CHECK_INTERVAL)
 
             except asyncio.CancelledError:
-                pass
+                raise
             except Exception as error:
                 logger.error(
                     "STT runtime failed error_type=%s",
@@ -354,80 +311,79 @@ class STTRealtime:
                 )
                 raise
             finally:
-                await self.disconnect()
-                await teardown_long_running_tasks(active_tasks=active_tasks)
+                try:
+                    await self.disconnect()
+                finally:
+                    await teardown_long_running_tasks(active_tasks=active_tasks)
 
-    async def disconnect(self):
-        """Disconnect from the STT service and clean up resources."""
-        # Emit disconnected state BEFORE actually disconnecting
-        # to ensure the WebSocket connection is still active
+    async def disconnect(self) -> None:
+        """Keep forwarding alive through provider EOF; final delivery is bounded."""
+        if self._disconnect_task is None:
+            self._disconnect_task = asyncio.create_task(self._disconnect())
+            self._disconnect_task.add_done_callback(_observe_disconnect)
+        await asyncio.shield(self._disconnect_task)
+
+    async def _disconnect(self) -> None:
+        try:
+            await self._stt_factory.disconnect()
+        finally:
+            await self._drain_responses()
         self._emit_stt_state(
             state=STTState.DISCONNECTED,
             message="STT service disconnected",
         )
 
-        # Cleanup wait mechanism (T6)
-        if self._wait_task and not self._wait_task.done():
-            self._wait_task.cancel()
-            logger.info("[STT_WAIT] Cancelled active wait task during disconnect")
-
-        if self._transcript_buffer:
-            logger.info("[STT_WAIT] Performing final flush during disconnect")
+    async def _drain_responses(self) -> None:
+        """No provider producers remain; forward accepted events before final debounce."""
+        async with asyncio.timeout(self._JOIN_TIMEOUT):
+            if self._response_task is not None:
+                if self._response_task.done():
+                    self._response_task.result()
+                await self._stt_service_results.join()
+                if self._response_task.done():
+                    self._response_task.result()
+            else:
+                while not self._stt_service_results.empty():
+                    response = self._stt_service_results.get_nowait()
+                    try:
+                        await self._handle_response_for_consumer(response)
+                    finally:
+                        self._stt_service_results.task_done()
+            await self._cancel_wait_task()
             await self._flush_transcript_buffer()
 
-        await self._stt_factory.disconnect()
-
-        logger.info("Disconnected from STT service.")
-
-    async def _flush_transcript_buffer(self):
-        """Join all buffered transcripts and send them to the consumer."""
-        if not self._transcript_buffer:
-            return
-
-        # Combine all segments into one string
-        combined_transcript = " ".join(self._transcript_buffer).strip()
-
-        # Reset the buffer immediately to prevent race conditions
-        self._transcript_buffer = []
-
-        if combined_transcript:
-            logger.info(
-                "[STT_WAIT] Sending combined transcript chars=%d",
-                len(combined_transcript),
-            )
-            # Create a response object that matches what our consumers expect
-            response = {
-                "type": "transcript",
-                "transcript": combined_transcript,
-                "is_final": True,
-                "timestamp": arrow.utcnow().timestamp(),
-            }
-
-            # Push it to the final queue
-            try:
-                self._respond_back_queue.put_nowait(response)
-            except asyncio.QueueFull:
-                logger.warning("Response queue is full, discarding response")
-
-        # Clean up the task reference
+    async def _cancel_wait_task(self) -> None:
+        """Join the owned timer; a previous delivery failure remains visible."""
+        task = self._wait_task
         self._wait_task = None
-
-    async def _run_wait_timer(self):
-        """Wait for the specified period and then flush the buffer."""
+        if task is None:
+            return
+        if not task.done():
+            task.cancel()
+        current = asyncio.current_task()
+        cancellation_count = current.cancelling() if current is not None else 0
         try:
-            # Wait for the specified silence duration
-            await asyncio.sleep(self._wait_seconds)
-
-            # If we get here, it means the silence duration has elapsed. Flush the buffer
-            await self._flush_transcript_buffer()
-
+            await task
         except asyncio.CancelledError:
-            # This is the "reset" mechanism.
-            # When a new transcript arrives, we will cancel this task.
-            pass
-        except Exception as error:
-            logger.error(
-                "STT wait timer failed error_type=%s",
-                type(error).__name__,
-            )
-            self._wait_task = None
+            # Suppress only cancellation of the timer, never its caller's.
+            if current is not None and current.cancelling() > cancellation_count:
+                raise
+
+    async def _flush_transcript_buffer(self) -> None:
+        """Keep segments until downstream acceptance; cancellation loses no batch."""
+        async with self._transcript_lock:
+            if not self._transcript_buffer:
+                return
+            batch = FinalTranscriptBatch(segments=tuple(self._transcript_buffer))
+            await self._respond_back_queue.put(batch)
+            self._transcript_buffer.clear()
+
+    async def _run_wait_timer(self) -> None:
+        """The runtime owns and observes this task, including delivery failures."""
+        await asyncio.sleep(self._wait_seconds)
+        await self._flush_transcript_buffer()
+
+
+def _observe_disconnect(task: asyncio.Task[None]) -> None:
+    if not task.cancelled():
+        task.exception()

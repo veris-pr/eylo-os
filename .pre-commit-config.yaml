@@ -31,6 +31,297 @@ repos:
         types: [python]
         stages: [pre-commit, pre-push]
 
+      - id: python-typed-provider-config-contracts
+        name: Python provider-config persistence, encryption and resolution types
+        entry: >-
+          bash -c 'cd server && .venv/bin/pyrefly check
+          eylo/modules/provider_configs/
+          eylo/pipelines/external_connections/credentials.py'
+        language: system
+        files: ^server/(pyproject\.toml|eylo/(common/contracts/provider_config\.py|modules/provider_configs/|pipelines/external_connections/credentials\.py))
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+
+      - id: python-typed-voice-contracts
+        name: Python voice contracts and lifecycle policy types
+        entry: >-
+          bash -c 'cd server && .venv/bin/pyrefly check
+          eylo/common/contracts/voice.py
+          eylo/common/contracts/realtime_runtime.py
+          eylo/common/contracts/speech_runtime.py
+          eylo/modules/voice_configs/domain.py
+          eylo/modules/voice_configs/resolver.py
+          eylo/pipelines/voice/provider_runtime.py
+          eylo/runtime/tasks.py
+          eylo/sockets/stt/
+          eylo/sockets/voice/vendors/assemblyai/
+          eylo/sockets/voice/vendors/speechmatics/
+          eylo/sockets/voice/vendors/deepgram/
+          eylo/sockets/voice/vendors/google/
+          eylo/sockets/voice/vendors/revai/
+          eylo/sockets/voice/vendors/gladia/
+          eylo/sockets/stt/adapters/gladia_adapter.py
+          eylo/sockets/stt/adapters/gladia_events.py
+          eylo/sockets/stt/adapters/sarvam_adapter.py
+          eylo/sockets/stt/adapters/sarvam_events.py
+          eylo/sockets/stt/adapters/sarvam_wire.py
+          eylo/sockets/voice/vendors/cartesia/stt.py
+          eylo/sockets/voice/vendors/cartesia/stt_wire.py
+          eylo/pipelines/voice/stt.py
+          eylo/pipelines/voice/transcript_inputs.py
+          eylo/pipelines/voice/transcripts.py
+          eylo/pipelines/voice/tts_payloads.py
+          eylo/pipelines/voice/session_tts.py
+          eylo/pipelines/voice/tts.py
+          eylo/pipelines/voice/audio_transport.py
+          eylo/audio/ops.py
+          eylo/pipelines/voice/filler.py
+          eylo/common/contracts/session_state.py
+          eylo/modules/conversations/message_facts.py
+          eylo/modules/conversations/services/request_status.py
+          eylo/modules/voice_transcripts/constants.py
+          eylo/modules/voice_transcripts/schemas/indb.py
+          eylo/modules/voice_transcripts/schemas/api.py
+          eylo/modules/voice_transcripts/services/indb.py
+          eylo/pipelines/voice/live_buffer.py
+          eylo/pipelines/voice/live_runner.py
+          eylo/pipelines/voice/realtime.py
+          eylo/pipelines/voice/realtime_tool_dispatcher.py
+          eylo/sockets/realtime/events.py
+          eylo/sockets/realtime/base.py
+          eylo/sockets/realtime/config.py
+          eylo/sockets/realtime/factory.py
+          eylo/pipelines/voice/capabilities.py
+          eylo/pipelines/voice/config_verification.py
+          eylo/sockets/realtime/vendors/gemini_live.py
+          eylo/sockets/realtime/vendors/openai_realtime.py
+          eylo/sockets/realtime/vendors/openai_wire.py
+          eylo/sockets/realtime/vendors/amazon_nova_sonic.py
+          eylo/sockets/realtime/vendors/amazon_nova_sonic_wire.py
+          eylo/sockets/tts/base.py
+          eylo/sockets/tts/schemas.py
+          eylo/sockets/tts/exceptions.py
+          eylo/sockets/tts/adapters/config.py
+          eylo/sockets/tts/factory.py
+          eylo/sockets/tts/adapters/cartesia_wire.py
+          eylo/sockets/tts/adapters/cartesia_contract_adapter.py
+          eylo/sockets/tts/adapters/elevenlabs_wire.py
+          eylo/sockets/tts/adapters/elevenlabs_adapter.py
+          eylo/sockets/tts/adapters/hume_wire.py
+          eylo/sockets/tts/adapters/hume_adapter.py
+          eylo/pipelines/voice/live_transcript.py
+          eylo/pipelines/voice/post_call.py
+          eylo/pipelines/voice/policy_speech.py
+          eylo/pipelines/voice/transcript_facts.py
+          eylo/pipelines/voice/consent.py
+          eylo/pipelines/telephony/sessions.py
+          eylo/pipelines/voice/lifecycle_policy.py'
+        language: system
+        files: ^server/(pyproject\.toml|eylo/(common/contracts/|audio/|runtime/tasks\.py|modules/(voice_configs|voice_transcripts|conversations)/|pipelines/(voice|webrtc|websocket|telephony)/|sockets/(realtime|stt|tts|voice/vendors/(assemblyai|cartesia|deepgram|gladia|google|revai|speechmatics))/))
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+
+      - id: python-typed-telephony-contracts
+        name: Python telephony contracts, settings, and runtime consumers
+        entry: >-
+          bash -c 'cd server && .venv/bin/pyrefly check
+          eylo/modules/telephony/constants.py
+          eylo/modules/telephony/models.py
+          eylo/modules/telephony/schemas.py
+          eylo/modules/telephony/services.py
+          eylo/modules/telephony/voice_controller.py
+          eylo/modules/telephony/provider_config_domain.py
+          eylo/pipelines/telephony/scheduled_actions.py
+          eylo/pipelines/telephony/tool_execution.py
+          eylo/pipelines/telephony/config.py
+          eylo/pipelines/telephony/config_verification.py
+          eylo/pipelines/telephony/call_control.py
+          eylo/pipelines/telephony/number_management.py
+          eylo/pipelines/telephony/media_stream.py
+          eylo/pipelines/telephony/sessions.py
+          eylo/pipelines/telephony/lifecycle.py
+          eylo/sockets/telephony/config.py
+          eylo/sockets/telephony/dtmf.py
+          eylo/sockets/telephony/base.py
+          eylo/sockets/telephony/factory.py
+          eylo/sockets/telephony/verification.py
+          eylo/sockets/telephony/manager.py
+          eylo/sockets/telephony/twilio/service.py
+          eylo/sockets/telephony/plivo/service.py
+          eylo/sockets/telephony/vonage/service.py
+          eylo/sockets/telephony/exotel/service.py'
+        language: system
+        files: ^server/(pyproject\.toml|uv\.lock|eylo/(modules/telephony/|sockets/telephony/|products/campaigns/channels/voice\.py|pipelines/(telephony/|system_tools/telephony_tools\.py)))
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+
+      - id: python-telephony-runtime-imports
+        name: Python telephony, voice, and background caller imports
+        entry: >-
+          bash -c 'cd server &&
+          ENV=local DB_USER=x DB_PASSWORD=x DB_HOST=localhost DB_NAME=x
+          AUTH_SECRET_KEY=local-hook-only
+          ENCRYPTION_KEY=abababababababababababababababababababababababababababababababab
+          AUTH_ALGORITHM=HS256 AUTH_ACCESS_TOKEN_EXPIRE_MINUTES=60
+          REDIS_HOST=localhost REDIS_PASSWORD="" HOSTING_MODE=local
+          SENTRY_ENABLE=false .venv/bin/python -c
+          "from eylo.pipelines.telephony import call_control, config_verification,
+          media_stream, number_management;
+          from eylo.pipelines.parallel_agents import background_agent_worker, llm_task_worker,
+          context, swarm_agent_worker;
+          from eylo.pipelines.llm.background_agents import summary_generator;
+          assert all(hasattr(summary_generator, name) for name in summary_generator.__all__);
+          print(\"RUNTIME-CONTRACT-IMPORTS-OK\")"'
+        language: system
+        files: ^server/(pyproject\.toml|uv\.lock|eylo/)
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+
+      - id: python-typed-curated-tool-contracts
+        name: Python curated-tool preparation and vendor contracts
+        entry: >-
+          bash -c 'cd server && .venv/bin/pyrefly check
+          eylo/modules/integrations_v2/models.py
+          eylo/modules/integrations_v2/services/installations.py
+          eylo/pipelines/integrations_v2/execution.py
+          eylo/pipelines/integrations_v2/resolution.py
+          eylo/pipelines/integrations_v2/credentials.py
+          eylo/pipelines/integrations_v2/vendors/github/tools.py
+          eylo/pipelines/integrations_v2/vendors/freshdesk/
+          eylo/pipelines/integrations_v2/vendors/gitlab/tools.py
+          eylo/pipelines/integrations_v2/vendors/intercom/tools.py'
+        language: system
+        files: ^server/(pyproject\.toml|eylo/(common/contracts/tool_platform\.py|modules/(integrations_v2|tools)/|pipelines/(integrations_v2/|conversation/domain\.py)))
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+
+      - id: python-typed-llm-request-contracts
+        name: Python LLM, framework, and native vendor contracts
+        entry: >-
+          bash -c 'cd server && .venv/bin/pyrefly check
+          eylo/common/contracts/llm_runtime.py
+          eylo/common/contracts/llm_verification.py
+          eylo/common/contracts/llm_response.py
+          eylo/common/contracts/widgets.py
+          eylo/common/contracts/message_content.py
+          eylo/common/contracts/messages.py
+          eylo/common/contracts/session_state.py
+          eylo/common/utils/context_sanitizer.py
+          eylo/modules/session_context/schemas.py
+          eylo/modules/session_context/service.py
+          eylo/modules/session_context/dependencies.py
+          eylo/framework/agents/
+          eylo/pipelines/agent_run_transcript.py
+          eylo/pipelines/agent_run_continuations.py
+          eylo/modules/agent_runs/domain.py
+          eylo/modules/agent_runs/budgets.py
+          eylo/modules/agent_runs/workflow.py
+          eylo/modules/agent_runs/absurd.py
+          eylo/modules/agent_runs/waits.py
+          eylo/modules/agent_runs/service.py
+          eylo/common/database.py
+          eylo/modules/llm_configs/domain.py
+          eylo/modules/llm_configs/service.py
+          eylo/modules/llm_configs/resolver.py
+          eylo/modules/llm_configs/wiring.py
+          eylo/modules/llm_configs/verification.py
+          eylo/modules/llm_configs/controllers.py
+          eylo/modules/llm_configs/routes.py
+          eylo/pipelines/llm/config_verification.py
+          eylo/sockets/llm/verification.py
+          eylo/pipelines/agent_run_heartbeat.py
+          eylo/pipelines/agent_execution_context.py
+          eylo/pipelines/mcp/execution.py
+          eylo/pipelines/mcp/tool_execution.py
+          eylo/pipelines/system_tools/availability.py
+          eylo/pipelines/system_tools/agent_capabilities.py
+          eylo/pipelines/scheduler/durable_execution.py
+          eylo/pipelines/sandbox/durable_execution.py
+          eylo/pipelines/parallel_agents/durable_execution.py
+          eylo/pipelines/parallel_agents/task_dispatcher.py
+          eylo/pipelines/conversation/background_dispatch.py
+          eylo/pipelines/conversation/durable_execution.py
+          eylo/pipelines/conversation/run_state.py
+          eylo/pipelines/conversation/prompt_context.py
+          eylo/pipelines/conversation/context.py
+          eylo/pipelines/conversation/completion.py
+          eylo/pipelines/conversation/handoff.py
+          eylo/pipelines/conversation/conversation_runner.py
+          eylo/pipelines/conversation/tool_dispatch.py
+          eylo/pipelines/conversation/tool_batch.py
+          eylo/pipelines/conversation/tool_executor.py
+          eylo/pipelines/conversation/widget_responses.py
+          eylo/common/contracts/widget_responses.py
+          eylo/modules/conversations/schemas/websocket.py
+          eylo/modules/conversations/controllers/ws_messages.py
+          eylo/modules/interfaces/schemas/api.py
+          eylo/modules/interfaces/schemas/tools.py
+          eylo/modules/interfaces/services/schema_validator.py
+          eylo/pipelines/system_tools/compound_render_widget.py
+          eylo/pipelines/voice/live_runner.py
+          eylo/pipelines/voice/tool_executor.py
+          eylo/pipelines/voice/realtime_tool_dispatcher.py
+          eylo/modules/agents/services/tool_execution_utils.py
+          eylo/sor/runtime/tools.py
+          eylo/pipelines/sor/tool_execution.py
+          eylo/sockets/llm/config.py
+          eylo/sockets/llm/base.py
+          eylo/sockets/llm/history.py
+          eylo/common/utils/messages.py
+          eylo/pipelines/conversation/domain.py
+          eylo/sockets/llm/tool_content.py
+          eylo/sockets/llm/vendors/groq.py
+          eylo/sockets/llm/vendors/groq_responses.py
+          eylo/sockets/llm/vendors/cerebras.py
+          eylo/sockets/llm/vendors/cerebras_responses.py
+          eylo/sockets/llm/vendors/sarvam.py
+          eylo/sockets/llm/vendors/sarvam_responses.py
+          eylo/sockets/llm/vendors/openai.py
+          eylo/sockets/llm/vendors/openai_chat_responses.py
+          eylo/sockets/llm/vendors/openai_responses.py
+          eylo/sockets/llm/vendors/openai_response_events.py
+          eylo/sockets/llm/vendors/openai_utils.py
+          eylo/sockets/llm/vendors/anthropic.py
+          eylo/sockets/llm/vendors/anthropic_responses.py
+          eylo/sockets/llm/vendors/bedrock.py
+          eylo/sockets/llm/vendors/gemini.py
+          eylo/sockets/llm/vendors/gemini_responses.py
+          eylo/sockets/llm/transient.py
+          eylo/pipelines/llm/runtime.py
+          eylo/pipelines/llm/voice_text.py
+          eylo/pipelines/llm/streaming_tts.py
+          eylo/pipelines/llm/background_agents/framework_prompt.py
+          eylo/common/contracts/background_task.py
+          eylo/common/context_compaction.py
+          eylo/modules/parallel_agents/schemas.py
+          eylo/pipelines/conversation/background_implementations.py
+          eylo/pipelines/parallel_agents/background_agent_worker.py
+          eylo/pipelines/parallel_agents/context.py
+          eylo/pipelines/parallel_agents/swarm_agent_worker.py
+          eylo/modules/conversations/repositories/participants.py
+          eylo/modules/conversations/services/participants.py
+          eylo/modules/conversations/services/messages.py
+          eylo/pipelines/llm/background_agents/summary_generator/agent.py
+          eylo/pipelines/llm/background_agents/summary_generator/constants.py
+          eylo/pipelines/llm/background_agents/summary_generator/token_counter.py
+          eylo/pipelines/llm/background_agents/summary_generator/utils.py
+          eylo/pipelines/llm/background_agents/summary_generator/__init__.py
+          eylo/pipelines/llm/background_agents/title_generator/agent.py
+          eylo/pipelines/llm/background_agents/title_generator/prompt.py
+          eylo/pipelines/llm/background_agents/title_generator/utils.py
+          eylo/pipelines/parallel_agents/llm_task_worker.py
+          eylo/common/contracts/memory.py
+          eylo/common/contracts/embedding.py
+          eylo/modules/memory_configs/verification.py
+          eylo/pipelines/memory/resolver.py
+          eylo/pipelines/memory/config_verification.py
+          eylo/pipelines/memory/reconciliation_durable_execution.py
+          eylo/sockets/memory/vendors/pgvector.py'
+        language: system
+        files: ^server/(pyproject\.toml|uv\.lock|eylo/)
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+
       - id: documentation-contract
         name: Documentation coverage and source docstrings
         entry: server/.venv/bin/python server/scripts/verify_documentation.py

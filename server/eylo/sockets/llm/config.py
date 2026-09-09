@@ -1,22 +1,16 @@
 """Validation shared by LLM vendor adapters at their public boundary."""
 
-from collections.abc import Mapping
-from typing import Any
-
-from eylo.common.contracts.llm_runtime import InvalidLLMConfig
+from eylo.common.contracts.llm_runtime import InvalidLLMConfig, LLMInferenceConfig
 
 
-def require_model(config: Mapping[str, Any]) -> str:
+def require_model(config: LLMInferenceConfig) -> str:
     """Return one explicit model name; vendor adapters never select a model."""
-    model = config.get("model")
-    if not isinstance(model, str) or not model.strip():
-        raise InvalidLLMConfig("LLM model must be configured explicitly.")
-    return model.strip()
+    return config.generation.model.value
 
 
-def require_max_tokens(config: Mapping[str, Any]) -> int:
+def require_max_tokens(config: LLMInferenceConfig) -> int:
     """Return an explicit output-token limit for providers that require one."""
-    value = config.get("max_tokens")
+    value = config.generation.max_tokens
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise InvalidLLMConfig(
             "LLM max_tokens must be configured explicitly for this provider."
@@ -25,25 +19,26 @@ def require_max_tokens(config: Mapping[str, Any]) -> int:
 
 
 def configured_generation_params(
-    config: Mapping[str, Any],
+    config: LLMInferenceConfig,
     *,
     max_tokens_parameter: str,
     stop_sequences_parameter: str | None,
     top_k_parameter: str | None = None,
-) -> dict[str, Any]:
+) -> dict[str, int | float | list[str]]:
     """Translate only operator-supplied generation settings for one vendor."""
-    parameter_names = (
-        ("max_tokens", max_tokens_parameter),
-        ("temperature", "temperature"),
-        ("top_p", "top_p"),
-        ("top_k", top_k_parameter),
-        ("stop_sequences", stop_sequences_parameter),
-    )
-    return {
-        target: config[source]
-        for source, target in parameter_names
-        if target is not None and source in config and config[source] is not None
-    }
+    generation = config.generation
+    values: dict[str, int | float | list[str]] = {}
+    if generation.max_tokens is not None:
+        values[max_tokens_parameter] = generation.max_tokens
+    if generation.temperature is not None:
+        values["temperature"] = generation.temperature
+    if generation.top_p is not None:
+        values["top_p"] = generation.top_p
+    if top_k_parameter is not None and generation.top_k is not None:
+        values[top_k_parameter] = generation.top_k
+    if stop_sequences_parameter is not None and generation.stop_sequences is not None:
+        values[stop_sequences_parameter] = list(generation.stop_sequences)
+    return values
 
 
 __all__ = [

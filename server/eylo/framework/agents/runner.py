@@ -6,34 +6,89 @@ import asyncio
 import json
 import logging
 from collections.abc import Awaitable
-from dataclasses import dataclass
-from typing import AsyncIterator, TypeVar
+from typing import AsyncIterator, Literal, TypeVar
+from uuid import UUID
+
+from pydantic import JsonValue, model_validator
 
 from .agent import AgentSpec
 from .approval import ApprovalActionKind, ApprovalRequest, RiskLevel
+from .common import FrameworkMetadata, FrozenFrameworkModel
 from .config import RunConfig
 from .context import RunContext, RunInput, RunMessage
-from .errors import GuardrailTripwireError
+from .durable import InputRequestDetails
+from .errors import GuardrailTripwireError, ToolResultIdentityError
 from .guardrail import Guardrail, GuardrailStage
-from .hooks import RunHooks
-from .items import RunItem, RunItemKind
+from .history import (
+    HistoryMessageMetadata,
+    ModelMessageMetadata,
+    ModelResponseProvenance,
+    ToolResultProvenance,
+    tool_exchange_messages,
+)
+from .hooks import RunCallbacks, RunHooks
+from .interruptions import (
+    RunApprovalInterruption,
+    RunInputInterruption,
+    ToolApprovalContinuation,
+    ToolInputContinuation,
+)
+from .items import (
+    RunApprovalRequestItem,
+    RunInputRequestItem,
+    RunItem,
+    RunItemKind,
+    RunMessageItem,
+    RunMessagePayload,
+    RunToolCallItem,
+    RunToolResultItem,
+)
 from .model import Model, ModelBlockKind, ModelResponse, ModelUsage
-from .result import RunResult, RunStatus
-from .tool import ToolCall, ToolExecutionMode, ToolExecutor, ToolResult, ToolSpec
+from .result import (
+    RunFailureCode,
+    RunFailureMetadata,
+    RunResult,
+    RunStatus,
+    RunTerminalMetadata,
+)
+from .tool import (
+    ToolCall,
+    ToolCompletionMetadata,
+    ToolCompletionMode,
+    ToolExecutionMode,
+    ToolExecutor,
+    ToolResult,
+    ToolSpec,
+)
 
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 _MAX_APPROVAL_ARGUMENT_FIELDS = 32
+ToolInterruptionStatus = Literal[
+    RunStatus.WAITING_FOR_APPROVAL, RunStatus.WAITING_FOR_INPUT
+]
 
 
-@dataclass(frozen=True)
-class ToolExecutionOutcome:
+class ToolExecutionOutcome(FrozenFrameworkModel):
     """Tool execution batch plus optional interruption metadata."""
 
     results: tuple[ToolResult, ...]
-    interrupted_status: RunStatus | None = None
-    interruption_metadata: dict | None = None
+    interrupted_status: ToolInterruptionStatus | None = None
+    interruption_metadata: RunApprovalInterruption | RunInputInterruption | None = None
+
+    @model_validator(mode="after")
+    def validate_pause_kind(self) -> ToolExecutionOutcome:
+        """A pause status must match its request and continuation contract."""
+        if self.interrupted_status is RunStatus.WAITING_FOR_APPROVAL:
+            if isinstance(self.interruption_metadata, RunApprovalInterruption):
+                return self
+        elif self.interrupted_status is RunStatus.WAITING_FOR_INPUT:
+            if isinstance(self.interruption_metadata, RunInputInterruption):
+                return self
+        elif self.interrupted_status is None and self.interruption_metadata is None:
+            return self
+        raise ValueError("Tool interruption status and request must match.")
 
 
 async def _safe_hook(coro: Awaitable[None], hook_name: str) -> None:
@@ -63,11 +118,13 @@ class FrameworkRunner:
         *,
         tool_executor: ToolExecutor | None = None,
         hooks: RunHooks | None = None,
+        callbacks: RunCallbacks | None = None,
         guardrails: tuple[Guardrail, ...] = (),
     ) -> None:
         self._model = model
         self._tool_executor = tool_executor
         self._hooks = hooks or RunHooks()
+        self._callbacks = callbacks or RunCallbacks()
         self._guardrails = guardrails
 
     async def run(
@@ -78,13 +135,13 @@ class FrameworkRunner:
         local_context: object | None = None,
     ) -> RunResult:
         """Run an agent to a terminal or interrupted state."""
-        run_config = config or RunConfig()
         context = RunContext(
-            config=run_config,
+            config=config if config is not None else RunConfig(),
             current_agent=agent,
             handoff_chain=[agent],
             local_context=local_context,
         )
+        run_config = context.config
         items: list[RunItem] = []
         model_responses: list[ModelResponse] = []
         current_input = run_input
@@ -118,11 +175,13 @@ class FrameworkRunner:
                     self._hooks.on_llm_start(context, current_input), "on_llm_start"
                 )
 
-                response = await _await_with_timeout(
-                    context,
-                    self._model.generate(
-                        current_input,
-                        context.current_agent.model_settings,
+                response = ModelResponse.model_validate(
+                    await _await_with_timeout(
+                        context,
+                        self._model.generate(
+                            current_input,
+                            context.current_agent.model_settings,
+                        ),
                     ),
                 )
                 model_responses.append(response)
@@ -136,6 +195,7 @@ class FrameworkRunner:
 
                 if tool_calls:
                     await _apply_model_response_update(
+                        self._callbacks,
                         context,
                         current_input,
                         response,
@@ -143,11 +203,11 @@ class FrameworkRunner:
                     )
                     if text:
                         items.append(
-                            RunItem(
+                            RunMessageItem(
                                 run_id=context.run_id,
                                 kind=RunItemKind.MESSAGE,
                                 message=text,
-                                payload={"role": "assistant", "content": text},
+                                payload=RunMessagePayload(content=text),
                             )
                         )
                     tool_results = await self._execute_tools(
@@ -163,7 +223,7 @@ class FrameworkRunner:
                             status=tool_results.interrupted_status,
                             items=items,
                             model_responses=model_responses,
-                            metadata=tool_results.interruption_metadata or {},
+                            metadata=tool_results.interruption_metadata,
                         )
                         await _safe_hook(
                             self._hooks.on_run_end(context, result), "on_run_end"
@@ -177,6 +237,7 @@ class FrameworkRunner:
                         response,
                     )
                     current_input = await _apply_post_tool_update(
+                        self._callbacks,
                         context,
                         current_input,
                         tool_results.results,
@@ -187,14 +248,11 @@ class FrameworkRunner:
                     )
                     if terminal_output is not None:
                         items.append(
-                            RunItem(
+                            RunMessageItem(
                                 run_id=context.run_id,
                                 kind=RunItemKind.MESSAGE,
                                 message=terminal_output,
-                                payload={
-                                    "role": "assistant",
-                                    "content": terminal_output,
-                                },
+                                payload=RunMessagePayload(content=terminal_output),
                             )
                         )
                         result = self._build_result(
@@ -215,11 +273,11 @@ class FrameworkRunner:
                     continue
 
                 if text:
-                    item = RunItem(
+                    item = RunMessageItem(
                         run_id=context.run_id,
                         kind=RunItemKind.MESSAGE,
                         message=text,
-                        payload={"role": "assistant", "content": text},
+                        payload=RunMessagePayload(content=text),
                     )
                     items.append(item)
                     result = self._build_result(
@@ -282,12 +340,14 @@ class FrameworkRunner:
                     if guardrail_blocked
                     else "Run failed."
                 ),
-                metadata={
-                    "failure_code": (
-                        "guardrail_blocked" if guardrail_blocked else "run_failed"
+                metadata=RunFailureMetadata(
+                    failure_code=(
+                        RunFailureCode.GUARDRAIL_BLOCKED
+                        if guardrail_blocked
+                        else RunFailureCode.RUN_FAILED
                     ),
-                    "error_type": type(error).__name__,
-                },
+                    error_type=type(error).__name__,
+                ),
             )
             await _safe_hook(self._hooks.on_run_end(context, result), "on_run_end")
             return result
@@ -323,25 +383,24 @@ class FrameworkRunner:
         for call in tool_calls:
             await self._check_tool_input_guardrails(context, call)
             items.append(
-                RunItem(
+                RunToolCallItem(
                     run_id=context.run_id,
                     kind=RunItemKind.TOOL_CALL,
-                    payload={
-                        "id": call.id,
-                        "name": call.name,
-                        "arguments": call.arguments,
-                    },
+                    payload=call,
                 )
             )
-            await _apply_tool_call_update(context, call, model_response)
+            await _apply_tool_call_update(
+                self._callbacks, context, call, model_response
+            )
             tool_spec = tool_specs_by_name.get(call.name)
             policy_result = _tool_policy_result(context, tool_spec, call)
             if policy_result is not None:
                 if policy_result.interrupted_status is not None:
+                    assert policy_result.interruption_metadata is not None
                     result = _pause_tool_result(
                         call,
                         policy_result.interrupted_status,
-                        policy_result.interruption_metadata or {},
+                        policy_result.interruption_metadata,
                     )
                     await self._record_tool_result(
                         context,
@@ -377,9 +436,12 @@ class FrameworkRunner:
 
             await _safe_hook(self._hooks.on_tool_start(context, call), "on_tool_start")
             try:
-                result = await _await_with_timeout(
-                    context,
-                    self._tool_executor.execute(context, call),
+                result = _validated_tool_result(
+                    call,
+                    await _await_with_timeout(
+                        context,
+                        self._tool_executor.execute(context, call),
+                    ),
                 )
             except Exception as error:
                 result = ToolResult(
@@ -468,7 +530,8 @@ class FrameworkRunner:
         emit_tool_end: bool,
     ) -> None:
         """Persist and record a tool result, preserving hook ordering."""
-        await _apply_tool_result_update(context, call, result)
+        result = _validated_tool_result(call, result)
+        await _apply_tool_result_update(self._callbacks, context, call, result)
         if emit_tool_end:
             await _safe_hook(
                 self._hooks.on_tool_end(context, call, result),
@@ -535,7 +598,7 @@ class FrameworkRunner:
         model_responses: list[ModelResponse],
         final_output: str | None = None,
         error_message: str | None = None,
-        metadata: dict | None = None,
+        metadata: FrameworkMetadata | None = None,
     ) -> RunResult:
         return RunResult(
             run_id=context.run_id,
@@ -547,7 +610,7 @@ class FrameworkRunner:
             starting_agent=context.handoff_chain[0] if context.handoff_chain else None,
             final_agent=context.current_agent,
             error_message=error_message,
-            metadata=metadata or {},
+            metadata=metadata if metadata is not None else FrameworkMetadata(),
         )
 
 
@@ -564,29 +627,18 @@ async def _await_with_timeout(
 
 def _extract_text(response: ModelResponse) -> str:
     """Return combined text blocks from a model response."""
-    chunks: list[str] = []
-    for block in response.blocks:
-        if block.kind != ModelBlockKind.TEXT:
-            continue
-        if isinstance(block.content, str):
-            chunks.append(block.content)
-        elif isinstance(block.content, dict):
-            text = block.content.get("text")
-            if isinstance(text, str):
-                chunks.append(text)
-    return "".join(chunks)
+    return "".join(
+        block.content for block in response.blocks if block.kind is ModelBlockKind.TEXT
+    )
 
 
 def _extract_tool_calls(response: ModelResponse) -> tuple[ToolCall, ...]:
     """Return tool calls requested by a model response."""
-    calls: list[ToolCall] = []
-    for block in response.blocks:
-        if block.kind != ModelBlockKind.TOOL_CALL:
-            continue
-        if not isinstance(block.content, dict):
-            raise ValueError("Tool call block content must be an object.")
-        calls.append(ToolCall.model_validate(block.content))
-    return tuple(calls)
+    return tuple(
+        block.content
+        for block in response.blocks
+        if block.kind is ModelBlockKind.TOOL_CALL
+    )
 
 
 def _append_tool_messages(
@@ -597,29 +649,24 @@ def _append_tool_messages(
 ) -> RunInput:
     """Return input with tool calls/results appended for the next turn."""
     messages = list(run_input.messages)
-    request_id = run_input.metadata.get("request_id")
-    model_meta = _model_response_metadata_for_next_turn(model_response)
+    request_id = HistoryMessageMetadata(
+        request_id=run_input.metadata.get("request_id")
+    ).request_id
     results_by_call_id = {result.tool_call_id: result for result in tool_results}
     calls_by_id = {call.id: call for call in tool_calls}
 
-    for block in model_response.blocks:
+    for index, block in enumerate(model_response.blocks):
+        model_meta = _model_response_metadata_for_next_turn(model_response, index)
         if block.kind == ModelBlockKind.TEXT:
-            text = _extract_text(
-                ModelResponse(
-                    id=model_response.id,
-                    model=model_response.model,
-                    blocks=(block,),
-                )
-            )
+            text = block.content
             if text:
                 messages.append(
                     RunMessage(
                         role="assistant",
                         content=text,
-                        metadata={
-                            "request_id": str(request_id) if request_id else None,
-                            "meta": model_meta,
-                        },
+                        metadata=ModelMessageMetadata(
+                            request_id=request_id, meta=model_meta
+                        ),
                     )
                 )
             continue
@@ -627,40 +674,19 @@ def _append_tool_messages(
         if block.kind != ModelBlockKind.TOOL_CALL:
             continue
 
-        parsed_call = ToolCall.model_validate(block.content)
+        parsed_call = block.content
         result = results_by_call_id.get(parsed_call.id)
         if result is None:
             continue
         call = calls_by_id.get(parsed_call.id, parsed_call)
         messages.extend(
-            (
-                RunMessage(
-                    role="assistant",
-                    content=f"Tool call: {call.name}",
-                    metadata={
-                        "request_id": str(request_id) if request_id else None,
-                        "meta": model_meta,
-                        "tool_call": {
-                            "id": call.id,
-                            "name": call.name,
-                            "arguments": call.arguments,
-                        },
-                    },
-                ),
-                RunMessage(
-                    role="tool",
-                    content=_tool_result_content_for_message(result),
-                    metadata={
-                        "request_id": str(request_id) if request_id else None,
-                        "meta": _tool_result_metadata_for_next_turn(result),
-                        "tool_result": {
-                            "tool_call_id": result.tool_call_id,
-                            "name": call.name,
-                            "is_error": result.is_error,
-                            "content": result.content,
-                        },
-                    },
-                ),
+            tool_exchange_messages(
+                call,
+                result,
+                request_id=request_id,
+                result_text=_tool_result_content_for_message(result),
+                model_meta=model_meta,
+                result_meta=_tool_result_metadata_for_next_turn(result),
             )
         )
 
@@ -689,41 +715,29 @@ def _tool_result_content_for_message(result: ToolResult) -> str:
     )
 
 
-def _tool_result_metadata_for_next_turn(result: ToolResult) -> dict:
+def _tool_result_metadata_for_next_turn(result: ToolResult) -> ToolResultProvenance:
     """Return metadata safe to round-trip into transient tool-result messages."""
-    return {
-        "framework": True,
-        "tool_call_id": result.tool_call_id,
-        "is_error": result.is_error,
-        "metadata": {
-            key: value
-            for key, value in result.metadata.model_dump(mode="json").items()
-            if key not in {"terminal_output"}
-        },
-    }
+    return ToolResultProvenance.from_result(result)
 
 
-def _model_response_metadata_for_next_turn(response: ModelResponse) -> dict:
+def _model_response_metadata_for_next_turn(
+    response: ModelResponse,
+    response_block_index: int,
+) -> ModelResponseProvenance:
     """Return model metadata in the shape existing LLM adapters understand."""
-    response_data = response.model_dump()
-    return {
-        **response_data,
-        "framework": True,
-        "llm_response": response_data,
-        "model_response": response_data,
-    }
+    return ModelResponseProvenance(
+        model_response=response, response_block_index=response_block_index
+    )
 
 
 async def _apply_post_tool_update(
+    callbacks: RunCallbacks,
     context: RunContext,
     run_input: RunInput,
     tool_results: tuple[ToolResult, ...],
 ) -> RunInput:
     """Allow application adapters to refresh local context after tool side effects."""
-    if not isinstance(context.local_context, dict):
-        return run_input
-
-    callback = context.local_context.get("after_tool_results")
+    callback = callbacks.after_tool_results
     if callback is None:
         return run_input
     updated_input = await callback(context, run_input, tool_results)
@@ -733,46 +747,40 @@ async def _apply_post_tool_update(
 
 
 async def _apply_model_response_update(
+    callbacks: RunCallbacks,
     context: RunContext,
     run_input: RunInput,
     response: ModelResponse,
     tool_calls: tuple[ToolCall, ...],
 ) -> None:
     """Run application-local side effects for model responses with tools."""
-    if not isinstance(context.local_context, dict):
-        return
-
-    callback = context.local_context.get("after_model_response")
+    callback = callbacks.after_model_response
     if callback is None:
         return
     await callback(context, run_input, response, tool_calls)
 
 
 async def _apply_tool_result_update(
+    callbacks: RunCallbacks,
     context: RunContext,
     call: ToolCall,
     result: ToolResult,
 ) -> None:
     """Run application-local side effects for tool results."""
-    if not isinstance(context.local_context, dict):
-        return
-
-    callback = context.local_context.get("after_tool_result")
+    callback = callbacks.after_tool_result
     if callback is None:
         return
     await callback(context, call, result)
 
 
 async def _apply_tool_call_update(
+    callbacks: RunCallbacks,
     context: RunContext,
     call: ToolCall,
     response: ModelResponse,
 ) -> None:
     """Run application-local side effects for a tool call before execution."""
-    if not isinstance(context.local_context, dict):
-        return
-
-    callback = context.local_context.get("before_tool_call")
+    callback = callbacks.before_tool_call
     if callback is None:
         return
     await callback(context, call, response)
@@ -820,7 +828,7 @@ def _tool_policy_result(
             interrupted_status=RunStatus.WAITING_FOR_APPROVAL,
             interruption_metadata=_approval_interruption_metadata(
                 call,
-                approval_request.model_dump(mode="json"),
+                approval_request,
             ),
         )
 
@@ -832,19 +840,24 @@ def _tool_approval_summary(tool_spec: ToolSpec) -> str:
     slug = tool_spec.metadata.get("slug")
     tool_id = tool_spec.metadata.get("id")
     revision = tool_spec.metadata.get("revision")
-    if isinstance(slug, str) and isinstance(tool_id, str) and isinstance(revision, int):
+    if (
+        isinstance(slug, str)
+        and isinstance(tool_id, str | UUID)
+        and type(revision) is int
+        and revision > 0
+    ):
         return f"Approve tool action {slug} ({tool_id}@{revision})."
     return "Approve this tool action."
 
 
-def _tool_approval_payload(tool_spec: ToolSpec, call: ToolCall) -> dict:
+def _tool_approval_payload(tool_spec: ToolSpec, call: ToolCall) -> dict[str, JsonValue]:
     """Project only stored identity and schema-owned argument structure."""
-    payload: dict[str, object] = {}
+    payload: dict[str, JsonValue] = {}
     tool_id = tool_spec.metadata.get("id")
     revision = tool_spec.metadata.get("revision")
-    if isinstance(tool_id, str):
-        payload["tool_id"] = tool_id
-    if isinstance(revision, int) and revision > 0:
+    if isinstance(tool_id, str | UUID):
+        payload["tool_id"] = str(tool_id)
+    if type(revision) is int and revision > 0:
         payload["tool_revision"] = revision
 
     properties = tool_spec.input_schema.get("properties")
@@ -882,7 +895,7 @@ def _approval_metadata_from_tool_result(
 ) -> ToolExecutionOutcome | None:
     """Return approval interruption when a tool executor reports one."""
     approval_request = result.metadata.get("approval_request")
-    if not isinstance(approval_request, dict):
+    if approval_request is None:
         return None
 
     return ToolExecutionOutcome(
@@ -890,7 +903,7 @@ def _approval_metadata_from_tool_result(
         interrupted_status=RunStatus.WAITING_FOR_APPROVAL,
         interruption_metadata=_approval_interruption_metadata(
             call,
-            approval_request,
+            ApprovalRequest.model_validate(approval_request),
         ),
     )
 
@@ -901,20 +914,22 @@ def _input_metadata_from_tool_result(
 ) -> ToolExecutionOutcome | None:
     """Return input-request interruption when a tool executor reports one."""
     input_request = result.metadata.get("input_request")
-    if not isinstance(input_request, dict):
+    if input_request is None:
         return None
 
     return ToolExecutionOutcome(
         results=(),
         interrupted_status=RunStatus.WAITING_FOR_INPUT,
-        interruption_metadata=_input_interruption_metadata(call, input_request),
+        interruption_metadata=_input_interruption_metadata(
+            call, InputRequestDetails.model_validate(input_request)
+        ),
     )
 
 
 def _pause_tool_result(
     call: ToolCall,
-    status: RunStatus,
-    metadata: dict,
+    status: ToolInterruptionStatus,
+    metadata: RunApprovalInterruption | RunInputInterruption,
 ) -> ToolResult:
     """Create a paired tool result so persisted provider history stays valid."""
     if status == RunStatus.WAITING_FOR_APPROVAL:
@@ -927,7 +942,7 @@ def _pause_tool_result(
         metadata={
             "tool_execution_paused": True,
             "status": status.value,
-            **metadata,
+            **metadata.model_dump(mode="json"),
         },
     )
 
@@ -935,8 +950,8 @@ def _pause_tool_result(
 def _interrupted_tool_outcome(
     prior_results: list[ToolResult],
     result: ToolResult,
-    status: RunStatus,
-    metadata: dict | None,
+    status: ToolInterruptionStatus,
+    metadata: RunApprovalInterruption | RunInputInterruption | None,
 ) -> ToolExecutionOutcome:
     return ToolExecutionOutcome(
         results=(*prior_results, result),
@@ -947,30 +962,24 @@ def _interrupted_tool_outcome(
 
 def _approval_interruption_metadata(
     call: ToolCall,
-    approval_request: dict,
-) -> dict:
+    approval_request: ApprovalRequest,
+) -> RunApprovalInterruption:
     """Build continuation metadata for approval-gated tool calls."""
-    return {
-        "approval_request": approval_request,
-        "continuation": {
-            "type": "tool_approval",
-            "tool_call_id": call.id,
-        },
-    }
+    return RunApprovalInterruption(
+        approval_request=approval_request,
+        continuation=ToolApprovalContinuation(tool_call_id=call.id),
+    )
 
 
 def _input_interruption_metadata(
     call: ToolCall,
-    input_request: dict,
-) -> dict:
+    input_request: InputRequestDetails,
+) -> RunInputInterruption:
     """Build continuation metadata for input-gated tool calls."""
-    return {
-        "input_request": input_request,
-        "continuation": {
-            "type": "tool_input",
-            "tool_call_id": call.id,
-        },
-    }
+    return RunInputInterruption(
+        input_request=input_request,
+        continuation=ToolInputContinuation(tool_call_id=call.id),
+    )
 
 
 def _approval_request_item(
@@ -978,10 +987,12 @@ def _approval_request_item(
     outcome: ToolExecutionOutcome,
 ) -> RunItem:
     """Represent a pause-for-approval as an inspectable run item."""
-    return RunItem(
+    if not isinstance(outcome.interruption_metadata, RunApprovalInterruption):
+        raise ValueError("Approval item requires an approval interruption.")
+    return RunApprovalRequestItem(
         run_id=context.run_id,
         kind=RunItemKind.APPROVAL_REQUEST,
-        payload=outcome.interruption_metadata or {},
+        payload=outcome.interruption_metadata,
         message="Approval required before executing a tool action.",
     )
 
@@ -991,25 +1002,33 @@ def _input_request_item(
     outcome: ToolExecutionOutcome,
 ) -> RunItem:
     """Represent a pause-for-input as an inspectable run item."""
-    return RunItem(
+    if not isinstance(outcome.interruption_metadata, RunInputInterruption):
+        raise ValueError("Input item requires an input interruption.")
+    return RunInputRequestItem(
         run_id=context.run_id,
         kind=RunItemKind.INPUT_REQUEST,
-        payload=outcome.interruption_metadata or {},
+        payload=outcome.interruption_metadata,
         message="Input required before completing a tool action.",
     )
 
 
+def _validated_tool_result(call: ToolCall, result: ToolResult) -> ToolResult:
+    """Reject malformed/foreign results before callbacks can persist completion."""
+    result = ToolResult.model_validate(result)
+    if result.tool_call_id != call.id:
+        raise ToolResultIdentityError(
+            "Tool result does not belong to the invocation being completed."
+        )
+    return result
+
+
 def _tool_result_item(context: RunContext, result: ToolResult) -> RunItem:
     """Return the standard item shape for an observed tool result."""
-    return RunItem(
+    return RunToolResultItem(
         run_id=context.run_id,
         kind=RunItemKind.TOOL_RESULT,
         message=_tool_result_content_for_message(result),
-        payload={
-            "tool_call_id": result.tool_call_id,
-            "content": result.content,
-            "is_error": result.is_error,
-        },
+        payload=result,
     )
 
 
@@ -1024,32 +1043,41 @@ def _terminal_tool_result(
     tool_results: tuple[ToolResult, ...],
 ) -> ToolResult | None:
     return next(
-        (result for result in tool_results if result.metadata.get("terminal_response")),
+        (
+            result
+            for result in tool_results
+            if isinstance(result.metadata, ToolCompletionMetadata)
+            and result.metadata.terminal_response is ToolCompletionMode.COMPLETE
+        ),
         None,
     )
 
 
 def _terminal_output_from_tool_result(result: ToolResult | None) -> str | None:
-    if result is None:
+    if result is None or not isinstance(result.metadata, ToolCompletionMetadata):
         return None
-    output = result.metadata.get("terminal_output") or result.content
+    if result.metadata.terminal_response is not ToolCompletionMode.COMPLETE:
+        return None
+    output = result.metadata.terminal_output or result.content
     return str(output)
 
 
 def _terminal_metadata_from_tool_result(
     result: ToolResult | None,
-) -> dict:
+) -> FrameworkMetadata:
     """Return result metadata for terminal tool completions."""
-    if result is None:
-        return {}
-    metadata = {
-        "terminal_response": True,
-        "terminal_tool_call_id": result.tool_call_id,
-    }
-    terminal_artifact = result.metadata.get("terminal_artifact")
-    if terminal_artifact is not None:
-        metadata["terminal_artifact"] = terminal_artifact
-    return metadata
+    if result is None or not isinstance(result.metadata, ToolCompletionMetadata):
+        return FrameworkMetadata()
+    if result.metadata.terminal_artifact is not None:
+        return RunTerminalMetadata(
+            terminal_response=result.metadata.terminal_response,
+            terminal_tool_call_id=result.tool_call_id,
+            terminal_artifact=result.metadata.terminal_artifact,
+        )
+    return RunTerminalMetadata(
+        terminal_response=result.metadata.terminal_response,
+        terminal_tool_call_id=result.tool_call_id,
+    )
 
 
 def _add_usage(current: ModelUsage, incoming: ModelUsage) -> ModelUsage:

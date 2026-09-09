@@ -13,7 +13,9 @@ from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from eylo.common.config import Environment, settings
 from eylo.common.database import start_transaction
+from eylo.events.schema.py_events.call import CallDirection
 from eylo.modules.agents.domain import ResolvedExecutableAgent
+from eylo.modules.telephony.constants import CallOpenerDeliveryStatus
 from eylo.modules.telephony.lifecycle import (
     claim_outbound_media_session,
     record_call_status,
@@ -29,6 +31,7 @@ from eylo.modules.telephony.wiring import build_telephony_config_resolver
 from eylo.modules.user_sessions.domain import UserSessionState
 from eylo.modules.user_sessions.service import UserSessionService
 from eylo.pipelines.session_timeline import try_file_runtime_fact
+from eylo.pipelines.telephony.config import build_telephony_runtime_config
 from eylo.pipelines.telephony.conversation import (
     init_conversation,
     persist_delivered_outbound_opener,
@@ -40,7 +43,12 @@ from eylo.pipelines.telephony.lifecycle import (
     handle_media_packet,
     tts_producer_task,
 )
-from eylo.pipelines.telephony.sessions import S_CALLS, CallSession
+from eylo.pipelines.telephony.sessions import (
+    S_CALLS,
+    CallSession,
+    CallSessionMetadata,
+    CallSessionState,
+)
 from eylo.pipelines.telephony.voice import (
     VoicePipelineBundle,
     apply_voice_bundle_to_session,
@@ -55,8 +63,10 @@ from eylo.pipelines.telephony.voice import (
     wait_for_voice_pipeline_ready,
 )
 from eylo.pipelines.voice import consent as _consent
+from eylo.pipelines.voice.tts_payloads import TTSFinalizeRequest, TTSTextRequest
 from eylo.pipelines.websocket.singleton import S_ws_manager
 from eylo.sockets.telephony.base import CallEndedReason, CallMetadata
+from eylo.sockets.telephony.config import TelephonyProvider as SocketTelephonyProvider
 from eylo.sockets.telephony.dtmf import DTMFCollector
 from eylo.sockets.telephony.manager import TelephonyRealtime
 
@@ -119,8 +129,8 @@ async def _handle_start_event(
         agent_revision=executable_agent.ref.revision,
         from_number=from_number,
         to_number=to_number,
-        direction=metadata.direction.lower(),
-        provider=provider,
+        direction=CallDirection(metadata.direction.lower()),
+        provider=SocketTelephonyProvider(provider),
         provider_config_id=metadata.provider_config_id,
         provider_config_revision=metadata.provider_config_revision,
         telephony_manager=telephony_manager,
@@ -132,10 +142,11 @@ async def _handle_start_event(
         ),
     )
     if canonical_call is not None:
-        for key in ("campaign_id", "campaign_contact_id", "campaign_attempt_id"):
-            value = getattr(canonical_call, key)
-            if value is not None:
-                sess.extra_data[key] = str(value)
+        sess.extra_data = CallSessionMetadata(
+            campaign_id=canonical_call.campaign_id,
+            campaign_contact_id=canonical_call.campaign_contact_id,
+            campaign_attempt_id=canonical_call.campaign_attempt_id,
+        )
 
     voice_bundle: VoicePipelineBundle | None = None
     auth_session_token: str | None = None
@@ -253,14 +264,14 @@ async def _start_outbound_opener(sess: CallSession) -> None:
     turn_id = f"outbound-opener-{sess.call_id}"
     try:
         await sess.tts.add_to_request_queue(
-            {"type": "text", "text": sess.opener_text, "turn_id": turn_id}
+            TTSTextRequest(text=sess.opener_text, turn_id=turn_id)
         )
-        await sess.tts.add_to_request_queue({"type": "finalize", "turn_id": turn_id})
+        await sess.tts.add_to_request_queue(TTSFinalizeRequest(turn_id=turn_id))
     except Exception:
         await record_opener_delivery(
             call_id=sess.call_id,
             organization_id=sess.organization_id,
-            accepted=False,
+            outcome=CallOpenerDeliveryStatus.FAILED,
         )
         logger.warning("Outbound opener could not be queued.")
         return
@@ -283,7 +294,7 @@ async def _observe_outbound_opener(sess: CallSession) -> None:
         await record_opener_delivery(
             call_id=sess.call_id,
             organization_id=sess.organization_id,
-            accepted=False,
+            outcome=CallOpenerDeliveryStatus.FAILED,
         )
         return
     await persist_delivered_outbound_opener(
@@ -301,7 +312,7 @@ async def _rollback_start_event(
     auth_session_token: str | None,
     published: bool,
 ) -> None:
-    sess.is_active = False
+    sess.state = CallSessionState.ENDED
     if published:
         S_CALLS.remove(sess)
     if sess.organization_id is not None and sess.call_id is not None:
@@ -362,27 +373,24 @@ def _enrich_metadata_from_query_params(metadata: CallMetadata, ws: WebSocket) ->
         ):
             setattr(metadata, attribute, UUID(value))
             metadata.requires_media_stream_token = True
-    if metadata.agent_revision is None and (
-        value := ws.query_params.get("agent_revision")
-    ):
+    value = ws.query_params.get("agent_revision")
+    if metadata.agent_revision is None and value:
         metadata.agent_revision = int(value)
         metadata.requires_media_stream_token = True
-    if metadata.provider_config_revision is None and (
-        value := ws.query_params.get("provider_config_revision")
-    ):
+    value = ws.query_params.get("provider_config_revision")
+    if metadata.provider_config_revision is None and value:
         metadata.provider_config_revision = int(value)
         metadata.requires_media_stream_token = True
-    if metadata.direction == "INBOUND" and (value := ws.query_params.get("direction")):
+    value = ws.query_params.get("direction")
+    if metadata.direction == "INBOUND" and value:
         metadata.direction = value
         metadata.requires_media_stream_token = True
-    if not metadata.initial_message and (
-        value := ws.query_params.get("initial_message")
-    ):
+    value = ws.query_params.get("initial_message")
+    if not metadata.initial_message and value:
         metadata.initial_message = value
         metadata.requires_media_stream_token = True
-    if not metadata.media_stream_token and (
-        value := ws.query_params.get("stream_token")
-    ):
+    value = ws.query_params.get("stream_token")
+    if not metadata.media_stream_token and value:
         metadata.media_stream_token = value
 
 
@@ -562,10 +570,12 @@ async def _receive_provider_message(ws: WebSocket, provider: str) -> str | bytes
 
 def _raise_failed_runtime_task(sess: CallSession) -> None:
     for task in (*sess.stt_tasks.values(), *sess.tts_tasks.values()):
-        if task.done() and not task.cancelled() and task.exception() is not None:
-            raise RuntimeError(
-                "Telephony runtime background task failed."
-            ) from task.exception()
+        if task.done() and not task.cancelled():
+            error = task.exception()
+            if error is not None:
+                raise RuntimeError(
+                    "Telephony runtime background task failed."
+                ) from error
 
 
 @router.websocket("/media/stream")
@@ -589,7 +599,9 @@ async def generic_media_ws(
     sess: CallSession | None = None
     auth_session_token: str | None = None
     manager_closed_ws = False
-    telephony_manager = TelephonyRealtime(websocket=ws, provider=provider)
+    telephony_manager = TelephonyRealtime(
+        websocket=ws, provider=SocketTelephonyProvider(provider)
+    )
     dtmf_collector = DTMFCollector()
     try:
         while True:
@@ -634,7 +646,9 @@ async def generic_media_ws(
                 telephony_manager.activate(
                     organization_id=resolved.organization_id,
                     session_id=metadata.call_sid,
-                    telephony_config=resolved.as_provider_config().adapter_settings(),
+                    telephony_config=build_telephony_runtime_config(
+                        resolved.as_provider_config()
+                    ),
                 )
                 sess, _, auth_session_token = await _handle_start_event(
                     telephony_manager,

@@ -1,6 +1,6 @@
 """Constants and enums for voice transcript persistence."""
 
-from enum import Enum
+from enum import Enum, StrEnum
 
 from eylo.common.contracts.voice import (
     VOICE_MESSAGE_META_REDACTION_VERSION as VOICE_MESSAGE_META_REDACTION_VERSION,
@@ -19,6 +19,9 @@ from eylo.common.contracts.voice import (
 )
 from eylo.common.contracts.voice import (
     VOICE_MESSAGE_META_SPEECH_OUTCOME as VOICE_MESSAGE_META_SPEECH_OUTCOME,
+)
+from eylo.common.contracts.voice import (
+    VoiceRuntimeMode as VoiceRuntimeMode,
 )
 from eylo.common.contracts.voice import (
     VoiceSpeechOutcome as VoiceSpeechOutcome,
@@ -43,15 +46,29 @@ class VoiceCanonicalState(str, Enum):
     NO_STORAGE = "no_storage"
 
 
+class VoiceCanonicalFailureCode(StrEnum):
+    """Content-free reasons a session's canonical history could not be stored."""
+
+    STORAGE_DECISION_UNAVAILABLE = "storage_decision_unavailable"
+    STORAGE_DECISION_CONFLICT = "storage_decision_conflict"
+    SOURCE_ORDER_INVALID = "source_order_invalid"
+    SOURCE_CAPTURE_INCOMPLETE = "source_capture_incomplete"
+    SOURCE_CAPACITY_EXCEEDED = "source_capacity_exceeded"
+    SOURCE_INVALID_PAYLOAD = "source_invalid_payload"
+    REDACTED_PAYLOAD_INVALID = "redacted_payload_invalid"
+    REDACTION_FAILED = "redaction_failed"
+    PROJECTION_FAILED = "projection_failed"
+    PARTICIPANT_AUTHORITY_UNAVAILABLE = "participant_authority_unavailable"
+    PARTICIPANT_AUTHORITY_CONFLICT = "participant_authority_conflict"
+    TOOL_CALL_INVALID = "tool_call_invalid"
+    TOOL_RESULT_INVALID = "tool_result_invalid"
+    MESSAGE_PROJECTION_UNAVAILABLE = "message_projection_unavailable"
+    POLICY_SOURCE_UNAVAILABLE = "policy_source_unavailable"
+    TEXT_PAYLOAD_INVALID = "text_payload_invalid"
+    ASSISTANT_SPEECH_OUTCOME_UNAVAILABLE = "assistant_speech_outcome_unavailable"
+
+
 VOICE_CANONICAL_REDACTION_VERSION = 1
-
-
-class VoiceRuntimeMode(str, Enum):
-    """Supported voice runtime modes."""
-
-    BROWSER_DECOMPOSED = "browser_decomposed"
-    BROWSER_REALTIME = "browser_realtime"
-    TELEPHONY = "telephony"
 
 
 class VoiceSegmentRole(str, Enum):

@@ -4,14 +4,23 @@ from __future__ import annotations
 
 import asyncio
 import json
-from copy import deepcopy
-from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import StrEnum
-from typing import Any
+from typing import Self
 from uuid import UUID
 
-from eylo.modules.voice_transcripts.constants import VoiceRuntimeMode
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    StrictBool,
+    StrictInt,
+    model_validator,
+)
+
+from eylo.common.contracts.voice import VoiceRuntimeMode, VoiceSpeechOutcome
 from eylo.pipelines.voice.request_state import VoiceRequestSource
 
 _MAX_BUFFER_BYTES = 16 * 1024 * 1024
@@ -36,69 +45,80 @@ class LiveVoiceBufferFailure(StrEnum):
     INVALID_PAYLOAD = "invalid_payload"
 
 
-@dataclass(frozen=True, slots=True)
-class LiveVoiceBufferIdentity:
+class LiveVoiceBufferIdentity(BaseModel):
     """Content-free authority for one in-memory call buffer."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     organization_id: UUID
     conversation_id: UUID
     session_id: str
     voice_session_id: UUID | None
     runtime_mode: VoiceRuntimeMode
-    canonical_storage_requested: bool
+    canonical_storage_requested: StrictBool
     contact_id: UUID | None = None
     contact_participant_id: UUID | None = None
     agent_participant_id: UUID | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class LiveVoiceDraft:
+class LiveVoiceDraft(BaseModel):
     """One not-yet-sequenced raw item supplied by a live runtime."""
 
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        allow_inf_nan=False,
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+    )
+
     kind: LiveVoiceItemKind
-    payload: str | dict[str, Any] = field(repr=False)
-    turn_index: int | None = None
+    payload: str | dict[str, JsonValue] = Field(repr=False, exclude=True)
+    turn_index: StrictInt | None = Field(default=None, ge=0)
     participant_id: UUID | None = None
     request_id: UUID | None = None
     tool_call_id: str | None = None
     tool_name: str | None = None
-    is_error: bool | None = None
-    speech_outcome: str | None = None
+    is_error: StrictBool | None = None
+    speech_outcome: VoiceSpeechOutcome | None = None
     policy_source: VoiceRequestSource | None = None
-    occurred_at: datetime = field(
+    occurred_at: AwareDatetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
     )
 
+    @model_validator(mode="after")
+    def validate_payload_kind(self) -> Self:
+        if self.kind is LiveVoiceItemKind.TOOL_CALL:
+            if not isinstance(self.payload, dict):
+                raise ValueError("Voice tool-call capture requires an argument object.")
+        elif self.kind is not LiveVoiceItemKind.TOOL_RESULT:
+            if not isinstance(self.payload, str):
+                raise ValueError("Voice speech capture requires text.")
+        return self
 
-@dataclass(frozen=True, slots=True)
-class LiveVoiceItem:
+
+class LiveVoiceItem(LiveVoiceDraft):
     """One raw item with an immutable session-local sequence."""
 
-    sequence: int
-    kind: LiveVoiceItemKind
-    payload: str | dict[str, Any] = field(repr=False)
-    turn_index: int | None = None
-    participant_id: UUID | None = None
-    request_id: UUID | None = None
-    tool_call_id: str | None = None
-    tool_name: str | None = None
-    is_error: bool | None = None
-    speech_outcome: str | None = None
-    policy_source: VoiceRequestSource | None = None
-    occurred_at: datetime = field(
-        default_factory=lambda: datetime.now(timezone.utc),
-    )
+    sequence: StrictInt = Field(ge=1)
 
 
-@dataclass(frozen=True, slots=True)
-class LiveVoiceBufferSnapshot:
+class LiveVoiceBufferSnapshot(BaseModel):
     """Raw post-call input; consumers must redact before any durable write."""
 
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
     identity: LiveVoiceBufferIdentity
-    items: tuple[LiveVoiceItem, ...] = field(repr=False)
-    complete: bool
+    items: tuple[LiveVoiceItem, ...] = Field(repr=False, exclude=True)
+    complete: StrictBool
     failure: LiveVoiceBufferFailure | None
-    captured_bytes: int
+    captured_bytes: StrictInt = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_completeness(self) -> Self:
+        if self.complete != (self.failure is None):
+            raise ValueError("Voice capture completeness disagrees with its failure.")
+        return self
 
 
 class LiveVoiceBuffer:
@@ -137,10 +157,10 @@ class LiveVoiceBuffer:
             return ()
 
         try:
-            copied: list[tuple[LiveVoiceDraft, str | dict[str, Any], int]] = []
+            copied: list[tuple[LiveVoiceDraft, int]] = []
             for draft in drafts:
-                payload = deepcopy(draft.payload)
-                copied.append((draft, payload, _payload_bytes(payload)))
+                validated = LiveVoiceDraft.model_validate(draft)
+                copied.append((validated, _payload_bytes(validated.payload)))
         except (RecursionError, TypeError, ValueError):
             async with self._lock:
                 if self._closed:
@@ -153,7 +173,7 @@ class LiveVoiceBuffer:
                 raise RuntimeError("Live voice buffer is closed.")
             if self._failure is not None:
                 return ()
-            batch_bytes = sum(size for _, _, size in copied)
+            batch_bytes = sum(size for _, size in copied)
             if (
                 len(self._items) + len(copied) > _MAX_BUFFER_ITEMS
                 or self._captured_bytes + batch_bytes > _MAX_BUFFER_BYTES
@@ -166,7 +186,7 @@ class LiveVoiceBuffer:
                 LiveVoiceItem(
                     sequence=start + offset,
                     kind=draft.kind,
-                    payload=payload,
+                    payload=draft.payload,
                     turn_index=draft.turn_index,
                     participant_id=draft.participant_id,
                     request_id=draft.request_id,
@@ -177,11 +197,17 @@ class LiveVoiceBuffer:
                     policy_source=draft.policy_source,
                     occurred_at=draft.occurred_at,
                 )
-                for offset, (draft, payload, _) in enumerate(copied)
+                for offset, (draft, _) in enumerate(copied)
             )
             self._items.extend(appended)
             self._captured_bytes += batch_bytes
-            return appended
+            return tuple(item.model_copy(deep=True) for item in appended)
+
+    async def reject_capture(self) -> None:
+        """Record invalid producer input without interrupting or reopening a call."""
+        async with self._lock:
+            if not self._closed and self._failure is None:
+                self._failure = LiveVoiceBufferFailure.INVALID_PAYLOAD
 
     async def snapshot(self) -> LiveVoiceBufferSnapshot:
         """Copy current raw state without closing the live session."""
@@ -204,7 +230,7 @@ class LiveVoiceBuffer:
     def mark_speech_outcome(
         self,
         request_id: UUID,
-        speech_outcome: str,
+        speech_outcome: VoiceSpeechOutcome,
     ) -> bool:
         """Attach a terminal playback result to generated speech.
 
@@ -224,9 +250,8 @@ class LiveVoiceBuffer:
                 }
                 and item.request_id == request_id
             ):
-                self._items[index] = replace(
-                    item,
-                    speech_outcome=speech_outcome,
+                self._items[index] = item.model_copy(
+                    update={"speech_outcome": VoiceSpeechOutcome(speech_outcome)},
                 )
                 return True
         return False
@@ -241,13 +266,14 @@ class LiveVoiceBuffer:
         )
 
 
-def _payload_bytes(payload: str | dict[str, Any]) -> int:
+def _payload_bytes(payload: str | dict[str, JsonValue]) -> int:
     if isinstance(payload, str):
         return len(payload.encode("utf-8"))
     encoded = json.dumps(
         payload,
         ensure_ascii=False,
         separators=(",", ":"),
+        allow_nan=False,
     )
     return len(encoded.encode("utf-8"))
 

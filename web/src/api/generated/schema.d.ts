@@ -6330,6 +6330,18 @@ export interface components {
              */
             contactId?: string | null;
         };
+        /**
+         * CallOpenerDeliveryStatus
+         * @description Delivery of the configured opener, independent of carrier call status.
+         * @enum {string}
+         */
+        CallOpenerDeliveryStatus: "not_requested" | "pending" | "accepted" | "failed";
+        /**
+         * CallTransferStatus
+         * @description Platform transfer intent and observed outcome, not vendor-native status.
+         * @enum {string}
+         */
+        CallTransferStatus: "none" | "transferring" | "accepted" | "failed" | "unknown" | "transferred";
         /** CampaignAnalyticsResponse */
         CampaignAnalyticsResponse: {
             /**
@@ -6815,22 +6827,284 @@ export interface components {
             allow_sensitive_metadata: boolean;
         };
         /**
+         * CompoundWidgetAlertNode
+         * @description An alert component with typed props and tree identity.
+         */
+        CompoundWidgetAlertNode: {
+            /**
+             * Id
+             * @description Unique component identifier within the widget.
+             */
+            id: string;
+            /**
+             * Children
+             * @description Ordered child IDs; only layout components may have children.
+             */
+            children?: string[] | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            component: "alert";
+            props: components["schemas"]["WidgetAlertProps"];
+        };
+        /**
+         * CompoundWidgetButtonGroupNode
+         * @description A button-group component with typed props and tree identity.
+         */
+        CompoundWidgetButtonGroupNode: {
+            /**
+             * Id
+             * @description Unique component identifier within the widget.
+             */
+            id: string;
+            /**
+             * Children
+             * @description Ordered child IDs; only layout components may have children.
+             */
+            children?: string[] | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            component: "button_group";
+            props: components["schemas"]["WidgetButtonGroupProps"];
+        };
+        /**
+         * CompoundWidgetCardListNode
+         * @description A card-list component with typed props and tree identity.
+         */
+        CompoundWidgetCardListNode: {
+            /**
+             * Id
+             * @description Unique component identifier within the widget.
+             */
+            id: string;
+            /**
+             * Children
+             * @description Ordered child IDs; only layout components may have children.
+             */
+            children?: string[] | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            component: "card_list";
+            props: components["schemas"]["WidgetCardListProps"];
+        };
+        /**
+         * CompoundWidgetDatePickerNode
+         * @description A date-picker component with typed props and tree identity.
+         */
+        CompoundWidgetDatePickerNode: {
+            /**
+             * Id
+             * @description Unique component identifier within the widget.
+             */
+            id: string;
+            /**
+             * Children
+             * @description Ordered child IDs; only layout components may have children.
+             */
+            children?: string[] | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            component: "date_picker";
+            props: components["schemas"]["WidgetDatePickerProps"];
+        };
+        /**
+         * CompoundWidgetDividerNode
+         * @description A divider component with typed props and tree identity.
+         */
+        CompoundWidgetDividerNode: {
+            /**
+             * Id
+             * @description Unique component identifier within the widget.
+             */
+            id: string;
+            /**
+             * Children
+             * @description Ordered child IDs; only layout components may have children.
+             */
+            children?: string[] | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            component: "divider";
+            props?: components["schemas"]["WidgetDividerProps"];
+        };
+        /**
+         * CompoundWidgetFormNode
+         * @description A form component with typed props and tree identity.
+         */
+        CompoundWidgetFormNode: {
+            /**
+             * Id
+             * @description Unique component identifier within the widget.
+             */
+            id: string;
+            /**
+             * Children
+             * @description Ordered child IDs; only layout components may have children.
+             */
+            children?: string[] | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            component: "form";
+            props: components["schemas"]["WidgetFormProps"];
+        };
+        /**
+         * CompoundWidgetImageNode
+         * @description An image component with typed props and tree identity.
+         */
+        CompoundWidgetImageNode: {
+            /**
+             * Id
+             * @description Unique component identifier within the widget.
+             */
+            id: string;
+            /**
+             * Children
+             * @description Ordered child IDs; only layout components may have children.
+             */
+            children?: string[] | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            component: "image";
+            props: components["schemas"]["WidgetImageProps"];
+        };
+        /**
          * CompoundWidgetPayload
-         * @description Validated compound widget payload — flat adjacency list of components.
+         * @description Top-level compound widget payload — adjacency-list model.
          */
         CompoundWidgetPayload: {
             /**
              * Components
-             * @description Flat list of component nodes
+             * @description Flat list of components with ID-based relationships.
              */
-            components: {
-                [key: string]: unknown;
-            }[];
+            components: (components["schemas"]["CompoundWidgetFormNode"] | components["schemas"]["CompoundWidgetButtonGroupNode"] | components["schemas"]["CompoundWidgetCardListNode"] | components["schemas"]["CompoundWidgetDatePickerNode"] | components["schemas"]["CompoundWidgetAlertNode"] | components["schemas"]["CompoundWidgetTextNode"] | components["schemas"]["CompoundWidgetImageNode"] | components["schemas"]["CompoundWidgetProgressNode"] | components["schemas"]["CompoundWidgetDividerNode"] | components["schemas"]["CompoundWidgetStackNode"] | components["schemas"]["CompoundWidgetRowNode"] | components["schemas"]["CompoundWidgetSectionNode"])[];
             /**
              * Root
-             * @description ID of the root component
+             * @description ID of the root component that anchors the tree.
              */
             root: string;
+        };
+        /**
+         * CompoundWidgetProgressNode
+         * @description A progress component with typed props and tree identity.
+         */
+        CompoundWidgetProgressNode: {
+            /**
+             * Id
+             * @description Unique component identifier within the widget.
+             */
+            id: string;
+            /**
+             * Children
+             * @description Ordered child IDs; only layout components may have children.
+             */
+            children?: string[] | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            component: "progress";
+            props: components["schemas"]["WidgetProgressProps"];
+        };
+        /**
+         * CompoundWidgetRowNode
+         * @description A row component with typed props and tree identity.
+         */
+        CompoundWidgetRowNode: {
+            /**
+             * Id
+             * @description Unique component identifier within the widget.
+             */
+            id: string;
+            /**
+             * Children
+             * @description Ordered child IDs; only layout components may have children.
+             */
+            children?: string[] | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            component: "row";
+            props?: components["schemas"]["WidgetRowProps"];
+        };
+        /**
+         * CompoundWidgetSectionNode
+         * @description A section component with typed props and tree identity.
+         */
+        CompoundWidgetSectionNode: {
+            /**
+             * Id
+             * @description Unique component identifier within the widget.
+             */
+            id: string;
+            /**
+             * Children
+             * @description Ordered child IDs; only layout components may have children.
+             */
+            children?: string[] | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            component: "section";
+            props?: components["schemas"]["WidgetSectionProps"];
+        };
+        /**
+         * CompoundWidgetStackNode
+         * @description A stack component with typed props and tree identity.
+         */
+        CompoundWidgetStackNode: {
+            /**
+             * Id
+             * @description Unique component identifier within the widget.
+             */
+            id: string;
+            /**
+             * Children
+             * @description Ordered child IDs; only layout components may have children.
+             */
+            children?: string[] | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            component: "stack";
+            props?: components["schemas"]["WidgetStackProps"];
+        };
+        /**
+         * CompoundWidgetTextNode
+         * @description A text component with typed props and tree identity.
+         */
+        CompoundWidgetTextNode: {
+            /**
+             * Id
+             * @description Unique component identifier within the widget.
+             */
+            id: string;
+            /**
+             * Children
+             * @description Ordered child IDs; only layout components may have children.
+             */
+            children?: string[] | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            component: "text";
+            props: components["schemas"]["WidgetTextProps"];
         };
         /**
          * ConnectCredentialRequestSchema
@@ -9533,6 +9807,15 @@ export interface components {
          */
         MessageContentKind: "TEXT" | "AUDIO" | "IMAGE" | "TOOL" | "WIDGET" | "WIDGET_RESPONSE" | "SUMMARY" | "TASK" | "TASK_RESULT";
         /**
+         * MessageInteraction
+         * @description Observed session facts, never caller-provided routing or authorization.
+         */
+        MessageInteraction: {
+            channel: components["schemas"]["SessionChannel"];
+            /** Is Voice */
+            is_voice: boolean;
+        };
+        /**
          * MessageKind
          * @description Enum for message categories.
          * @enum {string}
@@ -9540,15 +9823,38 @@ export interface components {
         MessageKind: "USER" | "ASSISTANT" | "SYSTEM" | "TOOL_RESULT" | "TOOL_USE";
         /**
          * MessageMeta
-         * @description Extensible metadata envelope for persisted messages.
+         * @description Persisted message facts plus producer-owned JSON extensions.
          *
-         *     Message producers own the specific meta schema for their subsystem. The
-         *     conversation module validates that meta is object-shaped while allowing
-         *     producer-owned fields to evolve without coupling conversations to agents,
-         *     sockets, widgets, or integrations.
+         *     Interaction facts are validated before runtime selection. Other subsystems
+         *     own their extension schemas; only finite JSON may cross this envelope.
+         *     Absent optional fields stay absent on disk to preserve replay identity.
          */
         MessageMeta: {
-            [key: string]: unknown;
+            interaction?: components["schemas"]["MessageInteraction"] | null;
+            /** Is Audio */
+            is_audio?: boolean | null;
+            /** Duration Ms */
+            duration_ms?: number | null;
+            speech_turn_outcome?: components["schemas"]["VoiceSpeechOutcome"] | null;
+            /** Voice Session Id */
+            voice_session_id?: string | null;
+            /** Voice Session Row Id */
+            voice_session_row_id?: string | null;
+            voice_runtime_mode?: components["schemas"]["VoiceRuntimeMode"] | null;
+            /** Voice Source Sequence */
+            voice_source_sequence?: number | null;
+            /** Voice Redaction Version */
+            voice_redaction_version?: number | null;
+            /** Transient */
+            transient?: boolean | null;
+            /** Source */
+            source?: string | null;
+            /** Context */
+            context?: {
+                [key: string]: components["schemas"]["JsonValue"];
+            } | null;
+        } & {
+            [key: string]: components["schemas"]["JsonValue"];
         };
         /**
          * MessageRequestFeedback
@@ -10820,6 +11126,12 @@ export interface components {
             };
         };
         /**
+         * SessionChannel
+         * @description Interface identity shared by live sessions and persisted interaction facts.
+         * @enum {string}
+         */
+        SessionChannel: "http" | "websocket" | "telephony" | "webrtc";
+        /**
          * SessionValidationRequest
          * @description Request payload for session validation.
          */
@@ -12069,7 +12381,7 @@ export interface components {
          * @description Platform role used to resolve one relation endpoint.
          * @enum {string}
          */
-        SorRelationshipRole: "assignee" | "author" | "company" | "contact" | "cycle" | "deal" | "document" | "explicit_issue_relation" | "inbox" | "issue" | "label" | "message" | "parent" | "project" | "queue" | "reporter" | "requester" | "space" | "tag" | "team" | "ticket";
+        SorRelationshipRole: "assignee" | "author" | "company" | "contact" | "cycle" | "deal" | "document" | "explicit_issue_relation" | "from_issue" | "inbox" | "issue" | "label" | "message" | "parent" | "project" | "queue" | "reporter" | "requester" | "space" | "tag" | "team" | "ticket" | "to_issue";
         /** SorSchemaDifferenceResponse */
         SorSchemaDifferenceResponse: {
             /**
@@ -13079,12 +13391,10 @@ export interface components {
             durationSeconds?: number | null;
             /** Providerstatus */
             providerStatus?: string | null;
-            /** Openerdeliverystatus */
-            openerDeliveryStatus: string;
+            openerDeliveryStatus: components["schemas"]["CallOpenerDeliveryStatus"];
             /** Openerdeliveredat */
             openerDeliveredAt?: string | null;
-            /** Transferstatus */
-            transferStatus: string;
+            transferStatus: components["schemas"]["CallTransferStatus"];
             /** Transferto */
             transferTo?: string | null;
             /** Transferreason */
@@ -13981,6 +14291,12 @@ export interface components {
          */
         VoiceAudioTrackKind: "user" | "assistant" | "combined";
         /**
+         * VoiceCanonicalFailureCode
+         * @description Content-free reasons a session's canonical history could not be stored.
+         * @enum {string}
+         */
+        VoiceCanonicalFailureCode: "storage_decision_unavailable" | "storage_decision_conflict" | "source_order_invalid" | "source_capture_incomplete" | "source_capacity_exceeded" | "source_invalid_payload" | "redacted_payload_invalid" | "redaction_failed" | "projection_failed" | "participant_authority_unavailable" | "participant_authority_conflict" | "tool_call_invalid" | "tool_result_invalid" | "message_projection_unavailable" | "policy_source_unavailable" | "text_payload_invalid" | "assistant_speech_outcome_unavailable";
+        /**
          * VoiceCanonicalState
          * @description Outcome of destructive post-call canonical history processing.
          * @enum {string}
@@ -14290,7 +14606,7 @@ export interface components {
         };
         /**
          * VoiceRuntimeMode
-         * @description Supported voice runtime modes.
+         * @description Platform runtime producing live and canonical voice history.
          * @enum {string}
          */
         VoiceRuntimeMode: "browser_decomposed" | "browser_realtime" | "telephony";
@@ -14410,8 +14726,7 @@ export interface components {
             canonicalState: components["schemas"]["VoiceCanonicalState"];
             /** Canonicalredactionversion */
             canonicalRedactionVersion?: number | null;
-            /** Canonicalfailurecode */
-            canonicalFailureCode?: string | null;
+            canonicalFailureCode?: components["schemas"]["VoiceCanonicalFailureCode"] | null;
             /** Canonicalsourcecomplete */
             canonicalSourceComplete?: boolean | null;
             /** Canonicalprojectedat */
@@ -14556,8 +14871,7 @@ export interface components {
             canonicalState: components["schemas"]["VoiceCanonicalState"];
             /** Canonicalredactionversion */
             canonicalRedactionVersion?: number | null;
-            /** Canonicalfailurecode */
-            canonicalFailureCode?: string | null;
+            canonicalFailureCode?: components["schemas"]["VoiceCanonicalFailureCode"] | null;
             /** Canonicalsourcecomplete */
             canonicalSourceComplete?: boolean | null;
             /** Canonicalprojectedat */
@@ -14729,6 +15043,175 @@ export interface components {
             /** Integrations */
             integrations: components["schemas"]["WidgetCuratedToolGroupSchema"][];
         };
+        /** WidgetAlertPayload */
+        WidgetAlertPayload: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            component: "alert";
+            props: components["schemas"]["WidgetAlertProps"];
+        };
+        /** WidgetAlertProps */
+        WidgetAlertProps: {
+            /** Title */
+            title?: string | null;
+            /** Message */
+            message: string;
+            /**
+             * Dismissible
+             * @default false
+             */
+            dismissible: boolean;
+            severity?: components["schemas"]["WidgetAlertSeverity"] | null;
+        };
+        /**
+         * WidgetAlertSeverity
+         * @enum {string}
+         */
+        WidgetAlertSeverity: "info" | "success" | "warning" | "error";
+        /**
+         * WidgetAlignment
+         * @enum {string}
+         */
+        WidgetAlignment: "start" | "center" | "end" | "stretch";
+        /** WidgetButton */
+        WidgetButton: {
+            /** Value */
+            value: string;
+            /** Label */
+            label: string;
+            variant?: components["schemas"]["WidgetButtonVariant"] | null;
+            /** Icon */
+            icon?: string | null;
+        };
+        /** WidgetButtonGroupPayload */
+        WidgetButtonGroupPayload: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            component: "button_group";
+            props: components["schemas"]["WidgetButtonGroupProps"];
+        };
+        /** WidgetButtonGroupProps */
+        WidgetButtonGroupProps: {
+            /** Question */
+            question?: string | null;
+            layout?: components["schemas"]["WidgetButtonLayout"] | null;
+            /** Buttons */
+            buttons: components["schemas"]["WidgetButton"][];
+        };
+        /** WidgetButtonGroupResponse */
+        WidgetButtonGroupResponse: {
+            /**
+             * Type
+             * @default widget_response
+             * @constant
+             */
+            type: "widget_response";
+            /**
+             * Widget Message Id
+             * Format: uuid
+             */
+            widget_message_id: string;
+            data: components["schemas"]["WidgetButtonSelection"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            component: "button_group";
+            /**
+             * Action
+             * @constant
+             */
+            action: "select";
+        };
+        /**
+         * WidgetButtonLayout
+         * @enum {string}
+         */
+        WidgetButtonLayout: "horizontal" | "vertical";
+        /** WidgetButtonSelection */
+        WidgetButtonSelection: {
+            /** Value */
+            value: string;
+            /** Label */
+            label: string;
+        };
+        /**
+         * WidgetButtonVariant
+         * @enum {string}
+         */
+        WidgetButtonVariant: "primary" | "secondary" | "destructive" | "ghost" | "outline" | "link";
+        /** WidgetCard */
+        WidgetCard: {
+            /** Id */
+            id: string;
+            /** Title */
+            title: string;
+            /** Description */
+            description?: string | null;
+            /** Image */
+            image?: string | null;
+            /** Price */
+            price?: string | null;
+            /** Badge */
+            badge?: string | null;
+            /** Features */
+            features?: string[] | null;
+        };
+        /** WidgetCardListPayload */
+        WidgetCardListPayload: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            component: "card_list";
+            props: components["schemas"]["WidgetCardListProps"];
+        };
+        /** WidgetCardListProps */
+        WidgetCardListProps: {
+            /** Title */
+            title?: string | null;
+            /** Description */
+            description?: string | null;
+            selectionMode?: components["schemas"]["WidgetSelectionMode"] | null;
+            /** Submitlabel */
+            submitLabel?: string | null;
+            /** Cards */
+            cards: components["schemas"]["WidgetCard"][];
+        };
+        /** WidgetCardListResponse */
+        WidgetCardListResponse: {
+            /**
+             * Type
+             * @default widget_response
+             * @constant
+             */
+            type: "widget_response";
+            /**
+             * Widget Message Id
+             * Format: uuid
+             */
+            widget_message_id: string;
+            data: components["schemas"]["WidgetCardSelection"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            component: "card_list";
+            /**
+             * Action
+             * @constant
+             */
+            action: "submit";
+        };
+        /** WidgetCardSelection */
+        WidgetCardSelection: {
+            /** Selectedids */
+            selectedIds: string[];
+        };
         /**
          * WidgetConnectCredentialRequestSchema
          * @description End-user credential entry; ownership always comes from the widget session.
@@ -14814,6 +15297,79 @@ export interface components {
             kind: string;
         };
         /**
+         * WidgetDateMode
+         * @enum {string}
+         */
+        WidgetDateMode: "date" | "time" | "datetime";
+        /** WidgetDatePickerPayload */
+        WidgetDatePickerPayload: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            component: "date_picker";
+            props: components["schemas"]["WidgetDatePickerProps"];
+        };
+        /** WidgetDatePickerProps */
+        WidgetDatePickerProps: {
+            /** Label */
+            label: string;
+            /** Name */
+            name: string;
+            /** Description */
+            description?: string | null;
+            mode?: components["schemas"]["WidgetDateMode"] | null;
+            /** Placeholder */
+            placeholder?: string | null;
+            /**
+             * Required
+             * @default false
+             */
+            required: boolean;
+            /** Defaultvalue */
+            defaultValue?: string | null;
+            /** Submitlabel */
+            submitLabel?: string | null;
+            validation?: components["schemas"]["WidgetDatePickerValidation"] | null;
+        };
+        /** WidgetDatePickerResponse */
+        WidgetDatePickerResponse: {
+            /**
+             * Type
+             * @default widget_response
+             * @constant
+             */
+            type: "widget_response";
+            /**
+             * Widget Message Id
+             * Format: uuid
+             */
+            widget_message_id: string;
+            /** Data */
+            data: {
+                [key: string]: string;
+            };
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            component: "date_picker";
+            /**
+             * Action
+             * @constant
+             */
+            action: "submit";
+        };
+        /** WidgetDatePickerValidation */
+        WidgetDatePickerValidation: {
+            /** Mindate */
+            minDate?: string | null;
+            /** Maxdate */
+            maxDate?: string | null;
+            /** Message */
+            message?: string | null;
+        };
+        /**
          * WidgetDevelopmentSessionResponse
          * @description Normal contact session issued to the standalone local widget.
          */
@@ -14835,6 +15391,140 @@ export interface components {
              * Format: date-time
              */
             sessionExpiresAt: string;
+        };
+        /** WidgetDividerPayload */
+        WidgetDividerPayload: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            component: "divider";
+            props?: components["schemas"]["WidgetDividerProps"];
+        };
+        /** WidgetDividerProps */
+        WidgetDividerProps: {
+            /** Label */
+            label?: string | null;
+        };
+        /**
+         * WidgetFieldKind
+         * @enum {string}
+         */
+        WidgetFieldKind: "text" | "email" | "phone" | "number" | "textarea" | "select" | "radio" | "checkbox" | "date" | "time" | "datetime";
+        /** WidgetFieldValidation */
+        WidgetFieldValidation: {
+            /** Minlength */
+            minLength?: number | null;
+            /** Maxlength */
+            maxLength?: number | null;
+            /** Min */
+            min?: number | null;
+            /** Max */
+            max?: number | null;
+            pattern?: components["schemas"]["WidgetPattern"] | null;
+            /** Message */
+            message?: string | null;
+            /** Mindate */
+            minDate?: string | null;
+            /** Maxdate */
+            maxDate?: string | null;
+        };
+        /** WidgetFormField */
+        WidgetFormField: {
+            type: components["schemas"]["WidgetFieldKind"];
+            /** Name */
+            name: string;
+            /** Label */
+            label: string;
+            /** Placeholder */
+            placeholder?: string | null;
+            /**
+             * Required
+             * @default false
+             */
+            required: boolean;
+            defaultValue?: components["schemas"]["JsonValue"];
+            /** Options */
+            options?: components["schemas"]["WidgetOption"][] | null;
+            validation?: components["schemas"]["WidgetFieldValidation"] | null;
+        };
+        /** WidgetFormPayload */
+        WidgetFormPayload: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            component: "form";
+            props: components["schemas"]["WidgetFormProps"];
+        };
+        /** WidgetFormProps */
+        WidgetFormProps: {
+            /** Title */
+            title: string;
+            /** Description */
+            description?: string | null;
+            /** Fields */
+            fields: components["schemas"]["WidgetFormField"][];
+            /** Submitlabel */
+            submitLabel?: string | null;
+            /** Cancellabel */
+            cancelLabel?: string | null;
+        };
+        /** WidgetFormResponse */
+        WidgetFormResponse: {
+            /**
+             * Type
+             * @default widget_response
+             * @constant
+             */
+            type: "widget_response";
+            /**
+             * Widget Message Id
+             * Format: uuid
+             */
+            widget_message_id: string;
+            /** Data */
+            data?: {
+                [key: string]: components["schemas"]["JsonValue"];
+            };
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            component: "form";
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "submit" | "cancel";
+        };
+        /** WidgetImagePayload */
+        WidgetImagePayload: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            component: "image";
+            props: components["schemas"]["WidgetImageProps"];
+        };
+        /** WidgetImageProps */
+        WidgetImageProps: {
+            /**
+             * Src
+             * @description Image URL.
+             */
+            src: string;
+            /**
+             * Alt
+             * @description Accessible alt text.
+             */
+            alt: string;
+            /** Caption */
+            caption?: string | null;
+            /** Width */
+            width?: number | null;
+            /** Height */
+            height?: number | null;
         };
         /** WidgetInvitationExchangeRequest */
         WidgetInvitationExchangeRequest: {
@@ -14976,59 +15666,53 @@ export interface components {
              * Content
              * @description Widget payload — single component or compound layout
              */
-            content: components["schemas"]["WidgetPayload"] | components["schemas"]["CompoundWidgetPayload"];
+            content: (components["schemas"]["WidgetFormPayload"] | components["schemas"]["WidgetButtonGroupPayload"] | components["schemas"]["WidgetCardListPayload"] | components["schemas"]["WidgetDatePickerPayload"] | components["schemas"]["WidgetAlertPayload"] | components["schemas"]["WidgetTextPayload"] | components["schemas"]["WidgetImagePayload"] | components["schemas"]["WidgetProgressPayload"] | components["schemas"]["WidgetDividerPayload"] | components["schemas"]["WidgetStackPayload"] | components["schemas"]["WidgetRowPayload"] | components["schemas"]["WidgetSectionPayload"]) | components["schemas"]["CompoundWidgetPayload"];
+        };
+        /** WidgetOption */
+        WidgetOption: {
+            /** Value */
+            value: string;
+            /** Label */
+            label: string;
+            /** Description */
+            description?: string | null;
         };
         /**
-         * WidgetPayload
-         * @description Validated single-component widget payload envelope.
+         * WidgetPattern
+         * @enum {string}
          */
-        WidgetPayload: {
+        WidgetPattern: "email" | "phone" | "url";
+        /** WidgetProgressPayload */
+        WidgetProgressPayload: {
             /**
-             * Component
-             * @description Registered widget component type
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
              */
-            component: string;
-            /**
-             * Props
-             * @description Component props validated by the backend
-             */
-            props?: {
-                [key: string]: unknown;
-            };
+            component: "progress";
+            props: components["schemas"]["WidgetProgressProps"];
+        };
+        /** WidgetProgressProps */
+        WidgetProgressProps: {
+            /** Currentstep */
+            currentStep: number;
+            /** Totalsteps */
+            totalSteps: number;
+            /** Label */
+            label?: string | null;
+            /** Steps */
+            steps?: components["schemas"]["WidgetProgressStep"][] | null;
         };
         /**
-         * WidgetResponseData
-         * @description Structured widget submission payload from the user.
+         * WidgetProgressStatus
+         * @enum {string}
          */
-        WidgetResponseData: {
-            /**
-             * Type
-             * @default widget_response
-             * @constant
-             */
-            type: "widget_response";
-            /**
-             * Widget Message Id
-             * @description ID of the widget message this response belongs to
-             */
-            widget_message_id: string;
-            /**
-             * Component
-             * @description Component type that emitted the response
-             */
-            component: string;
-            /**
-             * Action
-             * @description Interaction verb such as submit or select
-             */
-            action?: string | null;
-            /**
-             * Data
-             * @description Structured widget submission data
-             */
-            data?: {
-                [key: string]: unknown;
-            };
+        WidgetProgressStatus: "pending" | "active" | "completed";
+        /** WidgetProgressStep */
+        WidgetProgressStep: {
+            /** Label */
+            label: string;
+            /** @default pending */
+            status: components["schemas"]["WidgetProgressStatus"];
         };
         /**
          * WidgetResponseMessageContent
@@ -15041,9 +15725,93 @@ export interface components {
              * @constant
              */
             role: "user";
-            /** @description Structured widget response */
-            content: components["schemas"]["WidgetResponseData"];
+            /**
+             * Content
+             * @description Structured widget response
+             */
+            content: components["schemas"]["WidgetFormResponse"] | components["schemas"]["WidgetButtonGroupResponse"] | components["schemas"]["WidgetCardListResponse"] | components["schemas"]["WidgetDatePickerResponse"];
         };
+        /** WidgetRowPayload */
+        WidgetRowPayload: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            component: "row";
+            props?: components["schemas"]["WidgetRowProps"];
+        };
+        /** WidgetRowProps */
+        WidgetRowProps: {
+            spacing?: components["schemas"]["WidgetSpacing"] | null;
+            align?: components["schemas"]["WidgetAlignment"] | null;
+        };
+        /** WidgetSectionPayload */
+        WidgetSectionPayload: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            component: "section";
+            props?: components["schemas"]["WidgetSectionProps"];
+        };
+        /** WidgetSectionProps */
+        WidgetSectionProps: {
+            /** Title */
+            title?: string | null;
+            /** Description */
+            description?: string | null;
+            /**
+             * Collapsible
+             * @default false
+             */
+            collapsible: boolean;
+        };
+        /**
+         * WidgetSelectionMode
+         * @enum {string}
+         */
+        WidgetSelectionMode: "single" | "multiple";
+        /**
+         * WidgetSpacing
+         * @enum {string}
+         */
+        WidgetSpacing: "xs" | "sm" | "md" | "lg" | "xl";
+        /** WidgetStackPayload */
+        WidgetStackPayload: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            component: "stack";
+            props?: components["schemas"]["WidgetStackProps"];
+        };
+        /** WidgetStackProps */
+        WidgetStackProps: {
+            spacing?: components["schemas"]["WidgetSpacing"] | null;
+        };
+        /** WidgetTextPayload */
+        WidgetTextPayload: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            component: "text";
+            props: components["schemas"]["WidgetTextProps"];
+        };
+        /** WidgetTextProps */
+        WidgetTextProps: {
+            /**
+             * Content
+             * @description Text or markdown content to display.
+             */
+            content: string;
+            variant?: components["schemas"]["WidgetTextVariant"] | null;
+        };
+        /**
+         * WidgetTextVariant
+         * @enum {string}
+         */
+        WidgetTextVariant: "body" | "heading" | "caption" | "code";
         /**
          * ToolExecutionMode
          * @description Operator policy on one installed tool, enforced before dispatch.

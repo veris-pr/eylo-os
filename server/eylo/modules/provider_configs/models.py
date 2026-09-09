@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from uuid import UUID
 
+from pydantic import ConfigDict, JsonValue, TypeAdapter, ValidationError
 from sqlalchemy import (
     Boolean,
     DateTime,
@@ -25,10 +26,25 @@ from eylo.modules.provider_configs.constants import Capability
 
 _CAPABILITY_ENUM_NAME = "provider_capability_enum"
 _PROVIDER_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*$")
+_JSON_OBJECT = TypeAdapter(
+    dict[str, JsonValue], config=ConfigDict(strict=True, allow_inf_nan=False)
+)
 
 
 class ProviderConfigValidationError(Exception):
     """Raised when a provider configuration violates a model invariant."""
+
+
+def _validate_json_object(value: object) -> dict[str, JsonValue]:
+    """Copy finite JSON on ORM assignment; capability policy lives in services."""
+    if not isinstance(value, Mapping):
+        raise ProviderConfigValidationError("Config must be a string-keyed mapping.")
+    try:
+        return _JSON_OBJECT.validate_python(dict(value))
+    except ValidationError:
+        raise ProviderConfigValidationError(
+            "Config must contain finite JSON values with string keys."
+        ) from None
 
 
 class ProviderConfigModel(EyloOrganizationModel):
@@ -63,7 +79,7 @@ class ProviderConfigModel(EyloOrganizationModel):
     )
     provider: Mapped[str] = mapped_column(String(64), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    config: Mapped[dict] = mapped_column(
+    config: Mapped[dict[str, JsonValue]] = mapped_column(
         JSONB,
         nullable=False,
         default=dict,
@@ -109,14 +125,8 @@ class ProviderConfigModel(EyloOrganizationModel):
         return normalized
 
     @validates("config")
-    def validate_config(self, _key: str, value: dict) -> dict:
-        if not isinstance(value, Mapping) or not all(
-            isinstance(key, str) for key in value
-        ):
-            raise ProviderConfigValidationError(
-                "Config must be a string-keyed mapping."
-            )
-        return dict(value)
+    def validate_config(self, _key: str, value: object) -> dict[str, JsonValue]:
+        return _validate_json_object(value)
 
     @validates("encrypted_secrets")
     def validate_encrypted_secrets(self, _key: str, value: str) -> str:
@@ -127,9 +137,7 @@ class ProviderConfigModel(EyloOrganizationModel):
     @validates("revision")
     def validate_revision(self, _key: str, value: int) -> int:
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-            raise ProviderConfigValidationError(
-                "Revision must be a positive integer."
-            )
+            raise ProviderConfigValidationError("Revision must be a positive integer.")
         return value
 
 
@@ -165,7 +173,7 @@ class ProviderConfigRevisionModel(EyloOrganizationModel):
         index=True,
     )
     revision: Mapped[int] = mapped_column(Integer, nullable=False)
-    config: Mapped[dict] = mapped_column(
+    config: Mapped[dict[str, JsonValue]] = mapped_column(
         JSONB,
         nullable=False,
         default=dict,
@@ -176,7 +184,7 @@ class ProviderConfigRevisionModel(EyloOrganizationModel):
         DateTime(timezone=True),
         nullable=True,
     )
-    verification_metadata: Mapped[dict] = mapped_column(
+    verification_metadata: Mapped[dict[str, JsonValue]] = mapped_column(
         JSONB,
         nullable=False,
         default=dict,
@@ -186,20 +194,12 @@ class ProviderConfigRevisionModel(EyloOrganizationModel):
     @validates("revision")
     def validate_revision(self, _key: str, value: int) -> int:
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-            raise ProviderConfigValidationError(
-                "Revision must be a positive integer."
-            )
+            raise ProviderConfigValidationError("Revision must be a positive integer.")
         return value
 
     @validates("config")
-    def validate_config(self, _key: str, value: dict) -> dict:
-        if not isinstance(value, Mapping) or not all(
-            isinstance(key, str) for key in value
-        ):
-            raise ProviderConfigValidationError(
-                "Config must be a string-keyed mapping."
-            )
-        return dict(value)
+    def validate_config(self, _key: str, value: object) -> dict[str, JsonValue]:
+        return _validate_json_object(value)
 
     @validates("encrypted_secrets")
     def validate_encrypted_secrets(self, _key: str, value: str) -> str:
@@ -208,11 +208,7 @@ class ProviderConfigRevisionModel(EyloOrganizationModel):
         return value
 
     @validates("verification_metadata")
-    def validate_verification_metadata(self, _key: str, value: dict) -> dict:
-        if not isinstance(value, Mapping) or not all(
-            isinstance(key, str) for key in value
-        ):
-            raise ProviderConfigValidationError(
-                "Verification metadata must be a string-keyed mapping."
-            )
-        return dict(value)
+    def validate_verification_metadata(
+        self, _key: str, value: object
+    ) -> dict[str, JsonValue]:
+        return _validate_json_object(value)

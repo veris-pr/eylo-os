@@ -4,42 +4,114 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
-from typing import Any
+import math
+from collections.abc import Mapping
+from typing import ClassVar, Final, Generic
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
+from pydantic_core import PydanticSerializationError
 from sqlalchemy import func, select
 
 from eylo.common.database import get_transaction
-from eylo.framework.agents.context import RunMessage
+from eylo.framework.agents.common import FrameworkMetadata
+from eylo.framework.agents.context import RunContext, RunInput, RunMessage
+from eylo.framework.agents.history import tool_exchange_messages
 from eylo.framework.agents.model import (
     Model,
     ModelBlockKind,
-    ModelOutputBlock,
     ModelResponse,
     ModelSettings,
+    ModelToolCallBlock,
     ModelUsage,
 )
 from eylo.framework.agents.tool import ToolCall, ToolResult
+from eylo.modules.agent_runs.domain import AgentRunTranscriptKind
 from eylo.modules.agent_runs.models import (
     AgentRunModel,
     AgentRunTranscriptItemModel,
 )
+from eylo.pipelines.agent_execution_context import ContextT, PlatformRunState
 from eylo.pipelines.agent_run_tools import bind_agent_run_tool_command
 
-ASSISTANT_TEXT_KIND = "assistant_text"
-TOOL_CALL_KIND = "tool_call"
-TOOL_RESULT_KIND = "tool_result"
-
-_MAX_PAYLOAD_BYTES = 65_536
+_MAX_PAYLOAD_BYTES: Final = 65_536
+_REPLAY_REQUEST_ID = TypeAdapter(UUID, config=ConfigDict(hide_input_in_errors=True))
 
 
 class AgentRunTranscriptError(ValueError):
     """Private replay history is invalid or exceeds its whole-item ceiling."""
 
 
-@dataclass(frozen=True, slots=True)
-class AgentRunTranscriptReplay:
+class _TranscriptPayload(BaseModel):
+    """Owned row envelope; dynamic vendor/tool fields remain inside their payloads."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class TranscriptAssistantText(_TranscriptPayload):
+    """Model text stored before its accompanying tool calls execute."""
+
+    kind: ClassVar[AgentRunTranscriptKind] = AgentRunTranscriptKind.ASSISTANT_TEXT
+    text: str
+    response_id: str
+
+
+class TranscriptToolCall(_TranscriptPayload):
+    """Exact model command retained for replay and durable-effect correlation."""
+
+    kind: ClassVar[AgentRunTranscriptKind] = AgentRunTranscriptKind.TOOL_CALL
+    tool_call: ToolCall
+    response_id: str
+
+
+class TranscriptToolResult(_TranscriptPayload):
+    """Completed command result; pause/approval signals are not completion."""
+
+    kind: ClassVar[AgentRunTranscriptKind] = AgentRunTranscriptKind.TOOL_RESULT
+    tool_result: ToolResult
+
+
+type TranscriptPayload = (
+    TranscriptAssistantText | TranscriptToolCall | TranscriptToolResult
+)
+
+
+class TranscriptMessageMetadata(FrameworkMetadata):
+    """Marks a message reconstructed from private durable history."""
+
+    agent_run_transcript: bool = True
+    request_id: UUID | None = None
+
+
+class TranscriptCallMessageMetadata(TranscriptMessageMetadata):
+    """Replay tool calls retain their framework-owned request contract."""
+
+    tool_call: ToolCall
+
+
+class TranscriptResultMessageMetadata(TranscriptMessageMetadata):
+    """Replay tool results retain their framework-owned response contract."""
+
+    tool_result: ToolResult
+
+
+class AgentRunToolCapture(BaseModel):
+    """Transient last-response calls used to correlate pauses and completion.
+
+    None means no response was captured; an empty tuple is a captured response
+    without tool calls. Durable replay remains owned by AgentRunTranscript.
+    """
+
+    model_config = ConfigDict(extra="forbid", validate_assignment=True)
+
+    tool_calls: tuple[ToolCall, ...] | None = None
+
+
+class AgentRunTranscriptReplay(BaseModel):
+    """Validated private history and the exact commands still awaiting results."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
     messages: tuple[RunMessage, ...]
     pending_calls: tuple[ToolCall, ...]
     command_ids: dict[str, UUID]
@@ -75,24 +147,31 @@ class AgentRunTranscript:
         resolved = {
             row.correlation_id
             for row in rows
-            if row.kind == TOOL_RESULT_KIND and row.correlation_id is not None
+            if row.kind == AgentRunTranscriptKind.TOOL_RESULT
+            and row.correlation_id is not None
         }
+        recorded_calls = {
+            row.correlation_id
+            for row in rows
+            if row.kind == AgentRunTranscriptKind.TOOL_CALL
+        }
+        if not resolved.issubset(recorded_calls):
+            raise AgentRunTranscriptError("AgentRun history contains an orphan result.")
         pending_rows = [
             row
             for row in rows
-            if row.kind == TOOL_CALL_KIND and row.correlation_id not in resolved
+            if row.kind == AgentRunTranscriptKind.TOOL_CALL
+            and row.correlation_id not in resolved
         ]
         pending_ids = {row.id for row in pending_rows}
         messages = tuple(
             _message_from_row(row) for row in rows if row.id not in pending_ids
         )
-        pending_calls = tuple(
-            ToolCall.model_validate(row.payload["tool_call"]) for row in pending_rows
-        )
+        pending_calls = tuple(_tool_call_from_row(row) for row in pending_rows)
         command_ids = {
-            ToolCall.model_validate(row.payload["tool_call"]).id: UUID(str(row.id))
+            _tool_call_from_row(row).id: UUID(str(row.id))
             for row in rows
-            if row.kind == TOOL_CALL_KIND
+            if row.kind == AgentRunTranscriptKind.TOOL_CALL
         }
         return AgentRunTranscriptReplay(
             messages=messages,
@@ -108,26 +187,19 @@ class AgentRunTranscript:
         text = "\n".join(
             block.content
             for block in response.blocks
-            if block.kind is ModelBlockKind.TEXT
-            and isinstance(block.content, str)
-            and block.content
+            if block.kind is ModelBlockKind.TEXT and block.content
         )
         if text:
             await self._append(
-                kind=ASSISTANT_TEXT_KIND,
                 correlation_id=_correlation(f"{response.id}:text"),
-                payload={"text": text, "response_id": response.id},
+                payload=TranscriptAssistantText(text=text, response_id=response.id),
             )
 
         command_ids: dict[str, UUID] = {}
         for call in tool_calls:
             row = await self._append(
-                kind=TOOL_CALL_KIND,
                 correlation_id=_correlation(call.id),
-                payload={
-                    "tool_call": call.model_dump(mode="json"),
-                    "response_id": response.id,
-                },
+                payload=TranscriptToolCall(tool_call=call, response_id=response.id),
             )
             command_ids[call.id] = UUID(str(row.id))
         await get_transaction().commit()
@@ -138,12 +210,15 @@ class AgentRunTranscript:
         call: ToolCall,
         result: ToolResult,
     ) -> AgentRunTranscriptItemModel | None:
+        if result.tool_call_id != call.id:
+            raise AgentRunTranscriptError(
+                "AgentRun result does not belong to the invocation being completed."
+            )
         if _is_pause_result(result):
             return None
         row = await self._append(
-            kind=TOOL_RESULT_KIND,
             correlation_id=_correlation(call.id),
-            payload={"tool_result": result.model_dump(mode="json")},
+            payload=TranscriptToolResult(tool_result=result),
         )
         await get_transaction().commit()
         return row
@@ -153,43 +228,56 @@ class AgentRunTranscript:
             select(AgentRunTranscriptItemModel).where(
                 AgentRunTranscriptItemModel.organization_id == self.organization_id,
                 AgentRunTranscriptItemModel.run_id == self.agent_run_id,
-                AgentRunTranscriptItemModel.kind == TOOL_RESULT_KIND,
+                AgentRunTranscriptItemModel.kind
+                == AgentRunTranscriptKind.TOOL_RESULT.value,
                 AgentRunTranscriptItemModel.correlation_id == _correlation(call.id),
                 AgentRunTranscriptItemModel.deleted.is_(False),
             )
         )
         if row is None:
             return None
-        return ToolResult.model_validate(row.payload["tool_result"])
+        payload = _payload_from_row(row)
+        if not isinstance(payload, TranscriptToolResult):
+            raise AgentRunTranscriptError("AgentRun transcript result kind is invalid.")
+        if payload.tool_result.tool_call_id != call.id:
+            raise AgentRunTranscriptError("AgentRun result identity is invalid.")
+        await self._require_tool_call(row.correlation_id)
+        return payload.tool_result
+
+    async def _require_tool_call(self, correlation_id: str | None) -> ToolCall:
+        """Read one same-owner command; never create or repair missing history."""
+        row = await get_transaction().scalar(
+            select(AgentRunTranscriptItemModel).where(
+                AgentRunTranscriptItemModel.organization_id == self.organization_id,
+                AgentRunTranscriptItemModel.run_id == self.agent_run_id,
+                AgentRunTranscriptItemModel.kind
+                == AgentRunTranscriptKind.TOOL_CALL.value,
+                AgentRunTranscriptItemModel.correlation_id == correlation_id,
+                AgentRunTranscriptItemModel.deleted.is_(False),
+            )
+        )
+        if row is None:
+            raise AgentRunTranscriptError("AgentRun result has no persisted tool call.")
+        return _tool_call_from_row(row)
 
     async def _append(
         self,
         *,
-        kind: str,
         correlation_id: str | None,
-        payload: dict[str, Any],
+        payload: TranscriptPayload,
     ) -> AgentRunTranscriptItemModel:
-        _require_bounded_payload(payload)
+        try:
+            stored_payload = payload.model_dump(mode="json")
+            _require_finite_numbers(payload.model_dump(mode="python"))
+        except (PydanticSerializationError, ValueError):
+            raise AgentRunTranscriptError(
+                "AgentRun transcript payload is not JSON-safe."
+            ) from None
+        _require_bounded_payload(stored_payload)
+        kind = payload.kind
         session = get_transaction()
-        existing = None
-        if correlation_id is not None:
-            existing = await session.scalar(
-                select(AgentRunTranscriptItemModel).where(
-                    AgentRunTranscriptItemModel.organization_id
-                    == self.organization_id,
-                    AgentRunTranscriptItemModel.run_id == self.agent_run_id,
-                    AgentRunTranscriptItemModel.kind == kind,
-                    AgentRunTranscriptItemModel.correlation_id == correlation_id,
-                    AgentRunTranscriptItemModel.deleted.is_(False),
-                )
-            )
-        if existing is not None:
-            if existing.payload != payload:
-                raise AgentRunTranscriptError(
-                    "AgentRun transcript identity has different content."
-                )
-            return existing
-
+        # Lock before the identity lookup: concurrent retries must see the
+        # previous writer's committed item, not both decide to insert it.
         run = await session.scalar(
             select(AgentRunModel)
             .where(
@@ -201,12 +289,32 @@ class AgentRunTranscript:
         )
         if run is None:
             raise AgentRunTranscriptError("AgentRun transcript owner is unavailable.")
+        if isinstance(payload, TranscriptToolResult):
+            await self._require_tool_call(correlation_id)
+        existing = None
+        if correlation_id is not None:
+            existing = await session.scalar(
+                select(AgentRunTranscriptItemModel).where(
+                    AgentRunTranscriptItemModel.organization_id == self.organization_id,
+                    AgentRunTranscriptItemModel.run_id == self.agent_run_id,
+                    AgentRunTranscriptItemModel.kind == kind.value,
+                    AgentRunTranscriptItemModel.correlation_id == correlation_id,
+                    AgentRunTranscriptItemModel.deleted.is_(False),
+                )
+            )
+        if existing is not None:
+            if existing.payload != stored_payload:
+                raise AgentRunTranscriptError(
+                    "AgentRun transcript identity has different content."
+                )
+            return existing
+
         sequence = (
             await session.scalar(
-                select(func.coalesce(func.max(AgentRunTranscriptItemModel.sequence), 0))
-                .where(
-                    AgentRunTranscriptItemModel.organization_id
-                    == self.organization_id,
+                select(
+                    func.coalesce(func.max(AgentRunTranscriptItemModel.sequence), 0)
+                ).where(
+                    AgentRunTranscriptItemModel.organization_id == self.organization_id,
                     AgentRunTranscriptItemModel.run_id == self.agent_run_id,
                     AgentRunTranscriptItemModel.deleted.is_(False),
                 )
@@ -217,23 +325,23 @@ class AgentRunTranscript:
             organization_id=self.organization_id,
             run_id=self.agent_run_id,
             sequence=sequence,
-            kind=kind,
+            kind=kind.value,
             correlation_id=correlation_id,
-            payload=payload,
+            payload=stored_payload,
         )
         session.add(row)
         await session.flush()
         return row
 
 
-class AgentRunTranscriptBridge:
+class AgentRunTranscriptBridge(Generic[ContextT]):
     """Framework callbacks that make non-conversation tool loops replayable."""
 
     def __init__(
         self,
         *,
         transcript: AgentRunTranscript,
-        local_context: dict,
+        local_context: PlatformRunState[ContextT],
         command_ids: dict[str, UUID],
     ) -> None:
         self.transcript = transcript
@@ -242,8 +350,8 @@ class AgentRunTranscriptBridge:
 
     async def after_model_response(
         self,
-        _context,
-        _run_input,
+        _context: RunContext,
+        _run_input: RunInput,
         response: ModelResponse,
         tool_calls: tuple[ToolCall, ...],
     ) -> None:
@@ -258,7 +366,7 @@ class AgentRunTranscriptBridge:
 
     async def before_tool_call(
         self,
-        _context,
+        _context: RunContext,
         call: ToolCall,
         _response: ModelResponse,
     ) -> None:
@@ -275,7 +383,7 @@ class AgentRunTranscriptBridge:
 
     async def after_tool_result(
         self,
-        _context,
+        _context: RunContext,
         call: ToolCall,
         result: ToolResult,
     ) -> None:
@@ -298,7 +406,7 @@ class PendingToolCallsModel:
 
     async def generate(
         self,
-        run_input,
+        run_input: RunInput,
         settings: ModelSettings,
     ) -> ModelResponse:
         if self._pending_calls:
@@ -308,9 +416,8 @@ class PendingToolCallsModel:
                 id=f"agent-run-replay-{self._agent_run_id}",
                 model=settings.model or "agent-run-replay",
                 blocks=tuple(
-                    ModelOutputBlock(
-                        kind=ModelBlockKind.TOOL_CALL,
-                        content=call.model_dump(mode="json"),
+                    ModelToolCallBlock(
+                        content=call,
                     )
                     for call in calls
                 ),
@@ -320,53 +427,123 @@ class PendingToolCallsModel:
         return await self._delegate.generate(run_input, settings)
 
 
-def with_replay_messages(run_input, replay: AgentRunTranscriptReplay):
-    return run_input.model_copy(
-        update={"messages": (*run_input.messages, *replay.messages)}
+def with_replay_messages(
+    run_input: RunInput, replay: AgentRunTranscriptReplay
+) -> RunInput:
+    """Attach private history to this input's request, preserving command identity.
+
+    The transcript belongs to a durable run, not a conversation request. The
+    caller supplies that correlation at execution time; inventing it per replay
+    message would split tool calls from results in vendor history grouping.
+    """
+    messages = replay.messages
+    if messages:
+        try:
+            request_id = _REPLAY_REQUEST_ID.validate_python(
+                run_input.metadata.get("request_id")
+            )
+        except ValidationError as error:
+            raise AgentRunTranscriptError(
+                "AgentRun replay requires a valid request identity."
+            ) from error
+        messages = tuple(
+            message.model_copy(
+                update={
+                    "metadata": message.metadata.model_copy(
+                        update={"request_id": request_id}
+                    )
+                }
+            )
+            for message in messages
+        )
+    return run_input.model_copy(update={"messages": (*run_input.messages, *messages)})
+
+
+def append_resumed_tool_exchange(
+    run_input: RunInput, call: ToolCall, result: ToolResult
+) -> RunInput:
+    """Append one resumed exchange without changing replay or transient ownership."""
+    raw_request_id = run_input.metadata.get("request_id")
+    request_id = (
+        None
+        if raw_request_id is None or raw_request_id == ""
+        else _REPLAY_REQUEST_ID.validate_python(raw_request_id)
     )
+    content = (
+        result.content
+        if isinstance(result.content, str)
+        else json.dumps(result.content, ensure_ascii=False, separators=(",", ":"))
+    )
+    messages = tool_exchange_messages(
+        call, result, request_id=request_id, result_text=content
+    )
+    return run_input.model_copy(update={"messages": (*run_input.messages, *messages)})
+
+
+def _payload_from_row(row: AgentRunTranscriptItemModel) -> TranscriptPayload:
+    """Validate an owned row before accessing fields; never guess a payload kind."""
+    try:
+        kind = AgentRunTranscriptKind(row.kind)
+        if kind is AgentRunTranscriptKind.ASSISTANT_TEXT:
+            text_payload = TranscriptAssistantText.model_validate(row.payload)
+            expected_correlation = _correlation(f"{text_payload.response_id}:text")
+            payload: TranscriptPayload = text_payload
+        elif kind is AgentRunTranscriptKind.TOOL_CALL:
+            payload = TranscriptToolCall.model_validate(row.payload)
+            expected_correlation = _correlation(payload.tool_call.id)
+        else:
+            payload = TranscriptToolResult.model_validate(row.payload)
+            expected_correlation = _correlation(payload.tool_result.tool_call_id)
+        if row.correlation_id != expected_correlation:
+            raise AgentRunTranscriptError("AgentRun transcript correlation is invalid.")
+        return payload
+    except ValueError:
+        raise AgentRunTranscriptError(
+            "AgentRun transcript payload is invalid."
+        ) from None
+
+
+def _tool_call_from_row(row: AgentRunTranscriptItemModel) -> ToolCall:
+    payload = _payload_from_row(row)
+    if not isinstance(payload, TranscriptToolCall):
+        raise AgentRunTranscriptError("AgentRun transcript call kind is invalid.")
+    return payload.tool_call
 
 
 def _message_from_row(row: AgentRunTranscriptItemModel) -> RunMessage:
-    if row.kind == ASSISTANT_TEXT_KIND:
+    payload = _payload_from_row(row)
+    if isinstance(payload, TranscriptAssistantText):
         return RunMessage(
             id=row.id,
             role="assistant",
-            content=str(row.payload["text"]),
-            metadata={"agent_run_transcript": True},
+            content=payload.text,
+            metadata=TranscriptMessageMetadata(),
         )
-    if row.kind == TOOL_CALL_KIND:
-        call = ToolCall.model_validate(row.payload["tool_call"])
+    if isinstance(payload, TranscriptToolCall):
+        call = payload.tool_call
         return RunMessage(
             id=row.id,
             role="assistant",
             content=f"Tool call: {call.name}",
-            metadata={
-                "agent_run_transcript": True,
-                "tool_call": call.model_dump(mode="json"),
-            },
+            metadata=TranscriptCallMessageMetadata(tool_call=call),
         )
-    if row.kind == TOOL_RESULT_KIND:
-        result = ToolResult.model_validate(row.payload["tool_result"])
-        content = (
-            result.content
-            if isinstance(result.content, str)
-            else json.dumps(
-                result.content,
-                ensure_ascii=False,
-                separators=(",", ":"),
-                sort_keys=True,
-            )
+    result = payload.tool_result
+    content = (
+        result.content
+        if isinstance(result.content, str)
+        else json.dumps(
+            result.content,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
         )
-        return RunMessage(
-            id=row.id,
-            role="tool",
-            content=content,
-            metadata={
-                "agent_run_transcript": True,
-                "tool_result": result.model_dump(mode="json"),
-            },
-        )
-    raise AgentRunTranscriptError("AgentRun transcript kind is invalid.")
+    )
+    return RunMessage(
+        id=row.id,
+        role="tool",
+        content=content,
+        metadata=TranscriptResultMessageMetadata(tool_result=result),
+    )
 
 
 def _is_pause_result(result: ToolResult) -> bool:
@@ -382,7 +559,20 @@ def _correlation(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def _require_bounded_payload(payload: dict[str, Any]) -> None:
+def _require_finite_numbers(value: object) -> None:
+    """Refuse lossy null conversion, including independently serialized metadata."""
+    if isinstance(value, float) and not math.isfinite(value):
+        raise AgentRunTranscriptError("AgentRun transcript payload is not JSON-safe.")
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            _require_finite_numbers(key)
+            _require_finite_numbers(item)
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        for item in value:
+            _require_finite_numbers(item)
+
+
+def _require_bounded_payload(payload: object) -> None:
     try:
         encoded = json.dumps(
             payload,
@@ -397,11 +587,12 @@ def _require_bounded_payload(payload: dict[str, Any]) -> None:
         ) from error
     if len(encoded) > _MAX_PAYLOAD_BYTES:
         raise AgentRunTranscriptError(
-            "AgentRun transcript item exceeds 65536 encoded bytes."
+            f"AgentRun transcript item exceeds {_MAX_PAYLOAD_BYTES} encoded bytes."
         )
 
 
 __all__ = [
+    "AgentRunToolCapture",
     "AgentRunTranscript",
     "AgentRunTranscriptBridge",
     "AgentRunTranscriptError",

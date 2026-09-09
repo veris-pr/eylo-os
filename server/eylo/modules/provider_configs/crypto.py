@@ -4,19 +4,35 @@ import base64
 import binascii
 import json
 import os
-import re
-from dataclasses import dataclass
-from typing import Mapping
+from collections.abc import Mapping
+from typing import Self
 from uuid import UUID
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    ModelWrapValidatorHandler,
+    TypeAdapter,
+    ValidationError,
+    model_validator,
+)
 
 _ENVELOPE_VERSION = "v1"
 _KEY_HEX_LENGTH = 64
 _KEY_BYTE_LENGTH = 32
 _NONCE_LENGTH = 12
-_CAPABILITY_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
+_CAPABILITY_PATTERN = r"^[a-z][a-z0-9_]*$"
+_AUTHENTICATION_TAG_LENGTH = 16
+_BASE64_BLOCK_LENGTH = 4
+_ENVELOPE_PART_COUNT = 3
+_ASSOCIATED_DATA_PREFIX = "provider-config"
+_JSON_OBJECT = TypeAdapter(
+    dict[str, JsonValue], config=ConfigDict(strict=True, allow_inf_nan=False)
+)
 
 
 class SecretCipherError(Exception):
@@ -39,28 +55,44 @@ class SecretDecryptionError(SecretCipherError):
     """Raised when a ciphertext envelope cannot be authenticated or decoded."""
 
 
-@dataclass(frozen=True)
-class EncryptionContext:
+class EncryptionContext(BaseModel):
+    """Authenticated owner and revision, preserving the existing AAD encoding.
+
+    The purpose label belongs to the caller. MCP and external connections reuse
+    this cipher without becoming provider capabilities.
+    """
+
+    model_config = ConfigDict(
+        frozen=True,
+        strict=True,
+        extra="forbid",
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+    )
+
     organization_id: UUID
     config_id: UUID
-    capability: str
-    revision: int
+    capability: str = Field(pattern=_CAPABILITY_PATTERN)
+    revision: int = Field(ge=1)
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _validate_context(
+        cls, value: object, handler: ModelWrapValidatorHandler[Self]
+    ) -> Self:
+        try:
+            return handler(value)
+        except ValidationError:
+            raise InvalidEncryptionContext(
+                "Encryption context contains invalid owner, purpose or revision."
+            ) from None
 
     def associated_data(self) -> bytes:
-        if not _CAPABILITY_PATTERN.fullmatch(self.capability):
-            raise InvalidEncryptionContext(
-                "Capability must be a lowercase machine-readable identifier."
-            )
-        if (
-            isinstance(self.revision, bool)
-            or not isinstance(self.revision, int)
-            or self.revision < 1
-        ):
-            raise InvalidEncryptionContext("Revision must be a positive integer.")
+        validated = type(self).model_validate(self)
         return (
-            "provider-config:"
-            f"{self.organization_id}:{self.config_id}:{self.capability}:"
-            f"{self.revision}"
+            f"{_ASSOCIATED_DATA_PREFIX}:"
+            f"{validated.organization_id}:{validated.config_id}:{validated.capability}:"
+            f"{validated.revision}"
         ).encode("utf-8")
 
 
@@ -74,7 +106,7 @@ def get_secret_cipher() -> "SecretCipher":
 class SecretCipher:
     """Encrypt and decrypt provider secret mappings with a versioned envelope."""
 
-    def __init__(self, key_hex: str):
+    def __init__(self, key_hex: str) -> None:
         self._cipher = AESGCM(_decode_key(key_hex))
 
     def encrypt(
@@ -108,7 +140,7 @@ class SecretCipher:
         self,
         envelope: str,
         context: EncryptionContext,
-    ) -> dict[str, object]:
+    ) -> dict[str, JsonValue]:
         nonce, ciphertext = _decode_envelope(envelope)
 
         try:
@@ -117,51 +149,49 @@ class SecretCipher:
                 ciphertext,
                 context.associated_data(),
             )
-            secrets = json.loads(plaintext.decode("utf-8"))
         except InvalidEncryptionContext:
             raise
         except (
             InvalidTag,
             UnicodeDecodeError,
-            json.JSONDecodeError,
             ValueError,
         ) as error:
             raise SecretDecryptionError(
                 "Secret payload could not be decrypted."
             ) from error
 
-        if not isinstance(secrets, dict) or not all(
-            isinstance(key, str) for key in secrets
-        ):
+        try:
+            return _JSON_OBJECT.validate_python(json.loads(plaintext.decode("utf-8")))
+        except ValueError:
             raise SecretDecryptionError(
                 "Decrypted secret payload has an invalid shape."
-            )
-
-        return secrets
+            ) from None
 
     def encrypt_field(self, value: str, context_label: str = "") -> str:
         """Encrypt a single string value and return a versioned envelope."""
+        if not isinstance(value, str) or not isinstance(context_label, str):
+            raise SecretEncryptionError("Field and encryption context must be text.")
         nonce = os.urandom(_NONCE_LENGTH)
-        aad = context_label.encode("utf-8") if context_label else b""
         try:
+            aad = context_label.encode("utf-8")
             ciphertext = self._cipher.encrypt(nonce, value.encode("utf-8"), aad)
-        except (OverflowError, ValueError) as error:
-            raise SecretEncryptionError("Field encryption failed.") from error
+        except (OverflowError, ValueError):
+            raise SecretEncryptionError("Field encryption failed.") from None
         return ".".join(
             (_ENVELOPE_VERSION, _base64url_encode(nonce), _base64url_encode(ciphertext))
         )
 
     def decrypt_field(self, envelope: str, context_label: str = "") -> str:
         """Decrypt a single string value from a versioned envelope."""
+        if not isinstance(context_label, str):
+            raise SecretDecryptionError("Decryption context must be text.")
         nonce, ciphertext = _decode_envelope(envelope)
-        aad = context_label.encode("utf-8") if context_label else b""
         try:
+            aad = context_label.encode("utf-8")
             plaintext = self._cipher.decrypt(nonce, ciphertext, aad)
-        except (InvalidTag, UnicodeDecodeError, ValueError) as error:
-            raise SecretDecryptionError(
-                "Field could not be decrypted."
-            ) from error
-        return plaintext.decode("utf-8")
+            return plaintext.decode("utf-8")
+        except (InvalidTag, ValueError):
+            raise SecretDecryptionError("Field could not be decrypted.") from None
 
 
 def _decode_key(key_hex: str) -> bytes:
@@ -189,17 +219,18 @@ def _serialize_secrets(secrets: Mapping[str, object]) -> bytes:
         raise SecretEncryptionError("Secret payload must be a string-keyed mapping.")
 
     try:
+        validated = _JSON_OBJECT.validate_python(dict(secrets))
         return json.dumps(
-            dict(secrets),
+            validated,
             sort_keys=True,
             separators=(",", ":"),
             ensure_ascii=False,
             allow_nan=False,
         ).encode("utf-8")
-    except (TypeError, ValueError) as error:
+    except (TypeError, ValueError):
         raise SecretEncryptionError(
             "Secret payload must contain JSON-serializable values."
-        ) from error
+        ) from None
 
 
 def _decode_envelope(envelope: str) -> tuple[bytes, bytes]:
@@ -207,7 +238,7 @@ def _decode_envelope(envelope: str) -> tuple[bytes, bytes]:
         raise SecretDecryptionError("Ciphertext envelope is malformed.")
 
     parts = envelope.split(".")
-    if len(parts) != 3 or parts[0] != _ENVELOPE_VERSION:
+    if len(parts) != _ENVELOPE_PART_COUNT or parts[0] != _ENVELOPE_VERSION:
         raise SecretDecryptionError("Ciphertext envelope version is unsupported.")
 
     try:
@@ -216,7 +247,7 @@ def _decode_envelope(envelope: str) -> tuple[bytes, bytes]:
     except (binascii.Error, ValueError) as error:
         raise SecretDecryptionError("Ciphertext envelope is malformed.") from error
 
-    if len(nonce) != _NONCE_LENGTH or len(ciphertext) < 16:
+    if len(nonce) != _NONCE_LENGTH or len(ciphertext) < _AUTHENTICATION_TAG_LENGTH:
         raise SecretDecryptionError("Ciphertext envelope is malformed.")
     return nonce, ciphertext
 
@@ -226,5 +257,5 @@ def _base64url_encode(value: bytes) -> str:
 
 
 def _base64url_decode(value: str) -> bytes:
-    padding = "=" * (-len(value) % 4)
+    padding = "=" * (-len(value) % _BASE64_BLOCK_LENGTH)
     return base64.b64decode(value + padding, altchars=b"-_", validate=True)

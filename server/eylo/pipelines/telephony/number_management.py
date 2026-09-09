@@ -35,12 +35,19 @@ from eylo.modules.telephony.services import (
 )
 from eylo.modules.telephony.wiring import build_telephony_config_resolver
 from eylo.pipelines.outbound.durable_execution import (
-    DurableStepContext,
+    CommandStepContext,
     OutboundExecutionReceipt,
     OutboundRetryRequested,
     execute_outbound_attempt,
 )
+from eylo.pipelines.telephony.config import build_telephony_runtime_config
 from eylo.pipelines.telephony.twilio_rest import TwilioRestClient
+from eylo.sockets.telephony.config import (
+    ExotelSettings,
+    PlivoSettings,
+    TwilioSettings,
+    VonageSettings,
+)
 from eylo.sockets.telephony.number_clients import (
     ExotelNumberClient,
     PlivoNumberClient,
@@ -77,20 +84,20 @@ class NumberManagementController:
         """Search using one explicit ready carrier-account config."""
         resolved = await self.resolve_config(organization_id, provider_config_id)
         provider = resolved.provider.value
-        credentials = resolved.as_provider_config().adapter_settings()
+        credentials = build_telephony_runtime_config(
+            resolved.as_provider_config()
+        ).settings
         self._require_operation(resolved, TelephonyOperation.SEARCH_NUMBERS)
 
-        dispatch = {
-            TelephonyProviderType.TWILIO: self._search_twilio,
-            TelephonyProviderType.PLIVO: self._search_plivo,
-            TelephonyProviderType.VONAGE: self._search_vonage,
-            TelephonyProviderType.EXOTEL: self._search_exotel,
-        }
-        handler = dispatch.get(TelephonyProviderType(provider))
-        if not handler:
-            raise HTTPException(501, f"Search not implemented for {provider}")
-
-        return await handler(credentials, params, provider)
+        if isinstance(credentials, TwilioSettings):
+            return await self._search_twilio(credentials, params, provider)
+        if isinstance(credentials, PlivoSettings):
+            return await self._search_plivo(credentials, params, provider)
+        if isinstance(credentials, VonageSettings):
+            return await self._search_vonage(credentials, params, provider)
+        if isinstance(credentials, ExotelSettings):
+            return await self._search_exotel(credentials, params, provider)
+        raise HTTPException(501, f"Search not implemented for {provider}")
 
     async def resolve_config(
         self,
@@ -110,7 +117,7 @@ class NumberManagementController:
         provider_config_id: UUID,
         request: NumberPurchaseRequest,
         idempotency_key: str,
-        durable_context: DurableStepContext | None = None,
+        durable_context: CommandStepContext | None = None,
     ) -> PhoneNumberApiResponseSchema:
         """Persist intent, execute one charged effect, then project its outcome."""
         phone_number_id = self.purchase_identity(
@@ -291,13 +298,13 @@ class NumberManagementController:
 
     async def _search_twilio(
         self,
-        credentials: dict,
+        credentials: TwilioSettings,
         params: NumberSearchParams,
         provider: str,
     ) -> AvailableNumbersResponseSchema:
         client = TwilioRestClient(
-            account_sid=credentials["account_sid"],
-            auth_token=credentials["auth_token"],
+            account_sid=credentials.account_sid,
+            auth_token=credentials.auth_token,
         )
         raw = await client.search_available_numbers(
             country=params.country,
@@ -327,13 +334,13 @@ class NumberManagementController:
 
     async def _search_plivo(
         self,
-        credentials: dict,
+        credentials: PlivoSettings,
         params: NumberSearchParams,
         provider: str,
     ) -> AvailableNumbersResponseSchema:
         client = PlivoNumberClient(
-            auth_id=credentials["auth_id"],
-            auth_token=credentials["auth_token"],
+            auth_id=credentials.auth_id,
+            auth_token=credentials.auth_token,
         )
         raw = await client.search_available_numbers(
             country=params.country,
@@ -364,13 +371,13 @@ class NumberManagementController:
 
     async def _search_vonage(
         self,
-        credentials: dict,
+        credentials: VonageSettings,
         params: NumberSearchParams,
         provider: str,
     ) -> AvailableNumbersResponseSchema:
         client = VonageNumberClient(
-            api_key=credentials["api_key"],
-            api_secret=credentials["api_secret"],
+            api_key=credentials.api_key,
+            api_secret=credentials.api_secret,
         )
         raw = await client.search_available_numbers(
             country=params.country,
@@ -397,15 +404,15 @@ class NumberManagementController:
 
     async def _search_exotel(
         self,
-        credentials: dict,
+        credentials: ExotelSettings,
         params: NumberSearchParams,
         provider: str,
     ) -> AvailableNumbersResponseSchema:
         client = ExotelNumberClient(
-            api_key=credentials["api_key"],
-            api_token=credentials["api_token"],
-            account_sid=credentials["account_sid"],
-            subdomain=credentials["subdomain"],
+            api_key=credentials.api_key,
+            api_token=credentials.api_token,
+            account_sid=credentials.account_sid,
+            subdomain=credentials.api_host,
         )
         raw = await client.search_available_numbers(
             country=params.country,
@@ -436,28 +443,30 @@ class NumberManagementController:
 
     @staticmethod
     def _purchase_client(resolved: ResolvedTelephony) -> NumberPurchaseClient:
-        credentials = resolved.as_provider_config().adapter_settings()
-        if resolved.provider is TelephonyProviderType.TWILIO:
+        credentials = build_telephony_runtime_config(
+            resolved.as_provider_config()
+        ).settings
+        if isinstance(credentials, TwilioSettings):
             return TwilioRestClient(
-                account_sid=credentials["account_sid"],
-                auth_token=credentials["auth_token"],
+                account_sid=credentials.account_sid,
+                auth_token=credentials.auth_token,
             )
-        if resolved.provider is TelephonyProviderType.PLIVO:
+        if isinstance(credentials, PlivoSettings):
             return PlivoNumberClient(
-                auth_id=credentials["auth_id"],
-                auth_token=credentials["auth_token"],
+                auth_id=credentials.auth_id,
+                auth_token=credentials.auth_token,
             )
-        if resolved.provider is TelephonyProviderType.VONAGE:
+        if isinstance(credentials, VonageSettings):
             return VonageNumberClient(
-                api_key=credentials["api_key"],
-                api_secret=credentials["api_secret"],
+                api_key=credentials.api_key,
+                api_secret=credentials.api_secret,
             )
-        if resolved.provider is TelephonyProviderType.EXOTEL:
+        if isinstance(credentials, ExotelSettings):
             return ExotelNumberClient(
-                api_key=credentials["api_key"],
-                api_token=credentials["api_token"],
-                account_sid=credentials["account_sid"],
-                subdomain=credentials["subdomain"],
+                api_key=credentials.api_key,
+                api_token=credentials.api_token,
+                account_sid=credentials.account_sid,
+                subdomain=credentials.api_host,
             )
         raise HTTPException(
             status_code=501,

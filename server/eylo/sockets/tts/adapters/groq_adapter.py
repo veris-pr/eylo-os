@@ -16,10 +16,13 @@ import logging
 from typing import Optional
 
 import aiohttp
+from pydantic import Field, StrictInt
 
+from eylo.common.contracts.speech_runtime import SpeechText
+from eylo.sockets.tts.adapters.config import TTSAdapterConfig
 from eylo.sockets.tts.base import TTSVendorAdapter
 from eylo.sockets.tts.exceptions import TTSConnectionClosed, TTSConnectionFailed
-from eylo.sockets.tts.schemas import TTSCapabilities, TTSConfig
+from eylo.sockets.tts.schemas import TTSCapabilities, TTSConfig, TTSProvider
 
 logger = logging.getLogger(__name__)
 
@@ -32,27 +35,14 @@ _MAX_CONSECUTIVE_ERRORS = 3
 _WAV_HEADER_SIZE = 44
 
 
-class GroqTTSConfig:
+class GroqTTSConfig(TTSAdapterConfig):
     """Configuration for Groq TTS adapter."""
 
-    def __init__(
-        self,
-        *,
-        model: str,
-        voice: str,
-        sample_rate: int = _DEFAULT_SAMPLE_RATE,
-        api_key: str,
-        base_url: str = _DEFAULT_BASE_URL,
-        **kwargs,
-    ):
-        self.model = model
-        self.voice = voice
-        self.sample_rate = sample_rate
-        self.api_key = api_key
-        self.base_url = base_url
-
-        if not self.api_key:
-            raise ValueError("Groq TTS api_key is required.")
+    provider = TTSProvider.GROQ
+    model: SpeechText
+    voice: SpeechText
+    sample_rate: StrictInt = Field(default=_DEFAULT_SAMPLE_RATE, gt=0)
+    base_url: SpeechText = _DEFAULT_BASE_URL
 
 
 class GroqTTSAdapter(TTSVendorAdapter):
@@ -63,24 +53,14 @@ class GroqTTSAdapter(TTSVendorAdapter):
     """
 
     def __init__(self, config: GroqTTSConfig):
-        # Feed the contract config up from the vendor config. getattr with
-        # fallbacks because vendor configs disagree — deepgram has no voice,
-        # murf calls it voice_id, openai carries no sample_rate. Unset keys
-        # are omitted: passing None would override a field default with an
-        # invalid value.
-        _contract = {
-            "model": getattr(config, "model", None),
-            "voice": getattr(config, "voice", None)
-            or getattr(config, "voice_id", None),
-            # The API response is WAV at 48 kHz. This adapter strips the WAV
-            # header, so its downstream contract is raw PCM at that fixed rate.
-            "sample_rate": _DEFAULT_SAMPLE_RATE,
-            "encoding": "pcm_s16le",
-        }
+        config = GroqTTSConfig.model_validate(config)
         super().__init__(
             TTSConfig(
-                vendor="groq",
-                **{k: v for k, v in _contract.items() if v is not None},
+                vendor=TTSProvider.GROQ,
+                model=config.model,
+                voice=config.voice,
+                sample_rate=_DEFAULT_SAMPLE_RATE,
+                encoding="pcm_s16le",
             )
         )
         self._config = config

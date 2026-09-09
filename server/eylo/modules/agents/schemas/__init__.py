@@ -9,6 +9,9 @@ from eylo.common.contracts.llm_response import (
     LLMContentType,
     LLMResponse,
     LLMTextBlock,
+    LLMTextContent,
+    LLMThinkingContent,
+    LLMToolContent,
     LLMToolUseBlock,
     LLMUsageInfo,
 )
@@ -18,6 +21,9 @@ __all__ = [
     "LLMContentBlock",
     "LLMContentType",
     "LLMTextBlock",
+    "LLMTextContent",
+    "LLMThinkingContent",
+    "LLMToolContent",
     "LLMToolUseBlock",
     "LLMUsageInfo",
 ]

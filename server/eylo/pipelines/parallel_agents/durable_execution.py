@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from uuid import UUID
 
-from eylo.common.contracts.background_task import TaskContent
+from eylo.common.contracts.background_task import BackgroundTaskOutcome, TaskContent
 from eylo.common.database import start_transaction
 from eylo.modules.agent_runs.domain import (
     AgentRunLifecycle,
@@ -31,16 +30,19 @@ from eylo.modules.conversations.schemas.messages import (
     RequestStatus,
 )
 from eylo.modules.conversations.services.messages import MessageService
-from eylo.modules.parallel_agents.schemas import TaskResultContent, WorkerResult
+from eylo.modules.parallel_agents.schemas import (
+    ParallelTaskManifest,
+    TaskResultContent,
+    WorkerResult,
+)
 from eylo.modules.provider_configs.errors import NotConfiguredError
+from eylo.pipelines.agent_run_heartbeat import run_with_agent_heartbeat
 from eylo.pipelines.parallel_agents.background_agent_worker import (
     BackgroundAgentWorker,
 )
 from eylo.pipelines.parallel_agents.llm_task_worker import LLMTaskWorker
 from eylo.pipelines.parallel_agents.swarm_agent_worker import SwarmAgentWorker
 
-_HEARTBEAT_SECONDS = 120
-_HEARTBEAT_INTERVAL_SECONDS = 30
 _RESULT_LIMIT_BYTES = 65536
 
 TaskRunner = Callable[
@@ -86,7 +88,7 @@ class ParallelTaskAgentRunExecutor:
             )
 
         try:
-            await _run_with_heartbeat(context, execute_task)
+            await run_with_agent_heartbeat(context, execute_task)
         except NotConfiguredError:
             await _fail_task(claim, origin, "parallel_task_provider_not_configured")
             return
@@ -119,8 +121,11 @@ async def _validate_task_origin(
         raise ParallelAgentRunInvalid(
             "Parallel execution requires an initiating agent."
         )
+    raw_task = origin.get_text_content()
+    if raw_task is None:
+        raise ParallelAgentRunInvalid("Parallel task content is invalid.")
     try:
-        task_content = TaskContent.from_json(origin.get_text_content())
+        task_content = TaskContent.from_json(raw_task)
     except ValueError as error:
         raise ParallelAgentRunInvalid("Parallel task content is invalid.") from error
     if task_content.source_agent_id != claim.principal.principal_id:
@@ -136,9 +141,18 @@ async def _validate_task_origin(
         raise ParallelAgentRunInvalid(
             "Parallel task target does not match its AgentRun authority."
         ) from error
-    if claim.context_manifest.get("conversation_id") != str(origin.conversation_id):
+    try:
+        manifest = ParallelTaskManifest.model_validate(claim.context_manifest)
+    except ValueError as error:
+        raise ParallelAgentRunInvalid("Parallel task context is invalid.") from error
+    if (
+        manifest.conversation_id != origin.conversation_id
+        or manifest.task_type is not task_content.task_kind
+        or manifest.source_agent_id != task_content.source_agent_id
+        or manifest.source_agent_revision != task_content.source_agent_revision
+    ):
         raise ParallelAgentRunInvalid(
-            "Parallel task context does not match its conversation."
+            "Parallel task context does not match its task origin."
         )
 
     async with start_transaction(ro=True) as session:
@@ -203,10 +217,10 @@ async def _persist_completion(
     task_content: TaskContent,
     worker_result: WorkerResult,
 ) -> None:
-    worker_type = _worker_type(task_content)
+    worker_type = task_content.task_kind.value
     task_status = (
         RequestStatus.SKIPPED
-        if worker_result.outcome == "skipped"
+        if worker_result.outcome is BackgroundTaskOutcome.SKIPPED
         else RequestStatus.COMPLETED
     )
     result_content = TaskResultContent(
@@ -262,7 +276,9 @@ async def _persist_completion(
             outcome=AgentRunOutcome.ACHIEVED,
             result=projected_result,
             outcome_reason=(
-                "No work was required." if worker_result.outcome == "skipped" else None
+                "No work was required."
+                if worker_result.outcome is BackgroundTaskOutcome.SKIPPED
+                else None
             ),
         )
 
@@ -302,42 +318,6 @@ def _require_bounded_result(result: dict) -> None:
         raise ParallelAgentRunInvalid(
             "Parallel task result exceeds the canonical 65536-byte limit."
         )
-
-
-def _worker_type(task_content: TaskContent) -> str:
-    if task_content.background_agent_id is not None:
-        return "background_agent"
-    if task_content.swarm_id is not None:
-        return "swarm_agent"
-    return "llm_task"
-
-
-async def _run_with_heartbeat(
-    context: AgentRunWorkflowContext,
-    operation: Callable[[], Awaitable[None]],
-) -> None:
-    operation_task = asyncio.create_task(operation())
-    try:
-        while not operation_task.done():
-            remaining_milliseconds = await context.heartbeat(seconds=_HEARTBEAT_SECONDS)
-            try:
-                await asyncio.wait_for(
-                    asyncio.shield(operation_task),
-                    timeout=min(
-                        _HEARTBEAT_INTERVAL_SECONDS,
-                        max(0.001, remaining_milliseconds / 1000),
-                    ),
-                )
-            except TimeoutError:
-                continue
-        await operation_task
-    finally:
-        if not operation_task.done():
-            operation_task.cancel()
-            try:
-                await operation_task
-            except asyncio.CancelledError:
-                pass
 
 
 __all__ = ["ParallelAgentRunInvalid", "ParallelTaskAgentRunExecutor"]

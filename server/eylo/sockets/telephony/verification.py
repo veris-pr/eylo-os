@@ -5,10 +5,18 @@ from __future__ import annotations
 import base64
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
 
 import httpx
 
+from eylo.sockets.telephony.base import BaseTelephonyService, TelephonyConfig
+from eylo.sockets.telephony.config import (
+    ExotelSettings,
+    PlivoSettings,
+    TelephonyProvider,
+    TelephonyVendorSettings,
+    TwilioSettings,
+    VonageSettings,
+)
 from eylo.sockets.telephony.factory import TelephonyFactory
 from eylo.sockets.telephony.twilio.endpoint import twilio_account_url
 
@@ -19,7 +27,7 @@ class TelephonyCredentialProbeError(Exception):
 
 @dataclass(frozen=True)
 class TelephonyCredentialProbeResult:
-    provider: str
+    provider: TelephonyProvider
     account_reference: str
 
 
@@ -35,16 +43,12 @@ class TelephonyCredentialProbe:
     async def verify(
         self,
         *,
-        provider: str,
-        settings: Mapping[str, object],
+        config: TelephonyConfig,
         timeout_seconds: float,
     ) -> TelephonyCredentialProbeResult:
-        service = TelephonyFactory(
-            provider=provider,  # type: ignore[arg-type]
-            telephony_config=settings,
-        ).service
-        _require_constructed_provider(service, provider)
-        request = _request(provider, settings)
+        service = TelephonyFactory(config).service
+        _require_constructed_provider(service, config.provider)
+        request = _request(config.settings)
         try:
             async with self._client_factory(
                 timeout=timeout_seconds,
@@ -54,58 +58,54 @@ class TelephonyCredentialProbe:
                 response = await client.send(request)
             response.raise_for_status()
             payload = response.json()
-            account_reference = _account_reference(provider, settings, payload)
+            account_reference = _account_reference(config.settings, payload)
         except Exception as error:
             raise TelephonyCredentialProbeError(
                 "Telephony credential verification failed."
             ) from error
         return TelephonyCredentialProbeResult(
-            provider=provider,
+            provider=config.provider,
             account_reference=account_reference,
         )
 
 
-def _request(provider: str, settings: Mapping[str, object]) -> httpx.Request:
-    if provider == "twilio":
-        account_sid = _setting(settings, "account_sid")
+def _request(settings: TelephonyVendorSettings) -> httpx.Request:
+    if isinstance(settings, TwilioSettings):
+        account_sid = settings.account_sid
         return httpx.Request(
             "GET",
             f"{twilio_account_url(account_sid)}.json",
-            headers={
-                "Authorization": _basic(account_sid, _setting(settings, "auth_token"))
-            },
+            headers={"Authorization": _basic(account_sid, settings.auth_token)},
         )
-    if provider == "plivo":
-        auth_id = _setting(settings, "auth_id")
+    if isinstance(settings, PlivoSettings):
+        auth_id = settings.auth_id
         return httpx.Request(
             "GET",
             f"https://api.plivo.com/v1/Account/{auth_id}/",
-            headers={
-                "Authorization": _basic(auth_id, _setting(settings, "auth_token"))
-            },
+            headers={"Authorization": _basic(auth_id, settings.auth_token)},
         )
-    if provider == "vonage":
+    if isinstance(settings, VonageSettings):
         return httpx.Request(
             "GET",
             "https://rest.nexmo.com/account/get-balance",
             headers={
                 "Authorization": _basic(
-                    _setting(settings, "api_key"),
-                    _setting(settings, "api_secret"),
+                    settings.api_key,
+                    settings.api_secret,
                 )
             },
         )
-    if provider == "exotel":
-        account_sid = _setting(settings, "account_sid")
-        api_host = _setting(settings, "api_host")
+    if isinstance(settings, ExotelSettings):
+        account_sid = settings.account_sid
+        api_host = settings.api_host
         return httpx.Request(
             "GET",
             f"https://{api_host}/v1/Accounts/{account_sid}/Calls.json",
             params={"PageSize": 1},
             headers={
                 "Authorization": _basic(
-                    _setting(settings, "api_key"),
-                    _setting(settings, "api_token"),
+                    settings.api_key,
+                    settings.api_token,
                 )
             },
         )
@@ -113,47 +113,48 @@ def _request(provider: str, settings: Mapping[str, object]) -> httpx.Request:
 
 
 def _account_reference(
-    provider: str,
-    settings: Mapping[str, object],
-    payload: Any,
+    settings: TelephonyVendorSettings,
+    payload: object,
 ) -> str:
     if not isinstance(payload, Mapping):
         raise TelephonyCredentialProbeError("Carrier returned an invalid response.")
-    if provider == "twilio":
-        expected = _setting(settings, "account_sid")
+    if isinstance(settings, TwilioSettings):
+        expected = settings.account_sid
         if payload.get("sid") != expected:
             raise TelephonyCredentialProbeError("Twilio account identity mismatch.")
         return expected
-    if provider == "plivo":
-        expected = _setting(settings, "auth_id")
+    if isinstance(settings, PlivoSettings):
+        expected = settings.auth_id
         if payload.get("auth_id") != expected:
             raise TelephonyCredentialProbeError("Plivo account identity mismatch.")
         return expected
-    if provider == "vonage":
+    if isinstance(settings, VonageSettings):
         value = payload.get("value")
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise TelephonyCredentialProbeError("Vonage account response is invalid.")
-        return _setting(settings, "api_key")
-    if provider == "exotel":
+        return settings.api_key
+    if isinstance(settings, ExotelSettings):
         if not ({"Calls", "Metadata"} & set(payload)):
             raise TelephonyCredentialProbeError("Exotel account response is invalid.")
-        return _setting(settings, "account_sid")
+        return settings.account_sid
     raise TelephonyCredentialProbeError("Unsupported telephony provider.")
 
 
-def _require_constructed_provider(service: object, provider: str) -> None:
-    value = getattr(getattr(service, "provider", None), "value", None)
-    if value != provider:
+def _require_constructed_provider(
+    service: BaseTelephonyService, provider: TelephonyProvider
+) -> None:
+    if service.provider is not provider:
         raise TelephonyCredentialProbeError("Carrier adapter construction failed.")
-    if provider in {"plivo", "vonage"} and getattr(service, "client", None) is None:
-        raise TelephonyCredentialProbeError("Carrier client construction failed.")
+    if provider is TelephonyProvider.PLIVO:
+        from eylo.sockets.telephony.plivo.service import PlivoService
 
+        if not isinstance(service, PlivoService) or service.client is None:
+            raise TelephonyCredentialProbeError("Carrier client construction failed.")
+    if provider is TelephonyProvider.VONAGE:
+        from eylo.sockets.telephony.vonage.service import VonageService
 
-def _setting(settings: Mapping[str, object], name: str) -> str:
-    value = settings.get(name)
-    if not isinstance(value, str) or not value:
-        raise TelephonyCredentialProbeError(f"Missing telephony setting: {name}.")
-    return value
+        if not isinstance(service, VonageService) or service.client is None:
+            raise TelephonyCredentialProbeError("Carrier client construction failed.")
 
 
 def _basic(username: str, password: str) -> str:

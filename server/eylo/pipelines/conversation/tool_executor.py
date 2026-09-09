@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 from uuid import UUID
 
+from pydantic import ValidationError
+
+from eylo.common.contracts.conversation import WIDGET_TOOL_PREFIX
 from eylo.framework.agents.context import RunContext
-from eylo.framework.agents.tool import ToolCall, ToolResult
+from eylo.framework.agents.tool import (
+    ToolCall,
+    ToolCompletionMetadata,
+    ToolCompletionMode,
+    ToolResult,
+)
 from eylo.modules.agents.services.tool_execution_utils import (
     AmbiguousModelToolNameError,
     ModelToolNotFoundError,
@@ -16,7 +24,15 @@ from eylo.modules.agents.services.tool_execution_utils import (
     resolve_model_tool,
 )
 from eylo.modules.conversations.constants import HANDOFF_TOOL_PREFIX
+from eylo.modules.interfaces.schemas.tools import WidgetDeliveryReceipt
 from eylo.modules.tools.models import ToolKind
+from eylo.pipelines.agent_execution_context import (
+    PlatformExecutionContext,
+    PlatformRunState,
+    execution_context_from,
+)
+from eylo.pipelines.conversation.completion import ConversationMessageArtifact
+from eylo.pipelines.conversation.handoff import HandoffOutcome, HandoffToolMetadata
 from eylo.pipelines.conversation.tool_dispatch import (
     execute_handoff,
     execute_registered_tool,
@@ -50,8 +66,10 @@ from eylo.sor.runtime.tools import resolve_sor_tool
 from eylo.sor.shared.contracts import SorToolEffect
 
 if TYPE_CHECKING:
-    from eylo.modules.conversations.schemas.conversations import ConversationContext
-    from eylo.pipelines.outbound.durable_execution import DurableStepContext
+    from eylo.pipelines.outbound.durable_execution import (
+        CommandStepContext,
+        DurableStepContext,
+    )
     from eylo.sockets.email.sendgrid import SendGridHttpTransport
     from eylo.sockets.mcp.client import MCPHttpTransport
 
@@ -74,7 +92,7 @@ class PlatformToolExecutor:
         call: ToolCall,
     ) -> ToolResult:
         """Execute one tool call using current platform dispatch."""
-        conversation_context = _conversation_context_from(context.local_context)
+        conversation_context = execution_context_from(context.local_context)
         await _refresh_tool_availability(conversation_context, context.local_context)
         block = LLMToolUseBlock(
             id=call.id,
@@ -84,51 +102,24 @@ class PlatformToolExecutor:
 
         if call.name.startswith(HANDOFF_TOOL_PREFIX):
             source_participant = conversation_context.get_primary_agent()
-            outcome = await execute_handoff(conversation_context, block)
-            new_agent = outcome.target_agent
-            new_participant = outcome.target_participant
+            outcome = HandoffOutcome.model_validate(
+                await execute_handoff(conversation_context, block)
+            )
             return ToolResult(
                 tool_call_id=call.id,
                 content=outcome.content,
                 is_error=not outcome.succeeded,
-                metadata={
-                    "handoff_context_changed": bool(new_agent or new_participant),
-                    "handoff_occurred": outcome.succeeded,
-                    "handoff_outcome": (
-                        "succeeded" if outcome.succeeded else "rejected"
-                    ),
-                    "swarm_id": str(conversation_context.conversation.swarm_id)
-                    if conversation_context.conversation.swarm_id
-                    else None,
-                    "swarm_revision": conversation_context.conversation.swarm_revision,
-                    "source_agent_id": str(outcome.source_agent.id),
-                    "source_agent_revision": source_participant.agent_revision
+                metadata=HandoffToolMetadata.from_outcome(
+                    outcome,
+                    swarm_id=conversation_context.conversation.swarm_id,
+                    swarm_revision=conversation_context.conversation.swarm_revision,
+                    source_agent_revision=source_participant.agent_revision
                     if source_participant
                     else None,
-                    "source_participant_id": str(source_participant.id)
+                    source_participant_id=source_participant.id
                     if source_participant
                     else None,
-                    "new_agent_id": str(new_agent.id) if new_agent else None,
-                    "new_agent_revision": new_participant.agent_revision
-                    if new_participant
-                    else None,
-                    "new_participant_id": str(new_participant.id)
-                    if new_participant
-                    else None,
-                    "target_agent_id": str(new_agent.id) if new_agent else None,
-                    "target_agent_revision": new_participant.agent_revision
-                    if new_participant
-                    else None,
-                    "target_participant_id": str(new_participant.id)
-                    if new_participant
-                    else None,
-                    "circuit_breaker_triggered": outcome.circuit_breaker_triggered,
-                    "handoff_loop_detected": outcome.handoff_loop_detected,
-                    "terminal_response": outcome.circuit_breaker_triggered,
-                    "terminal_output": (
-                        outcome.content if outcome.circuit_breaker_triggered else None
-                    ),
-                },
+                ),
             )
 
         try:
@@ -173,7 +164,7 @@ class PlatformToolExecutor:
                     conversation_context=conversation_context,
                 )
             else:
-                state = _durable_execution_state(context.local_context, call.id)
+                state = _durable_run_execution_state(context.local_context, call.id)
                 agent_run_id = _agent_run_id_from(context.local_context)
                 if state is None or agent_run_id is None:
                     return ToolResult(
@@ -223,7 +214,7 @@ class PlatformToolExecutor:
             requested_tool.kind is ToolKind.SYSTEM
             and requested_tool.slug in SANDBOX_TOOL_SLUGS
         ):
-            state = _durable_execution_state(context.local_context, call.id)
+            state = _durable_run_execution_state(context.local_context, call.id)
             agent_run_id = _agent_run_id_from(context.local_context)
             if state is None or agent_run_id is None:
                 return ToolResult(
@@ -244,6 +235,8 @@ class PlatformToolExecutor:
                 )
             tool_use_message_id, durable_context = state
             agent = conversation_context.primary_agent
+            if agent is None:
+                raise ValueError("Sandbox execution requires a published agent.")
             outcome = await execute_agent_sandbox_tool(
                 tool_slug=requested_tool.slug,
                 tool_input=call.arguments,
@@ -387,84 +380,71 @@ class PlatformToolExecutor:
             )
 
         content = await execute_registered_tool(conversation_context, block)
-        if (
-            requested_tool.slug == "compound_render_widget"
-            and isinstance(content, dict)
-            and content.get("status") == "delivered"
-            and content.get("widget_message_id")
-        ):
+        if requested_tool.slug == WIDGET_TOOL_PREFIX and isinstance(content, dict):
+            try:
+                receipt = WidgetDeliveryReceipt.model_validate(content)
+            except ValidationError:
+                return ToolResult(
+                    tool_call_id=call.id,
+                    content="Widget delivery returned an invalid receipt.",
+                    is_error=True,
+                )
             return ToolResult(
                 tool_call_id=call.id,
                 content=content,
-                metadata={
-                    "terminal_response": True,
-                    "terminal_output": "Interactive content delivered.",
-                    "terminal_artifact": {
-                        "kind": "conversation_message",
-                        "id": content["widget_message_id"],
-                    },
-                },
+                metadata=ToolCompletionMetadata(
+                    terminal_response=ToolCompletionMode.COMPLETE,
+                    terminal_output="Interactive content delivered.",
+                    terminal_artifact=ConversationMessageArtifact(
+                        id=receipt.widget_message_id
+                    ).to_framework(),
+                ),
             )
         return ToolResult(tool_call_id=call.id, content=content)
 
 
-def _conversation_context_from(local_context: object | None) -> ConversationContext:
-    """Extract ConversationContext from the run's local context."""
-    if local_context is None:
-        raise ValueError("Platform tool execution requires a ConversationContext.")
-
-    if hasattr(local_context, "primary_agent") and hasattr(
-        local_context, "conversation"
-    ):
-        return local_context  # type: ignore[return-value]
-
-    if isinstance(local_context, dict):
-        value = local_context.get("conversation_context")
-        if value is not None:
-            return _conversation_context_from(value)
-
-    raise ValueError(
-        "Platform tool execution requires local_context to be a "
-        "ConversationContext or {'conversation_context': ConversationContext}."
-    )
-
-
 def _durable_execution_state(
-    local_context: object | None,
+    local_context: object,
+    tool_call_id: str,
+) -> tuple[UUID, CommandStepContext] | None:
+    if not isinstance(local_context, PlatformRunState):
+        return None
+    command_context = local_context.step_context
+    command_id = local_context.command_ids.get(tool_call_id)
+    if command_context is None or command_id is None:
+        return None
+    return command_id, command_context
+
+
+def _durable_run_execution_state(
+    local_context: object,
     tool_call_id: str,
 ) -> tuple[UUID, DurableStepContext] | None:
-    if not isinstance(local_context, dict):
+    if not isinstance(local_context, PlatformRunState):
         return None
-    durable_context = local_context.get("durable_context")
-    tool_use_messages = local_context.get("tool_use_messages")
-    if durable_context is None or not isinstance(tool_use_messages, dict):
+    command_id = local_context.command_ids.get(tool_call_id)
+    if (
+        local_context.agent_run_id is None
+        or local_context.durable_context is None
+        or command_id is None
+    ):
         return None
-    message = tool_use_messages.get(tool_call_id)
-    message_id = getattr(message, "id", None)
-    if message_id is None:
-        return None
-    return UUID(str(message_id)), cast("DurableStepContext", durable_context)
+    return command_id, local_context.durable_context
 
 
-def _agent_run_id_from(local_context: object | None) -> UUID | None:
-    if not isinstance(local_context, dict):
-        return None
-    value = local_context.get("agent_run_id")
-    if value is None:
-        return None
-    try:
-        return UUID(str(value))
-    except (TypeError, ValueError):
-        return None
+def _agent_run_id_from(local_context: object) -> UUID | None:
+    if isinstance(local_context, PlatformRunState):
+        return local_context.agent_run_id
+    return None
 
 
 def _live_voice_identity_from(
     local_context: object | None,
-    conversation_context: ConversationContext,
+    conversation_context: PlatformExecutionContext,
 ) -> LiveVoiceBufferIdentity | None:
-    if not isinstance(local_context, dict):
+    if not isinstance(local_context, PlatformRunState):
         return None
-    identity = local_context.get("live_voice_identity")
+    identity = local_context.live_voice_identity
     if not isinstance(identity, LiveVoiceBufferIdentity):
         return None
     conversation = conversation_context.conversation
@@ -477,7 +457,7 @@ def _live_voice_identity_from(
 
 
 async def _refresh_tool_availability(
-    conversation_context: ConversationContext,
+    conversation_context: PlatformExecutionContext,
     local_context: object | None,
 ) -> None:
     """Re-check mutable tool requirements immediately before dispatch."""
@@ -487,8 +467,8 @@ async def _refresh_tool_availability(
     )
 
     runtime_facts: set[ToolRuntimeFact] = set()
-    if isinstance(local_context, dict):
-        if local_context.get("durable_context") is not None:
+    if isinstance(local_context, PlatformRunState):
+        if local_context.step_context is not None:
             runtime_facts.add(ToolRuntimeFact.DURABLE_EXECUTION)
         if _agent_run_id_from(local_context) is not None:
             runtime_facts.add(ToolRuntimeFact.AGENT_RUN)
@@ -496,9 +476,8 @@ async def _refresh_tool_availability(
             local_context,
             conversation_context,
         )
-        if (
-            live_voice_identity is not None
-            and await is_live_voice_session_active(live_voice_identity)
+        if live_voice_identity is not None and await is_live_voice_session_active(
+            live_voice_identity
         ):
             runtime_facts.add(ToolRuntimeFact.ACTIVE_VOICE_SESSION)
     await refresh_context_tool_availability(

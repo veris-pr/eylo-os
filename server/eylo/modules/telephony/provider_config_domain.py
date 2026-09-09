@@ -118,7 +118,7 @@ _HOST_PATTERN = re.compile(
 class TelephonyProviderConfig:
     """Validated provider settings with plaintext secrets held in memory only."""
 
-    provider: TelephonyProvider | str
+    provider: TelephonyProvider
     config: Mapping[str, object]
     secrets: Mapping[str, str] = field(repr=False)
 
@@ -145,21 +145,13 @@ class TelephonyProviderConfig:
         secrets: Mapping[str, str] | None = None,
     ) -> TelephonyProviderConfig:
         return cls(
-            provider=provider,
+            provider=_provider(provider),
             config={} if config is None else config,
             secrets={} if secrets is None else secrets,
         )
 
     def secret(self, name: str) -> str:
         return self.secrets[name]
-
-    def adapter_settings(self) -> dict[str, object]:
-        """Translate canonical provider fields to the current socket contract."""
-        settings = {**self.config, **self.secrets}
-        if self.provider is TelephonyProvider.EXOTEL:
-            settings["exotel_app_id"] = self.config["application_id"]
-            settings["subdomain"] = self.config["api_host"]
-        return settings
 
 
 @dataclass(frozen=True)

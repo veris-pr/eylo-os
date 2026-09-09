@@ -13,10 +13,13 @@ import logging
 from typing import Optional
 
 import aiohttp
+from pydantic import Field, StrictInt, field_validator
 
+from eylo.common.contracts.speech_runtime import SpeechText
+from eylo.sockets.tts.adapters.config import TTSAdapterConfig
 from eylo.sockets.tts.base import TTSVendorAdapter
 from eylo.sockets.tts.exceptions import TTSConnectionFailed
-from eylo.sockets.tts.schemas import TTSCapabilities, TTSConfig
+from eylo.sockets.tts.schemas import TTSCapabilities, TTSConfig, TTSProvider
 
 logger = logging.getLogger(__name__)
 
@@ -24,33 +27,24 @@ _DEFAULT_SAMPLE_RATE = 24000
 _WS_URL = "wss://api.deepgram.com/v1/speak"
 
 
-class DeepgramTTSConfig:
+class DeepgramTTSConfig(TTSAdapterConfig):
     """Configuration for Deepgram TTS adapter."""
 
-    def __init__(
-        self,
-        *,
-        model: str,
-        sample_rate: int = _DEFAULT_SAMPLE_RATE,
-        encoding: str = "linear16",
-        container: str = "none",
-        api_key: str,
-        ws_url: str = _WS_URL,
-        **kwargs,  # Accept extra keys from tts_config without breaking
-    ):
-        self.model = model
-        self.sample_rate = sample_rate
-        self.encoding = {
+    provider = TTSProvider.DEEPGRAM
+    model: SpeechText
+    sample_rate: StrictInt = Field(default=_DEFAULT_SAMPLE_RATE, gt=0)
+    encoding: SpeechText = "linear16"
+    container: SpeechText = "none"
+    ws_url: SpeechText = _WS_URL
+
+    @field_validator("encoding")
+    @classmethod
+    def native_encoding(cls, encoding: str) -> str:
+        return {
             "pcm_s16le": "linear16",
             "pcm_mulaw": "mulaw",
             "pcm_alaw": "alaw",
         }.get(encoding, encoding)
-        self.container = container
-        self.api_key = api_key
-        self.ws_url = ws_url
-
-        if not self.api_key:
-            raise ValueError("Deepgram TTS api_key is required.")
 
 
 class DeepgramTTSAdapter(TTSVendorAdapter):
@@ -62,24 +56,15 @@ class DeepgramTTSAdapter(TTSVendorAdapter):
     """
 
     def __init__(self, config: DeepgramTTSConfig):
+        config = DeepgramTTSConfig.model_validate(config)
         if config.container not in {"none", "raw"}:
             raise ValueError("Deepgram TTS must emit raw audio for realtime voice.")
-        # Feed the contract config up from the vendor config. getattr with
-        # fallbacks because vendor configs disagree — deepgram has no voice,
-        # murf calls it voice_id, openai carries no sample_rate. Unset keys
-        # are omitted: passing None would override a field default with an
-        # invalid value.
-        _contract = {
-            "model": getattr(config, "model", None),
-            "voice": getattr(config, "voice", None)
-            or getattr(config, "voice_id", None),
-            "sample_rate": getattr(config, "sample_rate", None),
-            "encoding": getattr(config, "encoding", None),
-        }
         super().__init__(
             TTSConfig(
-                vendor="deepgram",
-                **{k: v for k, v in _contract.items() if v is not None},
+                vendor=TTSProvider.DEEPGRAM,
+                model=config.model,
+                sample_rate=config.sample_rate,
+                encoding=config.encoding,
             )
         )
         self._config = config

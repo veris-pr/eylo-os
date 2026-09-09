@@ -2,36 +2,40 @@
 
 import json
 import logging
-from typing import Any, AsyncIterator, Dict, List, Tuple
-from uuid import UUID
+from collections.abc import Sequence
+from typing import AsyncGenerator, List, Tuple
 
 from openai import AsyncOpenAI
 from openai.types.chat import (
     ChatCompletion,
+    ChatCompletionContentPartParam,
+    ChatCompletionMessageFunctionToolCallParam,
     ChatCompletionMessageParam,
     ChatCompletionToolParam,
 )
+from openai.types.chat.completion_create_params import (
+    CompletionCreateParamsBase,
+    CompletionCreateParamsNonStreaming,
+    CompletionCreateParamsStreaming,
+)
 
-from eylo.common.contracts.message_content import UserMessageContent
+from eylo.common.contracts.llm_runtime import LLMInferenceConfig
 from eylo.common.contracts.messages import (
     MessageInDb,
     MessageKind,
 )
 from eylo.common.contracts.tool_record import ToolRecord
 from eylo.sockets.llm.base import LLMVendorAdapter
-from eylo.sockets.llm.config import configured_generation_params, require_model
-from eylo.sockets.llm.schemas import (
-    LLMContentBlock,
-    LLMContentType,
-    LLMResponse,
-    LLMTextBlock,
-    LLMToolUseBlock,
-    LLMUsageInfo,
+from eylo.sockets.llm.config import require_model
+from eylo.sockets.llm.schemas import LLMResponse
+from eylo.sockets.llm.tool_content import serialize_tool_content
+from eylo.sockets.llm.vendors.openai_chat_responses import (
+    OpenAIChatStream,
+    completion_response,
 )
 from eylo.sockets.llm.vendors.openai_utils import (
     create_openai_client,
     extract_openai_function_declarations,
-    serialize_tool_content,
 )
 
 logger = logging.getLogger(__name__)
@@ -51,7 +55,6 @@ class OpenAIAdapter(LLMVendorAdapter):
     """
 
     vendor_name = "openai"
-    max_tokens_parameter = "max_completion_tokens"
 
     def __init__(self, api_key: str):
         self._api_key = api_key
@@ -60,64 +63,9 @@ class OpenAIAdapter(LLMVendorAdapter):
         """Get authenticated OpenAI client."""
         return create_openai_client(self._api_key)
 
-    @staticmethod
-    def _normalize_usage(usage: Any | None) -> LLMUsageInfo | None:
-        """Normalize OpenAI-compatible token usage into the platform contract."""
-        if usage is None:
-            return None
-        return LLMUsageInfo(
-            input_tokens=getattr(usage, "prompt_tokens", 0) or 0,
-            output_tokens=getattr(usage, "completion_tokens", 0) or 0,
-            cache_read_input_tokens=getattr(
-                getattr(usage, "prompt_tokens_details", None),
-                "cached_tokens",
-                None,
-            ),
-            reasoning_tokens=getattr(
-                getattr(usage, "completion_tokens_details", None),
-                "reasoning_tokens",
-                None,
-            ),
-        )
-
-    def _handle_user_transition(
-        self,
-        stack: List[MessageInDb],
-        msg: MessageInDb,
-        current_kind: MessageKind,
-        pending_tool_calls: dict[str, UUID],
-    ) -> None:
-        logger.debug(
-            f"[OpenAIAdapter] Handling USER message transition. {msg.id=} {current_kind=}"
-        )
-        if current_kind == MessageKind.USER:
-            # Anthropic: merge consecutive USER messages
-            logger.debug("Merging consecutive USER messages")
-            prev_ = stack[-1]
-            prev_.content = UserMessageContent(
-                content=f"{prev_.content.get_text_content()}\n{msg.get_text_content()}"
-            )
-            # Keep the first user message, log the merge
-            stack[-1] = prev_
-        elif current_kind == MessageKind.ASSISTANT:
-            stack.append(msg)
-        elif current_kind == MessageKind.TOOL_USE:
-            tool_id = self._extract_tool_use_id(msg)
-            if not tool_id:
-                logger.error(
-                    f"TOOL_USE message missing 'id' field. Rejecting message {msg.id}"
-                )
-                return
-            pending_tool_calls[tool_id] = msg.id
-            stack.append(msg)
-        else:
-            logger.warning(
-                f"Invalid transition: USER -> {current_kind}. Skipping message."
-            )
-
     def transform_messages_to_vendor(
         self, messages: List[MessageInDb], system_prompt: str
-    ) -> Tuple[str, List[Dict[str, Any]]]:
+    ) -> Tuple[str, List[ChatCompletionMessageParam]]:
         """Transform Eylo messages to OpenAI format.
 
         OpenAI expects:
@@ -141,24 +89,26 @@ class OpenAIAdapter(LLMVendorAdapter):
 
         # Add system message first if we have a system prompt
         if system_prompt:
-            vendor_messages.append({"role": "system", "content": system_prompt})  # type: ignore
+            vendor_messages.append({"role": "system", "content": system_prompt})
 
         for msg in messages:
             if msg.kind == MessageKind.USER:
                 # User messages
                 content = self._format_user_content(msg.content)
-                vendor_messages.append({"role": "user", "content": content})  # type: ignore
+                vendor_messages.append({"role": "user", "content": content})
 
             elif msg.kind == MessageKind.ASSISTANT:
                 # Assistant messages (text responses)
-                content = self._format_assistant_content(msg.content)
-                vendor_messages.append({"role": "assistant", "content": content})  # type: ignore
+                assistant_content = self._format_assistant_content(msg.content)
+                vendor_messages.append(
+                    {"role": "assistant", "content": assistant_content}
+                )
 
             elif msg.kind == MessageKind.TOOL_USE:
                 # Tool use messages - OpenAI puts these as assistant messages with tool_calls
                 tool_calls = self._format_tool_use_content(msg.content)
                 vendor_messages.append(
-                    {"role": "assistant", "content": None, "tool_calls": tool_calls}  # type: ignore
+                    {"role": "assistant", "content": None, "tool_calls": tool_calls}
                 )
 
             elif msg.kind == MessageKind.TOOL_RESULT:
@@ -166,27 +116,36 @@ class OpenAIAdapter(LLMVendorAdapter):
                 tool_result_messages = self._format_tool_result_content(msg.content)
                 vendor_messages.extend(tool_result_messages)
 
-        # Cast to base class return type (List[Dict[str, Any]])
-        # This is safe because ChatCompletionMessageParam is a dict at runtime
-        return (system_prompt, vendor_messages)  # type: ignore
+        return (system_prompt, vendor_messages)
 
-    def _format_user_content(self, content: Any) -> Any:
+    def _format_user_content(
+        self, content: object
+    ) -> str | list[ChatCompletionContentPartParam]:
         """Format one typed user message for OpenAI."""
         from eylo.common.contracts.message_content import (
+            TextContent,
             UserMessageContent,
             WidgetResponseMessageContent,
-            content_block_to_platform_dict,
         )
 
         if isinstance(content, UserMessageContent):
-            return [content_block_to_platform_dict(block) for block in content.content]
+            parts: list[ChatCompletionContentPartParam] = []
+            for block in content.content:
+                if isinstance(block, TextContent):
+                    parts.append({"type": "text", "text": block.text})
+                else:
+                    parts.append(
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": block.image_url.url},
+                        }
+                    )
+            return parts
         if isinstance(content, WidgetResponseMessageContent):
             return content.get_text_content()
-        raise TypeError(
-            f"Unsupported typed user content: {type(content).__name__}"
-        )
+        raise TypeError(f"Unsupported typed user content: {type(content).__name__}")
 
-    def _format_assistant_content(self, content: Any) -> Any:
+    def _format_assistant_content(self, content: object) -> str:
         """Format assistant message content for OpenAI.
 
         Handles:
@@ -206,7 +165,9 @@ class OpenAIAdapter(LLMVendorAdapter):
             f"Unsupported typed assistant content: {type(content).__name__}"
         )
 
-    def _format_tool_use_content(self, content: Any) -> List[Dict[str, Any]]:
+    def _format_tool_use_content(
+        self, content: object
+    ) -> list[ChatCompletionMessageFunctionToolCallParam]:
         """Format tool use content for OpenAI.
 
         OpenAI tool calls format:
@@ -241,7 +202,7 @@ class OpenAIAdapter(LLMVendorAdapter):
         ]
 
     def _format_tool_result_content(
-        self, content: Any
+        self, content: object
     ) -> List[ChatCompletionMessageParam]:
         """Format tool result content for OpenAI.
 
@@ -263,13 +224,13 @@ class OpenAIAdapter(LLMVendorAdapter):
                 "role": "tool",
                 "tool_call_id": result.tool_use_id,
                 "content": serialize_tool_content(result.content),
-            }  # type: ignore
+            }
             for result in content.content
         ]
 
     def transform_tools_to_vendor(
-        self, tools: List[ToolRecord]
-    ) -> List[Dict[str, Any]]:
+        self, tools: Sequence[ToolRecord]
+    ) -> List[ChatCompletionToolParam]:
         """Transform platform-native tools to OpenAI Chat Completions format.
 
         Delegates extraction to ``extract_openai_function_declarations``
@@ -288,411 +249,79 @@ class OpenAIAdapter(LLMVendorAdapter):
             }
             for d in declarations
         ]
-        return vendor_tools  # type: ignore
+        return vendor_tools
+
+    def _apply_request_settings(
+        self,
+        params: CompletionCreateParamsBase,
+        tools: list[ChatCompletionToolParam] | None,
+        config: LLMInferenceConfig,
+    ) -> None:
+        """Project configured values into the installed SDK's wire contract."""
+        generation = config.generation
+        if generation.max_tokens is not None:
+            params["max_completion_tokens"] = generation.max_tokens
+        if generation.temperature is not None:
+            params["temperature"] = generation.temperature
+        if generation.top_p is not None:
+            params["top_p"] = generation.top_p
+        if generation.stop_sequences is not None:
+            params["stop"] = list(generation.stop_sequences)
+        if tools:
+            params["tools"] = tools
+            params["tool_choice"] = "auto"
 
     async def run_inference(
         self,
-        messages: List[MessageInDb],
+        messages: list[MessageInDb],
         system_prompt: str,
-        tools: List[ToolRecord],
-        llm_config: Dict[str, Any],
-        stream: bool = False,
+        tools: Sequence[ToolRecord],
+        llm_config: LLMInferenceConfig,
     ) -> LLMResponse:
-        """Execute inference with OpenAI API.
-
-        Args:
-            messages: Platform-native message history
-            system_prompt: System instructions for the model
-            tools: Available tools for the model
-            llm_config: Model configuration (model name, temperature, etc.)
-            stream: Whether to stream the response (not implemented yet)
-
-        Returns:
-            LLMResponse: Standardized platform response
-
-        """
-        client = self.get_client()
-
-        # Transform messages and tools to OpenAI format
+        """Validate input before allocating a client; invocation owns its resources."""
         _, vendor_messages = self.transform_messages_to_vendor(messages, system_prompt)
         vendor_tools = self.transform_tools_to_vendor(tools) if tools else None
-
-        # Extract model config
-        model = require_model(llm_config)
-        logger.info(
-            f"OpenAI inference: model={model}, messages={len(vendor_messages)}, "
-            f"tools={len(vendor_tools) if vendor_tools else 0}"
-        )
-
-        try:
-            # Build request parameters
-            request_params: Dict[str, Any] = {
-                "model": model,
-                "messages": vendor_messages,
-            }
-            request_params.update(
-                configured_generation_params(
-                    llm_config,
-                    max_tokens_parameter=self.max_tokens_parameter,
-                    stop_sequences_parameter="stop",
-                )
-            )
-
-            # Add tools if available
-            if vendor_tools:
-                request_params["tools"] = vendor_tools
-                # Allow the model to decide whether to use tools
-                request_params["tool_choice"] = "auto"
-
-            # Make API call
-            response: ChatCompletion = await client.chat.completions.create(
-                **request_params
-            )
-
-            # Transform response to platform format
+        params: CompletionCreateParamsNonStreaming = {
+            "model": require_model(llm_config),
+            "messages": vendor_messages,
+            "stream": False,
+        }
+        self._apply_request_settings(params, vendor_tools, llm_config)
+        async with self.get_client() as client:
+            response = await client.chat.completions.create(**params)
             return self.transform_response_to_platform(response)
-
-        except Exception as error:
-            logger.error(
-                "OpenAI API request failed error_type=%s",
-                type(error).__name__,
-            )
-            raise
 
     async def run_streaming_inference(
         self,
-        messages: List[MessageInDb],
+        messages: list[MessageInDb],
         system_prompt: str,
-        tools: List[ToolRecord],
-        llm_config: Dict[str, Any],
-    ) -> AsyncIterator[LLMResponse]:
-        """Execute streaming inference with OpenAI API."""
-        client = self.get_client()
-
-        # Transform messages and tools to OpenAI format
+        tools: Sequence[ToolRecord],
+        llm_config: LLMInferenceConfig,
+    ) -> AsyncGenerator[LLMResponse, None]:
+        """Stream text early; expose tool completions only after validation and close."""
         _, vendor_messages = self.transform_messages_to_vendor(messages, system_prompt)
         vendor_tools = self.transform_tools_to_vendor(tools) if tools else None
-
-        # Extract model config
-        model = require_model(llm_config)
-        logger.debug(
-            f"OpenAI streaming inference: model={model}, messages={len(vendor_messages)}, "
-            f"tools={len(vendor_tools) if vendor_tools else 0}"
-        )
-
-        # Build request parameters
-        request_params = {
-            "model": model,
+        params: CompletionCreateParamsStreaming = {
+            "model": require_model(llm_config),
             "messages": vendor_messages,
             "stream": True,
+            "stream_options": {"include_usage": True},
         }
-        if self.vendor_name == "openai":
-            request_params["stream_options"] = {"include_usage": True}
-
-        request_params.update(
-            configured_generation_params(
-                llm_config,
-                max_tokens_parameter=self.max_tokens_parameter,
-                stop_sequences_parameter="stop",
-            )
-        )
-
-        # Add tools if available
-        if vendor_tools:
-            request_params["tools"] = vendor_tools
-            request_params["tool_choice"] = "auto"
-
-        # Accumulate state for building complete response
-        message_id = None
-        message_model = model
-        text_content = ""
-        tool_calls_dict: Dict[int, Dict[str, Any]] = {}  # Keyed by index
-        finish_reason = None
-        usage_info = None
-
-        try:
-            # Create streaming request
-            stream = await client.chat.completions.create(**request_params)
-
-            async for chunk in stream:
-                # OpenAI reports aggregate usage in a final chunk whose choices
-                # list is empty. Capture it before the ordinary delta guard.
-                chunk_usage = getattr(chunk, "usage", None)
-                if chunk_usage:
-                    usage_info = self._normalize_usage(chunk_usage)
-
-                # Extract chunk data
-                if not chunk.choices:
-                    continue
-
-                choice = chunk.choices[0]
-                delta = choice.delta
-
-                # Capture message ID from first chunk
-                if chunk.id and not message_id:
-                    message_id = chunk.id
-                    message_model = chunk.model
-
-                # Handle text content deltas
-                if delta.content:
-                    text_content += delta.content
-
-                    # Build content blocks for current state
-                    content_blocks = []
-                    if text_content:
-                        content_blocks.append(
-                            LLMContentBlock(
-                                type=LLMContentType.TEXT,
-                                content=LLMTextBlock(text=text_content),
-                            )
-                        )
-
-                    # Yield partial response with text delta
-                    yield LLMResponse(
-                        id=message_id or "",
-                        model=message_model,
-                        content=content_blocks,
-                        stop_reason=None,
-                        usage=usage_info,
-                        role="assistant",
-                        metadata={
-                            "vendor": self.vendor_name,
-                            "streaming": True,
-                            "delta": {
-                                "type": "text_delta",
-                                "text": delta.content,
-                            },
-                        },
-                    )
-
-                # Handle tool call deltas
-                if delta.tool_calls:
-                    for tool_call_delta in delta.tool_calls:
-                        index = tool_call_delta.index
-
-                        # Initialize tool call if new
-                        if index not in tool_calls_dict:
-                            tool_calls_dict[index] = {
-                                "id": tool_call_delta.id or "",
-                                "name": "",
-                                "arguments": "",
-                            }
-
-                        # Update tool call data
-                        if tool_call_delta.id:
-                            tool_calls_dict[index]["id"] = tool_call_delta.id
-
-                        if tool_call_delta.function and tool_call_delta.function.name:
-                            tool_calls_dict[index]["name"] = (
-                                tool_call_delta.function.name
-                            )
-
-                        if (
-                            tool_call_delta.function
-                            and tool_call_delta.function.arguments
-                        ):
-                            # Accumulate arguments
-                            tool_calls_dict[index]["arguments"] += (
-                                tool_call_delta.function.arguments
-                            )
-
-                # Handle finish reason
-                if choice.finish_reason:
-                    finish_reason = choice.finish_reason
-
-            # After stream completes, build final response
-            content_blocks = []
-
-            # Add text content if present
-            if text_content:
-                content_blocks.append(
-                    LLMContentBlock(
-                        type=LLMContentType.TEXT,
-                        content=LLMTextBlock(text=text_content),
-                    )
-                )
-
-            # Add completed tool calls
-            for index in sorted(tool_calls_dict.keys()):
-                tool_call = tool_calls_dict[index]
-                try:
-                    # Parse accumulated JSON arguments
-                    arguments = (
-                        json.loads(tool_call["arguments"])
-                        if tool_call["arguments"]
-                        else {}
-                    )
-
-                    content_blocks.append(
-                        LLMContentBlock(
-                            type=LLMContentType.TOOL_USE,
-                            content=LLMToolUseBlock(
-                                id=tool_call["id"],
-                                name=tool_call["name"],
-                                input=arguments,
-                            ),
-                            id=tool_call["id"],
-                        )
-                    )
-
-                    # Yield tool call completion
-                    yield LLMResponse(
-                        id=message_id or "",
-                        model=message_model,
-                        content=content_blocks,
-                        stop_reason=None,
-                        usage=usage_info,
-                        role="assistant",
-                        metadata={
-                            "vendor": self.vendor_name,
-                            "streaming": True,
-                            "delta": {
-                                "type": "tool_call_complete",
-                                "index": index,
-                                "tool_id": tool_call["id"],
-                                "tool_name": tool_call["name"],
-                                "tool_input": arguments,
-                            },
-                        },
-                    )
-
-                except json.JSONDecodeError as error:
-                    logger.error(
-                        "Failed to parse streamed tool input index=%d error_type=%s",
-                        index,
-                        type(error).__name__,
-                    )
-
-            # Map finish reason
-            stop_reason = (
-                self._map_finish_reason(finish_reason) if finish_reason else None
-            )
-
-            # Yield final complete response
-            final_response = LLMResponse(
-                id=message_id or "",
-                model=message_model,
-                content=content_blocks,
-                stop_reason=stop_reason,
-                usage=usage_info,
-                role="assistant",
-                metadata={
-                    "vendor": self.vendor_name,
-                    "streaming": False,
-                    "finish_reason": finish_reason,
-                },
-            )
-            yield final_response
-            return
-
-        except Exception as error:
-            logger.error(
-                "OpenAI streaming request failed error_type=%s",
-                type(error).__name__,
-            )
-            raise
+        self._apply_request_settings(params, vendor_tools, llm_config)
+        state = OpenAIChatStream()
+        async with self.get_client() as client:
+            stream = await client.chat.completions.create(**params)
+            async with stream:
+                async for chunk in stream:
+                    partial = state.accept(chunk)
+                    if partial is not None:
+                        yield partial
+                final = state.complete()
+        for completion in state.tool_completions(final):
+            yield completion
+        yield final
 
     def transform_response_to_platform(
         self, vendor_response: ChatCompletion
     ) -> LLMResponse:
-        """Transform OpenAI response to platform-native LLMResponse.
-
-        OpenAI response structure:
-        {
-            "id": "chatcmpl-abc123",
-            "model": "gpt-4o",
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": "text response",
-                    "tool_calls": [...]
-                },
-                "finish_reason": "stop"
-            }],
-            "usage": {
-                "prompt_tokens": 10,
-                "completion_tokens": 20,
-                "total_tokens": 30
-            }
-        }
-        """
-        try:
-            # Extract first choice (OpenAI typically returns single choice)
-            choice = vendor_response.choices[0]
-            message = choice.message
-
-            # Build content blocks
-            content_blocks: List[LLMContentBlock] = []
-
-            # Add text content if present
-            if message.content:
-                content_blocks.append(
-                    LLMContentBlock(
-                        type=LLMContentType.TEXT,
-                        content=LLMTextBlock(text=message.content),
-                    )
-                )
-
-            # Add tool calls if present
-            if message.tool_calls:
-                for tool_call in message.tool_calls:
-                    # Type guard: OpenAI tool calls can be function calls or custom tools
-                    # We only handle function calls here
-                    if hasattr(tool_call, "function"):
-                        content_blocks.append(
-                            LLMContentBlock(
-                                type=LLMContentType.TOOL_USE,
-                                content=LLMToolUseBlock(
-                                    id=tool_call.id,
-                                    name=tool_call.function.name,  # type: ignore
-                                    input=json.loads(tool_call.function.arguments),  # type: ignore
-                                ),
-                                id=tool_call.id,
-                            )
-                        )
-
-            # Extract usage info
-            usage = self._normalize_usage(vendor_response.usage)
-
-            # Map finish reason
-            stop_reason = self._map_finish_reason(choice.finish_reason)
-
-            return LLMResponse(
-                id=vendor_response.id,
-                model=vendor_response.model,
-                content=content_blocks,
-                stop_reason=stop_reason,
-                usage=usage,
-                role="assistant",
-                metadata={
-                    "vendor": self.vendor_name,
-                    "finish_reason": choice.finish_reason,
-                    "system_fingerprint": vendor_response.system_fingerprint,
-                },
-            )
-
-        except Exception as error:
-            logger.error(
-                "OpenAI response transformation failed error_type=%s",
-                type(error).__name__,
-            )
-            raise
-
-    def _map_finish_reason(self, openai_reason: str) -> str:
-        """Map OpenAI finish reasons to platform stop reasons.
-
-        OpenAI finish reasons:
-        - "stop": Natural stop point
-        - "length": Max tokens reached
-        - "tool_calls": Model called tools
-        - "content_filter": Content filtered
-        - "function_call": (deprecated) Function called
-        """
-        mapping = {
-            "stop": "end_turn",
-            "length": "max_tokens",
-            "tool_calls": "tool_use",
-            "function_call": "tool_use",  # Legacy
-            "content_filter": "content_filter",
-        }
-        return mapping.get(openai_reason, openai_reason)
+        return completion_response(vendor_response)

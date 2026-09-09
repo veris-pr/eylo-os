@@ -1,8 +1,10 @@
 """Explicit registration of pipeline-backed tools under stable public slugs."""
 
+from eylo.common.contracts.conversation import WIDGET_TOOL_PREFIX
 from eylo.common.contracts.provider_config import Capability
 from eylo.common.contracts.tool_availability import ToolRequirements, ToolRuntimeFact
 from eylo.modules.tools.services.tool_register import system_tools_registry
+from eylo.pipelines.system_tools.compound_render_widget import compound_render_widget
 from eylo.pipelines.system_tools.issue_visitor_chat_link import issue_chat_link
 from eylo.pipelines.system_tools.knowledgebase_tools import (
     kb_query,
@@ -61,6 +63,12 @@ _SOR_MUTATION_REQUIREMENTS = ToolRequirements(
 )
 
 _PIPELINE_SYSTEM_TOOLS = (
+    (
+        WIDGET_TOOL_PREFIX,
+        compound_render_widget,
+        ToolRequirements(runtime_facts=frozenset({ToolRuntimeFact.WIDGET})),
+        None,
+    ),
     ("dial_keypad", dial_keypad, _ACTIVE_CALL_REQUIREMENTS, Capability.TELEPHONY),
     ("end_call", end_call, _ACTIVE_VOICE_SESSION_REQUIREMENTS, None),
     ("issue_chat_link", issue_chat_link, _NO_REQUIREMENTS, None),
@@ -83,7 +91,12 @@ _PIPELINE_SYSTEM_TOOLS = (
 
 def register_pipeline_system_tools() -> None:
     """Register every pipeline tool once without directory scanning."""
-    for tool_name, tool_func, requirements, provider_capability in _PIPELINE_SYSTEM_TOOLS:
+    for (
+        tool_name,
+        tool_func,
+        requirements,
+        provider_capability,
+    ) in _PIPELINE_SYSTEM_TOOLS:
         system_tools_registry.register_tool(
             tool_name,
             tool_func,

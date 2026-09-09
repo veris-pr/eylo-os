@@ -17,7 +17,10 @@ from eylo.absurd_work import (
     spawn_unbound_work,
 )
 from eylo.common.contracts.embedding import embedding_space_from_record
-from eylo.common.contracts.memory import MemoryError, MemoryLevel, MemoryScope
+from eylo.common.contracts.memory import (
+    MemoryError as MemoryProviderError,
+)
+from eylo.common.contracts.memory import MemoryLevel, MemoryScope
 from eylo.common.contracts.memory_reconciliation import (
     MEMORY_RECONCILIATION_MAX_CANDIDATES,
     MemoryReconciliationBatch,
@@ -56,7 +59,7 @@ from eylo.modules.memory.reconciliation_service import (
     MemoryReconciliationStale,
 )
 from eylo.modules.provider_configs.errors import NotConfiguredError
-from eylo.pipelines.memory.resolver import resolve_memory_runtime
+from eylo.pipelines.memory.resolver import MemoryRuntime, resolve_memory_runtime
 from eylo.sockets.memory.reconciliation import (
     RECONCILIATION_PROMPT_REVISION,
     RECONCILIATION_SYSTEM_PROMPT,
@@ -79,9 +82,9 @@ def register_memory_reconciliation_workflow(runtime: PlatformDurableRuntime) -> 
 
 async def file_memory_reconciliation_backlog(*, limit: int = 100) -> int:
     async with start_transaction(ro=True) as session:
-        cursor_ids = await MemoryReconciliationService(
-            session
-        ).backlog_cursor_ids(limit=limit)
+        cursor_ids = await MemoryReconciliationService(session).backlog_cursor_ids(
+            limit=limit
+        )
     filed = 0
     for cursor_id in cursor_ids:
         try:
@@ -180,7 +183,7 @@ class MemoryReconciliationWorkflow:
                 )
                 embedding_space = embedding_space_from_record(job)
                 if embedding_space is None:
-                    raise MemoryError(
+                    raise MemoryProviderError(
                         "Memory reconciliation job has no embedding authority."
                     )
                 runtime = await resolve_memory_runtime(
@@ -312,18 +315,16 @@ async def _with_candidates(job, runtime, batch) -> MemoryReconciliationBatch:
                             == job.memory_provider_config_id,
                             MemoryModel.embedding_space_id == job.embedding_space_id,
                             MemoryModel.id.in_(all_ids),
-                                MemoryModel.deleted.is_(False),
-                                or_(
-                                    MemoryModel.expires_at.is_(None),
-                                    MemoryModel.expires_at > func.now(),
-                                ),
+                            MemoryModel.deleted.is_(False),
+                            or_(
+                                MemoryModel.expires_at.is_(None),
+                                MemoryModel.expires_at > func.now(),
+                            ),
                         )
                     )
                 ).all()
             )
-    by_id = {
-        row.id: row for row in rows if _matches_job_scope(row, job)
-    }
+    by_id = {row.id: row for row in rows if _matches_job_scope(row, job)}
     enriched: list[MemoryReconciliationInput] = []
     for item in batch.inputs:
         candidates = tuple(
@@ -340,8 +341,8 @@ async def _with_candidates(job, runtime, batch) -> MemoryReconciliationBatch:
 
 
 async def _load_or_propose(
-    job,
-    runtime,
+    job: MemoryReconciliationJobModel,
+    runtime: MemoryRuntime,
     batch: MemoryReconciliationBatch,
     task_context: AsyncTaskContext,
 ) -> MemoryReconciliationProposal:
@@ -391,9 +392,7 @@ async def _handle_failure(
     summary = _safe_failure_summary(error)
     if isinstance(error, MemoryReconciliationStale):
         async with start_transaction() as session:
-            row, cursor_id = await MemoryReconciliationService(
-                session
-            ).abandon_stale(
+            row, cursor_id = await MemoryReconciliationService(session).abandon_stale(
                 organization_id=organization_id,
                 job_id=job_id,
                 error=summary,
@@ -420,7 +419,7 @@ async def _handle_failure(
         )
         receipt = _receipt(row)
     if row.state is DurableState.PENDING:
-        raise MemoryError(
+        raise MemoryProviderError(
             "Memory reconciliation retry requested.",
             retryable=True,
         ) from None
@@ -475,6 +474,7 @@ async def _continue_backlog(job: MemoryReconciliationJobModel) -> None:
             type(error).__name__,
         )
 
+
 def _parse_params(params: dict[str, Any]) -> tuple[UUID, UUID]:
     if set(params) != {"organization_id", "job_id"}:
         raise ValueError("Memory reconciliation task params must contain IDs only.")
@@ -496,7 +496,9 @@ def _validate_runtime_authority(job, runtime) -> None:
         or authority.model != job.reconciliation_llm_model
         or job.reconciliation_prompt_revision != RECONCILIATION_PROMPT_REVISION
     ):
-        raise MemoryError("Memory reconciliation authority changed before execution.")
+        raise MemoryProviderError(
+            "Memory reconciliation authority changed before execution."
+        )
 
 
 def _terminal(job: MemoryReconciliationJobModel) -> bool:
@@ -538,14 +540,12 @@ def _safe_failure_summary(error: Exception) -> str:
             f"{error.dimension.value}_unavailable"
         )
     if isinstance(error, ExecutionBudgetExceeded):
-        return (
-            f"memory_reconciliation_execution_{error.dimension.value}_limit_exceeded"
-        )
+        return f"memory_reconciliation_execution_{error.dimension.value}_limit_exceeded"
     if isinstance(error, ExecutionUsageNotReported):
         return "memory_reconciliation_execution_usage_not_reported"
     if isinstance(error, ExecutionBudgetError):
         return "memory_reconciliation_execution_budget_conflict"
-    if isinstance(error, MemoryError):
+    if isinstance(error, MemoryProviderError):
         return (
             "memory_reconciliation_retryable_failure"
             if error.retryable
@@ -569,7 +569,7 @@ def _is_permanent(error: Exception) -> bool:
             isinstance(error, ExecutionBudgetError)
             and not isinstance(error, ExecutionBudgetUnavailable)
         )
-        or (isinstance(error, MemoryError) and not error.retryable)
+        or (isinstance(error, MemoryProviderError) and not error.retryable)
     )
 
 
@@ -581,6 +581,7 @@ def _matches_job_scope(fact: MemoryModel, job) -> bool:
         MemoryLevel.CONVERSATION: fact.conversation_id,
     }[level]
     return MemoryLevel(fact.scope_level) is level and owner_id == job.owner_id
+
 
 __all__ = [
     "MEMORY_RECONCILIATION_WORKFLOW",

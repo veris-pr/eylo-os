@@ -14,6 +14,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
+from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -61,7 +62,14 @@ class IntegrationV2InstallationModel(EyloOrganizationModel):
         doc="Curated registry vendor id, for example 'linear'.",
     )
     auth_kind: Mapped[VendorAuthKind] = mapped_column(
-        String(32),
+        SAEnum(
+            VendorAuthKind,
+            native_enum=False,
+            create_constraint=False,
+            length=32,
+            values_callable=lambda enum: [member.value for member in enum],
+            validate_strings=True,
+        ),
         nullable=False,
         doc="Auth mode this organization chose from the vendor's supported set.",
     )
@@ -201,9 +209,16 @@ class IntegrationV2ToolModel(EyloOrganizationModel):
         "derived from it, need no join.",
     )
     execution_mode: Mapped[ToolExecutionMode] = mapped_column(
-        String(32),
+        SAEnum(
+            ToolExecutionMode,
+            native_enum=False,
+            create_constraint=False,
+            length=32,
+            values_callable=lambda enum: [member.value for member in enum],
+            validate_strings=True,
+        ),
         nullable=False,
-        default=ToolExecutionMode.AUTO.value,
+        default=ToolExecutionMode.AUTO,
         server_default=ToolExecutionMode.AUTO.value,
     )
 

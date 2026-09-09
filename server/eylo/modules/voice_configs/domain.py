@@ -4,9 +4,39 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from types import MappingProxyType
+from typing import Self
 from uuid import UUID
 
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ModelWrapValidatorHandler,
+    SerializationInfo,
+    ValidationError,
+    ValidationInfo,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
+
+from eylo.common.contracts.realtime_runtime import (
+    RealtimeAWSCredentials,
+    RealtimeApiKeyCredentials,
+    RealtimeCredentials,
+    RealtimeInferenceConfig,
+)
+from eylo.common.contracts.speech_runtime import (
+    STTCredentials,
+    STTInferenceConfig,
+    SpeechAWSCredentials,
+    SpeechApiKeyCredentials,
+    SpeechGoogleCredentials,
+    SpeechText,
+    TTSCredentials,
+    TTSInferenceConfig,
+)
 from eylo.modules.provider_configs.constants import Capability
 from eylo.modules.provider_configs.domain import (
     EffectiveProviderConfig,
@@ -33,9 +63,7 @@ __all__ = [
 
 _SECRET_FIELD_NAME = "api_key"
 _GOOGLE_SECRET_FIELD_NAME = "service_account_json"
-_AWS_SECRET_FIELDS = frozenset(
-    {"access_key_id", "secret_access_key", "session_token"}
-)
+_AWS_SECRET_FIELDS = frozenset({"access_key_id", "secret_access_key", "session_token"})
 _AWS_REQUIRED_SECRET_FIELDS = frozenset({"access_key_id", "secret_access_key"})
 _AWS_PROVIDERS = frozenset(
     {
@@ -49,6 +77,7 @@ _LANGUAGE_CODE_PATTERN = re.compile(r"^[a-z]{2,3}(?:-[A-Z]{2,8}){0,2}$")
 _AWS_RESOURCE_NAME_PATTERN = re.compile(r"^[0-9A-Za-z._-]{1,200}$")
 _POLLY_ENGINES = frozenset({"standard", "neural", "long-form", "generative"})
 _PARTIAL_RESULTS_STABILITIES = frozenset({"low", "medium", "high"})
+_RETIRED_FLUX_VAD_SETTING = "high_vad_sensitivity"
 
 VoiceProvider = STTProviders | TTSProviders | RealtimeProviders
 _ProviderKey = tuple[
@@ -117,7 +146,7 @@ _CONFIG_FIELDS: dict[_ProviderKey, frozenset[str]] = {
             "encoding",
             "eot_threshold",
             "eot_timeout_ms",
-            "high_vad_sensitivity",
+            _RETIRED_FLUX_VAD_SETTING,
         }
     ),
     (STTProviders, STTProviders.SARVAM.value): frozenset(
@@ -209,7 +238,9 @@ _CONFIG_FIELDS: dict[_ProviderKey, frozenset[str]] = {
     (TTSProviders, TTSProviders.DEEPGRAM.value): frozenset(
         {"model", "sample_rate", "encoding", "container"}
     ),
-    (TTSProviders, TTSProviders.GROQ.value): frozenset({"model", "voice", "sample_rate"}),
+    (TTSProviders, TTSProviders.GROQ.value): frozenset(
+        {"model", "voice", "sample_rate"}
+    ),
     (TTSProviders, TTSProviders.RIME.value): frozenset(
         {"model", "voice", "sample_rate", "audio_format"}
     ),
@@ -279,12 +310,16 @@ _REQUIRED_CONFIG_FIELDS: dict[_ProviderKey, frozenset[str]] = {
         {"region", "model", "voice", "language"}
     ),
     (TTSProviders, TTSProviders.CARTESIA.value): frozenset({"model", "voice"}),
-    (TTSProviders, TTSProviders.SARVAM.value): frozenset({"model", "voice", "language"}),
+    (TTSProviders, TTSProviders.SARVAM.value): frozenset(
+        {"model", "voice", "language"}
+    ),
     (TTSProviders, TTSProviders.OPENAI.value): frozenset({"model", "voice"}),
     (TTSProviders, TTSProviders.DEEPGRAM.value): frozenset({"model"}),
     (TTSProviders, TTSProviders.GROQ.value): frozenset({"model", "voice"}),
     (TTSProviders, TTSProviders.RIME.value): frozenset({"model", "voice"}),
-    (TTSProviders, TTSProviders.SMALLEST.value): frozenset({"model", "voice", "language"}),
+    (TTSProviders, TTSProviders.SMALLEST.value): frozenset(
+        {"model", "voice", "language"}
+    ),
     (TTSProviders, TTSProviders.HUME.value): frozenset({"model", "language"}),
     (TTSProviders, TTSProviders.MURF.value): frozenset({"voice"}),
 }
@@ -294,42 +329,165 @@ class InvalidVoiceConfig(InvalidProviderConfig):
     """Raised when a voice provider config violates policy."""
 
 
-@dataclass(frozen=True)
-class VoiceProviderConfig:
-    """Validated voice provider config with plaintext secrets held in memory only."""
+class RealtimeProviderSettings(BaseModel):
+    """Stored realtime settings separate transport region from model inference."""
 
-    provider: VoiceProvider
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+    )
+
+    region: SpeechText | None = None
+    inference: RealtimeInferenceConfig
+
+
+VoiceProviderSettings = (
+    STTInferenceConfig | TTSInferenceConfig | RealtimeProviderSettings
+)
+
+
+def _stored_voice_settings(config: VoiceProviderSettings) -> dict[str, object]:
+    """Serialize only explicit values, preserving the existing persistence keys."""
+    if not isinstance(config, RealtimeProviderSettings):
+        return config.model_dump(mode="json", exclude_unset=True)
+    values = config.inference.model_dump(mode="json", exclude_unset=True)
+    if "is_context_compression_enabled" in values:
+        values["context_compression_enabled"] = values.pop(
+            "is_context_compression_enabled"
+        )
+    if config.region is not None:
+        values["region"] = config.region
+    return values
+
+
+class VoiceProviderConfig(BaseModel):
+    """Validated settings; plaintext secrets are private and never serialized."""
+
+    model_config = ConfigDict(
+        frozen=True,
+        strict=True,
+        extra="forbid",
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+    )
+
     kind: VoiceKind
-    config: Mapping[str, object]
-    secrets: Mapping[str, str] = field(repr=False)
+    provider: VoiceProvider
+    config: VoiceProviderSettings
+    secrets: Mapping[str, str] = Field(repr=False, exclude=True)
 
-    def __post_init__(self) -> None:
+    @model_validator(mode="wrap")
+    @classmethod
+    def _validate_fields(
+        cls, value: object, handler: ModelWrapValidatorHandler[Self]
+    ) -> Self:
+        try:
+            return handler(value)
+        except ValidationError:
+            raise InvalidVoiceConfig(
+                "Voice provider configuration contains invalid field values."
+            ) from None
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def _provider(cls, value: object, info: ValidationInfo) -> object:
+        """Overlapping vendor spellings resolve using their owning capability."""
+        if isinstance(value, (STTProviders, TTSProviders, RealtimeProviders)):
+            return value
+        kind = info.data.get("kind")
+        if isinstance(value, str) and isinstance(kind, VoiceKind):
+            return _parse_provider(value, kind)
+        return value
+
+    @field_validator("config", mode="before")
+    @classmethod
+    def _settings(cls, value: object, info: ValidationInfo) -> VoiceProviderSettings:
+        provider = info.data.get("provider")
+        if not isinstance(provider, (STTProviders, TTSProviders, RealtimeProviders)):
+            raise InvalidVoiceConfig("Voice settings require a valid provider.")
+        if isinstance(provider, STTProviders):
+            expected = STTInferenceConfig
+        elif isinstance(provider, TTSProviders):
+            expected = TTSInferenceConfig
+        else:
+            expected = RealtimeProviderSettings
+        if isinstance(
+            value, (STTInferenceConfig, TTSInferenceConfig, RealtimeProviderSettings)
+        ):
+            if not isinstance(value, expected):
+                raise InvalidVoiceConfig(
+                    "Voice settings do not match the provider kind."
+                )
+            values = _stored_voice_settings(expected.model_validate(value))
+        elif isinstance(value, Mapping):
+            if not all(isinstance(key, str) for key in value):
+                raise InvalidVoiceConfig("Voice settings require string keys.")
+            if expected is RealtimeProviderSettings and "inference" in value:
+                values = _stored_voice_settings(
+                    RealtimeProviderSettings.model_validate(value)
+                )
+            else:
+                values = dict(value)
+        else:
+            raise InvalidVoiceConfig(
+                "Voice settings must be a settings object or mapping."
+            )
+        normalized = _validate_config(values, provider)
+        if isinstance(provider, STTProviders):
+            return _stt_inference_config(normalized)
+        if isinstance(provider, TTSProviders):
+            return _tts_inference_config(normalized)
+        return RealtimeProviderSettings(
+            region=_validate_aws_region(normalized["region"])
+            if provider is RealtimeProviders.AMAZON_NOVA_SONIC
+            else None,
+            inference=_realtime_inference_config(normalized),
+        )
+
+    @field_validator("secrets")
+    @classmethod
+    def _secrets(
+        cls, value: Mapping[str, str], info: ValidationInfo
+    ) -> Mapping[str, str]:
+        provider = info.data.get("provider")
+        if not isinstance(provider, (STTProviders, TTSProviders, RealtimeProviders)):
+            raise InvalidVoiceConfig("Voice secrets require a valid provider.")
+        return MappingProxyType(dict(_validate_secrets(value, provider)))
+
+    @model_validator(mode="after")
+    def _validate_kind(self) -> Self:
         _validate_provider_kind(self.provider, self.kind)
-        object.__setattr__(
-            self,
-            "config",
-            _validate_config(self.config, self.provider),
-        )
-        object.__setattr__(
-            self,
-            "secrets",
-            _validate_secrets(self.secrets, self.provider),
-        )
+        return self
+
+    def to_storage_config(self) -> dict[str, object]:
+        """An independent JSON projection for the provider persistence boundary."""
+        return _stored_voice_settings(self.config)
+
+    @field_serializer("config")
+    def _settings_snapshot(
+        self, value: VoiceProviderSettings, info: SerializationInfo
+    ) -> dict[str, object]:
+        """Do not turn absent cross-provider fields into explicit null settings."""
+        return value.model_dump(mode=info.mode, exclude_unset=True)
 
     @classmethod
-    def validate(
+    def from_storage(
         cls,
         *,
         provider: str,
         kind: VoiceKind,
-        config: Mapping[str, object] | None = None,
+        config: Mapping[str, object] | VoiceProviderSettings | None = None,
         secrets: Mapping[str, str] | None = None,
     ) -> VoiceProviderConfig:
-        return cls(
-            provider=_parse_provider(provider, kind),
-            kind=kind,
-            config={} if config is None else config,
-            secrets={} if secrets is None else secrets,
+        return cls.model_validate(
+            {
+                "provider": _parse_provider(provider, kind),
+                "kind": kind,
+                "config": {} if config is None else config,
+                "secrets": {} if secrets is None else secrets,
+            }
         )
 
     @property
@@ -397,6 +555,10 @@ def _validate_config(
             "Provider hume requires config field voice or voice_description."
         )
     normalized = dict(config)
+    if provider is STTProviders.DEEPGRAM_FLUX:
+        # Older saved configs included this inert field. Accept their shape,
+        # but never present it as effective configuration or forward it.
+        normalized.pop(_RETIRED_FLUX_VAD_SETTING, None)
     if provider in _AWS_PROVIDERS:
         normalized["region"] = _validate_aws_region(config["region"])
     if provider in {STTProviders.AMAZON_TRANSCRIBE, TTSProviders.AMAZON_POLLY}:
@@ -406,7 +568,11 @@ def _validate_config(
     elif provider is TTSProviders.AMAZON_POLLY:
         _validate_amazon_polly_config(normalized)
     elif isinstance(provider, RealtimeProviders):
-        _validate_realtime_config(normalized, provider)
+        _validate_realtime_config(_realtime_inference_config(normalized), provider)
+    if isinstance(provider, STTProviders):
+        _stt_inference_config(normalized)
+    elif isinstance(provider, TTSProviders):
+        _validate_tts_settings(_tts_inference_config(normalized), provider)
     return normalized
 
 
@@ -439,8 +605,7 @@ def _validate_secrets(
         )
     if invalid_optional:
         raise InvalidVoiceConfig(
-            f"Provider {provider.value} has empty optional secrets: "
-            f"{invalid_optional}"
+            f"Provider {provider.value} has empty optional secrets: {invalid_optional}"
         )
     return dict(secrets)
 
@@ -526,9 +691,7 @@ def _validate_amazon_transcribe_config(config: Mapping[str, object]) -> None:
             not isinstance(value, str)
             or not _AWS_RESOURCE_NAME_PATTERN.fullmatch(value)
         ):
-            raise InvalidVoiceConfig(
-                f"{field_name} must be a valid AWS resource name."
-            )
+            raise InvalidVoiceConfig(f"{field_name} must be a valid AWS resource name.")
 
 
 def _validate_amazon_polly_config(config: Mapping[str, object]) -> None:
@@ -541,89 +704,64 @@ def _validate_amazon_polly_config(config: Mapping[str, object]) -> None:
         raise InvalidVoiceConfig("voice must be a valid Amazon Polly voice ID.")
 
 
+def _realtime_inference_config(config: Mapping[str, object]) -> RealtimeInferenceConfig:
+    """Translate persisted setting names once; region belongs to connection setup."""
+    values = dict(config)
+    values.pop("region", None)
+    if "context_compression_enabled" in values:
+        values["is_context_compression_enabled"] = values.pop(
+            "context_compression_enabled"
+        )
+    try:
+        return RealtimeInferenceConfig.model_validate(values)
+    except ValidationError:
+        raise InvalidVoiceConfig(
+            "Realtime settings contain invalid field values."
+        ) from None
+
+
 def _validate_realtime_config(
-    config: Mapping[str, object],
+    config: RealtimeInferenceConfig,
     provider: RealtimeProviders,
 ) -> None:
-    for field_name in ("model", "voice"):
-        value = config.get(field_name)
-        if not isinstance(value, str) or not value.strip():
-            raise InvalidVoiceConfig(f"{field_name} must be a non-empty string.")
-
     if provider is RealtimeProviders.AMAZON_NOVA_SONIC:
         _validate_amazon_nova_sonic_config(config)
         return
 
-    temperature = config.get("temperature")
+    temperature = config.temperature
 
     if provider is RealtimeProviders.GEMINI_LIVE:
         if temperature is not None and not _is_number_between(
             temperature, minimum=0, maximum=2
         ):
             raise InvalidVoiceConfig("temperature must be between 0 and 2.")
-        compression = config.get("context_compression_enabled")
-        if compression is not None and not isinstance(compression, bool):
-            raise InvalidVoiceConfig(
-                "context_compression_enabled must be a boolean."
-            )
-        trigger_tokens = config.get("context_compression_trigger_tokens")
-        if trigger_tokens is not None and (
-            isinstance(trigger_tokens, bool)
-            or not isinstance(trigger_tokens, int)
-            or trigger_tokens <= 0
-        ):
-            raise InvalidVoiceConfig(
-                "context_compression_trigger_tokens must be a positive integer."
-            )
         return
 
     if temperature is not None:
-        raise InvalidVoiceConfig(
-            "temperature is not supported by OpenAI Realtime."
-        )
+        raise InvalidVoiceConfig("temperature is not supported by OpenAI Realtime.")
 
-    transcription_model = config.get("input_transcription_model")
-    if not isinstance(transcription_model, str) or not transcription_model.strip():
+    if config.input_transcription_model is None:
         raise InvalidVoiceConfig(
             "input_transcription_model must be a non-empty string."
         )
-    vad_threshold = config.get("vad_threshold")
-    if vad_threshold is not None and (
-        isinstance(vad_threshold, bool)
-        or not isinstance(vad_threshold, (int, float))
-        or not 0 <= float(vad_threshold) <= 1
-    ):
-        raise InvalidVoiceConfig("vad_threshold must be between 0 and 1.")
-    vad_silence_ms = config.get("vad_silence_ms")
-    if vad_silence_ms is not None and (
-        isinstance(vad_silence_ms, bool)
-        or not isinstance(vad_silence_ms, int)
-        or vad_silence_ms <= 0
-    ):
-        raise InvalidVoiceConfig("vad_silence_ms must be a positive integer.")
 
 
-def _validate_amazon_nova_sonic_config(config: Mapping[str, object]) -> None:
-    if config.get("model") not in AMAZON_NOVA_SONIC_MODELS:
+def _validate_amazon_nova_sonic_config(config: RealtimeInferenceConfig) -> None:
+    if config.model not in AMAZON_NOVA_SONIC_MODELS:
         raise InvalidVoiceConfig(
             "model must be a supported Amazon Nova 2 Sonic model ID."
         )
-    if config.get("voice") not in AMAZON_NOVA_SONIC_VOICES:
+    if config.voice not in AMAZON_NOVA_SONIC_VOICES:
         raise InvalidVoiceConfig("voice must be a supported Amazon Nova 2 Sonic voice.")
 
-    max_tokens = config.get("max_tokens")
-    if (
-        isinstance(max_tokens, bool)
-        or not isinstance(max_tokens, int)
-        or max_tokens <= 0
-    ):
+    if config.max_tokens is None:
         raise InvalidVoiceConfig("max_tokens must be a positive integer.")
-    if not _is_number_between(config.get("temperature"), minimum=0, maximum=1):
+    if not _is_number_between(config.temperature, minimum=0, maximum=1):
         raise InvalidVoiceConfig("temperature must be between 0 and 1.")
-    if not _is_number_between(config.get("top_p"), minimum=0, maximum=1):
+    if not _is_number_between(config.top_p, minimum=0, maximum=1):
         raise InvalidVoiceConfig("top_p must be between 0 and 1.")
     if (
-        config.get("endpointing_sensitivity")
+        config.endpointing_sensitivity
         not in AMAZON_NOVA_SONIC_ENDPOINTING_SENSITIVITIES
     ):
         raise InvalidVoiceConfig(
@@ -639,20 +777,142 @@ def _is_number_between(value: object, *, minimum: float, maximum: float) -> bool
     )
 
 
-@dataclass(frozen=True)
-class ResolvedSTT:
-    """Immutable resolved STT runtime value with plaintext credentials."""
+def _stt_inference_config(config: Mapping[str, object]) -> STTInferenceConfig:
+    try:
+        return STTInferenceConfig.model_validate(config)
+    except ValidationError:
+        raise InvalidVoiceConfig("STT settings contain invalid field values.") from None
+
+
+def _tts_inference_config(config: Mapping[str, object]) -> TTSInferenceConfig:
+    try:
+        return TTSInferenceConfig.model_validate(config)
+    except ValidationError:
+        raise InvalidVoiceConfig("TTS settings contain invalid field values.") from None
+
+
+def _validate_tts_settings(config: TTSInferenceConfig, provider: TTSProviders) -> None:
+    """Disambiguate platform fields whose native type depends on the provider."""
+    if provider is TTSProviders.ELEVENLABS and isinstance(config.style, str):
+        raise InvalidVoiceConfig("ElevenLabs style must be a number.")
+    if provider is TTSProviders.MURF:
+        if config.style is not None and not isinstance(config.style, str):
+            raise InvalidVoiceConfig("Murf style must be text.")
+        if config.pitch is not None and not isinstance(config.pitch, int):
+            raise InvalidVoiceConfig("Murf pitch must be an integer.")
+
+
+def _validate_resolved_speech_config(
+    config: STTInferenceConfig | TTSInferenceConfig,
+    provider: STTProviders | TTSProviders,
+) -> None:
+    """A runtime snapshot must already contain the normalized storage values."""
+    values = config.model_dump(mode="json", exclude_unset=True)
+    if _validate_config(values, provider) != values:
+        raise InvalidVoiceConfig("Resolved speech settings must be normalized.")
+
+
+class _ResolvedSpeechProvider(BaseModel):
+    """Immutable resolution facts; agreement checks do not replace authorization."""
+
+    model_config = ConfigDict(
+        frozen=True,
+        strict=True,
+        extra="forbid",
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+    )
 
     provider_config_id: UUID
-    provider_config_revision: int
+    provider_config_revision: int = Field(gt=0)
     organization_id: UUID
-    provider: STTProviders
-    config: Mapping[str, object]
-    secrets: Mapping[str, str] = field(repr=False, compare=False)
     configured: bool = True
     verified: bool = False
     ready: bool = False
     granted: bool = False
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _validate_fields(
+        cls, value: object, handler: ModelWrapValidatorHandler[Self]
+    ) -> Self:
+        try:
+            return handler(value)
+        except ValidationError:
+            raise InvalidVoiceConfig(
+                "Resolved speech configuration contains invalid field values."
+            ) from None
+
+
+class ResolvedSTT(_ResolvedSpeechProvider):
+    """Checked recognition settings and private, provider-matched credentials."""
+
+    provider: STTProviders
+    config: STTInferenceConfig
+    credentials: STTCredentials = Field(repr=False, exclude=True)
+
+    @model_validator(mode="after")
+    def _validate_material(self) -> Self:
+        _validate_resolved_speech_config(self.config, self.provider)
+        if self.provider is STTProviders.AMAZON_TRANSCRIBE:
+            valid_credentials = isinstance(self.credentials, SpeechAWSCredentials)
+        elif self.provider is STTProviders.GOOGLE:
+            valid_credentials = isinstance(self.credentials, SpeechGoogleCredentials)
+        else:
+            valid_credentials = isinstance(self.credentials, SpeechApiKeyCredentials)
+        if not valid_credentials:
+            raise InvalidVoiceConfig("STT credentials do not match the provider.")
+        return self
+
+    @classmethod
+    def from_voice_config(
+        cls,
+        *,
+        provider_config_id: UUID,
+        provider_config_revision: int,
+        organization_id: UUID,
+        config: VoiceProviderConfig,
+        configured: bool = True,
+        verified: bool = False,
+        ready: bool = False,
+        granted: bool = False,
+    ) -> ResolvedSTT:
+        if config.kind is not VoiceKind.STT or not isinstance(
+            config.provider, STTProviders
+        ):
+            raise InvalidVoiceConfig("STT runtime requires an STT provider.")
+        validated = VoiceProviderConfig.from_storage(
+            provider=config.provider.value,
+            kind=VoiceKind.STT,
+            config=config.config,
+            secrets=config.secrets,
+        )
+        credentials: STTCredentials
+        if not isinstance(validated.config, STTInferenceConfig):
+            raise InvalidVoiceConfig("STT runtime requires STT settings.")
+        try:
+            if config.provider is STTProviders.AMAZON_TRANSCRIBE:
+                credentials = SpeechAWSCredentials.model_validate(validated.secrets)
+            elif config.provider is STTProviders.GOOGLE:
+                credentials = SpeechGoogleCredentials.model_validate(validated.secrets)
+            else:
+                credentials = SpeechApiKeyCredentials.model_validate(validated.secrets)
+        except ValidationError:
+            raise InvalidVoiceConfig(
+                "STT credentials contain invalid field values."
+            ) from None
+        return cls(
+            provider_config_id=provider_config_id,
+            provider_config_revision=provider_config_revision,
+            organization_id=organization_id,
+            provider=config.provider,
+            config=validated.config,
+            credentials=credentials,
+            configured=configured,
+            verified=verified,
+            ready=ready,
+            granted=granted,
+        )
 
     @classmethod
     def from_provider_config(
@@ -662,46 +922,92 @@ class ResolvedSTT:
         organization_id: UUID,
         provider_config: EffectiveProviderConfig,
     ) -> ResolvedSTT:
-        validated = VoiceProviderConfig.validate(
+        _validate_speech_identity(
+            provider_config, organization_id, provider_config_id, Capability.STT
+        )
+        validated = VoiceProviderConfig.from_storage(
             provider=provider_config.provider,
             kind=VoiceKind.STT,
             config=provider_config.settings,
             secrets=provider_config.secrets,
         )
-        if not isinstance(validated.provider, STTProviders):
-            raise AssertionError("validated STT provider has the wrong kind")
-        return cls(
+        return cls.from_voice_config(
             provider_config_id=provider_config_id,
             provider_config_revision=provider_config.revision,
             organization_id=organization_id,
-            provider=validated.provider,
-            config=validated.config,
-            secrets=validated.secrets,
+            config=validated,
             configured=provider_config.configured,
             verified=provider_config.verified,
             ready=provider_config.ready,
             granted=provider_config.granted,
         )
 
-    @property
-    def secret(self) -> str | None:
-        return self.secrets.get(_required_secret_field(self.provider))
 
+class ResolvedTTS(_ResolvedSpeechProvider):
+    """Checked synthesis settings and private, provider-matched credentials."""
 
-@dataclass(frozen=True)
-class ResolvedTTS:
-    """Immutable resolved TTS runtime value with plaintext credentials."""
-
-    provider_config_id: UUID
-    provider_config_revision: int
-    organization_id: UUID
     provider: TTSProviders
-    config: Mapping[str, object]
-    secrets: Mapping[str, str] = field(repr=False, compare=False)
-    configured: bool = True
-    verified: bool = False
-    ready: bool = False
-    granted: bool = False
+    config: TTSInferenceConfig
+    credentials: TTSCredentials = Field(repr=False, exclude=True)
+
+    @model_validator(mode="after")
+    def _validate_material(self) -> Self:
+        _validate_resolved_speech_config(self.config, self.provider)
+        if self.provider is TTSProviders.AMAZON_POLLY:
+            valid_credentials = isinstance(self.credentials, SpeechAWSCredentials)
+        else:
+            valid_credentials = isinstance(self.credentials, SpeechApiKeyCredentials)
+        if not valid_credentials:
+            raise InvalidVoiceConfig("TTS credentials do not match the provider.")
+        return self
+
+    @classmethod
+    def from_voice_config(
+        cls,
+        *,
+        provider_config_id: UUID,
+        provider_config_revision: int,
+        organization_id: UUID,
+        config: VoiceProviderConfig,
+        configured: bool = True,
+        verified: bool = False,
+        ready: bool = False,
+        granted: bool = False,
+    ) -> ResolvedTTS:
+        if config.kind is not VoiceKind.TTS or not isinstance(
+            config.provider, TTSProviders
+        ):
+            raise InvalidVoiceConfig("TTS runtime requires a TTS provider.")
+        validated = VoiceProviderConfig.from_storage(
+            provider=config.provider.value,
+            kind=VoiceKind.TTS,
+            config=config.config,
+            secrets=config.secrets,
+        )
+        credentials: TTSCredentials
+        if not isinstance(validated.config, TTSInferenceConfig):
+            raise InvalidVoiceConfig("TTS runtime requires TTS settings.")
+        try:
+            if config.provider is TTSProviders.AMAZON_POLLY:
+                credentials = SpeechAWSCredentials.model_validate(validated.secrets)
+            else:
+                credentials = SpeechApiKeyCredentials.model_validate(validated.secrets)
+        except ValidationError:
+            raise InvalidVoiceConfig(
+                "TTS credentials contain invalid field values."
+            ) from None
+        return cls(
+            provider_config_id=provider_config_id,
+            provider_config_revision=provider_config_revision,
+            organization_id=organization_id,
+            provider=config.provider,
+            config=validated.config,
+            credentials=credentials,
+            configured=configured,
+            verified=verified,
+            ready=ready,
+            granted=granted,
+        )
 
     @classmethod
     def from_provider_config(
@@ -711,46 +1017,148 @@ class ResolvedTTS:
         organization_id: UUID,
         provider_config: EffectiveProviderConfig,
     ) -> ResolvedTTS:
-        validated = VoiceProviderConfig.validate(
+        _validate_speech_identity(
+            provider_config, organization_id, provider_config_id, Capability.TTS
+        )
+        validated = VoiceProviderConfig.from_storage(
             provider=provider_config.provider,
             kind=VoiceKind.TTS,
             config=provider_config.settings,
             secrets=provider_config.secrets,
         )
-        if not isinstance(validated.provider, TTSProviders):
-            raise AssertionError("validated TTS provider has the wrong kind")
-        return cls(
+        return cls.from_voice_config(
             provider_config_id=provider_config_id,
             provider_config_revision=provider_config.revision,
             organization_id=organization_id,
-            provider=validated.provider,
-            config=validated.config,
-            secrets=validated.secrets,
+            config=validated,
             configured=provider_config.configured,
             verified=provider_config.verified,
             ready=provider_config.ready,
             granted=provider_config.granted,
         )
 
-    @property
-    def secret(self) -> str | None:
-        return self.secrets.get(_required_secret_field(self.provider))
+
+def _validate_speech_identity(
+    config: EffectiveProviderConfig,
+    organization_id: UUID,
+    provider_config_id: UUID,
+    capability: Capability,
+) -> None:
+    if (
+        config.organization_id != organization_id
+        or config.provider_config_id != provider_config_id
+        or config.capability is not capability
+    ):
+        raise InvalidVoiceConfig("Effective speech provider identity does not match.")
 
 
-@dataclass(frozen=True)
-class ResolvedRealtime:
-    """Immutable resolved realtime runtime value with plaintext credentials."""
+class ResolvedRealtime(BaseModel):
+    """Immutable runtime material; identity agreement is not a grant check.
+
+    Resolution owns authorization. Credentials stay in memory and are excluded
+    from repr/serialization; consumers use fields, never storage dictionary keys.
+    """
+
+    model_config = ConfigDict(
+        frozen=True,
+        strict=True,
+        extra="forbid",
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+    )
 
     provider_config_id: UUID
-    provider_config_revision: int
+    provider_config_revision: int = Field(gt=0)
     organization_id: UUID
     provider: RealtimeProviders
-    config: Mapping[str, object]
-    secrets: Mapping[str, str] = field(repr=False, compare=False)
+    config: RealtimeInferenceConfig
+    region: str | None = None
+    credentials: RealtimeCredentials = Field(repr=False, exclude=True)
     configured: bool = True
     verified: bool = False
     ready: bool = False
     granted: bool = False
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _validate_fields(
+        cls, value: object, handler: ModelWrapValidatorHandler[Self]
+    ) -> Self:
+        try:
+            return handler(value)
+        except ValidationError:
+            raise InvalidVoiceConfig(
+                "Resolved realtime configuration contains invalid field values."
+            ) from None
+
+    @model_validator(mode="after")
+    def _validate_provider_material(self) -> Self:
+        _validate_realtime_config(self.config, self.provider)
+        if self.provider is RealtimeProviders.AMAZON_NOVA_SONIC:
+            if not isinstance(self.credentials, RealtimeAWSCredentials):
+                raise InvalidVoiceConfig("Amazon Nova Sonic requires AWS credentials.")
+            if self.region is None or self.region != _validate_aws_region(self.region):
+                raise InvalidVoiceConfig("region must be a normalized AWS region.")
+        elif not isinstance(self.credentials, RealtimeApiKeyCredentials):
+            raise InvalidVoiceConfig("Realtime provider requires API key credentials.")
+        elif self.region is not None:
+            raise InvalidVoiceConfig(
+                "region is not supported by this realtime provider."
+            )
+        return self
+
+    @classmethod
+    def from_voice_config(
+        cls,
+        *,
+        provider_config_id: UUID,
+        provider_config_revision: int,
+        organization_id: UUID,
+        config: VoiceProviderConfig,
+        configured: bool = True,
+        verified: bool = False,
+        ready: bool = False,
+        granted: bool = False,
+    ) -> ResolvedRealtime:
+        """Hydrate stored JSON for runtime or a bounded verification/inspection."""
+        if config.kind is not VoiceKind.REALTIME or not isinstance(
+            config.provider, RealtimeProviders
+        ):
+            raise InvalidVoiceConfig("Realtime runtime requires a realtime provider.")
+        # Revalidate copied instances before admitting them to a runtime snapshot.
+        validated = VoiceProviderConfig.from_storage(
+            provider=config.provider.value,
+            kind=VoiceKind.REALTIME,
+            config=config.config,
+            secrets=config.secrets,
+        )
+        credentials: RealtimeCredentials
+        if not isinstance(validated.config, RealtimeProviderSettings):
+            raise InvalidVoiceConfig("Realtime runtime requires realtime settings.")
+        try:
+            if config.provider is RealtimeProviders.AMAZON_NOVA_SONIC:
+                credentials = RealtimeAWSCredentials.model_validate(validated.secrets)
+            else:
+                credentials = RealtimeApiKeyCredentials.model_validate(
+                    validated.secrets
+                )
+        except ValidationError:
+            raise InvalidVoiceConfig(
+                "Realtime credentials contain invalid field values."
+            ) from None
+        return cls(
+            provider_config_id=provider_config_id,
+            provider_config_revision=provider_config_revision,
+            organization_id=organization_id,
+            provider=config.provider,
+            config=validated.config.inference,
+            region=validated.config.region,
+            credentials=credentials,
+            configured=configured,
+            verified=verified,
+            ready=ready,
+            granted=granted,
+        )
 
     @classmethod
     def from_provider_config(
@@ -760,30 +1168,30 @@ class ResolvedRealtime:
         organization_id: UUID,
         provider_config: EffectiveProviderConfig,
     ) -> ResolvedRealtime:
-        validated = VoiceProviderConfig.validate(
+        if (
+            provider_config.organization_id != organization_id
+            or provider_config.provider_config_id != provider_config_id
+            or provider_config.capability is not Capability.REALTIME
+        ):
+            raise InvalidVoiceConfig(
+                "Effective realtime provider identity does not match."
+            )
+        validated = VoiceProviderConfig.from_storage(
             provider=provider_config.provider,
             kind=VoiceKind.REALTIME,
             config=provider_config.settings,
             secrets=provider_config.secrets,
         )
-        if not isinstance(validated.provider, RealtimeProviders):
-            raise AssertionError("validated realtime provider has the wrong kind")
-        return cls(
+        return cls.from_voice_config(
             provider_config_id=provider_config_id,
             provider_config_revision=provider_config.revision,
             organization_id=organization_id,
-            provider=validated.provider,
-            config=validated.config,
-            secrets=validated.secrets,
+            config=validated,
             configured=provider_config.configured,
             verified=provider_config.verified,
             ready=provider_config.ready,
             granted=provider_config.granted,
         )
-
-    @property
-    def secret(self) -> str | None:
-        return self.secrets.get("api_key")
 
     @property
     def provider_id(self) -> str:

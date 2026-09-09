@@ -8,17 +8,33 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any, List, Optional
+from typing import TYPE_CHECKING, List, Optional, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictStr,
+    ValidationError,
+    model_validator,
+)
 
 from eylo.common.contracts.llm_response import LLMContentType, LLMToolUseBlock
 from eylo.common.database import start_transaction
 from eylo.common.instrumentation import tool_span
+from eylo.modules.agents.schemas.indb import AgentInDb
 from eylo.modules.agents.services.runner.message_store import (
     format_widget_render_fallback,
 )
 from eylo.modules.conversations.constants import HANDOFF_TOOL_PREFIX, WIDGET_TOOL_PREFIX
+from eylo.modules.conversations.schemas.conversations import ConversationContext
+from eylo.modules.conversations.schemas.messages import MessageInDb
+from eylo.modules.conversations.schemas.participants import ParticipantInDb
+from eylo.pipelines.conversation.handoff import (
+    HandoffOutcome,
+    HandoffState,
+    require_handoff_target,
+)
 from eylo.pipelines.conversation.tool_dispatch import (
     execute_handoff,
     execute_registered_tool,
@@ -26,8 +42,6 @@ from eylo.pipelines.conversation.tool_dispatch import (
 
 if TYPE_CHECKING:
     from eylo.common.contracts.llm_response import LLMResponse
-    from eylo.modules.conversations.schemas.conversations import ConversationContext
-    from eylo.modules.conversations.schemas.messages import MessageInDb
 
 logger = logging.getLogger(__name__)
 
@@ -38,8 +52,8 @@ class ToolResult(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     tool_name: str
-    tool_use_block: Any  # LLMToolUseBlock
-    tool_use_message: Optional[Any] = None  # MessageInDb
+    tool_use_block: LLMToolUseBlock
+    tool_use_message: MessageInDb | None = None
     result: str | dict | list = ""
     is_error: bool = False
     error_message: Optional[str] = None
@@ -49,17 +63,41 @@ class ToolResult(BaseModel):
 class HandoffResult(BaseModel):
     """Result when a handoff tool is executed."""
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+    )
 
-    from_agent: Optional[Any] = None  # AgentInDb
-    to_agent: Optional[Any] = None  # AgentInDb
-    to_participant: Any = None
-    tool_use_block: Any = None
-    tool_result: str = ""
-    requested_input: Optional[str] = None
-    is_error: bool = False
-    circuit_breaker_triggered: bool = False
-    handoff_loop_detected: bool = False
+    from_agent: AgentInDb | None = None
+    to_agent: AgentInDb | None = None
+    to_participant: ParticipantInDb | None = None
+    tool_use_block: LLMToolUseBlock | None = None
+    tool_result: StrictStr = ""
+    requested_input: StrictStr | None = None
+    state: HandoffState = HandoffState.REJECTED
+
+    @model_validator(mode="after")
+    def validate_target(self) -> HandoffResult:
+        require_handoff_target(self.state, self.to_agent, self.to_participant)
+        if self.state is HandoffState.SUCCEEDED and (
+            self.from_agent is None or self.tool_use_block is None
+        ):
+            raise ValueError("A successful handoff requires its source and invocation.")
+        return self
+
+    @property
+    def is_error(self) -> bool:
+        return self.state is not HandoffState.SUCCEEDED
+
+    @property
+    def circuit_breaker_triggered(self) -> bool:
+        return self.state.circuit_breaker_triggered
+
+    @property
+    def handoff_loop_detected(self) -> bool:
+        return self.state is HandoffState.LOOP_DETECTED
 
 
 class ToolBatchResult(BaseModel):
@@ -82,6 +120,13 @@ class ToolBatchResult(BaseModel):
         )
 
 
+class ConversationToolBatchContext(Protocol):
+    """The batch executor needs a conversation, not arbitrary runner attributes."""
+
+    @property
+    def conversation_context(self) -> ConversationContext: ...
+
+
 class ConversationToolBatchExecutor:
     """Execute persisted tool calls from one conversational model turn."""
 
@@ -90,7 +135,7 @@ class ConversationToolBatchExecutor:
         """Extract tool_use blocks from an LLM response."""
         blocks = []
         for content in llm_response.content:
-            if LLMContentType(content.type) == LLMContentType.TOOL_USE:
+            if content.type == LLMContentType.TOOL_USE:
                 blocks.append(content.content)
         return blocks
 
@@ -119,8 +164,8 @@ class ConversationToolBatchExecutor:
         self,
         tool_messages: list[MessageInDb],
     ) -> tuple[
-        list[tuple[MessageInDb, Any]],
-        list[tuple[MessageInDb, Any]],
+        list[tuple[MessageInDb, LLMToolUseBlock]],
+        list[tuple[MessageInDb, LLMToolUseBlock]],
     ]:
         """Split tool messages into concurrent (safe for gather) and sequential.
 
@@ -193,7 +238,9 @@ class ConversationToolBatchExecutor:
         """Execute a handoff tool and project its current outcome."""
         try:
             with tool_span("handoff_execution"):
-                outcome = await execute_handoff(ctx, tool_use_block)
+                outcome = HandoffOutcome.model_validate(
+                    await execute_handoff(ctx, tool_use_block)
+                )
 
             return HandoffResult(
                 from_agent=outcome.source_agent,
@@ -202,9 +249,7 @@ class ConversationToolBatchExecutor:
                 tool_use_block=tool_use_block,
                 tool_result=outcome.content,
                 requested_input=outcome.requested_input,
-                is_error=not outcome.succeeded,
-                circuit_breaker_triggered=outcome.circuit_breaker_triggered,
-                handoff_loop_detected=outcome.handoff_loop_detected,
+                state=outcome.state,
             )
         except Exception as error:
             logger.warning(
@@ -215,13 +260,12 @@ class ConversationToolBatchExecutor:
                 from_agent=ctx.primary_agent,
                 tool_use_block=tool_use_block,
                 tool_result="Error: Agent handoff failed.",
-                is_error=True,
-                circuit_breaker_triggered=True,
+                state=HandoffState.EXECUTION_FAILED,
             )
 
     async def execute_batch(
         self,
-        run_ctx: Any,
+        run_ctx: ConversationToolBatchContext,
         tool_messages: list[MessageInDb],
         parallel: bool = True,
     ) -> ToolBatchResult:

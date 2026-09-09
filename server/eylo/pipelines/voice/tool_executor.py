@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Iterable
 from typing import TypeVar
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+from eylo.framework.agents.agent import AgentSpec
 from eylo.framework.agents.context import RunContext
-from eylo.framework.agents.tool import ToolCall, ToolExecutor, ToolResult
+from eylo.framework.agents.tool import ToolCall, ToolExecutor, ToolResult, ToolSpec
+from eylo.modules.tools.schemas.indb import ToolInDb
+from eylo.pipelines.agent_execution_context import PlatformRunState
 from eylo.pipelines.conversation.tool_executor import (
     PlatformToolExecutor,
 )
@@ -20,13 +22,7 @@ from eylo.pipelines.voice.live_buffer import LiveVoiceBufferIdentity
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
-
-
-@dataclass(frozen=True, slots=True)
-class LiveVoiceToolCommandRef:
-    """Content-free identity consumed by existing product tool adapters."""
-
-    id: UUID
+ToolT = TypeVar("ToolT", ToolSpec, ToolInDb)
 
 
 class LiveVoiceCommandStepContext:
@@ -72,16 +68,10 @@ class LiveVoiceToolExecutor:
         call: ToolCall,
     ) -> ToolResult:
         local_context = context.local_context
-        if not isinstance(local_context, dict):
+        if not isinstance(local_context, PlatformRunState):
             raise ValueError("Live voice tool execution requires local context.")
-        command_ref = LiveVoiceToolCommandRef(
-            id=self.command_id(call.id),
-        )
-        tool_use_messages = local_context.setdefault("tool_use_messages", {})
-        if not isinstance(tool_use_messages, dict):
-            raise ValueError("Live voice tool command state is invalid.")
-        tool_use_messages[call.id] = command_ref
-        local_context["durable_context"] = self._step_context
+        local_context.command_ids[call.id] = self.command_id(call.id)
+        local_context.command_context = self._step_context
         try:
             return await self._delegate.execute(context, call)
         except asyncio.CancelledError:
@@ -102,22 +92,18 @@ class LiveVoiceToolExecutor:
             )
 
 
-def without_live_sandbox_tools(tools):
+def without_live_sandbox_tools(tools: Iterable[ToolT]) -> tuple[ToolT, ...]:
     """Remove sandbox tools from the latency-sensitive live voice surface."""
     return tuple(tool for tool in tools if not _is_sandbox_tool(tool))
 
 
-def without_live_sandbox_agent_tools(agent):
+def without_live_sandbox_agent_tools(agent: AgentSpec) -> AgentSpec:
     """Return one framework agent spec with live-voice-safe tools only."""
     return agent.model_copy(update={"tools": without_live_sandbox_tools(agent.tools)})
 
 
-def _is_sandbox_tool(tool) -> bool:
-    slug = getattr(tool, "slug", None)
-    if slug is None:
-        metadata = getattr(tool, "metadata", None)
-        if metadata is not None:
-            slug = metadata.get("slug")
+def _is_sandbox_tool(tool: ToolSpec | ToolInDb) -> bool:
+    slug = tool.slug if isinstance(tool, ToolInDb) else tool.metadata.get("slug")
     return slug in SANDBOX_TOOL_SLUGS
 
 
@@ -132,7 +118,6 @@ def _command_id(identity: LiveVoiceBufferIdentity, tool_call_id: str) -> UUID:
 
 __all__ = [
     "LiveVoiceCommandStepContext",
-    "LiveVoiceToolCommandRef",
     "LiveVoiceToolExecutor",
     "without_live_sandbox_agent_tools",
     "without_live_sandbox_tools",

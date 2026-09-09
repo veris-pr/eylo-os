@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.contracts.provider_config import Capability
+from eylo.modules.agents.schemas.indb import AgentInDb
 from eylo.modules.provider_configs.crypto import (
     SecretDecryptionError,
     get_secret_cipher,
@@ -28,25 +29,33 @@ ProviderRef = tuple[UUID | None, int | None]
 
 async def resolve_agent_tool_capabilities(
     session: AsyncSession,
-    agent: object,
+    agent: AgentInDb,
     *,
     provider_refs: Mapping[Capability, ProviderRef] | None = None,
 ) -> frozenset[Capability]:
     """Return capabilities backed by this agent's exact active relationships."""
-    organization_id = UUID(str(getattr(agent, "organization_id")))
-    agent_id = UUID(str(getattr(agent, "id")))
+    organization_id = agent.organization_id
+    if organization_id is None:
+        raise ValueError("Agent tool capabilities require an organization.")
+    agent_id = agent.id
     repository = ProviderConfigRepository(session, get_secret_cipher())
     available: set[Capability] = set()
 
-    for capability, prefix in (
-        (Capability.EMAIL, "email"),
-        (Capability.MEMORY, "memory"),
-    ):
-        config_id, revision = _provider_ref(
-            agent,
-            capability=capability,
-            prefix=prefix,
-            provider_refs=provider_refs,
+    configured_refs: dict[Capability, ProviderRef] = {
+        Capability.EMAIL: (
+            agent.email_provider_config_id,
+            agent.email_provider_config_revision,
+        ),
+        Capability.MEMORY: (
+            agent.memory_provider_config_id,
+            agent.memory_provider_config_revision,
+        ),
+    }
+    for capability, configured_ref in configured_refs.items():
+        config_id, revision = (
+            provider_refs.get(capability, configured_ref)
+            if provider_refs is not None
+            else configured_ref
         )
         if await _is_verified_exact(
             repository,
@@ -57,9 +66,7 @@ async def resolve_agent_tool_capabilities(
         ):
             available.add(capability)
 
-    phone_number = await PhoneNumberRepository(
-        session
-    ).get_active_by_outbound_agent_id(
+    phone_number = await PhoneNumberRepository(session).get_active_by_outbound_agent_id(
         organization_id=organization_id,
         outbound_agent_id=agent_id,
     )
@@ -89,21 +96,6 @@ async def resolve_agent_tool_capabilities(
         available.add(Capability.SANDBOX)
 
     return frozenset(available)
-
-
-def _provider_ref(
-    agent: object,
-    *,
-    capability: Capability,
-    prefix: str,
-    provider_refs: Mapping[Capability, ProviderRef] | None,
-) -> ProviderRef:
-    if provider_refs is not None and capability in provider_refs:
-        return provider_refs[capability]
-    return (
-        getattr(agent, f"{prefix}_provider_config_id", None),
-        getattr(agent, f"{prefix}_provider_config_revision", None),
-    )
 
 
 async def _is_verified_exact(

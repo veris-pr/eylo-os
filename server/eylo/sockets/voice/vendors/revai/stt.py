@@ -1,365 +1,211 @@
-"""Rev.AI Speech-to-Text implementation.
-
-WebSocket-based real-time transcription with high accuracy.
-Supports streaming audio in audio/x-raw format with partial and final transcripts.
-"""
+"""Own one Rev AI WebSocket attempt from connected acknowledgement through EOS."""
 
 from __future__ import annotations
 
 import asyncio
-import json
-import logging
-import time
-from dataclasses import dataclass
-from typing import AsyncIterator, Literal
+from collections.abc import AsyncIterator
 
-import numpy as np
 import websockets
+from pydantic import ValidationError
 from websockets.asyncio.client import ClientConnection
+from websockets.exceptions import ConnectionClosed
+from websockets.frames import CloseCode
 
-from eylo.sockets.voice.audio import AudioFrame
+from eylo.sockets.stt.exceptions import (
+    STTConfigurationError,
+    STTConnectionCleanupFailed,
+    STTConnectionClosed,
+    STTConnectionFailureKind,
+    STTConnectionRetryUnsafe,
+    STTFinalizationFailed,
+)
+from eylo.sockets.voice.vendors.revai.wire import (
+    RevAICloseCode,
+    RevAIConfig,
+    RevAIConnected,
+    RevAIControl,
+    RevAIFinal,
+    RevAIPartial,
+    parse_revai_event,
+)
 
-logger = logging.getLogger(__name__)
+_PCM_SAMPLE_BYTES = 2
+_FINAL_RESULT_TIMEOUT_SECONDS = 2.0
+_SOCKET_CLOSE_TIMEOUT_SECONDS = 2.0
+_CLEANUP_TIMEOUT_SECONDS = 5.0
+_NATIVE_QUEUE_CAPACITY = 16
+_CLOSE_FAILURES: dict[int, STTConnectionFailureKind] = {
+    RevAICloseCode.UNAUTHORIZED: STTConnectionFailureKind.AUTHENTICATION,
+    RevAICloseCode.BAD_REQUEST: STTConnectionFailureKind.REQUEST_REJECTED,
+    RevAICloseCode.INSUFFICIENT_CREDITS: STTConnectionFailureKind.QUOTA_EXCEEDED,
+    RevAICloseCode.SERVER_SHUTTING_DOWN: STTConnectionFailureKind.SERVICE_UNAVAILABLE,
+    RevAICloseCode.NO_INSTANCE_AVAILABLE: STTConnectionFailureKind.SERVICE_UNAVAILABLE,
+    RevAICloseCode.TOO_MANY_REQUESTS: STTConnectionFailureKind.RATE_LIMITED,
+}
 
-REV_AI_WS_BASE = "wss://api.rev.ai/speechtotext/v1/stream"
 
-
-def get_timestamp() -> float:
-    """Get current timestamp in seconds."""
-    return time.time()
-
-
-@dataclass
-class RevAIConfig:
-    """Configuration for Rev.AI STT."""
-
-    api_key: str
-    """Rev.AI API access token."""
-
-    sample_rate: int = 16000
-    """Audio sample rate in Hz."""
-
-    language: str = "en"
-    """Language code (e.g., 'en', 'es')."""
-
-    content_type: str = (
-        "audio/x-raw;layout=interleaved;rate=16000;format=S16LE;channels=1"
+def revai_connection_error(error: ConnectionClosed) -> STTConnectionRetryUnsafe:
+    """Close codes carry meaning; vendor reason text is never a public failure message."""
+    code = error.rcvd.code if error.rcvd is not None else CloseCode.ABNORMAL_CLOSURE
+    return STTConnectionRetryUnsafe(
+        "Rev AI STT stream closed.",
+        kind=_CLOSE_FAILURES.get(code, STTConnectionFailureKind.PROTOCOL),
     )
-    """Audio content type specification."""
 
 
-@dataclass
-class TranscriptEvent:
-    """Event emitted by Rev.AI STT stream."""
+class RevAISTTStream(AsyncIterator[RevAIPartial | RevAIFinal]):
+    """The adapter owns the reader; this owner closes the socket without discarding it."""
 
-    type: Literal["PARTIAL", "FINAL", "ERROR", "CONNECTED"]
-    """Type of transcript event."""
-
-    text: str
-    """Transcribed text content."""
-
-    confidence: float
-    """Confidence score (0.0 to 1.0)."""
-
-    is_final: bool
-    """Whether this is a final transcript."""
-
-    timestamp: float = 0.0
-    """Timestamp when event was created."""
-
-
-class RevAISTTStream:
-    """Stream for processing audio and receiving transcripts from Rev.AI."""
-
-    def __init__(
-        self,
-        *,
-        config: RevAIConfig,
-    ) -> None:
-        """Initialize Rev.AI STT stream.
-
-        Args:
-            config: Configuration for Rev.AI STT
-
-        """
+    def __init__(self, *, config: RevAIConfig) -> None:
         self._config = config
-        self._queue: asyncio.Queue[TranscriptEvent] = asyncio.Queue()
-        self._closed = False
         self._ws: ClientConnection | None = None
-        self._sender_task: asyncio.Task | None = None
-        self._receiver_task: asyncio.Task | None = None
-        self._audio_queue: asyncio.Queue[bytes] = asyncio.Queue()
-        self._last_signal_time = get_timestamp()
-
-    def _build_websocket_url(self) -> str:
-        """Build Rev.AI WebSocket URL with parameters."""
-        params = {
-            "access_token": self._config.api_key,
-            "content_type": self._config.content_type,
-        }
-
-        param_str = "&".join([f"{key}={value}" for key, value in params.items()])
-        return f"{REV_AI_WS_BASE}?{param_str}"
-
-    async def _sender_loop(self, ws: ClientConnection) -> None:
-        """Send audio data to Rev.AI WebSocket."""
-        try:
-            while not self._closed:
-                try:
-                    data = await asyncio.wait_for(self._audio_queue.get(), timeout=5.0)
-                    await ws.send(data)
-                except asyncio.TimeoutError:
-                    continue
-                except Exception as error:
-                    logger.error(
-                        "Rev.AI audio send failed error_type=%s",
-                        type(error).__name__,
-                    )
-                    break
-        except Exception as error:
-            logger.error(
-                "Rev.AI sender loop failed error_type=%s",
-                type(error).__name__,
-            )
-        finally:
-            # Send close message
-            try:
-                if not self._closed and ws.open:
-                    close_msg = json.dumps({"type": "CloseStream"})
-                    await ws.send(close_msg)
-            except Exception:
-                pass
-            logger.debug("Rev.AI sender loop terminated")
-
-    async def _receiver_loop(self, ws: ClientConnection) -> None:
-        """Receive transcripts from Rev.AI WebSocket."""
-        buffer = ""
-
-        try:
-            while not self._closed:
-                try:
-                    msg = await ws.recv()
-                    data = json.loads(msg)
-
-                    # Handle connection confirmation
-                    if data.get("type") == "connected":
-                        logger.info("Rev.AI connection established")
-                        await self._queue.put(
-                            TranscriptEvent(
-                                type="CONNECTED",
-                                text="",
-                                confidence=1.0,
-                                is_final=False,
-                                timestamp=get_timestamp(),
-                            )
-                        )
-                        continue
-
-                    # Extract text from elements
-                    is_final = data.get("type") == "final"
-                    elements = data.get("elements", [])
-                    new_text = "".join([e.get("value", "") for e in elements])
-
-                    # Update buffer
-                    if len(new_text) > len(buffer):
-                        self._last_signal_time = get_timestamp()
-
-                    buffer = new_text
-
-                    # Emit transcript event
-                    if buffer:
-                        confidence = (
-                            1.0  # Rev.AI doesn't provide confidence in the same way
-                        )
-                        event = TranscriptEvent(
-                            type="FINAL" if is_final else "PARTIAL",
-                            text=buffer,
-                            confidence=confidence,
-                            is_final=is_final,
-                            timestamp=get_timestamp(),
-                        )
-                        await self._queue.put(event)
-
-                        # Clear buffer on final transcript
-                        if is_final:
-                            buffer = ""
-
-                except websockets.exceptions.ConnectionClosedError:
-                    logger.debug("Rev.AI connection closed")
-                    break
-                except json.JSONDecodeError:
-                    logger.error("Error decoding Rev.AI response")
-                    continue
-                except Exception as error:
-                    logger.error(
-                        "Rev.AI receive failed error_type=%s",
-                        type(error).__name__,
-                    )
-                    break
-        except Exception as error:
-            logger.error(
-                "Rev.AI receiver loop failed error_type=%s",
-                type(error).__name__,
-            )
-        finally:
-            logger.debug("Rev.AI receiver loop terminated")
+        self.connection_id: str | None = None
+        self._finished = asyncio.Event()
+        self._send_lock = asyncio.Lock()
+        self._eos_task: asyncio.Task[None] | None = None
+        self._close_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
-        """Start the WebSocket connection and processing tasks."""
-        if self._ws:
-            logger.warning("Stream already started")
-            return
-
+        """The factory bounds handshake/acknowledgement and disposes failed attempts."""
+        if self._close_task is not None:
+            raise STTConnectionClosed("Rev AI STT stream is closing.")
+        if self._ws is not None:
+            raise STTConnectionClosed("Rev AI STT attempt has already started.")
+        self._ws = await websockets.connect(
+            self._config.websocket_url(),
+            close_timeout=_SOCKET_CLOSE_TIMEOUT_SECONDS,
+            max_queue=_NATIVE_QUEUE_CAPACITY,
+        )
         try:
-            url = self._build_websocket_url()
-            self._ws = await websockets.connect(url)
-
-            # Start sender and receiver tasks
-            self._sender_task = asyncio.create_task(self._sender_loop(self._ws))
-            self._receiver_task = asyncio.create_task(self._receiver_loop(self._ws))
-
-            logger.info("Rev.AI STT stream started")
-
-        except Exception as error:
-            logger.error(
-                "Rev.AI stream start failed error_type=%s",
-                type(error).__name__,
+            event = parse_revai_event(await self._ws.recv())
+        except ConnectionClosed as error:
+            self._finished.set()
+            raise revai_connection_error(error) from error
+        except ValidationError:
+            raise STTConnectionRetryUnsafe(
+                "Rev AI STT returned an invalid acknowledgement.",
+                kind=STTConnectionFailureKind.PROTOCOL,
+            ) from None
+        if not isinstance(event, RevAIConnected):
+            raise STTConnectionRetryUnsafe(
+                "Rev AI STT did not acknowledge the connection.",
+                kind=STTConnectionFailureKind.PROTOCOL,
             )
-            raise
+        self.connection_id = event.id
 
-    def push_frame(self, frame: AudioFrame) -> None:
-        """Push an audio frame for transcription.
+    async def send_audio(self, audio: bytes) -> None:
+        """Await transport backpressure; only whole PCM16 samples precede EOS."""
+        async with self._send_lock:
+            ws = self._ws
+            if (
+                ws is None
+                or self.connection_id is None
+                or self._close_task is not None
+                or self._finished.is_set()
+            ):
+                raise STTConnectionClosed("Rev AI STT is not accepting audio.")
+            if len(audio) % _PCM_SAMPLE_BYTES:
+                raise STTConfigurationError(
+                    "Rev AI audio must contain whole PCM16 samples."
+                )
+            if not audio:
+                return
+            try:
+                await ws.send(audio)
+            except ConnectionClosed as error:
+                raise revai_connection_error(error) from error
 
-        Args:
-            frame: AudioFrame to process
+    async def __anext__(self) -> RevAIPartial | RevAIFinal:
+        ws = self._ws
+        if ws is None or self._finished.is_set():
+            raise StopAsyncIteration
+        try:
+            event = parse_revai_event(await ws.recv())
+        except ConnectionClosed as error:
+            self._finished.set()
+            if (
+                self._eos_task is not None
+                and error.rcvd is not None
+                and error.rcvd.code == CloseCode.NORMAL_CLOSURE
+            ):
+                raise StopAsyncIteration from None
+            raise revai_connection_error(error) from error
+        except ValidationError:
+            self._finished.set()
+            raise STTConnectionRetryUnsafe(
+                "Rev AI STT returned an invalid hypothesis.",
+                kind=STTConnectionFailureKind.PROTOCOL,
+            ) from None
+        if isinstance(event, RevAIConnected):
+            self._finished.set()
+            raise STTConnectionRetryUnsafe(
+                "Rev AI STT repeated its connection acknowledgement.",
+                kind=STTConnectionFailureKind.PROTOCOL,
+            )
+        return event
 
-        """
-        if self._closed:
-            raise RuntimeError("Stream is closed")
-
-        # Convert frame data to bytes
-        if isinstance(frame.data, np.ndarray):
-            data = frame.data.tobytes()
-        else:
-            data = bytes(frame.data)
-
-        # Rev.AI expects raw PCM data (S16LE format)
-        self._audio_queue.put_nowait(data)
+    async def _send_eos(self, ws: ClientConnection) -> None:
+        async with self._send_lock:
+            await ws.send(RevAIControl.END_OF_STREAM.value)
 
     async def aclose(self) -> None:
-        """Close the stream and cleanup resources."""
-        if self._closed:
-            return
-
-        self._closed = True
-
-        # Cancel tasks
-        if self._sender_task and not self._sender_task.done():
-            self._sender_task.cancel()
-        if self._receiver_task and not self._receiver_task.done():
-            self._receiver_task.cancel()
-
-        # Wait for tasks to complete
-        tasks = []
-        if self._sender_task:
-            tasks.append(self._sender_task)
-        if self._receiver_task:
-            tasks.append(self._receiver_task)
-
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-
-        # Close WebSocket
-        if self._ws:
-            await self._ws.close()
-
-        logger.info("Rev.AI STT stream closed")
-
-    def __aiter__(self) -> AsyncIterator[TranscriptEvent]:
-        """Make the stream async iterable."""
-        return self
-
-    async def __anext__(self) -> TranscriptEvent:
-        """Get next transcript event."""
-        if self._closed and self._queue.empty():
-            raise StopAsyncIteration
-
+        """Retain cleanup across caller cancellation; report incomplete final output."""
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._close())
+            self._close_task.add_done_callback(_observe_task)
         try:
-            event = await asyncio.wait_for(self._queue.get(), timeout=1.0)
-            return event
-        except asyncio.TimeoutError:
-            if self._closed:
-                raise StopAsyncIteration
-            # Continue waiting
-            return await self.__anext__()
+            async with asyncio.timeout(_CLEANUP_TIMEOUT_SECONDS):
+                await asyncio.shield(self._close_task)
+        except TimeoutError as error:
+            raise STTConnectionCleanupFailed(
+                "Rev AI STT cleanup did not complete."
+            ) from error
+
+    async def _close(self) -> None:
+        ws = self._ws
+        if ws is None:
+            return
+        finalization_error: Exception | None = None
+        try:
+            if self.connection_id is not None and not self._finished.is_set():
+                try:
+                    async with asyncio.timeout(_FINAL_RESULT_TIMEOUT_SECONDS):
+                        self._eos_task = asyncio.create_task(self._send_eos(ws))
+                        self._eos_task.add_done_callback(_observe_task)
+                        await asyncio.shield(self._eos_task)
+                        await self._finished.wait()
+                except Exception as error:
+                    finalization_error = error
+        finally:
+            try:
+                await ws.close()
+                await ws.wait_closed()
+            except Exception as error:
+                raise STTConnectionCleanupFailed(
+                    "Rev AI socket cleanup failed."
+                ) from error
+            finally:
+                eos = self._eos_task
+                if eos is not None:
+                    if not eos.done():
+                        eos.cancel()
+                    await asyncio.gather(eos, return_exceptions=True)
+        if finalization_error is not None:
+            raise STTFinalizationFailed(
+                "Rev AI STT closed before final output completed."
+            ) from finalization_error
 
 
 class RevAISTT:
-    """Rev.AI Speech-to-Text service."""
+    """Create native attempts from validated settings, without opening a connection."""
 
-    def __init__(
-        self,
-        *,
-        api_key: str,
-        sample_rate: int = 16000,
-        language: str = "en",
-    ) -> None:
-        """Initialize Rev.AI STT.
+    def __init__(self, config: RevAIConfig) -> None:
+        self.config = RevAIConfig.model_validate(config)
 
-        Args:
-            api_key: Rev.AI API access token
-            sample_rate: Audio sample rate in Hz (default: 16000)
-            language: Language code (default: 'en')
+    def stream(self) -> RevAISTTStream:
+        return RevAISTTStream(config=self.config)
 
-        """
-        # Build content type string
-        content_type = (
-            f"audio/x-raw;layout=interleaved;rate={sample_rate};format=S16LE;channels=1"
-        )
 
-        self._config = RevAIConfig(
-            api_key=api_key,
-            sample_rate=sample_rate,
-            language=language,
-            content_type=content_type,
-        )
-
-    @property
-    def model(self) -> str:
-        """Get model name."""
-        return "rev-ai"
-
-    @property
-    def provider(self) -> str:
-        """Get provider name."""
-        return "Rev.AI"
-
-    def stream(
-        self,
-        *,
-        language: str | None = None,
-        sample_rate: int | None = None,
-    ) -> RevAISTTStream:
-        """Create a new stream for transcription.
-
-        Args:
-            language: Override language code
-            sample_rate: Override sample rate
-
-        Returns:
-            RevAISTTStream for processing audio
-
-        """
-        sr = sample_rate or self._config.sample_rate
-        content_type = (
-            f"audio/x-raw;layout=interleaved;rate={sr};format=S16LE;channels=1"
-        )
-
-        config = RevAIConfig(
-            api_key=self._config.api_key,
-            sample_rate=sr,
-            language=language or self._config.language,
-            content_type=content_type,
-        )
-
-        return RevAISTTStream(config=config)
+def _observe_task(task: asyncio.Task[None]) -> None:
+    if not task.cancelled():
+        task.exception()

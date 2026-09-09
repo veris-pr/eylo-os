@@ -12,15 +12,16 @@ import json
 import re
 import shlex
 import shutil
+from collections.abc import Mapping
 from enum import Enum
 from pathlib import Path
 from typing import Protocol
 from uuid import UUID
 
-from pydantic import Field
+from pydantic import Field, SerializerFunctionWrapHandler, model_serializer
 
 from .approval import ApprovalActionKind, ApprovalRequest, RiskLevel
-from .common import FrozenFrameworkModel, JsonObject
+from .common import FrameworkMetadata, FrozenFrameworkModel, JsonObject
 from .context import RunContext
 from .sandbox import (
     SandboxActionDecision,
@@ -93,14 +94,33 @@ class SandboxActionResult(FrozenFrameworkModel):
     error_message: str | None = None
 
 
+class SandboxActionMetadata(FrameworkMetadata):
+    """Typed tool observation; optional facts retain their absent wire form."""
+
+    sandbox_status: SandboxActionStatus
+    action_kind: ApprovalActionKind
+    approval_request: ApprovalRequest | None = None
+    artifact: SandboxArtifact | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize_metadata(self, handler: SerializerFunctionWrapHandler) -> JsonObject:
+        payload = handler(self)
+        for field in ("approval_request", "artifact"):
+            if payload.get(field) is None:
+                payload.pop(field, None)
+        return payload
+
+
 class SandboxProvider(Protocol):
     """Runtime provider controlled by the trusted harness."""
 
     def validate_spec(self, spec: SandboxSpec) -> None:
         """Raise when this provider cannot honestly honor a sandbox spec."""
+        ...
 
     async def create_session(self, spec: SandboxSpec) -> SandboxSession:
         """Create a sandbox session for the given spec."""
+        ...
 
     async def execute_command(
         self,
@@ -108,9 +128,11 @@ class SandboxProvider(Protocol):
         command: SandboxCommand,
     ) -> SandboxCommandResult:
         """Execute a command inside an existing sandbox session."""
+        ...
 
     async def read_file(self, session: SandboxSession, path: str) -> str:
         """Read a text file from the sandbox workspace."""
+        ...
 
     async def write_file(
         self,
@@ -118,15 +140,18 @@ class SandboxProvider(Protocol):
         write: SandboxFileWrite,
     ) -> SandboxArtifact:
         """Write a text file into the sandbox workspace and return an artifact."""
+        ...
 
     async def list_artifacts(
         self,
         session: SandboxSession,
     ) -> tuple[SandboxArtifact, ...]:
         """Return artifacts produced in the sandbox."""
+        ...
 
     async def destroy_session(self, session: SandboxSession) -> SandboxSession:
         """Destroy a sandbox session and release runtime resources."""
+        ...
 
 
 class SandboxController:
@@ -600,14 +625,12 @@ def _tool_result_from_action(
     call: ToolCall,
     result: SandboxActionResult,
 ) -> ToolResult:
-    metadata = {
-        "sandbox_status": result.status.value,
-        "action_kind": result.action_kind.value,
-    }
-    if result.approval_request is not None:
-        metadata["approval_request"] = result.approval_request.model_dump(mode="json")
-    if result.artifact is not None:
-        metadata["artifact"] = result.artifact.model_dump(mode="json")
+    metadata = SandboxActionMetadata(
+        sandbox_status=result.status,
+        action_kind=result.action_kind,
+        approval_request=result.approval_request,
+        artifact=result.artifact,
+    )
 
     if result.status == SandboxActionStatus.COMPLETED:
         return ToolResult(
@@ -636,7 +659,7 @@ def _completed_action_content(result: SandboxActionResult) -> str:
     return "Sandbox action completed."
 
 
-def _extract_argv(arguments: JsonObject) -> tuple[str, ...]:
+def _extract_argv(arguments: Mapping[str, object]) -> tuple[str, ...]:
     argv_value = arguments.get("argv")
     if isinstance(argv_value, list) and all(
         isinstance(item, str) for item in argv_value

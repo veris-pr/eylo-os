@@ -12,8 +12,11 @@ authority, transforms, sinks, and recovery path for every entry below.
 | `agents` | resolve published Agents/config relations, swarm behavior, and provider-config deletion references |
 | `conversation` | start and run conversational work, build context, dispatch tools, queue requests, execute background attachments, and converge failures |
 | `llm` | construct resolved LLM adapters, normalize transient messages, stream decomposed TTS, and run first-party background implementations |
-| `agent_run_tools.py` | project run/input/cancellation controls into system tools |
-| `agent_run_transcript.py` | write framework/tool/runtime progress into Agent-run transcript items |
+| `agent_execution_context.py` | own typed runtime context, exact command IDs, and command-step versus durable-wait authority across conversation, scheduled, objective, and voice callers |
+| `agent_run_continuations.py` | validate product pause snapshots, request kinds and exact tool identity when filing and resuming conversation, objective and scheduled runs |
+| `agent_run_heartbeat.py` | renew durable Agent-run claims, check active-time budgets, and settle owned operations on completion, cancellation, or lease failure |
+| `agent_run_tools.py` | bind model tool calls to already-persisted Agent-run command IDs without synthetic message rows |
+| `agent_run_transcript.py` | persist/replay Agent-run model and tool exchanges; retain typed transient tool-call capture for pause/completion correlation |
 | `parallel_agents` | durable worker dispatch for LLM tasks, swarm members, and attached background Agents |
 | `system_tools` | register platform tools and connect them to knowledge, memory, sandbox, telephony, and task pipelines |
 | `mcp` | discover and execute MCP tools through pinned server definitions |

@@ -1,16 +1,31 @@
 """Provider-neutral message content contracts."""
 
 import datetime
+import logging
+from collections.abc import Mapping
 from enum import Enum
 from typing import Any, List, Optional, Self, TypeAlias, TypeVar, Union
 from uuid import UUID
-import logging
-from pydantic import ConfigDict, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    GetJsonSchemaHandler,
+    JsonValue,
+    SerializerFunctionWrapHandler,
+    StrictBool,
+    StrictInt,
+    TypeAdapter,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
+from pydantic.errors import PydanticInvalidForJsonSchema
+from pydantic.json_schema import JsonSchemaValue
+from pydantic_core import CoreSchema
 
-
-logger = logging.getLogger(__name__)
-
-MessageEnumT = TypeVar("MessageEnumT", bound=Enum)
+from eylo.common.contracts.session_state import SessionChannel
+from eylo.common.contracts.voice import VoiceRuntimeMode, VoiceSpeechOutcome
 from eylo.common.schemas import (
     CaseInSensitiveEnum,
     EyloBaseModelSchema,
@@ -27,6 +42,13 @@ from eylo.common.contracts.message_content import (
     UserMessageContent,
     WidgetMessageContent,
     WidgetResponseMessageContent,
+)
+
+logger = logging.getLogger(__name__)
+
+MessageEnumT = TypeVar("MessageEnumT", bound=Enum)
+_JSON_EXTENSIONS = TypeAdapter(
+    dict[str, JsonValue], config=ConfigDict(allow_inf_nan=False)
 )
 
 MessageContentType: TypeAlias = Union[
@@ -104,45 +126,108 @@ class MessageRequestFeedback(CaseInSensitiveEnum):
     NEGATIVE = "NEGATIVE"
 
 
-class MessageMeta(EyloBaseSchema):
-    """Extensible metadata envelope for persisted messages.
+class MessageInteraction(BaseModel):
+    """Observed session facts, never caller-provided routing or authorization."""
 
-    Message producers own the specific meta schema for their subsystem. The
-    conversation module validates that meta is object-shaped while allowing
-    producer-owned fields to evolve without coupling conversations to agents,
-    sockets, widgets, or integrations.
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    channel: SessionChannel
+    is_voice: StrictBool
+
+
+class MessageMeta(EyloBaseSchema):
+    """Persisted message facts plus producer-owned JSON extensions.
+
+    Interaction facts are validated before runtime selection. Other subsystems
+    own their extension schemas; only finite JSON may cross this envelope.
+    Absent optional fields stay absent on disk to preserve replay identity.
     """
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(
+        extra="allow", allow_inf_nan=False, validate_assignment=True
+    )
 
-    def get(self, key: str, default: Any = None) -> Any:
-        """Return producer-owned meta value while preserving dict-like callers."""
-        return self.model_extra.get(key, default) if self.model_extra else default
+    interaction: MessageInteraction | None = None
+    is_audio: StrictBool | None = None
+    duration_ms: StrictInt | None = Field(default=None, ge=0)
+    speech_turn_outcome: VoiceSpeechOutcome | None = None
+    voice_session_id: str | None = None
+    voice_session_row_id: UUID | None = None
+    voice_runtime_mode: VoiceRuntimeMode | None = None
+    voice_source_sequence: StrictInt | None = Field(default=None, ge=1)
+    voice_redaction_version: StrictInt | None = Field(default=None, ge=1)
+    transient: StrictBool | None = None
+    source: str | None = None
+    context: dict[str, JsonValue] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_extensions(cls, value: object) -> object:
+        """Reject invalid extensions before assignment can mutate the model."""
+        if isinstance(value, Mapping):
+            _JSON_EXTENSIONS.validate_python(
+                {
+                    key: entry
+                    for key, entry in value.items()
+                    if key not in cls.model_fields
+                }
+            )
+        return value
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core_schema: CoreSchema, handler: GetJsonSchemaHandler, /
+    ) -> JsonSchemaValue:
+        """Expose named fields: our serializer only omits unset values.
+
+        Its dictionary return annotation otherwise erases those fields from
+        output schemas. Copy only the schema; never alter runtime serialization.
+        """
+        if core_schema["type"] != "model":
+            raise PydanticInvalidForJsonSchema("MessageMeta requires its model schema.")
+        fields_schema = core_schema.copy()
+        fields_schema.pop("serialization", None)
+        schema = handler.resolve_ref_schema(handler(fields_schema))
+        extensions = handler(_JSON_EXTENSIONS.core_schema)
+        schema["additionalProperties"] = extensions["additionalProperties"]
+        return schema
+
+    @model_serializer(mode="wrap")
+    def serialize_metadata(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, JsonValue | UUID]:
+        """Do not invent null/default fields in historical metadata or fingerprints."""
+        payload = handler(self)
+        for name in type(self).model_fields:
+            if name not in self.model_fields_set:
+                payload.pop(name, None)
+        return payload
+
+    def get(self, key: str, default: JsonValue = None) -> JsonValue:
+        """Compatibility access for consumers migrating to owner-defined fields."""
+        if key not in self:
+            return default
+        return self[key]
 
     def __contains__(self, key: str) -> bool:
-        return bool(self.model_extra and key in self.model_extra)
+        return key in self.model_fields_set or key in (self.model_extra or {})
 
-    def __getitem__(self, key: str) -> Any:
+    def __getitem__(self, key: str) -> JsonValue:
         if key not in self:
             raise KeyError(key)
-        return self.model_extra[key]
+        return self.model_dump(mode="json", include={key})[key]
 
     def __eq__(self, other: object) -> bool:
         if isinstance(other, dict):
-            return (self.model_extra or {}) == other
+            return self.model_dump(mode="json") == other
         return super().__eq__(other)
 
 
-def _coerce_known_enum(
-    value: Any, enum_type: type[MessageEnumT]
-) -> MessageEnumT | None:
+def _coerce_known_enum(value: object, enum_type: type[MessageEnumT]) -> MessageEnumT:
     """Coerce persisted enum values into strict schema enum members."""
-    if value is None:
-        return None
-
     candidate = value if isinstance(value, enum_type) else enum_type(value)
     if candidate not in tuple(enum_type):
-        raise ValueError(f"{value!r} is not a valid {enum_type.__name__}")
+        raise ValueError(f"{value!r} is not a valid {type(candidate).__name__}")
 
     return candidate
 
@@ -171,23 +256,23 @@ class MessageModelSchema(EyloBaseModelSchema):
 
     @field_validator("kind", mode="before")
     @classmethod
-    def validate_kind(cls, v: Any) -> MessageKind:
+    def validate_kind(cls, v: object) -> MessageKind:
         return _coerce_known_enum(v, MessageKind)
 
     @field_validator("content_kind", mode="before")
     @classmethod
-    def validate_content_kind(cls, v: Any) -> MessageContentKind:
+    def validate_content_kind(cls, v: object) -> MessageContentKind:
         return _coerce_known_enum(v, MessageContentKind)
 
     @field_validator("request_status", mode="before")
     @classmethod
-    def validate_request_status(cls, v: Any) -> RequestStatus | None:
-        return _coerce_known_enum(v, RequestStatus)
+    def validate_request_status(cls, v: object) -> RequestStatus | None:
+        return None if v is None else _coerce_known_enum(v, RequestStatus)
 
     @field_validator("request_feedback", mode="before")
     @classmethod
-    def validate_request_feedback(cls, v: Any) -> MessageRequestFeedback | None:
-        return _coerce_known_enum(v, MessageRequestFeedback)
+    def validate_request_feedback(cls, v: object) -> MessageRequestFeedback | None:
+        return None if v is None else _coerce_known_enum(v, MessageRequestFeedback)
 
     @field_validator("content", mode="before")
     @classmethod
@@ -242,18 +327,19 @@ class MessageCreate(EyloBaseSchema):
 
     @field_validator("kind", mode="before")
     @classmethod
-    def validate_kind(cls, v: Any) -> MessageKind:
+    def validate_kind(cls, v: object) -> MessageKind:
         return _coerce_known_enum(v, MessageKind)
 
     @field_validator("content_kind", mode="before")
     @classmethod
-    def validate_content_kind(cls, v: Any) -> MessageContentKind:
+    def validate_content_kind(cls, v: object) -> MessageContentKind:
         return _coerce_known_enum(v, MessageContentKind)
 
     @field_validator("request_status", mode="before")
     @classmethod
-    def validate_request_status(cls, v: Any) -> RequestStatus | None:
-        return _coerce_known_enum(v, RequestStatus)
+    def validate_request_status(cls, v: object) -> RequestStatus | None:
+        return None if v is None else _coerce_known_enum(v, RequestStatus)
+
 
 class MessageInDb(MessageModelSchema):
     model_config = ConfigDict(from_attributes=True)

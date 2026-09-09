@@ -20,15 +20,8 @@ from eylo.common.outbound import (
     OutboundTransportKind,
     require_failure_code,
 )
-
-
-class TelephonyProvider(str, Enum):
-    """Supported telephony providers."""
-
-    TWILIO = "twilio"
-    PLIVO = "plivo"
-    EXOTEL = "exotel"
-    VONAGE = "vonage"
+from eylo.sockets.telephony.config import SettingsT, TelephonyVendorSettings
+from eylo.sockets.telephony.config import TelephonyProvider as TelephonyProvider
 
 
 class AudioEncoding(str, Enum):
@@ -43,18 +36,22 @@ class AudioEncoding(str, Enum):
 
 @dataclass
 class TelephonyConfig:
-    """Base configuration for telephony services."""
+    """Resolved carrier settings and media format for one adapter instance."""
 
-    provider: TelephonyProvider
+    settings: TelephonyVendorSettings
     encoding: AudioEncoding = AudioEncoding.MULAW
     sample_rate: int = 8000
     channels: int = 1
-    # Provider-specific config can be added here
-    extra_config: Optional[Dict[str, Any]] = None
 
-    def __post_init__(self):
-        if self.extra_config is None:
-            self.extra_config = {}
+    @property
+    def provider(self) -> TelephonyProvider:
+        return self.settings.provider
+
+    def require_settings(self, settings_type: type[SettingsT]) -> SettingsT:
+        """Refuse settings for another carrier before constructing its client."""
+        if not isinstance(self.settings, settings_type):
+            raise ValueError("Telephony settings do not match the carrier service.")
+        return self.settings
 
 
 @dataclass

@@ -54,7 +54,7 @@ class VoiceController:
             except ValueError:
                 raise HTTPException(status_code=400, detail="Invalid agent_id format")
 
-            return await self.service.initiate_outbound_call(
+            result = await self.service.initiate_outbound_call(
                 call_id=uuid5(
                     NAMESPACE_URL,
                     f"eylo:telephony-call:v1:{organization_id}:{idempotency_key}",
@@ -65,6 +65,7 @@ class VoiceController:
                 initial_message=initial_message,
                 context=context,
             )
+            return result.model_dump(mode="json")
 
         except (HTTPException, ProviderConfigError):
             raise

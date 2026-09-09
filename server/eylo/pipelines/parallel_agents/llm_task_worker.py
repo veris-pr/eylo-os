@@ -3,26 +3,30 @@
 from __future__ import annotations
 
 import logging
+from typing import Final
 from uuid import UUID
 
 from eylo.common.database import start_transaction
+from eylo.modules.llm_configs.domain import LLMOverrides
 from eylo.modules.llm_configs.resolver import LLMConfigResolver
 from eylo.modules.llm_configs.wiring import build_llm_config_resolver
 from eylo.modules.parallel_agents.schemas import TaskContent, WorkerResult
 from eylo.pipelines.llm.runtime import (
+    BackgroundPrompt,
     run_background_prompt_agent,
 )
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = (
+GENERATION_OVERRIDES: Final = LLMOverrides(max_tokens=1000, temperature=0.3)
+SYSTEM_PROMPT: Final = (
     "You are a task worker. Complete the given task thoroughly and concisely. "
     "Return only the result — no preamble, no commentary."
 )
 
 
 class LLMTaskWorker:
-    """Execute one task using the organization's default LLM config."""
+    """Execute one task using its persisted, revision-pinned LLM authority."""
 
     def __init__(
         self,
@@ -53,20 +57,22 @@ class LLMTaskWorker:
                     self.organization_id,
                     provider_config_id=config_id,
                     revision=config_revision,
-                    overrides={"max_tokens": 1000, "temperature": 0.3},
+                    overrides=GENERATION_OVERRIDES.to_storage(),
                 )
         else:
             resolved = await resolver.resolve_llm_pinned(
                 self.organization_id,
                 provider_config_id=config_id,
                 revision=config_revision,
-                overrides={"max_tokens": 1000, "temperature": 0.3},
+                overrides=GENERATION_OVERRIDES.to_storage(),
             )
 
         result = await run_background_prompt_agent(
             agent_name="parallel_llm_task",
-            system_prompt=SYSTEM_PROMPT,
-            user_content=self.task_content.instruction,
+            prompt=BackgroundPrompt(
+                system_prompt=SYSTEM_PROMPT,
+                user_content=self.task_content.instruction,
+            ),
             sender_id=self.sender_id,
             conversation_id=self.conversation_id,
             resolved=resolved,

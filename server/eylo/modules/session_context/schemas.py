@@ -8,27 +8,19 @@ and passed as a function argument through the call stack.
 
 from __future__ import annotations
 
-import enum
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, InstanceOf
+from pydantic.json_schema import SkipJsonSchema
 
 from eylo.common.contracts.session_state import (
+    SessionChannel,
     TelephonySessionStatePort,
     WebRTCSessionStatePort,
     WebSocketSessionStatePort,
 )
 from eylo.modules.auth.schemas import AuthSessionInDb
-
-
-class SessionChannel(str, enum.Enum):
-    """The interface through which this session was initiated."""
-
-    HTTP = "http"
-    WEBSOCKET = "websocket"
-    TELEPHONY = "telephony"
-    WEBRTC = "webrtc"
 
 
 class SessionContext(BaseModel):
@@ -39,7 +31,7 @@ class SessionContext(BaseModel):
     passed as a function argument through the call stack.
     """
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+    model_config = ConfigDict(extra="forbid", validate_assignment=True)
 
     # --- Always present ---
     channel: SessionChannel = Field(
@@ -75,20 +67,28 @@ class SessionContext(BaseModel):
     )
 
     # --- Composed session objects (populated per channel) ---
-    auth: Optional[AuthSessionInDb] = Field(
+    auth: SkipJsonSchema[AuthSessionInDb | None] = Field(
         default=None,
+        exclude=True,
+        repr=False,
         description="DB-persisted widget auth session.",
     )
-    ws: Optional[WebSocketSessionStatePort] = Field(
+    ws: SkipJsonSchema[InstanceOf[WebSocketSessionStatePort] | None] = Field(
         default=None,
+        exclude=True,
+        repr=False,
         description="In-memory WebSocket connection state.",
     )
-    call: Optional[TelephonySessionStatePort] = Field(
+    call: SkipJsonSchema[InstanceOf[TelephonySessionStatePort] | None] = Field(
         default=None,
+        exclude=True,
+        repr=False,
         description="In-memory telephony call state. TELEPHONY channel only.",
     )
-    webrtc: Optional[WebRTCSessionStatePort] = Field(
+    webrtc: SkipJsonSchema[InstanceOf[WebRTCSessionStatePort] | None] = Field(
         default=None,
+        exclude=True,
+        repr=False,
         description="In-memory WebRTC peer state. WEBRTC channel only.",
     )
 
@@ -150,15 +150,3 @@ class SessionContext(BaseModel):
         return self.authorized_conversation_id is None or str(
             self.authorized_conversation_id
         ) == str(conversation_id)
-
-    def enrich(self, **kwargs) -> SessionContext:
-        """Return a new SessionContext with additional attributes set.
-
-        Used for progressive hydration (e.g., adding webrtc to an
-        existing WS context).
-
-        Example:
-            ctx = ctx.enrich(webrtc=webrtc_session, channel=SessionChannel.WEBRTC)
-
-        """
-        return self.model_copy(update=kwargs)

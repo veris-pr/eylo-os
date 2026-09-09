@@ -8,13 +8,25 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Protocol
+from uuid import UUID
+
+from pydantic import ConfigDict, Field, JsonValue, StrictBool, StrictStr, TypeAdapter
 
 from eylo.framework.agents.agent import AgentSpec
-from eylo.framework.agents.common import FrameworkMetadata, JsonObject
+from eylo.framework.agents.common import FrameworkMetadata
 from eylo.framework.agents.context import RunInput, RunMessage
 from eylo.framework.agents.handoff import HandoffSpec
+from eylo.framework.agents.history import ToolResultMessageData
 from eylo.framework.agents.model import ModelSettings
-from eylo.framework.agents.tool import ToolExecutionMode, ToolKind, ToolSpec
+from eylo.framework.agents.tool import (
+    ToolExecutionMode,
+    ToolIdentity,
+    ToolKind,
+    ToolResult,
+    ToolSpec,
+)
+from eylo.modules.agents.models import AgentStatus
+from eylo.modules.conversations.schemas.conversations import HandoffTool
 from eylo.modules.conversations.schemas.message_content import (
     AssistantMessageContent,
     SystemMessageContent,
@@ -27,6 +39,8 @@ from eylo.modules.conversations.schemas.messages import (
     MessageKind,
     MessageMeta,
 )
+from eylo.modules.tools.models import ToolExecutionMode as PlatformToolExecutionMode
+from eylo.modules.tools.models import ToolKind as PlatformToolKind
 
 if TYPE_CHECKING:
     from eylo.modules.agents.schemas.indb import AgentInDb
@@ -38,69 +52,99 @@ if TYPE_CHECKING:
 class ExistingAgentMetadata(FrameworkMetadata):
     """Metadata carried from existing agent records into framework specs."""
 
-    slug: str
-    status: str
+    model_config = ConfigDict(revalidate_instances="always", hide_input_in_errors=True)
+
+    slug: StrictStr
+    status: AgentStatus = Field(strict=True)
 
 
 class ExistingToolMetadata(FrameworkMetadata):
     """Identity shared by persisted and code-defined platform tools."""
 
-    id: str
-    slug: str
-    mcp_server_id: str | None = None
+    model_config = ConfigDict(revalidate_instances="always", hide_input_in_errors=True)
+
+    id: UUID
+    slug: StrictStr
+    mcp_server_id: UUID | None = None
 
 
 class ExistingRevisionedToolMetadata(ExistingToolMetadata):
     """Identity for a persisted tool definition pinned to one revision."""
 
-    revision: int
+    revision: int = Field(strict=True, gt=0)
 
 
 class ExistingCodeDefinedToolMetadata(ExistingToolMetadata):
     """Identity for executable code whose deployed catalog is authoritative."""
 
-    definition_key: str
+    definition_key: StrictStr = Field(min_length=1, pattern=r"\S")
+
+
+class ExistingHandoffToolMetadata(ExistingToolMetadata):
+    """Generated handoff identity; execution rechecks the pinned swarm topology."""
+
+    target_agent_revision: int = Field(strict=True, gt=0)
 
 
 class ExistingRunInputMetadata(FrameworkMetadata):
     """Framework metadata derived from the current conversation context."""
 
-    conversation_id: str
-    organization_id: str | None = None
-    external_id: str | None = None
-    request_id: str | None = None
-    widget_interfaces_enabled: bool
-    transient_tool_message_count: int = 0
+    model_config = ConfigDict(revalidate_instances="always", hide_input_in_errors=True)
+
+    conversation_id: UUID
+    organization_id: UUID | None = None
+    external_id: StrictStr | None = None
+    request_id: UUID | None = None
+    widget_interfaces_enabled: StrictBool
+    transient_tool_message_count: int = Field(default=0, strict=True, ge=0)
 
 
 class ExistingToolCallMetadata(FrameworkMetadata):
     """Framework metadata for a persisted tool-use message."""
 
-    id: str
-    name: str
-    arguments: JsonObject
+    model_config = ConfigDict(
+        allow_inf_nan=False,
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+    )
+
+    id: ToolIdentity
+    name: ToolIdentity
+    arguments: dict[str, JsonValue]
 
 
 class ExistingToolResultMetadata(FrameworkMetadata):
     """Framework metadata for a persisted tool-result message."""
 
-    tool_call_id: str
-    name: str | None = None
-    is_error: bool
-    content: object
+    model_config = ConfigDict(
+        allow_inf_nan=False,
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+    )
+
+    tool_call_id: ToolIdentity
+    name: ToolIdentity | None = None
+    is_error: StrictBool
+    content: JsonValue
+
+
+_TOOL_RESULT_BATCH = TypeAdapter(tuple[ExistingToolResultMetadata, ...])
 
 
 class ExistingRunMessageMetadata(FrameworkMetadata):
     """Framework metadata derived from a persisted conversation message."""
 
+    model_config = ConfigDict(revalidate_instances="always", hide_input_in_errors=True)
+
     kind: MessageKind
     content_kind: MessageContentKind
-    request_id: str | None = None
+    request_id: UUID | None = None
     meta: MessageMeta
     content_blocks: TextMessageContentBlocks | None = None
     widget_response: WidgetResponseMessageContent | None = None
     tool_call: ExistingToolCallMetadata | None = None
     tool_result: ExistingToolResultMetadata | None = None
+    tool_results: tuple[ExistingToolResultMetadata, ...] | None = None
 
 
 class AgentSpecContext(Protocol):
@@ -140,8 +184,6 @@ def agent_spec_from_indb(
     handoffs: tuple[HandoffSpec, ...] = (),
 ) -> AgentSpec:
     """Build a framework agent config from an existing ``AgentInDb``."""
-    from eylo.modules.agents.models import AgentStatus
-
     if agent.status is not AgentStatus.ACTIVE:
         raise ValueError("Only published agents can be executed.")
     if (
@@ -169,7 +211,7 @@ def agent_spec_from_indb(
         handoffs=handoffs,
         metadata=ExistingAgentMetadata(
             slug=agent.slug,
-            status=getattr(agent.status, "value", str(agent.status)),
+            status=agent.status,
         ),
     )
 
@@ -189,7 +231,9 @@ def tool_spec_from_indb(tool: ToolInDb) -> ToolSpec:
     )
 
 
-def run_input_from_context(context: ConversationContext) -> RunInput:
+def run_input_from_context(
+    context: ConversationContext, *, request_id: UUID | None = None
+) -> RunInput:
     """Build LLM-visible input from a hydrated conversation context."""
     if context.primary_agent is None:
         raise ValueError("ConversationContext has no primary_agent.")
@@ -204,7 +248,9 @@ def run_input_from_context(context: ConversationContext) -> RunInput:
         messages=messages,
         tools=agent.tools,
         metadata=ExistingRunInputMetadata(
-            conversation_id=str(context.conversation.id),
+            conversation_id=context.conversation.id,
+            organization_id=context.conversation.organization_id,
+            request_id=request_id,
             external_id=context.external_id,
             widget_interfaces_enabled=context.widget_interfaces_enabled,
         ),
@@ -215,6 +261,7 @@ def run_message_from_indb(message: MessageInDb) -> RunMessage:
     """Convert an existing persisted message into framework-visible input."""
     tool_call_metadata: ExistingToolCallMetadata | None = None
     tool_result_metadata: ExistingToolResultMetadata | None = None
+    tool_results_metadata: tuple[ExistingToolResultMetadata, ...] | None = None
     content_blocks: TextMessageContentBlocks | None = None
     widget_response: WidgetResponseMessageContent | None = None
 
@@ -227,14 +274,19 @@ def run_message_from_indb(message: MessageInDb) -> RunMessage:
         )
     elif message.kind == MessageKind.TOOL_RESULT:
         parsed = message.get_tool_result_content()
-        if parsed.content:
-            result = parsed.content[0]
-            tool_result_metadata = ExistingToolResultMetadata(
+        results = tuple(
+            ExistingToolResultMetadata(
                 tool_call_id=result.tool_use_id,
                 name=result.name,
                 is_error=result.is_error,
                 content=result.content,
             )
+            for result in parsed.content
+        )
+        if len(results) == 1:
+            tool_result_metadata = results[0]
+        else:
+            tool_results_metadata = results
     else:
         parsed = message.get_parsed_content()
         if isinstance(parsed, WidgetResponseMessageContent):
@@ -248,12 +300,13 @@ def run_message_from_indb(message: MessageInDb) -> RunMessage:
     metadata = ExistingRunMessageMetadata(
         kind=message.kind,
         content_kind=message.content_kind,
-        request_id=str(message.request_id) if message.request_id else None,
+        request_id=message.request_id,
         meta=message.meta or MessageMeta(),
         content_blocks=content_blocks,
         widget_response=widget_response,
         tool_call=tool_call_metadata,
         tool_result=tool_result_metadata,
+        tool_results=tool_results_metadata,
     )
 
     return RunMessage(
@@ -264,45 +317,82 @@ def run_message_from_indb(message: MessageInDb) -> RunMessage:
     )
 
 
-# Platform kind -> framework kind. The two enums are deliberately separate and
-# are not being merged: the platform's stored kind uses upper-case DB values,
-# while the framework's `ToolKind` is its own vocabulary
-# and the framework may not import from `eylo.*` at all — Phase 16 enforces
-# that with a test. This mapping is the one place they meet.
-#
-# In this module `ToolKind` is the framework enum; the platform enum is imported
-# locally under the explicit `PlatformToolKind` name.
+def tool_results_from_run_message(
+    message: RunMessage,
+) -> tuple[ExistingToolResultMetadata, ...] | None:
+    """Decode persisted batches and existing single-result live/framework messages.
+
+    None means a non-result message. An empty tuple preserves an empty result
+    row for the shared history validator to reject, rather than inventing text.
+    """
+    single = message.metadata.get("tool_result")
+    batch = message.metadata.get("tool_results")
+    if batch is not None:
+        if single is not None:
+            raise ValueError(
+                "Run message contains both singular and batched tool results."
+            )
+        return _TOOL_RESULT_BATCH.validate_python(batch)
+    if single is not None:
+        if isinstance(single, ToolResultMessageData):
+            return (
+                ExistingToolResultMetadata(
+                    tool_call_id=single.tool_call_id,
+                    name=single.name,
+                    is_error=single.is_error,
+                    content=single.content,
+                ),
+            )
+        if isinstance(single, ToolResult):
+            return (
+                ExistingToolResultMetadata(
+                    tool_call_id=single.tool_call_id,
+                    is_error=single.is_error,
+                    content=single.content,
+                ),
+            )
+        return (ExistingToolResultMetadata.model_validate(single),)
+    return None
+
+
+# Platform enums are translated here; the standalone framework never imports them.
 _PLATFORM_TO_FRAMEWORK_KIND = {
-    "system": ToolKind.SYSTEM,
-    "local": ToolKind.LOCAL,
+    PlatformToolKind.SYSTEM: ToolKind.SYSTEM,
+    PlatformToolKind.LOCAL: ToolKind.LOCAL,
     # MCP is an external call as far as the agent loop is concerned. It does not
     # get its own framework value: the framework describes tool *families*, not
     # transports, and teaching it one protocol name would invite the next one.
     # Which transport runs it is decided by the platform's own dispatch.
-    "mcp": ToolKind.API,
+    PlatformToolKind.MCP: ToolKind.API,
     # Curated tools reach a vendor, but the agent loop calls them exactly like
     # any other in-process tool. Same reasoning as MCP above: the framework
     # describes families, and dispatch decides the transport.
-    "curated": ToolKind.LOCAL,
+    PlatformToolKind.CURATED: ToolKind.LOCAL,
+}
+
+_PLATFORM_TO_FRAMEWORK_EXECUTION_MODE = {
+    PlatformToolExecutionMode.AUTO: ToolExecutionMode.AUTO,
+    PlatformToolExecutionMode.REQUIRES_APPROVAL: ToolExecutionMode.REQUIRES_APPROVAL,
+    PlatformToolExecutionMode.DISABLED: ToolExecutionMode.DISABLED,
 }
 
 
 def _tool_metadata_from_existing(tool: ToolInDb) -> ExistingToolMetadata:
-    """Preserve either revision authority or deployed-code authority, never both."""
-    from eylo.modules.tools.models import ToolKind as PlatformToolKind
-
-    common = {
-        "id": str(tool.id),
-        "slug": tool.slug,
-        "mcp_server_id": (
-            str(tool.mcp_server_id) if tool.mcp_server_id else None
-        ),
-    }
+    """Distinguish tool revisions, deployed code and generated agent handoffs."""
+    if isinstance(tool, HandoffTool):
+        return ExistingHandoffToolMetadata(
+            id=tool.id,
+            slug=tool.slug,
+            mcp_server_id=tool.mcp_server_id,
+            target_agent_revision=tool.target_agent_revision,
+        )
     if tool.published_revision is not None:
         if tool.kind is PlatformToolKind.CURATED:
             raise ValueError("A curated tool cannot carry a persisted revision.")
         return ExistingRevisionedToolMetadata(
-            **common,
+            id=tool.id,
+            slug=tool.slug,
+            mcp_server_id=tool.mcp_server_id,
             revision=tool.published_revision,
         )
 
@@ -313,36 +403,31 @@ def _tool_metadata_from_existing(tool: ToolInDb) -> ExistingToolMetadata:
     elif tool.kind is PlatformToolKind.SYSTEM:
         definition_key = tool.slug
     else:
-        kind = getattr(tool.kind, "value", str(tool.kind))
-        raise ValueError(f"Tool kind {kind!r} requires a published revision.")
+        raise ValueError(
+            f"Tool kind {tool.kind.value!r} requires a published revision."
+        )
 
     return ExistingCodeDefinedToolMetadata(
-        **common,
+        id=tool.id,
+        slug=tool.slug,
+        mcp_server_id=tool.mcp_server_id,
         definition_key=definition_key,
     )
 
 
-def _tool_kind_from_existing(kind: object) -> ToolKind:
+def _tool_kind_from_existing(kind: PlatformToolKind) -> ToolKind:
     """Map one supported stored tool kind onto the framework vocabulary."""
-    value = getattr(kind, "value", str(kind)).lower()
-    mapped = _PLATFORM_TO_FRAMEWORK_KIND.get(value)
-    if mapped is not None:
-        return mapped
-    raise ValueError(f"Stored tool kind {value!r} has no framework mapping.")
+    if not isinstance(kind, PlatformToolKind):
+        raise ValueError("Stored tool kind must use the platform enum.")
+    return _PLATFORM_TO_FRAMEWORK_KIND[kind]
 
 
 def _tool_execution_mode_from_existing(tool: ToolInDb) -> ToolExecutionMode:
     """Map the persisted exact policy onto the framework contract."""
-    value = getattr(tool, "execution_mode", None)
-    if isinstance(value, ToolExecutionMode):
-        return value
-    raw_value = getattr(value, "value", value)
-    try:
-        return ToolExecutionMode(raw_value)
-    except (TypeError, ValueError) as error:
-        raise ValueError(
-            f"Tool {tool.id} has invalid execution mode {raw_value!r}."
-        ) from error
+    mode = tool.execution_mode
+    if not isinstance(mode, PlatformToolExecutionMode):
+        raise ValueError("Stored tool execution mode must use the platform enum.")
+    return _PLATFORM_TO_FRAMEWORK_EXECUTION_MODE[mode]
 
 
 def _message_role(kind: MessageKind) -> str:

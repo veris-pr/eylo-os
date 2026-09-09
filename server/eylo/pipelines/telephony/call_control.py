@@ -30,14 +30,16 @@ from eylo.modules.telephony.provider_config_domain import (
     TelephonyOperation,
     supports_telephony_operation,
 )
+from eylo.modules.telephony.schemas import OutboundCallResult
 from eylo.modules.telephony.services import PhoneNumberService, TelephonyCallService
 from eylo.modules.telephony.webhook_security import create_media_stream_token
 from eylo.modules.telephony.wiring import build_telephony_config_resolver
 from eylo.pipelines.outbound.durable_execution import (
-    DurableStepContext,
+    CommandStepContext,
     execute_outbound_attempt,
 )
 from eylo.pipelines.outbound.service import OutboundAttemptService
+from eylo.pipelines.telephony.config import build_telephony_runtime_config
 from eylo.sockets.telephony.base import (
     BaseTelephonyService,
     TelephonyControlAccepted,
@@ -78,8 +80,8 @@ class VoiceService:
         agent_revision: int | None = None,
         initial_message: str | None = None,
         context: dict[str, Any] | None = None,
-        durable_context: DurableStepContext | None = None,
-    ) -> dict[str, Any]:
+        durable_context: CommandStepContext | None = None,
+    ) -> OutboundCallResult:
         """Place a new call through the config owned by the agent's number."""
         async with start_transaction(ro=True) as db:
             phone_number = await PhoneNumberService(db=db).get_by_outbound_agent_id(
@@ -124,6 +126,7 @@ class VoiceService:
         self._require_operation(resolved, TelephonyOperation.OUTBOUND_CALL)
         adapter = self._adapter(resolved)
         profile = adapter.outbound_call_profile()
+        from_number = phone_number.number
 
         await prepare_outbound_call(
             call_id=call_id,
@@ -229,7 +232,7 @@ class VoiceService:
         async def send(authorization):
             return await adapter.initiate_outbound_call(
                 to_number=to_number,
-                from_number=phone_number.number,
+                from_number=from_number,
                 ws_url=ws_url,
                 custom_params=custom_params,
                 authorization=authorization,
@@ -248,18 +251,18 @@ class VoiceService:
             provider_reference=receipt.provider_reference,
             failure_code=receipt.failure_code,
         )
-        return {
-            "call_id": str(call_id),
-            "call_sid": receipt.provider_reference,
-            "status": receipt.state.value,
-            "failure_code": receipt.failure_code,
-            "outbound_attempt_id": str(receipt.attempt_id),
-            "agent_revision": executable_agent.ref.revision,
-            "provider": resolved.provider.value,
-            "provider_config_id": str(resolved.provider_config_id),
-            "provider_config_revision": resolved.provider_config_revision,
-            "from_number": phone_number.number,
-        }
+        return OutboundCallResult(
+            call_id=call_id,
+            call_sid=receipt.provider_reference,
+            status=receipt.state,
+            failure_code=receipt.failure_code,
+            outbound_attempt_id=receipt.attempt_id,
+            agent_revision=executable_agent.ref.revision,
+            provider=resolved.provider,
+            provider_config_id=resolved.provider_config_id,
+            provider_config_revision=resolved.provider_config_revision,
+            from_number=from_number,
+        )
 
     async def require_control_supported(
         self,
@@ -371,8 +374,7 @@ class VoiceService:
     @staticmethod
     def _adapter(resolved: ResolvedTelephony) -> BaseTelephonyService:
         return TelephonyFactory(
-            provider=resolved.provider.value,
-            telephony_config=resolved.as_provider_config().adapter_settings(),
+            build_telephony_runtime_config(resolved.as_provider_config())
         ).service
 
     @staticmethod

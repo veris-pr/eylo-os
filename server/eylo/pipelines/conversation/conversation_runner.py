@@ -9,24 +9,27 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Annotated, Any, Callable, Generic
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import arrow
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from eylo.common.context_compaction import (
     latest_context_compaction,
     uncompacted_messages,
 )
+from eylo.common.contracts.llm_catalog import LLMModels
 from eylo.common.contracts.llm_response import (
     LLMContentBlock,
     LLMContentType,
+    LLMDeltaKind,
     LLMResponse,
-    LLMTextBlock,
-    LLMToolUseBlock,
+    LLMResponsePhase,
 )
+from eylo.common.contracts.llm_runtime import LLMInferenceConfig, LLMPromptCaching
 from eylo.common.contracts.tool_platform import PlatformTool, PlatformToolInputSchema
 from eylo.common.contracts.tool_record import ToolRecord
 from eylo.common.database import get_transaction
@@ -40,16 +43,26 @@ from eylo.events.schema.py_events.base import (
     AgentToolResponseEvent,
 )
 from eylo.framework.agents.agent import AgentSpec
-from eylo.framework.agents.config import RunConfig
+from eylo.framework.agents.common import FrameworkMetadata, JsonObject
+from eylo.framework.agents.config import RunConfig, RunStreaming
 from eylo.framework.agents.context import RunContext, RunInput, RunMessage
-from eylo.framework.agents.hooks import RunHooks
+from eylo.framework.agents.history import ModelResponseProvenance, ToolResultProvenance
+from eylo.framework.agents.hooks import RunCallbacks, RunHooks
+from eylo.framework.agents.interruptions import (
+    RunApprovalInterruption,
+    RunInputInterruption,
+)
 from eylo.framework.agents.model import (
     ModelBlockKind,
     ModelOutputBlock,
+    ModelReasoningBlock,
     ModelResponse,
     ModelSettings,
+    ModelTextBlock,
+    ModelToolCallBlock,
+    ModelUsage,
 )
-from eylo.framework.agents.result import RunStatus
+from eylo.framework.agents.result import RunResult, RunStatus, RunTerminalMetadata
 from eylo.framework.agents.runner import FrameworkRunner
 from eylo.framework.agents.tool import ToolCall, ToolExecutor, ToolResult, ToolSpec
 from eylo.modules.agent_runs.budgets import (
@@ -57,16 +70,18 @@ from eylo.modules.agent_runs.budgets import (
     meter_current_agent_run_usage,
 )
 from eylo.modules.agent_runs.domain import (
+    AgentApprovalDecision,
     AgentInputRequestKind,
     AgentRunLifecycle,
     AgentRunOutcome,
 )
 from eylo.modules.agent_runs.service import (
-    AgentRunWaitState,
     finish_agent_run_in_transaction,
     pause_agent_run_in_transaction,
 )
+from eylo.modules.agent_runs.waits import AgentApprovalWaitState, AgentRunWaitState
 from eylo.modules.agents.services.runner.message_store import ErrorMessages
+from eylo.modules.conversations.schemas.conversations import ConversationContext
 from eylo.modules.conversations.schemas.message_content import (
     AssistantMessageContent,
     SystemMessageContent,
@@ -81,6 +96,7 @@ from eylo.modules.conversations.schemas.message_content import (
 )
 from eylo.modules.conversations.schemas.messages import (
     MessageContentKind,
+    MessageContentType,
     MessageCreate,
     MessageInDb,
     MessageKind,
@@ -88,25 +104,53 @@ from eylo.modules.conversations.schemas.messages import (
 )
 from eylo.modules.conversations.services.conversations import ConversationService
 from eylo.modules.conversations.services.messages import MessageService
-from eylo.modules.llm_configs.resolver import LLMConfigResolver
-from eylo.modules.llm_configs.wiring import build_llm_config_resolver
+from eylo.modules.llm_configs.domain import (
+    InvalidLLMConfig,
+    LLMOverrides,
+    ResolvePinnedLLM,
+)
+from eylo.modules.llm_configs.wiring import resolve_pinned_llm
 from eylo.modules.provider_configs.constants import Capability
 from eylo.modules.provider_configs.errors import NotConfiguredError
+from eylo.pipelines.agent_execution_context import (
+    ContextT,
+    PlatformExecutionContext,
+    PlatformRunState,
+)
+from eylo.pipelines.agent_run_continuations import (
+    RunContinuation,
+    parse_run_continuation,
+)
 from eylo.pipelines.conversation.background_dispatch import (
     dispatch_background_agents,
 )
 from eylo.pipelines.conversation.context import ConversationContextService
+from eylo.pipelines.llm.runtime import (
+    LLMInferenceMode,
+    to_llm_inference_mode,
+    to_llm_prompt_caching,
+)
+from eylo.pipelines.llm.voice_text import VoiceTextPhase, VoiceTurnRef
 from eylo.pipelines.session_timeline import try_file_runtime_fact
+from eylo.sockets.llm.base import LLMVendorAdapter
 from eylo.sockets.llm.factory import LLMFactory
 from eylo.sockets.tts.text_stream import SpeakableTextBuffer
 
+from .completion import (
+    ConversationMessageArtifact,
+    ConversationRunSummary,
+    FrameworkTerminalMessageMeta,
+)
 from .domain import (
     ExistingRunInputMetadata,
     ExistingToolCallMetadata,
     ExistingToolResultMetadata,
     agent_spec_from_context,
     run_input_from_context,
+    tool_results_from_run_message,
 )
+from .handoff import completed_handoffs, handoff_metadata_from
+from .run_state import ConversationRunState, require_conversation_run_state
 from .tool_executor import PlatformToolExecutor
 
 if TYPE_CHECKING:
@@ -119,60 +163,18 @@ _PAUSE_STATUSES = {
     RunStatus.WAITING_FOR_INPUT,
 }
 
-FRAMEWORK_META_FLAG = True
-RUN_METADATA_KEY = "run_metadata"
-APPROVAL_REQUEST_KEY = "approval_request"
-INPUT_REQUEST_KEY = "input_request"
-CONTINUATION_KEY = "continuation"
-TERMINAL_RESPONSE_KEY = "terminal_response"
-TERMINAL_TOOL_CALL_ID_KEY = "terminal_tool_call_id"
-TERMINAL_OUTPUT_KEY = "terminal_output"
-TERMINAL_ARTIFACT_KEY = "terminal_artifact"
+_FRAMEWORK_TOOL_ID = TypeAdapter(UUID, config=ConfigDict(hide_input_in_errors=True))
+_REQUEST_ID = TypeAdapter(UUID, config=ConfigDict(hide_input_in_errors=True))
+_TRANSIENT_MESSAGE_COUNT = TypeAdapter(
+    Annotated[int, Field(strict=True, ge=0)],
+    config=ConfigDict(hide_input_in_errors=True),
+)
 
 
-class FrameworkMessageMeta(BaseModel):
-    """Typed meta for framework-created assistant/tool-use messages."""
-
-    model_config = ConfigDict(extra="allow")
-
-    framework: bool = FRAMEWORK_META_FLAG
-    llm_response: dict[str, Any]
-    model_response: dict[str, Any]
-
-
-class FrameworkTerminalMessageMeta(BaseModel):
-    """Typed meta for the final message persisted for a framework run."""
-
-    model_config = ConfigDict(extra="allow")
-
-    framework: bool = FRAMEWORK_META_FLAG
-    run_id: str
-    status: RunStatus
-    model: str
-    usage: dict[str, int]
-    error: bool
-    run_metadata: dict[str, Any] | None = None
-    approval_request: dict[str, Any] | None = None
-    input_request: dict[str, Any] | None = None
-    continuation: dict[str, Any] | None = None
-    terminal_response: bool | None = None
-    terminal_tool_call_id: str | None = None
-
-
-class FrameworkToolResultMeta(BaseModel):
-    """Typed meta for framework-created tool result messages."""
-
-    model_config = ConfigDict(extra="allow")
-
-    framework: bool = FRAMEWORK_META_FLAG
-    tool_call_id: str
-    is_error: bool
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-@dataclass(frozen=True, slots=True)
-class _FrameworkToolRecord:
+class _FrameworkToolRecord(BaseModel):
     """Vendor-facing record for a framework-only model tool."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     id: UUID
     llm_config: PlatformTool
@@ -180,14 +182,16 @@ class _FrameworkToolRecord:
 
 def _vendor_tools_from_run_input(
     run_input: RunInput,
-    conversation_context: object,
+    conversation_context: PlatformExecutionContext,
 ) -> list[ToolRecord]:
     """Project the framework-authoritative tool list into vendor records."""
     persisted_by_name: dict[str, ToolRecord] = {}
     for tool in conversation_context.get_tools():
         name = tool.llm_config.name
         if name in persisted_by_name:
-            raise ValueError("Conversation tools contain a duplicate model-visible name.")
+            raise ValueError(
+                "Conversation tools contain a duplicate model-visible name."
+            )
         persisted_by_name[name] = tool
 
     organization_id = conversation_context.conversation.organization_id
@@ -219,34 +223,31 @@ def _vendor_tools_from_run_input(
 
 
 def _framework_tool_id(spec: ToolSpec, *, organization_id: UUID) -> UUID:
-    """Return a stable vendor-facing ID for a framework-only tool."""
+    """Preserve a supplied UUID; derive identity only when none was supplied."""
     metadata_id = spec.metadata.get("id")
     if metadata_id is not None:
-        try:
-            return UUID(str(metadata_id))
-        except (TypeError, ValueError, AttributeError):
-            pass
+        return _FRAMEWORK_TOOL_ID.validate_python(metadata_id)
     return uuid5(
         NAMESPACE_URL,
         f"eylo:framework-tool:{organization_id}:{spec.name}",
     )
 
 
-class ExistingConversationModel:
+class ExistingConversationModel(Generic[ContextT]):
     """Framework model adapter over today's LLM vendor adapters."""
 
     def __init__(
         self,
-        conversation_context: object,
+        conversation_context: ContextT | PlatformRunState[ContextT],
         *,
-        llm_resolver: LLMConfigResolver,
-        model_config_overrides: dict | None = None,
-        stream: bool = False,
+        llm_resolver: ResolvePinnedLLM,
+        prompt_caching: LLMPromptCaching | None = None,
+        inference_mode: LLMInferenceMode = LLMInferenceMode.SINGLE_RESPONSE,
     ) -> None:
         self._conversation_context = conversation_context
         self._llm_resolver = llm_resolver
-        self._model_config_overrides = model_config_overrides or {}
-        self._stream = stream
+        self._prompt_caching = prompt_caching
+        self._inference_mode = inference_mode
 
     async def generate(
         self,
@@ -254,6 +255,7 @@ class ExistingConversationModel:
         settings: ModelSettings,
     ) -> ModelResponse:
         """Resolve org credentials, then call the matching LLM adapter."""
+        settings = ModelSettings.model_validate(settings)
         if (
             settings.provider_config_id is None
             or settings.provider_config_revision is None
@@ -263,27 +265,26 @@ class ExistingConversationModel:
                 missing=["provider_config", "provider_config_revision"],
                 configure_via="/api/agents",
             )
-        resolved = await self._llm_resolver.resolve_llm_pinned(
+        resolved = await self._llm_resolver(
             self.current_context.conversation.organization_id,
             provider_config_id=settings.provider_config_id,
             revision=settings.provider_config_revision,
-            overrides=_llm_overrides_from_settings(
-                settings,
-                self._model_config_overrides,
-            ),
+            overrides=_llm_overrides_from_settings(settings),
         )
         adapter = LLMFactory.from_resolved(resolved).adapter
         messages = _prepare_messages_for_existing_vendor(
             _messages_from_run_input(run_input, self.current_context)
         )
         tools = _vendor_tools_from_run_input(run_input, self.current_context)
-        llm_config = resolved.generation.to_storage()
-        llm_config["prompt_caching"] = self._model_config_overrides.get(
-            "prompt_caching",
-            settings.prompt_caching,
+        prompt_caching = self._prompt_caching
+        if prompt_caching is None:
+            prompt_caching = to_llm_prompt_caching(settings.prompt_caching)
+        llm_config = LLMInferenceConfig(
+            generation=resolved.generation,
+            prompt_caching=prompt_caching,
         )
 
-        if self._stream:
+        if self._inference_mode is LLMInferenceMode.STREAMING:
             llm_response = await self._run_streaming_inference(
                 adapter=adapter,
                 run_input=run_input,
@@ -305,77 +306,79 @@ class ExistingConversationModel:
     async def _run_streaming_inference(
         self,
         *,
-        adapter,
+        adapter: LLMVendorAdapter,
         run_input: RunInput,
         messages: list[MessageInDb],
-        tools: list,
-        llm_config: dict,
+        tools: list[ToolRecord],
+        llm_config: LLMInferenceConfig,
         emit_tokens: bool,
     ) -> LLMResponse:
         """Stream through the adapter and deliver ordered voice text segments."""
-        turn_id = str(uuid4())
+        turn_id = uuid4()
         metadata = _token_metadata(run_input, turn_id)
         text_stream = PlatformTokenStream(run_input=run_input, metadata=metadata)
         emitted_complete = False
 
-        streaming_iter = adapter.run_streaming_inference(
-            messages=messages,
-            system_prompt=run_input.instructions,
-            tools=tools,
-            llm_config=llm_config,
-        )
-
+        streaming_iter: AsyncGenerator[LLMResponse, None] | None = None
         try:
-            first_chunk = await streaming_iter.__anext__()
-        except (AttributeError, NotImplementedError, StopAsyncIteration, TypeError):
-            response = await adapter.run_inference(
-                messages=messages,
-                system_prompt=run_input.instructions,
-                tools=tools,
-                llm_config=llm_config,
-            )
-            if emit_tokens:
-                await text_stream.add_response(response)
-                await text_stream.flush()
-                await _emit_token_complete(run_input, metadata)
-            return response
+            try:
+                streaming_iter = adapter.run_streaming_inference(
+                    messages=messages,
+                    system_prompt=run_input.instructions,
+                    tools=tools,
+                    llm_config=llm_config,
+                )
+                first_chunk = await streaming_iter.__anext__()
+            except (AttributeError, NotImplementedError, StopAsyncIteration, TypeError):
+                response = await adapter.run_inference(
+                    messages=messages,
+                    system_prompt=run_input.instructions,
+                    tools=tools,
+                    llm_config=llm_config,
+                )
+                if emit_tokens:
+                    await text_stream.add_response(response)
+                    await text_stream.flush()
+                    await _emit_token_complete(run_input, metadata)
+                return response
 
-        if not emit_tokens:
-            return await _consume_buffered_stream(first_chunk, streaming_iter)
+            if not emit_tokens:
+                return await _consume_buffered_stream(first_chunk, streaming_iter)
 
-        final_response: LLMResponse | None = None
-        for chunk in (first_chunk,):
             final_response, emitted_complete = await _consume_stream_chunk(
-                chunk,
+                first_chunk,
                 text_stream,
                 emitted_complete=emitted_complete,
             )
 
-        async for partial_response in streaming_iter:
-            candidate, emitted_complete = await _consume_stream_chunk(
-                partial_response,
-                text_stream,
-                emitted_complete=emitted_complete,
-            )
-            final_response = candidate or final_response
+            async for partial_response in streaming_iter:
+                candidate, emitted_complete = await _consume_stream_chunk(
+                    partial_response,
+                    text_stream,
+                    emitted_complete=emitted_complete,
+                )
+                final_response = candidate or final_response
 
-        if final_response is None:
-            raise ValueError("Streaming inference returned no responses")
+            if final_response is None:
+                raise ValueError("Streaming inference returned no responses")
 
-        if not text_stream.has_received_text:
-            await text_stream.add_response(final_response)
-        else:
-            await text_stream.reconcile_response(final_response)
-        await text_stream.flush()
-        if not emitted_complete:
-            await _emit_token_complete(run_input, metadata)
-        return final_response
+            if not text_stream.has_received_text:
+                await text_stream.add_response(final_response)
+            else:
+                await text_stream.reconcile_response(final_response)
+            await text_stream.flush()
+            if not emitted_complete:
+                await _emit_token_complete(run_input, metadata)
+            return final_response
+        finally:
+            if streaming_iter is not None:
+                await streaming_iter.aclose()
 
     @property
-    def current_context(self) -> object:
+    def current_context(self) -> ContextT:
         """Return the latest conversation context for this model call."""
-        if isinstance(self._conversation_context, dict):
-            return self._conversation_context["conversation_context"]
+        if isinstance(self._conversation_context, PlatformRunState):
+            return self._conversation_context.conversation_context
         return self._conversation_context
 
 
@@ -389,8 +392,11 @@ class FrameworkConversationRunner:
         context_service: ConversationContextService | None = None,
         message_service: MessageService | None = None,
         tool_executor: ToolExecutor | None = None,
-        llm_resolver: LLMConfigResolver | None = None,
-        model_factory: Callable[[object, RunConfig], ExistingConversationModel]
+        llm_resolver: ResolvePinnedLLM | None = None,
+        model_factory: Callable[
+            [ConversationRunState, RunConfig],
+            ExistingConversationModel[ConversationContext],
+        ]
         | None = None,
     ) -> None:
         self._conversation_service = conversation_service or ConversationService()
@@ -418,7 +424,9 @@ class FrameworkConversationRunner:
             raise ValueError("Durable conversation execution requires an exact agent.")
         if agent_run_id is not None and durable_context is None:
             raise ValueError("Durable conversation execution requires its context.")
-        run_config = config or RunConfig()
+        run_config = (
+            RunConfig.model_validate(config) if config is not None else RunConfig()
+        )
         conversation = await self._conversation_service.get_(conversation_id)
         context = await self._context_service.build(
             conversation=conversation,
@@ -453,6 +461,7 @@ class FrameworkConversationRunner:
         durable_context: DurableStepContext,
     ):
         """Continue one answered tool interruption on the same product run."""
+        config = RunConfig.model_validate(config)
         conversation = await self._conversation_service.get_(conversation_id)
         context = await self._context_service.build(conversation=conversation)
         _require_exact_context_agent(
@@ -484,22 +493,23 @@ class FrameworkConversationRunner:
             request_id=wait.request_id,
         )
         context.messages = _without_pause_projections(
-            context.messages,
+            context.messages or [],
             run_id=agent_run_id,
         )
-        local_context = {
-            "conversation_context": context,
-            "last_message_id": (
+        local_context = ConversationRunState(
+            conversation_context=context,
+            last_message_id=(
                 existing_result.id
                 if existing_result is not None
                 else tool_use_message.id
             ),
-            "active_user_message": user_message,
-            "request_id": user_message.request_id,
-            "agent_run_id": agent_run_id,
-            "tool_use_messages": {tool_call.id: tool_use_message},
-            "durable_context": durable_context,
-        }
+            active_user_message=user_message,
+            request_id=user_message.request_id,
+            agent_run_id=agent_run_id,
+            tool_use_messages={tool_call.id: tool_use_message},
+            command_ids={tool_call.id: tool_use_message.id},
+            durable_context=durable_context,
+        )
         run_context = RunContext(
             current_agent=agent,
             handoff_chain=[agent],
@@ -523,7 +533,7 @@ class FrameworkConversationRunner:
 
         refreshed = await self._context_service.build(conversation=conversation)
         refreshed.messages = _without_pause_projections(
-            refreshed.messages,
+            refreshed.messages or [],
             run_id=agent_run_id,
         )
         return await self._execute_context(
@@ -531,7 +541,7 @@ class FrameworkConversationRunner:
             user_message=user_message,
             run_config=config,
             agent_run_id=agent_run_id,
-            last_message_id=local_context["last_message_id"],
+            last_message_id=local_context.last_message_id,
             durable_context=durable_context,
         )
 
@@ -542,21 +552,17 @@ class FrameworkConversationRunner:
         call: ToolCall,
         wait: AgentRunWaitState,
     ) -> ToolResult:
-        if wait.kind is AgentInputRequestKind.APPROVAL:
-            response = wait.response
-            if not isinstance(response, dict):
-                raise ValueError("Approval response must be an object.")
-            decision = response.get("decision")
-            if decision == "approve":
+        wait.require_answered()
+        if isinstance(wait, AgentApprovalWaitState):
+            response = wait.require_response()
+            if response.decision is AgentApprovalDecision.APPROVE:
                 return await self._tool_executor.execute(run_context, call)
-            if decision == "reject":
-                return ToolResult(
-                    tool_call_id=call.id,
-                    content="The user rejected this tool action.",
-                    is_error=True,
-                    metadata={"approval_rejected": True},
-                )
-            raise ValueError("Approval decision must be approve or reject.")
+            return ToolResult(
+                tool_call_id=call.id,
+                content="The user rejected this tool action.",
+                is_error=True,
+                metadata={"approval_rejected": True},
+            )
 
         return ToolResult(
             tool_call_id=call.id,
@@ -572,7 +578,7 @@ class FrameworkConversationRunner:
     async def _execute_context(
         self,
         *,
-        context: object,
+        context: ConversationContext,
         user_message: MessageInDb,
         run_config: RunConfig,
         agent_run_id: UUID | None,
@@ -594,34 +600,15 @@ class FrameworkConversationRunner:
             runtime_facts=execution_facts,
         )
         agent = agent_spec_from_context(context)
-        base_input = run_input_from_context(context)
-        run_input = base_input.model_copy(
-            update={
-                "metadata": ExistingRunInputMetadata.model_validate(
-                    base_input.metadata
-                ).model_copy(
-                    update={
-                        "organization_id": str(context.conversation.organization_id),
-                        "request_id": str(user_message.request_id)
-                        if user_message.request_id
-                        else None,
-                    }
-                )
-            }
+        run_input = run_input_from_context(context, request_id=user_message.request_id)
+        local_context = ConversationRunState(
+            conversation_context=context,
+            last_message_id=last_message_id,
+            active_user_message=user_message,
+            request_id=user_message.request_id,
+            agent_run_id=agent_run_id,
+            durable_context=durable_context,
         )
-        local_context = {
-            "conversation_context": context,
-            "last_message_id": last_message_id,
-            "active_user_message": user_message,
-            "request_id": user_message.request_id,
-            "agent_run_id": agent_run_id,
-            "tool_use_messages": {},
-            "durable_context": durable_context,
-            "after_model_response": self._persist_model_response_messages,
-            "before_tool_call": self._persist_tool_use_message,
-            "after_tool_result": self._persist_tool_result_message,
-            "after_tool_results": self._refresh_after_tool_results,
-        }
 
         if user_message.request_id is not None:
             await self._transition_request_status(
@@ -635,11 +622,17 @@ class FrameworkConversationRunner:
             local_context=local_context,
             user_message=user_message,
         )
-        local_context["lifecycle_hooks"] = lifecycle_hooks
+        local_context.lifecycle_hooks = lifecycle_hooks
         runner = FrameworkRunner(
             self._build_model(local_context, run_config),
             tool_executor=self._tool_executor,
             hooks=lifecycle_hooks,
+            callbacks=RunCallbacks(
+                after_model_response=self._persist_model_response_messages,
+                before_tool_call=self._persist_tool_use_message,
+                after_tool_result=self._persist_tool_result_message,
+                after_tool_results=self._refresh_after_tool_results,
+            ),
         )
         try:
             result = await runner.run(
@@ -650,12 +643,12 @@ class FrameworkConversationRunner:
             )
         except Exception:
             await _complete_voice_request(
-                context=_conversation_context_from_state(local_context),
+                context=local_context.conversation_context,
                 user_message=user_message,
             )
             lifecycle_hooks.emit_response_complete(AgentLifecycleOutcome.FAILED)
             raise
-        final_context = _conversation_context_from_state(local_context)
+        final_context = local_context.conversation_context
         outcome = AgentLifecycleOutcome.COMPLETED
 
         try:
@@ -664,17 +657,20 @@ class FrameworkConversationRunner:
                 context=final_context,
                 agent=result.final_agent or agent,
                 user_message=user_message,
-                parent_message_id=local_context["last_message_id"],
+                parent_message_id=local_context.last_message_id,
                 agent_run_id=agent_run_id,
             )
-            if run_config.stream and _should_emit_terminal_message_tokens(result):
+            if (
+                run_config.stream is RunStreaming.ENABLED
+                and _should_emit_terminal_message_tokens(result)
+            ):
                 await _emit_terminal_message_tokens(
                     run_input,
-                    text=final_message.get_text_content(),
-                    turn_id=str(result.run_id),
+                    text=final_message.get_text_content() or "",
+                    turn_id=result.run_id,
                 )
             elif (
-                not run_config.stream
+                run_config.stream is RunStreaming.DISABLED
                 and final_message.content_kind == MessageContentKind.TEXT
             ):
                 from eylo.pipelines.llm.streaming_tts import (
@@ -735,18 +731,20 @@ class FrameworkConversationRunner:
 
     def _build_model(
         self,
-        local_context: dict,
+        local_context: ConversationRunState,
         config: RunConfig,
-    ) -> ExistingConversationModel:
+    ) -> ExistingConversationModel[ConversationContext]:
         if self._model_factory is not None:
             return self._model_factory(local_context, config)
-        if self._llm_resolver is None:
-            self._llm_resolver = build_llm_config_resolver()
         return ExistingConversationModel(
             local_context,
-            llm_resolver=self._llm_resolver,
-            model_config_overrides=_model_overrides_from_config(config),
-            stream=config.stream,
+            llm_resolver=(
+                self._llm_resolver
+                if self._llm_resolver is not None
+                else resolve_pinned_llm
+            ),
+            prompt_caching=to_llm_prompt_caching(config.prompt_caching),
+            inference_mode=to_llm_inference_mode(config.stream),
         )
 
     async def _mark_request_failed_after_terminal_persistence_error(
@@ -776,7 +774,7 @@ class FrameworkConversationRunner:
 
     async def _persist_model_response_messages(
         self,
-        run_context,
+        run_context: RunContext,
         run_input: RunInput,
         response: ModelResponse,
         tool_calls: tuple[ToolCall, ...],
@@ -785,28 +783,27 @@ class FrameworkConversationRunner:
         if not tool_calls:
             return
 
-        local_context = _local_context_dict(run_context.local_context)
-        local_context["pending_model_response"] = response
-        local_context["pending_model_response_cursor"] = 0
+        local_context = require_conversation_run_state(run_context.local_context)
+        local_context.pending_model_response_cursor = 0
 
     async def _persist_tool_use_message(
         self,
-        run_context,
+        run_context: RunContext,
         call: ToolCall,
         response: ModelResponse,
     ) -> None:
         """Persist model output blocks in order through this executed tool."""
-        local_context = _local_context_dict(run_context.local_context)
-        conversation_context = _conversation_context_from_state(local_context)
-        parent_message_id = local_context["last_message_id"]
+        local_context = require_conversation_run_state(run_context.local_context)
+        conversation_context = local_context.conversation_context
+        parent_message_id = local_context.last_message_id
         created_at = arrow.utcnow().datetime
-        cursor = int(local_context.get("pending_model_response_cursor", 0))
+        cursor = local_context.pending_model_response_cursor
         stop_index = _model_block_stop_index(response, call, cursor)
 
         for index in range(cursor, stop_index):
             block = response.blocks[index]
             if block.kind == ModelBlockKind.TEXT:
-                text = _model_text_content(block.content)
+                text = block.content
                 if not text:
                     continue
                 message = await self._message_service.create_(
@@ -818,12 +815,12 @@ class FrameworkConversationRunner:
                             content=TextContent(text=text),
                         ),
                         external_id=response.id,
-                        meta=_framework_message_meta(response),
+                        meta=_framework_message_meta(response, index),
                         created_at=created_at + datetime.timedelta(microseconds=index),
                         parent_message_id=parent_message_id,
-                        request_id=local_context["request_id"],
+                        request_id=local_context.request_id,
                         request_status=RequestStatus.PROCESSING,
-                        agent_run_id=local_context["agent_run_id"],
+                        agent_run_id=local_context.agent_run_id,
                     )
                 )
                 parent_message_id = message.id
@@ -832,9 +829,9 @@ class FrameworkConversationRunner:
             if block.kind != ModelBlockKind.TOOL_CALL:
                 continue
 
-            tool_call = ToolCall.model_validate(block.content)
+            tool_call = block.content
             await self._transition_request_status(
-                local_context["request_id"],
+                local_context.request_id,
                 RequestStatus.AWAITING_TOOL_RESULTS,
                 conversation_id=conversation_context.conversation.id,
             )
@@ -851,31 +848,31 @@ class FrameworkConversationRunner:
                         )
                     ),
                     external_id=tool_call.id,
-                    meta=_framework_message_meta(response),
+                    meta=_framework_message_meta(response, index),
                     created_at=created_at + datetime.timedelta(microseconds=index),
                     parent_message_id=parent_message_id,
-                    request_id=local_context["request_id"],
+                    request_id=local_context.request_id,
                     request_status=RequestStatus.AWAITING_TOOL_RESULTS,
-                    agent_run_id=local_context["agent_run_id"],
+                    agent_run_id=local_context.agent_run_id,
                 )
             )
-            local_context["tool_use_messages"][tool_call.id] = message
+            local_context.tool_use_messages[tool_call.id] = message
+            local_context.command_ids[tool_call.id] = message.id
             parent_message_id = message.id
 
-        local_context["pending_model_response_cursor"] = stop_index
-        local_context["last_message_id"] = parent_message_id
-        local_context["tool_messages_persisted"] = True
+        local_context.pending_model_response_cursor = stop_index
+        local_context.last_message_id = parent_message_id
         await get_transaction().commit()
 
     async def _persist_tool_result_message(
         self,
-        run_context,
+        run_context: RunContext,
         call: ToolCall,
         result: ToolResult,
     ) -> None:
         """Persist a tool result before the framework advances the loop."""
-        local_context = _local_context_dict(run_context.local_context)
-        tool_use_message = local_context["tool_use_messages"].get(call.id)
+        local_context = require_conversation_run_state(run_context.local_context)
+        tool_use_message = local_context.tool_use_messages.get(call.id)
         if tool_use_message is None:
             raise ValueError("No persisted TOOL_USE message exists for this tool call.")
 
@@ -904,70 +901,59 @@ class FrameworkConversationRunner:
                 parent_message_id=tool_use_message.id,
                 request_id=tool_use_message.request_id,
                 request_status=RequestStatus.AWAITING_TOOL_RESULTS,
-                agent_run_id=local_context["agent_run_id"],
+                agent_run_id=local_context.agent_run_id,
             )
         )
-        local_context["last_message_id"] = message.id
+        local_context.last_message_id = message.id
         await get_transaction().commit()
 
     async def _refresh_after_tool_results(
         self,
-        run_context,
+        run_context: RunContext,
         run_input: RunInput,
         tool_results: tuple[ToolResult, ...],
     ) -> RunInput:
         """Refresh active conversation state after DB-changing handoff tools."""
-        local_context = _local_context_dict(run_context.local_context)
+        handoffs = completed_handoffs(tool_results)
+        local_context = require_conversation_run_state(run_context.local_context)
         await self._transition_request_status(
-            local_context["request_id"],
+            local_context.request_id,
             RequestStatus.PROCESSING,
-            conversation_id=_conversation_context_from_state(
-                local_context
-            ).conversation.id,
+            conversation_id=local_context.conversation_context.conversation.id,
         )
         await get_transaction().commit()
 
-        if not any(
-            result.metadata.get("handoff_context_changed")
-            or result.metadata.get("handoff_occurred")
-            or result.metadata.get("new_agent_id")
-            for result in tool_results
-        ):
+        if not handoffs:
             return run_input
 
-        current_context = _conversation_context_from_state(local_context)
-        active_user_message = local_context.get("active_user_message")
+        current_context = local_context.conversation_context
+        active_user_message = local_context.active_user_message
         refreshed = await self._context_service.build(
             conversation=current_context.conversation,
-            through_message_id=active_user_message.id
-            if isinstance(active_user_message, MessageInDb)
-            else None,
+            through_message_id=active_user_message.id,
         )
-        if isinstance(active_user_message, MessageInDb):
-            refreshed = _context_through_user_message(refreshed, active_user_message)
+        refreshed = _context_through_user_message(refreshed, active_user_message)
         from eylo.common.contracts.tool_availability import ToolRuntimeFact
         from eylo.pipelines.system_tools.availability import (
             refresh_context_tool_availability,
         )
 
         runtime_facts = set()
-        if local_context.get("durable_context") is not None:
+        if local_context.durable_context is not None:
             runtime_facts.add(ToolRuntimeFact.DURABLE_EXECUTION)
-        if local_context.get("agent_run_id") is not None:
+        if local_context.agent_run_id is not None:
             runtime_facts.add(ToolRuntimeFact.AGENT_RUN)
         await refresh_context_tool_availability(
             refreshed,
             runtime_facts=runtime_facts,
         )
-        local_context["conversation_context"] = refreshed
+        local_context.conversation_context = refreshed
 
         previous_agent = run_context.current_agent
         next_agent = agent_spec_from_context(refreshed)
-        if previous_agent.id != next_agent.id and any(
-            result.metadata.get("handoff_occurred") for result in tool_results
-        ):
+        if previous_agent.id != next_agent.id:
             run_context.record_handoff(next_agent)
-            lifecycle_hooks = local_context.get("lifecycle_hooks")
+            lifecycle_hooks = local_context.lifecycle_hooks
             if isinstance(lifecycle_hooks, FrameworkConversationHooks):
                 await lifecycle_hooks.on_handoff(
                     run_context,
@@ -978,7 +964,7 @@ class FrameworkConversationRunner:
             run_context.current_agent = next_agent
 
         refreshed_input = run_input_from_context(refreshed)
-        transient_tool_message_count = int(
+        transient_tool_message_count = _TRANSIENT_MESSAGE_COUNT.validate_python(
             run_input.metadata.get("transient_tool_message_count", 0)
         )
         candidate_transient_tool_messages = (
@@ -1001,11 +987,11 @@ class FrameworkConversationRunner:
                     *refreshed_input.messages,
                     *transient_tool_messages,
                 ),
-                "metadata": run_input.metadata.model_copy(
-                    update=refreshed_input.metadata.model_dump(
-                        mode="json",
-                        exclude_none=True,
-                    )
+                "metadata": ExistingRunInputMetadata.model_validate(
+                    {
+                        **run_input.metadata.model_dump(),
+                        **refreshed_input.metadata.model_dump(exclude_none=True),
+                    }
                 ),
             }
         )
@@ -1013,13 +999,14 @@ class FrameworkConversationRunner:
     async def _persist_terminal_message(
         self,
         *,
-        result,
-        context: object,
+        result: RunResult,
+        context: ConversationContext,
         agent: AgentSpec,
         user_message: MessageInDb,
         parent_message_id: UUID,
         agent_run_id: UUID | None,
     ) -> MessageInDb:
+        result = RunResult.model_validate(result)
         request_status = _request_status_for_result(result)
         text = _terminal_text_for_result(result)
         if result.error_message:
@@ -1106,7 +1093,9 @@ class FrameworkConversationRunner:
 class FrameworkConversationHooks(RunHooks):
     """Bridge framework lifecycle callbacks to existing agent UI events."""
 
-    def __init__(self, *, local_context: dict, user_message: MessageInDb) -> None:
+    def __init__(
+        self, *, local_context: ConversationRunState, user_message: MessageInDb
+    ) -> None:
         self._local_context = local_context
         self._user_message = user_message
         self._agent_started = False
@@ -1128,7 +1117,7 @@ class FrameworkConversationHooks(RunHooks):
         await dispatch_background_agents(
             agent_id=primary_agent.id,
             conversation_context=conversation_context,
-            request_id=self._local_context.get("request_id"),
+            request_id=self._local_context.request_id,
         )
 
     async def on_agent_start(self, context, agent: AgentSpec) -> None:
@@ -1225,7 +1214,7 @@ class FrameworkConversationHooks(RunHooks):
         if user_session_id is None:
             return
         conversation = self.current_context.conversation
-        raw_run_id = self._local_context.get("agent_run_id")
+        raw_run_id = self._local_context.agent_run_id
         subject_id = (
             UUID(str(raw_run_id)) if raw_run_id is not None else self._user_message.id
         )
@@ -1252,42 +1241,46 @@ class FrameworkConversationHooks(RunHooks):
         )
 
     @property
-    def current_context(self) -> object:
-        return _conversation_context_from_state(self._local_context)
+    def current_context(self) -> ConversationContext:
+        return self._local_context.conversation_context
 
 
-def _model_overrides_from_config(config: RunConfig) -> dict:
-    return {"prompt_caching": config.prompt_caching}
-
-
-def _terminal_message_meta(result, agent: AgentSpec) -> dict:
-    meta = FrameworkTerminalMessageMeta(
-        run_id=str(result.run_id),
+def _terminal_message_meta(result: RunResult, agent: AgentSpec) -> dict[str, object]:
+    result = RunResult.model_validate(result)
+    return FrameworkTerminalMessageMeta(
+        run_id=result.run_id,
         status=result.status,
         model=(
             result.model_responses[-1].model
             if result.model_responses
             else agent.model_settings.model or "unknown"
         ),
-        usage=result.usage.model_dump(),
+        usage=result.usage,
         error=result.error_message is not None,
-    ).model_dump(exclude_none=True, mode="json")
-    if result.metadata:
-        meta[RUN_METADATA_KEY] = result.metadata.model_dump(mode="json")
-    for key in (
-        APPROVAL_REQUEST_KEY,
-        INPUT_REQUEST_KEY,
-        CONTINUATION_KEY,
-        TERMINAL_RESPONSE_KEY,
-        TERMINAL_TOOL_CALL_ID_KEY,
+        run_metadata=result.metadata,
+        llm_response=_terminal_replay_response(result),
+    ).model_dump(mode="json")
+
+
+def _terminal_replay_response(result: RunResult) -> ModelResponse | None:
+    """Replay only the unchanged final model text, never a tool/generated outcome."""
+    if (
+        not result.is_success
+        or not result.model_responses
+        or result.final_output is None
     ):
-        if key in result.metadata:
-            meta[key] = result.metadata[key]
-    return meta
+        return None
+    response = result.model_responses[-1]
+    if any(block.kind == ModelBlockKind.TOOL_CALL for block in response.blocks):
+        return None
+    text = "".join(
+        block.content for block in response.blocks if block.kind == ModelBlockKind.TEXT
+    )
+    return response if text == result.final_output else None
 
 
 def _primary_agent_message_create(
-    context: object,
+    context: ConversationContext,
     *,
     kind: MessageKind,
     content_kind: MessageContentKind,
@@ -1300,9 +1293,12 @@ def _primary_agent_message_create(
     request_status: RequestStatus,
     agent_run_id: UUID | None,
 ) -> MessageCreate:
+    participant = context.get_primary_agent()
+    if participant is None:
+        raise ValueError("ConversationContext has no primary agent participant.")
     return MessageCreate(
         conversation_id=context.conversation.id,
-        sender_participant_id=context.get_primary_agent().id,
+        sender_participant_id=participant.id,
         agent_run_id=agent_run_id,
         kind=kind,
         content_kind=content_kind,
@@ -1317,7 +1313,7 @@ def _primary_agent_message_create(
 
 
 def _require_exact_context_agent(
-    context: object,
+    context: ConversationContext,
     *,
     agent_id: UUID | None,
     agent_revision: int | None,
@@ -1334,23 +1330,19 @@ def _require_exact_context_agent(
 
 
 def _resume_tool_call(
-    context: object,
+    context: ConversationContext,
     *,
     run_id: UUID,
     wait: AgentRunWaitState,
 ) -> tuple[MessageInDb, ToolCall]:
-    framework = wait.continuation.get("framework")
-    if not isinstance(framework, dict):
-        raise ValueError("AgentRun continuation is missing framework state.")
-    tool_call_id = framework.get("tool_call_id")
-    if not tool_call_id:
-        raise ValueError("AgentRun continuation is missing the tool identity.")
+    continuation = parse_run_continuation(wait, RunContinuation)
+    tool_call_id = continuation.framework.tool_call_id
 
-    for message in reversed(context.messages):
+    for message in reversed(context.messages or []):
         if (
             message.agent_run_id != run_id
             or message.kind != MessageKind.TOOL_USE
-            or message.external_id != str(tool_call_id)
+            or message.external_id != tool_call_id
         ):
             continue
         content = message.get_tool_use_content().content
@@ -1375,12 +1367,12 @@ def _without_pause_projections(
 
 
 def _resume_result_message(
-    context: object,
+    context: ConversationContext,
     *,
     run_id: UUID,
     request_id: UUID,
 ) -> MessageInDb | None:
-    for message in reversed(context.messages):
+    for message in reversed(context.messages or []):
         if message.agent_run_id != run_id or message.kind != MessageKind.TOOL_RESULT:
             continue
         metadata = _message_meta_dict(message.meta).get("metadata")
@@ -1419,14 +1411,10 @@ async def _consume_stream_chunk(
     emitted_complete: bool,
 ) -> tuple[LLMResponse | None, bool]:
     """Route one adapter streaming chunk into the ordered voice stream."""
-    if response.metadata.get("streaming", False) and not response.metadata.get(
-        "final",
-        False,
-    ):
-        delta = response.metadata.get("delta") or {}
-        if delta.get("type") == "text_delta":
-            token = delta.get("text") or ""
-            await text_stream.add_delta(token)
+    if response.metadata.phase is LLMResponsePhase.PROGRESS:
+        delta = response.metadata.delta
+        if delta is not None and delta.type is LLMDeltaKind.TEXT:
+            await text_stream.add_delta(delta.text)
         return None, emitted_complete
 
     if not text_stream.has_received_text:
@@ -1442,7 +1430,7 @@ async def _consume_stream_chunk(
 
 async def _consume_buffered_stream(
     first_response: LLMResponse,
-    remaining_responses,
+    remaining_responses: AsyncIterator[LLMResponse],
 ) -> LLMResponse:
     """Buffer budgeted streaming output until final usage is accepted."""
     final_response = _final_stream_response(first_response)
@@ -1454,10 +1442,7 @@ async def _consume_buffered_stream(
 
 
 def _final_stream_response(response: LLMResponse) -> LLMResponse | None:
-    if response.metadata.get("streaming", False) and not response.metadata.get(
-        "final",
-        False,
-    ):
+    if response.metadata.phase is LLMResponsePhase.PROGRESS:
         return None
     return response
 
@@ -1473,18 +1458,18 @@ async def _meter_llm_response(response: LLMResponse) -> None:
 def _response_text(response: LLMResponse) -> str:
     """Return the concatenated text blocks from a vendor-normalized response."""
     return "".join(
-        _text_from_llm_content(block.content)
+        block.content.text
         for block in response.content
-        if LLMContentType(block.type) == LLMContentType.TEXT
+        if block.type == LLMContentType.TEXT
     )
 
 
 class PlatformTokenStream:
     """Emit vendor streaming deltas as safe Eylo platform text segments."""
 
-    def __init__(self, *, run_input: RunInput, metadata: dict) -> None:
+    def __init__(self, *, run_input: RunInput, metadata: VoiceTurnRef) -> None:
         self.run_input = run_input
-        self.metadata = metadata
+        self.metadata = VoiceTurnRef.model_validate(metadata)
         self._buffer = SpeakableTextBuffer()
         self._raw_text = ""
 
@@ -1523,27 +1508,29 @@ class PlatformTokenStream:
             await _emit_token(
                 self.run_input,
                 token=segment,
-                is_complete=False,
+                phase=VoiceTextPhase.PARTIAL,
                 metadata=self.metadata,
             )
 
 
-async def _emit_token_complete(run_input: RunInput, metadata: dict) -> None:
-    await _emit_token(run_input, token="", is_complete=True, metadata=metadata)
+async def _emit_token_complete(run_input: RunInput, metadata: VoiceTurnRef) -> None:
+    await _emit_token(
+        run_input, token="", phase=VoiceTextPhase.COMPLETE, metadata=metadata
+    )
 
 
 async def _emit_terminal_message_tokens(
     run_input: RunInput,
     *,
     text: str,
-    turn_id: str,
+    turn_id: UUID,
 ) -> None:
     metadata = _token_metadata(run_input, turn_id)
     if text:
         await _emit_token(
             run_input,
             token=text,
-            is_complete=False,
+            phase=VoiceTextPhase.PARTIAL,
             metadata=metadata,
         )
     await _emit_token_complete(run_input, metadata)
@@ -1553,8 +1540,8 @@ async def _emit_token(
     run_input: RunInput,
     *,
     token: str,
-    is_complete: bool,
-    metadata: dict,
+    phase: VoiceTextPhase,
+    metadata: VoiceTurnRef,
 ) -> None:
     """Deliver one ordered text segment to active voice sessions."""
     from eylo.pipelines.llm.streaming_tts import (
@@ -1571,44 +1558,35 @@ async def _emit_token(
 
     await deliver_voice_text_segment(
         VoiceTextSegment(
-            organization_id=UUID(str(organization_id)),
-            conversation_id=UUID(str(conversation_id)),
+            organization_id=organization_id,
+            conversation_id=conversation_id,
             text=token,
-            is_complete=is_complete,
-            turn_id=metadata.get("turn_id"),
-            request_id=metadata.get("request_id"),
+            phase=phase,
+            turn_id=metadata.turn_id,
+            request_id=metadata.request_id,
         )
     )
 
 
-def _token_metadata(run_input: RunInput, turn_id: str) -> dict:
-    metadata = {"turn_id": turn_id}
+def _token_metadata(run_input: RunInput, turn_id: UUID) -> VoiceTurnRef:
+    """Validate caller correlation without stringifying opaque runtime objects."""
     request_id = run_input.metadata.get("request_id")
-    if request_id:
-        metadata["request_id"] = str(request_id)
-    return metadata
-
-
-def _local_context_dict(local_context: object) -> dict:
-    if not isinstance(local_context, dict):
-        raise ValueError("Framework conversation callbacks require local context.")
-    return local_context
+    return VoiceTurnRef(
+        turn_id=turn_id,
+        request_id=None if request_id is None or request_id == "" else request_id,
+    )
 
 
 def _request_id_from_input(run_input: RunInput) -> UUID | None:
-    request_id = run_input.metadata.get("request_id")
-    if not request_id:
+    return _request_id_from_metadata(run_input.metadata)
+
+
+def _request_id_from_metadata(metadata: FrameworkMetadata) -> UUID | None:
+    """Accept UUID snapshots and legacy empty correlation, never opaque objects."""
+    request_id = metadata.get("request_id")
+    if request_id is None or request_id == "":
         return None
-    return UUID(str(request_id))
-
-
-def _model_text_content(content: object) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, dict):
-        value = content.get("text") or content.get("content") or ""
-        return str(value)
-    return str(content)
+    return _REQUEST_ID.validate_python(request_id)
 
 
 def _model_block_stop_index(
@@ -1628,7 +1606,7 @@ def _model_block_stop_index(
         block = response.blocks[index]
         if block.kind != ModelBlockKind.TOOL_CALL:
             continue
-        tool_call = ToolCall.model_validate(block.content)
+        tool_call = block.content
         if matched_tool:
             return index
         if tool_call.id == call.id:
@@ -1639,37 +1617,29 @@ def _model_block_stop_index(
     raise ValueError("Tool call identity was not found in its model response.")
 
 
-def _framework_message_meta(response: ModelResponse) -> dict:
-    response_data = response.model_dump()
-    return FrameworkMessageMeta(
-        llm_response=response_data,
-        model_response=response_data,
-        **response_data,
+def _framework_message_meta(
+    response: ModelResponse,
+    response_block_index: int | None,
+) -> JsonObject:
+    return ModelResponseProvenance(
+        model_response=response,
+        response_block_index=response_block_index,
     ).model_dump(mode="json")
 
 
-def _tool_result_meta(result: ToolResult) -> dict:
-    metadata = {
-        key: value
-        for key, value in result.metadata.model_dump(mode="json").items()
-        if key != TERMINAL_OUTPUT_KEY
-    }
-    return FrameworkToolResultMeta(
-        tool_call_id=result.tool_call_id,
-        is_error=result.is_error,
-        metadata=metadata,
-    ).model_dump(mode="json")
+def _tool_result_meta(result: ToolResult) -> JsonObject:
+    return ToolResultProvenance.from_result(result).model_dump(mode="json")
 
 
 def _tool_result_sender_participant_id(
-    local_context: dict,
+    local_context: ConversationRunState,
     result: ToolResult,
 ) -> UUID:
-    participant_id = result.metadata.get("new_participant_id")
-    if participant_id:
-        return UUID(str(participant_id))
+    handoff = handoff_metadata_from(result)
+    if handoff is not None and handoff.target_participant_id is not None:
+        return handoff.target_participant_id
 
-    conversation_context = _conversation_context_from_state(local_context)
+    conversation_context = local_context.conversation_context
     agent = conversation_context.get_primary_agent()
     if agent is None:
         raise ValueError("ConversationContext has no primary agent participant.")
@@ -1689,27 +1659,16 @@ def _should_append_transient_tool_messages(
         return False
 
     refreshed_tool_result_ids = {
-        tool_call_id
+        result.tool_call_id
         for message in refreshed_input.messages
-        if (tool_call_id := _tool_result_call_id(message)) is not None
+        for result in tool_results_from_run_message(message) or ()
     }
     return not expected_tool_call_ids.issubset(refreshed_tool_result_ids)
 
 
-def _tool_result_call_id(message: RunMessage) -> str | None:
-    tool_result = message.metadata.get("tool_result")
-    if isinstance(tool_result, ExistingToolResultMetadata):
-        tool_call_id = tool_result.tool_call_id
-    elif isinstance(tool_result, dict):
-        tool_call_id = tool_result.get("tool_call_id")
-    else:
-        return None
-    return str(tool_call_id) if tool_call_id else None
-
-
 async def _complete_voice_request(
     *,
-    context: object,
+    context: ConversationContext,
     user_message: MessageInDb,
 ) -> None:
     """Finish voice runtime state directly before emitting a lossy UI delta."""
@@ -1731,14 +1690,10 @@ async def _complete_voice_request(
         )
 
 
-def _conversation_context_from_state(local_context: dict) -> object:
-    return local_context["conversation_context"]
-
-
-def _context_through_user_message(context: object, user_message: MessageInDb) -> object:
-    messages = getattr(context, "messages", None) or []
-    if not isinstance(messages, list):
-        return context
+def _context_through_user_message(
+    context: ConversationContext, user_message: MessageInDb
+) -> ConversationContext:
+    messages = context.messages or []
     ordered_messages = sorted(
         messages,
         key=lambda message: (message.created_at, str(message.id)),
@@ -1757,24 +1712,28 @@ def _context_through_user_message(context: object, user_message: MessageInDb) ->
     return context
 
 
-def _llm_overrides_from_settings(
-    settings: ModelSettings,
-    run_overrides: dict,
-) -> dict[str, object]:
-    overrides: dict[str, object | None] = {
-        "model": run_overrides.get("model", settings.model),
-        "max_tokens": run_overrides.get("max_tokens", settings.max_tokens),
-        "temperature": run_overrides.get("temperature", settings.temperature),
-        "top_k": settings.top_k,
-        "top_p": settings.top_p,
-        "stop_sequences": settings.stop_sequences,
-    }
-    return {key: value for key, value in overrides.items() if value is not None}
+def _llm_overrides_from_settings(settings: ModelSettings) -> LLMOverrides:
+    """Translate framework settings without exposing vendor enums to the framework."""
+    try:
+        return LLMOverrides(
+            model=LLMModels(settings.model) if settings.model is not None else None,
+            max_tokens=settings.max_tokens,
+            temperature=settings.temperature,
+            top_k=settings.top_k,
+            top_p=settings.top_p,
+            stop_sequences=settings.stop_sequences,
+        )
+    except (InvalidLLMConfig, ValueError):
+        raise NotConfiguredError(
+            capability=Capability.LLM,
+            missing=["valid_pinned_provider_config"],
+            configure_via="/api/llm-configs",
+        ) from None
 
 
 def _messages_from_run_input(
     run_input: RunInput,
-    conversation_context: object,
+    conversation_context: PlatformExecutionContext,
 ) -> list[MessageInDb]:
     created_at = arrow.utcnow().datetime
     return [
@@ -1858,26 +1817,29 @@ def _replace_message_text(
 
 def _message_from_run_message(
     message: RunMessage,
-    conversation_context: object,
+    conversation_context: PlatformExecutionContext,
     *,
     created_at: datetime.datetime,
 ) -> MessageInDb:
     tool_call = message.metadata.get("tool_call")
-    if isinstance(tool_call, dict):
+    if isinstance(tool_call, ToolCall):
+        tool_call = ExistingToolCallMetadata(
+            id=tool_call.id,
+            name=tool_call.name,
+            arguments=tool_call.arguments,
+        )
+    if tool_call is not None:
         tool_call = ExistingToolCallMetadata.model_validate(tool_call)
-    if isinstance(tool_call, ExistingToolCallMetadata):
         return _tool_use_message_from(
             message, conversation_context, tool_call, created_at
         )
 
-    tool_result = message.metadata.get("tool_result")
-    if isinstance(tool_result, dict):
-        tool_result = ExistingToolResultMetadata.model_validate(tool_result)
-    if isinstance(tool_result, ExistingToolResultMetadata):
+    tool_results = tool_results_from_run_message(message)
+    if tool_results is not None:
         return _tool_result_message_from(
             message,
             conversation_context,
-            tool_result,
+            tool_results,
             created_at,
         )
 
@@ -1886,7 +1848,9 @@ def _message_from_run_message(
     if content_kind == MessageContentKind.WIDGET_RESPONSE:
         widget_response = message.metadata.get("widget_response")
         if widget_response is None:
-            raise ValueError("Widget response run message is missing structured content.")
+            raise ValueError(
+                "Widget response run message is missing structured content."
+            )
         content = WidgetResponseMessageContent.model_validate(widget_response)
     else:
         content = _message_content_for_kind(
@@ -1906,7 +1870,7 @@ def _message_from_run_message(
 
 def _tool_use_message_from(
     message: RunMessage,
-    conversation_context: object,
+    conversation_context: PlatformExecutionContext,
     tool_call: ExistingToolCallMetadata,
     created_at: datetime.datetime,
 ) -> MessageInDb:
@@ -1928,8 +1892,8 @@ def _tool_use_message_from(
 
 def _tool_result_message_from(
     message: RunMessage,
-    conversation_context: object,
-    tool_result: ExistingToolResultMetadata,
+    conversation_context: PlatformExecutionContext,
+    tool_results: tuple[ExistingToolResultMetadata, ...],
     created_at: datetime.datetime,
 ) -> MessageInDb:
     return _message_indb(
@@ -1945,6 +1909,7 @@ def _tool_result_message_from(
                     content=tool_result.content,
                     is_error=tool_result.is_error,
                 )
+                for tool_result in tool_results
             ],
         ),
         created_at=created_at,
@@ -1953,16 +1918,20 @@ def _tool_result_message_from(
 
 def _message_indb(
     message: RunMessage,
-    conversation_context: object,
+    conversation_context: PlatformExecutionContext,
     *,
     kind: MessageKind,
     content_kind: MessageContentKind,
-    content: object,
+    content: MessageContentType,
     created_at: datetime.datetime,
 ) -> MessageInDb:
+    meta = message.metadata.get("meta")
+    if isinstance(meta, ModelResponseProvenance):
+        meta = ModelResponseProvenance.model_validate(meta).model_dump(mode="json")
+    elif isinstance(meta, ToolResultProvenance):
+        meta = ToolResultProvenance.model_validate(meta).model_dump(mode="json")
     return MessageInDb(
         id=message.id or uuid4(),
-        organization_id=conversation_context.conversation.organization_id,
         conversation_id=conversation_context.conversation.id,
         sender_participant_id=_sender_participant_id(conversation_context, kind),
         kind=kind,
@@ -1970,15 +1939,13 @@ def _message_indb(
         content=content,
         created_at=created_at,
         updated_at=created_at,
-        meta=message.metadata.get("meta") or None,
-        request_id=UUID(str(message.metadata["request_id"]))
-        if message.metadata.get("request_id")
-        else None,
+        meta=meta or None,
+        request_id=_request_id_from_metadata(message.metadata),
     )
 
 
 def _sender_participant_id(
-    conversation_context: object,
+    conversation_context: PlatformExecutionContext,
     kind: MessageKind,
 ) -> UUID:
     if kind == MessageKind.USER:
@@ -2031,7 +1998,7 @@ def _message_content_for_kind(
     content: str,
     *,
     content_blocks: TextMessageContentBlocks | None = None,
-) -> object:
+) -> AssistantMessageContent | SystemMessageContent | UserMessageContent:
     content_value = content_blocks if content_blocks is not None else content
     if kind == MessageKind.USER:
         return UserMessageContent(content=content_value)
@@ -2056,74 +2023,41 @@ def _model_response_from_llm_response(response: LLMResponse) -> ModelResponse:
         blocks=tuple(_model_block_from_llm_block(block) for block in response.content),
         usage=_usage_from_llm_response(response),
         stop_reason=response.stop_reason,
-        metadata=response.metadata,
+        metadata=response.metadata.to_json(),
     )
 
 
 def _model_block_from_llm_block(block: LLMContentBlock) -> ModelOutputBlock:
-    content_type = LLMContentType(block.type)
-    if content_type == LLMContentType.TEXT:
-        return ModelOutputBlock(
-            kind=ModelBlockKind.TEXT,
-            content=_text_from_llm_content(block.content),
+    if block.type == LLMContentType.TEXT:
+        return ModelTextBlock(
+            content=block.content.text,
         )
-    if content_type == LLMContentType.TOOL_USE:
-        return ModelOutputBlock(
-            kind=ModelBlockKind.TOOL_CALL,
-            content=_tool_call_from_llm_content(block.content),
+    if block.type == LLMContentType.TOOL_USE:
+        return ModelToolCallBlock(
+            content=ToolCall(
+                id=block.content.id,
+                name=block.content.name,
+                arguments=block.content.input,
+            ),
         )
-    return ModelOutputBlock(
-        kind=ModelBlockKind.REASONING,
-        content=_text_from_llm_content(block.content),
+    return ModelReasoningBlock(
+        content=block.content.text,
     )
 
 
-def _text_from_llm_content(content: object) -> str:
-    if isinstance(content, LLMTextBlock):
-        return content.text
-    if isinstance(content, BaseModel):
-        content = content.model_dump(mode="json")
-    if isinstance(content, str):
-        return content
-    if isinstance(content, dict):
-        value = content.get("text") or content.get("content") or ""
-        return str(value)
-    return str(content)
-
-
-def _tool_call_from_llm_content(content: object) -> dict:
-    if isinstance(content, LLMToolUseBlock):
-        return {
-            "id": content.id,
-            "name": content.name,
-            "arguments": content.input,
-        }
-    if isinstance(content, BaseModel):
-        content = content.model_dump(mode="json")
-    if isinstance(content, dict):
-        return {
-            "id": str(content["id"]),
-            "name": str(content["name"]),
-            "arguments": content.get("input") or content.get("arguments") or {},
-        }
-    raise ValueError("Tool-use content must be an LLMToolUseBlock or object.")
-
-
-def _usage_from_llm_response(response: LLMResponse):
-    from eylo.framework.agents.model import ModelUsage
-
+def _usage_from_llm_response(response: LLMResponse) -> ModelUsage:
     if response.usage is None:
         return ModelUsage()
     return ModelUsage(
-        input_tokens=response.usage.input_tokens or 0,
-        output_tokens=response.usage.output_tokens or 0,
+        input_tokens=response.usage.input_tokens,
+        output_tokens=response.usage.output_tokens,
         cache_creation_input_tokens=response.usage.cache_creation_input_tokens or 0,
         cache_read_input_tokens=response.usage.cache_read_input_tokens or 0,
         reasoning_tokens=response.usage.reasoning_tokens or 0,
     )
 
 
-def _terminal_text_for_result(result) -> str:
+def _terminal_text_for_result(result: RunResult) -> str:
     if result.final_output:
         return result.final_output
     if result.is_success:
@@ -2132,15 +2066,15 @@ def _terminal_text_for_result(result) -> str:
         return "I need approval before continuing this request."
     if result.status == RunStatus.WAITING_FOR_INPUT:
         return "I need more information before continuing this request."
-    if result.status.value == "timed_out":
+    if result.status is RunStatus.TIMED_OUT:
         return ErrorMessages.REQUEST_TIMEOUT
-    if result.status.value == "max_turns_exceeded":
+    if result.status is RunStatus.MAX_TURNS_EXCEEDED:
         return ErrorMessages.MAX_ITERATIONS
     return ErrorMessages.GENERIC_ERROR
 
 
 def _agent_run_terminal_fields(
-    result,
+    result: RunResult,
     *,
     conversation_id: UUID,
     origin_message_id: UUID,
@@ -2148,7 +2082,7 @@ def _agent_run_terminal_fields(
 ) -> tuple[
     AgentRunLifecycle,
     AgentRunOutcome,
-    dict | None,
+    dict[str, object] | None,
     str | None,
     str | None,
 ]:
@@ -2190,40 +2124,42 @@ def _agent_run_terminal_fields(
 
 
 def _agent_run_pause_fields(
-    result,
+    result: RunResult,
 ) -> tuple[AgentInputRequestKind, str, dict, dict]:
     """Project framework interruption metadata onto a typed product request."""
-    continuation = result.metadata.get(CONTINUATION_KEY)
-    if not isinstance(continuation, dict):
+    interruption = result.metadata
+    if not isinstance(interruption, (RunApprovalInterruption, RunInputInterruption)):
         raise ValueError("Framework pause is missing continuation metadata.")
-
-    if result.status is RunStatus.WAITING_FOR_APPROVAL:
-        request = result.metadata.get(APPROVAL_REQUEST_KEY)
-        if not isinstance(request, dict):
-            raise ValueError("Framework approval pause is missing request metadata.")
-        prompt = str(
-            request.get("action_summary")
-            or request.get("policy_reason")
+    if result.status is RunStatus.WAITING_FOR_APPROVAL and isinstance(
+        interruption, RunApprovalInterruption
+    ):
+        approval = interruption.approval_request
+        request = approval
+        prompt = (
+            approval.action_summary
+            or approval.policy_reason
             or "Approve this agent action?"
         )
         expected_schema = {
             "type": "object",
             "properties": {
-                "decision": {"type": "string", "enum": ["approve", "reject"]},
+                "decision": {
+                    "type": "string",
+                    "enum": [decision.value for decision in AgentApprovalDecision],
+                },
                 "comment": {"type": "string"},
             },
             "required": ["decision"],
             "additionalProperties": False,
         }
         kind = AgentInputRequestKind.APPROVAL
-    elif result.status is RunStatus.WAITING_FOR_INPUT:
-        request = result.metadata.get(INPUT_REQUEST_KEY)
-        if not isinstance(request, dict):
-            raise ValueError("Framework input pause is missing request metadata.")
-        prompt = str(request.get("prompt") or "Provide the requested information.")
-        expected_schema = request.get("expected_input_schema") or {}
-        if not isinstance(expected_schema, dict):
-            raise ValueError("Framework input response schema must be an object.")
+    elif result.status is RunStatus.WAITING_FOR_INPUT and isinstance(
+        interruption, RunInputInterruption
+    ):
+        details = interruption.input_request
+        request = details
+        prompt = details.prompt or "Provide the requested information."
+        expected_schema = details.expected_input_schema
         kind = AgentInputRequestKind.INPUT
     else:
         raise ValueError("Framework result is not an input or approval pause.")
@@ -2232,30 +2168,31 @@ def _agent_run_pause_fields(
         kind,
         prompt,
         expected_schema,
-        {"framework": continuation, "request": request},
+        RunContinuation(
+            framework=interruption.continuation, request=request
+        ).model_dump(mode="json"),
     )
 
 
 def _conversation_run_result(
-    result,
+    result: RunResult,
     *,
     conversation_id: UUID,
     origin_message_id: UUID,
     final_message_id: UUID,
-) -> dict:
+) -> dict[str, object]:
     """Store bounded product references, never a provider response payload."""
-    return {
-        "kind": "conversation_message",
-        "conversation_id": str(conversation_id),
-        "origin_message_id": str(origin_message_id),
-        "final_message_id": str(final_message_id),
-        "framework_run_id": str(result.run_id),
-        "framework_status": result.status.value,
-        "usage": result.usage.model_dump(mode="json"),
-    }
+    return ConversationRunSummary(
+        conversation_id=conversation_id,
+        origin_message_id=origin_message_id,
+        final_message_id=final_message_id,
+        framework_run_id=result.run_id,
+        framework_status=result.status,
+        usage=result.usage,
+    ).model_dump(mode="json")
 
 
-def _request_status_for_result(result) -> RequestStatus:
+def _request_status_for_result(result: RunResult) -> RequestStatus:
     if result.is_success:
         return RequestStatus.COMPLETED
     if result.status in _PAUSE_STATUSES:
@@ -2263,35 +2200,30 @@ def _request_status_for_result(result) -> RequestStatus:
     return RequestStatus.FAILED
 
 
-def _should_emit_terminal_message_tokens(result) -> bool:
+def _should_emit_terminal_message_tokens(result: RunResult) -> bool:
     return (
-        (
-            result.metadata.get("terminal_response") is True
-            and result.metadata.get(TERMINAL_ARTIFACT_KEY) is None
-        )
-        or result.status in _PAUSE_STATUSES
-    )
+        isinstance(result.metadata, RunTerminalMetadata)
+        and result.metadata.terminal_artifact is None
+    ) or result.status in _PAUSE_STATUSES
 
 
 def _terminal_artifact_message(
-    result,
+    result: RunResult,
     *,
-    context: object,
+    context: ConversationContext,
     user_message: MessageInDb,
 ) -> MessageInDb | None:
     """Resolve a tool-persisted assistant artifact used as the run result."""
-    artifact = result.metadata.get(TERMINAL_ARTIFACT_KEY)
-    if artifact is None:
+    result = RunResult.model_validate(result)
+    if not isinstance(result.metadata, RunTerminalMetadata):
         return None
-    if not isinstance(artifact, dict) or artifact.get("kind") != "conversation_message":
-        raise ValueError("Terminal artifact reference is invalid.")
-    try:
-        message_id = UUID(str(artifact.get("id")))
-    except (TypeError, ValueError) as error:
-        raise ValueError("Terminal artifact message ID is invalid.") from error
+    reference = result.metadata.terminal_artifact
+    if reference is None:
+        return None
+    artifact = ConversationMessageArtifact.model_validate(reference.model_dump())
 
     for message in context.messages or []:
-        if message.id != message_id:
+        if message.id != artifact.id:
             continue
         if (
             message.conversation_id != user_message.conversation_id

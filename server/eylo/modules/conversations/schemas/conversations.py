@@ -7,7 +7,7 @@ from functools import lru_cache
 from typing import Annotated, Any, Dict, List, Literal, Optional, Self, Tuple
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from eylo.common.contracts.tool_availability import (
     ToolAvailabilityFacts,
@@ -94,6 +94,20 @@ class ConversationInDb(ConversationBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+class HandoffTool(ToolInDb):
+    """Generated tool projection whose ID/revision identify a target agent, not a tool row."""
+
+    target_agent_revision: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def validate_authority(self) -> Self:
+        if self.kind is not ToolKind.LOCAL or self.published_revision is not None:
+            raise ValueError(
+                "Handoff tools carry agent authority, not a tool revision."
+            )
+        return self
+
+
 # ====================== Request Models ======================
 
 
@@ -141,11 +155,13 @@ class ConversationParticipant(EyloBaseRequestSchema):
 
 
 class ConversationStartRequest(EyloBaseRequestSchema):
+    model_config = ConfigDict(allow_inf_nan=False)
+
     from_: ConversationParticipant = Field(alias="from")
     to_: ConversationParticipant = Field(alias="to")
     channel: ConversationChannels = ConversationChannels.CHAT
     message: ConversationInitialMessage | None
-    context: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    context: dict[str, JsonValue] | None = Field(default_factory=dict)
     external_id: Optional[str] = None
     swarm_id: UUID | None = Field(
         default=None,
@@ -608,7 +624,7 @@ class ConversationContext(BaseModel):
 
         return tool
 
-    def _get_handoff_agent_tools(self) -> List[ToolInDb]:
+    def _get_handoff_agent_tools(self) -> list[HandoffTool]:
         """Convert handoff agents to ToolInDb objects.
 
         Each agent that can be handed off to is represented as a tool.
@@ -692,9 +708,13 @@ class ConversationContext(BaseModel):
                 ),
             )
 
-            # Create ToolInDb using model_construct to bypass validation
-            tool = ToolInDb.model_construct(
+            if agent.published_revision is None:
+                raise ValueError(
+                    "A handoff target requires a published agent revision."
+                )
+            tool = HandoffTool(
                 id=agent.id,
+                target_agent_revision=agent.published_revision,
                 name=f"{HANDOFF_TOOL_PREFIX}{agent.slug}",
                 slug=agent.slug,
                 kind=ToolKind.LOCAL,
@@ -729,8 +749,10 @@ def _get_widget_catalog_schema(version: int = 0) -> tuple:
 
 
 class ConversationMessageRequest(EyloBaseApiSchema):
+    model_config = ConfigDict(allow_inf_nan=False)
+
     message: ConversationInitialMessage | None
-    context: dict | None = None
+    context: dict[str, JsonValue] | None = None
 
 
 # ====================== Conversation API Response ======================

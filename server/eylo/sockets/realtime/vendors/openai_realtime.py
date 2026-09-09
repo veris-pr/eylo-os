@@ -1,27 +1,56 @@
-"""OpenAI Realtime API adapter.
+"""OpenAI realtime WebSocket adapter with native wire contracts.
 
-Raw WebSocket to wss://api.openai.com/v1/realtime.
-Audio: PCM 24kHz in/out (browser sends 16kHz — resample in send_audio).
-Events are JSON frames over WebSocket.
+Audio is PCM 24kHz in/out; browser input is resampled from 16kHz.
+Vendor event objects are translated here, never passed to platform pipelines.
 """
 
 from __future__ import annotations
 
 import base64
-import enum
-import json
+import binascii
 import logging
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Final, Literal, TypeAlias
+from urllib.parse import urlencode
 
 import websockets
+from openai.types.realtime import (
+    AudioTranscription,
+    ConversationItemCreateEvent,
+    ConversationItemInputAudioTranscriptionCompletedEvent,
+    InputAudioBufferAppendEvent,
+    InputAudioBufferSpeechStartedEvent,
+    RealtimeAudioConfig,
+    RealtimeAudioConfigInput,
+    RealtimeAudioConfigOutput,
+    RealtimeConversationItemFunctionCall,
+    RealtimeConversationItemFunctionCallOutput,
+    RealtimeErrorEvent,
+    RealtimeFunctionTool,
+    RealtimeResponseCreateParams,
+    RealtimeSessionCreateRequest,
+    RealtimeToolsConfig,
+    ResponseAudioDeltaEvent,
+    ResponseAudioTranscriptDeltaEvent,
+    ResponseAudioTranscriptDoneEvent,
+    ResponseCreateEvent,
+    ResponseDoneEvent,
+    ResponseFunctionCallArgumentsDoneEvent,
+    ResponseOutputItemAddedEvent,
+    SessionUpdateEvent,
+)
+from openai.types.realtime.realtime_audio_formats import AudioPCM
+from openai.types.realtime.realtime_audio_input_turn_detection import ServerVad
+from pydantic import TypeAdapter
 
 from eylo.audio.ops import StreamingResampler
 from eylo.common.contracts.tool_record import ToolRecord
-from eylo.sockets.llm.vendors.openai_utils import (
-    extract_openai_function_declarations,
+from eylo.sockets.llm.vendors.openai_utils import extract_openai_function_declarations
+from eylo.sockets.realtime.base import (
+    RealtimeAdapter,
+    RealtimeCapabilities,
+    RealtimeSessionUpdateMode,
 )
-from eylo.sockets.realtime.base import RealtimeAdapter, RealtimeCapabilities
 from eylo.sockets.realtime.config import RealtimeSessionConfig
 from eylo.sockets.realtime.events import (
     VENDOR_OUTPUT_SAMPLE_RATE,
@@ -35,50 +64,38 @@ from eylo.sockets.realtime.events import (
     TurnCompleteEvent,
     UserSpeechStartedEvent,
 )
+from eylo.sockets.realtime.vendors.openai_wire import (
+    OpenAIRealtimeEventType,
+    OpenAIRealtimeProtocolError,
+    OpenAIRealtimeProtocolFailure,
+    OpenAIRealtimeServerEvent,
+    OpenAIRealtimeSessionEvent,
+    OpenAIRealtimeStreamState,
+    OpenAIRealtimeToolIdentity,
+    parse_openai_realtime_event,
+    parse_openai_tool_arguments,
+)
 
 logger = logging.getLogger(__name__)
 
 _OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime"
+_OPENAI_PCM_RATE: Final[Literal[24000]] = 24000
+_RESPONSE_COMPLETED: Final[Literal["completed"]] = "completed"
+_RESPONSE_FAILED: Final[Literal["failed"]] = "failed"
+_RESPONSE_INCOMPLETE: Final[Literal["incomplete"]] = "incomplete"
+_INVALID_REQUEST_ERROR = "invalid_request_error"
 
-# Current Realtime WebSocket sessions use 24 kHz signed PCM for both directions.
-_PCM_AUDIO_FORMAT = {"type": "audio/pcm", "rate": 24000}
-
-
-class _OAIEvent(str, enum.Enum):
-    """Server-sent event types from OpenAI Realtime API."""
-
-    SESSION_CREATED = "session.created"
-    SESSION_UPDATED = "session.updated"
-    AUDIO_DELTA = "response.output_audio.delta"
-    LEGACY_AUDIO_DELTA = "response.audio.delta"
-    TRANSCRIPT_DELTA = "response.output_audio_transcript.delta"
-    LEGACY_TRANSCRIPT_DELTA = "response.audio_transcript.delta"
-    TRANSCRIPT_DONE = "response.output_audio_transcript.done"
-    LEGACY_TRANSCRIPT_DONE = "response.audio_transcript.done"
-    INPUT_TRANSCRIPTION_DONE = "conversation.item.input_audio_transcription.completed"
-    OUTPUT_ITEM_ADDED = "response.output_item.added"
-    OUTPUT_ITEM_DONE = "response.output_item.done"
-    FUNCTION_CALL_DONE = "response.function_call_arguments.done"
-    RESPONSE_DONE = "response.done"
-    SPEECH_STARTED = "input_audio_buffer.speech_started"
-    ERROR = "error"
-
-
-class _OAIClientEvent(str, enum.Enum):
-    """Client-sent event types to OpenAI Realtime API."""
-
-    INPUT_AUDIO_APPEND = "input_audio_buffer.append"
-    SESSION_UPDATE = "session.update"
-    CONVERSATION_ITEM_CREATE = "conversation.item.create"
-    RESPONSE_CREATE = "response.create"
+_OpenAIClientEvent: TypeAlias = (
+    InputAudioBufferAppendEvent
+    | SessionUpdateEvent
+    | ConversationItemCreateEvent
+    | ResponseCreateEvent
+)
+_CLIENT_EVENT = TypeAdapter(_OpenAIClientEvent)
 
 
 def _resample_16k_to_24k(audio_16k: bytes, resampler: StreamingResampler) -> bytes:
-    """Resample PCM 16-bit mono from 16kHz to 24kHz.
-
-    OpenAI Realtime expects 24kHz input; browser sends 16kHz via WebRTC.
-    Ratio: 3/2 (up=3, down=2).
-    """
+    """Use the session-owned resampler; PCM frames may arrive in uneven chunks."""
     return resampler.process(audio_16k)
 
 
@@ -87,90 +104,95 @@ class OpenAIRealtimeAdapter(RealtimeAdapter):
         super().__init__(config)
         self._api_key = api_key
         self._ws: websockets.ClientConnection | None = None
-        self._pending_tool_names: dict[str, str] = {}
-        # Per-session resampler — never share across sessions.
-        self._upsampler = StreamingResampler(from_rate=16000, to_rate=24000)
+        self._stream = OpenAIRealtimeStreamState()
+        self._upsampler = StreamingResampler(from_rate=16000, to_rate=_OPENAI_PCM_RATE)
 
     @property
     def capabilities(self) -> RealtimeCapabilities:
-        return RealtimeCapabilities(session_update_mode="in_place")
+        return RealtimeCapabilities(
+            session_update_mode=RealtimeSessionUpdateMode.IN_PLACE
+        )
 
     async def connect(self) -> None:
-        url = f"{_OPENAI_REALTIME_URL}?model={self._config.model}"
-        headers = {
-            "Authorization": f"Bearer {self._api_key}",
-        }
+        url = f"{_OPENAI_REALTIME_URL}?{urlencode({'model': self._config.model})}"
+        headers = {"Authorization": f"Bearer {self._api_key}"}
         self._ws = await websockets.connect(url, additional_headers=headers)
         await self._send_session_update()
         self._connected = True
-        logger.info(
-            "OpenAI Realtime connected",
-            extra={"model": self._config.model},
-        )
+        logger.info("OpenAI Realtime connected", extra={"model": self._config.model})
 
     async def verify_ready(self) -> None:
-        """Wait for OpenAI to accept the session update sent by ``connect``."""
+        """Require a valid session acknowledgement, not just its event label."""
         if not self._connected or not self._ws:
             raise RuntimeError("OpenAI Realtime session is not connected.")
         while True:
-            data = json.loads(await self._ws.recv())
-            event_type = data.get("type")
-            if event_type == _OAIEvent.SESSION_UPDATED:
+            event = parse_openai_realtime_event(await self._ws.recv())
+            if (
+                isinstance(event, OpenAIRealtimeSessionEvent)
+                and event.type == OpenAIRealtimeEventType.SESSION_UPDATED
+            ):
                 return
-            if event_type == _OAIEvent.ERROR:
+            if isinstance(event, RealtimeErrorEvent):
                 raise RuntimeError("OpenAI Realtime rejected the session config.")
 
     async def disconnect(self) -> None:
         self._connected = False
-        self._pending_tool_names.clear()
+        self._stream.pending_tools.clear()
         if self._ws:
             try:
                 await self._ws.close()
             except Exception:
                 logger.debug("OpenAI WebSocket close error ignored")
-            self._ws = None
+            finally:
+                self._ws = None
+
+    async def _send(self, event: _OpenAIClientEvent) -> None:
+        """Validate SDK objects again before JSON serialization; preserve omitted fields."""
+        if self._ws is None:
+            return
+        validated = _CLIENT_EVENT.validate_python(
+            event.model_dump(exclude_unset=True), strict=True
+        )
+        await self._ws.send(
+            validated.model_dump_json(exclude_unset=True, exclude_none=True)
+        )
 
     async def send_audio(self, audio_data: bytes) -> None:
-        if not self._ws:
+        if self._ws is None:
             return
-        # OpenAI expects 24kHz — resample from browser's 16kHz
         resampled = _resample_16k_to_24k(audio_data, self._upsampler)
-        encoded = base64.b64encode(resampled).decode("ascii")
-        await self._ws.send(
-            json.dumps(
-                {
-                    "type": _OAIClientEvent.INPUT_AUDIO_APPEND,
-                    "audio": encoded,
-                }
+        await self._send(
+            InputAudioBufferAppendEvent(
+                type="input_audio_buffer.append",
+                audio=base64.b64encode(resampled).decode("ascii"),
             )
         )
 
     async def request_speech(self, text: str) -> None:
         """Trigger one audio response with per-response instructions."""
-        if not self._ws:
+        if self._ws is None:
             raise RuntimeError("OpenAI Realtime session is not connected.")
-        await self._ws.send(
-            json.dumps(
-                {
-                    "type": _OAIClientEvent.RESPONSE_CREATE,
-                    "response": {
-                        "instructions": (
-                            "Speak exactly the following message, without adding "
-                            f"anything: {text}"
-                        )
-                    },
-                }
+        await self._send(
+            ResponseCreateEvent(
+                type="response.create",
+                response=RealtimeResponseCreateParams(
+                    instructions=(
+                        "Speak exactly the following message, without adding "
+                        f"anything: {text}"
+                    ),
+                ),
             )
         )
 
     async def receive(self) -> AsyncIterator[RealtimeEvent]:
-        if not self._ws:
+        if self._ws is None:
             return
         try:
             async for raw in self._ws:
-                data = json.loads(raw)
-                for event in self._translate(data):
-                    yield event
+                event = parse_openai_realtime_event(raw)
+                if event is not None:
+                    for translated in self._translate(event):
+                        yield translated
         except websockets.ConnectionClosed:
             logger.warning("OpenAI WebSocket closed")
             yield ErrorEvent(
@@ -190,22 +212,18 @@ class OpenAIRealtimeAdapter(RealtimeAdapter):
             )
 
     async def send_tool_result(self, tool_call_id: str, result: str) -> None:
-        if not self._ws:
+        if self._ws is None:
             return
-        await self._ws.send(
-            json.dumps(
-                {
-                    "type": _OAIClientEvent.CONVERSATION_ITEM_CREATE,
-                    "item": {
-                        "type": "function_call_output",
-                        "call_id": tool_call_id,
-                        "output": result,
-                    },
-                }
+        await self._send(
+            ConversationItemCreateEvent(
+                type="conversation.item.create",
+                item=RealtimeConversationItemFunctionCallOutput(
+                    type="function_call_output", call_id=tool_call_id, output=result
+                ),
             )
         )
-        # After sending tool result, request a new response
-        await self._ws.send(json.dumps({"type": _OAIClientEvent.RESPONSE_CREATE}))
+        # A function result is input to a new response, not the end of the turn.
+        await self._send(ResponseCreateEvent(type="response.create"))
 
     async def update_session(
         self,
@@ -215,208 +233,171 @@ class OpenAIRealtimeAdapter(RealtimeAdapter):
         voice: str | None = None,
         temperature: float | None = None,
     ) -> None:
-        """OpenAI supports session.update without reconnect."""
-        if not self._ws:
+        """Apply supported settings without reconnect; commit locally only after send."""
+        if self._ws is None:
             return
-        update: dict[str, Any] = {}
-        if system_prompt is not None:
-            update["instructions"] = system_prompt
-            self._config.system_prompt = system_prompt
-        if tools is not None:
-            update["tools"] = self._format_tools(tools)
-            self._config.tools = tools
-        if voice is not None:
-            self._config.voice = voice
         if temperature is not None:
             raise ValueError("OpenAI Realtime does not support temperature.")
-        audio_update: dict[str, Any] = {}
-        if voice is not None:
-            audio_update["output"] = {"voice": voice}
-        if audio_update:
-            update["audio"] = audio_update
-        if update:
-            update["type"] = "realtime"
-            await self._ws.send(
-                json.dumps(
-                    {
-                        "type": _OAIClientEvent.SESSION_UPDATE,
-                        "session": update,
-                    }
-                )
+        updated = self._config.updated(
+            system_prompt=system_prompt, tools=tools, voice=voice
+        )
+        if system_prompt is None and tools is None and voice is None:
+            return
+        await self._send(
+            SessionUpdateEvent(
+                type="session.update",
+                session=RealtimeSessionCreateRequest(
+                    type="realtime",
+                    instructions=updated.system_prompt
+                    if system_prompt is not None
+                    else None,
+                    tools=self._format_tools(updated.tools)
+                    if tools is not None
+                    else None,
+                    audio=RealtimeAudioConfig(
+                        output=RealtimeAudioConfigOutput(voice=updated.voice)
+                    )
+                    if voice is not None
+                    else None,
+                ),
             )
-
-    # --- Private ---
+        )
+        self._config = updated
 
     async def _send_session_update(self) -> None:
-        if not self._ws:
-            return
-        session_config: dict[str, Any] = {
-            "type": "realtime",
-            "instructions": self._config.system_prompt,
-            "output_modalities": ["audio"],
-            "audio": {
-                "input": {
-                    "format": dict(_PCM_AUDIO_FORMAT),
-                },
-                "output": {
-                    "format": dict(_PCM_AUDIO_FORMAT),
-                    "voice": self._config.voice,
-                },
-            },
-        }
-        audio_input = session_config["audio"]["input"]
-        if self._config.input_transcription_model is not None:
-            audio_input["transcription"] = {
-                "model": self._config.input_transcription_model
-            }
-        turn_detection: dict[str, Any] = {
-            "type": "server_vad",
-            "create_response": True,
-            "interrupt_response": True,
-        }
-        if self._config.vad_threshold is not None:
-            turn_detection["threshold"] = self._config.vad_threshold
-        if self._config.vad_silence_ms is not None:
-            turn_detection["silence_duration_ms"] = self._config.vad_silence_ms
-        audio_input["turn_detection"] = turn_detection
-        tools = self._format_tools()
-        if tools:
-            session_config["tools"] = tools
-        await self._ws.send(
-            json.dumps(
-                {
-                    "type": _OAIClientEvent.SESSION_UPDATE,
-                    "session": session_config,
-                }
+        """Build only explicitly configured options; absent values retain vendor semantics."""
+        config = self._config
+        audio_format = AudioPCM(type="audio/pcm", rate=_OPENAI_PCM_RATE)
+        await self._send(
+            SessionUpdateEvent(
+                type="session.update",
+                session=RealtimeSessionCreateRequest(
+                    type="realtime",
+                    instructions=config.system_prompt,
+                    output_modalities=["audio"],
+                    audio=RealtimeAudioConfig(
+                        input=RealtimeAudioConfigInput(
+                            format=audio_format,
+                            transcription=AudioTranscription(
+                                model=config.input_transcription_model
+                            )
+                            if config.input_transcription_model is not None
+                            else None,
+                            turn_detection=ServerVad(
+                                type="server_vad",
+                                create_response=True,
+                                interrupt_response=True,
+                                threshold=config.vad_threshold,
+                                silence_duration_ms=config.vad_silence_ms,
+                            ),
+                        ),
+                        output=RealtimeAudioConfigOutput(
+                            format=audio_format, voice=config.voice
+                        ),
+                    ),
+                    tools=self._format_tools() or None,
+                ),
             )
         )
 
     def _format_tools(
         self, tools: list[ToolRecord] | None = None
-    ) -> list[dict[str, Any]]:
-        """Convert platform tools to OpenAI Realtime API format.
-
-        Delegates extraction to ``extract_openai_function_declarations``
-        (shared with Chat Completions and Responses adapters) and wraps
-        each declaration in the flat ``{"type": "function", ...}`` format
-        used by the Realtime API (no ``strict`` flag, no ``function`` nesting).
-        """
-        tool_list = tools if tools is not None else self._config.tools
-        declarations = extract_openai_function_declarations(tool_list)
-        return [{"type": "function", **d} for d in declarations]
-
-    def _translate(self, data: dict[str, Any]) -> list[RealtimeEvent]:
-        """Translate one OpenAI server event into platform events."""
-        events: list[RealtimeEvent] = []
-        event_type = data.get("type", "")
-
-        if event_type == _OAIEvent.SESSION_CREATED:
-            events.append(
-                SessionStartedEvent(
-                    session_id=data.get("session", {}).get("id", ""),
-                )
+    ) -> RealtimeToolsConfig:
+        """Use the native flat function format, without Chat's wrapper or strict flag."""
+        declarations = extract_openai_function_declarations(
+            tools if tools is not None else self._config.tools
+        )
+        return [
+            RealtimeFunctionTool(
+                type="function",
+                name=declaration["name"],
+                description=declaration.get("description"),
+                parameters=declaration.get("parameters"),
             )
+            for declaration in declarations
+        ]
 
-        elif event_type in {_OAIEvent.AUDIO_DELTA, _OAIEvent.LEGACY_AUDIO_DELTA}:
-            audio_bytes = base64.b64decode(data.get("delta", ""))
-            if audio_bytes:
-                events.append(
-                    AudioDataEvent(
-                        audio=audio_bytes, sample_rate=VENDOR_OUTPUT_SAMPLE_RATE
+    def _translate(self, event: OpenAIRealtimeServerEvent) -> list[RealtimeEvent]:
+        """Consume validated native events; only normalized values leave the adapter."""
+        if isinstance(event, OpenAIRealtimeSessionEvent):
+            if event.type == OpenAIRealtimeEventType.SESSION_CREATED:
+                return [SessionStartedEvent(session_id=event.session.id)]
+        elif isinstance(event, ResponseAudioDeltaEvent):
+            try:
+                audio = base64.b64decode(event.delta, validate=True)
+            except (binascii.Error, ValueError):
+                raise OpenAIRealtimeProtocolError(
+                    OpenAIRealtimeProtocolFailure.INVALID_AUDIO
+                ) from None
+            if audio:
+                return [
+                    AudioDataEvent(audio=audio, sample_rate=VENDOR_OUTPUT_SAMPLE_RATE)
+                ]
+        elif isinstance(event, ResponseAudioTranscriptDeltaEvent):
+            return [OutputTranscriptEvent(text=event.delta, is_final=False)]
+        elif isinstance(event, ResponseAudioTranscriptDoneEvent):
+            return [OutputTranscriptEvent(text=event.transcript, is_final=True)]
+        elif isinstance(event, ConversationItemInputAudioTranscriptionCompletedEvent):
+            return [InputTranscriptEvent(text=event.transcript, is_final=True)]
+        elif isinstance(event, ResponseOutputItemAddedEvent):
+            if isinstance(event.item, RealtimeConversationItemFunctionCall):
+                if not event.item.call_id or not event.item.id:
+                    raise OpenAIRealtimeProtocolError(
+                        OpenAIRealtimeProtocolFailure.TOOL_IDENTITY_MISMATCH
+                    )
+                self._stream.pending_tools[event.item.call_id] = (
+                    OpenAIRealtimeToolIdentity(
+                        response_id=event.response_id,
+                        item_id=event.item.id,
+                        name=event.item.name,
                     )
                 )
-
-        elif event_type in {
-            _OAIEvent.TRANSCRIPT_DELTA,
-            _OAIEvent.LEGACY_TRANSCRIPT_DELTA,
-        }:
-            events.append(
-                OutputTranscriptEvent(
-                    text=data.get("delta", ""),
-                    is_final=False,
+        elif isinstance(event, ResponseFunctionCallArgumentsDoneEvent):
+            identity = self._stream.pending_tools.pop(event.call_id, None)
+            if (
+                identity is None
+                or identity.response_id != event.response_id
+                or identity.item_id != event.item_id
+            ):
+                raise OpenAIRealtimeProtocolError(
+                    OpenAIRealtimeProtocolFailure.TOOL_IDENTITY_MISMATCH
                 )
-            )
-
-        elif event_type in {
-            _OAIEvent.TRANSCRIPT_DONE,
-            _OAIEvent.LEGACY_TRANSCRIPT_DONE,
-        }:
-            events.append(
-                OutputTranscriptEvent(
-                    text=data.get("transcript", ""),
-                    is_final=True,
-                )
-            )
-
-        elif event_type == _OAIEvent.INPUT_TRANSCRIPTION_DONE:
-            events.append(
-                InputTranscriptEvent(
-                    text=data.get("transcript", ""),
-                    is_final=True,
-                )
-            )
-
-        elif event_type in {_OAIEvent.OUTPUT_ITEM_ADDED, _OAIEvent.OUTPUT_ITEM_DONE}:
-            item = data.get("item", {})
-            if item.get("type") == "function_call":
-                call_id = item.get("call_id")
-                name = item.get("name")
-                if call_id and name:
-                    self._pending_tool_names[call_id] = name
-
-        elif event_type == _OAIEvent.FUNCTION_CALL_DONE:
-            try:
-                arguments = json.loads(data.get("arguments", "{}"))
-            except json.JSONDecodeError:
-                logger.warning("Malformed tool arguments from OpenAI")
-                arguments = {}
-            call_id = data.get("call_id", "")
-            events.append(
+            return [
                 ToolCallEvent(
-                    tool_call_id=call_id,
-                    tool_name=(
-                        data.get("name")
-                        or self._pending_tool_names.pop(call_id, "")
-                    ),
-                    arguments=arguments,
+                    tool_call_id=event.call_id,
+                    tool_name=identity.name,
+                    arguments=parse_openai_tool_arguments(event.arguments),
                 )
-            )
-
-        elif event_type == _OAIEvent.RESPONSE_DONE:
-            # P-F07: response.done fires per response object, not per
-            # conversational turn.  When the response contains function calls,
-            # the vendor will issue another response after tool results —
-            # only emit TurnComplete for the final response.
-            response = data.get("response", {})
-            response_status = response.get("status")
-            if response_status in {"failed", "incomplete"}:
+            ]
+        elif isinstance(event, ResponseDoneEvent):
+            response = event.response
+            self._stream.finish_response(response.id)
+            events: list[RealtimeEvent] = []
+            if response.status in {_RESPONSE_FAILED, _RESPONSE_INCOMPLETE}:
                 events.append(
                     ErrorEvent(
                         message="OpenAI Realtime response did not complete",
-                        code=f"response_{response_status}",
+                        code=f"response_{response.status}",
                         is_recoverable=True,
                     )
                 )
-            response_output = response.get("output", [])
-            has_pending_tool_calls = any(
-                item.get("type") == "function_call" for item in response_output
+            has_tool_calls = any(
+                isinstance(item, RealtimeConversationItemFunctionCall)
+                for item in response.output or ()
             )
             if (
-                response_status is not None and response_status != "completed"
-            ) or not has_pending_tool_calls:
+                response.status is not None and response.status != _RESPONSE_COMPLETED
+            ) or not has_tool_calls:
                 events.append(TurnCompleteEvent())
-
-        elif event_type == _OAIEvent.SPEECH_STARTED:
-            events.append(UserSpeechStartedEvent())
-
-        elif event_type == _OAIEvent.ERROR:
-            err = data.get("error", {})
-            events.append(
+            return events
+        elif isinstance(event, InputAudioBufferSpeechStartedEvent):
+            return [UserSpeechStartedEvent()]
+        elif isinstance(event, RealtimeErrorEvent):
+            return [
                 ErrorEvent(
-                    message=err.get("message", "Unknown error"),
-                    code=err.get("code", ""),
-                    is_recoverable=err.get("type") != "invalid_request_error",
+                    message=event.error.message,
+                    code=event.error.code or "",
+                    is_recoverable=event.error.type != _INVALID_REQUEST_ERROR,
                 )
-            )
-
-        return events
+            ]
+        return []

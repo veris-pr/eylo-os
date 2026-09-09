@@ -8,7 +8,8 @@ session TTS manager queue items and request-state updates.
 from __future__ import annotations
 
 import logging
-from typing import Any, Protocol
+from collections.abc import Collection
+from typing import Protocol
 from uuid import UUID
 
 from eylo.pipelines.voice.live_buffer import (
@@ -18,27 +19,32 @@ from eylo.pipelines.voice.live_buffer import (
 )
 from eylo.pipelines.voice.request_state import (
     VoiceRequestSource,
+    VoiceRequestState,
     VoiceRequestStatus,
+)
+from eylo.pipelines.voice.tts_payloads import (
+    TTSRequest,
+    TTSTextRequest,
+    validate_tts_request,
 )
 
 logger = logging.getLogger(__name__)
 
-_PAYLOAD_TYPE_FIELD = "type"
-_PAYLOAD_TEXT_FIELD = "text"
-_PAYLOAD_TURN_ID_FIELD = "turn_id"
-_PAYLOAD_REQUEST_ID_FIELD = "request_id"
-_PAYLOAD_POLICY_SOURCE_FIELD = "policy_source"
-_PAYLOAD_TYPE_TEXT = "text"
-_PAYLOAD_TYPE_FINALIZE = "finalize"
-
 
 class TTSQueue(Protocol):
-    async def add_to_request_queue(self, item: str | dict[str, Any]) -> None: ...
+    """Speech input port; runtime managers own queue capacity and playback."""
+
+    async def add_to_request_queue(self, tts_item: TTSRequest) -> None: ...
 
 
 class VoiceSessionState(Protocol):
-    tts_socket: TTSQueue | None
-    live_voice_buffer: LiveVoiceBuffer | None
+    """Read-only session resources and request-state operations used by routing."""
+
+    @property
+    def tts_socket(self) -> TTSQueue | None: ...
+
+    @property
+    def live_voice_buffer(self) -> LiveVoiceBuffer | None: ...
 
     def start_voice_request(
         self,
@@ -47,7 +53,7 @@ class VoiceSessionState(Protocol):
         conversation_id: UUID,
         source: VoiceRequestSource,
         status: VoiceRequestStatus,
-    ) -> Any: ...
+    ) -> VoiceRequestState: ...
 
     def mark_voice_request(
         self,
@@ -56,15 +62,17 @@ class VoiceSessionState(Protocol):
         *,
         conversation_id: UUID | None = None,
         turn_id: str | None = None,
-    ) -> Any | None: ...
+    ) -> VoiceRequestState | None: ...
 
 
 class ConversationSessionRouter(Protocol):
+    """Resolve only the voice sessions registered to an org/conversation pair."""
+
     async def get_sessions_for_conversation(
         self,
         organization_id: UUID,
         conversation_id: UUID,
-    ) -> list[str]: ...
+    ) -> Collection[str]: ...
 
     def get_session_state(
         self,
@@ -73,59 +81,28 @@ class ConversationSessionRouter(Protocol):
     ) -> VoiceSessionState | None: ...
 
 
-def build_tts_queue_item(payload: str | dict[str, Any]) -> str | dict[str, Any] | None:
-    """Normalize conversation-level TTS payloads for TTS manager queues."""
-    if isinstance(payload, str):
-        return payload
-
-    payload_type = payload.get(_PAYLOAD_TYPE_FIELD)
-    if payload_type == _PAYLOAD_TYPE_TEXT:
-        return {
-            _PAYLOAD_TYPE_FIELD: _PAYLOAD_TYPE_TEXT,
-            _PAYLOAD_TEXT_FIELD: payload.get(_PAYLOAD_TEXT_FIELD),
-            _PAYLOAD_TURN_ID_FIELD: payload.get(_PAYLOAD_TURN_ID_FIELD),
-            _PAYLOAD_REQUEST_ID_FIELD: payload.get(_PAYLOAD_REQUEST_ID_FIELD),
-            _PAYLOAD_POLICY_SOURCE_FIELD: payload.get(_PAYLOAD_POLICY_SOURCE_FIELD),
-        }
-    if payload_type == _PAYLOAD_TYPE_FINALIZE:
-        return {
-            _PAYLOAD_TYPE_FIELD: _PAYLOAD_TYPE_FINALIZE,
-            _PAYLOAD_TURN_ID_FIELD: payload.get(_PAYLOAD_TURN_ID_FIELD),
-            _PAYLOAD_REQUEST_ID_FIELD: payload.get(_PAYLOAD_REQUEST_ID_FIELD),
-            _PAYLOAD_POLICY_SOURCE_FIELD: payload.get(_PAYLOAD_POLICY_SOURCE_FIELD),
-        }
-
-    return None
-
-
 async def enqueue_conversation_tts_payload(
     *,
     router: ConversationSessionRouter,
-    conversation_id: UUID | str,
-    organization_id: UUID | str,
-    payload: str | dict[str, Any],
+    conversation_id: UUID,
+    organization_id: UUID,
+    payload: TTSRequest,
 ) -> None:
     """Enqueue a conversation-level TTS payload into all active voice sessions."""
-    normalized_conversation_id = UUID(str(conversation_id))
-    normalized_organization_id = UUID(str(organization_id))
+    tts_item = validate_tts_request(payload)
     session_ids = await router.get_sessions_for_conversation(
-        normalized_organization_id,
-        normalized_conversation_id,
+        organization_id,
+        conversation_id,
     )
 
     if not session_ids:
         logger.debug("[TTS_PIPELINE] No session_ids for conversation, skipping TTS")
         return
 
-    tts_item = build_tts_queue_item(payload)
-    if tts_item is None:
-        logger.warning("[TTS_PIPELINE] tts_item is None, cannot enqueue")
-        return
-
     for session_id in session_ids:
         session_state = router.get_session_state(
-            normalized_organization_id,
-            str(session_id),
+            organization_id,
+            session_id,
         )
         if not session_state:
             continue
@@ -138,23 +115,21 @@ async def enqueue_conversation_tts_payload(
             )
             continue
 
-        if isinstance(tts_item, dict):
-            await _capture_policy_speech(
-                session_state=session_state,
-                conversation_id=normalized_conversation_id,
-                item=tts_item,
-            )
-            request_id = tts_item.get(_PAYLOAD_REQUEST_ID_FIELD)
-            session_state.mark_voice_request(
-                request_id,
-                VoiceRequestStatus.TTS_QUEUED,
-                conversation_id=normalized_conversation_id,
-                turn_id=tts_item.get(_PAYLOAD_TURN_ID_FIELD),
-            )
+        await _capture_policy_speech(
+            session_state=session_state,
+            conversation_id=conversation_id,
+            item=tts_item,
+        )
+        session_state.mark_voice_request(
+            tts_item.request_id,
+            VoiceRequestStatus.TTS_QUEUED,
+            conversation_id=conversation_id,
+            turn_id=tts_item.turn_id,
+        )
 
         logger.debug(
             "[TTS_PIPELINE] Enqueuing to TTS request_queue: type=%s",
-            tts_item.get(_PAYLOAD_TYPE_FIELD) if isinstance(tts_item, dict) else "str",
+            tts_item.type.value,
         )
         await tts_socket.add_to_request_queue(tts_item)
 
@@ -163,38 +138,27 @@ async def _capture_policy_speech(
     *,
     session_state: VoiceSessionState,
     conversation_id: UUID,
-    item: dict[str, Any],
+    item: TTSRequest,
 ) -> None:
-    if item.get(_PAYLOAD_TYPE_FIELD) != _PAYLOAD_TYPE_TEXT:
+    if not isinstance(item, TTSTextRequest) or item.policy_source is None:
         return
-    policy_source = item.get(_PAYLOAD_POLICY_SOURCE_FIELD)
-    request_id = item.get(_PAYLOAD_REQUEST_ID_FIELD)
-    text = item.get(_PAYLOAD_TEXT_FIELD)
-    if policy_source is None:
-        return
-    try:
-        source = VoiceRequestSource(str(policy_source))
-        normalized_request_id = UUID(str(request_id))
-    except (TypeError, ValueError):
-        logger.error("Policy TTS payload has invalid request authority.")
-        return
-    if not isinstance(text, str) or not text or session_state.live_voice_buffer is None:
+    if not item.text or session_state.live_voice_buffer is None:
         logger.error("Policy TTS payload cannot be captured in live voice state.")
         return
-
+    assert item.request_id is not None  # Required by the policy request contract.
     session_state.start_voice_request(
-        request_id=normalized_request_id,
+        request_id=item.request_id,
         conversation_id=conversation_id,
-        source=source,
+        source=item.policy_source,
         status=VoiceRequestStatus.TTS_QUEUED,
     )
     await session_state.live_voice_buffer.append_turn(
         [
             LiveVoiceDraft(
                 kind=LiveVoiceItemKind.SYSTEM_SPEECH,
-                payload=text,
-                request_id=normalized_request_id,
-                policy_source=source,
+                payload=item.text,
+                request_id=item.request_id,
+                policy_source=item.policy_source,
             )
         ]
     )

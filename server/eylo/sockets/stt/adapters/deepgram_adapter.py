@@ -1,309 +1,265 @@
-"""Deepgram STT adapter for canonical STT pipeline.
+"""Translate Deepgram Listen v1 objects into platform-neutral recognition events."""
 
-This adapter wraps the new voice module's DeepgramSTT to work with
-the existing STT factory and manager patterns.
-"""
+from __future__ import annotations
 
 import asyncio
-import logging
-from typing import Any, Dict, Optional
 
+from pydantic import ConfigDict, Field, SecretStr, field_validator
+
+from eylo.sockets.stt.adapters.connection_errors import (
+    close_failed_websocket_connection,
+)
 from eylo.sockets.stt.base import STTVendorAdapter
-from eylo.sockets.stt.schemas import STTCapabilities, STTEvent, STTEventType
-from eylo.sockets.voice.vendors.deepgram import DeepgramSTT, DeepgramSTTStream
+from eylo.sockets.stt.exceptions import STTConnectionClosed
+from eylo.sockets.stt.schemas import (
+    RecognitionUsage,
+    STTCapabilities,
+    STTCapabilitySupport,
+    STTEncoding,
+    STTEvent,
+    STTEventType,
+    STTProvider,
+    STTTranscriptForm,
+    TimedWord,
+)
+from eylo.sockets.voice.audio import AudioFrame
+from eylo.sockets.voice.vendors.deepgram.stt import DeepgramSTT, DeepgramSTTStream
+from eylo.sockets.voice.vendors.deepgram.stt_wire import (
+    DeepgramEncoding,
+    DeepgramEvent,
+    DeepgramListenQuery,
+    DeepgramMetadata,
+    DeepgramSpeechStarted,
+    DeepgramUtteranceEnd,
+)
 
-logger = logging.getLogger(__name__)
+_MILLISECONDS_PER_SECOND = 1000
+_PCM_BYTES_PER_SAMPLE = 2
+
+
+class DeepgramAdapterConfig(DeepgramListenQuery):
+    """Select consumed native settings; unrelated common config fields remain outside."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore", hide_input_in_errors=True)
+
+    api_key: SecretStr = Field(min_length=1, repr=False, exclude=True)
+
+    @field_validator("encoding", mode="before")
+    @classmethod
+    def translate_pcm_encoding(cls, value: object) -> object:
+        if value == STTEncoding.PCM_S16LE:
+            return DeepgramEncoding.LINEAR16
+        return value
 
 
 class DeepgramAdapter(STTVendorAdapter):
-    """Adapter to use new voice module DeepgramSTT with canonical STT pipeline.
+    """Native stream owns I/O; factory owns retry and pipelines own conversational policy."""
 
-    This class bridges the gap between:
-    - Canonical interface: connect(), send_audio(), receive_event()
-    - New voice module: stream() with async iteration
-
-    The adapter handles:
-    - Audio streaming to Deepgram
-    - Event parsing (transcripts, VAD events)
-    - Response queuing for STT manager
-    """
-
-    def __init__(self, config: dict):
-        """Initialize Deepgram adapter with resolved provider config.
-
-        Args:
-            config: Resolved STT config dict with keys:
-                - api_key: Deepgram API key
-                - model: Model to use (e.g., "nova-2", "nova-3")
-                - language: Language code
-                - sample_rate: Audio sample rate
-                - punctuate: Enable punctuation
-                - interim_results: Enable interim results
-                - vad_events: Enable VAD events
-                - utterance_end_ms: Utterance end timeout
-                - endpointing: Endpointing timeout
-
-        """
-        # Initialise the contract's shared state. Inheriting without this
-        # leaves `retry_options` unset, so the ABC's helpers raise on this
-        # class while every structural check still passes.
+    def __init__(self, config: object) -> None:
         super().__init__()
-        self._config = config
+        self._config = DeepgramAdapterConfig.model_validate(config)
+        self._stream: DeepgramSTTStream | None = None
         self._is_connected = False
-        self._stream: Optional[DeepgramSTTStream] = None
-        self._receive_task: Optional[asyncio.Task] = None
-        self._response_queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
-
-        # Initialize new voice module STT
+        self._lifecycle_lock = asyncio.Lock()
         self._stt = DeepgramSTT(
-            model=config["model"],
-            language=config["language"],
-            sample_rate=config.get("sample_rate", 16000),
-            interim_results=config.get("interim_results", True),
-            punctuate=config.get("punctuate", True),
-            api_key=config["api_key"],
+            model=self._config.model,
+            language=self._config.language,
+            api_key=self._config.api_key.get_secret_value(),
+            sample_rate=self._config.sample_rate,
+            interim_results=self._config.interim_results,
+            punctuate=self._config.punctuate,
+            smart_format=self._config.smart_format,
+            vad_events=self._config.vad_events,
+            endpointing=self._config.endpointing,
+            utterance_end_ms=self._config.utterance_end_ms,
         )
 
-        logger.info(f"Initialized DeepgramAdapter with model={self._stt.model}")
+    async def connect(self) -> DeepgramAdapter:
+        async with self._lifecycle_lock:
+            if self.is_connected:
+                return self
+            if self._stream is not None:
+                await self._close_stream()
+            self._stream = self._stt.stream()
+            try:
+                await self._stream.connect()
+            except BaseException as error:
+                await close_failed_websocket_connection(error, self._close_stream)
+            self._is_connected = True
+            return self
 
-    async def connect(self):
-        """Connect to Deepgram service (canonical interface).
-
-        Returns:
-            Self to maintain interface compatibility.
-
-        """
-        # Create stream
-        self._stream = self._stt.stream()
-
-        # Start background task to receive events
-        self._receive_task = asyncio.create_task(self._receive_events())
-
-        self._is_connected = True
-        logger.info("Deepgram adapter connected")
-        return self
-
-    async def _receive_events(self):
-        """Receive events from Deepgram stream and queue them.
-
-        This background task continuously receives events from the voice module
-        stream and puts them in the response queue for the STT manager.
-        """
-        try:
-            async for event in self._stream:
-                # Convert voice module event to adapter event format
-                adapter_event = self._convert_event(event)
-                if adapter_event:
-                    try:
-                        await self._response_queue.put(adapter_event)
-                    except asyncio.QueueFull:
-                        logger.warning("Response queue full, dropping event")
-
-        except Exception as error:
-            logger.error(
-                "Deepgram event receive failed error_type=%s",
-                type(error).__name__,
+    def _convert_event(self, event: DeepgramEvent) -> STTEvent | None:
+        """Preserve native finality, segment boundaries, audio clocks and reported usage."""
+        session_id = self._stream.session_id if self._stream is not None else ""
+        request_id = self._stream.request_id if self._stream is not None else None
+        if isinstance(event, DeepgramMetadata):
+            return STTEvent(
+                type=STTEventType.RECOGNITION_USAGE,
+                provider=STTProvider.DEEPGRAM,
+                model=self.model,
+                session_id=session_id,
+                provider_request_id=event.request_id,
+                usage=RecognitionUsage(audio_duration=event.duration),
             )
-            self._is_connected = False
-
-    def _convert_event(self, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Convert voice module event format to adapter event format.
-
-        Args:
-            event: Event from voice module.
-
-        Returns:
-            Event in adapter event format or None if should be filtered.
-
-        Voice module event types:
-        - type: "Results" with channel/alternatives
-        - type: "SpeechStarted"
-        - type: "UtteranceEnd"
-        - type: "Metadata"
-
-        Adapter event shape consumed by receive_event:
-        - transcript: str
-        - is_final: bool
-        - confidence: float
-        - type: "speech_started" | "utterance_end" | etc.
-
-        """
-        event_type = event.get("type")
-
-        # Handle transcript results
-        if event_type in ("Results", "final_transcript", "partial_transcript"):
-            is_final = event.get("is_final", False) or event.get("speech_final", False)
-
-            # Extract transcript text
-            if "channel" in event:
-                # Original Deepgram format
-                alternatives = event.get("channel", {}).get("alternatives", [])
-                if alternatives:
-                    alt = alternatives[0]
-                    return {
-                        "transcript": alt.get("transcript", ""),
-                        "is_final": is_final,
-                        "confidence": alt.get("confidence", 0.0),
-                        "words": alt.get("words", []),
-                        "type": "final" if is_final else "partial",
-                    }
-            else:
-                # Already parsed format
-                return {
-                    "transcript": event.get("text", ""),
-                    "is_final": is_final,
-                    "confidence": event.get("confidence", 0.0),
-                    "words": event.get("words", []),
-                    "type": "final" if is_final else "partial",
-                }
-
-        # Handle VAD events
-        elif event_type == "SpeechStarted" or event_type == "speech_started":
-            return {
-                "type": "speech_started",
-                "timestamp": event.get("timestamp", 0),
-            }
-
-        elif event_type == "UtteranceEnd" or event_type == "utterance_end":
-            return {
-                "type": "utterance_end",
-                "timestamp": event.get("timestamp", 0),
-            }
-
-        # Ignore metadata events
-        elif event_type == "Metadata" or event_type == "metadata":
+        if isinstance(event, DeepgramSpeechStarted):
+            return STTEvent(
+                type=STTEventType.SPEECH_START,
+                provider=STTProvider.DEEPGRAM,
+                model=self.model,
+                session_id=session_id,
+                provider_request_id=request_id,
+                audio_start_ms=round(event.timestamp * _MILLISECONDS_PER_SECOND),
+            )
+        if isinstance(event, DeepgramUtteranceEnd):
+            return STTEvent(
+                type=STTEventType.SPEECH_END,
+                provider=STTProvider.DEEPGRAM,
+                model=self.model,
+                session_id=session_id,
+                provider_request_id=request_id,
+                audio_end_ms=round(event.last_word_end * _MILLISECONDS_PER_SECOND),
+            )
+        alternative = (
+            event.channel.alternatives[0] if event.channel.alternatives else None
+        )
+        transcript = alternative.transcript if alternative is not None else ""
+        ended = event.is_final and event.speech_final
+        if not transcript and not ended:
             return None
+        if ended:
+            event_type = STTEventType.END_OF_TURN
+        elif event.is_final:
+            event_type = STTEventType.TRANSCRIPT_FINAL
+        else:
+            event_type = STTEventType.TRANSCRIPT_PARTIAL
+        words = (
+            tuple(
+                TimedWord(
+                    word=word.word,
+                    start_time=word.start,
+                    end_time=word.end,
+                    confidence=word.confidence,
+                    speaker_id=str(word.speaker) if word.speaker is not None else None,
+                )
+                for word in alternative.words
+            )
+            if alternative is not None
+            else ()
+        )
+        speakers = {word.speaker_id for word in words if word.speaker_id is not None}
+        if event.metadata is not None:
+            request_id = event.metadata.request_id or request_id
+        return STTEvent(
+            type=event_type,
+            provider=STTProvider.DEEPGRAM,
+            model=self.model,
+            session_id=session_id,
+            provider_request_id=request_id,
+            transcript=transcript,
+            transcript_form=STTTranscriptForm.SEGMENT,
+            confidence=alternative.confidence if alternative is not None else None,
+            language=alternative.languages[0]
+            if alternative is not None and len(alternative.languages) == 1
+            else self._config.language,
+            words=words,
+            speaker_id=next(iter(speakers)) if len(speakers) == 1 else None,
+            audio_start_ms=round(event.start * _MILLISECONDS_PER_SECOND),
+            audio_end_ms=round(
+                (event.start + event.duration) * _MILLISECONDS_PER_SECOND
+            ),
+            vendor_metadata=event.model_dump(
+                mode="json",
+                include={
+                    "metadata",
+                    "channel_index",
+                    "is_final",
+                    "speech_final",
+                    "from_finalize",
+                },
+                exclude_none=True,
+            ),
+        )
 
-        return None
-
-    async def send_audio(self, audio_data: bytes):
-        """Send audio data for transcription (canonical interface).
-
-        Args:
-            audio_data: Raw audio bytes (PCM format).
-
-        """
-        if not self._is_connected or not self._stream:
-            raise RuntimeError("Not connected. Call connect() first.")
-
-        # Push audio to stream
-        from eylo.sockets.voice.audio import AudioFrame
-
+    async def send_audio(self, audio_data: bytes) -> None:
+        if self._stream is None:
+            raise STTConnectionClosed("Deepgram stream is not connected.")
         frame = AudioFrame(
             data=audio_data,
-            sample_rate=self._stt.sample_rate,
+            sample_rate=self.sample_rate,
             num_channels=1,
-            samples_per_channel=len(audio_data) // 2,  # 16-bit PCM
+            samples_per_channel=len(audio_data) // _PCM_BYTES_PER_SAMPLE,
         )
-
-        await self._stream.push_audio(frame)
-
-    async def _receive_raw_event(self) -> Optional[Dict[str, Any]]:
-        """Read one vendor-shaped event from the internal queue.
-
-        Returns:
-            Event dict or None if no data available.
-
-        """
         try:
-            # Non-blocking get with timeout
-            event = await asyncio.wait_for(self._response_queue.get(), timeout=0.1)
-            return event
-        except asyncio.TimeoutError:
+            await self._stream.push_audio(frame)
+        except BaseException:
+            self._is_connected = False
+            raise
+
+    async def receive_event(self, timeout_ms: int = 100) -> STTEvent | None:
+        if self._stream is None:
+            raise STTConnectionClosed("Deepgram stream is not connected.")
+        try:
+            event = await asyncio.wait_for(
+                anext(self._stream), timeout=timeout_ms / _MILLISECONDS_PER_SECOND
+            )
+        except TimeoutError:
             return None
+        except StopAsyncIteration as error:
+            self._is_connected = False
+            raise STTConnectionClosed("Deepgram stream ended.") from error
+        except Exception:
+            self._is_connected = False
+            raise
+        return self._convert_event(event)
 
-    async def keepalive(self):
-        """Send keepalive (canonical interface).
+    async def flush(self) -> None:
+        if self._stream is None:
+            raise STTConnectionClosed("Deepgram stream is not connected.")
+        try:
+            await self._stream.flush()
+        except BaseException:
+            self._is_connected = False
+            raise
 
-        The new voice module handles keepalive internally, so this is a no-op.
-        """
-        pass
+    async def keepalive(self) -> None:
+        """The native stream owns periodic JSON KeepAlive messages."""
 
-    async def disconnect(self):
-        """Disconnect from Deepgram service (canonical interface)."""
-        logger.info("Disconnecting Deepgram adapter")
-
+    async def _close_stream(self) -> None:
         self._is_connected = False
+        stream, self._stream = self._stream, None
+        try:
+            if stream is not None:
+                await stream.aclose()
+        finally:
+            await self._stt.aclose()
 
-        # Cancel receive task
-        if self._receive_task and not self._receive_task.done():
-            self._receive_task.cancel()
-            try:
-                await self._receive_task
-            except asyncio.CancelledError:
-                pass
-
-        # Close stream
-        if self._stream:
-            await self._stream.aclose()
-            self._stream = None
-
-        # Close STT client
-        await self._stt.aclose()
+    async def disconnect(self) -> None:
+        async with self._lifecycle_lock:
+            await self._close_stream()
 
     @property
     def is_connected(self) -> bool:
-        """Check if connected."""
+        """Keep already-received terminal output readable after the socket closes."""
         return self._is_connected
 
     @property
     def sample_rate(self) -> int:
-        """Get audio sample rate."""
         return self._stt.sample_rate
 
     @property
     def provider(self) -> str:
-        """Get provider name."""
         return self._stt.provider
-
-    async def receive_event(self, timeout_ms: int = 100) -> STTEvent | None:
-        """Next event as the canonical `STTEvent`.
-
-        Adapts the queue `receive_event` already reads rather than replacing
-        it, so the live path keeps its exact behaviour while the contract is
-        young. Only fields the vendor actually reported are set — confidence and
-        timings are left unset rather than invented.
-        """
-        raw = await self._receive_raw_event()
-        if raw is None:
-            return None
-        event_type = raw.get("type") or raw.get("event")
-        return STTEvent(
-            type=STTEventType(event_type)
-            if event_type in set(STTEventType)
-            else STTEventType.TRANSCRIPT_PARTIAL,
-            provider=self.provider,
-            model=self.model,
-            transcript=str(raw.get("transcript") or raw.get("text") or ""),
-            is_final=bool(raw.get("is_final", False)),
-            confidence=raw.get("confidence"),
-            language=raw.get("language"),
-        )
-
-    async def flush(self) -> None:
-        """No flush frame on this stream. Explicit, not faked."""
-        return None
 
     @property
     def model(self) -> str:
-        """From the vendor client — what actually connected."""
-        return str(getattr(self._stt, "model", "") or "")
+        return self._stt.model
 
     @property
     def capabilities(self) -> STTCapabilities:
-        """Derived from what this adapter's own code does, not from memory.
-
-        Conservative where unknown: under-claiming makes a caller skip a
-        feature, over-claiming makes it break. Confirm against vendor
-        documentation before relying on a False here.
-        """
         return STTCapabilities(
-            streaming=True,
-            batch_recognize=False,
-            interim_results=True,
-            vad_events=True,
-            turn_detection=False,
-            word_timestamps=False,
-            speaker_labels=False,
-            language_detection=False,
+            streaming=STTCapabilitySupport.SUPPORTED,
+            interim_results=STTCapabilitySupport.SUPPORTED,
+            vad_events=STTCapabilitySupport.SUPPORTED,
+            word_timestamps=STTCapabilitySupport.SUPPORTED,
+            punctuation=STTCapabilitySupport.SUPPORTED,
         )

@@ -43,7 +43,7 @@ from eylo.common.outbound import (
     OutboundTransportKind,
 )
 from eylo.pipelines.outbound.durable_execution import (
-    DurableStepContext,
+    CommandStepContext,
     execute_outbound_attempt,
 )
 from eylo.sockets.http.transport import SafeHttpTransport
@@ -71,7 +71,7 @@ class DurableMutationOwner:
     organization_id: UUID
     tool_use_message_id: UUID
     tool_id: UUID
-    durable_context: DurableStepContext
+    durable_context: CommandStepContext
 
 
 class GuardedVendorClient:

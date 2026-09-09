@@ -19,11 +19,14 @@ import logging
 from typing import Optional
 
 import websockets
+from pydantic import Field, StrictInt
 from websockets.asyncio.client import ClientConnection
 
+from eylo.common.contracts.speech_runtime import SpeechText
+from eylo.sockets.tts.adapters.config import TTSAdapterConfig
 from eylo.sockets.tts.base import TTSVendorAdapter
 from eylo.sockets.tts.exceptions import TTSConnectionClosed, TTSConnectionFailed
-from eylo.sockets.tts.schemas import TTSCapabilities, TTSConfig
+from eylo.sockets.tts.schemas import TTSCapabilities, TTSConfig, TTSProvider
 
 logger = logging.getLogger(__name__)
 
@@ -32,28 +35,18 @@ _DEFAULT_FORMAT = "mulaw"
 _WS_BASE = "wss://users.rime.ai/ws2"
 
 
-class RimeTTSConfig:
+class RimeTTSConfig(TTSAdapterConfig):
     """Configuration for Rime TTS adapter."""
 
-    def __init__(
-        self,
-        *,
-        voice: str,
-        model: str,
-        sample_rate: int = _DEFAULT_SAMPLE_RATE,
-        audio_format: str = _DEFAULT_FORMAT,
-        api_key: str,
-        **kwargs,
-    ):
-        self.speaker = voice
-        self.voice = voice
-        self.model = model
-        self.sample_rate = sample_rate
-        self.audio_format = audio_format
-        self.api_key = api_key
+    provider = TTSProvider.RIME
+    voice: SpeechText
+    model: SpeechText
+    sample_rate: StrictInt = Field(default=_DEFAULT_SAMPLE_RATE, gt=0)
+    audio_format: SpeechText = _DEFAULT_FORMAT
 
-        if not self.api_key:
-            raise ValueError("Rime TTS api_key is required.")
+    @property
+    def speaker(self) -> str:
+        return self.voice
 
 
 class RimeTTSAdapter(TTSVendorAdapter):
@@ -64,22 +57,14 @@ class RimeTTSAdapter(TTSVendorAdapter):
     """
 
     def __init__(self, config: RimeTTSConfig):
-        # Feed the contract config up from the vendor config. getattr with
-        # fallbacks because vendor configs disagree — deepgram has no voice,
-        # murf calls it voice_id, openai carries no sample_rate. Unset keys
-        # are omitted: passing None would override a field default with an
-        # invalid value.
-        _contract = {
-            "model": getattr(config, "model", None),
-            "voice": getattr(config, "voice", None)
-            or getattr(config, "voice_id", None),
-            "sample_rate": getattr(config, "sample_rate", None),
-            "encoding": getattr(config, "audio_format", None),
-        }
+        config = RimeTTSConfig.model_validate(config)
         super().__init__(
             TTSConfig(
-                vendor="rime",
-                **{k: v for k, v in _contract.items() if v is not None},
+                vendor=TTSProvider.RIME,
+                model=config.model,
+                voice=config.voice,
+                sample_rate=config.sample_rate,
+                encoding=config.audio_format,
             )
         )
         self._config = config

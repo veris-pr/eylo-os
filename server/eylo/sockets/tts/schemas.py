@@ -5,7 +5,18 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
+    ValidationError,
+    model_validator,
+)
+
+from eylo.sockets.tts.exceptions import TTSConfigurationError
 
 DEFAULT_TTS_SAMPLE_RATE = 24000
 DEFAULT_TTS_ENCODING = "pcm_s16le"
@@ -47,9 +58,13 @@ _AMAZON_POLLY_FALLBACK_SAMPLE_RATE = 16000
 class RetryOptions(BaseModel):
     """Retry behavior for vendor connection and synthesis operations."""
 
-    max_retries: int = Field(default=3, ge=0)
-    timeout_seconds: float = Field(default=10.0, gt=0)
-    retry_interval_seconds: float = Field(default=1.0, ge=0)
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", revalidate_instances="always", allow_inf_nan=False
+    )
+
+    max_retries: StrictInt = Field(default=3, ge=0)
+    timeout_seconds: StrictFloat = Field(default=10.0, gt=0)
+    retry_interval_seconds: StrictFloat = Field(default=1.0, ge=0)
 
 
 class TTSCapabilities(BaseModel):
@@ -118,14 +133,16 @@ class TTSAudioFormat(BaseModel):
 class TTSConfig(BaseModel):
     """Canonical TTS runtime configuration plus provider-specific options."""
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(
+        extra="allow", revalidate_instances="always", hide_input_in_errors=True
+    )
 
-    vendor: TTSProvider | str
-    model: str | None = None
-    voice: str | None = None
-    language: str | None = None
-    sample_rate: int = DEFAULT_TTS_SAMPLE_RATE
-    encoding: str = DEFAULT_TTS_ENCODING
+    vendor: TTSProvider
+    model: StrictStr | None = None
+    voice: StrictStr | None = None
+    language: StrictStr | None = None
+    sample_rate: StrictInt = Field(default=DEFAULT_TTS_SAMPLE_RATE, gt=0)
+    encoding: StrictStr = DEFAULT_TTS_ENCODING
     output_format: dict[str, Any] | None = None
     options: dict[str, Any] = Field(default_factory=dict)
     retry: RetryOptions = Field(default_factory=RetryOptions)
@@ -152,15 +169,21 @@ class TTSConfig(BaseModel):
 
         return normalized
 
-    def to_adapter_config(self) -> dict[str, Any]:
-        """Flatten canonical and vendor-specific fields for one adapter."""
-        data = self.model_dump(mode="python", exclude_none=True)
-        vendor = (
-            self.vendor.value if isinstance(self.vendor, TTSProvider) else self.vendor
-        )
-        data["vendor"] = vendor
-        data["retry"] = self.retry.model_dump()
-        return data
+    def to_adapter_config(self) -> dict[str, object]:
+        """One unambiguous adapter payload; nested options cannot shadow fields."""
+        try:
+            config = TTSConfig.model_validate(self)
+        except ValidationError:
+            raise TTSConfigurationError("Invalid TTS runtime configuration.") from None
+        data = config.model_dump(mode="python", exclude_none=True)
+        data["vendor"] = config.vendor.value
+        data["retry"] = config.retry.model_dump()
+        for key in config.options:
+            if key in TTSConfig.model_fields and key not in config.model_fields_set:
+                # A supplied option may replace an implicit transport default,
+                # but never an explicitly configured value.
+                data.pop(key, None)
+        return _flatten_options(data)
 
 
 class TTSAudioChunk(BaseModel):
@@ -233,47 +256,70 @@ class TTSMetricsSnapshot(BaseModel):
 
 
 def normalize_tts_config(
-    config: TTSConfig | dict[str, Any] | None,
+    config: TTSConfig | dict[str, object] | None,
     *,
     vendor: str | TTSProvider | None = None,
+    api_key: str | None = None,
 ) -> TTSConfig:
     """Normalize a provider-config mapping into the canonical TTS contract."""
-    data: dict[str, Any]
+    data: dict[str, object]
     if isinstance(config, TTSConfig):
         data = config.to_adapter_config()
     elif isinstance(config, dict):
-        data = dict(config)
-    else:
+        data = _flatten_options(dict(config))
+    elif config is None:
         data = {}
+    else:
+        raise TTSConfigurationError("TTS configuration must be an object.")
 
     configured_vendor = data.get("vendor")
+    if configured_vendor is not None and not isinstance(configured_vendor, str):
+        raise TTSConfigurationError("Unsupported TTS vendor.")
     if isinstance(configured_vendor, TTSProvider):
         configured_vendor = configured_vendor.value
     selected_vendor = (
-        configured_vendor.strip()
-        if isinstance(configured_vendor, str)
-        else None
+        configured_vendor.strip() if isinstance(configured_vendor, str) else None
     )
     if vendor is not None:
+        if not isinstance(vendor, str):
+            raise TTSConfigurationError("Unsupported TTS vendor.")
         requested_vendor = (
             vendor.value if isinstance(vendor, TTSProvider) else vendor.strip()
         )
-        if (
-            selected_vendor is not None
-            and selected_vendor != requested_vendor
-        ):
-            raise ValueError(
+        if selected_vendor is not None and selected_vendor != requested_vendor:
+            raise TTSConfigurationError(
                 "TTS provider config does not match the selected provider."
             )
         selected_vendor = requested_vendor
         data["vendor"] = requested_vendor
 
+    if api_key is not None:
+        if not isinstance(api_key, str) or not api_key.strip():
+            raise TTSConfigurationError("TTS API key must be nonempty text.")
+        data["api_key"] = api_key
     _apply_provider_sample_rate_default(data, selected_vendor)
-    return TTSConfig.model_validate(data)
+    try:
+        return TTSConfig.model_validate(data)
+    except ValidationError:
+        raise TTSConfigurationError("Invalid TTS runtime configuration.") from None
+
+
+def _flatten_options(data: dict[str, object]) -> dict[str, object]:
+    """Accept either input spelling, rejecting ambiguity before any native I/O."""
+    options = data.pop("options", {})
+    if not isinstance(options, dict):
+        raise TTSConfigurationError("TTS options must be an object.")
+    for key, value in options.items():
+        if not isinstance(key, str) or key in {"vendor", "retry", "options"}:
+            raise TTSConfigurationError("TTS options contain a reserved field.")
+        if key in data and (type(data[key]) is not type(value) or data[key] != value):
+            raise TTSConfigurationError("Conflicting TTS configuration fields.")
+        data[key] = value
+    return data
 
 
 def _apply_provider_sample_rate_default(
-    data: dict[str, Any],
+    data: dict[str, object],
     vendor: str | None,
 ) -> None:
     if vendor != TTSProvider.AMAZON_POLLY.value or "sample_rate" in data:

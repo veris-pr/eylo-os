@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from uuid import UUID
 
+from pydantic import JsonValue
+
 from eylo.modules.provider_configs.crypto import EncryptionContext, get_secret_cipher
 
 _CAPABILITY = "external_connection"
@@ -30,7 +32,7 @@ def decrypt_connection_credentials(
     organization_id: UUID,
     connection_id: UUID,
     revision: int,
-) -> dict[str, object]:
+) -> dict[str, JsonValue]:
     """Authenticate and decrypt credentials only at an adapter composition edge."""
     return get_secret_cipher().decrypt(
         envelope,

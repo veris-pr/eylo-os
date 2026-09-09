@@ -19,11 +19,18 @@ import logging
 from typing import Optional
 
 import websockets
+from pydantic import Field, StrictInt
 from websockets.asyncio.client import ClientConnection
 
+from eylo.common.contracts.speech_runtime import (
+    SpeechOption,
+    SpeechOptionState,
+    SpeechText,
+)
+from eylo.sockets.tts.adapters.config import TTSAdapterConfig
 from eylo.sockets.tts.base import TTSVendorAdapter
 from eylo.sockets.tts.exceptions import TTSConnectionClosed, TTSConnectionFailed
-from eylo.sockets.tts.schemas import TTSCapabilities, TTSConfig
+from eylo.sockets.tts.schemas import TTSCapabilities, TTSConfig, TTSProvider
 
 logger = logging.getLogger(__name__)
 
@@ -31,30 +38,19 @@ _DEFAULT_SAMPLE_RATE = 24000
 _WS_URL = "wss://waves-api.smallest.ai/api/v1/lightning-v2/get_speech/stream?timeout=60"
 
 
-class SmallestTTSConfig:
+class SmallestTTSConfig(TTSAdapterConfig):
     """Configuration for Smallest AI TTS adapter."""
 
-    def __init__(
-        self,
-        *,
-        voice: str,
-        model: str,
-        language: str,
-        sample_rate: int = _DEFAULT_SAMPLE_RATE,
-        add_wav_header: bool = False,
-        api_key: str,
-        **kwargs,
-    ):
-        self.voice_id = voice
-        self.voice = voice
-        self.model = model
-        self.language = language
-        self.sample_rate = sample_rate
-        self.add_wav_header = add_wav_header
-        self.api_key = api_key
+    provider = TTSProvider.SMALLEST
+    voice: SpeechText
+    model: SpeechText
+    language: SpeechText
+    sample_rate: StrictInt = Field(default=_DEFAULT_SAMPLE_RATE, gt=0)
+    add_wav_header: SpeechOption = SpeechOptionState.DISABLED
 
-        if not self.api_key:
-            raise ValueError("Smallest TTS api_key is required.")
+    @property
+    def voice_id(self) -> str:
+        return self.voice
 
 
 class SmallestTTSAdapter(TTSVendorAdapter):
@@ -66,26 +62,18 @@ class SmallestTTSAdapter(TTSVendorAdapter):
     """
 
     def __init__(self, config: SmallestTTSConfig):
-        if config.add_wav_header:
+        config = SmallestTTSConfig.model_validate(config)
+        if config.add_wav_header is SpeechOptionState.ENABLED:
             raise ValueError(
                 "Smallest TTS add_wav_header must be false for realtime voice."
             )
-        # Feed the contract config up from the vendor config. getattr with
-        # fallbacks because vendor configs disagree — deepgram has no voice,
-        # murf calls it voice_id, openai carries no sample_rate. Unset keys
-        # are omitted: passing None would override a field default with an
-        # invalid value.
-        _contract = {
-            "model": getattr(config, "model", None),
-            "voice": getattr(config, "voice", None)
-            or getattr(config, "voice_id", None),
-            "sample_rate": getattr(config, "sample_rate", None),
-            "encoding": "pcm_s16le",
-        }
         super().__init__(
             TTSConfig(
-                vendor="smallest",
-                **{k: v for k, v in _contract.items() if v is not None},
+                vendor=TTSProvider.SMALLEST,
+                model=config.model,
+                voice=config.voice,
+                sample_rate=config.sample_rate,
+                encoding="pcm_s16le",
             )
         )
         self._config = config
@@ -194,7 +182,7 @@ class SmallestTTSAdapter(TTSVendorAdapter):
                     "voice_id": self._config.voice_id,
                     "language": self._config.language,
                     "sample_rate": self._config.sample_rate,
-                    "add_wav_header": self._config.add_wav_header,
+                    "add_wav_header": self._config.add_wav_header.value,
                 }
             )
             await self._ws.send(message)

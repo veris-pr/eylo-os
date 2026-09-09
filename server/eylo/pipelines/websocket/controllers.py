@@ -11,6 +11,7 @@ from fastapi import Request, WebSocket, status
 from fastapi.websockets import WebSocketState
 from starlette.websockets import WebSocketDisconnect
 
+from eylo.common.contracts.voice import BrowserVoiceTerminationReason
 from eylo.common.contracts.websocket import WsResponse
 from eylo.common.database import start_transaction
 from eylo.modules.auth.services.session_service import AuthSessionService
@@ -22,11 +23,6 @@ from eylo.modules.user_sessions.domain import (
 )
 from eylo.modules.user_sessions.events import file_user_session_fact
 from eylo.modules.user_sessions.service import UserSessionService
-from eylo.runtime.tasks import (
-    monitor_long_running_tasks,
-    teardown_long_running_tasks,
-    teardown_queues,
-)
 from eylo.pipelines.websocket.handlers import handle_event
 from eylo.pipelines.websocket.schemas import WsEventAction
 from eylo.pipelines.websocket.singleton import S_ws_manager
@@ -61,7 +57,9 @@ class WebSocketController:
     ):
         """Handles the entire lifecycle of a WebSocket connection."""
         async with start_transaction() as db:
-            auth_session = await AuthSessionService(db).validate_session_token(session_id)
+            auth_session = await AuthSessionService(db).validate_session_token(
+                session_id
+            )
 
         if not auth_session or auth_session.organization_id != organization_id:
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
@@ -203,13 +201,6 @@ class WebSocketController:
             )
             return
 
-        _stt_task_definitions = {}
-        _tts_task_definitions = {}
-        _stt_active_tasks = {}
-        _tts_active_tasks = {}
-        _stt_task_params = {}
-        _tts_task_params = {}
-
         close_reason = "transport.websocket.disconnected"
         explicitly_ended = False
         cancellation: asyncio.CancelledError | None = None
@@ -218,9 +209,7 @@ class WebSocketController:
                 message = await websocket.receive()
                 if message.get("type") == "websocket.disconnect":
                     raise WebSocketDisconnect(
-                        code=int(
-                            message.get("code") or status.WS_1000_NORMAL_CLOSURE
-                        ),
+                        code=int(message.get("code") or status.WS_1000_NORMAL_CLOSURE),
                         reason=message.get("reason"),
                     )
                 response_payload = None
@@ -304,12 +293,6 @@ class WebSocketController:
                         expected_websocket=websocket,
                     )
 
-                await monitor_long_running_tasks(
-                    task_definitions={**_stt_task_definitions, **_tts_task_definitions},
-                    active_tasks={**_stt_active_tasks, **_tts_active_tasks},
-                    task_params={**_stt_task_params, **_tts_task_params},
-                    exceptions_to_ignore={asyncio.CancelledError},
-                )
         except WebSocketDisconnect as error:
             explicitly_ended = (
                 error.code == status.WS_1000_NORMAL_CLOSURE
@@ -375,7 +358,7 @@ class WebSocketController:
         try:
             await terminate_browser_voice(
                 ctx,
-                reason="websocket_disconnected",
+                reason=BrowserVoiceTerminationReason.WEBSOCKET_DISCONNECTED,
                 notify_client=False,
             )
         except Exception as error:

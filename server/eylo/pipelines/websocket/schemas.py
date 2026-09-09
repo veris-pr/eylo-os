@@ -13,6 +13,10 @@ from uuid import UUID
 import arrow
 from pydantic import BaseModel, Field, SkipValidation
 
+from eylo.common.contracts.voice import (
+    BrowserVoiceTerminationReason,
+    RecordingDisclosureState,
+)
 from eylo.common.contracts.websocket import (
     WsCommonFilters as WsCommonFilters,
 )
@@ -57,6 +61,7 @@ from eylo.pipelines.voice.request_state import (
     resolve_voice_request_status,
 )
 from eylo.pipelines.voice.stt import STTRealtime
+from eylo.pipelines.voice.transcript_inputs import VoiceTranscriptInput
 from eylo.pipelines.voice.tts import TTSRealtime
 
 if TYPE_CHECKING:
@@ -121,7 +126,7 @@ class WSSessionState(BaseModel):
     session_type: WSSessionType = WSSessionType.BROWSER
     stream_sid: str | None = None
     stt_socket: Optional[STTRealtime] = None
-    stt_response_queue: Optional[asyncio.Queue] = None
+    stt_response_queue: Optional[asyncio.Queue[VoiceTranscriptInput]] = None
     stt_request_queue: Optional[asyncio.Queue] = None
     client_info: dict | None = None
     stt_started: bool = False
@@ -172,9 +177,9 @@ class WSSessionState(BaseModel):
     # Notification state is visible to the client but does not own recording.
     # Recording begins with the primary voice flow; post-call data controls
     # own later redaction/deletion.
-    recording_consent_state: Literal[
-        "not_required", "pending", "granted", "declined"
-    ] = "not_required"
+    recording_consent_state: RecordingDisclosureState = (
+        RecordingDisclosureState.NOT_REQUIRED
+    )
     audio_recorder: Optional[Any] = None
     # Fresh identity for one call on a potentially long-lived WebSocket.
     # ``session_id`` identifies the transport connection and must not be reused
@@ -195,10 +200,11 @@ class WSSessionState(BaseModel):
     )
     voice_termination_task: SkipValidation[asyncio.Task[bool]] | None = None
     voice_termination_complete: bool = False
-    voice_termination_reason: str | None = None
-    voice_terminal_callback: SkipValidation[Callable[[str], Awaitable[None]]] | None = (
-        None
-    )
+    voice_termination_reason: BrowserVoiceTerminationReason | None = None
+    voice_terminal_callback: (
+        SkipValidation[Callable[[BrowserVoiceTerminationReason], Awaitable[None]]]
+        | None
+    ) = None
 
     class Config:
         arbitrary_types_allowed = True

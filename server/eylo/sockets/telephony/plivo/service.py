@@ -22,7 +22,7 @@ import asyncio
 import base64
 import json
 import logging
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from eylo.common.outbound import (
     OutboundSendAuthorization,
@@ -49,6 +49,10 @@ from eylo.sockets.telephony.base import (
     classify_control_failure,
     classify_provider_failure,
 )
+from eylo.sockets.telephony.config import PlivoSettings
+
+if TYPE_CHECKING:
+    from plivo.rest.client import Client
 
 logger = logging.getLogger(__name__)
 
@@ -204,27 +208,18 @@ class PlivoService(BaseTelephonyService):
             websocket: Optional WebSocket connection for media streaming
 
         """
+        self.settings = config.require_settings(PlivoSettings)
         super().__init__(config)
         self.websocket = websocket
         self._parser = PlivoMessageParser()
-
-        # Extract credentials from extra_config
-        extra_config = config.extra_config or {}
-        auth_id = extra_config.get("account_sid") or extra_config.get("auth_id")
-        auth_token = extra_config.get("auth_token")
-
-        if not auth_id or not auth_token:
-            logger.warning("Plivo credentials not found in config.extra_config")
-            logger.info("Will skip Plivo REST client initialization")
-            self.client = None
-            return
+        self.client: Client | None = None
 
         try:
             import plivo
 
             self.client = plivo.RestClient(
-                auth_id=auth_id,
-                auth_token=auth_token,
+                auth_id=self.settings.auth_id,
+                auth_token=self.settings.auth_token,
             )
             logger.info("Plivo client initialized successfully")
         except ImportError:

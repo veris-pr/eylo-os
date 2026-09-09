@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import Enum
 from uuid import UUID, uuid4
 
-from pydantic import Field
+from pydantic import ConfigDict, Field, JsonValue, StrictStr
 
 from .approval import ApprovalRequest
 from .common import FrozenFrameworkModel, JsonObject
@@ -69,13 +69,24 @@ class InputRequestStatus(str, Enum):
     EXPIRED = "expired"
 
 
-class InputRequest(FrozenFrameworkModel):
+class InputRequestDetails(FrozenFrameworkModel):
+    """Question and response schema before a durable owner assigns request IDs."""
+
+    model_config = ConfigDict(
+        allow_inf_nan=False,
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+    )
+
+    prompt: StrictStr
+    expected_input_schema: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+class InputRequest(InputRequestDetails):
     """Request for missing information needed to continue a durable run."""
 
     id: UUID = Field(default_factory=uuid4)
     durable_run_id: UUID
-    prompt: str
-    expected_input_schema: JsonObject = Field(default_factory=dict)
     status: InputRequestStatus = InputRequestStatus.PENDING
     resume_checkpoint_id: UUID | None = None
     metadata: JsonObject = Field(default_factory=dict)

@@ -15,6 +15,7 @@ from eylo.modules.telephony.provider_config_verification import (
     TelephonyVerificationResult,
 )
 from eylo.modules.telephony.wiring import build_telephony_config_service
+from eylo.pipelines.telephony.config import build_telephony_runtime_config
 from eylo.sockets.telephony.verification import TelephonyCredentialProbe
 
 _VERIFICATION_TIMEOUT_SECONDS = 20.0
@@ -33,8 +34,7 @@ class TelephonyRuntimeVerifier:
         try:
             async with asyncio.timeout(_VERIFICATION_TIMEOUT_SECONDS + 1):
                 result = await self._probe.verify(
-                    provider=config.provider.value,
-                    settings=config.adapter_settings(),
+                    config=build_telephony_runtime_config(config),
                     timeout_seconds=_VERIFICATION_TIMEOUT_SECONDS,
                 )
         except Exception as error:
@@ -43,7 +43,7 @@ class TelephonyRuntimeVerifier:
             ) from error
         fingerprint = hashlib.sha256(result.account_reference.encode()).hexdigest()[:16]
         return TelephonyProviderVerification(
-            provider=result.provider,
+            provider=result.provider.value,
             metadata={
                 "account_fingerprint": fingerprint,
                 "operation": "read_only_account_lookup",

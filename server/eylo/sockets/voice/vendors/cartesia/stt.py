@@ -1,313 +1,296 @@
-"""Cartesia STT - ink-whisper speech recognition.
-
-Cartesia provides ink-whisper model for real-time speech recognition
-via WebSocket streaming.
-
-Based on: livekit-plugins-cartesia/livekit/plugins/cartesia/stt.py
-"""
+"""Own Cartesia STT connection, PCM sending and validated response delivery."""
 
 from __future__ import annotations
 
 import asyncio
-import json
-import uuid
-from dataclasses import dataclass
-from typing import Literal
+from enum import StrEnum
+from typing import NoReturn
 
 import aiohttp
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, SecretStr
 
 from eylo.sockets.voice.audio import AudioByteStream
-from eylo.sockets.voice.types import NOT_GIVEN, NotGivenOr
-
-# Cartesia STT models
-CartesiaSTTModels = Literal["ink-whisper"]
-
-# Cartesia STT languages
-CartesiaSTTLanguages = Literal[
-    "en", "es", "fr", "de", "pt", "zh", "ja", "ko", "it", "nl", "ru"
-]
-
-# Cartesia STT encoding
-CartesiaSTTEncoding = Literal["pcm_s16le"]
+from eylo.sockets.voice.vendors.cartesia.stt_wire import (
+    CartesiaSTTCommand,
+    CartesiaSTTDone,
+    CartesiaSTTError,
+    CartesiaSTTEvent,
+    CartesiaSTTQuery,
+    parse_cartesia_stt_event,
+)
 
 DEFAULT_BASE_URL = "https://api.cartesia.ai"
-API_VERSION = "2026-03-01"
-SAMPLE_RATE = 16000
+_CONNECT_TIMEOUT_SECONDS = 10.0
+_CLOSE_TIMEOUT_SECONDS = 5.0
+_HEARTBEAT_SECONDS = 30.0
+_AUDIO_CHUNK_SECONDS = 0.05
+_OUTPUT_QUEUE_CAPACITY = 1000
 
 
-@dataclass
-class STTOptions:
-    """Cartesia STT configuration."""
+class STTOptions(BaseModel):
+    """Immutable native material; the API key is never serialized or represented."""
 
-    model: str
-    language: str | None
-    encoding: str
-    sample_rate: int
-    api_key: str
-    base_url: str
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", hide_input_in_errors=True, validate_default=True
+    )
+
+    query: CartesiaSTTQuery
+    api_key: SecretStr = Field(min_length=1, repr=False, exclude=True)
+    base_url: HttpUrl = HttpUrl(DEFAULT_BASE_URL)
+
+
+class CartesiaSTTState(StrEnum):
+    """Lifecycle of one connection; reconnecting creates a new stream."""
+
+    NEW = "new"
+    OPEN = "open"
+    CLOSING = "closing"
+    CLOSED = "closed"
+
+
+class CartesiaSTTStreamError(RuntimeError):
+    """A closed or failed native stream cannot accept more input."""
 
 
 class CartesiaSTT:
-    """Cartesia STT using ink-whisper model."""
+    """Build isolated streams from configured material; own only acquired HTTP sessions."""
 
     def __init__(
         self,
         *,
-        model: CartesiaSTTModels | str = "ink-whisper",
-        language: CartesiaSTTLanguages | str = "en",
-        encoding: CartesiaSTTEncoding = "pcm_s16le",
-        sample_rate: int = SAMPLE_RATE,
-        api_key: NotGivenOr[str] = NOT_GIVEN,
+        model: str,
+        api_key: str,
+        language: str | None = None,
+        encoding: str = "pcm_s16le",
+        sample_rate: int = 16000,
         base_url: str = DEFAULT_BASE_URL,
         http_session: aiohttp.ClientSession | None = None,
     ) -> None:
-        if api_key is NOT_GIVEN or not api_key:
-            raise ValueError("Cartesia api_key is required.")
-
-        self._session = http_session
         self._opts = STTOptions(
-            model=model,
-            language=language,
-            encoding=encoding,
-            sample_rate=sample_rate,
+            query=CartesiaSTTQuery(
+                model=model,
+                language=language,
+                encoding=encoding,
+                sample_rate=sample_rate,
+            ),
             api_key=api_key,
             base_url=base_url,
         )
+        self._session = http_session
+        self._owns_session = http_session is None
 
     @property
     def model(self) -> str:
-        """Get the STT model being used."""
-        return self._opts.model
+        return self._opts.query.model
 
     @property
     def provider(self) -> str:
-        """Get the provider name."""
         return "Cartesia"
 
     @property
     def sample_rate(self) -> int:
-        """Get the audio sample rate."""
-        return self._opts.sample_rate
+        return self._opts.query.sample_rate
 
     def _ensure_session(self) -> aiohttp.ClientSession:
-        """Get or create HTTP session."""
-        if not self._session:
+        if self._session is None:
             self._session = aiohttp.ClientSession()
         return self._session
 
     def stream(self) -> CartesiaSTTStream:
-        """Create a streaming STT session.
-
-        Returns:
-            CartesiaSTTStream for real-time transcription.
-
-        """
-        return CartesiaSTTStream(
-            opts=self._opts,
-            http_session=self._ensure_session(),
-        )
+        """Create an unopened stream; its connect method proves WebSocket acquisition."""
+        return CartesiaSTTStream(opts=self._opts, http_session=self._ensure_session())
 
     async def aclose(self) -> None:
-        """Close HTTP session if owned by this instance."""
-        if self._session:
-            await self._session.close()
-            self._session = None
+        if self._owns_session and self._session is not None:
+            session, self._session = self._session, None
+            await session.close()
 
 
 class CartesiaSTTStream:
-    """Cartesia WebSocket streaming STT session."""
+    """Serialize binary/control writes; one reader owns responses and terminal failure."""
 
     def __init__(
-        self,
-        *,
-        opts: STTOptions,
-        http_session: aiohttp.ClientSession,
+        self, *, opts: STTOptions, http_session: aiohttp.ClientSession
     ) -> None:
         self._opts = opts
         self._session = http_session
         self._ws: aiohttp.ClientWebSocketResponse | None = None
-        self._request_id = str(uuid.uuid4())
-        self._reconnect_event = asyncio.Event()
-        self._closed = False
+        self._state = CartesiaSTTState.NEW
+        self._failure: Exception | None = None
+        self._task: asyncio.Task[None] | None = None
+        self._lifecycle_lock = asyncio.Lock()
+        self._send_lock = asyncio.Lock()
+        self._output_queue: asyncio.Queue[CartesiaSTTEvent | None] = asyncio.Queue(
+            maxsize=_OUTPUT_QUEUE_CAPACITY
+        )
+        self._output_closed = False
+        self._audio = AudioByteStream(
+            sample_rate=opts.query.sample_rate,
+            num_channels=1,
+            samples_per_channel=max(
+                1, round(opts.query.sample_rate * _AUDIO_CHUNK_SECONDS)
+            ),
+        )
 
-        # Audio input queue
-        self._input_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+    @property
+    def is_connected(self) -> bool:
+        return self._state is CartesiaSTTState.OPEN and self._failure is None
 
-        # Transcription output queue
-        self._output_queue: asyncio.Queue[dict | None] = asyncio.Queue()
+    async def connect(self) -> None:
+        """Report readiness only after authenticated WebSocket upgrade, not task creation."""
+        async with self._lifecycle_lock:
+            if self.is_connected:
+                return
+            if self._state is not CartesiaSTTState.NEW:
+                raise CartesiaSTTStreamError("Cartesia stream cannot be reopened.")
+            base = str(self._opts.base_url).rstrip("/")
+            ws_base = base.replace("https://", "wss://", 1).replace(
+                "http://", "ws://", 1
+            )
+            url = f"{ws_base}/stt/websocket?{self._opts.query.query_string()}"
+            try:
+                async with asyncio.timeout(_CONNECT_TIMEOUT_SECONDS):
+                    self._ws = await self._session.ws_connect(
+                        url,
+                        headers={"X-API-Key": self._opts.api_key.get_secret_value()},
+                        heartbeat=_HEARTBEAT_SECONDS,
+                    )
+            except BaseException:
+                self._state = CartesiaSTTState.CLOSED
+                self._finish_output()
+                raise
+            self._state = CartesiaSTTState.OPEN
+            self._task = asyncio.create_task(self._read(self._ws))
 
-        # Start background task
-        self._task = asyncio.create_task(self._run())
+    def _require_open(self) -> aiohttp.ClientWebSocketResponse:
+        if self._failure is not None:
+            raise self._failure
+        if not self.is_connected or self._ws is None:
+            raise CartesiaSTTStreamError("Cartesia stream is not open.")
+        return self._ws
 
     async def push_audio(self, audio_data: bytes) -> None:
-        """Push audio data for transcription."""
-        if not self._closed:
-            await self._input_queue.put(audio_data)
+        """Await socket acceptance; no detached, unbounded audio-input queue."""
+        async with self._send_lock:
+            ws = self._require_open()
+            try:
+                for chunk in self._audio.write(audio_data):
+                    await ws.send_bytes(chunk.data)
+            except BaseException:
+                self._failure = CartesiaSTTStreamError("Cartesia audio send failed.")
+                raise
 
     async def flush(self) -> None:
-        """Flush any pending audio."""
-        if not self._closed:
-            await self._input_queue.put(None)  # Sentinel
+        """Send buffered PCM before finalize; keep the sender usable for the next turn."""
+        async with self._send_lock:
+            ws = self._require_open()
+            try:
+                await self._flush_audio(ws)
+                await ws.send_str(CartesiaSTTCommand.FINALIZE.value)
+            except BaseException:
+                self._failure = CartesiaSTTStreamError("Cartesia finalize failed.")
+                raise
 
-    def __aiter__(self):
-        """Async iterator for transcription events."""
+    async def _flush_audio(self, ws: aiohttp.ClientWebSocketResponse) -> None:
+        for chunk in self._audio.flush():
+            await ws.send_bytes(chunk.data)
+
+    def __aiter__(self) -> CartesiaSTTStream:
         return self
 
-    async def __anext__(self) -> dict:
-        """Get next transcription event."""
+    async def __anext__(self) -> CartesiaSTTEvent:
+        if self._output_closed and self._output_queue.empty():
+            self._raise_terminal()
         event = await self._output_queue.get()
-        if event is None:
-            raise StopAsyncIteration
-        return event
+        self._output_queue.task_done()
+        if event is not None:
+            return event
+        if self._failure is not None:
+            raise self._failure
+        raise StopAsyncIteration
 
-    async def _connect_ws(self) -> aiohttp.ClientWebSocketResponse:
-        """Connect to Cartesia WebSocket."""
-        # Build WebSocket URL
-        params = {
-            "model": self._opts.model,
-            "sample_rate": str(self._opts.sample_rate),
-            "encoding": self._opts.encoding,
-            "cartesia_version": API_VERSION,
-            "api_key": self._opts.api_key,
-        }
+    def _raise_terminal(self) -> NoReturn:
+        if self._failure is not None:
+            raise self._failure
+        raise StopAsyncIteration
 
-        if self._opts.language:
-            params["language"] = self._opts.language
+    def _finish_output(self) -> None:
+        if not self._output_closed:
+            self._output_closed = True
+            try:
+                self._output_queue.put_nowait(None)
+            except asyncio.QueueFull:
+                # Existing output remains ordered; the next empty read observes closure.
+                pass
 
-        # Convert HTTP URL to WebSocket URL
-        ws_base = self._opts.base_url.replace("https://", "wss://").replace(
-            "http://", "ws://"
-        )
-        query_string = "&".join(f"{k}={v}" for k, v in params.items())
-        ws_url = f"{ws_base}/stt/websocket?{query_string}"
-
+    async def _read(self, ws: aiohttp.ClientWebSocketResponse) -> None:
         try:
-            ws = await asyncio.wait_for(
-                self._session.ws_connect(ws_url),
-                timeout=10.0,
-            )
-            return ws
-        except Exception as error:
-            raise RuntimeError("Failed to connect to Cartesia.") from error
-
-    async def _run(self) -> None:
-        """Main streaming loop with reconnection logic."""
-
-        async def keepalive_task(ws: aiohttp.ClientWebSocketResponse) -> None:
-            """Send periodic ping messages."""
-            try:
-                while True:
-                    await ws.ping()
-                    await asyncio.sleep(30)
-            except Exception:
-                return
-
-        async def send_task(ws: aiohttp.ClientWebSocketResponse) -> None:
-            """Send audio to Cartesia."""
-            # 50ms audio chunks
-            samples_50ms = self._opts.sample_rate // 20
-            audio_bstream = AudioByteStream(
-                sample_rate=self._opts.sample_rate,
-                num_channels=1,
-                samples_per_channel=samples_50ms,
-            )
-
             while True:
-                data = await self._input_queue.get()
-
-                if data is None:  # Flush sentinel
-                    chunks = audio_bstream.flush()
-                    for chunk in chunks:
-                        await ws.send_bytes(chunk.data)
-                    # Send finalize message
-                    await ws.send_str("finalize")
-                    return
-
-                # Buffer data and get chunks
-                chunks = audio_bstream.write(data)
-                for chunk in chunks:
-                    await ws.send_bytes(chunk.data)
-
-        async def recv_task(ws: aiohttp.ClientWebSocketResponse) -> None:
-            """Receive transcriptions from Cartesia."""
-            while True:
-                msg = await ws.receive()
-
-                if msg.type in (
-                    aiohttp.WSMsgType.CLOSED,
+                message = await ws.receive()
+                if message.type in {
                     aiohttp.WSMsgType.CLOSE,
+                    aiohttp.WSMsgType.CLOSED,
                     aiohttp.WSMsgType.CLOSING,
-                ):
-                    if self._closed:
-                        return
-                    raise RuntimeError("Cartesia connection closed unexpectedly")
-
-                if msg.type != aiohttp.WSMsgType.TEXT:
+                    aiohttp.WSMsgType.ERROR,
+                }:
+                    raise CartesiaSTTStreamError(
+                        "Cartesia ended without a done acknowledgement."
+                    )
+                if message.type is not aiohttp.WSMsgType.TEXT:
                     continue
-
-                try:
-                    data = json.loads(msg.data)
-                    await self._output_queue.put(data)
-                except json.JSONDecodeError:
-                    pass
-
-        # Main reconnection loop
-        while not self._closed:
-            ws = None
+                event = parse_cartesia_stt_event(message.data)
+                if event is None:
+                    continue
+                await self._output_queue.put(event)
+                if isinstance(event, (CartesiaSTTDone, CartesiaSTTError)):
+                    return
+        except Exception as error:
+            self._failure = error
+        finally:
+            self._state = CartesiaSTTState.CLOSED
             try:
-                ws = await self._connect_ws()
-                self._ws = ws
-
-                # Start tasks
-                tasks = [
-                    asyncio.create_task(send_task(ws)),
-                    asyncio.create_task(recv_task(ws)),
-                    asyncio.create_task(keepalive_task(ws)),
-                ]
-
-                wait_reconnect_task = asyncio.create_task(self._reconnect_event.wait())
-
-                try:
-                    done, _ = await asyncio.wait(
-                        [asyncio.gather(*tasks), wait_reconnect_task],
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
-
-                    # Check for exceptions
-                    for task in done:
-                        if task != wait_reconnect_task:
-                            task.result()
-
-                    if wait_reconnect_task not in done:
-                        break
-
-                    self._reconnect_event.clear()
-                finally:
-                    # Cancel all tasks
-                    for task in tasks + [wait_reconnect_task]:
-                        if not task.done():
-                            task.cancel()
-                    await asyncio.gather(
-                        *tasks, wait_reconnect_task, return_exceptions=True
-                    )
-            except Exception:
-                if self._closed:
-                    break
-                await asyncio.sleep(1)
+                await self._close_socket()
             finally:
-                if ws and not ws.closed:
-                    await ws.close()
+                self._finish_output()
 
-        # Signal end of stream
-        await self._output_queue.put(None)
+    async def _close_socket(self) -> None:
+        if self._ws is not None and not self._ws.closed:
+            try:
+                async with asyncio.timeout(_CLOSE_TIMEOUT_SECONDS):
+                    await self._ws.close()
+            except Exception as error:
+                if self._failure is None:
+                    self._failure = error
 
     async def aclose(self) -> None:
-        """Close the stream and clean up resources."""
-        self._closed = True
-        self._reconnect_event.set()
-
-        if self._task and not self._task.done():
-            await self._task
-
-        if self._ws and not self._ws.closed:
-            await self._ws.close()
+        """Flush/close with bounded draining, then cancel/join and wake every reader."""
+        async with self._lifecycle_lock:
+            try:
+                if self.is_connected:
+                    self._state = CartesiaSTTState.CLOSING
+                    try:
+                        async with asyncio.timeout(_CLOSE_TIMEOUT_SECONDS):
+                            async with self._send_lock:
+                                if self._ws is not None:
+                                    await self._flush_audio(self._ws)
+                                    await self._ws.send_str(
+                                        CartesiaSTTCommand.CLOSE.value
+                                    )
+                            if self._task is not None:
+                                await asyncio.shield(self._task)
+                    except TimeoutError:
+                        if self._failure is None:
+                            self._failure = CartesiaSTTStreamError(
+                                "Cartesia close acknowledgement timed out."
+                            )
+                    except Exception as error:
+                        if self._failure is None:
+                            self._failure = error
+            finally:
+                if self._task is not None:
+                    if not self._task.done():
+                        self._task.cancel()
+                    await asyncio.gather(self._task, return_exceptions=True)
+                await self._close_socket()
+                self._state = CartesiaSTTState.CLOSED
+                self._finish_output()

@@ -1,12 +1,11 @@
-"""Explicit Absurd 0.4.0 adapter for durable AgentRun execution."""
+"""Explicit Absurd adapter for durable AgentRun execution."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any
 from uuid import UUID
 
 from absurd_sdk import AsyncTaskContext
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr
 
 from eylo.common.database import start_transaction
 from eylo.durable_runtime import (
@@ -20,10 +19,12 @@ from eylo.durable_runtime import (
 )
 from eylo.modules.agent_runs.domain import AgentRunLifecycle
 from eylo.modules.agent_runs.repositories import AgentRunRepository
+from eylo.modules.agent_runs.waits import AgentRunInputEvent
 from eylo.modules.agent_runs.workflow import (
     AgentRunComputeCleanup,
     AgentRunExecutor,
     AgentRunFailureHandler,
+    AgentRunTaskParams,
     AgentRunWorkflow,
     UnwiredAgentRunExecutor,
 )
@@ -40,25 +41,27 @@ class AgentRunSpawnConflict(Exception):
     """A product run cannot be bound to the requested engine task."""
 
 
-@dataclass(frozen=True, slots=True)
-class AgentRunRegistrationHealth:
+class AgentRunRegistrationHealth(BaseModel):
     """Public registration manifest without inspecting SDK private state."""
 
-    registered: bool
-    workflow_name: str
-    queue_name: str
-    max_attempts: int
-    has_automatic_timeout: bool
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
+
+    registered: StrictBool
+    workflow_name: StrictStr
+    queue_name: StrictStr
+    max_attempts: int = Field(strict=True, ge=1)
+    has_automatic_timeout: StrictBool
 
 
-@dataclass(frozen=True, slots=True)
-class AgentRunTaskBinding:
+class AgentRunTaskBinding(BaseModel):
     """Stable product-to-engine binding returned by idempotent spawn."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
 
     organization_id: UUID
     run_id: UUID
     task_id: UUID
-    created: bool
+    created: StrictBool
 
 
 class AgentRunAbsurdAdapter:
@@ -103,9 +106,9 @@ class AgentRunAbsurdAdapter:
         )
 
         async def execute_agent_run(
-            params: dict[str, Any],
+            params: object,
             task_context: AsyncTaskContext,
-        ) -> dict[str, Any]:
+        ) -> dict[str, str]:
             return await workflow.execute(params, task_context)
 
         self._runtime.register_task(
@@ -156,10 +159,9 @@ class AgentRunAbsurdAdapter:
 
         task_id = await self._runtime.spawn_task(
             name=AGENT_RUN_WORKFLOW,
-            params={
-                "organization_id": str(organization_id),
-                "run_id": str(run_id),
-            },
+            params=AgentRunTaskParams(
+                organization_id=organization_id, run_id=run_id
+            ).as_json(),
             idempotency_key=f"agent-run:v1:{organization_id}:{run_id}",
             max_attempts=self._config.max_attempts,
         )
@@ -184,9 +186,9 @@ class AgentRunAbsurdAdapter:
     async def task_state(self, *, task_id: UUID) -> str | None:
         return await self._runtime.task_state(task_id)
 
-    async def emit_event(self, *, event_name: str, payload: dict) -> None:
+    async def emit_event(self, *, event_name: str, payload: AgentRunInputEvent) -> None:
         """Wake one named durable wait; Absurd keeps the first event payload."""
-        await self._runtime.emit_event(event_name=event_name, payload=payload)
+        await self._runtime.emit_event(event_name=event_name, payload=payload.as_json())
 
     async def start_worker(self, *, worker_id: str) -> None:
         if not worker_id.strip():
@@ -223,7 +225,7 @@ async def spawn_agent_run(
         await adapter.close()
 
 
-async def emit_agent_run_event(*, event_name: str, payload: dict) -> None:
+async def emit_agent_run_event(*, event_name: str, payload: AgentRunInputEvent) -> None:
     """Deliver an already-committed product response to the durable engine."""
     adapter = AgentRunAbsurdAdapter()
     try:

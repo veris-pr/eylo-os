@@ -2,15 +2,25 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Awaitable, Callable, Mapping
 from copy import deepcopy
-from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Protocol, TypeVar
+from typing import Literal, Protocol, TypeVar
 from uuid import UUID
 
 from absurd_sdk import AsyncTaskContext, CancelledTask
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    StrictStr,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,6 +40,7 @@ from eylo.modules.agent_runs.domain import (
     ExecutionUsageNotReported,
     InitiatingPrincipalKind,
     InitiatingPrincipalRef,
+    validate_lifecycle_outcome,
 )
 from eylo.modules.agent_runs.models import AgentRunModel
 from eylo.modules.agent_runs.repositories import AgentRunRepository
@@ -66,32 +77,82 @@ class AgentRunExecutionIncomplete(Exception):
     """An executor returned without committing a terminal product state."""
 
 
-@dataclass(frozen=True, slots=True)
-class AgentRunExecutionClaim:
+class AgentRunTaskParams(BaseModel):
+    """Engine task locator only; never a snapshot of execution authority."""
+
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+    )
+
+    organization_id: UUID
+    run_id: UUID
+
+    def as_json(self) -> dict[str, str]:
+        return {
+            "organization_id": str(self.organization_id),
+            "run_id": str(self.run_id),
+        }
+
+
+class AgentRunExecutionClaim(BaseModel):
     """Current product authority reloaded from IDs when Absurd claims work."""
+
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+    )
 
     organization_id: UUID
     run_id: UUID
     principal: InitiatingPrincipalRef
     agent_id: UUID
-    agent_revision: int
+    agent_revision: int = Field(strict=True, ge=1)
     agent_revision_id: UUID
     origin_kind: AgentRunOriginKind
     origin_message_id: UUID | None
     origin_schedule_run_id: UUID | None
-    session_context_digest: str
-    context_manifest: dict[str, Any]
-    goal: str
+    session_context_digest: StrictStr
+    context_manifest: dict[str, JsonValue]
+    goal: StrictStr
+
+    @field_validator("context_manifest")
+    @classmethod
+    def validate_manifest_json(
+        cls, value: dict[str, JsonValue]
+    ) -> dict[str, JsonValue]:
+        """Product pipelines own manifest fields; claims contain finite JSON only."""
+        json.dumps(value, allow_nan=False)
+        return value
 
 
-@dataclass(frozen=True, slots=True)
-class AgentRunWorkflowReceipt:
+class AgentRunWorkflowReceipt(BaseModel):
     """Bounded engine result; canonical output stays on Eylo product rows."""
+
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+    )
 
     organization_id: UUID
     run_id: UUID
-    lifecycle: AgentRunLifecycle
+    lifecycle: Literal[
+        AgentRunLifecycle.COMPLETED,
+        AgentRunLifecycle.FAILED,
+        AgentRunLifecycle.CANCELLED,
+    ]
     outcome: AgentRunOutcome
+
+    @model_validator(mode="after")
+    def validate_terminal_outcome(self) -> AgentRunWorkflowReceipt:
+        validate_lifecycle_outcome(self.lifecycle, self.outcome)
+        return self
 
     def as_json(self) -> dict[str, str]:
         return {
@@ -144,7 +205,7 @@ class AgentRunWorkflowContext:
         event_name: str,
         key: str,
         version: int,
-    ) -> Any:
+    ) -> object:
         if not _EVENT_NAME.fullmatch(event_name):
             raise ValueError("Event name is invalid.")
         return await self._task_context.await_event(
@@ -241,10 +302,11 @@ class AgentRunWorkflow:
 
     async def execute(
         self,
-        params: dict[str, Any],
+        params: object,
         task_context: AsyncTaskContext,
     ) -> dict[str, str]:
-        organization_id, run_id = _parse_task_params(params)
+        task = _parse_task_params(params)
+        organization_id, run_id = task.organization_id, task.run_id
         try:
             await task_context.heartbeat(seconds=120)
             claim = await _claim_run(
@@ -362,13 +424,11 @@ class AgentRunWorkflow:
         )
 
 
-def _parse_task_params(params: dict[str, Any]) -> tuple[UUID, UUID]:
-    if set(params) != {"organization_id", "run_id"}:
-        raise ValueError("AgentRun task params must contain IDs only.")
+def _parse_task_params(params: object) -> AgentRunTaskParams:
     try:
-        return UUID(str(params["organization_id"])), UUID(str(params["run_id"]))
-    except (TypeError, ValueError) as error:
-        raise ValueError("AgentRun task params contain an invalid UUID.") from error
+        return AgentRunTaskParams.model_validate(params)
+    except ValidationError:
+        raise ValueError("AgentRun task params must contain valid IDs only.") from None
 
 
 async def _cancellation_was_requested(
@@ -657,5 +717,6 @@ __all__ = [
     "AgentRunWorkflow",
     "AgentRunWorkflowContext",
     "AgentRunWorkflowReceipt",
+    "AgentRunTaskParams",
     "UnwiredAgentRunExecutor",
 ]

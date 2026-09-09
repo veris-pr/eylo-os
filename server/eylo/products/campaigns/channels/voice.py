@@ -8,7 +8,13 @@ from uuid import UUID
 from sqlalchemy import select
 
 from eylo.common.database import start_transaction
+from eylo.common.outbound import OutboundAttemptState
+from eylo.modules.telephony.constants import (
+    OUTBOUND_CALL_REJECTED,
+    CallInitiationMarker,
+)
 from eylo.modules.telephony.models import TelephonyCallModel
+from eylo.modules.telephony.schemas import CallStatus
 from eylo.products.campaigns.channels.base import (
     CampaignChannelAdapter,
     ChannelDispatchResult,
@@ -70,15 +76,15 @@ class VoiceChannelAdapter:
             return None
         if call.call_sid:
             return ChannelDispatchResult(tracking_id=call.call_sid)
-        if call.provider_status == "initiation-unknown":
+        if call.provider_status == CallInitiationMarker.UNKNOWN.value:
             return ChannelDispatchResult(
                 tracking_id=str(call.id),
                 dispatch_unknown=True,
             )
-        if call.status == "failed":
+        if call.status == CallStatus.FAILED.value:
             return ChannelDispatchResult(
                 tracking_id=str(call.id),
-                error=call.ended_reason or "provider_rejected",
+                error=call.ended_reason or OUTBOUND_CALL_REJECTED,
             )
         return None
 
@@ -109,16 +115,16 @@ class VoiceChannelAdapter:
             initial_message=rendered_message,
             context=meta,
         )
-        tracking_id = str(response.get("call_sid") or response["call_id"])
-        if response["status"] == "unknown":
+        tracking_id = response.call_sid or str(response.call_id)
+        if response.status is OutboundAttemptState.UNKNOWN:
             return ChannelDispatchResult(
                 tracking_id=tracking_id,
                 dispatch_unknown=True,
             )
-        if response["status"] != "succeeded":
+        if response.status is not OutboundAttemptState.SUCCEEDED:
             return ChannelDispatchResult(
                 tracking_id=tracking_id,
-                error=str(response.get("failure_code") or "provider_rejected"),
+                error=response.failure_code or OUTBOUND_CALL_REJECTED,
             )
 
         logger.info(

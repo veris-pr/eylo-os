@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.outbound import OutboundAttemptState
 from eylo.common.services import EyloBaseService
+from eylo.modules.telephony.constants import CallTransferStatus
 from eylo.modules.telephony.repositories import (
     PhoneNumberRepository,
     TelephonyCallRepository,
@@ -515,7 +516,7 @@ class TelephonyCallService(EyloBaseService[TelephonyCallInDb]):
         if not entity:
             logger.warning("Call not found for transfer update: call_sid=%s", call_sid)
             return None
-        entity.transfer_status = "transferring"
+        entity.transfer_status = CallTransferStatus.TRANSFERRING
         entity.transfer_to = transfer_to
         entity.transfer_reason = reason
         entity.transfer_metadata = {
@@ -538,7 +539,7 @@ class TelephonyCallService(EyloBaseService[TelephonyCallInDb]):
                 "Call not found for transfer completion: call_sid=%s", call_sid
             )
             return None
-        entity.transfer_status = "transferred"
+        entity.transfer_status = CallTransferStatus.TRANSFERRED
         entity.transfer_to = transfer_to or entity.transfer_to
         entity.transferred_at = arrow.utcnow().datetime
         entity.transfer_metadata = {

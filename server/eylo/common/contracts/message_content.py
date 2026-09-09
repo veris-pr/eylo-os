@@ -7,12 +7,25 @@ The database stores message.content as JSONB, which should conform to these sche
 """
 
 import json
-import re
 from typing import Any, Dict, Final, List, Literal, Optional, Union
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    field_validator,
+    model_validator,
+)
 from typing_extensions import Annotated
 
+from eylo.common.contracts.widget_responses import (
+    WidgetResponseData as WidgetResponseData,
+)
+from eylo.common.contracts.widgets import (
+    CompoundWidgetPayload as CompoundWidgetPayload,
+)
+from eylo.common.contracts.widgets import WidgetComponentPayload as WidgetPayload
 from eylo.common.markdown import md_to_html
 
 TEXT_CONTENT_TYPE: Final = "text"
@@ -266,24 +279,6 @@ class SystemMessageContent(BaseModel):
         return md_to_html(self.get_text_content())
 
 
-class WidgetPayload(BaseModel):
-    """Validated single-component widget payload envelope."""
-
-    component: str = Field(..., description="Registered widget component type")
-    props: Dict[str, Any] = Field(
-        default_factory=dict, description="Component props validated by the backend"
-    )
-
-
-class CompoundWidgetPayload(BaseModel):
-    """Validated compound widget payload — flat adjacency list of components."""
-
-    components: List[Dict[str, Any]] = Field(
-        ..., description="Flat list of component nodes"
-    )
-    root: str = Field(..., description="ID of the root component")
-
-
 class WidgetMessageContent(BaseModel):
     """Content structure for ASSISTANT widget messages (single or compound).
 
@@ -298,16 +293,16 @@ class WidgetMessageContent(BaseModel):
     )
 
     def get_text_content(self) -> str:
-        if isinstance(self.content, WidgetPayload):
+        if not isinstance(self.content, CompoundWidgetPayload):
             return (
                 "Interactive widget rendered for the user.\n"
                 f"Component: {self.content.component}\n"
                 "Props:\n"
-                f"{_to_pretty_json(self.content.props)}"
+                f"{_to_pretty_json(self.content.props.model_dump(exclude_none=True))}"
             )
         # Compound payload
-        component_ids = [c.get("id", "?") for c in self.content.components]
-        component_types = [c.get("component", "?") for c in self.content.components]
+        component_ids = [node.id for node in self.content.components]
+        component_types = [node.component for node in self.content.components]
         return (
             "Compound interactive widget rendered for the user.\n"
             f"Root: {self.content.root}\n"
@@ -321,57 +316,28 @@ class WidgetMessageContent(BaseModel):
         return ""
 
 
-_WIDGET_COMPONENT_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
-_WIDGET_DATA_MAX_BYTES = 64 * 1024  # 64 KB
-
-
-class WidgetResponseData(BaseModel):
-    """Structured widget submission payload from the user."""
-
-    type: Literal["widget_response"] = "widget_response"
-    widget_message_id: str = Field(
-        ..., description="ID of the widget message this response belongs to"
-    )
-    component: str = Field(..., description="Component type that emitted the response")
-    action: Optional[str] = Field(
-        None, description="Interaction verb such as submit or select"
-    )
-    data: Dict[str, Any] = Field(
-        default_factory=dict, description="Structured widget submission data"
-    )
-
-    @field_validator("component")
-    @classmethod
-    def validate_component_name(cls, v: str) -> str:
-        if not _WIDGET_COMPONENT_RE.match(v):
-            raise ValueError(
-                "component must be lowercase alphanumeric with underscores, max 64 chars"
-            )
-        return v
-
-    @model_validator(mode="after")
-    def validate_data_size(self) -> "WidgetResponseData":
-        raw = json.dumps(self.data, default=str)
-        if len(raw.encode("utf-8")) > _WIDGET_DATA_MAX_BYTES:
-            raise ValueError("widget response data exceeds maximum allowed size")
-        return self
+_WIDGET_RESPONSE_ADAPTER = TypeAdapter(WidgetResponseData)
 
 
 class WidgetResponseMessageContent(BaseModel):
     """Content structure for USER widget response messages."""
 
+    model_config = ConfigDict(extra="forbid")
+
     role: Literal["user"] = "user"
     content: WidgetResponseData = Field(..., description="Structured widget response")
 
     def get_text_content(self) -> str:
-        action_line = f"Action: {self.content.action}\n" if self.content.action else ""
+        submitted_data = json.dumps(
+            self.content.submitted_data(), indent=2, sort_keys=True, allow_nan=False
+        )
         return (
             "User submitted a widget response.\n"
             f"Widget Message ID: {self.content.widget_message_id}\n"
             f"Component: {self.content.component}\n"
-            f"{action_line}"
+            f"Action: {self.content.action}\n"
             "Submitted Data:\n"
-            f"{_to_pretty_json(self.content.data)}"
+            f"{submitted_data}"
         )
 
     def to_html_content(self) -> str:
@@ -379,17 +345,19 @@ class WidgetResponseMessageContent(BaseModel):
 
 
 def normalize_widget_response_message_content(
-    content: Dict[str, Any],
-) -> Dict[str, Any]:
+    content: object,
+) -> WidgetResponseMessageContent:
     """Normalize raw or wrapped widget-response payloads to platform-native shape."""
-    if content.get("role") == "user" and isinstance(content.get("content"), dict):
-        return WidgetResponseMessageContent.model_validate(content).model_dump()
+    if isinstance(content, WidgetResponseMessageContent):
+        return content
+    if isinstance(content, dict) and "content" in content:
+        return WidgetResponseMessageContent.model_validate(content)
 
-    normalized_content = WidgetResponseData.model_validate(content)
+    normalized_content = _WIDGET_RESPONSE_ADAPTER.validate_python(content)
     return WidgetResponseMessageContent(
         role="user",
         content=normalized_content,
-    ).model_dump()
+    )
 
 
 # ====================== Content Block Union Type ======================

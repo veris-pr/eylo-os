@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.absurd_work import DurableState
 from eylo.common.contracts.messages import MessageInDb
-from eylo.common.contracts.voice import VOICE_MESSAGE_META_SESSION_ROW_ID
 from eylo.events.durable.domain import DurableEventEnvelope
 from eylo.events.durable.registry import (
     EventConsumerRegistry,
@@ -89,18 +89,21 @@ async def consume_voice_message_segment(
             "Canonical voice message authority is unavailable."
         )
     message_row, conversation = row
-    meta = message_row.meta or {}
     try:
-        voice_session_id = UUID(str(meta[VOICE_MESSAGE_META_SESSION_ROW_ID]))
-    except (KeyError, TypeError, ValueError) as error:
+        message = MessageInDb.model_validate(message_row)
+    except ValidationError as error:
+        raise PermanentEventConsumerError(
+            "Canonical voice message data is invalid."
+        ) from error
+    if message.meta is None or message.meta.voice_session_row_id is None:
         raise PermanentEventConsumerError(
             "Canonical voice message has no exact session authority."
-        ) from error
+        )
 
     voice_session = await session.scalar(
         select(VoiceSessionModel)
         .where(
-            VoiceSessionModel.id == voice_session_id,
+            VoiceSessionModel.id == message.meta.voice_session_row_id,
             VoiceSessionModel.organization_id == envelope.organization_id,
             VoiceSessionModel.conversation_id == conversation.id,
             VoiceSessionModel.deleted.is_(False),
@@ -114,8 +117,12 @@ async def consume_voice_message_segment(
     try:
         segment = await VoiceTranscriptService(session).create_segment_from_canonical_message(
             voice_session=VoiceSessionInDb.model_validate(voice_session),
-            message=MessageInDb.model_validate(message_row),
+            message=message,
         )
+    except ValidationError as error:
+        raise PermanentEventConsumerError(
+            "Canonical voice transcript data is invalid."
+        ) from error
     except ValueError as error:
         raise PermanentEventConsumerError(str(error)) from error
     if segment is None:

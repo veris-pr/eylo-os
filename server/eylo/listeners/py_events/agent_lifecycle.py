@@ -9,6 +9,7 @@ late or reordered delivery.
 import logging
 
 from eylo.events.schema.py_events.base import (
+    AgentLifecycleOutcome,
     AgentProcessingEvent,
     AgentResponseCompleteEvent,
     AgentRunInferenceEvent,
@@ -98,7 +99,7 @@ async def handle_tool_completed(event: AgentToolResponseEvent):
 
 async def handle_agent_response_complete(event: AgentResponseCompleteEvent):
     """Broadcast the completed or failed terminal state for the correlated run."""
-    failed = event.outcome.value == "failed"
+    failed = event.outcome is AgentLifecycleOutcome.FAILED
     await _broadcast(
         event,
         kind=WsEventAction.AGENT_RESPONSE_COMPLETE,

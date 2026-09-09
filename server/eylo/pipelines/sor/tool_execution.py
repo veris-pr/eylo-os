@@ -50,7 +50,7 @@ from eylo.sor.shared.services import (
 )
 
 if TYPE_CHECKING:
-    from eylo.modules.conversations.schemas.conversations import ConversationContext
+    from eylo.pipelines.agent_execution_context import PlatformExecutionContext
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,7 +70,7 @@ async def execute_sor_read_tool(
     *,
     tool_name: str,
     tool_input: Mapping[str, Any],
-    conversation_context: ConversationContext,
+    conversation_context: PlatformExecutionContext,
 ) -> SorToolExecutionOutcome:
     """Read the Agent-safe canonical projection for one exact published tool."""
     resolved = resolve_sor_tool(tool_name)
@@ -147,7 +147,7 @@ async def execute_sor_mutation_tool(
     tool_name: str,
     tool_call_id: str,
     tool_input: Mapping[str, Any],
-    conversation_context: ConversationContext,
+    conversation_context: PlatformExecutionContext,
     agent_run_id: UUID,
     durable_context: DurableStepContext,
 ) -> SorToolExecutionOutcome:
@@ -207,9 +207,9 @@ async def execute_sor_mutation_tool(
                     owner_id=filed.command_id,
                 )
             await durable_context.await_event(
-                sor_command_terminal_event(filed.command_id),
-                step_name=f"sor-command:{filed.command_id}:await-terminal:v1",
-                timeout=None,
+                event_name=sor_command_terminal_event(filed.command_id),
+                key=f"sor-command:{filed.command_id}:await-terminal",
+                version=1,
             )
             receipt = await read_sor_command_receipt(
                 organization_id=organization_id,
@@ -334,7 +334,7 @@ def _require_read_identity_when_needed(
         raise ValueError("This SOR read requires a record ID or external key.")
 
 
-def _agent_identity(context: ConversationContext) -> tuple[UUID, int]:
+def _agent_identity(context: PlatformExecutionContext) -> tuple[UUID, int]:
     agent = context.primary_agent
     participant = context.get_primary_agent()
     revision = getattr(participant, "agent_revision", None)

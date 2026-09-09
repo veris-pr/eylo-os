@@ -10,10 +10,10 @@ from uuid import UUID, uuid4
 from eylo.common.contracts.telephony import CallEndedReason
 from eylo.events.py_events.emitter import emit_ephemeral
 from eylo.events.schema.py_events.call import (
-    CallDirection,
     CallTransferringEvent,
 )
 from eylo.modules.conversations.schemas.conversations import ConversationContext
+from eylo.modules.telephony.constants import CallTransferOutcome, CallTransferStatus
 from eylo.modules.telephony.lifecycle import (
     record_call_transfer_outcome,
     record_call_transfer_requested,
@@ -55,9 +55,7 @@ _resolve_active_call.__eylo_hidden__ = True
 
 def _resolve_provider(session: CallSession) -> str:
     """Return the provider already pinned on the active call session."""
-    if not session.provider:
-        raise ValueError("Active call is missing its telephony provider.")
-    return session.provider
+    return session.provider.value
 
 
 _resolve_provider.__eylo_hidden__ = True
@@ -65,8 +63,7 @@ _resolve_provider.__eylo_hidden__ = True
 
 def _require_session_authority(session: CallSession) -> tuple[UUID, UUID, int]:
     if (
-        session.organization_id is None
-        or session.provider_config_id is None
+        session.provider_config_id is None
         or session.provider_config_revision is None
     ):
         raise ValueError("Active call is missing pinned telephony authority.")
@@ -92,9 +89,7 @@ def _build_call_event_kwargs(session: CallSession, provider: str) -> dict:
         or session.call_sid,
         "organization_id": organization_id,
         "conversation_id": session.conversation_id,
-        "direction": CallDirection(session.direction)
-        if session.direction
-        else CallDirection.INBOUND,
+        "direction": session.direction,
         "provider": provider,
         "provider_config_id": provider_config_id,
         "provider_config_revision": provider_config_revision,
@@ -108,13 +103,13 @@ def _build_call_event_kwargs(session: CallSession, provider: str) -> dict:
 _build_call_event_kwargs.__eylo_hidden__ = True
 
 
-def _transfer_failure_projection(error: Exception) -> tuple[str, str]:
+def _transfer_failure_projection(error: Exception) -> tuple[CallTransferOutcome, str]:
     """Map a safe control error onto the durable transfer state machine."""
     detail = getattr(error, "detail", None)
     code = detail.get("code") if isinstance(detail, dict) else None
     if code == "UNKNOWN":
-        return "unknown", "call_transfer_unconfirmed"
-    return "failed", "call_transfer_rejected"
+        return CallTransferStatus.UNKNOWN, "call_transfer_unconfirmed"
+    return CallTransferStatus.FAILED, "call_transfer_rejected"
 
 
 _transfer_failure_projection.__eylo_hidden__ = True
@@ -256,7 +251,7 @@ async def transfer_call(
             await record_call_transfer_outcome(
                 organization_id=organization_id,
                 call_sid=call_sid,
-                outcome="accepted",
+                outcome=CallTransferStatus.ACCEPTED,
             )
         except Exception as persistence_error:
             logger.error(
@@ -265,7 +260,7 @@ async def transfer_call(
                 type(persistence_error).__name__,
             )
         session.ended_reason = CallEndedReason.AGENT_FORWARDED_CALL
-        session.extra_data["transfer_to"] = to_number
+        session.extra_data.transfer_to = to_number
 
         return json.dumps(
             {
@@ -280,7 +275,7 @@ async def transfer_call(
             outcome, failure_code = _transfer_failure_projection(error)
             try:
                 await record_call_transfer_outcome(
-                    organization_id=organization_id,
+                    organization_id=session.organization_id,
                     call_sid=call_sid,
                     outcome=outcome,
                     failure_code=failure_code,

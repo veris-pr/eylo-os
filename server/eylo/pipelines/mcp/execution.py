@@ -27,7 +27,7 @@ from eylo.modules.tools.schemas.executors.mcp import (
     MCPToolExecutorConfig,
 )
 from eylo.pipelines.outbound.durable_execution import (
-    DurableStepContext,
+    CommandStepContext,
     OutboundExecutionReceipt,
     execute_outbound_attempt,
 )
@@ -119,7 +119,7 @@ async def execute_mcp_operation(
     tool_revision: int | None = None,
     server_id: UUID | None = None,
     server_revision: int | None = None,
-    durable_context: DurableStepContext | None = None,
+    durable_context: CommandStepContext | None = None,
     transport: MCPHttpTransport | None = None,
 ) -> MCPToolExecutionOutcome:
     """Execute reads once; execute idempotent mutations in an Absurd step."""
@@ -137,17 +137,14 @@ async def execute_mcp_operation(
             transport=wire_transport,
         )
 
-    if any(
-        value is None
-        for value in (
-            organization_id,
-            tool_use_message_id,
-            tool_id,
-            tool_revision,
-            server_id,
-            server_revision,
-            durable_context,
-        )
+    if (
+        organization_id is None
+        or tool_use_message_id is None
+        or tool_id is None
+        or tool_revision is None
+        or server_id is None
+        or server_revision is None
+        or durable_context is None
     ):
         return MCPToolExecutionOutcome(
             effect=executor.effect,
@@ -202,7 +199,7 @@ async def _execute_mutation(
     tool_revision: int,
     server_id: UUID,
     server_revision: int,
-    durable_context: DurableStepContext,
+    durable_context: CommandStepContext,
     transport: MCPHttpTransport,
 ) -> MCPToolExecutionOutcome:
     identity = OutboundAttemptIdentity(

@@ -3,7 +3,7 @@
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Optional, cast
+from typing import Final, Optional, cast
 
 import arrow
 from aiortc import (
@@ -14,6 +14,7 @@ from aiortc import (
     RTCSessionDescription,
 )
 
+from eylo.common.contracts.voice import BrowserVoiceTerminationReason
 from eylo.common.contracts.websocket import WEBRTC_SIGNALING_VERSION
 from eylo.events.py_events.emitter import emit_ephemeral
 from eylo.events.schema.py_events.voice import WebRTCState, WebRTCStateEvent
@@ -22,6 +23,17 @@ from eylo.pipelines.webrtc.media import IncomingAudioTrack, OutgoingAudioTrack
 from eylo.pipelines.websocket.schemas import WSSessionState, WsEventAction
 
 logger = logging.getLogger(__name__)
+
+_PEER_TERMINATION_REASONS: Final = {
+    "disconnected": BrowserVoiceTerminationReason.PEER_DISCONNECTED,
+    "failed": BrowserVoiceTerminationReason.PEER_FAILED,
+    "closed": BrowserVoiceTerminationReason.PEER_CLOSED,
+}
+_ICE_TERMINATION_REASONS: Final = {
+    "disconnected": BrowserVoiceTerminationReason.ICE_DISCONNECTED,
+    "failed": BrowserVoiceTerminationReason.ICE_FAILED,
+    "closed": BrowserVoiceTerminationReason.ICE_CLOSED,
+}
 
 
 class AgentPeerClient:
@@ -50,7 +62,7 @@ class AgentPeerClient:
         session_state: WSSessionState,
         *,
         negotiation_id: str,
-        terminal_callback: Callable[[str], Awaitable[None]],
+        terminal_callback: Callable[[BrowserVoiceTerminationReason], Awaitable[None]],
     ):
         self._session_state = session_state
         self._negotiation_id = negotiation_id
@@ -106,7 +118,7 @@ class AgentPeerClient:
                 type(error).__name__,
             )
 
-    def _schedule_terminal(self, reason: str) -> None:
+    def _schedule_terminal(self, reason: BrowserVoiceTerminationReason) -> None:
         if self._terminal_scheduled or self._cleaning_up:
             return
         self._terminal_scheduled = True
@@ -222,7 +234,7 @@ class AgentPeerClient:
                     data={"state": state},
                 )
                 await self._record_transport_state("disconnected")
-                self._schedule_terminal("peer_disconnected")
+                self._schedule_terminal(_PEER_TERMINATION_REASONS[state])
             elif state in {"failed", "closed"}:
                 self._emit_webrtc_state(
                     state=WebRTCState.PEER_FAILED,
@@ -232,7 +244,7 @@ class AgentPeerClient:
                 await self._record_transport_state(
                     "disconnected" if state == "closed" and self._cleaning_up else "failed"
                 )
-                self._schedule_terminal(f"peer_{state}")
+                self._schedule_terminal(_PEER_TERMINATION_REASONS[state])
 
         @self.pc.on("icegatheringstatechange")
         async def on_icegatheringstatechange():
@@ -270,7 +282,7 @@ class AgentPeerClient:
                     "Relay likely unavailable or connectivity interrupted.",
                     state,
                 )
-                self._schedule_terminal(f"ice_{state}")
+                self._schedule_terminal(_ICE_TERMINATION_REASONS[state])
 
         @self.pc.on("signalingstatechange")
         async def on_signalingstatechange():
@@ -303,7 +315,9 @@ class AgentPeerClient:
                         self._session_state.session_id,
                     )
                     if not delivered:
-                        self._schedule_terminal("candidate_delivery_failed")
+                        self._schedule_terminal(
+                            BrowserVoiceTerminationReason.CANDIDATE_DELIVERY_FAILED
+                        )
                 except Exception as error:
                     logger.warning(
                         "WebRTC candidate delivery failed "
@@ -311,7 +325,9 @@ class AgentPeerClient:
                         self._session_state.organization_id,
                         type(error).__name__,
                     )
-                    self._schedule_terminal("candidate_delivery_failed")
+                    self._schedule_terminal(
+                        BrowserVoiceTerminationReason.CANDIDATE_DELIVERY_FAILED
+                    )
             else:
                 logger.info("AGENT_PEER: ICE candidate gathering complete.")
                 delivered = await S_ws_manager.send_response(
@@ -329,7 +345,9 @@ class AgentPeerClient:
                     self._session_state.session_id,
                 )
                 if not delivered:
-                    self._schedule_terminal("candidate_delivery_failed")
+                    self._schedule_terminal(
+                        BrowserVoiceTerminationReason.CANDIDATE_DELIVERY_FAILED
+                    )
 
         @self.pc.on("icecandidateerror")
         async def on_icecandidateerror(error):
@@ -387,7 +405,7 @@ class AgentPeerClient:
                         logger.info(
                             "Track consumption ended category=%s", type(e).__name__
                         )
-                        self._schedule_terminal("track_ended")
+                        self._schedule_terminal(BrowserVoiceTerminationReason.TRACK_ENDED)
                         return
 
                 self._consume_task = asyncio.create_task(consume_track())

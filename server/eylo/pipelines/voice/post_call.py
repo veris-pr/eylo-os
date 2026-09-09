@@ -3,21 +3,13 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from eylo.common.contracts.voice import (
-    VOICE_MESSAGE_META_REDACTION_VERSION,
-    VOICE_MESSAGE_META_RUNTIME_MODE,
-    VOICE_MESSAGE_META_SESSION_ID,
-    VOICE_MESSAGE_META_SESSION_ROW_ID,
-    VOICE_MESSAGE_META_SOURCE_SEQUENCE,
-    VOICE_MESSAGE_META_SPEECH_OUTCOME,
-)
 from eylo.common.database import start_transaction
 from eylo.common.redaction import redact_value
 from eylo.modules.conversations.models.participants import ParticipantsModel
@@ -32,6 +24,7 @@ from eylo.modules.conversations.schemas.message_content import (
 )
 from eylo.modules.conversations.schemas.messages import (
     MessageContentKind,
+    MessageContentType,
     MessageCreate,
     MessageInDb,
     MessageKind,
@@ -43,6 +36,7 @@ from eylo.modules.conversations.services.messages import MessageService
 from eylo.modules.voice_transcripts.constants import (
     VOICE_CANONICAL_REDACTION_VERSION,
     VoiceAudioTrackKind,
+    VoiceCanonicalFailureCode,
     VoiceCanonicalState,
     VoiceRuntimeMode,
     VoiceSegmentRole,
@@ -64,7 +58,6 @@ from eylo.pipelines.voice.live_buffer import (
     LiveVoiceItem,
     LiveVoiceItemKind,
 )
-from eylo.pipelines.voice.request_state import VoiceRequestSource
 
 logger = logging.getLogger(__name__)
 
@@ -85,40 +78,36 @@ class VoiceProjectionAuthorityError(Exception):
 class VoiceProjectionBuildError(Exception):
     """Canonical history cannot be built from otherwise valid session state."""
 
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: VoiceCanonicalFailureCode) -> None:
         self.code = code
         super().__init__("Canonical voice history input is unavailable.")
 
 
-@dataclass(frozen=True, slots=True)
-class VoiceProjectionResult:
+class VoiceProjectionResult(BaseModel):
+    """Content-free outcome, including a replay of the persisted terminal state."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
     voice_session_id: UUID
     state: VoiceCanonicalState
-    message_count: int
-    segment_count: int
-    source_complete: bool | None
-    failure_code: str | None
-    replayed: bool
+    message_count: StrictInt = Field(ge=0)
+    segment_count: StrictInt = Field(ge=0)
+    source_complete: StrictBool | None
+    failure_code: VoiceCanonicalFailureCode | None
+    replayed: StrictBool
 
 
-@dataclass(frozen=True, slots=True)
-class _CanonicalItem:
-    sequence: int
-    kind: LiveVoiceItemKind
-    payload: str | dict[str, Any]
-    changed: bool
-    occurred_at: datetime
-    participant_id: UUID | None
-    request_id: UUID | None
-    tool_call_id: str | None
-    tool_name: str | None
-    is_error: bool | None
-    speech_outcome: str | None
-    policy_source: VoiceRequestSource | None
+class _CanonicalItem(LiveVoiceItem):
+    """Validated redactor output; payload is still excluded from generic dumps."""
+
+    changed: StrictBool
 
 
-@dataclass(frozen=True, slots=True)
-class _ParticipantAuthority:
+class _ParticipantAuthority(BaseModel):
+    """Resolved primary participant rows within the exact conversation."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
     contact_id: UUID | None
     agent_id: UUID | None
 
@@ -178,7 +167,7 @@ async def project_live_voice_snapshot(
             snapshot.identity,
             state=VoiceCanonicalState.FAILED,
             source_complete=True,
-            failure_code="redaction_failed",
+            failure_code=VoiceCanonicalFailureCode.REDACTION_FAILED,
             redaction_version=VOICE_CANONICAL_REDACTION_VERSION,
         )
 
@@ -198,7 +187,7 @@ async def project_live_voice_snapshot(
             "Post-call voice projection failed error_type=%s",
             type(error).__name__,
         )
-        failure_code = "projection_failed"
+        failure_code = VoiceCanonicalFailureCode.PROJECTION_FAILED
     return await _record_terminal_state(
         snapshot.identity,
         state=VoiceCanonicalState.FAILED,
@@ -250,10 +239,14 @@ def _storage_decision(
         or "canonical_storage_requested" not in meta
         or not isinstance(meta["canonical_storage_requested"], bool)
     ):
-        raise VoiceProjectionBuildError("storage_decision_unavailable")
+        raise VoiceProjectionBuildError(
+            VoiceCanonicalFailureCode.STORAGE_DECISION_UNAVAILABLE
+        )
     requested = meta["canonical_storage_requested"]
     if requested is not identity.canonical_storage_requested:
-        raise VoiceProjectionBuildError("storage_decision_conflict")
+        raise VoiceProjectionBuildError(
+            VoiceCanonicalFailureCode.STORAGE_DECISION_CONFLICT
+        )
     return requested
 
 
@@ -277,13 +270,18 @@ def _redact_items(items: tuple[LiveVoiceItem, ...]) -> tuple[_CanonicalItem, ...
     expected_sequence = 1
     for item in items:
         if item.sequence != expected_sequence:
-            raise VoiceProjectionBuildError("source_order_invalid")
+            raise VoiceProjectionBuildError(
+                VoiceCanonicalFailureCode.SOURCE_ORDER_INVALID
+            )
         payload = redact_value(item.payload)
         if not isinstance(payload, (str, dict)):
-            raise VoiceProjectionBuildError("redacted_payload_invalid")
+            raise VoiceProjectionBuildError(
+                VoiceCanonicalFailureCode.REDACTED_PAYLOAD_INVALID
+            )
         redacted.append(
             _CanonicalItem(
                 sequence=item.sequence,
+                turn_index=item.turn_index,
                 kind=item.kind,
                 payload=payload,
                 changed=payload != item.payload,
@@ -327,7 +325,9 @@ async def _persist_projection(
             VoiceSessionInDb.model_validate(session_row),
             identity,
         ):
-            raise VoiceProjectionBuildError("storage_decision_conflict")
+            raise VoiceProjectionBuildError(
+                VoiceCanonicalFailureCode.STORAGE_DECISION_CONFLICT
+            )
 
         participants = await _participant_authority(db, session_row, items)
         message_service = MessageService(db)
@@ -357,7 +357,7 @@ async def _persist_projection(
         segment_count = await transcript_service.count_segments(session_row.id)
 
     return VoiceProjectionResult(
-        voice_session_id=identity.voice_session_id,
+        voice_session_id=voice_session.id,
         state=state,
         message_count=message_count,
         segment_count=segment_count,
@@ -368,7 +368,7 @@ async def _persist_projection(
 
 
 async def _participant_authority(
-    db,
+    db: AsyncSession,
     session: VoiceSessionModel,
     items: tuple[_CanonicalItem, ...],
 ) -> _ParticipantAuthority:
@@ -406,7 +406,9 @@ async def _participant_authority(
         and row.agent_revision == session.agent_revision
     ]
     if (needs_contact and len(contacts) != 1) or (needs_agent and len(agents) != 1):
-        raise VoiceProjectionBuildError("participant_authority_unavailable")
+        raise VoiceProjectionBuildError(
+            VoiceCanonicalFailureCode.PARTICIPANT_AUTHORITY_UNAVAILABLE
+        )
     contact_id = contacts[0].id if contacts else None
     agent_id = agents[0].id if agents else None
     for item in items:
@@ -420,7 +422,9 @@ async def _participant_authority(
         else:
             expected = agent_id
         if item.participant_id is not None and item.participant_id != expected:
-            raise VoiceProjectionBuildError("participant_authority_conflict")
+            raise VoiceProjectionBuildError(
+                VoiceCanonicalFailureCode.PARTICIPANT_AUTHORITY_CONFLICT
+            )
     return _ParticipantAuthority(contact_id=contact_id, agent_id=agent_id)
 
 
@@ -429,27 +433,31 @@ def _message_create(
     participants: _ParticipantAuthority,
     item: _CanonicalItem,
 ) -> MessageCreate:
+    if identity.voice_session_id is None:
+        raise VoiceProjectionAuthorityError
     sender_id = (
         participants.contact_id
         if item.kind in {LiveVoiceItemKind.USER_TRANSCRIPT, LiveVoiceItemKind.DTMF}
         else participants.agent_id
     )
     if sender_id is None:
-        raise VoiceProjectionBuildError("participant_authority_unavailable")
+        raise VoiceProjectionBuildError(
+            VoiceCanonicalFailureCode.PARTICIPANT_AUTHORITY_UNAVAILABLE
+        )
     request_id = _request_id(identity, item)
     kind, content_kind, content, status = _message_content(item)
-    meta: dict[str, Any] = {
-        VOICE_MESSAGE_META_SESSION_ID: identity.session_id,
-        VOICE_MESSAGE_META_SESSION_ROW_ID: str(identity.voice_session_id),
-        VOICE_MESSAGE_META_RUNTIME_MODE: identity.runtime_mode.value,
-        VOICE_MESSAGE_META_SOURCE_SEQUENCE: item.sequence,
-        VOICE_MESSAGE_META_REDACTION_VERSION: VOICE_CANONICAL_REDACTION_VERSION,
-        "source": "realtime"
+    meta = MessageMeta(
+        voice_session_id=identity.session_id,
+        voice_session_row_id=identity.voice_session_id,
+        voice_runtime_mode=identity.runtime_mode,
+        voice_source_sequence=item.sequence,
+        voice_redaction_version=VOICE_CANONICAL_REDACTION_VERSION,
+        source=VoiceSegmentSource.REALTIME.value
         if identity.runtime_mode is VoiceRuntimeMode.BROWSER_REALTIME
         else "voice",
-    }
+    )
     if item.speech_outcome is not None:
-        meta[VOICE_MESSAGE_META_SPEECH_OUTCOME] = item.speech_outcome
+        meta.speech_turn_outcome = _speech_outcome(item)
     return MessageCreate(
         conversation_id=identity.conversation_id,
         sender_participant_id=sender_id,
@@ -459,14 +467,14 @@ def _message_create(
         content=content,
         request_id=request_id,
         request_status=status,
-        meta=MessageMeta.model_validate(meta),
+        meta=meta,
         external_id=f"voice:{identity.voice_session_id}:{item.sequence}",
     )
 
 
 def _message_content(
     item: _CanonicalItem,
-) -> tuple[MessageKind, MessageContentKind, object, RequestStatus]:
+) -> tuple[MessageKind, MessageContentKind, MessageContentType, RequestStatus]:
     if item.kind is LiveVoiceItemKind.USER_TRANSCRIPT:
         text = _text_payload(item)
         return (
@@ -497,7 +505,7 @@ def _message_content(
             or not item.tool_call_id
             or not item.tool_name
         ):
-            raise VoiceProjectionBuildError("tool_call_invalid")
+            raise VoiceProjectionBuildError(VoiceCanonicalFailureCode.TOOL_CALL_INVALID)
         return (
             MessageKind.TOOL_USE,
             MessageContentKind.TOOL,
@@ -511,7 +519,7 @@ def _message_content(
             RequestStatus.COMPLETED,
         )
     if not item.tool_call_id:
-        raise VoiceProjectionBuildError("tool_result_invalid")
+        raise VoiceProjectionBuildError(VoiceCanonicalFailureCode.TOOL_RESULT_INVALID)
     return (
         MessageKind.TOOL_RESULT,
         MessageContentKind.TOOL,
@@ -534,6 +542,8 @@ def _segment_create(
     message: MessageInDb | None,
     item: _CanonicalItem,
 ) -> VoiceSegmentCreate:
+    if identity.voice_session_id is None:
+        raise VoiceProjectionAuthorityError
     role, segment_type, source, audio_track = _segment_class(identity, item)
     text = None
     tool_input = None
@@ -546,7 +556,9 @@ def _segment_create(
         LiveVoiceItemKind.ASSISTANT_TRANSCRIPT,
     }:
         if message is None:
-            raise VoiceProjectionBuildError("message_projection_unavailable")
+            raise VoiceProjectionBuildError(
+                VoiceCanonicalFailureCode.MESSAGE_PROJECTION_UNAVAILABLE
+            )
         text = MessageService.get_message_content(message.content)
     elif item.kind is LiveVoiceItemKind.DTMF:
         dtmf_digits = _text_payload(item)
@@ -563,9 +575,7 @@ def _segment_create(
         conversation_id=identity.conversation_id,
         message_id=message.id if message is not None else None,
         request_id=(
-            message.request_id
-            if message is not None
-            else _request_id(identity, item)
+            message.request_id if message is not None else _request_id(identity, item)
         ),
         source_created_at=item.occurred_at,
         sequence=item.sequence - 1,
@@ -630,7 +640,9 @@ def _segment_class(
         )
     if item.kind is LiveVoiceItemKind.SYSTEM_SPEECH:
         if item.policy_source is None:
-            raise VoiceProjectionBuildError("policy_source_unavailable")
+            raise VoiceProjectionBuildError(
+                VoiceCanonicalFailureCode.POLICY_SOURCE_UNAVAILABLE
+            )
         return (
             VoiceSegmentRole.SYSTEM,
             VoiceSegmentType.SPEECH,
@@ -656,7 +668,7 @@ def _segment_class(
 
 def _text_payload(item: _CanonicalItem) -> str:
     if not isinstance(item.payload, str):
-        raise VoiceProjectionBuildError("text_payload_invalid")
+        raise VoiceProjectionBuildError(VoiceCanonicalFailureCode.TEXT_PAYLOAD_INVALID)
     return item.payload
 
 
@@ -672,12 +684,11 @@ def _request_id(
 
 
 def _speech_outcome(item: _CanonicalItem) -> VoiceSpeechOutcome:
-    try:
-        return VoiceSpeechOutcome(str(item.speech_outcome))
-    except ValueError as error:
+    if item.speech_outcome is None:
         raise VoiceProjectionBuildError(
-            "assistant_speech_outcome_unavailable"
-        ) from error
+            VoiceCanonicalFailureCode.ASSISTANT_SPEECH_OUTCOME_UNAVAILABLE
+        )
+    return item.speech_outcome
 
 
 def _speech_request_status(outcome: VoiceSpeechOutcome) -> RequestStatus:
@@ -694,7 +705,7 @@ async def _record_terminal_state(
     *,
     state: VoiceCanonicalState,
     source_complete: bool,
-    failure_code: str | None,
+    failure_code: VoiceCanonicalFailureCode | None,
     redaction_version: int | None,
 ) -> VoiceProjectionResult:
     async with start_transaction() as db:
@@ -715,15 +726,18 @@ async def _record_terminal_state(
             return existing
         session.canonical_state = state
         session.canonical_redaction_version = redaction_version
-        session.canonical_failure_code = failure_code
+        session.canonical_failure_code = (
+            failure_code.value if failure_code is not None else None
+        )
         session.canonical_source_complete = source_complete
         session.canonical_projected_at = datetime.now(timezone.utc)
         session.canonical_message_count = 0
         await db.flush()
         segment_count = await VoiceTranscriptService(db).count_segments(session.id)
+        voice_session_id = session.id
 
     return VoiceProjectionResult(
-        voice_session_id=identity.voice_session_id,
+        voice_session_id=voice_session_id,
         state=state,
         message_count=0,
         segment_count=segment_count,
@@ -733,11 +747,15 @@ async def _record_terminal_state(
     )
 
 
-def _source_failure_code(failure: LiveVoiceBufferFailure | None) -> str:
+def _source_failure_code(
+    failure: LiveVoiceBufferFailure | None,
+) -> VoiceCanonicalFailureCode:
+    if failure is None:
+        return VoiceCanonicalFailureCode.SOURCE_CAPTURE_INCOMPLETE
     return {
-        LiveVoiceBufferFailure.CAPACITY_EXCEEDED: "source_capacity_exceeded",
-        LiveVoiceBufferFailure.INVALID_PAYLOAD: "source_invalid_payload",
-    }.get(failure, "source_capture_incomplete")
+        LiveVoiceBufferFailure.CAPACITY_EXCEEDED: VoiceCanonicalFailureCode.SOURCE_CAPACITY_EXCEEDED,
+        LiveVoiceBufferFailure.INVALID_PAYLOAD: VoiceCanonicalFailureCode.SOURCE_INVALID_PAYLOAD,
+    }[failure]
 
 
 __all__ = [

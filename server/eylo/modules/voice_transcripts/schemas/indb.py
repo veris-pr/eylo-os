@@ -15,6 +15,7 @@ from eylo.common.schemas import (
 )
 from eylo.modules.voice_transcripts.constants import (
     VoiceAudioTrackKind,
+    VoiceCanonicalFailureCode,
     VoiceCanonicalState,
     VoiceRuntimeMode,
     VoiceSegmentRole,
@@ -65,7 +66,7 @@ class VoiceSessionUpdate(EyloBaseSchema):
     status: VoiceSessionStatus | None = None
     canonical_state: VoiceCanonicalState | None = None
     canonical_redaction_version: int | None = Field(default=None, gt=0)
-    canonical_failure_code: str | None = None
+    canonical_failure_code: VoiceCanonicalFailureCode | None = None
     canonical_source_complete: bool | None = None
     canonical_projected_at: datetime | None = None
     canonical_message_count: int | None = Field(default=None, ge=0)
@@ -143,7 +144,7 @@ class VoiceSessionInDb(EyloBaseOrganizationModelSchema):
     status: VoiceSessionStatus
     canonical_state: VoiceCanonicalState = VoiceCanonicalState.NOT_RUN
     canonical_redaction_version: int | None = None
-    canonical_failure_code: str | None = None
+    canonical_failure_code: VoiceCanonicalFailureCode | None = None
     canonical_source_complete: bool | None = None
     canonical_projected_at: datetime | None = None
     canonical_message_count: int = 0

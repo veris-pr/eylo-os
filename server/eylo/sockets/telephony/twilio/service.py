@@ -32,6 +32,7 @@ from eylo.sockets.telephony.base import (
     TelephonyProvider,
     classify_provider_failure,
 )
+from eylo.sockets.telephony.config import TwilioSettings
 from eylo.sockets.telephony.twilio.rest_client import TwilioRestClient
 
 logger = logging.getLogger(__name__)
@@ -153,6 +154,7 @@ class TwilioService(BaseTelephonyService):
             websocket: Optional WebSocket connection for media streaming
 
         """
+        self.settings = config.require_settings(TwilioSettings)
         super().__init__(config)
         self.websocket = websocket
         self._parser = TwilioMessageParser()
@@ -238,7 +240,7 @@ class TwilioService(BaseTelephonyService):
             TwiML XML string
 
         """
-        params_xml = []
+        params_xml: list[str] = []
         for k, v in custom_params.items():
             params_xml.append(f'<Parameter name="{k}" value="{quote(str(v))}" />')
         params_str = "\n".join(params_xml)
@@ -320,12 +322,11 @@ class TwilioService(BaseTelephonyService):
         self._is_connected = False
         self.websocket = None
 
-    def _make_rest_client(self):
+    def _make_rest_client(self) -> TwilioRestClient:
         """Create a TwilioRestClient using per-org credentials from config."""
-        extra = self.config.extra_config or {}
         return TwilioRestClient(
-            account_sid=extra.get("account_sid"),
-            auth_token=extra.get("auth_token"),
+            account_sid=self.settings.account_sid,
+            auth_token=self.settings.auth_token,
         )
 
     async def end_call(self, call_sid: str) -> TelephonyControlResult:

@@ -34,8 +34,10 @@ from eylo.pipelines.voice.request_state import (
     VoiceRequestSource,
     VoiceRequestStatus,
 )
+from eylo.pipelines.voice.transcript_inputs import DTMFInput, VoiceTranscriptInput
 from eylo.pipelines.voice.tts import TTSRealtime
 from eylo.pipelines.websocket.schemas import WSSessionState
+from eylo.sockets.stt.schemas import STTEvent, STTEventType, STTInterruptionHint
 
 logger = logging.getLogger(__name__)
 
@@ -158,14 +160,13 @@ def _track_prebuffered_user_input(
 
 
 async def _validated_dtmf_sequence(
-    metadata: object,
+    event: DTMFInput | None,
     live_buffer: LiveVoiceBuffer,
 ) -> int | None:
-    if not isinstance(metadata, dict) or metadata.get("source") != "dtmf":
+    if event is None:
         return None
-    sequence = metadata.get("live_buffer_sequence")
-    digits = metadata.get("digits")
-    if not isinstance(sequence, int) or sequence <= 0 or not isinstance(digits, str):
+    sequence = event.live_buffer_sequence
+    if sequence is None:
         return None
     snapshot = await live_buffer.snapshot()
     matched = next(
@@ -175,7 +176,7 @@ async def _validated_dtmf_sequence(
     if (
         matched is None
         or matched.kind is not LiveVoiceItemKind.DTMF
-        or matched.payload != digits
+        or matched.payload != event.digits
     ):
         return None
     return sequence
@@ -184,10 +185,10 @@ async def _validated_dtmf_sequence(
 def _should_allow_interruption(
     stop_plan: StopSpeakingPlan,
     effective_interruption_type: InterruptionType,
-    result_type: str,
+    result_type: STTEventType,
     transcript: str,
     last_interruption_time: float | None,
-    vad_should_interrupt: bool = False,
+    interruption_hint: STTInterruptionHint = STTInterruptionHint.NONE,
 ) -> bool:
     normalized_transcript = transcript.strip().lower()
 
@@ -209,11 +210,16 @@ def _should_allow_interruption(
     ):
         return True
 
-    if vad_should_interrupt and not transcript:
+    if interruption_hint is STTInterruptionHint.REQUESTED and not transcript:
         return True
 
     if (
-        result_type == "interrupt"
+        result_type
+        in {
+            STTEventType.SPEECH_START,
+            STTEventType.START_OF_TURN,
+            STTEventType.TURN_RESUMED,
+        }
         and not transcript
         and effective_interruption_type == InterruptionType.VAD
     ):
@@ -242,7 +248,7 @@ def _get_effective_interruption_type(
 
 
 async def write_user_transcript(
-    stt_queue: asyncio.Queue,
+    stt_queue: asyncio.Queue[VoiceTranscriptInput],
     conversation_id: UUID,
     tts_manager: TTSRealtime | None,
     tts_interrupt_event: asyncio.Event,
@@ -250,7 +256,7 @@ async def write_user_transcript(
     on_interrupt: Callable[[], Awaitable[None]] | None = None,
     on_end_call: (Callable[[UUID, str | None], Awaitable[None]] | None) = None,
     on_final_transcript: (
-        Callable[[UUID, str, int | None], Awaitable[None]] | None
+        Callable[[UUID, str, int | None], Awaitable[bool]] | None
     ) = None,
     voice_config: VoiceConfig | None = None,
     session_state: WSSessionState | None = None,
@@ -267,11 +273,7 @@ async def write_user_transcript(
     interruption, and request tracking before writing final transcripts to the
     session buffer. No raw turn is written to a message, event, or segment.
     """
-    stop_plan = (
-        voice_config.stop_speaking_plan
-        if voice_config
-        else StopSpeakingPlan()
-    )
+    stop_plan = voice_config.stop_speaking_plan if voice_config else StopSpeakingPlan()
     conversation_control = (
         voice_config.conversation_control if voice_config else ConversationControl()
     )
@@ -286,12 +288,24 @@ async def write_user_transcript(
         try:
             stt_result = await stt_queue.get()
             stt_item_acquired = True
-            result_type = stt_result.get("type", "")
-
-            transcript = stt_result.get("transcript", "")
-            is_final_transcript = stt_result.get("is_final", True)
-            vad_should_interrupt = bool(stt_result.get("should_interrupt"))
-            metadata = stt_result.get("metadata")
+            result_type = (
+                stt_result.type
+                if isinstance(stt_result, STTEvent)
+                else STTEventType.TRANSCRIPT_FINAL
+            )
+            transcript = stt_result.transcript
+            is_final_transcript = (
+                stt_result.is_final if isinstance(stt_result, STTEvent) else True
+            )
+            interruption_hint = (
+                stt_result.interruption_hint
+                if isinstance(stt_result, STTEvent)
+                else STTInterruptionHint.NONE
+            )
+            speech_started = (
+                isinstance(stt_result, STTEvent) and stt_result.is_speech_start
+            )
+            speech_ended = isinstance(stt_result, STTEvent) and stt_result.is_speech_end
             logger.info(
                 "Transcript pipeline event type=%s final=%s transcript_chars=%d",
                 result_type,
@@ -300,8 +314,7 @@ async def write_user_transcript(
             )
 
             if (
-                result_type == "transcript"
-                and transcript
+                transcript
                 and is_final_transcript
                 and matches_end_call_phrase(transcript, end_call_phrases)
             ):
@@ -331,22 +344,22 @@ async def write_user_transcript(
                 await on_end_call(request_id, end_call_message)
                 break
 
-            if (
-                transcript or result_type in {"interrupt", "vad"}
-            ) and speech_activity_event:
+            if (transcript or speech_started) and speech_activity_event:
                 if session_state:
                     session_state.transport_playback_gate.cancel()
                     session_state.voice_activity_gate.mark_user_activity()
                 speech_activity_event.set()
 
-            if result_type in {"interrupt", "vad"} or transcript:
+            if (speech_started or transcript) and not (
+                speech_ended and not is_final_transcript
+            ):
                 should_interrupt = _should_allow_interruption(
                     stop_plan,
                     effective_interruption_type,
                     result_type,
                     transcript,
                     last_interruption_time,
-                    vad_should_interrupt,
+                    interruption_hint,
                 )
                 if should_interrupt:
                     interrupted_request_id = None
@@ -390,9 +403,9 @@ async def write_user_transcript(
                             )
                     last_interruption_time = time.time()
 
-            if result_type == "transcript" and transcript and is_final_transcript:
+            if transcript and is_final_transcript:
                 live_buffer_sequence = await _validated_dtmf_sequence(
-                    metadata,
+                    stt_result if isinstance(stt_result, DTMFInput) else None,
                     live_buffer,
                 )
                 if live_buffer_sequence is not None:
@@ -428,7 +441,7 @@ async def write_user_transcript(
             if stt_item_acquired:
                 stt_queue.task_done()
             logger.info("User transcript writer task cancelled")
-            break
+            raise
         except Exception as error:
             if stt_item_acquired:
                 stt_queue.task_done()

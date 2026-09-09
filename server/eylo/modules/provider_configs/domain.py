@@ -2,17 +2,32 @@
 
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from types import MappingProxyType
+from typing import Self
 from uuid import UUID
 
 import uuid_utils
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    ModelWrapValidatorHandler,
+    TypeAdapter,
+    ValidationError,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from eylo.common.contracts.provider_config import Capability, ProviderConfigError
 from eylo.modules.provider_configs.masking import apply_secret_patch
 
 _PROVIDER_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*$")
+_JSON_OBJECT = TypeAdapter(
+    dict[str, JsonValue], config=ConfigDict(strict=True, allow_inf_nan=False)
+)
 
 
 class InvalidProviderConfig(ProviderConfigError):
@@ -31,99 +46,143 @@ class ProviderConfigRevisionConflict(ProviderConfigConflict):
     """Raised when a stale operation targets a superseded config revision."""
 
 
-@dataclass(frozen=True)
-class EffectiveProviderConfig:
-    """Immutable provider material resolved for one explicit capability use."""
+class _ProviderConfigValue(BaseModel):
+    """Validate shared material without importing capability or vendor schemas.
+
+    Secrets stay private during serialization. Mapping bindings are read-only;
+    nested JSON values are copied on validation, not recursively frozen.
+    """
+
+    model_config = ConfigDict(
+        frozen=True,
+        strict=True,
+        extra="forbid",
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+        allow_inf_nan=False,
+        validate_default=True,
+    )
+
+    capability: Capability
+    provider: str
+    secrets: Mapping[str, str] = Field(repr=False, exclude=True)
+    verification_metadata: Mapping[str, JsonValue] = Field(default_factory=dict)
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _validate_fields(
+        cls, value: object, handler: ModelWrapValidatorHandler[Self]
+    ) -> Self:
+        try:
+            return handler(value)
+        except ValidationError:
+            raise InvalidProviderConfig(
+                "Provider configuration contains invalid field values."
+            ) from None
+
+    @field_validator("capability", mode="before")
+    @classmethod
+    def _capability(cls, value: object) -> Capability:
+        if not isinstance(value, (Capability, str)):
+            raise InvalidProviderConfig("Capability is not supported.")
+        return _validate_capability(value)
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def _provider(cls, value: str) -> str:
+        return _normalize_provider(value)
+
+    @field_validator("secrets")
+    @classmethod
+    def _secrets(cls, value: Mapping[str, str]) -> Mapping[str, str]:
+        return MappingProxyType(_validate_secrets(value))
+
+    @field_validator("verification_metadata")
+    @classmethod
+    def _metadata(cls, value: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
+        return MappingProxyType(_JSON_OBJECT.validate_python(dict(value)))
+
+    @field_serializer("verification_metadata")
+    def _serialize_metadata(
+        self, value: Mapping[str, JsonValue]
+    ) -> dict[str, JsonValue]:
+        return dict(value)
+
+
+class EffectiveProviderConfig(_ProviderConfigValue):
+    """Validated provider snapshot resolved for one explicit capability use."""
 
     organization_id: UUID
-    capability: Capability
     provider_config_id: UUID
-    revision: int
-    provider: str
-    settings: Mapping[str, object]
-    secrets: Mapping[str, str] = field(repr=False, compare=False)
-    verification_metadata: Mapping[str, object] = field(default_factory=dict)
+    revision: int = Field(ge=1)
+    settings: Mapping[str, JsonValue]
     configured: bool = True
     verified: bool = False
     ready: bool = False
     granted: bool = False
 
-    def __post_init__(self) -> None:
-        if not isinstance(self.organization_id, UUID) or not isinstance(
-            self.provider_config_id, UUID
-        ):
-            raise InvalidProviderConfig(
-                "Effective provider config identifiers must be UUIDs."
-            )
-        object.__setattr__(self, "capability", _validate_capability(self.capability))
-        object.__setattr__(self, "provider", _normalize_provider(self.provider))
-        object.__setattr__(self, "revision", _validate_revision(self.revision))
-        object.__setattr__(
-            self,
-            "settings",
-            MappingProxyType(_validate_config(self.settings)),
-        )
-        object.__setattr__(
-            self,
-            "secrets",
-            MappingProxyType(_validate_secrets(self.secrets)),
-        )
-        object.__setattr__(
-            self,
-            "verification_metadata",
-            MappingProxyType(_validate_config(self.verification_metadata)),
-        )
+    @field_validator("settings")
+    @classmethod
+    def _settings(cls, value: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
+        return MappingProxyType(_JSON_OBJECT.validate_python(dict(value)))
+
+    @field_serializer("settings")
+    def _serialize_settings(
+        self, value: Mapping[str, JsonValue]
+    ) -> dict[str, JsonValue]:
+        return dict(value)
 
 
-@dataclass(frozen=True)
-class ProviderConfig:
+class ProviderConfig(_ProviderConfigValue):
     """Provider configuration aggregate with plaintext secrets held in memory only."""
 
     id: UUID
     organization_id: UUID
-    capability: Capability
-    provider: str
     name: str
-    config: Mapping[str, object]
-    secrets: Mapping[str, str] = field(repr=False)
+    config: Mapping[str, JsonValue]
     deleted: bool = False
-    revision: int = 1
-    current_revision: int | None = None
+    revision: int = Field(default=1, ge=1)
+    current_revision: int | None = Field(default=None, ge=1)
     enabled: bool = True
     verified_at: datetime | None = None
-    verification_metadata: Mapping[str, object] = field(default_factory=dict)
     credentials_available: bool = True
 
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "capability", _validate_capability(self.capability))
-        object.__setattr__(self, "provider", _normalize_provider(self.provider))
-        object.__setattr__(self, "name", _normalize_name(self.name))
-        object.__setattr__(self, "config", _validate_config(self.config))
-        object.__setattr__(self, "secrets", _validate_secrets(self.secrets))
-        object.__setattr__(self, "revision", _validate_revision(self.revision))
+    @field_validator("name", mode="before")
+    @classmethod
+    def _name(cls, value: str) -> str:
+        return _normalize_name(value)
+
+    @field_validator("config")
+    @classmethod
+    def _config(cls, value: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
+        return MappingProxyType(_JSON_OBJECT.validate_python(dict(value)))
+
+    @field_serializer("config")
+    def _serialize_config(self, value: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
+        return dict(value)
+
+    @field_validator("verified_at")
+    @classmethod
+    def _verified_at(cls, value: datetime | None) -> datetime | None:
+        return _validate_verified_at(value)
+
+    @model_validator(mode="after")
+    def _selected_revision(self) -> Self:
         current_revision = (
-            self.revision
-            if self.current_revision is None
-            else _validate_revision(self.current_revision)
+            self.revision if self.current_revision is None else self.current_revision
         )
         if self.revision > current_revision:
             raise InvalidProviderConfig(
                 "Selected revision cannot exceed the current revision."
             )
         object.__setattr__(self, "current_revision", current_revision)
-        if not isinstance(self.enabled, bool):
-            raise InvalidProviderConfig("Enabled must be a boolean.")
-        if not isinstance(self.credentials_available, bool):
-            raise InvalidProviderConfig("Credential availability must be a boolean.")
-        object.__setattr__(
-            self,
-            "verified_at",
-            _validate_verified_at(self.verified_at),
-        )
-        object.__setattr__(
-            self,
-            "verification_metadata",
-            MappingProxyType(_validate_config(self.verification_metadata)),
+        return self
+
+    def _replace(self, **changes: object) -> Self:
+        """Revalidate every lifecycle transition, including private credentials."""
+        validated = type(self).model_validate(self)
+        return type(self).model_validate(
+            {**validated.model_dump(), "secrets": validated.secrets, **changes}
         )
 
     @classmethod
@@ -137,19 +196,16 @@ class ProviderConfig:
         config: Mapping[str, object] | None = None,
         secrets: Mapping[str, str] | None = None,
     ) -> "ProviderConfig":
-        return cls(
-            id=UUID(str(uuid_utils.uuid7())),
-            organization_id=organization_id,
-            capability=capability,
-            provider=provider,
-            name=name,
-            config={} if config is None else config,
-            secrets={} if secrets is None else secrets,
-            revision=1,
-            current_revision=1,
-            enabled=True,
-            verified_at=None,
-            verification_metadata={},
+        return cls.model_validate(
+            {
+                "id": UUID(str(uuid_utils.uuid7())),
+                "organization_id": organization_id,
+                "capability": capability,
+                "provider": provider,
+                "name": name,
+                "config": {} if config is None else config,
+                "secrets": {} if secrets is None else secrets,
+            }
         )
 
     def update(
@@ -164,8 +220,7 @@ class ProviderConfig:
                 "Only the current provider configuration revision can be updated."
             )
         next_revision = self.revision + 1
-        return replace(
-            self,
+        return self._replace(
             name=self.name if name is None else name,
             config=self.config if config is None else config,
             secrets=(
@@ -185,7 +240,7 @@ class ProviderConfig:
             raise ProviderConfigRevisionConflict(
                 "Only the current provider configuration revision can be renamed."
             )
-        return replace(self, name=name)
+        return self._replace(name=name)
 
     @property
     def configured(self) -> bool:
@@ -224,9 +279,10 @@ class ProviderConfig:
             raise ProviderConfigRevisionConflict(
                 "Only the current provider configuration revision can be verified."
             )
-        return replace(
-            self,
-            verified_at=verified_at or datetime.now(timezone.utc),
+        return self._replace(
+            verified_at=(
+                datetime.now(timezone.utc) if verified_at is None else verified_at
+            ),
             verification_metadata=(
                 {} if verification_metadata is None else verification_metadata
             ),
@@ -235,7 +291,7 @@ class ProviderConfig:
     def set_enabled(self, enabled: bool) -> "ProviderConfig":
         if not isinstance(enabled, bool):
             raise InvalidProviderConfig("Enabled must be a boolean.")
-        return replace(self, enabled=enabled)
+        return self._replace(enabled=enabled)
 
     def to_effective(self, *, granted: bool) -> EffectiveProviderConfig:
         if not isinstance(granted, bool):
@@ -256,7 +312,7 @@ class ProviderConfig:
         )
 
     def soft_delete(self) -> "ProviderConfig":
-        return replace(self, deleted=True, enabled=False)
+        return self._replace(deleted=True, enabled=False)
 
 
 def _validate_capability(value: Capability | str) -> Capability:
@@ -282,12 +338,6 @@ def _normalize_name(value: str) -> str:
     return normalized
 
 
-def _validate_config(value: Mapping[str, object]) -> dict[str, object]:
-    if not isinstance(value, Mapping) or not all(isinstance(key, str) for key in value):
-        raise InvalidProviderConfig("Config must be a string-keyed mapping.")
-    return dict(value)
-
-
 def _validate_secrets(value: Mapping[str, str]) -> dict[str, str]:
     if not isinstance(value, Mapping) or not all(
         isinstance(key, str) and isinstance(secret, str) and secret
@@ -308,6 +358,6 @@ def _validate_revision(value: int) -> int:
 def _validate_verified_at(value: datetime | None) -> datetime | None:
     if value is None:
         return None
-    if not isinstance(value, datetime) or value.tzinfo is None:
+    if not isinstance(value, datetime) or value.utcoffset() is None:
         raise InvalidProviderConfig("Verification time must be timezone-aware.")
     return value

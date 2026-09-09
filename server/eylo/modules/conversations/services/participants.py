@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from eylo.common.database import register_ephemeral_event_post_txn
 from eylo.common.services import EyloBaseService
 from eylo.events.schema.py_events.base import ParticipantCreatedEvent
+from eylo.modules.agents.schemas.indb import AgentInDb
 from eylo.modules.contacts.schemas.indb import ContactCreateSchema, ContactRef
 from eylo.modules.conversations.repositories.participants import (
     ConversationParticipantRepository,
@@ -89,6 +90,42 @@ class ConversationParticipantService(EyloBaseService[ParticipantInDb]):
             )
         )
         return participant_indb
+
+    async def ensure_agent_actor(
+        self, *, conversation_id: UUID, agent: AgentInDb
+    ) -> ParticipantInDb:
+        """Reuse or create a non-primary actor for an already resolved revision.
+
+        The caller owns a short transaction and executable-agent resolution.
+        Creation shares the handoff lock; retries cannot duplicate an actor or
+        promote it to primary. No provider operation belongs in this scope.
+        """
+        if (
+            agent.organization_id is None
+            or agent.published_revision is None
+            or agent.deleted
+        ):
+            raise ValueError("Task agent requires an available exact revision.")
+        await self.repository.lock_conversation(
+            conversation_id, organization_id=agent.organization_id
+        )
+        existing = await self.repository.active_agent_actor(
+            conversation_id=conversation_id,
+            agent_id=agent.id,
+            agent_revision=agent.published_revision,
+        )
+        if existing is not None:
+            return self.orm_to_schema(existing)
+        return await self.create_(
+            ParticipantCreateSchema(
+                conversation_id=conversation_id,
+                entity_kind=ParticipantKind.AGENT,
+                entity_id=agent.id,
+                agent_id=agent.id,
+                agent_revision=agent.published_revision,
+                is_primary=False,
+            )
+        )
 
     async def list_by_conversation(
         self, conversation_id: UUID

@@ -13,10 +13,19 @@ Usage:
     - cancel_filler() before the first ordered response segment or at turn end
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import random
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
+
+from eylo.pipelines.voice.request_state import VoiceRequestSource
+from eylo.pipelines.voice.tts_payloads import TTSFinalizeRequest, TTSTextRequest
+
+if TYPE_CHECKING:
+    from eylo.pipelines.websocket.manager import WsConnectionManager
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +47,7 @@ class FillerPhraseManager:
     Thread-safe via asyncio — all methods must be called from the same event loop.
     """
 
-    _pending: dict[UUID, asyncio.Task] = {}
+    _pending: dict[UUID, asyncio.Task[None]] = {}
 
     @classmethod
     async def schedule_filler(
@@ -71,7 +80,7 @@ class FillerPhraseManager:
         conversation_id: UUID,
         organization_id: UUID,
         *,
-        ws_manager=None,
+        ws_manager: WsConnectionManager | None = None,
     ) -> None:
         """Wait, then push a filler phrase through the TTS pipeline.
 
@@ -137,23 +146,21 @@ class FillerPhraseManager:
             await ws_manager.conversation_tts_to_session(
                 conversation_id=conversation_id,
                 organization_id=organization_id,
-                payload={
-                    "type": "text",
-                    "text": filler_text,
-                    "turn_id": filler_turn_id,
-                    "request_id": str(request_id),
-                    "policy_source": "filler",
-                },
+                payload=TTSTextRequest(
+                    text=filler_text,
+                    turn_id=filler_turn_id,
+                    request_id=request_id,
+                    policy_source=VoiceRequestSource.FILLER,
+                ),
             )
             await ws_manager.conversation_tts_to_session(
                 conversation_id=conversation_id,
                 organization_id=organization_id,
-                payload={
-                    "type": "finalize",
-                    "turn_id": filler_turn_id,
-                    "request_id": str(request_id),
-                    "policy_source": "filler",
-                },
+                payload=TTSFinalizeRequest(
+                    turn_id=filler_turn_id,
+                    request_id=request_id,
+                    policy_source=VoiceRequestSource.FILLER,
+                ),
             )
         except Exception as error:
             logger.error(
@@ -171,7 +178,7 @@ class FillerPhraseManager:
     @classmethod
     async def _get_filler_config(
         cls,
-        ws_manager,
+        ws_manager: WsConnectionManager,
         conversation_id: UUID,
         organization_id: UUID,
     ) -> dict:
@@ -190,7 +197,7 @@ class FillerPhraseManager:
     @classmethod
     async def _agent_is_thinking(
         cls,
-        ws_manager,
+        ws_manager: WsConnectionManager,
         conversation_id: UUID,
         organization_id: UUID,
     ) -> bool:
@@ -202,14 +209,14 @@ class FillerPhraseManager:
             session_state = ws_manager.get_session_state(
                 organization_id, str(session_id)
             )
-            if session_state and getattr(session_state, "is_agent_thinking", False):
+            if session_state and session_state.is_agent_thinking:
                 return True
         return False
 
     @classmethod
     async def _tts_is_active(
         cls,
-        ws_manager,
+        ws_manager: WsConnectionManager,
         conversation_id: UUID,
         organization_id: UUID,
     ) -> bool:
@@ -224,13 +231,8 @@ class FillerPhraseManager:
             if not session_state:
                 continue
             tts = session_state.tts_manager or session_state.tts_socket
-            if tts:
-                is_playback_active = getattr(tts, "is_playback_active", None)
-                if callable(is_playback_active):
-                    if bool(is_playback_active()):
-                        return True
-                elif getattr(tts, "_active_turn_id", None) is not None:
-                    return True
+            if tts is not None and tts.is_playback_active():
+                return True
             # Also check the consumer queue for buffered audio
             q = session_state.tts_response_queue
             if q and not q.empty():

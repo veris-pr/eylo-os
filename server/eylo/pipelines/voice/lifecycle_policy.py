@@ -6,26 +6,29 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Protocol
 
+from eylo.common.contracts.voice import BrowserVoiceTerminationReason
 from eylo.modules.voice.schemas.api import SilenceConfig
 from eylo.modules.voice_transcripts.constants import VoiceSessionStatus
 
 _COMPLETED_BROWSER_END_REASONS = frozenset(
     {
-        "client_hangup",
-        "ice_closed",
-        "ice_disconnected",
-        "max_duration",
-        "peer_closed",
-        "peer_disconnected",
-        "silence_timeout",
-        "track_ended",
-        "user_end_call_phrase",
-        "websocket_disconnected",
+        BrowserVoiceTerminationReason.CLIENT_HANGUP,
+        BrowserVoiceTerminationReason.ICE_CLOSED,
+        BrowserVoiceTerminationReason.ICE_DISCONNECTED,
+        BrowserVoiceTerminationReason.MAX_DURATION,
+        BrowserVoiceTerminationReason.PEER_CLOSED,
+        BrowserVoiceTerminationReason.PEER_DISCONNECTED,
+        BrowserVoiceTerminationReason.SILENCE_TIMEOUT,
+        BrowserVoiceTerminationReason.TRACK_ENDED,
+        BrowserVoiceTerminationReason.USER_END_CALL_PHRASE,
+        BrowserVoiceTerminationReason.WEBSOCKET_DISCONNECTED,
     }
 )
 
 
-def browser_voice_session_status(reason: str | None) -> VoiceSessionStatus:
+def browser_voice_session_status(
+    reason: BrowserVoiceTerminationReason | None,
+) -> VoiceSessionStatus:
     """Classify a browser call conservatively from its terminal observation."""
     if reason in _COMPLETED_BROWSER_END_REASONS:
         return VoiceSessionStatus.COMPLETED

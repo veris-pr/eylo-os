@@ -2,80 +2,107 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
-from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import Literal
 from uuid import UUID
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    JsonValue,
+    StrictStr,
+    ValidationError,
+    model_validator,
+)
 
 from eylo.common.config import settings
 from eylo.common.contracts.sandbox import SandboxError
-from eylo.common.contracts.tool_availability import (
-    ToolAvailabilityFacts,
-    ToolRuntimeFact,
-)
+from eylo.common.contracts.tool_availability import ToolRuntimeFact
 from eylo.common.database import get_transaction, start_transaction
-from eylo.framework.agents.config import RunConfig
+from eylo.framework.agents.config import RunConfig, RunPromptCaching, RunStreaming
 from eylo.framework.agents.context import RunContext, RunInput, RunMessage
-from eylo.framework.agents.model import Model, ModelResponse
-from eylo.framework.agents.result import RunResult, RunStatus
+from eylo.framework.agents.durable import InputRequestDetails
+from eylo.framework.agents.hooks import RunCallbacks
+from eylo.framework.agents.interruptions import (
+    RunApprovalInterruption,
+    RunInputInterruption,
+    ToolInputRequestMetadata,
+)
+from eylo.framework.agents.model import Model, ModelResponse, ModelUsage
+from eylo.framework.agents.result import RunResult, RunStatus, RunTerminalMetadata
 from eylo.framework.agents.runner import FrameworkRunner
 from eylo.framework.agents.tool import (
     ToolCall,
+    ToolCompletionMetadata,
+    ToolCompletionMode,
     ToolExecutor,
     ToolKind,
     ToolResult,
     ToolSpec,
 )
 from eylo.modules.agent_runs.domain import (
+    AgentApprovalDecision,
     AgentInputRequestKind,
     AgentRunLifecycle,
     AgentRunOriginKind,
     AgentRunOutcome,
 )
 from eylo.modules.agent_runs.service import (
-    AgentRunWaitState,
     fail_agent_run,
     finish_agent_run_in_transaction,
     load_agent_run_wait,
     pause_agent_run_in_transaction,
     resume_agent_run_in_transaction,
 )
+from eylo.modules.agent_runs.waits import (
+    AgentApprovalWaitState,
+    AgentRunInputEvent,
+    AgentRunWaitState,
+)
 from eylo.modules.agent_runs.workflow import (
     AgentRunExecutionClaim,
     AgentRunWorkflowContext,
 )
-from eylo.modules.llm_configs.wiring import build_llm_config_resolver
+from eylo.modules.llm_configs.wiring import resolve_pinned_llm
 from eylo.modules.provider_configs.errors import NotConfiguredError
 from eylo.modules.templates.domain import TemplateConsumerKind
+from eylo.pipelines.agent_execution_context import (
+    AgentExecutionContext,
+    AgentExecutionParticipant,
+    AgentExecutionScope,
+    PlatformRunState,
+)
+from eylo.pipelines.agent_run_continuations import (
+    ObjectiveRunContinuation,
+    RunToolCallSnapshot,
+    parse_run_continuation,
+)
+from eylo.pipelines.agent_run_heartbeat import run_with_agent_heartbeat
 from eylo.pipelines.agent_run_tools import bind_agent_run_tool_command
 from eylo.pipelines.agent_run_transcript import (
+    AgentRunToolCapture,
     AgentRunTranscript,
     AgentRunTranscriptBridge,
     AgentRunTranscriptError,
     PendingToolCallsModel,
+    append_resumed_tool_exchange,
     with_replay_messages,
 )
 from eylo.pipelines.agents import build_executable_agent_resolver
 from eylo.pipelines.conversation.conversation_runner import ExistingConversationModel
 from eylo.pipelines.conversation.domain import agent_spec_from_context
 from eylo.pipelines.conversation.tool_executor import PlatformToolExecutor
+from eylo.pipelines.llm.runtime import to_llm_prompt_caching
 from eylo.pipelines.sandbox.sessions import discard_live_run_sessions
 from eylo.pipelines.system_tools.availability import (
-    filter_available_system_tools,
     refresh_context_tool_availability,
 )
 
-if TYPE_CHECKING:
-    from eylo.modules.agents.schemas.indb import AgentInDb
-    from eylo.modules.tools.schemas.indb import ToolInDb
-
-_HEARTBEAT_SECONDS = 120
-_HEARTBEAT_INTERVAL_SECONDS = 30
 _OBJECTIVE_RESULT_LIMIT_BYTES = 65_536
+_OBJECTIVE_REASON_LIMIT_CHARS = 4_000
+_OBJECTIVE_PROMPT_LIMIT_CHARS = 8_192
 _COMPLETE_OBJECTIVE_TOOL = "complete_objective"
 _REQUEST_OBJECTIVE_INPUT_TOOL = "request_objective_input"
 _PAUSE_STATUSES = {
@@ -105,41 +132,87 @@ class ObjectiveAgentRunRetryable(Exception):
     """A tool call is persisted but has no canonical result yet."""
 
 
-@dataclass(slots=True)
-class _ObjectiveExecutionContext:
-    """In-memory adapter context; no synthetic conversation row is created."""
+class ObjectiveCompletion(BaseModel):
+    """Validated terminal tool payload shared by execution and persistence."""
 
-    conversation: SimpleNamespace
-    primary_agent: AgentInDb
-    tools: list[ToolInDb]
-    system_prompt: str
-    principal_participant: SimpleNamespace
-    agent_participant: SimpleNamespace
-    messages: list
-    handoff_agents: tuple[AgentInDb, ...] = ()
-    widget_interfaces_enabled: bool = False
-    external_id: str | None = None
-    tool_availability: ToolAvailabilityFacts = field(
-        default_factory=ToolAvailabilityFacts
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        allow_inf_nan=False,
+        revalidate_instances="always",
+        hide_input_in_errors=True,
     )
 
-    def get_tools(self) -> list[ToolInDb]:
-        return filter_available_system_tools(self.tools, self.tool_availability)
+    outcome: Literal[AgentRunOutcome.ACHIEVED, AgentRunOutcome.UNACHIEVABLE]
+    result: JsonValue = None
+    reason: StrictStr | None = None
 
-    def get_messages(self) -> list:
-        return self.messages
+    @model_validator(mode="after")
+    def require_unachievable_reason(self) -> ObjectiveCompletion:
+        if self.outcome is AgentRunOutcome.UNACHIEVABLE:
+            if self.reason is None or not self.reason.strip():
+                raise ValueError("Unachievable objectives require a reason.")
+            if len(self.reason) > _OBJECTIVE_REASON_LIMIT_CHARS:
+                raise ValueError("Objective completion reason exceeds its limit.")
+        return self
 
-    def get_primary_contact(self) -> SimpleNamespace:
-        return self.principal_participant
+    @classmethod
+    def from_arguments(cls, arguments: Mapping[str, object]) -> ObjectiveCompletion:
+        raw_outcome = arguments.get("outcome")
+        if raw_outcome == AgentRunOutcome.ACHIEVED.value:
+            outcome = AgentRunOutcome.ACHIEVED
+        elif raw_outcome == AgentRunOutcome.UNACHIEVABLE.value:
+            outcome = AgentRunOutcome.UNACHIEVABLE
+        else:
+            raise ObjectiveAgentRunInvalid(
+                "Objective completion outcome must be achieved or unachievable."
+            )
+        reason = arguments.get("reason")
+        if outcome is AgentRunOutcome.UNACHIEVABLE:
+            reason = _required_text(
+                arguments, "reason", max_chars=_OBJECTIVE_REASON_LIMIT_CHARS
+            )
+        elif reason is not None and not isinstance(reason, str):
+            raise ObjectiveAgentRunInvalid("Objective completion reason must be text.")
+        try:
+            return cls.model_validate(
+                {
+                    "outcome": outcome,
+                    "result": arguments.get("result"),
+                    "reason": reason,
+                }
+            )
+        except ValidationError as error:
+            raise ObjectiveAgentRunInvalid(
+                "Objective completion payload is invalid."
+            ) from error
 
-    def get_primary_agent(self) -> SimpleNamespace:
-        return self.agent_participant
+    def as_json(self) -> dict[str, object]:
+        return self.model_dump(mode="json")
 
 
-@dataclass(frozen=True, slots=True)
-class ObjectiveFrameworkTurn:
+class ObjectiveFrameworkTurn(BaseModel):
+    """Validated run conclusion and its captured invocation identities."""
+
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", revalidate_instances="always"
+    )
+
     result: RunResult
-    captured: dict[str, object]
+    captured: AgentRunToolCapture
+
+
+class ObjectiveRunSummary(BaseModel):
+    """Bounded persisted objective result with finite JSON output."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+    kind: Literal["objective"] = "objective"
+    agent_run_id: UUID
+    framework_run_id: UUID
+    framework_status: RunStatus
+    output: JsonValue
+    usage: ModelUsage
 
 
 class ObjectiveControlToolExecutor:
@@ -150,7 +223,9 @@ class ObjectiveControlToolExecutor:
 
     async def execute(self, context: RunContext, call: ToolCall) -> ToolResult:
         if call.name == _REQUEST_OBJECTIVE_INPUT_TOOL:
-            prompt = _required_text(call.arguments, "prompt", max_chars=8_192)
+            prompt = _required_text(
+                call.arguments, "prompt", max_chars=_OBJECTIVE_PROMPT_LIMIT_CHARS
+            )
             expected_schema = call.arguments.get("expected_response_schema") or {}
             if not isinstance(expected_schema, dict):
                 raise ObjectiveAgentRunInvalid(
@@ -159,36 +234,16 @@ class ObjectiveControlToolExecutor:
             return ToolResult(
                 tool_call_id=call.id,
                 content="Objective paused pending identified user input.",
-                metadata={
-                    "input_request": {
-                        "prompt": prompt,
-                        "expected_input_schema": expected_schema,
-                    }
-                },
+                metadata=ToolInputRequestMetadata(
+                    input_request=InputRequestDetails(
+                        prompt=prompt, expected_input_schema=expected_schema
+                    )
+                ),
             )
         if call.name == _COMPLETE_OBJECTIVE_TOOL:
-            outcome = call.arguments.get("outcome")
-            if outcome not in {
-                AgentRunOutcome.ACHIEVED.value,
-                AgentRunOutcome.UNACHIEVABLE.value,
-            }:
-                raise ObjectiveAgentRunInvalid(
-                    "Objective completion outcome must be achieved or unachievable."
-                )
-            reason = call.arguments.get("reason")
-            if outcome == AgentRunOutcome.UNACHIEVABLE.value:
-                reason = _required_text(call.arguments, "reason", max_chars=4_000)
-            elif reason is not None and not isinstance(reason, str):
-                raise ObjectiveAgentRunInvalid(
-                    "Objective completion reason must be text."
-                )
-            payload = {
-                "outcome": outcome,
-                "result": call.arguments.get("result"),
-                "reason": reason,
-            }
+            completion = ObjectiveCompletion.from_arguments(call.arguments)
             terminal_output = json.dumps(
-                payload,
+                completion.as_json(),
                 ensure_ascii=False,
                 separators=(",", ":"),
                 sort_keys=True,
@@ -196,10 +251,10 @@ class ObjectiveControlToolExecutor:
             return ToolResult(
                 tool_call_id=call.id,
                 content=terminal_output,
-                metadata={
-                    "terminal_response": True,
-                    "terminal_output": terminal_output,
-                },
+                metadata=ToolCompletionMetadata(
+                    terminal_response=ToolCompletionMode.COMPLETE,
+                    terminal_output=terminal_output,
+                ),
             )
         return await self._delegate.execute(context, call)
 
@@ -210,7 +265,10 @@ class ObjectiveFrameworkRunner:
     def __init__(
         self,
         *,
-        model_factory: Callable[[dict, RunConfig], Model] | None = None,
+        model_factory: Callable[
+            [PlatformRunState[AgentExecutionContext], RunConfig], Model
+        ]
+        | None = None,
         tool_executor: ToolExecutor | None = None,
     ) -> None:
         self._model_factory = model_factory
@@ -258,15 +316,17 @@ class ObjectiveFrameworkRunner:
                 f"Reached the explicit {max_steps}-tool-step limit."
             )
         if remaining_seconds <= 0:
-            raise ObjectiveAgentRunExhausted(
-                "Reached the explicit objective deadline."
-            )
+            raise ObjectiveAgentRunExhausted("Reached the explicit objective deadline.")
 
         config = RunConfig(
             max_turns=remaining_steps,
             request_timeout_seconds=remaining_seconds,
-            stream=False,
-            prompt_caching=getattr(settings, "ENABLE_PROMPT_CACHING", False),
+            stream=RunStreaming.DISABLED,
+            prompt_caching=(
+                RunPromptCaching.ENABLED
+                if settings.ENABLE_PROMPT_CACHING
+                else RunPromptCaching.DISABLED
+            ),
         )
         run_input = with_replay_messages(
             _initial_run_input(claim, execution_context, agent.tools),
@@ -285,13 +345,12 @@ class ObjectiveFrameworkRunner:
                 command_ids=replay.command_ids,
             )
 
-        captured: dict[str, object] = {}
-        local_context = {
-            "conversation_context": execution_context,
-            "agent_run_id": claim.run_id,
-            "durable_context": workflow_context,
-            "tool_use_messages": {},
-        }
+        captured = AgentRunToolCapture()
+        local_context = PlatformRunState(
+            conversation_context=execution_context,
+            agent_run_id=claim.run_id,
+            durable_context=workflow_context,
+        )
         bridge = AgentRunTranscriptBridge(
             transcript=transcript,
             local_context=local_context,
@@ -304,8 +363,7 @@ class ObjectiveFrameworkRunner:
             response: ModelResponse,
             tool_calls: tuple[ToolCall, ...],
         ) -> None:
-            captured["response"] = response
-            captured["tool_calls"] = tool_calls
+            captured.tool_calls = tool_calls
             await bridge.after_model_response(
                 run_context,
                 current_input,
@@ -313,23 +371,13 @@ class ObjectiveFrameworkRunner:
                 tool_calls,
             )
 
-        local_context.update(
-            {
-                "after_model_response": capture_model_response,
-                "before_tool_call": bridge.before_tool_call,
-                "after_tool_result": bridge.after_tool_result,
-            }
-        )
         base_model = (
             self._model_factory(local_context, config)
             if self._model_factory is not None
             else ExistingConversationModel(
                 local_context,
-                llm_resolver=build_llm_config_resolver(get_transaction()),
-                model_config_overrides={
-                    "prompt_caching": config.prompt_caching,
-                },
-                stream=False,
+                llm_resolver=resolve_pinned_llm,
+                prompt_caching=to_llm_prompt_caching(config.prompt_caching),
             )
         )
         model = PendingToolCallsModel(
@@ -340,6 +388,11 @@ class ObjectiveFrameworkRunner:
         result = await FrameworkRunner(
             model,
             tool_executor=self._tool_executor,
+            callbacks=RunCallbacks(
+                after_model_response=capture_model_response,
+                before_tool_call=bridge.before_tool_call,
+                after_tool_result=bridge.after_tool_result,
+            ),
         ).run(
             agent,
             run_input,
@@ -361,51 +414,42 @@ class ObjectiveFrameworkRunner:
         wait: AgentRunWaitState,
         run_input: RunInput,
         agent,
-        execution_context: _ObjectiveExecutionContext,
+        execution_context: AgentExecutionContext,
         config: RunConfig,
         workflow_context: AgentRunWorkflowContext,
         transcript: AgentRunTranscript,
         command_ids: dict[str, UUID],
     ) -> RunInput:
-        objective = wait.continuation.get("objective")
-        if not isinstance(objective, dict):
-            raise ObjectiveAgentRunInvalid(
-                "Objective continuation is missing tool state."
-            )
+        wait.require_answered()
         try:
-            call = ToolCall.model_validate(objective["tool_call"])
-        except (KeyError, TypeError, ValueError) as error:
+            continuation = parse_run_continuation(wait, ObjectiveRunContinuation)
+        except ValueError as error:
             raise ObjectiveAgentRunInvalid(
                 "Objective continuation contains an invalid tool call."
             ) from error
+        call = continuation.objective.tool_call
 
-        async def resolve_result() -> dict[str, Any]:
-            if wait.kind is AgentInputRequestKind.APPROVAL:
-                response = wait.response
-                if not isinstance(response, dict):
-                    raise ObjectiveAgentRunInvalid(
-                        "Approval response must be an object."
-                    )
-                decision = response.get("decision")
-                if decision == "reject":
+        async def resolve_result() -> dict[str, object]:
+            if isinstance(wait, AgentApprovalWaitState):
+                response = wait.require_response()
+                if response.decision is AgentApprovalDecision.REJECT:
                     result = ToolResult(
                         tool_call_id=call.id,
                         content="The user rejected this tool action.",
                         is_error=True,
                         metadata={"approval_rejected": True},
                     )
-                elif decision == "approve":
+                else:
                     command_id = command_ids.get(call.id)
                     if command_id is None:
                         raise ObjectiveAgentRunInvalid(
                             "Approved tool call has no durable command identity."
                         )
-                    local_context = {
-                        "conversation_context": execution_context,
-                        "agent_run_id": claim.run_id,
-                        "durable_context": workflow_context,
-                        "tool_use_messages": {},
-                    }
+                    local_context = PlatformRunState(
+                        conversation_context=execution_context,
+                        agent_run_id=claim.run_id,
+                        durable_context=workflow_context,
+                    )
                     bind_agent_run_tool_command(
                         local_context,
                         call=call,
@@ -419,10 +463,6 @@ class ObjectiveFrameworkRunner:
                             local_context=local_context,
                         ),
                         call,
-                    )
-                else:
-                    raise ObjectiveAgentRunInvalid(
-                        "Approval decision must be approve or reject."
                     )
             else:
                 result = ToolResult(
@@ -449,10 +489,8 @@ class ObjectiveFrameworkRunner:
             raise ObjectiveAgentRunInvalid("Objective resume receipt is invalid.")
         tool_result = await transcript.tool_result(call)
         if tool_result is None:
-            raise ObjectiveAgentRunInvalid(
-                "Objective resume result is unavailable."
-            )
-        return _append_resumed_tool_exchange(run_input, call, tool_result)
+            raise ObjectiveAgentRunInvalid("Objective resume result is unavailable.")
+        return append_resumed_tool_exchange(run_input, call, tool_result)
 
 
 class ObjectiveAgentRunExecutor:
@@ -540,7 +578,7 @@ class ObjectiveAgentRunExecutor:
                     await _persist_turn(claim=claim, turn=turn)
                     turn_holder.append(turn)
 
-            await _run_with_heartbeat(context, execute_turn)
+            await run_with_agent_heartbeat(context, execute_turn)
             turn = turn_holder[0]
             if turn.result.status not in _PAUSE_STATUSES:
                 return
@@ -556,14 +594,14 @@ class ObjectiveAgentRunExecutor:
 
 async def _build_execution_context(
     claim: AgentRunExecutionClaim,
-) -> _ObjectiveExecutionContext:
+) -> AgentExecutionContext:
     resolved = await build_executable_agent_resolver(get_transaction()).resolve_exact(
         organization_id=claim.organization_id,
         agent_id=claim.agent_id,
         revision=claim.agent_revision,
         consumer_kind=TemplateConsumerKind.SANDBOX_AGENT,
     )
-    conversation = SimpleNamespace(
+    conversation = AgentExecutionScope(
         id=claim.run_id,
         organization_id=claim.organization_id,
         swarm_id=None,
@@ -571,18 +609,18 @@ async def _build_execution_context(
         channel=None,
         meta={},
     )
-    return _ObjectiveExecutionContext(
+    return AgentExecutionContext(
         conversation=conversation,
         primary_agent=resolved.agent,
         tools=list(resolved.tools),
         system_prompt=resolved.system_prompt
         or resolved.agent.description
         or resolved.agent.name,
-        principal_participant=SimpleNamespace(
+        principal_participant=AgentExecutionParticipant(
             id=claim.principal.principal_id,
             entity_id=str(claim.principal.principal_id),
         ),
-        agent_participant=SimpleNamespace(
+        agent_participant=AgentExecutionParticipant(
             id=claim.agent_id,
             entity_id=str(claim.agent_id),
             agent_id=claim.agent_id,
@@ -703,22 +741,21 @@ async def _persist_turn(
 
 def _pause_fields(
     result: RunResult,
-    captured: dict[str, object],
+    captured: AgentRunToolCapture,
 ) -> tuple[AgentInputRequestKind, str, dict, dict]:
-    framework = result.metadata.get("continuation")
-    if not isinstance(framework, dict):
+    interruption = result.metadata
+    if not isinstance(interruption, (RunApprovalInterruption, RunInputInterruption)):
         raise ObjectiveAgentRunInvalid(
             "Framework pause is missing continuation metadata."
         )
-    calls = captured.get("tool_calls")
-    if not isinstance(calls, tuple):
+    calls = captured.tool_calls
+    if calls is None:
         raise ObjectiveAgentRunInvalid("Framework pause has no captured tool call.")
     call = next(
         (
             candidate
             for candidate in calls
-            if isinstance(candidate, ToolCall)
-            and candidate.id == framework.get("tool_call_id")
+            if candidate.id == interruption.continuation.tool_call_id
         ),
         None,
     )
@@ -727,38 +764,37 @@ def _pause_fields(
             "Framework pause continuation differs from its tool call."
         )
 
-    if result.status is RunStatus.WAITING_FOR_APPROVAL:
-        request = result.metadata.get("approval_request")
-        if not isinstance(request, dict):
-            raise ObjectiveAgentRunInvalid(
-                "Approval pause is missing request metadata."
-            )
+    if result.status is RunStatus.WAITING_FOR_APPROVAL and isinstance(
+        interruption, RunApprovalInterruption
+    ):
+        approval = interruption.approval_request
+        request = approval
         kind = AgentInputRequestKind.APPROVAL
-        prompt = str(
-            request.get("action_summary")
-            or request.get("policy_reason")
+        prompt = (
+            approval.action_summary
+            or approval.policy_reason
             or "Approve this objective action?"
         )
         expected_schema = {
             "type": "object",
             "properties": {
-                "decision": {"type": "string", "enum": ["approve", "reject"]},
+                "decision": {
+                    "type": "string",
+                    "enum": [decision.value for decision in AgentApprovalDecision],
+                },
                 "comment": {"type": "string"},
             },
             "required": ["decision"],
             "additionalProperties": False,
         }
-    elif result.status is RunStatus.WAITING_FOR_INPUT:
-        request = result.metadata.get("input_request")
-        if not isinstance(request, dict):
-            raise ObjectiveAgentRunInvalid("Input pause is missing request metadata.")
+    elif result.status is RunStatus.WAITING_FOR_INPUT and isinstance(
+        interruption, RunInputInterruption
+    ):
+        details = interruption.input_request
+        request = details
         kind = AgentInputRequestKind.INPUT
-        prompt = str(request.get("prompt") or "Provide the requested information.")
-        expected_schema = request.get("expected_input_schema") or {}
-        if not isinstance(expected_schema, dict):
-            raise ObjectiveAgentRunInvalid(
-                "Input response schema must be an object."
-            )
+        prompt = details.prompt or "Provide the requested information."
+        expected_schema = details.expected_input_schema
     else:
         raise ObjectiveAgentRunInvalid("Framework result is not a pause.")
 
@@ -766,32 +802,32 @@ def _pause_fields(
         kind,
         prompt,
         expected_schema,
-        {
-            "framework": framework,
-            "request": request,
-            "objective": {"tool_call": call.model_dump(mode="json")},
-        },
+        ObjectiveRunContinuation(
+            framework=interruption.continuation,
+            request=request,
+            objective=RunToolCallSnapshot(tool_call=call),
+        ).model_dump(mode="json"),
     )
 
 
 def _terminal_fields(
     claim: AgentRunExecutionClaim,
     result: RunResult,
-    captured: dict[str, object],
+    captured: AgentRunToolCapture,
 ) -> tuple[
     AgentRunLifecycle,
     AgentRunOutcome,
-    dict | None,
+    dict[str, object] | None,
     str | None,
     str | None,
 ]:
     if result.status is RunStatus.COMPLETED:
-        outcome, output, reason = _objective_completion(result, captured)
+        completion = _objective_completion(result, captured)
         return (
             AgentRunLifecycle.COMPLETED,
-            outcome,
-            _objective_result(claim, result, output),
-            reason,
+            completion.outcome,
+            _objective_result(claim, result, completion.result),
+            completion.reason,
             None,
         )
     if result.status in {RunStatus.TIMED_OUT, RunStatus.MAX_TURNS_EXCEEDED}:
@@ -814,41 +850,44 @@ def _terminal_fields(
 
 def _objective_completion(
     result: RunResult,
-    captured: dict[str, object],
-) -> tuple[AgentRunOutcome, object, str | None]:
-    terminal_id = result.metadata.get("terminal_tool_call_id")
-    calls = captured.get("tool_calls")
-    if terminal_id is not None and isinstance(calls, tuple):
+    captured: AgentRunToolCapture,
+) -> ObjectiveCompletion:
+    result = RunResult.model_validate(result)
+    terminal_id = (
+        result.metadata.terminal_tool_call_id
+        if isinstance(result.metadata, RunTerminalMetadata)
+        else None
+    )
+    calls = captured.tool_calls
+    if terminal_id is not None and calls is not None:
         call = next(
             (
                 candidate
                 for candidate in calls
-                if isinstance(candidate, ToolCall)
-                and candidate.id == terminal_id
+                if candidate.id == terminal_id
                 and candidate.name == _COMPLETE_OBJECTIVE_TOOL
             ),
             None,
         )
         if call is not None:
-            outcome = AgentRunOutcome(str(call.arguments["outcome"]))
-            reason = call.arguments.get("reason")
-            return outcome, call.arguments.get("result"), reason
-    return AgentRunOutcome.ACHIEVED, result.final_output, None
+            return ObjectiveCompletion.from_arguments(call.arguments)
+    return ObjectiveCompletion(
+        outcome=AgentRunOutcome.ACHIEVED, result=result.final_output
+    )
 
 
 def _objective_result(
     claim: AgentRunExecutionClaim,
     result: RunResult,
-    output: object,
-) -> dict[str, Any]:
-    projected = {
-        "kind": "objective",
-        "agent_run_id": str(claim.run_id),
-        "framework_run_id": str(result.run_id),
-        "framework_status": result.status.value,
-        "output": output,
-        "usage": result.usage.model_dump(mode="json"),
-    }
+    output: JsonValue,
+) -> dict[str, object]:
+    projected = ObjectiveRunSummary(
+        agent_run_id=claim.run_id,
+        framework_run_id=result.run_id,
+        framework_status=result.status,
+        output=output,
+        usage=result.usage,
+    ).model_dump(mode="json")
     encoded = json.dumps(
         projected,
         ensure_ascii=False,
@@ -856,9 +895,7 @@ def _objective_result(
         sort_keys=True,
     ).encode("utf-8")
     if len(encoded) > _OBJECTIVE_RESULT_LIMIT_BYTES:
-        raise ObjectiveAgentRunInvalid(
-            "Objective result exceeds 65536 encoded bytes."
-        )
+        raise ObjectiveAgentRunInvalid("Objective result exceeds 65536 encoded bytes.")
     return projected
 
 
@@ -880,47 +917,6 @@ async def _finish_completed(
             result=projected,
             outcome_reason=reason,
         )
-
-
-def _append_resumed_tool_exchange(
-    run_input: RunInput,
-    call: ToolCall,
-    result: ToolResult,
-) -> RunInput:
-    request_id = run_input.metadata.get("request_id")
-    content = (
-        result.content
-        if isinstance(result.content, str)
-        else json.dumps(result.content, ensure_ascii=False, separators=(",", ":"))
-    )
-    return run_input.model_copy(
-        update={
-            "messages": (
-                *run_input.messages,
-                RunMessage(
-                    role="assistant",
-                    content=f"Tool call: {call.name}",
-                    metadata={
-                        "request_id": request_id,
-                        "tool_call": call.model_dump(mode="json"),
-                    },
-                ),
-                RunMessage(
-                    role="tool",
-                    content=content,
-                    metadata={
-                        "request_id": request_id,
-                        "tool_result": {
-                            "tool_call_id": result.tool_call_id,
-                            "name": call.name,
-                            "is_error": result.is_error,
-                            "content": result.content,
-                        },
-                    },
-                ),
-            )
-        }
-    )
 
 
 def _validate_claim(claim: AgentRunExecutionClaim) -> tuple[int, datetime]:
@@ -954,15 +950,16 @@ def _validate_resume_event(
     claim: AgentRunExecutionClaim,
     wait: AgentRunWaitState,
 ) -> None:
-    expected = {
-        "organization_id": str(claim.organization_id),
-        "run_id": str(claim.run_id),
-        "request_id": str(wait.request_id),
-    }
-    if payload != expected:
+    try:
+        AgentRunInputEvent(
+            organization_id=claim.organization_id,
+            run_id=claim.run_id,
+            request_id=wait.request_id,
+        ).require_matching_payload(payload)
+    except ValueError:
         raise ObjectiveAgentRunInvalid(
             "Durable input event does not match the objective request."
-        )
+        ) from None
 
 
 def _objective_failure_code(error: Exception) -> str:
@@ -974,7 +971,7 @@ def _objective_failure_code(error: Exception) -> str:
 
 
 def _required_text(
-    source: dict,
+    source: Mapping[str, object],
     key: str,
     *,
     max_chars: int,
@@ -992,36 +989,6 @@ async def _discard_compute(claim: AgentRunExecutionClaim) -> None:
         organization_id=claim.organization_id,
         agent_run_id=claim.run_id,
     )
-
-
-async def _run_with_heartbeat(
-    context: AgentRunWorkflowContext,
-    operation: Callable[[], Awaitable[None]],
-) -> None:
-    task = asyncio.create_task(operation())
-    try:
-        while not task.done():
-            remaining_milliseconds = await context.heartbeat(
-                seconds=_HEARTBEAT_SECONDS
-            )
-            try:
-                await asyncio.wait_for(
-                    asyncio.shield(task),
-                    timeout=min(
-                        _HEARTBEAT_INTERVAL_SECONDS,
-                        max(0.001, remaining_milliseconds / 1_000),
-                    ),
-                )
-            except TimeoutError:
-                continue
-        await task
-    finally:
-        if not task.done():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
 
 
 __all__ = [

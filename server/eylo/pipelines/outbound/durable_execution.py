@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Protocol, TypeVar
+from typing import Any, Protocol, TypeVar, runtime_checkable
 from uuid import UUID
 
 from absurd_sdk import CancelledTask
@@ -44,8 +44,9 @@ _UNKNOWN_AFTER_EXCEPTION = "send_exception_unconfirmed"
 _UNKNOWN_AFTER_REPLAY = "prior_send_unconfirmed"
 
 
-class DurableStepContext(Protocol):
-    """Subset shared by Absurd-backed product workflow contexts."""
+@runtime_checkable
+class CommandStepContext(Protocol):
+    """Execute one product-owned command; this alone grants no event-wait ability."""
 
     async def step(
         self,
@@ -55,12 +56,18 @@ class DurableStepContext(Protocol):
         operation: Callable[[], Awaitable[T]],
     ) -> T: ...
 
+
+@runtime_checkable
+class DurableStepContext(CommandStepContext, Protocol):
+    """Absurd-backed command steps plus resumable event waits."""
+
     async def await_event(
         self,
+        *,
         event_name: str,
-        step_name: str | None = None,
-        timeout: int | None = None,
-    ) -> Any: ...
+        key: str,
+        version: int,
+    ) -> object: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,7 +190,7 @@ class OutboundRetryRequested(Exception):
 async def execute_outbound_attempt(
     *,
     spec: OutboundAttemptSpec,
-    context: DurableStepContext,
+    context: CommandStepContext,
     sender: OutboundSender,
 ) -> OutboundExecutionReceipt:
     """Prepare first, then let one Absurd step own send/checkpoint/retry."""
@@ -346,6 +353,7 @@ async def _recover_unknown_if_in_flight(
 
 
 __all__ = [
+    "CommandStepContext",
     "DurableStepContext",
     "OutboundExecutionReceipt",
     "OutboundRetryRequested",

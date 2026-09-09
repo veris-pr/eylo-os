@@ -1,117 +1,114 @@
 """Deepgram Flux adapter for the canonical STT socket contract."""
 
 import asyncio
-import json
 import logging
-from enum import Enum
-from typing import Dict, Optional
+from urllib.parse import urlencode
 
-import arrow
-import pydantic
 import websockets
-from pydantic import BaseModel, Field
+from pydantic import ConfigDict, Field, SecretStr, ValidationError, field_validator
 
-from eylo.common.contracts.voice import InterruptionType
+from eylo.common.contracts.speech_runtime import SpeechOption, SpeechOptionState
+from eylo.sockets.stt.adapters.connection_errors import (
+    close_failed_websocket_connection,
+)
+from eylo.sockets.stt.adapters.deepgram_flux_events import (
+    flux_stream_final_event,
+    flux_turn_event,
+)
+from eylo.sockets.stt.adapters.deepgram_flux_wire import (
+    FluxCloseStream,
+    FluxConnected,
+    FluxEOTThreshold,
+    FluxEOTTimeout,
+    FluxEncoding,
+    FluxError,
+    FluxListenQuery,
+    FluxResponse,
+    FluxSampleRate,
+    FluxTurnInfo,
+    parse_flux_response,
+)
 from eylo.sockets.stt.base import STTVendorAdapter
 from eylo.sockets.stt.exceptions import (
-    STTConnectionError,
-    STTConnectionFailed,
+    STTConnectionCleanupFailed,
+    STTConnectionClosed,
+    STTConnectionFailureKind,
+    STTConnectionRetryUnsafe,
+    STTFinalizationFailed,
 )
-from eylo.sockets.stt.schemas import STTCapabilities, STTEvent, STTEventType
+from eylo.sockets.stt.schemas import (
+    STTCapabilities,
+    STTCapabilitySupport,
+    STTEncoding,
+    STTEvent,
+    STTEventType,
+    STTProvider,
+)
 
 logger = logging.getLogger(__name__)
 
-# Deepgram API constants
 _DEEPGRAM_API_URL = "wss://api.deepgram.com/v2/listen"
+_DEFAULT_EOT_THRESHOLD = 0.85
+_DEFAULT_EOT_TIMEOUT_MS = 5000
+_CLOSE_TIMEOUT_SECONDS = 2.0
+_CLEANUP_WAIT_SECONDS = 7.0
+_READY_TIMEOUT_SECONDS = 10.0
+_FINAL_DRAIN_SECONDS = 2.0
+_RESPONSE_QUEUE_CAPACITY = 1000
+_MILLISECONDS_PER_SECOND = 1000
 
 
-class _FluxEventType(str, Enum):
-    """Deepgram Flux specific event types."""
+class DeepgramFluxConfig(FluxListenQuery):
+    """Frozen consumed settings; shared runtime policy is not vendor query data."""
 
-    StartOfTurn = "StartOfTurn"  # User started talking
-    Update = "Update"  # User is still talking...
-    EagerEndOfTurn = "EagerEndOfTurn"  # Speculative end of turn (Speedy)
-    EndOfTurn = "EndOfTurn"  # Definite end of turn
-    TurnResumed = "TurnResumed"  # User started talking again
+    model_config = ConfigDict(
+        frozen=True,
+        extra="ignore",
+        hide_input_in_errors=True,
+        revalidate_instances="always",
+    )
 
-    # Other Deepgram Events
-    Metadata = "Metadata"  # Connected!
-    CloseStream = "CloseStream"  # Goodbye!
-    Error = "Error"  # Something broke!
+    api_key: SecretStr = Field(min_length=1, repr=False, exclude=True)
+    encoding: FluxEncoding = FluxEncoding.LINEAR16
+    sample_rate: int = Field(default=FluxSampleRate.HZ_16000, strict=True)
+    interim_results: SpeechOption = SpeechOptionState.ENABLED
+    eot_threshold: FluxEOTThreshold = _DEFAULT_EOT_THRESHOLD
+    eot_timeout_ms: FluxEOTTimeout = _DEFAULT_EOT_TIMEOUT_MS
 
+    @field_validator("encoding", mode="before")
+    @classmethod
+    def normalize_encoding(cls, value: object) -> object:
+        if value == STTEncoding.PCM_S16LE:
+            return FluxEncoding.LINEAR16
+        return value
 
-class _FluxResponse(BaseModel):
-    """Pydantic model for Deepgram Flux responses."""
-
-    type: str  # "TurnInfo", "Metadata", "Error", "CloseStream"
-    event: Optional[_FluxEventType] = None
-    transcript: str = ""
-    turn_index: int = 0
-    end_of_turn_confidence: float = 0.0
-
-    # Error fields
-    message: Optional[str] = None
-    description: Optional[str] = None
-    variant: Optional[str] = None
-
-    class Config:
-        extra = "ignore"
-
-
-class DeepgramFluxConfig(BaseModel):
-    """Configuration for Deepgram Flux STT service."""
-
-    api_key: str = Field(min_length=1)
-    model: str = Field(min_length=1)
-    # The model name already encodes a language (flux-general-en), so this was
-    # both invented and probably redundant. Unset lets the vendor decide.
-    language: Optional[str] = None
-    # smart_format and punctuate were declared here and never sent — each
-    # appeared exactly once in this module, its own field declaration. They are
-    # Deepgram *Listen* parameters and Flux is a different product; the
-    # They are Deepgram Listen parameters and are intentionally absent here.
-    encoding: str = "linear16"
-    sample_rate: int = 16000
-    channels: int = 1
-
-    # Flux specific settings
-    eot_threshold: float = 0.85  # 85% sure the user is done
-    eager_eot_threshold: float = 0.5  # 50% sure the user is done (activates Eager mode)
-    # 5000 to agree with STTSettings.eot_timeout_ms, which is what the config
-    # surface advertises and bounds at le=10000. This said 8000, so one setting
-    # had two answers and which an operator got depended on whether the config
-    # surface passed a value through.
-    eot_timeout_ms: int = 5000
-
-    # Interruption settings
-    interruption_type: InterruptionType = InterruptionType.VAD
-
-class _DeepgramFluxState(BaseModel):
-    """State tracking for Deepgram Flux connection."""
-
-    reconnect_attempts: int = 0
-    speech_active: bool = False
-    interrupted_this_turn: bool = False
-    eager_handled_turn_index: Optional[int] = None
-
-    class Config:
-        arbitrary_types_allowed = True
+    @field_validator("api_key")
+    @classmethod
+    def require_key(cls, value: SecretStr) -> SecretStr:
+        if not value.get_secret_value().strip():
+            raise ValueError("Deepgram Flux requires a nonempty API key.")
+        return value
 
 
 class DeepgramFluxSTT(STTVendorAdapter):
-    """Deepgram Flux STT implementation for low-latency voice agents."""
+    """Own one native stream; only the factory may retry establishment."""
 
-    _MAX_RECONNECTION_ATTEMPTS = 1
-    _BACKOFF_FACTOR = 2
-
-    def __init__(self, config: DeepgramFluxConfig):
-        # Initialise the contract's shared state. Inheriting without this
-        # leaves `retry_options` unset, so the ABC's helpers raise on this
-        # class while every structural check still passes.
+    def __init__(self, config: DeepgramFluxConfig) -> None:
         super().__init__()
-        self._config = config
-        self._ws: websockets.ClientConnection = None
-        self._state = _DeepgramFluxState()
+        self._config = DeepgramFluxConfig.model_validate(config)
+        self._ws: websockets.ClientConnection | None = None
+        self._lifecycle_lock = asyncio.Lock()
+        self._send_lock = asyncio.Lock()
+        self._close_task: asyncio.Task[None] | None = None
+        self._stream_failure: STTConnectionRetryUnsafe | None = None
+        self._last_response: FluxConnected | FluxTurnInfo | None = None
+        self._receive_task: asyncio.Task[None] | None = None
+        self._close_signal_task: asyncio.Task[None] | None = None
+        self._response_queue: asyncio.Queue[STTEvent] = asyncio.Queue(
+            maxsize=_RESPONSE_QUEUE_CAPACITY
+        )
+        self._pending_output: STTEvent | None = None
+        self._reader_error: STTConnectionRetryUnsafe | None = None
         logger.info(
             "Deepgram Flux initialized model=%s encoding=%s sample_rate=%d",
             self._config.model,
@@ -121,236 +118,325 @@ class DeepgramFluxSTT(STTVendorAdapter):
 
     @property
     def is_connected(self) -> bool:
-        if not self._ws:
-            return False
-        return self._ws.state == websockets.protocol.State.OPEN
+        """Remain readable after native EOF until acquired output/errors are consumed."""
+        return (
+            not self._response_queue.empty()
+            or self._pending_output is not None
+            or self._reader_error is not None
+            or (self._receive_task is not None and not self._receive_task.done())
+        )
 
     def _get_ws_url(self) -> str:
         """Generate the Deepgram Flux API URL with query parameters."""
-        params = {
-            "model": self._config.model,
-            "sample_rate": self._config.sample_rate,
-            "encoding": self._config.encoding,
-            # Flux parameters
-            "eot_threshold": str(self._config.eot_threshold),
-            "eot_timeout_ms": str(self._config.eot_timeout_ms),
-        }
-        params_str = "&".join([f"{k}={v}" for k, v in params.items()])
-        return f"{_DEEPGRAM_API_URL}?{params_str}"
+        query = FluxListenQuery(
+            model=self._config.model,
+            sample_rate=self._config.sample_rate,
+            encoding=self._config.encoding,
+            eot_threshold=self._config.eot_threshold,
+            eot_timeout_ms=self._config.eot_timeout_ms,
+        )
+        return f"{_DEEPGRAM_API_URL}?{urlencode(query.model_dump(mode='json'))}"
 
-    async def keepalive(self):
+    async def keepalive(self) -> None:
         """Keepalive is not supported for Flux, skipping."""
-        # Note: Flux does not support "type": "KeepAlive"
-        pass
+        return None
 
     async def connect(self) -> websockets.ClientConnection:
-        """Establish a WebSocket connection to Deepgram Flux."""
-        if self._ws and self.is_connected:
-            return self._ws
-
-        try:
-            ws_url = self._get_ws_url()
-            logger.info("Connecting to Deepgram Flux")
-            headers = {"Authorization": f"Token {self._config.api_key}"}
-            self._ws = await websockets.connect(ws_url, additional_headers=headers)
-            logger.info("Connected to Deepgram Flux STT service")
-            return self._ws
-        except Exception as error:
-            logger.error(
-                "Deepgram Flux connection failed error_type=%s",
-                type(error).__name__,
-            )
-            raise STTConnectionFailed
-
-    async def disconnect(self):
-        """Close the WebSocket connection."""
-        ws = self._ws
-        try:
-            if ws and self.is_connected:
-                await ws.send(json.dumps({"type": "CloseStream"}))
-        except Exception as error:
-            logger.error(
-                "Deepgram Flux disconnect failed error_type=%s",
-                type(error).__name__,
-            )
-        finally:
-            if ws:
-                try:
-                    await ws.close()
-                except Exception as error:
-                    logger.error(
-                        "Deepgram Flux socket close failed error_type=%s",
-                        type(error).__name__,
+        """Publish readiness only after the native acknowledgement; clean failures."""
+        async with self._lifecycle_lock:
+            if self._close_task is not None:
+                await self._await_close()
+            if self._stream_failure is not None:
+                raise self._stream_failure
+            if self._ws is not None:
+                if (
+                    self._last_response is not None
+                    and self._ws.state == websockets.protocol.State.OPEN
+                ):
+                    return self._ws
+                raise STTConnectionRetryUnsafe(
+                    "Deepgram Flux's previous stream ended; replacement is refused."
+                )
+            if self.is_connected:
+                raise STTFinalizationFailed(
+                    "Deepgram Flux has undelivered output; replacement is refused."
+                )
+            self._close_task = None
+            self._close_signal_task = None
+            try:
+                self._ws = await websockets.connect(
+                    self._get_ws_url(),
+                    additional_headers={
+                        "Authorization": f"Token {self._config.api_key.get_secret_value()}"
+                    },
+                    close_timeout=_CLOSE_TIMEOUT_SECONDS,
+                )
+                async with asyncio.timeout(_READY_TIMEOUT_SECONDS):
+                    response = await self._receive_raw_event()
+                if not isinstance(response, FluxConnected):
+                    self._stream_failure = STTConnectionRetryUnsafe(
+                        "Deepgram Flux did not acknowledge the new stream.",
+                        kind=STTConnectionFailureKind.PROTOCOL,
                     )
-            if self._ws is ws:
-                self._ws = None
-                self._state = _DeepgramFluxState()
+                    raise self._stream_failure
+                self._last_response = response
+                self._receive_task = asyncio.create_task(self._receive_events())
+                self._receive_task.add_done_callback(self._observe_close)
+                logger.info("Connected to Deepgram Flux STT service")
+                return self._ws
+            except BaseException as error:
+                logger.error(
+                    "Deepgram Flux connection failed error_type=%s",
+                    type(error).__name__,
+                )
+                await close_failed_websocket_connection(error, self._disconnect_locked)
 
-    async def _reconnect(self, attempt: int = 0):
-        """Attempt to reconnect with exponential backoff."""
-        exponential_backoff = self._BACKOFF_FACTOR**attempt
-        await asyncio.sleep(exponential_backoff)
+    async def disconnect(self) -> None:
+        """Cancelled waiters cannot abandon or duplicate the owned close operation."""
+        async with self._lifecycle_lock:
+            await self._disconnect_locked()
+
+    async def _disconnect_locked(self) -> None:
+        """Used by startup rollback and explicit close under the same lifecycle lock."""
+        if (
+            self._close_task is not None
+            and self._close_task.done()
+            and not self._close_task.cancelled()
+            and isinstance(self._close_task.exception(), STTConnectionCleanupFailed)
+        ):
+            # Retry physical disposal of the retained socket, never the
+            # application close signal or an uncertain audio send.
+            self._close_task = None
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._close())
+            self._close_task.add_done_callback(self._observe_close)
+        await self._await_close()
+
+    @staticmethod
+    def _observe_close(task: asyncio.Task[None]) -> None:
+        if not task.cancelled():
+            task.exception()
+
+    async def _await_close(self) -> None:
+        task = self._close_task
+        if task is None:
+            return
         try:
-            await self.connect()
-        except Exception as error:
-            logger.error(
-                "Deepgram Flux reconnect failed attempt=%d error_type=%s",
-                attempt + 1,
-                type(error).__name__,
-            )
-            if attempt >= self._MAX_RECONNECTION_ATTEMPTS:
-                raise STTConnectionFailed
-            await self._reconnect(attempt + 1)
+            await asyncio.wait_for(asyncio.shield(task), _CLEANUP_WAIT_SECONDS)
+        except TimeoutError:
+            raise STTConnectionCleanupFailed(
+                "Deepgram Flux cleanup is still pending; replacement is refused."
+            ) from None
+
+    async def _close(self) -> None:
+        socket = self._ws
+        if socket is None:
+            return
+        finalization_error: Exception | None = None
+        receiver = self._receive_task
+        try:
+            if (
+                self._last_response is not None
+                and socket.state == websockets.protocol.State.OPEN
+                and self._stream_failure is None
+            ):
+                try:
+                    if self._close_signal_task is None:
+                        self._close_signal_task = asyncio.create_task(
+                            self._send_close_signal(socket)
+                        )
+                        self._close_signal_task.add_done_callback(self._observe_close)
+                    async with asyncio.timeout(_CLOSE_TIMEOUT_SECONDS):
+                        await asyncio.shield(self._close_signal_task)
+                    if receiver is not None:
+                        async with asyncio.timeout(_FINAL_DRAIN_SECONDS):
+                            await asyncio.shield(receiver)
+                        if self._stream_failure is not None:
+                            raise self._stream_failure
+                except Exception as error:
+                    finalization_error = error
+                    self._stream_failure = STTConnectionRetryUnsafe(
+                        "Deepgram Flux final output did not complete."
+                    )
+        finally:
+            try:
+                await socket.close()
+                await socket.wait_closed()
+            except Exception:
+                if self._stream_failure is None:
+                    self._stream_failure = STTConnectionRetryUnsafe(
+                        "Deepgram Flux cleanup failed; the stream cannot resume."
+                    )
+                raise STTConnectionCleanupFailed(
+                    "Deepgram Flux cleanup failed; the connection remains owned."
+                ) from None
+        for task in (self._close_signal_task, receiver):
+            if task is not None:
+                if not task.done():
+                    task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        self._receive_task = None
+        self._ws = None
+        self._last_response = None
+        if finalization_error is not None:
+            raise STTFinalizationFailed(
+                "Deepgram Flux closed before final transcription completed."
+            ) from finalization_error
+
+    async def _send_close_signal(self, socket: websockets.ClientConnection) -> None:
+        async with self._send_lock:
+            if self._stream_failure is not None:
+                raise self._stream_failure
+            await socket.send(FluxCloseStream().model_dump_json())
 
     async def _receive(self) -> str | None:
         """Receive a message from the WebSocket connection."""
-        try:
-            if self._ws and self.is_connected:
-                try:
-                    return await self._ws.recv(decode=True)
-                except websockets.ConnectionClosed:
-                    logger.info("Connection closed by Deepgram Flux.")
-                    await self._reconnect()
-                except (asyncio.TimeoutError, asyncio.CancelledError):
-                    pass
-        except Exception as error:
-            logger.error(
-                "Deepgram Flux receive failed error_type=%s",
-                type(error).__name__,
-            )
-            raise
-        return None
-
-    async def _receive_raw_event(self) -> Dict | None:
-        """Process one Deepgram Flux response into its vendor-shaped event."""
-        payload = await self._receive()
-        if not payload:
+        if self._stream_failure is not None:
+            raise self._stream_failure
+        if self._ws is None:
             return None
-
         try:
-            data = _FluxResponse.model_validate_json(payload)
-            timestamp = arrow.utcnow().timestamp()
-
-            # Handle Non-Turn Messages
-            if data.type == "Metadata":
-                logger.info("Deepgram Flux connected")
-                return None
-            elif data.type == "CloseStream":
-                logger.info("Flux Stream Closed.")
-                return None
-            elif data.type == "Error":
-                logger.error("Deepgram Flux provider error")
-                return None
-
-            #  StartOfTurn -> Interrupt immediately if VAD mode
-            if data.event == _FluxEventType.StartOfTurn:
-                logger.info("Flux: StartOfTurn detected")
-                self._state.speech_active = True
-                self._state.interrupted_this_turn = False  # Reset for new turn
-
-                if self._config.interruption_type == InterruptionType.VAD:
-                    logger.info("Flux: Interrupting (VAD mode)")
-                    self._state.interrupted_this_turn = True
-                    return {"type": "interrupt", "timestamp": timestamp}
-                return None
-
-            #  EndOfTurn -> Normal completion (fallback if Eager failed)
-            elif data.event == _FluxEventType.EndOfTurn:
-                if self._state.eager_handled_turn_index == data.turn_index:
-                    logger.info("Flux: EndOfTurn ignored (already handled eagerly)")
-                    return None
-
-                logger.info(
-                    "Flux: EndOfTurn transcript_chars=%d",
-                    len(data.transcript),
-                )
-                self._state.speech_active = False
-                self._state.interrupted_this_turn = False
-                return {
-                    "type": "transcript",
-                    "transcript": data.transcript,
-                    "is_final": True,
-                    "timestamp": timestamp,
-                }
-
-            #  TurnResumed -> False alarm (Interrupt again)
-            elif data.event == _FluxEventType.TurnResumed:
-                logger.info("Flux: TurnResumed - Cancelling previous turn!")
-                self._state.speech_active = True
-                self._state.eager_handled_turn_index = None
-
-                # Treat as interrupt regardless of mode to stop any bot response
-                return {"type": "interrupt", "timestamp": timestamp}
-
-            #  Regular Updates
-            elif data.event == _FluxEventType.Update:
-                # Handle TRANSCRIPT based interruption
-                if (
-                    self._config.interruption_type == InterruptionType.TRANSCRIPT
-                    and not self._state.interrupted_this_turn
-                    and data.transcript
-                ):
-                    # We don't have per-update confidence in Flux yet, but if there's text,
-                    # it usually means user is speaking.
-                    # The plan says "transcript confidence > 0.5".
-                    # Flux doesn't provide confidence on Updates, only EOT.
-                    # For now, we'll assume if there's a transcript update, we can interrupt.
-                    logger.info("Flux: Interrupting (TRANSCRIPT mode)")
-                    self._state.interrupted_this_turn = True
-                    return {
-                        "type": "interrupt",
-                        "transcript": data.transcript,
-                        "timestamp": timestamp,
-                    }
-
-        except pydantic.ValidationError:
-            # Fallback for unexpected messages
-            pass
-        except Exception as error:
-            logger.error(
-                "Flux response processing failed error_type=%s",
-                type(error).__name__,
+            return await self._ws.recv(decode=True)
+        except websockets.ConnectionClosed:
+            if self._close_signal_task is not None:
+                await asyncio.shield(self._close_signal_task)
+                if self._stream_failure is None:
+                    raise STTConnectionClosed(
+                        "Deepgram Flux finished the stream."
+                    ) from None
+            if self._stream_failure is not None:
+                raise self._stream_failure from None
+            self._stream_failure = STTConnectionRetryUnsafe(
+                "Deepgram Flux ended without confirmed final delivery.",
+                kind=STTConnectionFailureKind.NETWORK,
             )
+            raise self._stream_failure from None
 
-        return None
-
-    async def send_audio(self, audio_data: bytes):
-        """Send audio data to Deepgram Flux."""
+    async def _receive_raw_event(self) -> FluxResponse | None:
+        """Keep failed/malformed provider responses distinct from absent speech."""
+        payload = await self._receive()
+        if payload is None:
+            return None
         try:
-            if self._ws and self.is_connected:
+            return parse_flux_response(payload)
+        except ValidationError:
+            self._stream_failure = STTConnectionRetryUnsafe(
+                "Deepgram Flux returned an invalid STT event.",
+                kind=STTConnectionFailureKind.PROTOCOL,
+            )
+            raise self._stream_failure from None
+
+    async def send_audio(self, audio_data: bytes) -> None:
+        """Apply backpressure; uncertain delivery must not be replayed or continued."""
+        async with self._send_lock:
+            if self._stream_failure is not None:
+                raise self._stream_failure
+            if (
+                self._close_task is not None
+                or not self._ws
+                or self._last_response is None
+                or self._ws.state != websockets.protocol.State.OPEN
+            ):
+                raise STTConnectionRetryUnsafe("Deepgram Flux is not accepting input.")
+            try:
                 await self._ws.send(audio_data)
-            else:
-                raise STTConnectionError("Not connected to Deepgram Flux")
-        except Exception as error:
-            logger.error(
-                "Deepgram Flux audio send failed error_type=%s",
-                type(error).__name__,
+            except asyncio.CancelledError:
+                self._stream_failure = STTConnectionRetryUnsafe(
+                    "Deepgram Flux audio delivery was interrupted and is uncertain."
+                )
+                raise
+            except Exception:
+                self._stream_failure = STTConnectionRetryUnsafe(
+                    "Deepgram Flux audio delivery failed and is uncertain."
+                )
+                raise self._stream_failure from None
+
+    async def _read_next_event(self) -> STTEvent | None:
+        """Expose typed hypotheses and turn signals without treating eager text as final."""
+        previous = self._last_response
+        if previous is None:
+            raise STTConnectionClosed("Deepgram Flux has not acknowledged a stream.")
+        native = await self._receive_raw_event()
+        if native is None:
+            return None
+        if isinstance(native, FluxError):
+            self._stream_failure = STTConnectionRetryUnsafe(
+                "Deepgram Flux reported an STT failure.",
+                kind=STTConnectionFailureKind.PROTOCOL,
             )
-            raise
+            raise self._stream_failure from None
+        if (
+            isinstance(native, FluxConnected)
+            or native.request_id != previous.request_id
+            or native.sequence_id <= previous.sequence_id
+        ):
+            self._stream_failure = STTConnectionRetryUnsafe(
+                "Deepgram Flux returned an inconsistent stream identity or sequence.",
+                kind=STTConnectionFailureKind.PROTOCOL,
+            )
+            raise self._stream_failure
+        self._last_response = native
+        event = flux_turn_event(native, model=self.model)
+        if (
+            event.type is STTEventType.TRANSCRIPT_PARTIAL
+            and self._config.interim_results is SpeechOptionState.DISABLED
+        ):
+            return None
+        return event
+
+    async def _publish(self, event: STTEvent) -> None:
+        """Retain acquired output if shutdown interrupts queue backpressure."""
+        self._pending_output = event
+        await self._response_queue.put(event)
+        self._pending_output = None
+
+    async def _receive_events(self) -> None:
+        try:
+            try:
+                while True:
+                    event = await self._read_next_event()
+                    if event is not None:
+                        await self._publish(event)
+            except STTConnectionClosed:
+                native = self._last_response
+                if isinstance(native, FluxTurnInfo):
+                    final = flux_stream_final_event(native, model=self.model)
+                    if final is not None:
+                        await self._publish(final)
+        except STTConnectionRetryUnsafe as error:
+            self._reader_error = error
+        except Exception as error:
+            logger.error("Flux output failed error_type=%s", type(error).__name__)
+            self._stream_failure = STTConnectionRetryUnsafe(
+                "Deepgram Flux output processing failed."
+            )
+            self._reader_error = self._stream_failure
 
     async def receive_event(self, timeout_ms: int = 100) -> STTEvent | None:
-        """Next event as the canonical `STTEvent`.
-
-        Adapts what `receive_event` already returns instead of replacing it,
-        so the live path keeps its exact behaviour. Only fields the vendor
-        actually reported are set — confidence and timings stay unset rather
-        than invented.
-        """
-        raw = await self._receive_raw_event()
-        if raw is None:
+        """One native reader preserves ordering; consumer cancellation cannot steal data."""
+        if not self._response_queue.empty():
+            event = self._response_queue.get_nowait()
+            self._response_queue.task_done()
+            return event
+        if self._receive_task is None or self._receive_task.done():
+            if self._pending_output is not None:
+                event, self._pending_output = self._pending_output, None
+                return event
+            if self._reader_error is not None:
+                error, self._reader_error = self._reader_error, None
+                raise error
+            raise STTConnectionClosed("Deepgram Flux output ended.")
+        try:
+            event = await asyncio.wait_for(
+                self._response_queue.get(), timeout_ms / _MILLISECONDS_PER_SECOND
+            )
+            self._response_queue.task_done()
+            return event
+        except TimeoutError:
+            if self._reader_error is not None:
+                error, self._reader_error = self._reader_error, None
+                raise error
             return None
-        event_type = raw.get("type") or raw.get("event")
-        return STTEvent(
-            type=STTEventType(event_type)
-            if event_type in set(STTEventType)
-            else STTEventType.TRANSCRIPT_PARTIAL,
-            provider=self.provider,
-            model=self.model,
-            transcript=str(raw.get("transcript") or raw.get("text") or ""),
-            is_final=bool(raw.get("is_final", False)),
-            confidence=raw.get("confidence"),
-            language=raw.get("language"),
-        )
 
     async def flush(self) -> None:
         """No flush frame on this stream. Explicit, not faked."""
@@ -358,34 +444,33 @@ class DeepgramFluxSTT(STTVendorAdapter):
 
     @property
     def provider(self) -> str:
-        return "deepgram-flux"
+        return STTProvider.DEEPGRAM_FLUX.value
 
     @property
     def model(self) -> str:
-        return str(getattr(self._config, "model", "") or "")
+        return self._config.model.value
 
     @property
     def sample_rate(self) -> int:
-        """From the operator's config. 16 kHz only if nothing was configured —
-        the transport needs a number, and this is the pipeline's rate.
-        """
-        return int(getattr(self._config, "sample_rate", 16000) or 16000)
+        return self._config.sample_rate
 
     @property
     def capabilities(self) -> STTCapabilities:
-        """Derived from this module's own behaviour, not from vendor memory.
-
-        Deepgram's documentation has been unreachable throughout this
-        migration, so confirm any of these against it before relying on a
-        False.
-        """
+        """Canonical behavior implemented for Listen v2, not Listen v1 features."""
         return STTCapabilities(
-            streaming=True,
-            batch_recognize=False,
-            interim_results=True,
-            vad_events=True,
-            turn_detection=True,
-            word_timestamps=False,
-            speaker_labels=False,
-            language_detection=False,
+            streaming=STTCapabilitySupport.SUPPORTED,
+            batch_recognize=STTCapabilitySupport.UNSUPPORTED,
+            interim_results=STTCapabilitySupport.SUPPORTED,
+            vad_events=STTCapabilitySupport.SUPPORTED,
+            turn_detection=STTCapabilitySupport.SUPPORTED,
+            word_timestamps=STTCapabilitySupport.SUPPORTED,
+            speaker_labels=STTCapabilitySupport.UNSUPPORTED,
+            language_detection=STTCapabilitySupport.UNSUPPORTED,
+            supported_encodings=(
+                STTEncoding.LINEAR16,
+                STTEncoding.PCM_S16LE,
+                STTEncoding.MULAW,
+                STTEncoding.ALAW,
+            ),
+            supported_sample_rates=tuple(int(rate) for rate in FluxSampleRate),
         )

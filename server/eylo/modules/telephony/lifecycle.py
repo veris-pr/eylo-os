@@ -16,6 +16,14 @@ from eylo.common.outbound import OutboundAttemptState, require_failure_code
 from eylo.events.durable.binding import spawn_event_deliveries
 from eylo.events.durable.domain import DurableEventEnvelope
 from eylo.events.durable.service import DurableEventService
+from eylo.modules.telephony.constants import (
+    OUTBOUND_CALL_REJECTED,
+    CallInitiationMarker,
+    CallOpenerDeliveryOutcome,
+    CallOpenerDeliveryStatus,
+    CallTransferOutcome,
+    CallTransferStatus,
+)
 from eylo.modules.telephony.repositories import TelephonyCallRepository
 from eylo.modules.telephony.schemas import (
     CallStatus,
@@ -182,15 +190,15 @@ async def apply_outbound_call_outcome(
         call.status_history = [*(call.status_history or []), history_entry]
         if state is OutboundAttemptState.SUCCEEDED:
             if call.status not in _TERMINAL_STATUSES:
-                call.provider_status = "accepted"
+                call.provider_status = CallInitiationMarker.ACCEPTED.value
         elif state is OutboundAttemptState.RETRYABLE:
-            call.provider_status = "retryable"
+            call.provider_status = CallInitiationMarker.RETRYABLE.value
         elif state is OutboundAttemptState.UNKNOWN:
-            call.provider_status = "initiation-unknown"
+            call.provider_status = CallInitiationMarker.UNKNOWN.value
         elif state is OutboundAttemptState.TERMINAL:
             call.status = CallStatus.FAILED.value
-            call.provider_status = "rejected"
-            call.ended_reason = failure_code or "provider_rejected"
+            call.provider_status = CallInitiationMarker.REJECTED.value
+            call.ended_reason = failure_code or OUTBOUND_CALL_REJECTED
             call.ended_at = call.ended_at or observed_at
             fact = _terminal_envelope(TelephonyCallService(session).orm_to_schema(call))
             consumers = (
@@ -234,12 +242,12 @@ def _outbound_outcome_already_projected(
     if state is OutboundAttemptState.SUCCEEDED:
         return provider_was_bound and call.provider_status is not None
     if state is OutboundAttemptState.RETRYABLE:
-        return call.provider_status == "retryable"
+        return call.provider_status == CallInitiationMarker.RETRYABLE.value
     if state is OutboundAttemptState.UNKNOWN:
-        return call.provider_status == "initiation-unknown"
+        return call.provider_status == CallInitiationMarker.UNKNOWN.value
     if state is OutboundAttemptState.TERMINAL:
         return call.status == CallStatus.FAILED.value and call.ended_reason == (
-            failure_code or "provider_rejected"
+            failure_code or OUTBOUND_CALL_REJECTED
         )
     return False
 
@@ -315,7 +323,11 @@ async def claim_outbound_media_session(
         observed_at = datetime.now(timezone.utc)
         call.call_sid = provider_call_sid
         call.media_claimed_at = observed_at
-        call.opener_delivery_status = "pending" if initial_message else "not_requested"
+        call.opener_delivery_status = (
+            CallOpenerDeliveryStatus.PENDING
+            if initial_message
+            else CallOpenerDeliveryStatus.NOT_REQUESTED
+        )
         call.status_history = [
             *(call.status_history or []),
             {
@@ -331,7 +343,7 @@ async def record_opener_delivery(
     *,
     call_id: UUID,
     organization_id: UUID,
-    accepted: bool,
+    outcome: CallOpenerDeliveryOutcome,
     db: AsyncSession | None = None,
 ) -> TelephonyCallInDb:
     """Persist the final carrier-facing delivery state of an outbound opener."""
@@ -340,14 +352,14 @@ async def record_opener_delivery(
             db=db,
             call_id=call_id,
             organization_id=organization_id,
-            accepted=accepted,
+            outcome=outcome,
         )
     async with start_transaction() as session:
         return await _record_opener_delivery(
             db=session,
             call_id=call_id,
             organization_id=organization_id,
-            accepted=accepted,
+            outcome=outcome,
         )
 
 
@@ -356,27 +368,28 @@ async def _record_opener_delivery(
     db: AsyncSession,
     call_id: UUID,
     organization_id: UUID,
-    accepted: bool,
+    outcome: CallOpenerDeliveryOutcome,
 ) -> TelephonyCallInDb:
+    if outcome not in {CallOpenerDeliveryStatus.ACCEPTED, CallOpenerDeliveryStatus.FAILED}:
+        raise ValueError("Invalid call opener delivery outcome.")
     repository = TelephonyCallRepository(db)
     call = await repository.get_by_id_for_update(call_id, organization_id)
     if call is None:
         raise CallLifecycleNotFound
-    target = "accepted" if accepted else "failed"
-    if call.opener_delivery_status == target:
+    if call.opener_delivery_status == outcome:
         return TelephonyCallService(db).orm_to_schema(call)
-    if call.opener_delivery_status != "pending":
+    if call.opener_delivery_status != CallOpenerDeliveryStatus.PENDING:
         raise CallLifecycleConflict(
             "Call does not have a pending outbound opener delivery."
         )
     observed_at = datetime.now(timezone.utc)
-    call.opener_delivery_status = target
-    if accepted:
+    call.opener_delivery_status = outcome
+    if outcome == CallOpenerDeliveryStatus.ACCEPTED:
         call.opener_delivered_at = observed_at
     call.status_history = [
         *(call.status_history or []),
         {
-            "opener_delivery": target,
+            "opener_delivery": outcome.value,
             "observed_at": observed_at.isoformat(),
         },
     ]
@@ -623,15 +636,15 @@ async def record_call_transfer_requested(
         if call is None:
             raise CallLifecycleNotFound
         if call.transfer_status in {
-            "transferring",
-            "accepted",
-            "unknown",
-            "transferred",
+            CallTransferStatus.TRANSFERRING,
+            CallTransferStatus.ACCEPTED,
+            CallTransferStatus.UNKNOWN,
+            CallTransferStatus.TRANSFERRED,
         }:
             raise CallTransferNotSendable(
                 f"Transfer cannot begin from {call.transfer_status}."
             )
-        call.transfer_status = "transferring"
+        call.transfer_status = CallTransferStatus.TRANSFERRING
         call.transfer_to = transfer_to
         call.transfer_reason = reason
         call.transfer_metadata = {
@@ -646,15 +659,19 @@ async def record_call_transfer_outcome(
     *,
     organization_id: UUID,
     call_sid: str,
-    outcome: str,
+    outcome: CallTransferOutcome,
     failure_code: str | None = None,
 ) -> TelephonyCallInDb:
     """Project the typed carrier result without treating intent as success."""
-    if outcome not in {"accepted", "failed", "unknown"}:
+    if outcome not in {
+        CallTransferStatus.ACCEPTED,
+        CallTransferStatus.FAILED,
+        CallTransferStatus.UNKNOWN,
+    }:
         raise ValueError("Invalid call transfer outcome.")
-    if outcome == "accepted" and failure_code is not None:
+    if outcome == CallTransferStatus.ACCEPTED and failure_code is not None:
         raise ValueError("Accepted transfer cannot have a failure code.")
-    if outcome != "accepted" and not failure_code:
+    if outcome != CallTransferStatus.ACCEPTED and not failure_code:
         raise ValueError("Failed/unknown transfer requires a failure code.")
     if failure_code is not None:
         failure_code = require_failure_code(failure_code)
@@ -668,7 +685,7 @@ async def record_call_transfer_outcome(
             raise CallLifecycleNotFound
         if call.transfer_status == outcome:
             return TelephonyCallService(session).orm_to_schema(call)
-        if call.transfer_status != "transferring":
+        if call.transfer_status != CallTransferStatus.TRANSFERRING:
             raise CallTransferNotSendable(
                 f"Transfer outcome cannot apply from {call.transfer_status}."
             )
@@ -697,13 +714,13 @@ async def record_call_transfer_completed(
         )
         if call is None:
             raise CallLifecycleNotFound
-        if call.transfer_status == "transferred":
+        if call.transfer_status == CallTransferStatus.TRANSFERRED:
             return TelephonyCallService(session).orm_to_schema(call)
-        if call.transfer_status != "accepted":
+        if call.transfer_status != CallTransferStatus.ACCEPTED:
             raise CallTransferNotSendable(
                 f"Transfer completion cannot apply from {call.transfer_status}."
             )
-        call.transfer_status = "transferred"
+        call.transfer_status = CallTransferStatus.TRANSFERRED
         call.transfer_to = transfer_to or call.transfer_to
         call.transferred_at = datetime.now(timezone.utc)
         call.transfer_metadata = {

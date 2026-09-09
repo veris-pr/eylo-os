@@ -3,9 +3,16 @@
 from __future__ import annotations
 
 import audioop
+from typing import Final
 
 from eylo.audio.ops import AudioMixer, StreamingResampler
 from eylo.sockets.tts.schemas import TTSAudioFormat
+
+BROWSER_OUTPUT_AUDIO_FORMAT: Final = TTSAudioFormat(
+    container="raw",
+    encoding="pcm_s16le",
+    sample_rate=16000,
+)
 
 
 class StreamingAudioTranscoder:
@@ -29,13 +36,19 @@ class StreamingAudioTranscoder:
         """Convert one ordered chunk from provider media to transport media."""
         if not audio:
             return audio
-        if self.source == self.target:
-            return audio
 
         pcm = _decode_pcm16(audio, self.source.encoding)
+        if self.source == self.target:
+            return audio
         if self._resampler is not None:
             pcm = self._resampler.process(pcm)
         return _encode_pcm16(pcm, self.target.encoding)
+
+    def finish(self) -> bytes:
+        """Flush a completed utterance; interruption uses reset without output."""
+        if self._resampler is None:
+            return b""
+        return _encode_pcm16(self._resampler.finish(), self.target.encoding)
 
     def reset(self) -> None:
         """Drop filter history when an interrupted utterance is discarded."""
@@ -55,9 +68,7 @@ class ComfortAudioStream:
         frame_duration_ms: int = 20,
     ) -> None:
         self.target = target
-        self._samples_per_frame = int(
-            target.sample_rate * frame_duration_ms / 1000
-        )
+        self._samples_per_frame = int(target.sample_rate * frame_duration_ms / 1000)
         self._mixer = AudioMixer(
             target.sample_rate,
             amplitude=amplitude,

@@ -8,9 +8,14 @@ stays in the capability-specific pipeline modules that call it.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from typing import Final
+
+from pydantic import BaseModel, Field, ValidationError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.contracts.llm_response import LLMToolUseBlock
+from eylo.common.database import current_transaction, start_transaction
+from eylo.common.revisions import DefinitionRef
 from eylo.modules.agents.schemas.indb import AgentInDb
 from eylo.modules.agents.services.tool_execution_utils import (
     AmbiguousModelToolNameError,
@@ -25,41 +30,29 @@ from eylo.modules.agents.services.tool_execution_utils import (
 from eylo.modules.conversations.constants import HANDOFF_TOOL_PREFIX
 from eylo.modules.conversations.schemas.conversations import ConversationContext
 from eylo.modules.conversations.schemas.messages import MessageKind
-from eylo.modules.conversations.schemas.participants import ParticipantInDb
 from eylo.modules.conversations.services.participants import (
     ConversationParticipantService,
 )
-from eylo.modules.tools.services.executors.system_tools.compound_render_widget import (
+from eylo.pipelines.agent_execution_context import PlatformExecutionContext
+from eylo.pipelines.conversation.handoff import HandoffOutcome, HandoffState
+from eylo.pipelines.system_tools.compound_render_widget import (
     compound_widget_text_fallback,
 )
 
 logger = logging.getLogger(__name__)
 
+_HANDOFF_HISTORY_MESSAGE_LIMIT: Final = 10
+_HANDOFF_TURN_LIMIT: Final = 3
 
-@dataclass(frozen=True, slots=True)
-class HandoffOutcome:
-    """One attempted handoff from the pinned conversation topology."""
 
-    content: str
-    source_agent: AgentInDb
-    requested_input: str | None = None
-    target_agent: AgentInDb | None = None
-    target_participant: ParticipantInDb | None = None
-    circuit_breaker_triggered: bool = False
-    handoff_loop_detected: bool = False
+class HandoffInput(BaseModel):
+    """Model-supplied continuation text; topology, agents and revisions are trusted context."""
 
-    @property
-    def succeeded(self) -> bool:
-        return bool(
-            self.target_agent
-            and self.target_participant
-            and not self.circuit_breaker_triggered
-            and not self.handoff_loop_detected
-        )
+    message: str | None = Field(default=None, strict=True)
 
 
 async def execute_registered_tool(
-    context: ConversationContext,
+    context: PlatformExecutionContext,
     tool_call: LLMToolUseBlock,
 ) -> str | dict | list:
     """Resolve and execute one exact in-process tool revision."""
@@ -116,14 +109,21 @@ async def execute_registered_tool(
 
 
 async def execute_handoff(
-    context: ConversationContext,
+    context: PlatformExecutionContext,
     tool_call: LLMToolUseBlock,
 ) -> HandoffOutcome:
-    """Switch to an exact member authorized by the pinned swarm topology."""
+    """Persist an exact member switch; callers own the full runtime-context rebuild.
+
+    Without a caller session, own a short DB-only transaction. A borrowed session
+    is never committed or closed here. Return detached DTOs without partially
+    mutating the caller's context, including when a commit fails.
+    """
     source_agent = context.primary_agent
-    agent_slug = tool_call.name.removeprefix(HANDOFF_TOOL_PREFIX)
+    if source_agent is None:
+        raise ValueError("Handoff requires a published source agent.")
     if (
-        context.conversation.swarm_id is None
+        not isinstance(context, ConversationContext)
+        or context.conversation.swarm_id is None
         or context.conversation.swarm_revision is None
     ):
         logger.error("Handoff requested without pinned swarm authority.")
@@ -132,13 +132,36 @@ async def execute_handoff(
             source_agent=source_agent,
         )
 
+    swarm_ref = DefinitionRef(
+        context.conversation.swarm_id, context.conversation.swarm_revision
+    )
+    session = current_transaction()
+    if session is not None:
+        return await _execute_pinned_handoff(
+            session, context, tool_call, source_agent, swarm_ref
+        )
+    async with start_transaction() as session:
+        return await _execute_pinned_handoff(
+            session, context, tool_call, source_agent, swarm_ref
+        )
+
+
+async def _execute_pinned_handoff(
+    session: AsyncSession,
+    context: ConversationContext,
+    tool_call: LLMToolUseBlock,
+    source_agent: AgentInDb,
+    swarm_ref: DefinitionRef,
+) -> HandoffOutcome:
+    """Resolve topology and switch the expected primary under one DB scope."""
     from eylo.modules.templates.domain import TemplateConsumerKind
     from eylo.pipelines.agents import build_executable_swarm_resolver
 
-    topology = await build_executable_swarm_resolver().resolve_exact(
+    agent_slug = tool_call.name.removeprefix(HANDOFF_TOOL_PREFIX)
+    topology = await build_executable_swarm_resolver(session).resolve_exact(
         organization_id=context.conversation.organization_id,
-        swarm_id=context.conversation.swarm_id,
-        revision=context.conversation.swarm_revision,
+        swarm_id=swarm_ref.definition_id,
+        revision=swarm_ref.revision,
         consumer_kind=TemplateConsumerKind.CONVERSATIONAL_TEXT,
     )
     current_participant = context.get_primary_agent()
@@ -168,9 +191,15 @@ async def execute_handoff(
             source_agent=source_agent,
         )
 
-    requested_input = tool_call.input.get("message")
+    try:
+        requested_input = HandoffInput.model_validate(tool_call.input).message
+    except ValidationError:
+        return HandoffOutcome(
+            content="Error: Handoff message must be text.",
+            source_agent=source_agent,
+        )
     handoff_tools: list[str] = []
-    for message in reversed(context.messages[-10:] if context.messages else []):
+    for message in reversed((context.messages or [])[-_HANDOFF_HISTORY_MESSAGE_LIMIT:]):
         if message.kind == MessageKind.USER:
             break
         if message.kind != MessageKind.TOOL_USE or not message.content:
@@ -182,7 +211,7 @@ async def execute_handoff(
         if parsed.content.name.startswith(HANDOFF_TOOL_PREFIX):
             handoff_tools.append(parsed.content.name)
 
-    circuit_breaker_triggered = len(handoff_tools) >= 3
+    circuit_breaker_triggered = len(handoff_tools) >= _HANDOFF_TURN_LIMIT
     handoff_loop_detected = (
         circuit_breaker_triggered and tool_call.name in handoff_tools
     )
@@ -196,20 +225,22 @@ async def execute_handoff(
             content="Error: Too many recent handoffs detected.",
             source_agent=source_agent,
             requested_input=requested_input,
-            circuit_breaker_triggered=True,
-            handoff_loop_detected=handoff_loop_detected,
+            state=(
+                HandoffState.LOOP_DETECTED
+                if handoff_loop_detected
+                else HandoffState.LIMIT_REACHED
+            ),
         )
 
-    target_participant = (
-        await ConversationParticipantService().switch_primary_agent(
-            context.conversation.id,
-            current_participant.agent_id,
-            current_participant.agent_revision,
-            target_agent.id,
-            resolved_agent.ref.revision,
-        )
+    target_participant = await ConversationParticipantService(
+        session
+    ).switch_primary_agent(
+        context.conversation.id,
+        source_agent.id,
+        current_participant.agent_revision,
+        target_agent.id,
+        resolved_agent.ref.revision,
     )
-    context.participants.append(target_participant)
     logger.warning(
         "Handoff switched conversation=%s from_agent=%s to_agent=%s",
         context.conversation.id,
@@ -226,6 +257,7 @@ async def execute_handoff(
         requested_input=requested_input,
         target_agent=target_agent,
         target_participant=target_participant,
+        state=HandoffState.SUCCEEDED,
     )
 
 

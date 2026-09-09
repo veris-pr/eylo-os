@@ -3,12 +3,26 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from enum import StrEnum
 from uuid import UUID, uuid4
 
-from eylo.common.contracts.embedding import EmbeddingError, EmbeddingSpace
-from eylo.common.contracts.memory import MemoryError, MemoryExtractionAuthority
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from eylo.common.contracts.embedding import (
+    DocumentEmbedder,
+    EmbeddingError,
+    EmbeddingSpace,
+    QueryEmbedder,
+)
+from eylo.common.contracts.llm_runtime import LLMInferenceConfig
+from eylo.common.contracts.memory import (
+    MemoryError as MemoryProviderError,
+)
+from eylo.common.contracts.memory import (
+    MemoryExtractionAuthority,
+    MemoryTextCompleter,
+)
 from eylo.common.contracts.messages import MessageKind
 from eylo.common.database import async_session_factory, get_transaction
 from eylo.modules.agent_runs.budgets import (
@@ -37,6 +51,12 @@ from eylo.sockets.memory.vendors.pgvector import PgVectorMemoryAdapter
 
 _EXTRACTION_TIMEOUT_SECONDS = 15.0
 _EXTRACTION_MAX_TOKENS = 1500
+_EXTRACTION_TEMPERATURE = 0.0
+
+
+class _DependencyRevisionMode(StrEnum):
+    CURRENT = "current"
+    PINNED = "pinned"
 
 
 @dataclass(frozen=True)
@@ -45,16 +65,16 @@ class MemoryRuntime:
     adapter: MemoryVendorAdapter
     embedding_space: EmbeddingSpace
     extraction_authority: MemoryExtractionAuthority
-    reconciliation_completer: Callable[..., Awaitable[str]]
+    reconciliation_completer: MemoryTextCompleter
 
 
 async def resolve_memory_adapter(
     organization_id: UUID,
-    db=None,
+    db: AsyncSession | None = None,
     *,
     provider_config_id: UUID | None = None,
     provider_config_revision: int | None = None,
-):
+) -> MemoryVendorAdapter:
     """Build exactly the requested current or pinned memory adapter."""
     return (
         await resolve_memory_runtime(
@@ -68,7 +88,7 @@ async def resolve_memory_adapter(
 
 async def resolve_memory_runtime(
     organization_id: UUID,
-    db=None,
+    db: AsyncSession | None = None,
     *,
     provider_config_id: UUID | None = None,
     provider_config_revision: int | None = None,
@@ -81,7 +101,7 @@ async def resolve_memory_runtime(
             organization_id,
             provider_config_id=provider_config_id,
         )
-        pinned_dependencies = False
+        dependency_revision = _DependencyRevisionMode.CURRENT
     else:
         if provider_config_id is None:
             raise _memory_not_configured("provider_config")
@@ -90,7 +110,7 @@ async def resolve_memory_runtime(
             provider_config_id=provider_config_id,
             revision=provider_config_revision,
         )
-        pinned_dependencies = True
+        dependency_revision = _DependencyRevisionMode.PINNED
 
     if resolved.provider is not MemoryProviders.PGVECTOR:
         raise _memory_not_configured("supported_provider")
@@ -105,7 +125,7 @@ async def resolve_memory_runtime(
         organization_id,
         resolved,
         db,
-        pinned=pinned_dependencies,
+        revision_mode=dependency_revision,
     )
     _validate_dependency_authority(resolved, llm)
     document_embedder, query_embedder = _embedding_functions(embedding)
@@ -140,7 +160,7 @@ async def resolve_memory_runtime(
 async def _embedding_runtime(
     organization_id: UUID,
     resolved: ResolvedMemory,
-    db,
+    db: AsyncSession | None,
     *,
     embedding_space: EmbeddingSpace | None,
 ) -> EmbeddingRuntime:
@@ -170,25 +190,27 @@ async def _embedding_runtime(
             )
     except (InvalidEmbeddingConfig, NotConfiguredError):
         if exact_revision:
-            raise MemoryError(
+            raise MemoryProviderError(
                 "Pinned memory embedding authority is unavailable."
             ) from None
         raise
     if not runtime.space.is_compatible_with(expected_space):
-        raise MemoryError("Memory job embedding authority does not match its space.")
+        raise MemoryProviderError(
+            "Memory job embedding authority does not match its space."
+        )
     return runtime
 
 
 async def _llm_runtime(
     organization_id: UUID,
     resolved: ResolvedMemory,
-    db,
+    db: AsyncSession | None,
     *,
-    pinned: bool,
+    revision_mode: _DependencyRevisionMode,
 ) -> ResolvedLLM:
     resolver = build_llm_config_resolver(db)
     overrides = memory_llm_overrides()
-    if pinned:
+    if revision_mode is _DependencyRevisionMode.PINNED:
         return await resolver.resolve_llm_pinned(
             organization_id,
             provider_config_id=resolved.llm_provider_config_id,
@@ -206,16 +228,18 @@ def memory_llm_overrides() -> LLMOverrides:
     """One extraction policy shared by verification and live composition."""
     return LLMOverrides(
         max_tokens=_EXTRACTION_MAX_TOKENS,
-        temperature=0.0,
+        temperature=_EXTRACTION_TEMPERATURE,
     )
 
 
-def _embedding_functions(runtime: EmbeddingRuntime):
+def _embedding_functions(
+    runtime: EmbeddingRuntime,
+) -> tuple[DocumentEmbedder, QueryEmbedder]:
     async def embed_documents(texts: list[str]) -> list[list[float]]:
         try:
             return await runtime.embed_documents(texts)
         except EmbeddingError as error:
-            raise MemoryError(
+            raise MemoryProviderError(
                 "Memory embedding failed.",
                 vendor=error.vendor,
                 retryable=error.retryable,
@@ -225,7 +249,7 @@ def _embedding_functions(runtime: EmbeddingRuntime):
         try:
             return await runtime.embed_query(text)
         except EmbeddingError as error:
-            raise MemoryError(
+            raise MemoryProviderError(
                 "Memory query embedding failed.",
                 vendor=error.vendor,
                 retryable=error.retryable,
@@ -234,10 +258,10 @@ def _embedding_functions(runtime: EmbeddingRuntime):
     return embed_documents, embed_query
 
 
-def build_memory_completer(llm: ResolvedLLM):
+def build_memory_completer(llm: ResolvedLLM) -> MemoryTextCompleter:
     """Use the selected native LLM adapter for bounded extraction completion."""
     adapter = build_llm_adapter(llm)
-    generation = llm.generation.to_storage()
+    generation = LLMInferenceConfig(generation=llm.generation)
 
     async def complete(*, system: str, user: str) -> str:
         sender_id = uuid4()
@@ -260,7 +284,7 @@ def build_memory_completer(llm: ResolvedLLM):
         except Exception as error:
             if isinstance(error, NotConfiguredError):
                 raise
-            raise MemoryError(
+            raise MemoryProviderError(
                 "Memory extraction provider failed.",
                 vendor=llm.provider.value,
                 retryable=True,
@@ -271,13 +295,13 @@ def build_memory_completer(llm: ResolvedLLM):
             output_tokens=None if usage is None else usage.output_tokens,
         )
         if tool_uses(response.content):
-            raise MemoryError(
+            raise MemoryProviderError(
                 "Memory extraction provider returned an unexpected tool call.",
                 vendor=llm.provider.value,
             )
         content = "\n".join(text_parts(response.content)).strip()
         if not content:
-            raise MemoryError(
+            raise MemoryProviderError(
                 "Memory extraction provider returned no text.",
                 vendor=llm.provider.value,
             )

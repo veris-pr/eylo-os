@@ -12,7 +12,12 @@ from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
 from eylo.sor.knowledge.contracts import KnowledgeToolName
 from eylo.sor.runtime.catalog import get_sor_registry
 from eylo.sor.runtime.command_payloads import command_payload_type
-from eylo.sor.shared.contracts import SorProfile, SorToolEffect, SorToolSpec
+from eylo.sor.shared.contracts import (
+    SorCommandPayload,
+    SorProfile,
+    SorToolEffect,
+    SorToolSpec,
+)
 from eylo.sor.shared.query import SorAgentSortField, SorSortDirection
 
 
@@ -104,6 +109,7 @@ class SorMutationToolInput(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    payload: SorCommandPayload
     source_id: UUID | None = Field(
         default=None,
         description=(
@@ -169,7 +175,7 @@ def _declaration_function(
     return execute_through_sor_pipeline
 
 
-def read_tool_input_model(spec: SorToolSpec) -> type[BaseModel]:
+def read_tool_input_model(spec: SorToolSpec) -> type[SorReadSelectionInput]:
     """Expose entity choice only when one read genuinely has several targets."""
     if spec.name == KnowledgeToolName.GET:
         return SorDocumentGetInput
@@ -197,7 +203,7 @@ def mutation_tool_input_model(
     *,
     profile: SorProfile,
     spec: SorToolSpec,
-) -> type[BaseModel]:
+) -> type[SorMutationToolInput]:
     """Expose the profile-owned command object instead of an untyped JSON bag."""
     payload_model = command_payload_type(profile=profile, tool_name=spec.name)
     return create_model(

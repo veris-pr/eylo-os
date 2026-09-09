@@ -2,13 +2,14 @@
 
 import json
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from eylo.modules.conversations.schemas.conversations import ConversationContext
 from eylo.modules.tools.models import ToolExecutionMode, ToolKind
 from eylo.modules.tools.schemas.indb import ToolInDb
+
+ToolContextT = TypeVar("ToolContextT")
 
 
 class ToolDispatchError(RuntimeError):
@@ -93,9 +94,13 @@ def require_tool_execution_allowed(tool: ToolInDb) -> None:
 async def execute_exact_tool(
     tool: ToolInDb,
     tool_input: dict[str, Any],
-    ctx: ConversationContext,
+    ctx: ToolContextT,
 ) -> str | dict | list:
-    """Dispatch by the exact row's stored kind after enforcing its policy."""
+    """Forward caller-owned context unchanged after enforcing exact tool policy.
+
+    Context is opaque to this registry dispatcher; the registered callable owns
+    its requirements. Do not manufacture a conversation for non-conversation runs.
+    """
     require_tool_execution_allowed(tool)
 
     if tool.kind in (ToolKind.SYSTEM, ToolKind.LOCAL):

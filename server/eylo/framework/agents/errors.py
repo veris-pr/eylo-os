@@ -7,6 +7,10 @@ class FrameworkError(Exception):
     """Base error for the new framework path."""
 
 
+class ToolResultIdentityError(FrameworkError):
+    """A tool returned a result for a different invocation."""
+
+
 class MaxTurnsExceededError(FrameworkError):
     """Raised when a run exceeds its configured turn limit."""
 

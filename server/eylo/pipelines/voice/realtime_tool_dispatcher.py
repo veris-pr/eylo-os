@@ -7,10 +7,11 @@ the current platform executor. Uses isolated execution
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, StrictBool, StrictStr, model_validator
 
 from eylo.common.contracts.conversation import WIDGET_TOOL_PREFIX
 from eylo.common.database import start_transaction
@@ -18,6 +19,7 @@ from eylo.framework.agents.config import RunConfig
 from eylo.framework.agents.context import RunContext
 from eylo.framework.agents.tool import ToolCall
 from eylo.modules.conversations.schemas.conversations import ConversationContext
+from eylo.pipelines.agent_execution_context import PlatformRunState
 from eylo.pipelines.conversation.domain import agent_spec_from_context
 from eylo.pipelines.conversation.tool_batch import (
     ConversationToolBatchExecutor,
@@ -40,12 +42,27 @@ class DispatchResult(BaseModel):
     (handoff session update, widget fallback tracking).
     """
 
-    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+    )
 
-    result: str | dict[str, Any]
-    is_error: bool = False
-    is_widget_fallback: bool = False
+    result: StrictStr
+    is_error: StrictBool = False
+    is_widget_fallback: StrictBool = False
     handoff: HandoffResult | None = None
+
+    @model_validator(mode="after")
+    def validate_handoff(self) -> DispatchResult:
+        if self.handoff is not None and (
+            self.is_error is not self.handoff.is_error
+            or self.result != self.handoff.tool_result
+            or self.is_widget_fallback
+        ):
+            raise ValueError("Realtime dispatch must preserve its handoff outcome.")
+        return self
 
 
 class RealtimeToolDispatcher:
@@ -68,9 +85,9 @@ class RealtimeToolDispatcher:
         """Execute a tool and return a structured result.
 
         Special handling:
-        - **Handoff tools**: delegates to ``execute_handoff_tool``, mutates
-          ``ctx.primary_agent``, and returns the ``HandoffResult`` for the
-          manager to check circuit-breaker flags and update the session.
+        - **Handoff tools**: delegates to ``execute_handoff_tool`` and returns
+          the typed outcome. The manager rebuilds the full context from DB before
+          changing the live session; no partial agent/participant update occurs here.
         - **Widget tools**: tracks validation failures per-turn so a second
           call in the same turn gets a "reply in plain text" fallback.
         """
@@ -81,12 +98,11 @@ class RealtimeToolDispatcher:
         )
 
         if ConversationToolBatchExecutor.is_handoff_tool(tool_name):
-            async with start_transaction():
-                handoff_result = await self._handoff_executor.execute_handoff_tool(
+            handoff_result = HandoffResult.model_validate(
+                await self._handoff_executor.execute_handoff_tool(
                     self._ctx, tool_use_block
                 )
-            if handoff_result.to_agent:
-                self._ctx.primary_agent = handoff_result.to_agent
+            )
             return DispatchResult(
                 result=handoff_result.tool_result,
                 is_error=handoff_result.is_error,
@@ -112,10 +128,10 @@ class RealtimeToolDispatcher:
             handoff_chain=[agent],
             conversation_id=self._ctx.conversation.id,
             organization_id=self._ctx.conversation.organization_id,
-            local_context={
-                "conversation_context": self._ctx,
-                "live_voice_identity": self._identity,
-            },
+            local_context=PlatformRunState(
+                conversation_context=self._ctx,
+                live_voice_identity=self._identity,
+            ),
         )
         async with start_transaction():
             tool_result = await self._executor.execute(
@@ -143,7 +159,11 @@ class RealtimeToolDispatcher:
             )
 
         return DispatchResult(
-            result=result_value,
+            result=(
+                result_value
+                if isinstance(result_value, str)
+                else json.dumps(result_value, ensure_ascii=False)
+            ),
             is_error=tool_result.is_error,
             is_widget_fallback=is_widget_fallback,
         )

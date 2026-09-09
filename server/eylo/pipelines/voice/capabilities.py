@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from collections.abc import Mapping
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,12 +14,21 @@ from eylo.modules.voice.schemas.api import (
     VoiceProviderCapabilityRead,
 )
 from eylo.modules.voice.services.voice_configs import VoiceConfigService
-from eylo.modules.voice_configs.catalog import RealtimeProviders, VoiceKind
-from eylo.modules.voice_configs.domain import ResolvedRealtime
+from eylo.modules.voice_configs.catalog import VoiceKind
+from eylo.modules.voice_configs.domain import (
+    ResolvedRealtime,
+    ResolvedSTT,
+    ResolvedTTS,
+    VoiceProviderConfig,
+)
 from eylo.modules.voice_configs.wiring import (
     build_voice_config_service as build_provider_voice_config_service,
 )
-from eylo.sockets.realtime.config import RealtimeSessionConfig
+from eylo.pipelines.voice.provider_runtime import (
+    build_realtime_session_config,
+    build_stt_runtime_config,
+    build_tts_runtime_config,
+)
 from eylo.sockets.realtime.factory import RealtimeFactory
 from eylo.sockets.stt.factory import STTFactory
 from eylo.sockets.tts.factory import TTSFactory
@@ -87,22 +96,37 @@ class VoiceCapabilityService:
             config_id=config_id,
             kind=kind,
         )
-        runtime_config = {**stored.config, **stored.secrets}
+        validated = VoiceProviderConfig.from_storage(
+            provider=stored.provider,
+            kind=kind,
+            config=stored.config,
+            secrets=stored.secrets,
+        )
 
         if kind is VoiceKind.STT:
+            stt = ResolvedSTT.from_voice_config(
+                provider_config_id=stored.id,
+                provider_config_revision=stored.revision,
+                organization_id=organization_id,
+                config=validated,
+            )
             adapter = STTFactory(
                 organization_id=organization_id,
                 session_id="voice-config-capability-inspection",
                 stt_vendor=stored.provider,
-                stt_config=runtime_config,
-                api_key=stored.secrets.get("api_key"),
+                stt_config=build_stt_runtime_config(None, stt),
             ).service
-            capabilities = asdict(adapter.capabilities)
+            capabilities = adapter.capabilities.model_dump(mode="json")
         elif kind is VoiceKind.TTS:
+            tts = ResolvedTTS.from_voice_config(
+                provider_config_id=stored.id,
+                provider_config_revision=stored.revision,
+                organization_id=organization_id,
+                config=validated,
+            )
             adapter = TTSFactory(
                 tts_vendor=stored.provider,
-                tts_config=runtime_config,
-                api_key=stored.secrets.get("api_key"),
+                tts_config=build_tts_runtime_config(tts),
             ).service
             capabilities = adapter.capabilities.model_dump(mode="json")
         else:
@@ -130,51 +154,31 @@ class VoiceCapabilityService:
         provider_config_id: UUID,
         provider_config_revision: int,
         provider: str,
-        config,
-        secrets,
-    ) -> dict:
-        resolved = ResolvedRealtime(
+        config: Mapping[str, object],
+        secrets: Mapping[str, str],
+    ) -> dict[str, object]:
+        validated = VoiceProviderConfig.from_storage(
+            provider=provider, kind=VoiceKind.REALTIME, config=config, secrets=secrets
+        )
+        resolved = ResolvedRealtime.from_voice_config(
             provider_config_id=provider_config_id,
             provider_config_revision=provider_config_revision,
             organization_id=organization_id,
-            provider=RealtimeProviders(provider),
-            config=config,
-            secrets=secrets,
+            config=validated,
             configured=True,
             verified=False,
             ready=False,
             granted=True,
         )
-        session_config = RealtimeSessionConfig.model_validate(
-            {
-                "organization_id": organization_id,
-                "conversation_id": UUID(int=0),
-                "agent_id": UUID(int=0),
-                "session_id": "voice-config-capability-inspection",
-                "vendor": provider,
-                "model": config["model"],
-                "voice": config["voice"],
-                "temperature": config.get("temperature"),
-                "top_p": config.get("top_p"),
-                "max_tokens": config.get("max_tokens"),
-                "input_transcription_model": config.get(
-                    "input_transcription_model"
-                ),
-                "vad_threshold": config.get("vad_threshold"),
-                "vad_silence_ms": config.get("vad_silence_ms"),
-                "endpointing_sensitivity": config.get(
-                    "endpointing_sensitivity"
-                ),
-                "is_context_compression_enabled": config.get(
-                    "context_compression_enabled"
-                ),
-                "context_compression_trigger_tokens": config.get(
-                    "context_compression_trigger_tokens"
-                ),
-            }
+        session_config = build_realtime_session_config(
+            resolved,
+            organization_id=organization_id,
+            conversation_id=UUID(int=0),
+            agent_id=UUID(int=0),
+            session_id="voice-config-capability-inspection",
         )
         adapter = RealtimeFactory.create(session_config, resolved)
-        return asdict(adapter.capabilities)
+        return adapter.capabilities.model_dump(mode="json")
 
 
 def _platform_features(config: VoiceConfig) -> list[VoicePlatformFeatureRead]:

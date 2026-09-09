@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+from enum import StrEnum
+from typing import Any, Self
 
 from pydantic import BaseModel, Field
 
@@ -15,7 +16,22 @@ from .definition import REPO, vendor
 MAX_BODY_CHARS = 6_000
 MAX_COMMENTS = 20
 MAX_FILES = 50
-_STATES = ("open", "closed", "all")
+
+
+class GitHubQueryState(StrEnum):
+    """GitHub issue/PR filter choices; ALL is not an entity lifecycle state."""
+
+    OPEN = "open"
+    CLOSED = "closed"
+    ALL = "all"
+
+    @classmethod
+    def _missing_(cls, value: object) -> Self | None:
+        """Keep the tools' existing case/whitespace tolerance at input parsing."""
+        if not isinstance(value, str):
+            return None
+        normalized = value.strip().casefold()
+        return next((state for state in cls if state.value == normalized), None)
 
 
 class SearchIssuesInput(BaseModel):
@@ -24,7 +40,10 @@ class SearchIssuesInput(BaseModel):
         description="Repository as owner/name. Omit to search everything visible.",
     )
     text: str | None = Field(default=None, description="Free text to match.")
-    state: str = Field(default="open", description="open, closed, or all.")
+    state: GitHubQueryState = Field(
+        default=GitHubQueryState.OPEN,
+        description="Issue state to search; all omits the state filter.",
+    )
     labels: list[str] | None = Field(default=None, description="All must be present.")
     assignee: str | None = Field(default=None, description="GitHub username.")
     author: str | None = Field(default=None, description="GitHub username.")
@@ -57,7 +76,9 @@ class AddCommentInput(BaseModel):
 
 class ListPullRequestsInput(BaseModel):
     repository: str = Field(min_length=1)
-    state: str = Field(default="open", description="open, closed, or all.")
+    state: GitHubQueryState = Field(
+        default=GitHubQueryState.OPEN, description="Pull request state to list."
+    )
     base_branch: str | None = Field(
         default=None, description="Only requests targeting this branch."
     )
@@ -97,14 +118,13 @@ class CreatePullRequestInput(BaseModel):
 async def search_issues(
     payload: SearchIssuesInput, ctx: VendorToolContext
 ) -> dict[str, Any]:
-    state = _state(payload.state)
     terms: list[str] = []
     if payload.repository:
         terms.append(f"repo:{_repository(payload.repository)}")
     if not payload.include_pull_requests:
         terms.append("is:issue")
-    if state != "all":
-        terms.append(f"state:{state}")
+    if payload.state is not GitHubQueryState.ALL:
+        terms.append(f"state:{payload.state.value}")
     for label in payload.labels or []:
         terms.append(f'label:"{label}"')
     if payload.assignee:
@@ -231,7 +251,7 @@ async def list_pull_requests(
 ) -> dict[str, Any]:
     repository = _repository(payload.repository)
     query: dict[str, Any] = {
-        "state": _state(payload.state),
+        "state": payload.state.value,
         "per_page": payload.limit,
         "sort": "updated",
         "direction": "desc",
@@ -349,15 +369,6 @@ def _repository(value: str) -> str:
             f"'{value}' is not a repository. Use owner/name, e.g. acme/api.",
         )
     return f"{pieces[0]}/{pieces[1]}"
-
-
-def _state(value: str) -> str:
-    state = value.strip().casefold()
-    if state not in _STATES:
-        raise VendorToolError(
-            "state_invalid", f"State must be one of: {', '.join(_STATES)}."
-        )
-    return state
 
 
 def _issue_view(issue: dict[str, Any]) -> dict[str, Any]:
