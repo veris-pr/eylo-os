@@ -150,12 +150,15 @@ def _validated_headers(
         raise ValueError("MCP authentication header names must be unique.")
     if any(name in _RESERVED_PROTOCOL_HEADERS for name in normalized_names):
         raise ValueError("MCP authentication cannot override protocol headers.")
-    if not all(isinstance(value, str) for value in headers.values()):
-        raise ValueError("MCP header secrets must be strings.")
+    values: dict[str, str] = {}
+    for name, value in headers.items():
+        if not isinstance(value, str):
+            raise ValueError("MCP header secrets must be strings.")
+        values[str(name)] = value
     try:
         return OriginBoundHeaders(
             origin=origin,
-            values={str(name): value for name, value in headers.items()},
+            values=values,
         )
     except HttpEgressPolicyError as error:
         raise ValueError(str(error)) from None

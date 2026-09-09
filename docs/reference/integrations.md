@@ -139,6 +139,56 @@ paths only. The transport pins the configured credential to the registered or
 installation-specific origin, rejects redirects, bounds replies, and separates
 read calls from durable mutations.
 
+## OAuth token contracts
+
+Initial authorization and refresh share a validated token-response object; each
+flow translates failures into its own named codes. Authorization requests have
+explicit private fields and serialize only at the pinned HTTP boundary. Callback
+completion returns a named connection/vendor receipt rather than a positional
+tuple. Public callback HTML and redirect response fields are unchanged.
+
+Expiry is a nonnegative JSON integer in seconds, and unknown response extensions
+are ignored, following [OAuth 2 token-response semantics](https://www.rfc-editor.org/rfc/rfc6749.html#section-5.1).
+The existing compatibility allowance for an omitted `token_type` remains; this
+is not a claim of strict protocol conformance for every vendor. Missing expiry
+does not invent a default lifetime.
+
+OAuth state creation validates UUID owners, positive optional revisions,
+timezone-aware expiry and the existing DB column length bounds. Expired-state
+cleanup returns validated receipts; source-owned deletion counts returned IDs.
+These changes do not modify the database schema or authorization scopes.
+
+The callback spends a recognized state in a short committed transaction before
+reporting a missing installation or exchanging a code. Declined consent and
+missing-code callbacks also spend state and notify the contact with platform-owned
+failure text; vendor error text is not echoed. Unknown, consumed, and wrong-route
+states are refused. A connection revision that changed since consent began cannot
+be activated by that old attempt.
+
+Expired and rejected attempts discard only the matching, still-initiated connection
+revision. They never revoke an already-active or newer connection. The callback
+controller closes its installation lookup transaction before token exchange.
+
+## OAuth credential refresh
+
+The refresh pipeline reads due connections in a short transaction, closes it
+before vendor HTTP, then persists renewed credentials with the expected connection
+revision. A concurrent credential change skips the stale write. Cancellation
+propagates; it is not recorded as an ordinary credential failure.
+
+Refresh request, token response and renewal receipts use validated Pydantic
+contracts. Connection organization identity is required. Token expiry is an
+optional nonnegative integer in seconds; malformed expiry or datetime overflow
+fails visibly rather than accepting a boolean/string or inventing a lifetime.
+Omitted token-rotation fields preserve the previous values. Receipt dumps and
+representations exclude plaintext secrets.
+
+The current shared refresh path posts an origin-pinned form. Its existing policy
+treats HTTP 400 as reauthorization required; other HTTP failures are retried until
+the attempt limit. Named failure codes preserve the stored diagnostic spelling.
+These shared contracts do not prove every vendor's authentication format or live
+refresh behavior; vendor-specific compatibility must be verified separately.
+
 ## Persistence relationships
 
 - installation: one organization's decision to configure a vendor;

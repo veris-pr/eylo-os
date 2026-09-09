@@ -212,14 +212,14 @@ class ExternalConnectionService:
         await self._db.flush()
         return ExternalConnectionInDb.model_validate(row)
 
-    async def revoke_expired_authorization_attempt(
+    async def revoke_pending_authorization_attempt(
         self,
         *,
         organization_id: UUID,
         connection_id: UUID,
         expected_revision: int | None,
     ) -> bool:
-        """Discard only the still-initiated connection owned by an expired state."""
+        """Discard only the still-initiated revision owned by an abandoned state."""
         if expected_revision is None:
             return False
         row = await self._connections.get(

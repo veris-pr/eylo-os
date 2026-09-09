@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import logging
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from http import HTTPStatus
 from urllib.parse import urlencode
 from uuid import UUID
-
-from pydantic import JsonValue
 
 from eylo.common.database import (
     register_ephemeral_event_post_txn,
@@ -43,54 +40,27 @@ from eylo.sockets.http.transport import SafeHttpTransport
 
 from .http_client import VendorTransport
 from .oauth import decrypt_client_secret
+from .oauth_tokens import OAuthTokenError, OAuthTokenErrorCode, OAuthTokenResponse
+from .refresh_contracts import (
+    RefreshDisposition,
+    RefreshError,
+    RefreshErrorCode,
+    RefreshOutcome,
+    RefreshTokenRequest,
+    RenewedCredential,
+)
 from .registry import CuratedRegistry, load_vendors
 
 logger = logging.getLogger(__name__)
 
 REFRESH_WINDOW_MINUTES = 10
 MAX_REFRESH_ATTEMPTS = 5
-
-
-@dataclass(frozen=True, slots=True)
-class RefreshOutcome:
-    """Connection IDs renewed, failed, or superseded during one cycle."""
-
-    refreshed: tuple[UUID, ...]
-    failed: tuple[UUID, ...]
-    skipped: tuple[UUID, ...] = ()
-
-    @property
-    def considered(self) -> int:
-        return len(self.refreshed) + len(self.failed) + len(self.skipped)
-
-
-@dataclass(frozen=True, slots=True)
-class _RenewedCredential:
-    connection: ExternalConnectionInDb
-    credentials: dict[str, JsonValue]
-    expires_at: datetime | None
+_TOKEN_RESPONSE_BODY_LIMIT = 262_144
+_TOKEN_REQUEST_TIMEOUT_SECONDS = 20.0
 
 
 class _RefreshSkipped(Exception):
     """Another authority changed the connection before this cycle could act."""
-
-
-class _RefreshError(Exception):
-    """A coded renewal failure with safe Integration identity metadata."""
-
-    def __init__(
-        self,
-        code: str,
-        *,
-        exhausted: bool = False,
-        vendor: str | None = None,
-        installation_id: UUID | None = None,
-    ) -> None:
-        self.code = code
-        self.exhausted = exhausted
-        self.vendor = vendor
-        self.installation_id = installation_id
-        super().__init__(code)
 
 
 async def refresh_expiring_curated_connections(
@@ -144,11 +114,11 @@ async def refresh_expiring_curated_connections(
         ):
             skipped.append(connection_id)
             continue
-        except _RefreshError as error:
+        except RefreshError as error:
             logger.warning(
                 "[CuratedRefresh] connection=%s not renewed code=%s",
                 connection_id,
-                error.code,
+                error.failure.persisted_code,
             )
             recorded = await _record_failure(candidate, error)
             (failed if recorded else skipped).append(connection_id)
@@ -168,7 +138,7 @@ async def _refresh_one(
     candidate: ExternalConnectionInDb,
     registry: CuratedRegistry,
     transport: VendorTransport | None,
-) -> _RenewedCredential:
+) -> RenewedCredential:
     async with start_transaction(ro=True) as session:
         connection = await ExternalConnectionService(session).get(
             organization_id=candidate.organization_id,
@@ -189,27 +159,33 @@ async def _refresh_one(
     ):
         raise _RefreshSkipped
     if installation is None:
-        raise _RefreshError("installation_removed", exhausted=True)
+        raise RefreshError(
+            RefreshErrorCode.INSTALLATION_REMOVED,
+            disposition=RefreshDisposition.REAUTHORIZE,
+        )
 
     vendor_name = installation.vendor
     vendor = registry.vendor(vendor_name)
-    error_metadata = {
-        "vendor": vendor_name,
-        "installation_id": installation.id,
-    }
     if vendor is None or vendor.oauth is None:
-        raise _RefreshError(
-            "vendor_no_longer_carried",
-            exhausted=True,
-            **error_metadata,
+        raise RefreshError(
+            RefreshErrorCode.VENDOR_NO_LONGER_CARRIED,
+            disposition=RefreshDisposition.REAUTHORIZE,
+            vendor=vendor_name,
+            installation_id=installation.id,
         )
     if not installation.oauth_client_id or not installation.oauth_client_secret:
-        raise _RefreshError("oauth_app_missing", exhausted=True, **error_metadata)
+        raise RefreshError(
+            RefreshErrorCode.OAUTH_APP_MISSING,
+            disposition=RefreshDisposition.REAUTHORIZE,
+            vendor=vendor_name,
+            installation_id=installation.id,
+        )
     if connection.credentials is None:
-        raise _RefreshError(
-            "credentials_unavailable",
-            exhausted=True,
-            **error_metadata,
+        raise RefreshError(
+            RefreshErrorCode.CREDENTIALS_UNAVAILABLE,
+            disposition=RefreshDisposition.REAUTHORIZE,
+            vendor=vendor_name,
+            installation_id=installation.id,
         )
     try:
         credentials = decrypt_connection_credentials(
@@ -219,17 +195,19 @@ async def _refresh_one(
             revision=connection.revision,
         )
     except SecretCipherError as error:
-        raise _RefreshError(
-            "credentials_unreadable",
-            exhausted=True,
-            **error_metadata,
+        raise RefreshError(
+            RefreshErrorCode.CREDENTIALS_UNREADABLE,
+            disposition=RefreshDisposition.REAUTHORIZE,
+            vendor=vendor_name,
+            installation_id=installation.id,
         ) from error
     refresh_token = credentials.get("refresh_token")
     if not isinstance(refresh_token, str) or not refresh_token:
-        raise _RefreshError(
-            "refresh_token_unavailable",
-            exhausted=True,
-            **error_metadata,
+        raise RefreshError(
+            RefreshErrorCode.REFRESH_TOKEN_UNAVAILABLE,
+            disposition=RefreshDisposition.REAUTHORIZE,
+            vendor=vendor_name,
+            installation_id=installation.id,
         )
 
     token_url = vendor.oauth.token_url.replace(
@@ -238,10 +216,11 @@ async def _refresh_one(
     try:
         client_secret = decrypt_client_secret(installation.oauth_client_secret)
     except SecretCipherError as error:
-        raise _RefreshError(
-            "oauth_app_unreadable",
-            exhausted=True,
-            **error_metadata,
+        raise RefreshError(
+            RefreshErrorCode.OAUTH_APP_UNREADABLE,
+            disposition=RefreshDisposition.REAUTHORIZE,
+            vendor=vendor_name,
+            installation_id=installation.id,
         ) from error
 
     try:
@@ -252,30 +231,31 @@ async def _refresh_one(
             refresh_token=refresh_token,
             transport=transport,
         )
-    except _RefreshError as error:
-        raise _RefreshError(
-            error.code,
-            exhausted=error.exhausted,
-            **error_metadata,
+        expires_at = payload.expires_at(datetime.now(timezone.utc))
+    except OAuthTokenError:
+        raise RefreshError(
+            RefreshErrorCode.TOKEN_RESPONSE_UNREADABLE,
+            vendor=vendor_name,
+            installation_id=installation.id,
+        ) from None
+    except RefreshError as error:
+        raise RefreshError(
+            error.failure.code,
+            disposition=error.failure.disposition,
+            vendor=vendor_name,
+            installation_id=installation.id,
+            http_status=error.failure.http_status,
         ) from error
 
-    access_token = payload.get("access_token")
-    if not isinstance(access_token, str) or not access_token:
-        raise _RefreshError("no_access_token_returned", **error_metadata)
-
     renewed_credentials = dict(credentials)
-    renewed_credentials["access_token"] = access_token
-    for optional in ("refresh_token", "token_type", "scope"):
-        value = payload.get(optional)
-        if isinstance(value, str) and value:
-            renewed_credentials[optional] = value
-
-    expires_at = None
-    if isinstance(payload.get("expires_in"), int):
-        expires_at = datetime.now(timezone.utc) + timedelta(
-            seconds=int(payload["expires_in"])
-        )
-    return _RenewedCredential(
+    renewed_credentials["access_token"] = payload.access_token
+    if payload.refresh_token:
+        renewed_credentials["refresh_token"] = payload.refresh_token
+    if payload.token_type:
+        renewed_credentials["token_type"] = payload.token_type
+    if payload.scope:
+        renewed_credentials["scope"] = payload.scope
+    return RenewedCredential(
         connection=connection,
         credentials=renewed_credentials,
         expires_at=expires_at,
@@ -289,13 +269,10 @@ async def _post_refresh(
     client_secret: str,
     refresh_token: str,
     transport: VendorTransport | None,
-) -> dict[str, object]:
-    form = {
-        "grant_type": "refresh_token",
-        "refresh_token": refresh_token,
-        "client_id": client_id,
-        "client_secret": client_secret,
-    }
+) -> OAuthTokenResponse:
+    form = RefreshTokenRequest(
+        client_id=client_id, client_secret=client_secret, refresh_token=refresh_token
+    ).to_form()
     try:
         origin, path = parse_https_target(token_url)
         request = HttpEgressRequest(
@@ -310,32 +287,43 @@ async def _post_refresh(
                 "Content-Type": "application/x-www-form-urlencoded",
             },
             body=urlencode(form).encode("utf-8"),
-            response_body_limit=262_144,
-            total_timeout_seconds=20.0,
+            response_body_limit=_TOKEN_RESPONSE_BODY_LIMIT,
+            total_timeout_seconds=_TOKEN_REQUEST_TIMEOUT_SECONDS,
         )
         response = await (transport or SafeHttpTransport()).send(request)
     except (HttpEgressPolicyError, TimeoutError) as error:
-        raise _RefreshError("token_endpoint_unreachable") from error
+        raise RefreshError(RefreshErrorCode.TOKEN_ENDPOINT_UNREACHABLE) from error
 
-    if response.status_code == 400:
-        raise _RefreshError("refresh_token_rejected", exhausted=True)
-    if response.status_code != 200:
-        raise _RefreshError(f"token_endpoint_http_{response.status_code}")
+    if response.status_code == HTTPStatus.BAD_REQUEST:
+        raise RefreshError(
+            RefreshErrorCode.REFRESH_TOKEN_REJECTED,
+            disposition=RefreshDisposition.REAUTHORIZE,
+        )
+    if response.status_code != HTTPStatus.OK:
+        raise RefreshError(
+            RefreshErrorCode.TOKEN_ENDPOINT_HTTP, http_status=response.status_code
+        )
     try:
-        payload = json.loads(response.body)
-    except ValueError as error:
-        raise _RefreshError("token_response_unreadable") from error
-    if not isinstance(payload, dict):
-        raise _RefreshError("token_response_unreadable")
-    return payload
+        return OAuthTokenResponse.from_body(response.body)
+    except OAuthTokenError as error:
+        code = (
+            RefreshErrorCode.NO_ACCESS_TOKEN_RETURNED
+            if error.code is OAuthTokenErrorCode.MISSING_ACCESS_TOKEN
+            else RefreshErrorCode.TOKEN_RESPONSE_UNREADABLE
+        )
+        raise RefreshError(code) from None
 
 
 async def _record_failure(
     connection: ExternalConnectionInDb,
-    error: _RefreshError,
+    error: RefreshError,
 ) -> bool:
     attempts = connection.refresh_attempts + 1
-    finished = error.exhausted or attempts >= MAX_REFRESH_ATTEMPTS
+    failure = error.failure
+    finished = (
+        failure.disposition is RefreshDisposition.REAUTHORIZE
+        or attempts >= MAX_REFRESH_ATTEMPTS
+    )
     try:
         async with start_transaction() as session:
             service = ExternalConnectionService(session)
@@ -344,26 +332,26 @@ async def _record_failure(
                     organization_id=connection.organization_id,
                     connection_id=connection.id,
                     expected_revision=connection.revision,
-                    error_code=error.code,
+                    error_code=failure.persisted_code,
                 )
             else:
                 await service.mark_degraded(
                     organization_id=connection.organization_id,
                     connection_id=connection.id,
                     expected_revision=connection.revision,
-                    error_code=error.code,
+                    error_code=failure.persisted_code,
                 )
-            if finished and error.installation_id is not None:
+            if finished and failure.installation_id is not None:
                 register_ephemeral_event_post_txn(
                     ConnectionExpiredEvent(
                         connection_id=connection.id,
                         organization_id=connection.organization_id,
-                        integration_id=error.installation_id,
-                        vendor=error.vendor,
+                        integration_id=failure.installation_id,
+                        vendor=failure.vendor,
                         contact_id=connection.contact_id,
                         reason=(
                             "Curated credential could not be renewed: "
-                            f"{error.code}."
+                            f"{failure.persisted_code}."
                         ),
                     )
                 )

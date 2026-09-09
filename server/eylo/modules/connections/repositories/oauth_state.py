@@ -1,10 +1,9 @@
 """Repository for OAuth state management."""
 
-from dataclasses import dataclass
 from datetime import datetime
-from typing import List, Optional
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, select
 
 from eylo.common.repositories import BaseORMRepository as EyloBaseRepository
@@ -13,21 +12,24 @@ from eylo.modules.connections.models import OAuthStateModel
 from eylo.modules.connections.schemas.oauth import OAuthStateCreateSchema
 
 
-@dataclass(frozen=True, slots=True)
-class ExpiredOAuthState:
+class ExpiredOAuthState(BaseModel):
     """Unconsumed state whose initiated connection must also be revoked."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", revalidate_instances="always"
+    )
 
     id: UUID
     organization_id: UUID
     external_connection_id: UUID
-    expected_connection_revision: int | None
+    expected_connection_revision: int | None = Field(ge=1)
 
 
 class OAuthStateRepository(EyloBaseRepository[OAuthStateModel]):
     """Repository for OAuth state tracking."""
 
     @property
-    def model(self):
+    def model(self) -> type[OAuthStateModel]:
         """Model property."""
         return OAuthStateModel
 
@@ -41,10 +43,11 @@ class OAuthStateRepository(EyloBaseRepository[OAuthStateModel]):
             Created OAuthStateModel
 
         """
-        oauth_state = map_schema_to_model(OAuthStateModel, data)
+        validated = OAuthStateCreateSchema.model_validate(data)
+        oauth_state = map_schema_to_model(OAuthStateModel, validated)
         return await self.save_(oauth_state)
 
-    async def get_by_state(self, state: str) -> Optional[OAuthStateModel]:
+    async def get_by_state(self, state: str) -> OAuthStateModel | None:
         """Get OAuth state by state token.
 
         Args:
@@ -65,7 +68,7 @@ class OAuthStateRepository(EyloBaseRepository[OAuthStateModel]):
         result = await db.execute(stmt)
         return result.scalar_one_or_none()
 
-    async def consume_by_state(self, state: str) -> Optional[OAuthStateModel]:
+    async def consume_by_state(self, state: str) -> OAuthStateModel | None:
         """Lock and spend one OAuth state token exactly once.
 
         The caller must commit this transaction before contacting the provider.
@@ -88,7 +91,7 @@ class OAuthStateRepository(EyloBaseRepository[OAuthStateModel]):
 
     async def delete_expired_states(
         self, current_time: datetime
-    ) -> List[ExpiredOAuthState]:
+    ) -> list[ExpiredOAuthState]:
         """Delete OAuth states that have expired.
 
         Deletes OAuth state records where:
@@ -113,7 +116,15 @@ class OAuthStateRepository(EyloBaseRepository[OAuthStateModel]):
                 OAuthStateModel.deleted.is_(False),
             )
         )
-        active_states = [ExpiredOAuthState(*row) for row in active_result.all()]
+        active_states = [
+            ExpiredOAuthState(
+                id=state_id,
+                organization_id=organization_id,
+                external_connection_id=connection_id,
+                expected_connection_revision=revision,
+            )
+            for state_id, organization_id, connection_id, revision in active_result.all()
+        ]
 
         await self.db_session.execute(
             delete(OAuthStateModel).where(OAuthStateModel.expires_at < current_time)
@@ -155,15 +166,16 @@ class OAuthStateRepository(EyloBaseRepository[OAuthStateModel]):
         external_connection_id: UUID,
     ) -> int:
         """Hard-delete every transient OAuth state owned by one connection."""
-        result = await self.db_session.execute(
-            delete(OAuthStateModel).where(
+        result = await self.db_session.scalars(
+            delete(OAuthStateModel)
+            .where(
                 OAuthStateModel.organization_id == organization_id,
-                OAuthStateModel.external_connection_id
-                == external_connection_id,
+                OAuthStateModel.external_connection_id == external_connection_id,
             )
+            .returning(OAuthStateModel.id)
         )
         await self.db_session.flush()
-        return result.rowcount or 0
+        return len(result.all())
 
 
 __all__ = ["ExpiredOAuthState", "OAuthStateRepository"]

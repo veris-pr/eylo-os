@@ -41,7 +41,7 @@ async def cleanup_expired_oauth_states() -> dict:
             async with start_transaction() as db:
                 await ExternalConnectionService(
                     db
-                ).revoke_expired_authorization_attempt(
+                ).revoke_pending_authorization_attempt(
                     organization_id=state.organization_id,
                     connection_id=state.external_connection_id,
                     expected_revision=state.expected_connection_revision,

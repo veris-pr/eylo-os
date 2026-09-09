@@ -42,6 +42,32 @@ repos:
         pass_filenames: false
         stages: [pre-commit, pre-push]
 
+      - id: python-typed-integration-refresh-contracts
+        name: Python integration OAuth, refresh and credential consumer types
+        entry: >-
+          bash -c 'cd server && .venv/bin/pyrefly check
+          eylo/pipelines/integrations_v2/refresh_contracts.py
+          eylo/pipelines/integrations_v2/oauth_contracts.py
+          eylo/pipelines/integrations_v2/oauth_tokens.py
+          eylo/pipelines/integrations_v2/oauth.py
+          eylo/pipelines/integrations_v2/refresh.py
+          eylo/pipelines/integrations_v2/tasks.py
+          eylo/pipelines/integrations_v2/resolution.py
+          eylo/modules/connections/schemas/external.py
+          eylo/modules/connections/schemas/oauth.py
+          eylo/modules/connections/repositories/oauth_state.py
+          eylo/modules/connections/tasks.py
+          eylo/modules/integrations_v2/controllers.py
+          eylo/modules/integrations_v2/routes/widget.py
+          eylo/modules/mcp_servers/config.py
+          eylo/sor/runtime/adapters.py
+          eylo/sor/runtime/refresh.py
+          eylo/sor/runtime/oauth.py'
+        language: system
+        files: ^server/(pyproject\.toml|eylo/(pipelines/(integrations_v2/|external_connections/)|modules/(connections/|integrations_v2/|mcp_servers/|provider_configs/)|sor/runtime/))
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+
       - id: python-typed-voice-contracts
         name: Python voice contracts and lifecycle policy types
         entry: >-

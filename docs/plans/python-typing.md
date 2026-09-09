@@ -4972,12 +4972,125 @@ Verification:
 - The initial isolated DB probe omitted `register_models()` and failed before
   insertion; using the required runtime registration resolved the probe setup.
 
-Follow-on work is explicit: the broader caller type check reports 26 remaining
-errors in MCP header narrowing and Integration V2 OAuth refresh ownership/error
-metadata/expiry parsing. The newly narrowed credential output is carried through
-`_RenewedCredential`; the rest of refresh typing is not claimed complete. Audit
+The follow-on OAuth refresh slice below resolves the 26 caller diagnostics in
+MCP header narrowing and refresh ownership/error metadata/expiry parsing. Audit
 other direct `JsonValue` JSON import paths for the reproduced finite-number gap.
-Browser acceptance and the full F0–F10 goal remain open.
+Full changed-build browser acceptance and the F0–F10 goal remain open.
+
+### F7 progress: Integration V2 OAuth refresh contracts
+
+2026-09-09: refresh now carries frozen Pydantic request, response, failure and
+renewal receipts. Required connection organization identity follows the existing
+non-null ORM owner. Failure codes and retry/reauthorize disposition are enums;
+HTTP status remains separate, preserving existing persisted diagnostic strings.
+Scheduled-task output keeps its JSON shape through a discriminated TypedDict.
+MCP header values narrow explicitly before entering the transport contract.
+
+Token expiry accepts a nonnegative integer, not a boolean, float or numeric
+string. Invalid response material and datetime overflow produce value-free
+refresh failures. Secrets are excluded from receipt snapshots and repr; explicit
+form/encryption boundaries still receive the required plaintext. Optional token
+rotation fields preserve existing credentials when absent or empty.
+
+Verification: 96 function assertions cover actual registry and wire DTOs,
+malformed responses, private projections, stale revisions, retry/reauthorization,
+guarded persistence, cancellation and HTTP outside transactions. DB services and
+HTTP transport are substituted; this is not a live token-rotation proof. Scoped
+type checking, including the scheduled task and affected SOR/MCP consumers,
+reports zero errors. A local pre-commit/pre-push gate retains that scope.
+
+The scheduled-task JSON success/failure projections and cancellation propagation
+also pass a focused caller probe. The 212-assertion cipher/MCP/external-connection
+regression probe passes. All seven configured type/import gates, backend Ruff and
+documentation validation pass; the existing LLM gate retains its one suppression.
+
+Browser baseline QA on the older running image: logged back into the existing
+Eylo Development organization after session expiry; resumed QA SOR Audit Agent
+in the widget; a new `issue_search` call for VER-50 completed. Console conversation
+`01a0842c-908d-7b70-b9f0-21154013c441` displays all nine persisted messages,
+including the new completed user/call/result/agent exchange. Widget back-navigation
+shows the updated conversation preview. This is not changed-build acceptance.
+QA Minimal Groq Agent also retained earlier conversation context in a widget
+follow-up; the console list shows the updated four-message conversation. No
+provider configuration, source record or credential was changed for these cases.
+Its detail page also loads all four messages with completed states. A baseline
+UX issue remains: list/detail initially show an empty result message while their
+API request is still loading, then replace it with the actual rows/messages.
+This observation needs a separate UI data-loading investigation, not a refresh
+pipeline fix.
+
+This slice preserves the existing form request and HTTP failure classification;
+it does not establish every vendor's refresh protocol compatibility. Vendor-specific
+authentication formats and callback failure lifecycle remain separate work; the
+next slice below types the shared initial exchange.
+Final acceptance must use the existing test organization in the widget, followed
+by console inspection of the same conversation and tool calls, against a runtime
+that actually contains the changed source. Preserve configured providers and data.
+
+### F7 progress: initial OAuth exchange and state receipts
+
+2026-09-09: initial exchange and refresh now share `OAuthTokenResponse` at their
+wire boundary, with private fields, strict expiry, ignored extensions and safe
+parse failures. Each pipeline translates those failures into its own enum codes.
+Authorization-code requests serialize explicitly to the existing pinned form
+request. Consent redirects and callback completion use frozen Pydantic receipts;
+the public callback still emits the same fields. No vendor scopes or request
+authentication format changed.
+
+`OAuthStateCreateSchema` validates the actual UUID/revision/aware-expiry contract
+and existing DB string bounds. Repository creation revalidates copied input.
+`ExpiredOAuthState` is a frozen Pydantic receipt. Owner-scoped deletion uses
+`DELETE RETURNING` IDs instead of an untyped cursor row count.
+
+Evidence:
+
+- 104 function assertions through real registry, ORM state and wire models:
+  PKCE formation, consent/state agreement, exchange errors, strict expiry,
+  activation input, callback event identity, private projections and cancellation.
+  DB/HTTP effects are substituted, so this is not live OAuth consent acceptance.
+- 96 refresh regressions pass after replacing the duplicate token-response model.
+- 14 real PostgreSQL assertions exercise current repository source against a
+  session-private clone of `connection_oauth_states`: create/read, consume once,
+  expired-state receipts, cross-org deletion isolation, exact deletion count and
+  invalid-copy refusal. Temporary-table identity is checked before writes;
+  rollback removes it. No public rows, schema or running services change.
+- The initial function probe omitted required `refresh_attempts` in its fixture;
+  correcting the fixture resolved that setup failure.
+- Scoped type checking includes callbacks, widget initiation, shared state cleanup
+  and the SOR OAuth consumer. The expanded local type gate retains that scope.
+
+### F7 progress: callback rejection and transaction lifecycle
+
+2026-09-09: reproduced missing-installation consumption rollback using the actual
+pipeline with a transaction-rollback substitute. The public controller's declined
+callback also bypassed state handling. The direct completion controller helper
+(not currently routed) held its own transaction over the token-exchange pipeline.
+
+Repairs:
+
+- Missing-installation and linkage failures are raised after state consumption
+  commits; an old state cannot become reusable because failure rolls it back.
+- Declined/missing-code callbacks use a named `AuthorizationRejection`, consume
+  state, perform guarded cleanup and emit the contact failure after commit.
+  Arbitrary provider error strings are not shown to the user.
+- Expiry/rejection share the connection domain's renamed
+  `revoke_pending_authorization_attempt` guard. Only a matching initiated revision
+  is revoked; active, reauthorization-required and newer connections survive.
+- Activation refuses a revision that changed since consent began. The controller
+  releases its lookup transaction before invoking token exchange.
+
+Evidence: 97 function assertions cover actual controllers/domain guards, state
+replay, wrong callback route, missing installation, cancellation, expiry, revision
+conflicts and post-commit event timing. DB/HTTP effects are substituted. The earlier
+104 initial-exchange assertions still pass. A separate real PostgreSQL probe runs
+22 assertions with current source in a session-private state table: committed
+missing-installation/declined/missing-code consumption remains spent after failure.
+The outer transaction is rolled back and temporary-table removal is verified;
+no public rows, configured credentials, schema or running services are changed.
+
+These checks do not prove concurrent callbacks across separate PostgreSQL sessions,
+every vendor's token authentication format, or changed-build browser acceptance.
+The running image remains older than this source. Full F0–F10 completion is open.
 
 ### F7 progress: shared provider-config aggregate and snapshot
 
@@ -5007,9 +5120,10 @@ Locally verified:
   service; the five existing type/import gates and backend Ruff also pass.
 
 No operator data, DB schema or deployment changed. Repository-wide and encryption
-context typing were completed in the follow-on slice above. Console/widget HTTP endpoints respond, but browser
-navigation is blocked by the Mac lock screen; this is not live acceptance of the
-new source. Full F0–F10 completion remains open.
+context typing were completed in the follow-on slice above. Browser navigation was
+initially blocked by the Mac lock screen; the later baseline QA above supersedes
+that observation but still does not exercise the changed backend image.
+Full F0–F10 completion remains open.
 
 ### F7 progress: typed stored voice carrier
 

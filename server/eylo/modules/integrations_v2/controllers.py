@@ -515,12 +515,12 @@ class CuratedIntegrationController:
         _offer, spec = self._offer(vendor)
         async with start_transaction():
             installation = await self._installation(organization_id, vendor)
-            try:
-                connection_id = await complete_authorization(
-                    code=code, state=state, installation=installation, vendor=spec
-                )
-            except IntegrationsV2Error as error:
-                raise self._http_error(error) from None
+        try:
+            connection_id = await complete_authorization(
+                code=code, state=state, installation=installation, vendor=spec
+            )
+        except IntegrationsV2Error as error:
+            raise self._http_error(error) from None
         return ConnectionSchema(
             id=connection_id,
             vendor=spec.vendor,
@@ -871,28 +871,31 @@ class CuratedIntegrationController:
         """
         from eylo.pipelines.integrations_v2.oauth import (
             complete_authorization_from_state,
+            reject_authorization_from_state,
+        )
+        from eylo.pipelines.integrations_v2.oauth_contracts import (
+            AuthorizationRejection,
         )
 
-        if error:
-            return _completion_page(
-                ok=False,
-                message="Authorization was declined at the provider.",
-            )
-        if not code:
-            return _completion_page(
-                ok=False, message="The provider returned no authorization code."
-            )
         try:
-            connection_id, vendor = await complete_authorization_from_state(
+            if error or not code:
+                reason = (
+                    AuthorizationRejection.DECLINED
+                    if error
+                    else AuthorizationRejection.CODE_MISSING
+                )
+                await reject_authorization_from_state(state=state, reason=reason)
+                return _completion_page(ok=False, message=reason.message)
+            completed = await complete_authorization_from_state(
                 code=code, state=state
             )
         except IntegrationsV2Error as failure:
             return _completion_page(ok=False, message=str(failure))
         return _completion_page(
             ok=True,
-            message=f"{vendor} is connected.",
-            connection_id=connection_id,
-            vendor=vendor,
+            message=f"{completed.vendor} is connected.",
+            connection_id=completed.connection_id,
+            vendor=completed.vendor,
         )
 
     async def _installation(self, organization_id: uuid.UUID, vendor: str):

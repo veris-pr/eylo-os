@@ -7,9 +7,9 @@ from datetime import datetime
 from typing import Self
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from eylo.common.schemas import EyloBaseOrganizationModelSchema
+from eylo.common.schemas import EyloBaseModelSchema
 
 from ..domain import (
     ConnectionAuthKind,
@@ -21,9 +21,13 @@ _VENDOR_KEY = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _SCOPE = re.compile(r"^[^\s\x00-\x1f\x7f]{1,256}$")
 
 
-class ExternalConnectionModelSchema(EyloBaseOrganizationModelSchema):
+class ExternalConnectionModelSchema(EyloBaseModelSchema):
     """Internal connection state; encrypted credentials never reach API schemas."""
 
+    model_config = ConfigDict(revalidate_instances="always")
+
+    external_id: str | None = None
+    organization_id: UUID = Field(strict=True)
     contact_id: UUID | None = None
     owner_kind: ConnectionOwnerKind
     vendor_key: str
