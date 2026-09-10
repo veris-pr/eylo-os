@@ -1,65 +1,211 @@
-"""Curated Outlook tools over Microsoft Graph.
-
-Graph's mail shapes are nested three deep — a recipient is
-`{"emailAddress": {"address": "a@b.com"}}` — and a body carries an explicit
-content type. `send_message` and `reply_to_message` take plain addresses and
-plain text and build that themselves, which is ceremony no agent should spend
-tokens reproducing and frequently gets wrong.
-
-Reading goes the other way: `search_messages` and `get_message` flatten the
-nesting back into flat fields and convert HTML bodies to text.
-"""
-
-from __future__ import annotations
+"""Typed mailbox reads and receipt-backed mail acceptance over Microsoft Graph."""
 
 import html
+import json
 import re
-from typing import Any
+from typing import Self
+from urllib.parse import quote
 
-from pydantic import BaseModel, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    StrictBool,
+    StrictInt,
+    model_validator,
+)
 
 from eylo.modules.integrations_v2.domain.enums import ToolEffect
 
-from ...contracts import VendorToolContext, VendorToolError
+from ...contracts import VendorToolContext
 from ...registry import curated_tool
 from .definition import MAIL_READ, MAIL_SEND, vendor
-
-_TAG = re.compile(r"<[^>]+>")
-_MESSAGE_FIELDS = (
-    "id,subject,from,toRecipients,ccRecipients,receivedDateTime,"
-    "isRead,hasAttachments,conversationId,webLink,bodyPreview"
+from .schemas import (
+    DEFAULT_PAGE_SIZE,
+    MAX_NEXT_LINK_CHARS,
+    MAX_PAGE_SIZE,
+    MAX_RECIPIENTS,
+    MAX_TEXT_CHARS,
+    MESSAGE,
+    MESSAGES_PATH,
+    PAGES,
+    BodyFormat,
+    Email,
+    EmailAddress,
+    FullMessageView,
+    ItemBody,
+    MessageId,
+    MessageOrder,
+    MessageSummary,
+    MessageView,
+    MessageWrite,
+    MessagesQuery,
+    MessagesView,
+    ReadState,
+    Recipient,
+    ReplyAction,
+    ReplyRecipients,
+    ReplyRequest,
+    ReplyView,
+    SendRequest,
+    SendView,
+    SentCopy,
+    continuation_path,
+    invalid_response,
+    parse_response,
+    require_accepted,
 )
 
+_TAG = re.compile(r"<[^>]+>")
+_RECEIVED_DESCENDING = "receivedDateTime desc"
+_SEND_PATH = "/me/sendMail"
 
-class SearchMessagesInput(BaseModel):
+
+class MailInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class SearchMessagesInput(MailInput):
     query: str | None = Field(
-        default=None, description="Free text searched across the mailbox."
+        default=None,
+        min_length=1,
+        max_length=MAX_TEXT_CHARS,
+        description="Graph mailbox search expression, across sender, subject and body by default.",
     )
-    from_address: str | None = Field(
-        default=None, description="Only messages from this sender."
+    from_address: Email | None = None
+    read_state: ReadState | None = None
+    unread_only: StrictBool | None = Field(
+        default=None,
+        deprecated=True,
+        description="Legacy input. Use read_state instead.",
     )
-    unread_only: bool = Field(default=False, description="Restrict to unread messages.")
-    limit: int = Field(default=25, ge=1, le=100)
+    limit: StrictInt = Field(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE)
+    next_page_url: str | None = Field(
+        default=None,
+        max_length=MAX_NEXT_LINK_CHARS,
+        description="Returned continuation URL. Repeat the same search, sender, read state and limit.",
+    )
+
+    @model_validator(mode="after")
+    def one_read_mode(self) -> Self:
+        if self.read_state is not None and self.unread_only is not None:
+            raise ValueError("Use read_state or legacy unread_only, not both.")
+        return self
+
+    @property
+    def selected_read_state(self) -> ReadState:
+        return self.read_state or (
+            ReadState.UNREAD if self.unread_only else ReadState.ALL
+        )
 
 
-class GetMessageInput(BaseModel):
-    message_id: str = Field(min_length=1, description="Graph message id.")
+class GetMessageInput(MailInput):
+    message_id: MessageId
 
 
-class SendMessageInput(BaseModel):
-    to: list[str] = Field(min_length=1, description="Recipient email addresses.")
-    subject: str = Field(min_length=1, description="Message subject.")
-    body: str = Field(min_length=1, description="Message body as plain text.")
-    cc: list[str] | None = Field(default=None, description="Copy these addresses.")
-    save_to_sent_items: bool = Field(default=True)
+class SendMessageInput(MailInput):
+    to: list[Email] = Field(min_length=1, max_length=MAX_RECIPIENTS)
+    subject: str = Field(min_length=1, max_length=MAX_TEXT_CHARS)
+    body: str = Field(
+        min_length=1, max_length=MAX_TEXT_CHARS, description="Plain text, not HTML."
+    )
+    cc: list[Email] | None = Field(default=None, max_length=MAX_RECIPIENTS)
+    sent_copy: SentCopy | None = None
+    save_to_sent_items: StrictBool | None = Field(
+        default=None,
+        deprecated=True,
+        description="Legacy input. Use sent_copy instead.",
+    )
+
+    @model_validator(mode="after")
+    def validate_delivery_options(self) -> Self:
+        if len(self.to) + len(self.cc or []) > MAX_RECIPIENTS:
+            raise ValueError("Too many combined recipients.")
+        if self.sent_copy is not None and self.save_to_sent_items is not None:
+            raise ValueError("Use sent_copy or legacy save_to_sent_items, not both.")
+        return self
+
+    @property
+    def selected_sent_copy(self) -> SentCopy:
+        return self.sent_copy or (
+            SentCopy.OMIT if self.save_to_sent_items is False else SentCopy.KEEP
+        )
 
 
-class ReplyToMessageInput(BaseModel):
-    message_id: str = Field(min_length=1, description="Message to reply to.")
-    body: str = Field(min_length=1, description="Reply text as plain text.")
-    reply_all: bool = Field(
-        default=False,
-        description="Reply to every recipient rather than only the sender.",
+class ReplyToMessageInput(GetMessageInput):
+    body: str = Field(min_length=1, max_length=MAX_TEXT_CHARS)
+    recipients: ReplyRecipients | None = None
+    reply_all: StrictBool | None = Field(
+        default=None,
+        deprecated=True,
+        description="Legacy input. Use recipients instead.",
+    )
+
+    @model_validator(mode="after")
+    def one_reply_mode(self) -> Self:
+        if self.recipients is not None and self.reply_all is not None:
+            raise ValueError("Use recipients or legacy reply_all, not both.")
+        return self
+
+    @property
+    def selected_recipients(self) -> ReplyRecipients:
+        return self.recipients or (
+            ReplyRecipients.ALL if self.reply_all else ReplyRecipients.SENDER
+        )
+
+
+def _query(payload: SearchMessagesInput) -> tuple[MessagesQuery, MessageOrder]:
+    filters: list[str] = []
+    if payload.from_address:
+        sender = payload.from_address.replace("'", "''")
+        filters.append(f"from/emailAddress/address eq '{sender}'")
+    if payload.selected_read_state != ReadState.ALL:
+        filters.append(
+            "isRead eq true"
+            if payload.selected_read_state == ReadState.READ
+            else "isRead eq false"
+        )
+    if payload.query:
+        # Search and OData filters do not compose reliably. Preserve sender/read
+        # predicates locally on every page rather than silently dropping them.
+        return MessagesQuery(
+            top=payload.limit, search=json.dumps(payload.query, ensure_ascii=False)
+        ), MessageOrder.SEARCH_SENT_TIME
+    if filters:
+        # Adding orderby requires matching leading filter properties, otherwise
+        # Graph rejects valid sender/read filters as InefficientFilter.
+        return MessagesQuery(
+            top=payload.limit, filter=" and ".join(filters)
+        ), MessageOrder.VENDOR
+    return MessagesQuery(
+        top=payload.limit, order_by=_RECEIVED_DESCENDING
+    ), MessageOrder.RECEIVED_DESCENDING
+
+
+def _matches(message: MessageSummary, payload: SearchMessagesInput) -> bool:
+    sender = message.from_.email_address.address if message.from_ else None
+    if payload.from_address and (
+        sender is None or sender.casefold() != payload.from_address.casefold()
+    ):
+        return False
+    state = payload.selected_read_state
+    return state == ReadState.ALL or message.is_read == (state == ReadState.READ)
+
+
+def _message_view(message: MessageSummary) -> MessageView:
+    return MessageView(
+        id=message.id,
+        subject=message.subject,
+        from_=message.from_.email_address.address if message.from_ else None,
+        to=[recipient.email_address.address for recipient in message.to_recipients],
+        cc=[recipient.email_address.address for recipient in message.cc_recipients],
+        received_at=message.received_at,
+        is_read=message.is_read,
+        has_attachments=message.has_attachments,
+        conversation_id=message.conversation_id,
+        preview=message.preview,
+        web_link=message.web_link,
     )
 
 
@@ -67,197 +213,132 @@ class ReplyToMessageInput(BaseModel):
     vendor=vendor.vendor,
     name="search_messages",
     display_name="Search Outlook Messages",
-    description=(
-        "Search the mailbox by free text, sender, or unread state. Returns "
-        "sender, recipients, and a preview already flattened, so a follow-up "
-        "fetch is only needed for the full body."
-    ),
+    description="Search mailbox messages by text, sender and read state. Returns one page and next_page_url; repeat unchanged options to continue, even after an empty filtered page. With text search, sender/read filters apply to each returned page, and Graph limits search to 1000 results. Ordering is reported explicitly. Fetch a message for its full body.",
     input_model=SearchMessagesInput,
     effect=ToolEffect.READ,
     scopes=(MAIL_READ,),
 )
 async def search_messages(
     payload: SearchMessagesInput, ctx: VendorToolContext
-) -> dict[str, Any]:
-    query: dict[str, Any] = {"$top": payload.limit, "$select": _MESSAGE_FIELDS}
-    filters: list[str] = []
-    if payload.from_address:
-        filters.append(f"from/emailAddress/address eq '{_odata(payload.from_address)}'")
-    if payload.unread_only:
-        filters.append("isRead eq false")
-    if payload.query:
-        # Graph rejects $search combined with $orderby, and $filter with
-        # $search only on some shapes; search wins when both are supplied.
-        query["$search"] = f'"{_odata(payload.query)}"'
+) -> dict[str, JsonValue]:
+    query, ordering = _query(payload)
+    if payload.next_page_url:
+        response = await ctx.read(continuation_path(payload.next_page_url, query))
     else:
-        query["$orderby"] = "receivedDateTime desc"
-    if filters and "$search" not in query:
-        query["$filter"] = " and ".join(filters)
-
-    response = await ctx.read("/me/messages", query=query)
-    items = _values(response.data)
-    return {
-        "messages": [_message_view(item) for item in items],
-        "count": len(items),
-    }
+        response = await ctx.read(
+            MESSAGES_PATH,
+            query=query.model_dump(mode="json", by_alias=True, exclude_none=True),
+        )
+    page = parse_response(response, PAGES)
+    if len(page.value) > payload.limit:
+        invalid_response()
+    if page.next_link:
+        continuation_path(page.next_link, query)
+        if page.next_link == payload.next_page_url:
+            invalid_response()
+    messages = [
+        _message_view(message) for message in page.value if _matches(message, payload)
+    ]
+    return MessagesView(
+        messages=messages,
+        count=len(messages),
+        next_page_url=page.next_link,
+        ordering=ordering,
+    ).model_dump(mode="json", by_alias=True)
 
 
 @curated_tool(
     vendor=vendor.vendor,
     name="get_message",
     display_name="Get Outlook Message",
-    description=(
-        "Read one message in full, with the body converted from HTML to plain "
-        "text so it can be quoted directly."
-    ),
+    description="Read one mailbox message in full as text. Plain-text content is preserved; if Graph returns HTML despite the text preference, basic tags are removed. Attachments are not downloaded.",
     input_model=GetMessageInput,
     effect=ToolEffect.READ,
     scopes=(MAIL_READ,),
 )
 async def get_message(
     payload: GetMessageInput, ctx: VendorToolContext
-) -> dict[str, Any]:
-    response = await ctx.read(f"/me/messages/{payload.message_id}")
-    message = _object(response.data)
-    view = _message_view(message)
-    body = message.get("body") or {}
-    view["body"] = _plain_text(body.get("content"))
-    return view
+) -> dict[str, JsonValue]:
+    response = await ctx.read(f"{MESSAGES_PATH}/{quote(payload.message_id, safe='')}")
+    message = parse_response(response, MESSAGE)
+    if message.id != payload.message_id:
+        invalid_response()
+    body = message.body.content
+    if message.body.content_type == BodyFormat.HTML:
+        body = re.sub(r"\s+", " ", html.unescape(_TAG.sub(" ", body))).strip()
+    return FullMessageView(
+        **_message_view(message).model_dump(),
+        body=body,
+        source_body_format=message.body.content_type,
+    ).model_dump(mode="json", by_alias=True)
+
+
+def _recipients(addresses: list[str]) -> list[Recipient]:
+    return [Recipient(emailAddress=EmailAddress(address=value)) for value in addresses]
 
 
 @curated_tool(
     vendor=vendor.vendor,
     name="send_message",
     display_name="Send Outlook Message",
-    description=(
-        "Send an email. Recipients are given as plain address strings and the "
-        "body as plain text; the nested Graph message envelope is built here."
-    ),
+    description="Submit plain-text email to Graph. A successful result means accepted for processing, not delivered. No message ID or delivery confirmation is returned. Do not retry an uncertain submission; it may already have been accepted.",
     input_model=SendMessageInput,
     effect=ToolEffect.MUTATION,
     scopes=(MAIL_SEND,),
 )
 async def send_message(
     payload: SendMessageInput, ctx: VendorToolContext
-) -> dict[str, Any]:
-    message: dict[str, Any] = {
-        "subject": payload.subject,
-        "body": {"contentType": "Text", "content": payload.body},
-        "toRecipients": _recipients(payload.to),
-    }
-    if payload.cc:
-        message["ccRecipients"] = _recipients(payload.cc)
-    await ctx.mutate(
-        "/me/sendMail",
-        method="POST",
-        json={"message": message, "saveToSentItems": payload.save_to_sent_items},
+) -> dict[str, JsonValue]:
+    request = SendRequest(
+        message=MessageWrite(
+            subject=payload.subject,
+            body=ItemBody(contentType=BodyFormat.TEXT, content=payload.body),
+            toRecipients=_recipients(payload.to),
+            ccRecipients=_recipients(payload.cc or []),
+        ),
+        saveToSentItems=payload.selected_sent_copy == SentCopy.KEEP,
     )
-    # Graph answers sendMail with 202 and an empty body; there is no id to
-    # return, so report what was actually accepted rather than inventing one.
-    return {
-        "sent": True,
-        "subject": payload.subject,
-        "to": payload.to,
-        "cc": payload.cc or [],
-    }
+    response = await ctx.mutate(
+        _SEND_PATH,
+        method="POST",
+        json=request.model_dump(mode="json", by_alias=True, exclude_none=True),
+    )
+    require_accepted(response)
+    return SendView(
+        subject=payload.subject,
+        to=payload.to,
+        cc=payload.cc or [],
+        sent_copy=payload.selected_sent_copy,
+    ).model_dump(mode="json")
 
 
 @curated_tool(
     vendor=vendor.vendor,
     name="reply_to_message",
     display_name="Reply To Outlook Message",
-    description=(
-        "Reply to a message, optionally to everyone on it. Quoting and "
-        "threading are handled by Outlook, so only the new text is needed."
-    ),
+    description="Submit a plain-text reply to the sender or all recipients. Outlook handles threading. Success means accepted, not delivered; do not retry an uncertain submission.",
     input_model=ReplyToMessageInput,
     effect=ToolEffect.MUTATION,
     scopes=(MAIL_SEND, MAIL_READ),
 )
 async def reply_to_message(
     payload: ReplyToMessageInput, ctx: VendorToolContext
-) -> dict[str, Any]:
-    action = "replyAll" if payload.reply_all else "reply"
-    await ctx.mutate(
-        f"/me/messages/{payload.message_id}/{action}",
-        method="POST",
-        json={"comment": payload.body},
+) -> dict[str, JsonValue]:
+    action = (
+        ReplyAction.ALL
+        if payload.selected_recipients == ReplyRecipients.ALL
+        else ReplyAction.SENDER
     )
-    return {
-        "replied": True,
-        "message_id": payload.message_id,
-        "reply_all": payload.reply_all,
-    }
+    request = ReplyRequest(comment=payload.body)
+    response = await ctx.mutate(
+        f"{MESSAGES_PATH}/{quote(payload.message_id, safe='')}/{action}",
+        method="POST",
+        json=request.model_dump(mode="json"),
+    )
+    require_accepted(response)
+    return ReplyView(
+        message_id=payload.message_id, recipients=payload.selected_recipients
+    ).model_dump(mode="json")
 
 
-def _recipients(addresses: list[str]) -> list[dict[str, Any]]:
-    """Build Graph's nested recipient shape from plain addresses."""
-    return [
-        {"emailAddress": {"address": address.strip()}}
-        for address in addresses
-        if address and address.strip()
-    ]
-
-
-def _address(entry: Any) -> str | None:
-    if not isinstance(entry, dict):
-        return None
-    mail = entry.get("emailAddress")
-    return mail.get("address") if isinstance(mail, dict) else None
-
-
-def _message_view(message: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "id": message.get("id"),
-        "subject": message.get("subject"),
-        "from": _address(message.get("from")),
-        "to": [a for a in map(_address, message.get("toRecipients") or []) if a],
-        "cc": [a for a in map(_address, message.get("ccRecipients") or []) if a],
-        "received_at": message.get("receivedDateTime"),
-        "is_read": message.get("isRead"),
-        "has_attachments": message.get("hasAttachments"),
-        "conversation_id": message.get("conversationId"),
-        "preview": message.get("bodyPreview"),
-        "web_link": message.get("webLink"),
-    }
-
-
-def _plain_text(content: Any) -> str | None:
-    if not isinstance(content, str):
-        return None
-    stripped = _TAG.sub(" ", content)
-    return re.sub(r"\s+", " ", html.unescape(stripped)).strip() or None
-
-
-def _odata(value: str) -> str:
-    """Escape a value for an OData literal; a bare quote would break the query."""
-    return value.replace("'", "''")
-
-
-def _values(payload: Any) -> list[dict[str, Any]]:
-    body = _object(payload)
-    return [item for item in body.get("value", []) or [] if isinstance(item, dict)]
-
-
-def _object(payload: Any) -> dict[str, Any]:
-    if payload is None:
-        return {}
-    if not isinstance(payload, dict):
-        raise VendorToolError(
-            "vendor_response_invalid", "Microsoft Graph returned a non-object response."
-        )
-    error = payload.get("error")
-    if isinstance(error, dict):
-        raise VendorToolError(
-            "vendor_rejected",
-            str(error.get("message", "Microsoft Graph rejected the request."))[:500],
-        )
-    return payload
-
-
-__all__ = [
-    "get_message",
-    "reply_to_message",
-    "search_messages",
-    "send_message",
-]
+__all__ = ["get_message", "reply_to_message", "search_messages", "send_message"]

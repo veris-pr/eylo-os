@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Awaitable, Callable, Mapping
+from enum import StrEnum
 from typing import Annotated, Any, Protocol, Self, runtime_checkable
 
 from pydantic import (
@@ -239,6 +240,11 @@ class InstanceUrlRequirement(_FrozenContract):
         return self
 
 
+class OAuthTokenEncoding(StrEnum):
+    FORM = "application/x-www-form-urlencoded"
+    JSON = "application/json"
+
+
 class VendorOAuthConfig(_FrozenContract):
     """Everything about a vendor's OAuth flow that the vendor itself decides."""
 
@@ -246,6 +252,7 @@ class VendorOAuthConfig(_FrozenContract):
     token_url: str
     scopes: tuple[str, ...]
     scope_delimiter: str = " "
+    token_encoding: OAuthTokenEncoding = OAuthTokenEncoding.FORM
     pkce: bool = False
     authorization_params: tuple[tuple[str, str], ...] = ()
 

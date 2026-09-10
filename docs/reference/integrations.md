@@ -68,6 +68,394 @@ durable approval wait.
 
 ## Typed tool choices
 
+### Stripe billing reads
+
+The five tools are read-only and pin `Stripe-Version: 2026-08-26.dahlia`.
+Customer email matching is exact and case-sensitive. `find_customer` returns a
+page of matches, not one arbitrarily selected account. Other customer tools accept
+either an unambiguous `customer_email` or an explicit `customer_id`. Continue lists
+with `starting_after` from `next_starting_after`, retaining the same customer and
+filters. [Customer filtering](https://docs.stripe.com/api/customers/list).
+
+Amounts expose precise decimal strings, currency, original minor units and their
+availability. Unknown/missing currencies never become USD. ISK and UGX use
+Stripe's compatibility representation. `paid` can include an authorization;
+inspect `amount_captured` before claiming capture.
+[Currency representation](https://docs.stripe.com/currencies),
+[charge fields](https://docs.stripe.com/api/charges/object).
+
+Subscriptions retain multiple price items and each item's billing period. Use
+`subscription_id` and `items_starting_after` to continue an item's page, preserving
+the customer selector. `status=all` includes canceled subscriptions; the ordinary
+list excludes canceled subscriptions. Unit prices are not final invoice totals,
+particularly for metered or tiered billing.
+[Subscription listing](https://docs.stripe.com/api/subscriptions/list).
+
+`get_payment` reads a charge or PaymentIntent and separately queries refunds.
+Continue with `refunds_starting_after`; partial pages and unavailable refund status
+cannot establish a fully refunded PaymentIntent. Pending or failed refunds are
+not successful refunds. The result is a set of live reads, not an atomic financial
+snapshot or proof of bank settlement.
+[Refund listing](https://docs.stripe.com/api/refunds/list).
+
+Local contracts, official examples and substituted guarded-executor checks passed.
+The development deployment loads these schemas; native Stripe account acceptance
+remains unverified.
+
+### Shopify commerce contracts
+
+All five curated tools use Admin GraphQL API `2026-07`, with the existing
+store-specific token connection and `X-Shopify-Access-Token` credential placement.
+The old `2025-01` pin was retired; Shopify falls forward for unsupported pins.
+The adapter no longer uses the legacy REST product/variant operations.
+[Versioning](https://shopify.dev/docs/api/usage/versioning),
+[GraphQL reference](https://shopify.dev/docs/api/admin-graphql/latest).
+
+Customer and order lists expose `cursor`/`next_cursor`; retain the same filters
+when continuing. Customer email/phone values are quoted as search data, not
+interpreted as operators. Order email resolution refuses multiple matches or an
+inexact email rather than choosing the first account; use `find_customer` and an
+explicit `customer_id` to disambiguate. The result's `customer_resolution`
+distinguishes matched, not found, explicit ID and no customer filter. Returned
+orders must belong to the selected customer. Monetary amounts, resource IDs and
+uint64 order counts remain decimal strings, avoiding floating-point loss.
+[Customer search](https://shopify.dev/docs/api/admin-graphql/latest/queries/customers),
+[order search](https://shopify.dev/docs/api/admin-graphql/latest/queries/orders).
+
+`get_order` accepts numeric IDs, numeric strings or Order GIDs, not display order
+numbers. Follow `next_line_items_cursor` using `line_items_cursor`; each page has
+at most 50 items. Fulfillments retain status/tracking and their `created_at`, not
+an invented shipment timestamp. Access to orders older than 60 days requires
+Shopify approval and `read_all_orders`; inaccessible is not proof of absence.
+[Order access](https://shopify.dev/docs/api/admin-graphql/latest/queries/order).
+
+`check_product_stock` scans up to 25 products per call and filters their titles
+locally by case-insensitive substring. This preserves actual substring semantics
+instead of substituting Shopify's token search. A page may have no matches and
+still have `next_cursor`. Each product exposes up to 10 variants; continue with
+its `product_id` and `next_variants_cursor` as `variants_cursor`. Product and
+variant cursors cannot be mixed. A product's `total_in_stock` is present only for
+a complete tracked variant set. Partial, unavailable and untracked quantities
+are explicit; negative inventory remains negative. `inventory_policy` separately
+indicates whether the vendor permits overselling. This is not a location-level
+inventory export or a snapshot spanning pages.
+[Variant inventory](https://shopify.dev/docs/api/admin-graphql/latest/objects/ProductVariant).
+
+`tag_order` uses atomic `tagsAdd`, preserving existing/concurrent tags. The
+optional note uses `orderUpdate`; empty text clears it. When both are supplied,
+one guarded HTTP request contains two independent operations—not a vendor
+transaction. Inspect `tags_outcome`, `note_outcome` and overall `outcome`, which
+can be `partial`. Raw vendor errors are not echoed. Contradictory/missing native
+acknowledgements return outcome-unknown; receipt replay does not resend them.
+The tool bounds requests to 250 tags, 255 characters per tag and 5,000 note
+characters; these are adapter input limits, not claims of every vendor limit.
+[Atomic tag addition](https://shopify.dev/docs/api/admin-graphql/latest/mutations/tagsAdd),
+[order update](https://shopify.dev/docs/api/admin-graphql/latest/mutations/orderUpdate).
+
+Configure token access for `read_customers`, `read_orders`, `read_products` and
+`write_orders` as needed by the selected tools; protected customer data may
+require Shopify approval. Local typed/executor checks passed and the development
+deployment loads these schemas; native account acceptance remains unverified.
+
+### Notion page and block writes
+
+The adapter remains pinned to `Notion-Version: 2022-06-28`; it has not migrated
+to the newer data-source API. `create_page` and `append_to_page` use native
+request and acknowledgement models. Search, page/block reading and database
+querying are also typed as described below. Local contract verification is not
+a claim of live Notion account acceptance.
+
+Use `parent_kind=page` or `database`. The deprecated strict boolean
+`parent_is_database` remains accepted, but supplying both selectors is refused.
+IDs must be UUIDs or HTTPS Notion page URLs. Page titles use the stable `title`
+property ID, so a renamed database title column does not require a lookup.
+
+Writes preserve empty lines and split long lines into rich-text runs of at most
+2,000 characters. More than 100 paragraph lines, input beyond 100,000 characters,
+or a serialized request over 500 KB is refused before sending. Content is never
+silently truncated. Split oversized text across separate tool calls.
+
+Acknowledgements distinguish `identity_only`, `page_metadata_verified`, and
+`block_text_verified`. Notion's response contract permits partial resources,
+including for integrations without read access; a valid ID-only response is not
+mistaken for an empty or malformed response. Full create responses must match
+the requested parent and title. Append validates count, unique block IDs and any
+returned parent/text. `body_blocks_submitted` describes the create request, not
+a separate body readback. An uncertain acknowledgement is an error; durable
+mutation receipts prevent automatic resend of a possibly completed write.
+
+Sources: [version-matched SDK contracts](https://github.com/makenotion/notion-sdk-js/blob/v2.2.15/src/api-endpoints.ts),
+[request limits](https://developers.notion.com/reference/request-limits),
+[property identities](https://developers.notion.com/reference/page-property-values).
+
+### Notion database query contracts
+
+`query_database` accepts `property_name` with exactly one of `equals` or
+`contains`, or no filter. Text properties support both operators; select/status
+require equals, multi-select requires contains, and checkbox/number require
+equals. Checkbox text must be true/false; numbers must be finite. Unsupported
+operator/type pairs are refused, not translated into a different comparison.
+The schema read resolves the property's name to its native ID. A query POST is
+a read operation and does not create a mutation receipt.
+
+Pass `start_cursor` with the same query to continue. Results expose `next_cursor`;
+an empty valid result is distinct from missing or malformed vendor data. Schema
+and returned row database identities are checked. Property projections preserve
+false, zero, empty text, date ranges and user IDs. `property_extents` distinguishes
+inline values, incomplete relations, possible reference limits, and types not
+projected by this tool. This query is not a full property-item export: pagination
+of long individual properties and full rollup/file projections are not implemented.
+
+[Version-pinned database filters](https://developers.notion.com/reference/post-database-query-filter),
+[property response limits](https://developers.notion.com/reference/page-property-values).
+
+### Notion search and page reading
+
+Search matches shared page/database titles, not body text. `only` accepts page
+or database; repeat the same query with `start_cursor` to continue. Responses
+retain `next_cursor` and distinguish an empty title from unavailable metadata.
+
+`read_page` paginates block children and walks structural containers, with at
+most 20 child-list requests and three nested levels per call. `state=partial`
+and `omitted` identify request/depth limits, unsupported block types and unavailable
+metadata. Each omission includes its block ID and any continuation cursor.
+Use the same page ID plus an ordinary descendant `block_id`/`start_cursor` to
+read another subtree. A bounded ancestor check prevents another page's subtree
+being mislabeled. Synced containers accept the native source-parent identity;
+transcluded children are not physical descendants of the containing page, so
+resume those from the accessible synced container rather than directly by child ID.
+
+Rendered text is capped at 20,000 characters per result. Repeat the same inputs
+with `next_text_offset` as `text_offset` for the remainder of that traversal
+window. These are live reads: edits between calls can change offsets or cursors.
+Headings, lists, checkboxes, code text, table rows and named child pages are
+projected. Images/files/other unsupported block bodies are reported as omissions;
+the tool does not download assets or promise exact visual rendering.
+
+[Block pagination](https://developers.notion.com/reference/get-block-children),
+[version-matched block and search contracts](https://github.com/makenotion/notion-sdk-js/blob/v2.2.15/src/api-endpoints.ts).
+
+### Zoom meeting contracts
+
+The four tools use native meeting/settings/occurrence models, strict IDs and
+typed requests/results. Meeting numbers are int64 in vendor JSON but strings in
+tool results, separate from instance UUIDs. Lists expose cursor or page-number
+continuation and mark provider-truncated agendas; `get_meeting` returns full
+details and available recurring occurrence IDs. The list is not an exhaustive
+past-meeting archive. Host start URLs are not projected into results.
+
+Scheduling requires an offset or explicit IANA timezone. Aware timestamps retain
+their instant even with a named timezone; the request sends UTC. Ambiguous or
+nonexistent DST local times require an offset. Past starts are rejected before
+sending because Zoom would replace them with the current time. Creation requires
+a 201 response matching the requested topic, instant, type and duration. Returned
+waiting-room settings reflect account policy; the requested mode is separate.
+
+Cancellation first reads the meeting. A recurring meeting requires a known
+available occurrence or explicit `scope=series`; omission cannot silently delete
+a whole series. Active, instant and personal meetings are refused by this
+scheduled-meeting tool. Successful deletion requires 204 with an empty parsed
+body. Notification choices request host emails, registrant emails, both or neither;
+they do not confirm delivery or claim a live call has ended. The preflight is not
+an atomic lock on remote state.
+
+The catalog uses Zoom's accepted **legacy user-level** `meeting:read` and
+`meeting:write` scopes, not granular scopes. Cancellation now declares read access
+for its preflight; list no longer requires unrelated `user:read`, which was also
+removed from future consent requests. Existing credentials were not changed.
+[Current meeting reference](https://developers.zoom.us/docs/api/meetings/),
+[vendor OpenAPI contract](https://developers.zoom.us/api-hub/meetings/methods/endpoints.json).
+
+### Gmail message, MIME and label contracts
+
+All eight tools use Gmail-native resource/request models and typed result views.
+IDs remain opaque strings escaped below the connected mailbox route. Missing
+message/draft identities and mismatched acknowledgements are errors, not successful
+null-filled results. Empty repeated collections may be omitted by Google's JSON
+encoding; that is distinct from a missing individual message.
+
+Search returns `next_page_token` and a result-size **estimate**. Thread reads return
+messages ordered by internal timestamp with `next_before_message_id` for older
+pages. Body excerpts retain the existing 8,000-character bound but now expose
+`next_body_offset` through `read_message`; long bodies are not irretrievably cut
+off. Each search result needs one bounded metadata lookup; thread reads use the
+thread resource instead. [Listing](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/list),
+[thread retrieval](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.threads/get).
+
+The MIME reader distinguishes body parts from named/attachment-disposition
+subtrees. Alternatives prefer text, including intentionally empty text. It
+honors the declared charset and rejects corrupt base64 or inconsistent sizes.
+Externally stored body parts can be fetched, with limits of 256 MIME nodes and
+10 body-part fetches per message. Named attachments remain metadata only.
+Unsupported MIME types are explicit; HTML-only bodies retain their format,
+while mixed text/HTML parts use a basic flattened text projection.
+[Part body contract](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages.attachments).
+
+Replies/drafts preserve the latest non-draft parent's subject and threading
+headers. Threaded drafts reject a different subject instead of merely attaching
+`threadId`. The draft tool now requires both `gmail.compose` and `gmail.modify`
+because its parent lookup needs read access. Both scopes already belong to the
+vendor OAuth catalog, but a partial grant may need renewed consent. Reply-all
+excludes the primary address returned by the account profile; send-as aliases
+are not enumerated. A successful send reports `submitted`, not delivery.
+[Threading requirements](https://developers.google.com/workspace/gmail/api/guides/threads).
+
+Label resolution uses one catalog read, refuses ambiguous names and conflicting
+resolved IDs, and preflights removals before creating anything. Optional label
+creation and message modification are separate receipt-backed effects, not one
+atomic vendor transaction; partial failures can leave created labels. Modified
+labels and Trash acknowledgements are checked against the requested message.
+Trash does not promise a fixed recovery period or perform permanent deletion.
+`mailbox_range`, `recipients` and `missing_labels` are enum choices; their legacy
+boolean inputs remain deprecated and mutually exclusive with the new fields.
+
+### Outlook mailbox contracts
+
+The four Graph mail tools validate native message and recipient envelopes instead
+of treating missing data as empty success. Message IDs remain opaque strings;
+they are escaped as path segments under the shared egress policy.
+
+`search_messages` returns one page, its ordering and `next_page_url`. Repeat the
+same search options when continuing, including after an empty filtered page.
+Free-text searches retain sender/read predicates by applying them to each returned
+page; Graph's search limit remains 1,000 results. Filter-only requests omit ordering
+that would cause Graph's `InefficientFilter` error. Continuation is restricted to
+the same Graph mailbox route and query; the returned query is preserved, not a
+reconstructed skip token. [Graph message listing](https://learn.microsoft.com/en-us/graph/api/user-list-messages?view=graph-rest-1.0),
+[search semantics](https://learn.microsoft.com/en-us/graph/search-query-parameter).
+
+`get_message` requests text bodies. Literal angle brackets, newlines and empty
+text remain unchanged. If Graph returns HTML instead, a basic flattened text
+fallback applies; this is not a layout renderer or attachment downloader.
+[Graph message read](https://learn.microsoft.com/en-us/graph/api/message-get?view=graph-rest-1.0).
+
+Send/reply require **202 Accepted** with an empty parsed body. Their result is
+`state=accepted`, not delivery confirmation; no message ID is invented. Existing
+outbound receipts prevent resending an uncertain accepted mutation on replay.
+Blank/invalid recipients are rejected before sending rather than silently removed.
+`read_state`, `sent_copy` and `recipients` are enum choices. Their legacy boolean
+inputs remain deprecated compatibility inputs; supplying both forms is rejected.
+[Sending](https://learn.microsoft.com/en-us/graph/api/user-sendmail?view=graph-rest-1.0),
+[replying](https://learn.microsoft.com/en-us/graph/api/message-reply?view=graph-rest-1.0).
+
+### Slack channel, message and directory contracts
+
+The four curated Slack tools use vendor-owned requests, strict success envelopes
+and typed result projections. HTTP success alone is insufficient: `ok` must be a
+JSON boolean and the operation's required collection or acknowledgement must be
+present. Errors do not echo arbitrary Slack response text. Wire methods and
+platform-owned failure categories are enums; extensible native warning/subtype
+tags remain strings and do not drive a platform lifecycle.
+
+`list_channels` returns one public-channel page with `next_cursor`. Name filtering
+applies to that page, so an empty match set may still have a continuation. Automatic
+channel-name resolution follows up to ten pages; exhausting that budget requires
+a channel ID rather than claiming the channel does not exist. Repeated lookup
+cursors are refused. [Slack channel pagination](https://docs.slack.dev/reference/methods/conversations.list/).
+
+`read_channel` preserves returned message order and exposes `next_cursor`, or an
+exclusive `next_latest` boundary when only time pagination is available. Slack may
+return fewer items than requested; history limits depend on the app's distribution
+category. The adapter does not assume the higher internal/Marketplace quota or
+automatically loop over history pages. Author names use bounded directory pages,
+not one request per message; unresolved IDs are disclosed. Bot identity, attachment
+text and file metadata are retained. Block types are identified as unrendered;
+file bytes and thread replies are not fetched by this tool.
+[Slack history](https://docs.slack.dev/reference/methods/conversations.history/),
+[Slack directory](https://docs.slack.dev/reference/methods/users.list/).
+
+`post_message` accepts at most 40,000 characters and verifies the acknowledged
+channel, timestamp and requested thread. It returns Slack's actual text because
+Slack may normalize it; warnings remain visible. The existing durable outbound
+receipt owns the mutation. An accepted but malformed response is not permission
+to resend it. `permalink_hint` remains a channel/timestamp hint, not a fetched URL
+or delivery/read confirmation. The tool does not join channels or add scopes.
+[Slack posting](https://docs.slack.dev/reference/methods/chat.postMessage/).
+
+Email lookup retains native user identity and reported account flags; absent
+flags remain unknown rather than becoming an active account. Returned email, when
+present, must match the lookup. Live Slack acceptance is still separate from the
+local contract/executor checks.
+[Slack email lookup](https://docs.slack.dev/reference/methods/users.lookupByEmail/).
+
+### Confluence page and search contracts
+
+The five curated tools use v2 page/space models and v1 search models, distinct
+from the Confluence SOR adapter. Missing envelopes do not become successful empty
+lists or pages. Numeric page identities, versions, content states and space types
+are validated. Simple CQL filters escape quotes and backslashes; raw CQL remains
+an explicit override and must select pages.
+
+Space lists and search expose `cursor`/`next_cursor`. The optional space query
+filters each returned page locally, so zero matches with a continuation token
+does not mean no matching space exists. Pagination tokens are extracted from
+body/Link metadata; conflicting or repeated tokens are refused. Subsequent
+requests rebuild the known endpoint and original filters, never follow the
+returned URL. Search now includes the source link it previously advertised but
+omitted. [Search reference](https://developer.atlassian.com/cloud/confluence/rest/v1/api-group-search/),
+[spaces reference](https://developer.atlassian.com/cloud/confluence/rest/v2/api-group-space/).
+
+Page reads request storage format. Missing requested content is an error; empty
+content is an empty string. Text extraction is a flattened reading aid, not a
+macro/layout renderer or attachment fetcher. Creates require an unambiguous exact
+space key and validate the acknowledged title, space and explicit parent. Updates
+only edit currently published pages and verify the acknowledged identity, space,
+title and incremented version. They never silently restore/publish another state
+or retry a conflict with a newly fetched version. Both writes retain one durable
+outbound receipt. [Page operations](https://developer.atlassian.com/cloud/confluence/rest/v2/api-group-page/).
+
+The catalog now declares **granular** scopes: `read:page:confluence`,
+`write:page:confluence`, `read:space:confluence`, and search's granular alternative
+`read:content-details:confluence`. Existing OAuth authorizations may need new
+consent. Basic API-token connections do not use the OAuth scope check.
+
+Curated Jira/Confluence OAuth binds the configured site to a cloud ID through
+`accessible-resources` after code exchange. Matching requires the exact site and
+requested product scopes; absent or ambiguous matches fail instead of selecting
+the first resource. The typed binding stays inside the existing encrypted
+connection credentials. Tool calls use the pinned
+`api.atlassian.com/ex/{product}/{cloudid}` gateway with the registry's API suffix.
+Basic auth continues to use the configured site directly. Legacy OAuth credentials
+without this binding require reconnection; no site is assigned automatically.
+Local checks cover routing, encryption, refusal and refresh; live account
+acceptance remains pending.
+[Atlassian 3LO routing](https://developer.atlassian.com/cloud/oauth/getting-started/making-calls-to-api/).
+
+### Airtable record and schema contracts
+
+All five tools validate native response envelopes before returning results.
+Bases and records expose `offset`/`next_offset`; continue with the same record
+filter and view. `limit` bounds one page, not the entire collection. Missing
+collections, duplicate IDs and repeated cursors fail visibly.
+[Base pagination](https://airtable.com/developers/web/api/list-bases),
+[record pagination](https://airtable.com/developers/web/api/list-records).
+
+Records return `id`, `created_at`, `fields` and optional `details`. Custom cells
+remain under `fields` so a user column named `id` cannot replace record identity.
+Cell names and values are user-defined finite JSON; envelope fields and native
+field-type enums are vendor-owned contracts. Tables expose field and view IDs
+alongside names. The tools do not fetch attachment URLs.
+[Native cell types](https://airtable.com/developers/web/api/field-model).
+
+Filtering accepts a field name or ID plus exactly one of `equals` or `contains`.
+Table names are URL encoded without trimming. Names containing path separators
+or dot-segments resolve through the base schema to table IDs; field names with
+formula delimiters resolve to field IDs. Those lookups require
+`schema.bases:read`. Passing IDs avoids them. Ordinary record reads/writes retain
+their `data.records:read`/`data.records:write` requirements; no new OAuth mode or
+automatic scope grant is introduced.
+[Base schema and scope](https://airtable.com/developers/web/api/get-base-schema).
+
+Writes retain Airtable's existing best-effort `typecast` behavior; updates use
+PATCH, never destructive PUT. The acknowledgement must include a valid record;
+updates also require its ID to match the request. Native partial-attachment
+outcomes are returned in `details`, not hidden as unconditional success. Because
+type conversion and omission of empty cells are vendor behavior, the returned
+fields describe the actual acknowledgement rather than an invented exact-value
+verification. Each mutation still uses one durable outbound receipt.
+[Create records](https://airtable.com/developers/web/api/create-records),
+[update record](https://airtable.com/developers/web/api/update-record).
+
 ### Typeform form and submission contracts
 
 All three read tools validate native payloads before projecting agent results.
@@ -670,6 +1058,15 @@ failure text; vendor error text is not echoed. Unknown, consumed, and wrong-rout
 states are refused. A connection revision that changed since consent began cannot
 be activated by that old attempt.
 
+Scope fallback comes from that consent attempt's stored scopes, not the current
+catalog; an explicitly empty token scope is not treated as an omitted scope.
+Atlassian token exchange and refresh use the catalog's JSON encoding. Consent
+includes `offline_access` for rotating refresh tokens. Other registrations retain
+their declared form encoding. Token exchange and resource discovery refuse an
+ambient DB transaction; vendor latency must not extend an operator transaction.
+[Atlassian authorization](https://developer.atlassian.com/cloud/oauth/getting-started/implementing-oauth-3lo/),
+[Atlassian refresh](https://developer.atlassian.com/cloud/oauth/getting-started/refresh-tokens/).
+
 Expired and rejected attempts discard only the matching, still-initiated connection
 revision. They never revoke an already-active or newer connection. The callback
 controller closes its installation lookup transaction before token exchange.
@@ -691,7 +1088,14 @@ fails visibly rather than accepting a boolean/string or inventing a lifetime.
 Omitted token-rotation fields preserve the previous values. Receipt dumps and
 representations exclude plaintext secrets.
 
-The current shared refresh path posts an origin-pinned form. Its existing policy
+The shared refresh path posts the catalog-declared encoding to a pinned origin.
+Atlassian refresh validates the stored site binding before exchanging the token,
+then preserves that binding with the rotated credential. It does not rediscover
+or reassign a site after rotation: a secondary discovery failure must not discard
+the newly issued refresh token. This validates local identity, not a fresh remote
+resource listing; the vendor still enforces current access on each API call.
+Returned scopes may narrow, never widen, the stored grant; omission preserves it.
+Its existing policy
 treats HTTP 400 as reauthorization required; other HTTP failures are retried until
 the attempt limit. Named failure codes preserve the stored diagnostic spelling.
 These shared contracts do not prove every vendor's authentication format or live

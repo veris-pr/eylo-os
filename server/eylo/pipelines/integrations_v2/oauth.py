@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import re
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -21,7 +22,7 @@ from uuid import UUID
 
 from pydantic import JsonValue
 
-from eylo.common.database import start_transaction
+from eylo.common.database import current_transaction, start_transaction
 from eylo.common.http_egress import (
     HttpDestinationPolicy,
     HttpEgressPolicyError,
@@ -54,7 +55,7 @@ from .connections import (
     activate_curated_external_connection,
     create_curated_external_connection,
 )
-from .contracts import CuratedVendorSpec, VendorOAuthConfig
+from .contracts import CuratedVendorSpec, OAuthTokenEncoding, VendorOAuthConfig
 from .http_client import VendorTransport
 from .oauth_contracts import (
     AuthorizationCodeRequest,
@@ -66,6 +67,12 @@ from .oauth_contracts import (
 )
 from .oauth_tokens import OAuthTokenError, OAuthTokenErrorCode, OAuthTokenResponse
 from .registry import CuratedRegistry, load_vendors
+from .vendors.atlassian_oauth import (
+    OFFLINE_SCOPE,
+    SITE_BINDING_KEY,
+    discover_site_binding,
+    product_for_vendor,
+)
 
 STATE_TTL_MINUTES = 10
 _SECRET_LABEL = "curated_oauth_client_secret"
@@ -207,12 +214,15 @@ async def complete_authorization(
         code_verifier = stored.code_verifier
         organization_id = stored.organization_id
         expected_revision = stored.expected_connection_revision
+        requested_scopes = tuple(stored.requested_scopes)
     # Report linkage failures only after spending this one-time state commits.
     if (
         organization_id != installation.organization_id
         or connection is None
         or linked_installation is None
         or linked_installation.id != installation.id
+        or connection.instance_origin != installation.instance_url
+        or connection.vendor_key != vendor.vendor
     ):
         raise CuratedOAuthError(
             CuratedOAuthCode.STATE_INVALID, "Authorization state is unknown."
@@ -240,6 +250,7 @@ async def complete_authorization(
         redirect_uri=redirect_uri,
         code_verifier=code_verifier,
         transport=transport,
+        token_encoding=oauth.token_encoding,
     )
 
     credentials: dict[str, JsonValue] = {"access_token": tokens.access_token}
@@ -249,6 +260,25 @@ async def complete_authorization(
         credentials["token_type"] = tokens.token_type
     if tokens.scope is not None:
         credentials["scope"] = tokens.scope
+    granted_scopes = _granted_scopes(
+        tokens=tokens, requested=requested_scopes, delimiter=oauth.scope_delimiter
+    )
+    product = product_for_vendor(vendor.vendor)
+    if product is not None:
+        if not (set(requested_scopes) - {OFFLINE_SCOPE}).issubset(granted_scopes):
+            raise CuratedOAuthError(
+                CuratedOAuthCode.SITE_ACCESS_REJECTED,
+                "Atlassian did not grant the requested product scopes.",
+            )
+        binding = await discover_site_binding(
+            product=product,
+            site_origin=installation.instance_url,
+            access_token=tokens.access_token,
+            required_scopes=requested_scopes,
+            transport=transport,
+        )
+        credentials[SITE_BINDING_KEY] = binding.model_dump(mode="json")
+        granted_scopes = [scope for scope in granted_scopes if scope in binding.scopes]
     try:
         expires_at = tokens.expires_at(datetime.now(timezone.utc))
     except OAuthTokenError:
@@ -262,11 +292,7 @@ async def complete_authorization(
             connection=connection,
             credentials=credentials,
             credentials_expires_at=expires_at,
-            granted_scopes=_granted_scopes(
-                tokens=tokens,
-                requested=oauth.scopes,
-                delimiter=oauth.scope_delimiter,
-            ),
+            granted_scopes=granted_scopes,
             service=connections,
         )
         return activated.id
@@ -438,7 +464,13 @@ async def _exchange(
     redirect_uri: str,
     code_verifier: str | None,
     transport: VendorTransport | None,
+    token_encoding: OAuthTokenEncoding = OAuthTokenEncoding.FORM,
 ) -> OAuthTokenResponse:
+    if current_transaction() is not None:
+        raise CuratedOAuthError(
+            CuratedOAuthCode.REQUEST_INVALID,
+            "OAuth exchange cannot run inside a DB transaction.",
+        )
     if not installation.oauth_client_id or not installation.oauth_client_secret:
         raise CuratedOAuthError(
             CuratedOAuthCode.APP_MISSING,
@@ -463,9 +495,13 @@ async def _exchange(
             ),
             headers={
                 "Accept": "application/json",
-                "Content-Type": "application/x-www-form-urlencoded",
+                "Content-Type": token_encoding.value,
             },
-            body=urlencode(form).encode("utf-8"),
+            body=(
+                json.dumps(form)
+                if token_encoding is OAuthTokenEncoding.JSON
+                else urlencode(form)
+            ).encode("utf-8"),
             response_body_limit=_TOKEN_RESPONSE_BODY_LIMIT,
             total_timeout_seconds=_TOKEN_REQUEST_TIMEOUT_SECONDS,
         )
@@ -537,7 +573,7 @@ def _granted_scopes(
     delimiter: str,
 ) -> list[str]:
     raw = tokens.scope
-    if not isinstance(raw, str) or not raw.strip():
+    if raw is None:
         return list(requested)
     separator = delimiter or " "
     return [scope.strip() for scope in raw.split(separator) if scope.strip()]

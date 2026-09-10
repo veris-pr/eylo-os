@@ -1,262 +1,453 @@
-"""Curated Gmail tool implementations for the `integrations_v2` pipeline."""
+"""Curated Gmail workflows with native contracts, MIME handling and receipt-owned writes."""
 
-from __future__ import annotations
+from typing import Self
+from urllib.parse import quote
 
-import base64
-from email.message import EmailMessage
-from email.utils import getaddresses
-from typing import Any
-
-from pydantic import BaseModel, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    StrictBool,
+    StrictInt,
+    model_validator,
+)
 
 from eylo.modules.integrations_v2.domain.enums import ToolEffect
 
 from ...contracts import VendorToolContext, VendorToolError
 from ...registry import curated_tool
 from .definition import GMAIL_COMPOSE, GMAIL_MODIFY, GMAIL_SEND, vendor
-
-ME = "users/me"
-MAX_BODY_CHARS = 8_000
-_METADATA_HEADERS = ("From", "To", "Cc", "Subject", "Date")
-
-# Gmail's built-in labels. They are addressed by these exact ids, and unlike
-# user labels they never appear under a different name.
-_SYSTEM_LABELS = frozenset(
-    {
-        "CHAT",
-        "DRAFT",
-        "IMPORTANT",
-        "INBOX",
-        "SENT",
-        "SPAM",
-        "STARRED",
-        "TRASH",
-        "UNREAD",
-        "CATEGORY_PERSONAL",
-        "CATEGORY_SOCIAL",
-        "CATEGORY_PROMOTIONS",
-        "CATEGORY_UPDATES",
-        "CATEGORY_FORUMS",
-    }
+from .mime import addresses, build_message, headers, read_body, threading_headers
+from .schemas import (
+    ACK,
+    DEFAULT_PAGE_SIZE,
+    DRAFT,
+    LABEL,
+    LABELS,
+    MAX_BODY_CHARS,
+    MAX_INPUT_CHARS,
+    MAX_LABEL_CHANGES,
+    MAX_PAGE_SIZE,
+    MAX_RECIPIENTS,
+    MAX_THREAD_PAGE_SIZE,
+    ME,
+    MESSAGE,
+    MESSAGE_PAGE,
+    METADATA,
+    PROFILE,
+    THREAD,
+    DraftRequest,
+    DraftView,
+    Email,
+    FullMessage,
+    FullMessageView,
+    GmailErrorCode,
+    HeaderName,
+    HeaderText,
+    Identifier,
+    LabelCreate,
+    LabelName,
+    LabelSelection,
+    LabelType,
+    LabelsRequest,
+    MailOutcome,
+    MailboxRange,
+    MessageAck,
+    MessageFormat,
+    MessageView,
+    MetadataMessage,
+    MissingLabels,
+    MutationView,
+    RawMessage,
+    ReadQuery,
+    ReplyRecipients,
+    ReplyView,
+    SearchQuery,
+    SearchView,
+    SystemLabel,
+    Thread,
+    ThreadView,
+    invalid_response,
+    parse_response,
 )
 
+_METADATA_HEADERS = [
+    HeaderName.FROM,
+    HeaderName.TO,
+    HeaderName.CC,
+    HeaderName.SUBJECT,
+    HeaderName.DATE,
+]
+_NON_EDITABLE_LABELS = {SystemLabel.DRAFT, SystemLabel.SENT, SystemLabel.CHAT}
 
-class SearchMessagesInput(BaseModel):
+
+class MailInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class SearchMessagesInput(MailInput):
     query: str | None = Field(
         default=None,
-        description=(
-            "Gmail search expression, e.g. 'from:ana@acme.com is:unread' or "
-            "'subject:invoice after:2026/07/01'. Omit to list recent mail."
-        ),
+        max_length=MAX_INPUT_CHARS,
+        description="Native Gmail search expression.",
     )
-    limit: int = Field(
-        default=10,
+    limit: StrictInt = Field(
+        default=DEFAULT_PAGE_SIZE,
         ge=1,
-        le=25,
-        description="How many messages to return. Each one costs a lookup.",
+        le=MAX_PAGE_SIZE,
+        description="One metadata lookup per returned message.",
     )
-    include_spam_trash: bool = Field(default=False)
-
-
-class ReadMessageInput(BaseModel):
-    message_id: str = Field(min_length=1)
-
-
-class ReadThreadInput(BaseModel):
-    thread_id: str = Field(
-        min_length=1,
-        description="Thread id. Every message result carries the one it belongs to.",
+    mailbox_range: MailboxRange | None = None
+    include_spam_trash: StrictBool | None = Field(
+        default=None, deprecated=True, description="Legacy input. Use mailbox_range."
     )
-    max_messages: int = Field(
-        default=10,
-        ge=1,
-        le=50,
-        description="Return at most this many of the most recent messages.",
+    page_token: Identifier | None = Field(
+        default=None, description="Use next_page_token with the same search options."
     )
 
+    @model_validator(mode="after")
+    def one_range(self) -> Self:
+        if self.mailbox_range is not None and self.include_spam_trash is not None:
+            raise ValueError(
+                "Use mailbox_range or legacy include_spam_trash, not both."
+            )
+        return self
 
-class SendMessageInput(BaseModel):
-    to: list[str] = Field(min_length=1, description="Recipient email addresses.")
-    subject: str = Field(min_length=1)
-    body: str = Field(description="Plain text body.")
-    cc: list[str] | None = None
-    bcc: list[str] | None = None
-    html_body: str | None = Field(
+    @property
+    def selected_range(self) -> MailboxRange:
+        return self.mailbox_range or (
+            MailboxRange.INCLUDE_SPAM_TRASH
+            if self.include_spam_trash
+            else MailboxRange.STANDARD
+        )
+
+
+class ReadMessageInput(MailInput):
+    message_id: Identifier
+    body_offset: StrictInt = Field(
+        default=0,
+        ge=0,
+        description="Character offset; use next_body_offset to continue a long body.",
+    )
+
+
+class ReadThreadInput(MailInput):
+    thread_id: Identifier
+    max_messages: StrictInt = Field(
+        default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_THREAD_PAGE_SIZE
+    )
+    before_message_id: Identifier | None = Field(
         default=None,
-        description="Optional HTML alternative. Clients that can render it prefer it.",
+        description="Use next_before_message_id to read earlier messages in the same thread.",
     )
 
 
-class ReplyToThreadInput(BaseModel):
-    thread_id: str = Field(min_length=1)
-    body: str = Field(description="Plain text reply body.")
-    reply_all: bool = Field(
-        default=False,
-        description=(
-            "Also copy everyone the last message reached, excluding this "
-            "account. Defaults to replying to the sender alone."
+class SendMessageInput(MailInput):
+    to: list[Email] = Field(min_length=1, max_length=MAX_RECIPIENTS)
+    subject: HeaderText = Field(min_length=1)
+    body: str = Field(max_length=MAX_INPUT_CHARS)
+    cc: list[Email] | None = Field(default=None, max_length=MAX_RECIPIENTS)
+    bcc: list[Email] | None = Field(default=None, max_length=MAX_RECIPIENTS)
+    html_body: str | None = Field(default=None, max_length=MAX_INPUT_CHARS)
+
+    @model_validator(mode="after")
+    def recipient_budget(self) -> Self:
+        if len(self.to) + len(self.cc or []) + len(self.bcc or []) > MAX_RECIPIENTS:
+            raise ValueError("Too many combined recipients.")
+        return self
+
+
+class ReplyToThreadInput(MailInput):
+    thread_id: Identifier
+    body: str = Field(max_length=MAX_INPUT_CHARS)
+    recipients: ReplyRecipients | None = None
+    reply_all: StrictBool | None = Field(
+        default=None, deprecated=True, description="Legacy input. Use recipients."
+    )
+    html_body: str | None = Field(default=None, max_length=MAX_INPUT_CHARS)
+
+    @model_validator(mode="after")
+    def one_reply_mode(self) -> Self:
+        if self.recipients is not None and self.reply_all is not None:
+            raise ValueError("Use recipients or legacy reply_all, not both.")
+        return self
+
+    @property
+    def selected_recipients(self) -> ReplyRecipients:
+        return self.recipients or (
+            ReplyRecipients.ALL if self.reply_all else ReplyRecipients.SENDER
+        )
+
+
+class CreateDraftInput(MailInput):
+    to: list[Email] = Field(min_length=1, max_length=MAX_RECIPIENTS)
+    subject: HeaderText = Field(min_length=1)
+    body: str = Field(max_length=MAX_INPUT_CHARS)
+    cc: list[Email] | None = Field(default=None, max_length=MAX_RECIPIENTS)
+    thread_id: Identifier | None = None
+
+    @model_validator(mode="after")
+    def recipient_budget(self) -> Self:
+        if len(self.to) + len(self.cc or []) > MAX_RECIPIENTS:
+            raise ValueError("Too many combined recipients.")
+        return self
+
+
+class ModifyLabelsInput(MailInput):
+    message_id: Identifier
+    add: list[LabelName] | None = Field(default=None, max_length=MAX_LABEL_CHANGES)
+    remove: list[LabelName] | None = Field(default=None, max_length=MAX_LABEL_CHANGES)
+    missing_labels: MissingLabels | None = None
+    create_missing: StrictBool | None = Field(
+        default=None, deprecated=True, description="Legacy input. Use missing_labels."
+    )
+
+    @model_validator(mode="after")
+    def label_change(self) -> Self:
+        if not self.add and not self.remove:
+            raise ValueError("Give at least one label to add or remove.")
+        if self.missing_labels is not None and self.create_missing is not None:
+            raise ValueError("Use missing_labels or legacy create_missing, not both.")
+        if set(self.add or []) & set(self.remove or []):
+            raise ValueError("The same label cannot be added and removed.")
+        return self
+
+    @property
+    def selected_missing_labels(self) -> MissingLabels:
+        return self.missing_labels or (
+            MissingLabels.CREATE if self.create_missing else MissingLabels.REJECT
+        )
+
+
+class TrashMessageInput(MailInput):
+    message_id: Identifier
+
+
+def _message_path(identifier: str) -> str:
+    return f"{ME}/messages/{quote(identifier, safe='')}"
+
+
+def _view(message: MetadataMessage | FullMessage) -> MessageView:
+    mail = headers(message.payload.headers)
+    return MessageView(
+        id=message.id,
+        thread_id=message.threadId,
+        from_=mail.sender,
+        to=mail.to,
+        cc=mail.cc,
+        subject=mail.subject,
+        date=mail.date,
+        snippet=message.snippet,
+        labels=message.labelIds,
+        unread=SystemLabel.UNREAD in message.labelIds,
+    )
+
+
+async def _full_view(
+    message: FullMessage, ctx: VendorToolContext, offset: int = 0
+) -> FullMessageView:
+    decoded = await read_body(message.id, message.payload, ctx)
+    if offset > len(decoded.text):
+        raise VendorToolError(
+            GmailErrorCode.CONTINUATION_INVALID,
+            "Body offset is beyond the current message body.",
+        )
+    end = offset + MAX_BODY_CHARS
+    return FullMessageView(
+        **_view(message).model_dump(),
+        body=decoded.text[offset:end],
+        body_format=decoded.format,
+        body_state=decoded.state,
+        body_offset=offset,
+        body_total_chars=len(decoded.text),
+        next_body_offset=end if end < len(decoded.text) else None,
+        body_truncated=offset > 0 or end < len(decoded.text),
+        attachments=decoded.attachments,
+        unsupported_mime_types=decoded.unsupported_mime_types,
+    )
+
+
+async def _thread(ctx: VendorToolContext, thread_id: str) -> Thread:
+    response = await ctx.read(
+        f"{ME}/threads/{quote(thread_id, safe='')}",
+        query=ReadQuery(format=MessageFormat.FULL).model_dump(
+            mode="json", exclude_none=True
         ),
     )
-    html_body: str | None = None
+    thread = parse_response(response, THREAD)
+    if (
+        thread.id != thread_id
+        or any(message.threadId != thread_id for message in thread.messages)
+        or len({message.id for message in thread.messages}) != len(thread.messages)
+    ):
+        invalid_response()
+    return thread
 
 
-class CreateDraftInput(BaseModel):
-    to: list[str] = Field(min_length=1)
-    subject: str = Field(min_length=1)
-    body: str
-    cc: list[str] | None = None
-    thread_id: str | None = Field(
-        default=None, description="Attach the draft to an existing thread."
+def _ordered(thread: Thread) -> list[FullMessage]:
+    return sorted(thread.messages, key=lambda message: int(message.internalDate))
+
+
+def _parent(thread: Thread) -> FullMessage:
+    messages = [
+        message
+        for message in _ordered(thread)
+        if SystemLabel.DRAFT not in message.labelIds
+    ]
+    if not messages:
+        raise VendorToolError(
+            GmailErrorCode.THREAD_EMPTY,
+            "That thread has no non-draft message to reply to.",
+        )
+    return messages[-1]
+
+
+def _ack_view(message: MessageAck, state: MailOutcome) -> MutationView:
+    return MutationView(
+        message_id=message.id,
+        thread_id=message.threadId,
+        labels=message.labelIds,
+        state=state,
     )
-
-
-class ModifyLabelsInput(BaseModel):
-    message_id: str = Field(min_length=1)
-    add: list[str] | None = Field(
-        default=None,
-        description=(
-            "Label names or ids to apply. Use STARRED to star, IMPORTANT to "
-            "flag, or any user label by its name."
-        ),
-    )
-    remove: list[str] | None = Field(
-        default=None,
-        description=(
-            "Label names or ids to strip. Remove UNREAD to mark as read, or "
-            "INBOX to archive."
-        ),
-    )
-    create_missing: bool = Field(
-        default=False,
-        description="Create any label in 'add' that does not exist yet.",
-    )
-
-
-class TrashMessageInput(BaseModel):
-    message_id: str = Field(min_length=1)
 
 
 @curated_tool(
     vendor=vendor.vendor,
     name="search_messages",
     display_name="Search Gmail",
-    description=(
-        "Search the mailbox using Gmail's own query syntax and return matching "
-        "messages with sender, recipients, subject, date, and snippet already "
-        "extracted from their headers. Operators such as from:, to:, subject:, "
-        "is:unread, has:attachment, before: and after: all work."
-    ),
+    description="Search with Gmail's query syntax. Returns one page of sender/recipient/subject metadata and next_page_token; repeat unchanged options to continue. Each returned message requires one bounded metadata lookup. Result size is an estimate, not an exact count.",
     input_model=SearchMessagesInput,
     effect=ToolEffect.READ,
     scopes=(GMAIL_MODIFY,),
 )
 async def search_messages(
     payload: SearchMessagesInput, ctx: VendorToolContext
-) -> dict[str, Any]:
-    query: dict[str, Any] = {
-        "maxResults": payload.limit,
-        "includeSpamTrash": payload.include_spam_trash,
-    }
-    if payload.query:
-        query["q"] = payload.query
-    listing = _object((await ctx.read(f"/{ME}/messages", query=query)).data)
-    stubs = [
-        item for item in listing.get("messages", []) or [] if isinstance(item, dict)
-    ]
-
-    # The list endpoint returns ids only, so each message costs one lookup.
-    # `limit` is capped low for exactly this reason.
-    messages = []
-    for stub in stubs:
-        message_id = stub.get("id")
-        if not message_id:
-            continue
-        detail = _object(
-            (
-                await ctx.read(
-                    f"/{ME}/messages/{message_id}",
-                    query={
-                        "format": "metadata",
-                        "metadataHeaders": list(_METADATA_HEADERS),
-                    },
-                )
-            ).data
+) -> dict[str, JsonValue]:
+    query = SearchQuery(
+        maxResults=payload.limit,
+        includeSpamTrash=payload.selected_range == MailboxRange.INCLUDE_SPAM_TRASH,
+        q=payload.query,
+        pageToken=payload.page_token,
+    )
+    listing = parse_response(
+        await ctx.read(
+            f"{ME}/messages", query=query.model_dump(mode="json", exclude_none=True)
+        ),
+        MESSAGE_PAGE,
+    )
+    if len(listing.messages) > payload.limit or len(
+        {message.id for message in listing.messages}
+    ) != len(listing.messages):
+        invalid_response()
+    if (
+        listing.nextPageToken is not None
+        and listing.nextPageToken == payload.page_token
+    ):
+        invalid_response()
+    messages: list[MessageView] = []
+    for stub in listing.messages:
+        query = ReadQuery(
+            format=MessageFormat.METADATA, metadataHeaders=list(_METADATA_HEADERS)
         )
-        messages.append(_message_view(detail, include_body=False))
-    return {"messages": messages, "count": len(messages)}
+        detail = parse_response(
+            await ctx.read(
+                _message_path(stub.id),
+                query=query.model_dump(mode="json", exclude_none=True),
+            ),
+            METADATA,
+        )
+        if detail.id != stub.id or detail.threadId != stub.threadId:
+            invalid_response()
+        messages.append(_view(detail))
+    return SearchView(
+        messages=messages,
+        count=len(messages),
+        result_size_estimate=listing.resultSizeEstimate,
+        next_page_token=listing.nextPageToken,
+    ).model_dump(mode="json", by_alias=True)
 
 
 @curated_tool(
     vendor=vendor.vendor,
     name="read_message",
     display_name="Read Gmail Message",
-    description=(
-        "Read one message in full. The body is decoded from its MIME parts and "
-        "returned as plain text, with attachment names and sizes listed "
-        "separately. Very long bodies are truncated and marked as such."
-    ),
+    description="Read a message's decoded MIME body and attachment metadata. Body excerpts expose next_body_offset for continuation. Text attachments are not mistaken for body text; named attachments are not downloaded. Externally stored body parts are fetched under a bounded budget. Invalid encoding is an error, not empty content; unsupported MIME types are explicit.",
     input_model=ReadMessageInput,
     effect=ToolEffect.READ,
     scopes=(GMAIL_MODIFY,),
 )
 async def read_message(
     payload: ReadMessageInput, ctx: VendorToolContext
-) -> dict[str, Any]:
-    detail = _object(
-        (
-            await ctx.read(
-                f"/{ME}/messages/{payload.message_id}", query={"format": "full"}
-            )
-        ).data
+) -> dict[str, JsonValue]:
+    message = parse_response(
+        await ctx.read(
+            _message_path(payload.message_id),
+            query=ReadQuery(format=MessageFormat.FULL).model_dump(
+                mode="json", exclude_none=True
+            ),
+        ),
+        MESSAGE,
     )
-    return _message_view(detail, include_body=True)
+    if message.id != payload.message_id:
+        invalid_response()
+    return (await _full_view(message, ctx, payload.body_offset)).model_dump(
+        mode="json", by_alias=True
+    )
 
 
 @curated_tool(
     vendor=vendor.vendor,
     name="read_thread",
     display_name="Read Gmail Thread",
-    description=(
-        "Read a whole conversation in order, with every message's body decoded. "
-        "This is the tool to reach for before replying: one call returns the "
-        "context that would otherwise take one lookup per message."
-    ),
+    description="Read a page of thread messages ordered by Gmail internal time. Initially returns the latest messages; use next_before_message_id for earlier pages. Each body is a bounded excerpt; read_message continues long bodies. This does not silently claim an excerpt is the whole thread.",
     input_model=ReadThreadInput,
     effect=ToolEffect.READ,
     scopes=(GMAIL_MODIFY,),
 )
 async def read_thread(
     payload: ReadThreadInput, ctx: VendorToolContext
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     thread = await _thread(ctx, payload.thread_id)
-    messages = _thread_messages(thread)
-    recent = messages[-payload.max_messages :]
-    return {
-        "thread_id": payload.thread_id,
-        "messages": [_message_view(item, include_body=True) for item in recent],
-        "count": len(recent),
-        "total_in_thread": len(messages),
-    }
+    messages = _ordered(thread)
+    end = len(messages)
+    if payload.before_message_id is not None:
+        indexes = [
+            index
+            for index, message in enumerate(messages)
+            if message.id == payload.before_message_id
+        ]
+        if not indexes:
+            raise VendorToolError(
+                GmailErrorCode.CONTINUATION_INVALID,
+                "The continuation message is not in this thread.",
+            )
+        end = indexes[0]
+    start = max(0, end - payload.max_messages)
+    selected = messages[start:end]
+    views = [await _full_view(message, ctx) for message in selected]
+    return ThreadView(
+        thread_id=thread.id,
+        messages=views,
+        count=len(views),
+        total_in_thread=len(messages),
+        next_before_message_id=selected[0].id if start and selected else None,
+    ).model_dump(mode="json", by_alias=True)
 
 
 @curated_tool(
     vendor=vendor.vendor,
     name="send_message",
     display_name="Send Gmail Message",
-    description=(
-        "Send a new email. Recipients and body are given as plain values; the "
-        "compliant MIME message and its encoding are built here, so no message "
-        "source has to be assembled. Use reply_to_thread instead when "
-        "responding to existing mail, so the reply threads correctly."
-    ),
+    description="Submit a new email from plain recipients and text, optionally an HTML alternative. Returns Gmail message/thread identity, not delivery confirmation. Use reply_to_thread for existing conversations. Do not retry uncertain submissions.",
     input_model=SendMessageInput,
     effect=ToolEffect.MUTATION,
     scopes=(GMAIL_SEND,),
 )
 async def send_message(
     payload: SendMessageInput, ctx: VendorToolContext
-) -> dict[str, Any]:
-    raw = _build_mime(
+) -> dict[str, JsonValue]:
+    raw = build_message(
         to=payload.to,
         subject=payload.subject,
         body=payload.body,
@@ -264,407 +455,253 @@ async def send_message(
         bcc=payload.bcc,
         html_body=payload.html_body,
     )
-    response = await ctx.mutate(f"/{ME}/messages/send", json={"raw": raw})
-    return _sent_view(_object(response.data))
+    request = RawMessage(raw=raw)
+    message = parse_response(
+        await ctx.mutate(
+            f"{ME}/messages/send",
+            json=request.model_dump(mode="json", exclude_none=True),
+        ),
+        ACK,
+    )
+    return _ack_view(message, MailOutcome.SUBMITTED).model_dump(mode="json")
 
 
 @curated_tool(
     vendor=vendor.vendor,
     name="reply_to_thread",
     display_name="Reply to Gmail Thread",
-    description=(
-        "Reply to an existing conversation. Reads the thread, addresses the "
-        "reply to the last sender, carries the Message-ID, In-Reply-To and "
-        "References headers across, and prefixes the subject with Re: so mail "
-        "clients file it under the same conversation. Set reply_all to copy "
-        "everyone the last message reached."
-    ),
+    description="Reply to the latest non-draft message, preserving its subject and RFC threading headers. Sender/all controls recipients; the connected account is excluded. Missing/invalid parent headers or recipients refuse sending. Returns submitted message identity, not delivery confirmation.",
     input_model=ReplyToThreadInput,
     effect=ToolEffect.MUTATION,
     scopes=(GMAIL_SEND, GMAIL_MODIFY),
 )
 async def reply_to_thread(
     payload: ReplyToThreadInput, ctx: VendorToolContext
-) -> dict[str, Any]:
-    thread = await _thread(ctx, payload.thread_id)
-    messages = _thread_messages(thread)
-    if not messages:
-        raise VendorToolError("thread_empty", "That thread contains no messages.")
-
-    last = messages[-1]
-    headers = _headers(last)
-    sender = headers.get("reply-to") or headers.get("from")
-    if not sender:
+) -> dict[str, JsonValue]:
+    parent = _parent(await _thread(ctx, payload.thread_id))
+    mail = headers(parent.payload.headers)
+    subject, in_reply_to, references = threading_headers(mail)
+    profile = parse_response(await ctx.read(f"{ME}/profile"), PROFILE)
+    own = profile.emailAddress.casefold()
+    target = [
+        value for value in addresses(mail.reply_to or mail.sender) if value != own
+    ]
+    if not target:
+        target = [value for value in addresses(mail.to) if value != own]
+    if not target:
         raise VendorToolError(
-            "reply_target_unknown",
-            "The last message in this thread has no sender to reply to.",
+            GmailErrorCode.REPLY_TARGET_UNKNOWN,
+            "No other participant is available to reply to.",
         )
-
-    to = [sender]
-    cc: list[str] = []
-    if payload.reply_all:
-        # Everyone the last message reached, minus this account and the person
-        # already in To — otherwise the reply copies the sender twice.
-        me = await _account_address(ctx)
-        already = {_address(sender)} | ({me} if me else set())
-        for candidate in _addresses(headers.get("to"), headers.get("cc")):
-            if candidate and candidate not in already:
-                already.add(candidate)
-                cc.append(candidate)
-
-    raw = _build_mime(
-        to=to,
-        subject=_reply_subject(headers.get("subject")),
+    copied: list[str] = []
+    if payload.selected_recipients == ReplyRecipients.ALL and (mail.to or mail.cc):
+        copied = [
+            value
+            for value in addresses(mail.to, mail.cc)
+            if value != own and value not in target
+        ]
+    if len(target) + len(copied) > MAX_RECIPIENTS:
+        raise VendorToolError(
+            GmailErrorCode.REPLY_TARGET_UNKNOWN, "Too many reply recipients."
+        )
+    raw = build_message(
+        to=target,
+        cc=copied,
+        subject=subject,
         body=payload.body,
-        cc=cc or None,
         html_body=payload.html_body,
-        in_reply_to=headers.get("message-id"),
-        references=_references(headers),
+        in_reply_to=in_reply_to,
+        references=references,
     )
-    response = await ctx.mutate(
-        f"/{ME}/messages/send", json={"raw": raw, "threadId": payload.thread_id}
+    request = RawMessage(raw=raw, threadId=payload.thread_id)
+    message = parse_response(
+        await ctx.mutate(
+            f"{ME}/messages/send",
+            json=request.model_dump(mode="json", exclude_none=True),
+        ),
+        ACK,
     )
-    view = _sent_view(_object(response.data))
-    view["replied_to"] = sender
-    view["copied"] = cc
-    return view
+    if message.threadId != payload.thread_id:
+        invalid_response()
+    return ReplyView(
+        **_ack_view(message, MailOutcome.SUBMITTED).model_dump(),
+        replied_to=target,
+        copied=copied,
+    ).model_dump(mode="json")
 
 
 @curated_tool(
     vendor=vendor.vendor,
     name="create_draft",
     display_name="Create Gmail Draft",
-    description=(
-        "Compose a message and leave it in Drafts without sending it. Useful "
-        "when a person should review the wording first. Give a thread_id to "
-        "attach the draft to an existing conversation."
-    ),
+    description="Create an unsent draft. For a thread draft, reads the latest non-draft parent, requires its exact subject and includes reference headers. Requires compose and modify scopes so thread reads are authorized. It never sends the draft.",
     input_model=CreateDraftInput,
     effect=ToolEffect.MUTATION,
-    scopes=(GMAIL_COMPOSE,),
+    scopes=(GMAIL_COMPOSE, GMAIL_MODIFY),
 )
 async def create_draft(
     payload: CreateDraftInput, ctx: VendorToolContext
-) -> dict[str, Any]:
-    raw = _build_mime(
-        to=payload.to, subject=payload.subject, body=payload.body, cc=payload.cc
-    )
-    message: dict[str, Any] = {"raw": raw}
+) -> dict[str, JsonValue]:
+    in_reply_to: str | None = None
+    references: str | None = None
     if payload.thread_id:
-        message["threadId"] = payload.thread_id
-    response = await ctx.mutate(f"/{ME}/drafts", json={"message": message})
-    draft = _object(response.data)
-    return {
-        "draft_id": draft.get("id"),
-        "message_id": (draft.get("message") or {}).get("id"),
-        "thread_id": (draft.get("message") or {}).get("threadId"),
-        "sent": False,
-    }
+        parent = _parent(await _thread(ctx, payload.thread_id))
+        subject, in_reply_to, references = threading_headers(
+            headers(parent.payload.headers)
+        )
+        if payload.subject != subject:
+            raise VendorToolError(
+                GmailErrorCode.THREAD_MISMATCH,
+                "A threaded draft must use the parent message's exact subject.",
+            )
+    raw = build_message(
+        to=payload.to,
+        subject=payload.subject,
+        body=payload.body,
+        cc=payload.cc,
+        in_reply_to=in_reply_to,
+        references=references,
+    )
+    request = DraftRequest(message=RawMessage(raw=raw, threadId=payload.thread_id))
+    draft = parse_response(
+        await ctx.mutate(
+            f"{ME}/drafts", json=request.model_dump(mode="json", exclude_none=True)
+        ),
+        DRAFT,
+    )
+    if payload.thread_id and draft.message.threadId != payload.thread_id:
+        invalid_response()
+    return DraftView(
+        draft_id=draft.id, message_id=draft.message.id, thread_id=draft.message.threadId
+    ).model_dump(mode="json")
+
+
+async def _label_plan(
+    payload: ModifyLabelsInput, ctx: VendorToolContext
+) -> tuple[list[LabelSelection], list[LabelSelection]]:
+    catalog = parse_response(await ctx.read(f"{ME}/labels"), LABELS)
+    if len({label.id for label in catalog.labels}) != len(catalog.labels):
+        invalid_response()
+
+    def select(names: list[str], missing: MissingLabels) -> list[LabelSelection]:
+        selected: list[LabelSelection] = []
+        for name in dict.fromkeys(names):
+            if name in _NON_EDITABLE_LABELS:
+                raise VendorToolError(
+                    GmailErrorCode.LABEL_CONFLICT,
+                    "This system label cannot be changed with modify_labels.",
+                )
+            if name in SystemLabel:
+                selected.append(LabelSelection(name=name, id=name))
+                continue
+            by_id = [label for label in catalog.labels if label.id == name]
+            matches = by_id or [
+                label
+                for label in catalog.labels
+                if label.name.casefold() == name.casefold()
+            ]
+            if len(matches) > 1:
+                raise VendorToolError(
+                    GmailErrorCode.LABEL_AMBIGUOUS,
+                    "Multiple labels match this name. Use the exact label ID.",
+                )
+            if matches:
+                label = matches[0]
+                if label.id in _NON_EDITABLE_LABELS:
+                    raise VendorToolError(
+                        GmailErrorCode.LABEL_CONFLICT,
+                        "This system label cannot be changed with modify_labels.",
+                    )
+                selected.append(LabelSelection(name=label.name, id=label.id))
+            elif missing == MissingLabels.CREATE:
+                selected.append(LabelSelection(name=name, id=None))
+            else:
+                raise VendorToolError(
+                    GmailErrorCode.LABEL_NOT_FOUND,
+                    "A requested label does not exist. Use its exact name or ID.",
+                )
+        return selected
+
+    # Preflight every removal and ambiguity before any remote label creation.
+    remove = select(payload.remove or [], MissingLabels.REJECT)
+    add = select(payload.add or [], payload.selected_missing_labels)
+    if {item.id for item in add if item.id} & {item.id for item in remove}:
+        raise VendorToolError(
+            GmailErrorCode.LABEL_CONFLICT,
+            "The same resolved label cannot be added and removed.",
+        )
+    return add, remove
 
 
 @curated_tool(
     vendor=vendor.vendor,
     name="modify_labels",
     display_name="Change Gmail Labels",
-    description=(
-        "Apply and remove labels on a message by name, resolving names to ids "
-        "here. This is how mail is filed: remove UNREAD to mark as read, "
-        "remove INBOX to archive, add STARRED to star, or add any user label. "
-        "If a name does not exist the error lists the labels that do."
-    ),
+    description="Apply/remove message labels by ID or unambiguous name. Remove UNREAD to mark read, INBOX to archive. Optional missing_labels=create creates missing added labels; each creation and the message change has its own receipt, not one atomic vendor transaction. A partial failure may leave created labels. DRAFT, SENT and CHAT are not editable here.",
     input_model=ModifyLabelsInput,
     effect=ToolEffect.MUTATION,
     scopes=(GMAIL_MODIFY,),
 )
 async def modify_labels(
     payload: ModifyLabelsInput, ctx: VendorToolContext
-) -> dict[str, Any]:
-    if not payload.add and not payload.remove:
-        raise VendorToolError(
-            "no_change_requested", "Give at least one label to add or remove."
-        )
-    add_ids = await _resolve_labels(
-        ctx, payload.add, create_missing=payload.create_missing
+) -> dict[str, JsonValue]:
+    add, remove = await _label_plan(payload, ctx)
+    created_ids: dict[str, str] = {}
+    add_ids: list[str] = []
+    for selection in add:
+        label_id = selection.id or created_ids.get(selection.name.casefold())
+        if label_id is None:
+            label = parse_response(
+                await ctx.mutate(
+                    f"{ME}/labels",
+                    json=LabelCreate(name=selection.name).model_dump(mode="json"),
+                ),
+                LABEL,
+            )
+            if label.name != selection.name or label.type != LabelType.USER:
+                invalid_response()
+            label_id = label.id
+            created_ids[selection.name.casefold()] = label_id
+        add_ids.append(label_id)
+    remove_ids = [selection.id for selection in remove if selection.id is not None]
+    request = LabelsRequest(
+        addLabelIds=list(dict.fromkeys(add_ids)),
+        removeLabelIds=list(dict.fromkeys(remove_ids)),
     )
-    remove_ids = await _resolve_labels(ctx, payload.remove, create_missing=False)
-    response = await ctx.mutate(
-        f"/{ME}/messages/{payload.message_id}/modify",
-        json={"addLabelIds": add_ids, "removeLabelIds": remove_ids},
+    message = parse_response(
+        await ctx.mutate(
+            f"{_message_path(payload.message_id)}/modify",
+            json=request.model_dump(mode="json"),
+        ),
+        ACK,
     )
-    updated = _object(response.data)
-    return {
-        "message_id": updated.get("id"),
-        "thread_id": updated.get("threadId"),
-        "labels": updated.get("labelIds") or [],
-    }
+    if (
+        message.id != payload.message_id
+        or not set(request.addLabelIds) <= set(message.labelIds)
+        or set(request.removeLabelIds) & set(message.labelIds)
+    ):
+        invalid_response()
+    return _ack_view(message, MailOutcome.LABELS_UPDATED).model_dump(mode="json")
 
 
 @curated_tool(
     vendor=vendor.vendor,
     name="trash_message",
     display_name="Move Gmail Message to Trash",
-    description=(
-        "Move a message to Trash, where Gmail keeps it for thirty days and a "
-        "person can restore it. This is reversible; permanent deletion is not "
-        "offered by any curated tool."
-    ),
+    description="Move a message to Trash and verify its returned identity/label. This is not permanent deletion. Retention and recovery follow the mailbox's policies; no fixed recovery period is promised.",
     input_model=TrashMessageInput,
     effect=ToolEffect.MUTATION,
     scopes=(GMAIL_MODIFY,),
 )
 async def trash_message(
     payload: TrashMessageInput, ctx: VendorToolContext
-) -> dict[str, Any]:
-    response = await ctx.mutate(f"/{ME}/messages/{payload.message_id}/trash")
-    trashed = _object(response.data)
-    return {
-        "message_id": trashed.get("id"),
-        "thread_id": trashed.get("threadId"),
-        "trashed": True,
-        "recoverable_for_days": 30,
-    }
-
-
-async def _thread(ctx: VendorToolContext, thread_id: str) -> dict[str, Any]:
-    return _object(
-        (await ctx.read(f"/{ME}/threads/{thread_id}", query={"format": "full"})).data
+) -> dict[str, JsonValue]:
+    message = parse_response(
+        await ctx.mutate(f"{_message_path(payload.message_id)}/trash"), ACK
     )
-
-
-def _thread_messages(thread: dict[str, Any]) -> list[dict[str, Any]]:
-    return [item for item in thread.get("messages", []) or [] if isinstance(item, dict)]
-
-
-async def _account_address(ctx: VendorToolContext) -> str | None:
-    """This connection's own address, so a reply-all never copies itself."""
-    profile = _object((await ctx.read(f"/{ME}/profile")).data)
-    return _address(profile.get("emailAddress"))
-
-
-async def _resolve_labels(
-    ctx: VendorToolContext, names: list[str] | None, *, create_missing: bool
-) -> list[str]:
-    """Map label names to ids, accepting ids and system labels unchanged."""
-    wanted = [name.strip() for name in names or [] if name and name.strip()]
-    if not wanted:
-        return []
-
-    existing = _object((await ctx.read(f"/{ME}/labels")).data)
-    labels = [
-        item for item in existing.get("labels", []) or [] if isinstance(item, dict)
-    ]
-    by_id = {str(label.get("id")) for label in labels}
-    by_name = {
-        str(label.get("name", "")).casefold(): str(label.get("id")) for label in labels
-    }
-
-    resolved: list[str] = []
-    for name in wanted:
-        if name in _SYSTEM_LABELS or name in by_id:
-            resolved.append(name)
-            continue
-        found = by_name.get(name.casefold())
-        if found:
-            resolved.append(found)
-            continue
-        if not create_missing:
-            available = sorted(
-                str(label.get("name"))
-                for label in labels
-                if label.get("type") == "user"
-            )
-            raise VendorToolError(
-                "label_not_found",
-                f"No label named '{name}'. Available: {', '.join(available) or 'none'}.",
-            )
-        created = _object(
-            (
-                await ctx.mutate(
-                    f"/{ME}/labels",
-                    json={
-                        "name": name,
-                        "labelListVisibility": "labelShow",
-                        "messageListVisibility": "show",
-                    },
-                )
-            ).data
-        )
-        resolved.append(str(created.get("id")))
-    return resolved
-
-
-def _build_mime(
-    *,
-    to: list[str],
-    subject: str,
-    body: str,
-    cc: list[str] | None = None,
-    bcc: list[str] | None = None,
-    html_body: str | None = None,
-    in_reply_to: str | None = None,
-    references: str | None = None,
-) -> str:
-    """Build an RFC 2822 message and encode it the way Gmail's API expects.
-
-    This is the ceremony the curated layer exists to absorb: the raw endpoint
-    accepts only a base64url-encoded message source.
-    """
-    message = EmailMessage()
-    message["To"] = ", ".join(to)
-    message["Subject"] = subject
-    if cc:
-        message["Cc"] = ", ".join(cc)
-    if bcc:
-        message["Bcc"] = ", ".join(bcc)
-    if in_reply_to:
-        message["In-Reply-To"] = in_reply_to
-    if references:
-        message["References"] = references
-    message.set_content(body)
-    if html_body:
-        message.add_alternative(html_body, subtype="html")
-    return base64.urlsafe_b64encode(message.as_bytes()).decode("ascii")
-
-
-def _reply_subject(subject: str | None) -> str:
-    text = (subject or "").strip()
-    if not text:
-        return "Re:"
-    return text if text.casefold().startswith("re:") else f"Re: {text}"
-
-
-def _references(headers: dict[str, str]) -> str | None:
-    """Chain this reply onto the conversation's existing reference list."""
-    message_id = headers.get("message-id")
-    existing = headers.get("references")
-    parts = [part for part in (existing, message_id) if part]
-    return " ".join(parts) or None
-
-
-def _addresses(*values: str | None) -> list[str]:
-    pairs = getaddresses([value for value in values if value])
-    return [address.strip().casefold() for _, address in pairs if address]
-
-
-def _address(value: str | None) -> str | None:
-    found = _addresses(value)
-    return found[0] if found else None
-
-
-def _headers(message: dict[str, Any]) -> dict[str, str]:
-    """Flatten Gmail's header list into a lowercased lookup."""
-    payload = message.get("payload") or {}
-    entries = [
-        item for item in payload.get("headers", []) or [] if isinstance(item, dict)
-    ]
-    return {
-        str(item.get("name", "")).casefold(): str(item.get("value", ""))
-        for item in entries
-    }
-
-
-def _message_view(message: dict[str, Any], *, include_body: bool) -> dict[str, Any]:
-    headers = _headers(message)
-    view: dict[str, Any] = {
-        "id": message.get("id"),
-        "thread_id": message.get("threadId"),
-        "from": headers.get("from"),
-        "to": headers.get("to"),
-        "cc": headers.get("cc"),
-        "subject": headers.get("subject"),
-        "date": headers.get("date"),
-        "snippet": message.get("snippet"),
-        "labels": message.get("labelIds") or [],
-        "unread": "UNREAD" in (message.get("labelIds") or []),
-    }
-    if not include_body:
-        return view
-
-    text, html = _body_parts(message.get("payload") or {})
-    chosen = text or html or ""
-    view["body"] = chosen[:MAX_BODY_CHARS]
-    view["body_truncated"] = len(chosen) > MAX_BODY_CHARS
-    view["body_is_html"] = not text and bool(html)
-    view["attachments"] = _attachments(message.get("payload") or {})
-    return view
-
-
-def _body_parts(payload: dict[str, Any]) -> tuple[str | None, str | None]:
-    """Walk the MIME tree for the first plain-text and HTML bodies."""
-    text: str | None = None
-    html: str | None = None
-
-    def walk(part: Any) -> None:
-        nonlocal text, html
-        if not isinstance(part, dict):
-            return
-        mime = str(part.get("mimeType", ""))
-        data = (part.get("body") or {}).get("data")
-        if isinstance(data, str) and data:
-            if mime == "text/plain" and text is None:
-                text = _decode(data)
-            elif mime == "text/html" and html is None:
-                html = _decode(data)
-        for child in part.get("parts", []) or []:
-            walk(child)
-
-    walk(payload)
-    return text, html
-
-
-def _attachments(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    found: list[dict[str, Any]] = []
-
-    def walk(part: Any) -> None:
-        if not isinstance(part, dict):
-            return
-        filename = part.get("filename")
-        if filename:
-            found.append(
-                {
-                    "filename": filename,
-                    "mime_type": part.get("mimeType"),
-                    "size_bytes": (part.get("body") or {}).get("size"),
-                    "attachment_id": (part.get("body") or {}).get("attachmentId"),
-                }
-            )
-        for child in part.get("parts", []) or []:
-            walk(child)
-
-    walk(payload)
-    return found
-
-
-def _decode(data: str) -> str:
-    """Gmail encodes part bodies as base64url, unpadded."""
-    try:
-        padded = data + "=" * (-len(data) % 4)
-        return base64.urlsafe_b64decode(padded).decode("utf-8", errors="replace")
-    except (ValueError, TypeError):
-        return ""
-
-
-def _sent_view(message: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "message_id": message.get("id"),
-        "thread_id": message.get("threadId"),
-        "labels": message.get("labelIds") or [],
-        "sent": True,
-    }
-
-
-def _object(payload: Any) -> dict[str, Any]:
-    if not isinstance(payload, dict):
-        raise VendorToolError(
-            "vendor_response_invalid", "Gmail returned a non-object response."
-        )
-    error = payload.get("error")
-    if isinstance(error, dict):
-        raise VendorToolError(
-            "vendor_rejected",
-            str(error.get("message", "Google rejected the request."))[:500],
-        )
-    return payload
+    if message.id != payload.message_id or SystemLabel.TRASH not in message.labelIds:
+        invalid_response()
+    return _ack_view(message, MailOutcome.TRASHED).model_dump(mode="json")
 
 
 __all__ = [

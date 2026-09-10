@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
@@ -9,6 +10,7 @@ from urllib.parse import urlencode
 from uuid import UUID
 
 from eylo.common.database import (
+    current_transaction,
     register_ephemeral_event_post_txn,
     start_transaction,
 )
@@ -38,8 +40,10 @@ from eylo.pipelines.external_connections.credentials import (
 )
 from eylo.sockets.http.transport import SafeHttpTransport
 
+from .contracts import OAuthTokenEncoding
 from .http_client import VendorTransport
 from .oauth import decrypt_client_secret
+from .oauth_contracts import CuratedOAuthError
 from .oauth_tokens import OAuthTokenError, OAuthTokenErrorCode, OAuthTokenResponse
 from .refresh_contracts import (
     RefreshDisposition,
@@ -50,6 +54,7 @@ from .refresh_contracts import (
     RenewedCredential,
 )
 from .registry import CuratedRegistry, load_vendors
+from .vendors.atlassian_oauth import product_for_vendor, require_site_binding
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +107,7 @@ async def refresh_expiring_curated_connections(
                     expected_revision=renewed.connection.revision,
                     encrypted_credentials=encrypted,
                     credentials_expires_at=renewed.expires_at,
-                    granted_scopes=renewed.connection.granted_scopes,
+                    granted_scopes=list(renewed.granted_scopes),
                 )
         except _RefreshSkipped:
             skipped.append(connection_id)
@@ -201,6 +206,22 @@ async def _refresh_one(
             vendor=vendor_name,
             installation_id=installation.id,
         ) from error
+    product = product_for_vendor(vendor_name)
+    if product is not None:
+        try:
+            require_site_binding(
+                credentials,
+                product=product,
+                site_origin=installation.instance_url,
+                required_scopes=connection.granted_scopes,
+            )
+        except CuratedOAuthError:
+            raise RefreshError(
+                RefreshErrorCode.SITE_BINDING_INVALID,
+                disposition=RefreshDisposition.REAUTHORIZE,
+                vendor=vendor_name,
+                installation_id=installation.id,
+            ) from None
     refresh_token = credentials.get("refresh_token")
     if not isinstance(refresh_token, str) or not refresh_token:
         raise RefreshError(
@@ -230,6 +251,7 @@ async def _refresh_one(
             client_secret=client_secret,
             refresh_token=refresh_token,
             transport=transport,
+            token_encoding=vendor.oauth.token_encoding,
         )
         expires_at = payload.expires_at(datetime.now(timezone.utc))
     except OAuthTokenError:
@@ -253,12 +275,19 @@ async def _refresh_one(
         renewed_credentials["refresh_token"] = payload.refresh_token
     if payload.token_type:
         renewed_credentials["token_type"] = payload.token_type
-    if payload.scope:
+    if payload.scope is not None:
         renewed_credentials["scope"] = payload.scope
+    granted_scopes = tuple(connection.granted_scopes)
+    if payload.scope is not None:
+        returned_scopes = set(payload.scope.split(vendor.oauth.scope_delimiter or " "))
+        granted_scopes = tuple(
+            scope for scope in granted_scopes if scope in returned_scopes
+        )
     return RenewedCredential(
         connection=connection,
         credentials=renewed_credentials,
         expires_at=expires_at,
+        granted_scopes=granted_scopes,
     )
 
 
@@ -269,7 +298,10 @@ async def _post_refresh(
     client_secret: str,
     refresh_token: str,
     transport: VendorTransport | None,
+    token_encoding: OAuthTokenEncoding = OAuthTokenEncoding.FORM,
 ) -> OAuthTokenResponse:
+    if current_transaction() is not None:
+        raise RefreshError(RefreshErrorCode.TOKEN_REQUEST_INVALID)
     form = RefreshTokenRequest(
         client_id=client_id, client_secret=client_secret, refresh_token=refresh_token
     ).to_form()
@@ -284,9 +316,13 @@ async def _post_refresh(
             ),
             headers={
                 "Accept": "application/json",
-                "Content-Type": "application/x-www-form-urlencoded",
+                "Content-Type": token_encoding.value,
             },
-            body=urlencode(form).encode("utf-8"),
+            body=(
+                json.dumps(form)
+                if token_encoding is OAuthTokenEncoding.JSON
+                else urlencode(form)
+            ).encode("utf-8"),
             response_body_limit=_TOKEN_RESPONSE_BODY_LIMIT,
             total_timeout_seconds=_TOKEN_REQUEST_TIMEOUT_SECONDS,
         )

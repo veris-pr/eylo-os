@@ -32,9 +32,10 @@ vendor = registry.register_vendor(
             placeholder="https://gitlab.com",
             description=(
                 "https://gitlab.com, or your self-hosted GitLab. Requests are "
-                "sent under <site>/api/v4 and may not leave this origin."
+                "sent under <site>/api: GraphQL resolves project paths, then "
+                "REST v4 operates on numeric IDs. Requests may not leave this origin."
             ),
-            path_suffix="/api/v4",
+            path_suffix="/api",
         ),
         categories=("developer_tools", "productivity"),
         homepage_url="https://gitlab.com",

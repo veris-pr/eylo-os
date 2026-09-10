@@ -187,9 +187,9 @@ class BasesQuery(AirtableModel):
 
 
 class RecordsQuery(BasesQuery):
-    page_size: int = Field(alias="pageSize", ge=1, le=MAX_PAGE_SIZE)
+    page_size: int = Field(serialization_alias="pageSize", ge=1, le=MAX_PAGE_SIZE)
     view: Name | None = None
-    formula: str | None = Field(default=None, alias="filterByFormula")
+    formula: str | None = Field(default=None, serialization_alias="filterByFormula")
 
 
 class WriteRecord(AirtableModel):

@@ -36,6 +36,7 @@ class RefreshErrorCode(StrEnum):
     TOKEN_ENDPOINT_HTTP = "token_endpoint_http"
     TOKEN_RESPONSE_UNREADABLE = "token_response_unreadable"
     TOKEN_REQUEST_INVALID = "token_request_invalid"
+    SITE_BINDING_INVALID = "site_binding_invalid"
 
 
 class RefreshDisposition(StrEnum):
@@ -151,6 +152,7 @@ class RenewedCredential(BaseModel):
     connection: ExternalConnectionInDb
     credentials: dict[str, JsonValue] = Field(repr=False, exclude=True)
     expires_at: AwareDatetime | None
+    granted_scopes: tuple[str, ...]
 
     @model_validator(mode="wrap")
     @classmethod

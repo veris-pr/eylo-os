@@ -2,8 +2,8 @@
 
 Every store has its own `https://<store>.myshopify.com`, so this vendor
 declares an instance URL. The API version is pinned in the path rather than
-left to default: Shopify dates its versions and retires them, and an unpinned
-call silently changes response shape when the default rolls forward.
+left to default. Shopify also falls forward for retired version pins, so this
+pin must be maintained against the supported quarterly releases.
 
 Auth is a custom app's Admin API access token, presented in Shopify's own
 `X-Shopify-Access-Token` header rather than `Authorization`. That is the first
@@ -21,7 +21,7 @@ from eylo.modules.integrations_v2.domain.enums import (
 from ...contracts import ApiKeyPlacement, CuratedVendorSpec, InstanceUrlRequirement
 from ...registry import registry
 
-API_VERSION = "2025-01"
+API_VERSION = "2026-07"
 
 vendor = registry.register_vendor(
     CuratedVendorSpec(

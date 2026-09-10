@@ -1,13 +1,4 @@
-"""Outlook vendor identity, over Microsoft Graph.
-
-Microsoft's identity endpoints are per-tenant and require PKCE, but neither is
-declared here: both belong to the OAuth app an operator configures, not to the
-vendor. The authorize and token URLs carry `{tenant}`, substituted from
-`auth_config.tenant`, and PKCE is switched on with `auth_config.pkce`. Both are
-handled by the curated OAuth pipeline.
-
-Graph itself is a single fixed origin, so this vendor needs no instance URL.
-"""
+"""Fixed Graph origin, tenant-templated OAuth with PKCE, and text body preference."""
 
 from __future__ import annotations
 
@@ -15,6 +6,7 @@ from eylo.modules.integrations_v2.domain.enums import VendorAuthKind
 
 from ...contracts import CuratedVendorSpec, VendorOAuthConfig
 from ...registry import registry
+from .schemas import API_PREFIX, BODY_PREFERENCE, GRAPH_ORIGIN
 
 AUTHORIZATION_URL = "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize"
 TOKEN_URL = "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
@@ -35,7 +27,8 @@ vendor = registry.register_vendor(
             "sending, and replying to messages."
         ),
         auth_kinds=(VendorAuthKind.OAUTH2,),
-        base_url="https://graph.microsoft.com/v1.0",
+        base_url=GRAPH_ORIGIN + API_PREFIX,
+        static_headers=(("Prefer", BODY_PREFERENCE),),
         oauth=VendorOAuthConfig(
             authorization_url=AUTHORIZATION_URL,
             token_url=TOKEN_URL,

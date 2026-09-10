@@ -1,16 +1,12 @@
-"""Slack vendor identity and Web API response handling."""
+"""Slack workspace bot identity and documented OAuth scopes."""
 
 from __future__ import annotations
-
-from typing import Any
 
 from eylo.modules.integrations_v2.domain.enums import VendorAuthKind
 
 from ...contracts import (
     CuratedVendorSpec,
     VendorOAuthConfig,
-    VendorToolContext,
-    VendorToolError,
 )
 from ...registry import registry
 
@@ -51,35 +47,6 @@ vendor = registry.register_vendor(
 )
 
 
-async def call(
-    ctx: VendorToolContext,
-    method: str,
-    payload: dict[str, Any] | None = None,
-    *,
-    mutating: bool = False,
-) -> dict[str, Any]:
-    """Call one Slack Web API method and unwrap its envelope.
-
-    Slack answers a failed call with HTTP 200 and `{"ok": false, "error": ...}`,
-    so success has to be read from the body. Every curated Slack tool goes
-    through here rather than each rediscovering that.
-    """
-    send = ctx.mutate if mutating else ctx.read
-    response = await send(f"/{method}", method="POST", json=payload or {})
-    body = response.data
-    if not isinstance(body, dict):
-        raise VendorToolError(
-            "vendor_response_invalid",
-            "Slack returned a non-object response.",
-        )
-    if not body.get("ok"):
-        raise VendorToolError(
-            "vendor_rejected",
-            f"Slack rejected {method}: {body.get('error', 'unknown_error')}",
-        )
-    return body
-
-
 __all__ = [
     "CHANNELS_HISTORY",
     "CHANNELS_READ",
@@ -87,6 +54,5 @@ __all__ = [
     "OAUTH_SCOPES",
     "USERS_READ",
     "USERS_READ_EMAIL",
-    "call",
     "vendor",
 ]

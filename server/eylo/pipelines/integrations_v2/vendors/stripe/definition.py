@@ -21,6 +21,8 @@ from eylo.modules.integrations_v2.domain.enums import (
 from ...contracts import ApiKeyPlacement, CuratedVendorSpec
 from ...registry import registry
 
+API_VERSION = "2026-08-26.dahlia"
+
 vendor = registry.register_vendor(
     CuratedVendorSpec(
         vendor="stripe",
@@ -33,14 +35,15 @@ vendor = registry.register_vendor(
         ),
         auth_kinds=(VendorAuthKind.API_KEY,),
         base_url="https://api.stripe.com/v1",
+        static_headers=(("Stripe-Version", API_VERSION),),
         categories=("billing", "support"),
         homepage_url="https://stripe.com",
         api_key_placement=ApiKeyPlacement(
             location=CredentialLocation.HEADER,
             name="Authorization",
-            value_prefix="Bearer ",
+            value_prefix="Bearer",
         ),
     )
 )
 
-__all__ = ["vendor"]
+__all__ = ["API_VERSION", "vendor"]

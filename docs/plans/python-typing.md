@@ -5,16 +5,23 @@
 This is the short completion tracker. The chronological evidence below is not a
 percentage-complete claim; local contracts and live product acceptance are separate.
 
-- [ ] Finish curated native contracts: 20/29 vendors, 103/148 tools locally covered
+- [ ] Close curated integration acceptance: 29/29 vendors have local native-contract
+  coverage; 148/148 tools locally covered
   (Asana, Freshdesk, Zendesk, Intercom, GitHub, GitLab, Jira, Linear, Google Sheets,
   HubSpot, Pipedrive, Google Docs, Google Drive, Google Tasks, Dropbox,
-  Google Calendar, Calendly, PagerDuty, Sentry, Typeform).
-  Next: remaining document/file, communication and operational vendors. Close
+  Google Calendar, Calendly, PagerDuty, Sentry, Typeform, Airtable, Confluence, Slack,
+  Outlook, Gmail, Zoom, Notion, Shopify, Stripe).
+  Local coverage is not native account or deployed acceptance. Close
   GitLab named-project transport refusal without weakening shared egress policy.
   Plan Sentry's deprecated project-list/ID-only route migration explicitly rather
   than guessing an organization in existing tool inputs.
   Pipedrive now uses supported v2 CRM operations and v1 notes; live acceptance
   remains pending, alongside the other curated vendors.
+- [ ] Complete native acceptance of corrected curated Atlassian OAuth routing:
+  callback resource discovery, encrypted site/cloud binding, product gateway
+  resolution, JSON token requests, offline consent and refresh binding are now
+  locally verified. Deployment and real Jira/Confluence consent/tool/refresh QA
+  remain pending. Basic auth and the separate SOR adapters are unchanged.
 - [ ] Reconcile all 11 SOR profile/vendor registrations against sync, commands,
   OAuth and webhook operation coverage; finish missing native contracts.
 - [ ] Close remaining voice lifecycle/config gaps, Smallest protocol compatibility
@@ -24,8 +31,9 @@ percentage-complete claim; local contracts and live product acceptance are separ
 - [ ] Fix outstanding product findings: generated-card text presentation and SOR
   duplicate field descriptors; verify other recorded findings remain applicable.
 - [ ] Repeat deployment/acceptance after the remaining implementation without
-  resetting operator data. A current-build text/retrieval checkpoint passed on
-  2026-09-10 (below); full voice, upload, vendor and recovery acceptance stays open.
+  resetting operator data. The completed curated-contract batch was rebuilt and
+  text/retrieval acceptance passed on 2026-09-10 (below); full voice, upload,
+  native vendor and recovery acceptance stays open.
 - [ ] Run final backend/frontend/widget/docs gates; publish a bounded acceptance
   summary identifying any vendor-specific missing credentials or human QA.
 
@@ -33,6 +41,303 @@ Completed foundation: all eight LLM native branches, shared execution/config/
 identity contracts, and substantial retrieval, storage, voice, email, telephony,
 campaign and session typing. The detailed evidence remains below. No entire flow
 is closed merely because its enums, config or type checker pass.
+
+Deployed checkpoint (2026-09-10, 22:32 IST): development API, durable worker,
+ordinary worker and scheduler all run image
+`sha256:d6c9b9168b3b5160106112dc50bc57b130a7c80ad227cb29104a2f639c21cc71`.
+PostgreSQL/Redis were not recreated; Alembic remains `eylo0012`. All 29 curated
+vendor registrations and 148 generated tool input schemas loaded inside that image.
+This verifies runtime registration, not execution against those vendor accounts.
+
+The existing widget conversation `01a08b8f-bc37-7601-b585-6403cf032f69` continued
+after the restart in Eylo Development. QA Core Mixed Agent recalled the saved
+ultraviolet color, queried the incident escalation phrase with `top_k=2`, and
+returned silver compass with `[K1]`. Both retrieval tools reported Bedrock
+reranking `applied`; the knowledge result retained its citation and provider
+config revision. The admin console displayed 28 persisted messages, including
+completed input, tool calls/results, assistant response and background task/result.
+An expired console login successfully returned to the same deep link after sign-in.
+No external vendor mutation was requested. Background memory behavior is not
+claimed absent merely because the conversational prompt requested read-only work.
+
+Gates: integrations Pyrefly, backend/CLI Ruff, console lint/TypeScript/build,
+widget SDK build and Preact lint/TypeScript/build passed. Documentation validation
+passed with 46 pages, 288 links and 47 diagrams. The console build still warns
+about large chunks. Recent service logs contained a trapped passlib/bcrypt version
+lookup warning during successful login; no other error/warning lines were found
+in the inspected post-rebuild window. Voice, upload, native curated accounts,
+crash recovery and the broader platform checklist remain unverified here.
+
+Stripe completion (2026-09-10): all five read tools now use typed native requests,
+responses and agent-facing projections, pinned to `2026-08-26.dahlia`. Exact
+email lookup refuses ambiguity; explicit customer IDs and pagination are supported.
+Subscription reads preserve every returned price item and its own billing period,
+with separate item continuation. Money retains decimal precision and raw minor
+units; unavailable currency precision never defaults to USD. ISK and UGX follow
+Stripe's API representation rather than ISO display precision.
+
+PaymentIntent reads now query refunds instead of inventing an empty refund list.
+Pending/failed refunds are not successful refunds; incomplete pages cannot prove
+a fully refunded intent. Charge-native refund status remains separately authoritative.
+Requests verify resource/customer identity and cursor progress; missing list fields
+cannot become successful empty results. Bearer placement uses one separator.
+
+Evidence rechecked: 79 contract assertions, six official published response
+examples, all five actual executor/guarded-client paths and seven executor refusal
+paths passed. All calls were read-only and created zero mutation receipts.
+HTTP, auth/grants and DB boundaries were substituted: native Stripe account and
+deployed product acceptance remain open. The full integrations pipeline Pyrefly
+check, backend/CLI Ruff check and diff whitespace check passed. No operator
+configuration, credentials, dependency or DB schema changed. The local pre-commit
+gate now includes Stripe. Broader platform work remains listed above.
+
+Shopify completion (2026-09-10): all five tools now use typed GraphQL native
+requests, resources and agent outputs under the supported 2026-07 API version.
+The retired 2025-01 REST pin silently fell forward; the product/variant REST
+surface is legacy. The token connection and configured store origin are unchanged.
+Customer/order lists preserve cursors; email resolution refuses ambiguity and
+checks exact returned customer identity. An explicit customer ID avoids lookup.
+Order reads paginate line items and preserve decimal money, uint64 identities,
+financial/fulfillment states and nullable contact/address fields. Fulfillment
+creation timestamps are no longer mislabeled as shipment timestamps.
+
+Stock performs bounded catalog pages with real substring filtering and explicit
+continuation even when a page contains no matches. Variant continuation is
+per-product. Partial/untracked/unavailable stock never becomes zero or a complete
+total; continuation totals are not misrepresented as whole-product totals.
+Tag updates use atomic tagsAdd rather than read/merge/replace. An optional note
+update shares one guarded HTTP mutation request/receipt; each independent native
+operation has a confirmed/rejected outcome, including partial success. Missing,
+malformed or contradictory acknowledgements are outcome-unknown, never success.
+
+Evidence: 40 order + 50 list + 70 inventory/write assertions passed. All five
+actual executor/guarded-client paths passed, including one-receipt mutation,
+successful replay/no-resend, four uncertain-ack replay refusals and four pre-send
+input refusals. The initial runtime probe also found and fixed a Pydantic deferred
+annotation shadowing bug that static checks did not catch. Focused lint and
+Pyrefly passed. HTTP, auth/grants and receipt persistence were substituted; native
+Shopify account acceptance, actual DB recovery and deployment remain open.
+No operator configuration, credential, DB schema or migration was changed.
+Only Stripe remains in the curated native-contract inventory; the broader
+platform checklist above remains open.
+
+Notion read/search completion (2026-09-10): all five tools now have typed native
+and agent-facing contracts. Search preserves cursors and distinguishes empty
+titles from unavailable metadata. Page reads validate page/subtree identity,
+paginate children, descend through structural blocks and handle synced source
+parent identities. Traversal is bounded to 20 child-list requests and three
+nested levels per invocation. Omissions expose reasons and subtree/cursor targets;
+ordinary descendant targets are verified by a bounded ancestor walk on resume.
+Transcluded descendants whose physical parent belongs to another page cannot
+be resumed as direct descendants of the original page; resume from the accessible
+synced container instead. Long rendered output uses text offsets rather than
+discarding its tail. Unsupported/media blocks are reported, not silently erased.
+Reads remain live projections, not versioned snapshots or full property exports.
+
+Evidence: 44 read/search assertions plus the prior 73 write and 82 query assertions
+all passed together (199 total). All five actual executor/guarded-client paths
+passed, along with write replay/no-resend and read refusal checks. Search/query
+POSTs remained read-only. Focused lint, Pyrefly and documentation checks passed.
+HTTP, grant/auth and DB receipt persistence were substituted; native account QA,
+real DB recovery and deployment remain open. No operator state or API pin changed.
+Remaining curated vendors are Shopify and Stripe, not remaining platform scope.
+
+Notion database-query slice (2026-09-10): query inputs, native schema/filter/page/
+property envelopes and agent-visible results now use typed models. Invalid filter
+combinations fail before querying; invalid checkbox text and non-finite numeric
+values are refused rather than reinterpreted. Schema lookups use the requested
+database identity and translate human property names to stable native property
+IDs. Lists preserve continuation; inconsistent/repeated cursors, duplicate rows,
+wrong-database rows and absent payload fields cannot become successful empty data.
+Inline properties preserve date ranges and user identities; their extent marks
+potential reference limits, known incomplete relations and unsupported projections.
+This is not a complete property-item export. Search and page/block reading remain
+open, along with vendor-native acceptance.
+
+Evidence: 82 function assertions and the actual executor/guarded-client query path
+passed, including the exact false-valued checkbox filter and continuation body.
+The POST query created no mutation receipt. Four executor refusal paths passed;
+local write probes and replay checks remain green. Focused lint/type checks pass.
+HTTP and grant/auth resolution were substituted, not live Notion calls. No DB,
+provider config, credential or migration was changed.
+
+Notion write slice (2026-09-10): the create/append tools now use vendor-owned
+Pydantic input, native request, acknowledgement and result models. Current-path
+probes reproduced empty create/append responses reporting success, writes dropping
+paragraphs after line 100 and unbounded rich-text runs. Writes now split long
+runs, preserve empty lines, refuse oversize input/request bytes before mutation,
+validate IDs and full returned parent/title/block text, and explicitly distinguish
+partial ID-only acknowledgements permitted by the version-matched SDK contract.
+The old database-parent boolean is deprecated in favor of an exclusive enum.
+No lookup was added for renamed database title columns: stable property IDs are
+already supported by Notion. The existing 2022-06-28 API pin is unchanged.
+
+Evidence: 73 function assertions, both actual executor/guarded-client write paths
+and four malformed-ack replay checks passed. Each write produced one substituted
+receipt and replay sent no second mutation; input refusal sent nothing. Focused
+lint and Pyrefly passed. Vendor HTTP, grant/auth and receipt persistence were
+substituted; native account, actual DB recovery and deployment remain pending.
+The source trace also reproduced empty search responses accepted as empty lists,
+discarded continuation and invalid checkbox text silently interpreted as false.
+Those three read/search/query handlers remain the next Notion slice, not completed
+work. No operator data, credentials, schema, dependency or API-version changed.
+
+Zoom slice (2026-09-10): four tools now use native request/resource/result models.
+Scheduling preserves offsets with named timezones; ambiguous local times and
+past-time vendor rewriting are refused. Reads expose occurrences and pagination.
+Cancellation requires explicit recurring-series intent or an available occurrence,
+validates its 204 acknowledgement and reports notification requests, not delivery.
+Create acknowledgements validate topic/time/type/duration; actual waiting-room
+policy is returned separately from the requested mode. Cancellation adds its
+required read scope; unrelated user:read was removed from the consent catalog.
+
+Evidence: current Zoom API Hub OpenAPI was inspected for all four operations.
+72 function assertions, all four actual executor/guarded-client paths and four
+malformed-acknowledgement replay checks passed. Each mutation used one substituted
+receipt; replays sent no second mutation. Two fixtures assembled from the vendor's
+individual property examples validated the native read/create models; these are
+not recorded live responses. The generated create request also passed JSON Schema
+validation against its consumed fields from the current vendor OpenAPI document.
+Focused lint/type checks passed. HTTP, grant/auth
+lookup and receipt persistence were substituted; native Zoom account acceptance,
+DB recovery and deployment remain open. No operator data, credentials, dependency
+or migration changed. Remaining curated vendors: Notion, Shopify and Stripe.
+
+Outlook slice (2026-09-10): four mail tools now use typed Graph requests,
+responses and result projections. Combined search no longer drops sender/read
+filters; continuation preserves Graph's query under a pinned mailbox boundary.
+Text bodies retain literal markup and whitespace. Send/reply validate 202
+acknowledgements and report acceptance, not delivery. Enum modes replace the
+preferred boolean inputs while preserving explicitly deprecated compatibility.
+
+Evidence: 67 function assertions, all four real executor/guarded-client paths,
+and six malformed-acknowledgement replay checks passed. Each mutation used one
+substituted receipt and replay sent nothing. The guarded continuation retained
+the exact query and vendor text-preference header. Focused type checking passed.
+Vendor HTTP, grant/auth lookup and receipt persistence were substituted; native
+Outlook account acceptance, actual DB recovery and deployment remain pending.
+No provider config, OAuth scope, DB schema or dependency changed. Remaining
+curated vendors: Gmail, Notion, Shopify, Stripe and Zoom. Broad milestone gates
+will run once for the completed batch rather than after each vendor.
+
+Gmail slice (2026-09-10): five current-path reproductions confirmed
+empty send acknowledgements reporting success with null IDs, a named text
+attachment selected before the actual message body, malformed base64 decoded as
+empty success, threaded drafts omitting parent headers/subject validation, and
+search continuation being discarded. These used current handlers with substituted
+HTTP responses; no real mail was sent or drafted. All five paths are now corrected
+with native resource/request/result contracts and strict MIME handling.
+
+Completed: native message/MIME/label/request/result contracts; strict body decoding
+and attachment distinction; search/thread/body continuation and identity checks;
+reply/draft threading; label resolution and mutation acknowledgement. Google's thread guide requires
+matching subject plus reference headers, not only `threadId`. Reading a parent
+thread requires a read-capable scope; `gmail.compose` alone is insufficient, so
+the draft tool now declares both compose and modify. The OAuth catalog already
+requested both, but partial grants may require new consent. Sources:
+[thread contract](https://developers.google.com/workspace/gmail/api/guides/threads),
+[thread read scopes](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.threads/get),
+[message body contract](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages.attachments).
+
+Verification: 75 function assertions, all eight actual executor/guarded-client
+paths and six malformed-acknowledgement replay cases passed. Label creation plus
+message modification produced two distinct substituted receipts; replay of an
+uncertain mutation sent nothing a second time. Focused lint and Pyrefly passed.
+HTTP, grant/auth lookup and receipt persistence were substituted; native Gmail
+account acceptance, actual DB recovery and deployment are still pending. No
+operator data, credentials, dependencies or DB schema changed. Remaining curated
+vendors: Notion, Shopify, Stripe and Zoom. Full platform acceptance remains open.
+
+Slack slice (2026-09-10): all four tools now use vendor-owned native requests,
+response envelopes, entities and result models, with JSON serialization at the
+curated executor boundary. Missing success fields and truthy non-boolean `ok`
+values no longer become successful results. Explicit cursor/time continuation
+replaces silent list/history truncation. Name resolution uses bounded pages and
+reports an incomplete lookup or unresolved author IDs. Posts validate returned
+identity/thread while preserving Slack-normalized text and warnings. File metadata
+and attachment text are projected; Block Kit types are explicitly unrendered.
+
+Evidence: 60 function assertions and all four actual executor/guarded-client
+paths passed. Three accepted/rejected malformed-ack replay checks each produced
+one substituted receipt and no second send. This caught and corrected a local
+model-versus-JSON return-boundary mistake before completion. Vendor HTTP,
+grant/auth lookup and receipt persistence were substituted; native Slack account
+acceptance, real DB recovery and deployment remain pending. No OAuth scopes,
+operator configuration, dependency, migration or vendor data changed.
+Full backend lint and Pyrefly passed (two existing suppressions/two unrelated
+SOR cast warnings). The expanded curated pre-commit hook passed. Documentation
+verification passed: 46 pages, 288 links, 1246 Python modules, 47 diagrams.
+Next curated slice is Outlook: trace search/filter composition, Graph message
+identity/body contracts, and 202 send/reply acknowledgements before proceeding
+through Gmail, Notion, Shopify, Stripe and Zoom.
+
+Atlassian OAuth slice (2026-09-10): reproduced shared curated resolution sending
+OAuth to the Basic-auth site URL. Added native accessible-resource and encrypted
+site-binding contracts at the vendor-family boundary. Callback matches the
+configured site and the consent attempt's scopes, never the first resource;
+absent/ambiguous results cannot activate a connection. Jira and Confluence now
+resolve to their cloud-ID gateway while Basic auth remains site-bound. Explicit
+JSON token encoding and offline consent follow Atlassian documentation. Stored
+bindings are checked before refresh and preserved during rotation; optional
+returned scopes can narrow but never enlarge the prior grant. No post-rotation
+discovery call can discard a newly issued refresh token. Missing legacy bindings
+require reconnection rather than an automatic site assignment.
+
+Local evidence: 138 function/path assertions cover both products, native payload
+refusals, encrypted credential round-trip, callback activation, actual guarded
+HTTP-client routing, Basic compatibility, refresh rotation/scope narrowing and
+transaction refusal, stale callbacks, failed-discovery non-activation and catalog
+changes during consent. Vendor HTTP, DB services/transactions and activation were
+substituted; actual encrypted serialization was exercised. Full backend lint
+and Pyrefly pass (two existing suppressions/two unrelated SOR cast warnings).
+Documentation verification passed (46 pages, 288 links, 1245 Python modules,
+47 diagrams); diff whitespace checks passed.
+No deployment, migration, configured credential or vendor data changed. Live
+consent, actual DB persistence/recovery and native tool acceptance remain open.
+
+Confluence slice (2026-09-10): all five handlers now use native v2 page/space and
+v1 search models, typed queries/writes/results and scoped enums. Reproduced CQL
+filter interpolation altering the query, absent collections becoming empty
+success, and empty page acknowledgements being accepted. Filters are escaped;
+pagination is explicit; reads distinguish absent bodies from empty content;
+mutations validate identity/space/title/parent or version. Updates refuse
+non-current pages rather than implicitly restoring or publishing them. The
+OAuth scope catalog now uses documented granular page/space/search scopes.
+
+Local verification: 114 function assertions, all five real executor/guarded-client
+paths and both accepted-malformed-mutation replay paths passed. Each write used
+one substituted receipt; replay performed its preflight read but did not resend
+the mutation. Generated create/update bodies match the documented flat-body
+OpenAPI variant. The upstream `oneOf` is ambiguous because its nested variant
+has no required properties; generic whole-schema validation therefore fails
+even for the documented flat body. That vendor schema ambiguity was reproduced,
+not hidden as an implementation success.
+
+Full backend lint/type checking passed (two existing suppressions and two unrelated
+SOR cast warnings). Vendor HTTP, grant/auth lookup and receipt persistence were
+substituted; native account acceptance, actual DB recovery and deployment remain
+open. A separate confirmed shared Atlassian OAuth routing gap is tracked above,
+so corrected scope declarations are not a claim of complete OAuth support.
+No DB schema, provider config, credential or dependency changed.
+
+Airtable slice (2026-09-10): all five handlers now use vendor-owned native,
+query, write and result models. Reproduced custom `id`/`created_at` fields
+overwriting native identity, missing collections becoming empty success and
+unencoded table-name URL delimiters. Record fields now stay in a separate
+finite-JSON map; envelopes, field types, permissions and partial-upload outcomes
+are typed. Pagination is explicit. Special table/field names resolve through
+schema lookup without relaxing the shared egress policy; those lookups require
+`schema.bases:read`, while IDs avoid the lookup. Updates verify returned identity.
+
+Evidence: 118 function assertions, six literal official response examples, all
+five actual executor/guarded-client paths, and both mutation/replay refusal
+paths passed. Each mutation produced one substituted receipt; replay after an
+accepted malformed acknowledgement sent no second mutation. Vendor HTTP,
+grant/auth lookup and receipt persistence were substituted, so native account
+acceptance and actual DB recovery are not claimed. Full backend lint and Pyrefly
+passed (two existing suppressions and two unrelated SOR cast warnings). Airtable
+is included in the curated local hook. Deployment and live Airtable QA remain
+pending; no operator data, config, dependency or migration was changed.
 
 Typeform slice (2026-09-10): all three read handlers now use native form,
 submission, tagged-answer and request/result models. Page continuation, nested

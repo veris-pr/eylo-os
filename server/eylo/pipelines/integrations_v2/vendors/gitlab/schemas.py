@@ -8,6 +8,7 @@ from enum import StrEnum
 from typing import Annotated, Literal, Self
 
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
@@ -26,7 +27,16 @@ MAX_LIST_LIMIT = 100
 # Eylo bounds username-resolution I/O; this is not a GitLab tier limit.
 MAX_ASSIGNEE_LOOKUPS = 20
 USER_LOOKUP_LIMIT = 2
-USERS_PATH = "/users"
+REST_PATH = "/v4"
+PROJECTS_PATH = f"{REST_PATH}/projects"
+USERS_PATH = f"{REST_PATH}/users"
+GRAPHQL_PATH = "/graphql"
+PROJECT_GLOBAL_ID_PREFIX = "gid://gitlab/Project/"
+MAX_PROJECT_REFERENCE_CHARS = 512
+
+
+class GitLabGraphQLDocument(StrEnum):
+    PROJECT_ID = "query EyloProject($fullPath: ID!) { project(fullPath: $fullPath) { id fullPath } }"
 
 
 class _GitLabQueryChoice(StrEnum):
@@ -54,7 +64,7 @@ class GitLabMergeRequestQueryState(_GitLabQueryChoice):
 class GitLabErrorCode(StrEnum):
     RESPONSE_INVALID = "vendor_response_invalid"
     REJECTED = "vendor_rejected"
-    PROJECT_INVALID = "project_invalid"
+    PROJECT_UNAVAILABLE = "project_unavailable"
     ASSIGNEE_UNRESOLVED = "assignee_unresolved"
 
 
@@ -66,6 +76,65 @@ class GitLabModel(BaseModel):
 
 class GitLabRequest(GitLabModel):
     model_config = ConfigDict(extra="forbid")
+
+
+def project_reference(value: str) -> str:
+    """Accept IDs or literal full paths, never URLs or pre-encoded route fragments."""
+    value = value.strip()
+    if value.isascii() and value.isdecimal():
+        if int(value) > 0:
+            return str(int(value))
+    elif "/" in value and all(
+        part not in {"", ".", ".."}
+        and all(char.isalnum() or char in "_.-" for char in part)
+        for part in value.split("/")
+    ):
+        return value
+    raise ValueError("Use a positive numeric project ID or literal group/project path.")
+
+
+ProjectReference = Annotated[
+    str,
+    Field(min_length=1, max_length=MAX_PROJECT_REFERENCE_CHARS),
+    AfterValidator(project_reference),
+]
+
+
+class GitLabProjectVariables(GitLabRequest):
+    full_path: ProjectReference = Field(serialization_alias="fullPath")
+
+
+class GitLabProjectRequest(GitLabRequest):
+    query: Literal[GitLabGraphQLDocument.PROJECT_ID] = GitLabGraphQLDocument.PROJECT_ID
+    variables: GitLabProjectVariables
+
+
+class GitLabProjectIdentity(GitLabModel):
+    id: Annotated[
+        str,
+        Field(
+            pattern=r"^gid://gitlab/Project/[1-9][0-9]*$",
+            max_length=MAX_PROJECT_REFERENCE_CHARS,
+        ),
+    ]
+    full_path: ProjectReference = Field(validation_alias="fullPath")
+
+    @property
+    def numeric_id(self) -> int:
+        return int(self.id.removeprefix(PROJECT_GLOBAL_ID_PREFIX))
+
+
+class GitLabProjectData(GitLabModel):
+    project: GitLabProjectIdentity | None
+
+
+class GitLabGraphQLError(GitLabModel):
+    message: str = Field(repr=False)
+
+
+class GitLabProjectResponse(GitLabModel):
+    data: GitLabProjectData | None = None
+    errors: list[GitLabGraphQLError] | None = None
 
 
 class GitLabIssueQuery(GitLabRequest):
@@ -285,6 +354,7 @@ MERGE_REQUESTS_RESPONSE = TypeAdapter(list[GitLabMergeRequest])
 MERGE_REQUEST_RESPONSE = TypeAdapter(GitLabMergeRequestDetail)
 CHANGES_RESPONSE = TypeAdapter(GitLabChanges)
 USERS_RESPONSE = TypeAdapter(list[GitLabResolvedUser])
+PROJECT_RESPONSE = TypeAdapter(GitLabProjectResponse)
 
 
 def parse_response[T](response: VendorResponse, schema: TypeAdapter[T]) -> T:
@@ -311,11 +381,9 @@ def parse_response[T](response: VendorResponse, schema: TypeAdapter[T]) -> T:
 
 
 def require_identity(
-    *, actual_iid: int, requested_iid: int, actual_project_id: int, project: str
+    *, actual_iid: int, requested_iid: int, actual_project_id: int, project: int
 ) -> None:
-    if actual_iid != requested_iid or (
-        project.isascii() and project.isdecimal() and actual_project_id != int(project)
-    ):
+    if actual_iid != requested_iid or actual_project_id != project:
         raise VendorToolError(
             GitLabErrorCode.RESPONSE_INVALID, "GitLab returned a different resource."
         )

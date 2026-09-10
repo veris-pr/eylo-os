@@ -1,14 +1,13 @@
 """Compose GitLab v4 issues, bounded notes and merge-request change summaries.
 
-Project paths require encoded slashes; the shared transport currently refuses
-those paths, so named-project live acceptance remains open. Numeric IDs use the
-same typed flow. Merge status is not an approval or merge-permission decision.
+GraphQL resolves exact project paths before REST v4 operates on numeric IDs.
+No encoded path separators bypass shared egress policy. Merge status is not
+an approval or merge-permission decision.
 """
 
 from __future__ import annotations
 
 from typing import Annotated
-from urllib.parse import quote
 
 from pydantic import (
     BaseModel,
@@ -28,6 +27,7 @@ from .schemas import (
     CHANGES_RESPONSE,
     CREATED_NOTE_RESPONSE,
     DEFAULT_LIST_LIMIT,
+    GRAPHQL_PATH,
     ISSUES_RESPONSE,
     ISSUE_RESPONSE,
     MAX_ASSIGNEE_LOOKUPS,
@@ -36,6 +36,8 @@ from .schemas import (
     MERGE_REQUESTS_RESPONSE,
     MERGE_REQUEST_RESPONSE,
     NOTES_RESPONSE,
+    PROJECTS_PATH,
+    PROJECT_RESPONSE,
     USERS_PATH,
     USERS_RESPONSE,
     GitLabCommentView,
@@ -55,7 +57,10 @@ from .schemas import (
     GitLabMergeRequestsView,
     GitLabNoteRequest,
     GitLabNotesQuery,
+    GitLabProjectRequest,
+    GitLabProjectVariables,
     GitLabUserQuery,
+    ProjectReference,
     parse_response,
     require_identity,
 )
@@ -64,7 +69,7 @@ GitLabUsername = Annotated[str, StringConstraints(strip_whitespace=True, min_len
 
 
 class SearchIssuesInput(BaseModel):
-    project: str = Field(
+    project: ProjectReference = Field(
         min_length=1, description="Project path such as acme/api, or its numeric id."
     )
     text: str | None = Field(default=None, description="Free text to match.")
@@ -78,7 +83,7 @@ class SearchIssuesInput(BaseModel):
 
 
 class GetIssueInput(BaseModel):
-    project: str = Field(min_length=1)
+    project: ProjectReference
     issue_iid: StrictInt = Field(
         ge=1, description="Issue number as shown in the project."
     )
@@ -86,7 +91,7 @@ class GetIssueInput(BaseModel):
 
 
 class CreateIssueInput(BaseModel):
-    project: str = Field(min_length=1)
+    project: ProjectReference
     title: str = Field(min_length=1)
     description: str | None = Field(default=None, description="Markdown body.")
     labels: list[str] | None = None
@@ -98,13 +103,13 @@ class CreateIssueInput(BaseModel):
 
 
 class AddCommentInput(BaseModel):
-    project: str = Field(min_length=1)
+    project: ProjectReference
     issue_iid: StrictInt = Field(ge=1)
     body: str = Field(min_length=1, description="Markdown comment.")
 
 
 class ListMergeRequestsInput(BaseModel):
-    project: str = Field(min_length=1)
+    project: ProjectReference
     state: GitLabMergeRequestQueryState = Field(
         default=GitLabMergeRequestQueryState.OPENED,
         description="Merge request state to list; all omits the state filter.",
@@ -114,7 +119,7 @@ class ListMergeRequestsInput(BaseModel):
 
 
 class GetMergeRequestInput(BaseModel):
-    project: str = Field(min_length=1)
+    project: ProjectReference
     merge_request_iid: StrictInt = Field(ge=1)
     include_changes: StrictBool = Field(default=True)
 
@@ -125,8 +130,8 @@ class GetMergeRequestInput(BaseModel):
     display_name="Search GitLab Issues",
     description=(
         "Find issues in a project by state, label, assignee, or free text. The "
-        "project is named the way it appears in its URL — acme/api — and the "
-        "encoding GitLab requires is handled here."
+        "project is a numeric ID or literal path such as acme/api, not a URL. "
+        "Paths are resolved to numeric IDs before reading issues."
     ),
     input_model=SearchIssuesInput,
     effect=ToolEffect.READ,
@@ -143,11 +148,19 @@ async def search_issues(
         if payload.assignee_username
         else None,
     )
+    project = await _project(payload.project, ctx)
     response = await ctx.read(
-        f"/projects/{_project(payload.project)}/issues",
+        f"{PROJECTS_PATH}/{project}/issues",
         query=query.model_dump(mode="json", by_alias=True, exclude_none=True),
     )
     issues = parse_response(response, ISSUES_RESPONSE)
+    for issue in issues:
+        require_identity(
+            actual_iid=issue.iid,
+            requested_iid=issue.iid,
+            actual_project_id=issue.project_id,
+            project=project,
+        )
     return GitLabIssueListView(
         project=payload.project,
         issues=[_issue_view(issue) for issue in issues],
@@ -170,9 +183,9 @@ async def search_issues(
 async def get_issue(
     payload: GetIssueInput, ctx: VendorToolContext
 ) -> dict[str, JsonValue]:
-    project = _project(payload.project)
+    project = await _project(payload.project, ctx)
     issue = parse_response(
-        await ctx.read(f"/projects/{project}/issues/{payload.issue_iid}"),
+        await ctx.read(f"{PROJECTS_PATH}/{project}/issues/{payload.issue_iid}"),
         ISSUE_RESPONSE,
     )
     require_identity(
@@ -185,7 +198,7 @@ async def get_issue(
     view.description = _clip(issue.description)
     if payload.include_comments:
         notes = await ctx.read(
-            f"/projects/{project}/issues/{payload.issue_iid}/notes",
+            f"{PROJECTS_PATH}/{project}/issues/{payload.issue_iid}/notes",
             query=GitLabNotesQuery().model_dump(mode="json"),
         )
         view.comments = [
@@ -217,7 +230,7 @@ async def get_issue(
 async def create_issue(
     payload: CreateIssueInput, ctx: VendorToolContext
 ) -> dict[str, JsonValue]:
-    project = _project(payload.project)
+    project = await _project(payload.project, ctx)
     assignee_ids = await _resolve_assignees(payload.assignee_usernames or [], ctx)
     body = GitLabCreateIssueRequest(
         title=payload.title,
@@ -227,12 +240,17 @@ async def create_issue(
         assignee_ids=assignee_ids if len(assignee_ids) > 1 else None,
     )
     response = await ctx.mutate(
-        f"/projects/{project}/issues",
+        f"{PROJECTS_PATH}/{project}/issues",
         json=body.model_dump(mode="json", exclude_none=True),
     )
-    return _issue_view(parse_response(response, ISSUE_RESPONSE)).model_dump(
-        mode="json", exclude_unset=True
+    issue = parse_response(response, ISSUE_RESPONSE)
+    require_identity(
+        actual_iid=issue.iid,
+        requested_iid=issue.iid,
+        actual_project_id=issue.project_id,
+        project=project,
     )
+    return _issue_view(issue).model_dump(mode="json", exclude_unset=True)
 
 
 @curated_tool(
@@ -246,9 +264,9 @@ async def create_issue(
 async def add_comment(
     payload: AddCommentInput, ctx: VendorToolContext
 ) -> dict[str, JsonValue]:
-    project = _project(payload.project)
+    project = await _project(payload.project, ctx)
     response = await ctx.mutate(
-        f"/projects/{project}/issues/{payload.issue_iid}/notes",
+        f"{PROJECTS_PATH}/{project}/issues/{payload.issue_iid}/notes",
         json=GitLabNoteRequest(body=payload.body).model_dump(mode="json"),
     )
     note = parse_response(response, CREATED_NOTE_RESPONSE)
@@ -288,11 +306,19 @@ async def list_merge_requests(
         else None,
         target_branch=payload.target_branch or None,
     )
+    project = await _project(payload.project, ctx)
     response = await ctx.read(
-        f"/projects/{_project(payload.project)}/merge_requests",
+        f"{PROJECTS_PATH}/{project}/merge_requests",
         query=query.model_dump(mode="json", exclude_none=True),
     )
     requests = parse_response(response, MERGE_REQUESTS_RESPONSE)
+    for request in requests:
+        require_identity(
+            actual_iid=request.iid,
+            requested_iid=request.iid,
+            actual_project_id=request.project_id,
+            project=project,
+        )
     return GitLabMergeRequestsView(
         project=payload.project,
         merge_requests=[_merge_request_view(item) for item in requests],
@@ -315,10 +341,10 @@ async def list_merge_requests(
 async def get_merge_request(
     payload: GetMergeRequestInput, ctx: VendorToolContext
 ) -> dict[str, JsonValue]:
-    project = _project(payload.project)
+    project = await _project(payload.project, ctx)
     request = parse_response(
         await ctx.read(
-            f"/projects/{project}/merge_requests/{payload.merge_request_iid}"
+            f"{PROJECTS_PATH}/{project}/merge_requests/{payload.merge_request_iid}"
         ),
         MERGE_REQUEST_RESPONSE,
     )
@@ -336,7 +362,7 @@ async def get_merge_request(
     if payload.include_changes:
         changes = parse_response(
             await ctx.read(
-                f"/projects/{project}/merge_requests/{payload.merge_request_iid}/changes"
+                f"{PROJECTS_PATH}/{project}/merge_requests/{payload.merge_request_iid}/changes"
             ),
             CHANGES_RESPONSE,
         )
@@ -359,20 +385,39 @@ async def get_merge_request(
     return view.model_dump(mode="json", exclude_unset=True)
 
 
-def _project(value: str) -> str:
-    """Encode one project segment; the shared transport still owns path policy."""
-    candidate = value.strip().strip("/")
-    if candidate.startswith("https://"):
-        parts = [part for part in candidate.split("/") if part]
-        candidate = "/".join(parts[2:]) if len(parts) > 2 else ""
-    if not candidate:
+async def _project(value: str, ctx: VendorToolContext) -> int:
+    """Resolve a full path once per invocation; a null project is not an empty list."""
+    if value.isascii() and value.isdecimal():
+        return int(value)
+    body = GitLabProjectRequest(variables=GitLabProjectVariables(full_path=value))
+    response = parse_response(
+        await ctx.read(
+            GRAPHQL_PATH,
+            method="POST",
+            json=body.model_dump(mode="json", by_alias=True),
+        ),
+        PROJECT_RESPONSE,
+    )
+    if response.errors:
         raise VendorToolError(
-            GitLabErrorCode.PROJECT_INVALID,
-            "Use a GitLab project as group/name or numeric ID.",
+            GitLabErrorCode.REJECTED, "GitLab rejected project lookup."
         )
-    if candidate.isdigit():
-        return candidate
-    return quote(candidate, safe="")
+    if response.data is None:
+        raise VendorToolError(
+            GitLabErrorCode.RESPONSE_INVALID,
+            "GitLab omitted the project lookup result.",
+        )
+    project = response.data.project
+    if project is None:
+        raise VendorToolError(
+            GitLabErrorCode.PROJECT_UNAVAILABLE,
+            "The project is unavailable to this connection. Verify its path and token access.",
+        )
+    if project.full_path.casefold() != value.casefold():
+        raise VendorToolError(
+            GitLabErrorCode.RESPONSE_INVALID, "GitLab returned a different project."
+        )
+    return project.numeric_id
 
 
 async def _resolve_assignees(usernames: list[str], ctx: VendorToolContext) -> list[int]:

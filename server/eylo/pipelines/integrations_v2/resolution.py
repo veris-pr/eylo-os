@@ -33,7 +33,9 @@ from eylo.pipelines.external_connections.credentials import (
 
 from .contracts import CuratedVendorSpec, VendorAccount
 from .credentials import VendorWireAuth, build_vendor_wire_auth
+from .oauth_contracts import CuratedOAuthError
 from .registry import CuratedRegistry, load_vendors
+from .vendors.atlassian_oauth import product_for_vendor, require_site_binding
 from .vendors.calendly.schemas import VENDOR_KEY as CALENDLY_VENDOR_KEY
 from .vendors.calendly.schemas import effective_scopes as calendly_effective_scopes
 
@@ -146,6 +148,22 @@ async def resolve_vendor_auth(
         connection_id=connection.id,
         revision=connection.revision,
     )
+
+    product = product_for_vendor(grant.vendor)
+    if grant.auth_kind is VendorAuthKind.OAUTH2 and product is not None:
+        try:
+            binding = require_site_binding(
+                credentials,
+                product=product,
+                site_origin=grant.instance_url,
+                required_scopes=required_scopes,
+            )
+        except CuratedOAuthError:
+            raise CredentialUnavailableError(
+                "auth_required", "Reconnect the configured Atlassian site."
+            ) from None
+        base_url = binding.gateway_url(_path)
+        origin, _path = parse_https_target(base_url)
 
     auth = build_vendor_wire_auth(
         auth_kind=grant.auth_kind,

@@ -660,6 +660,16 @@ repos:
           eylo/pipelines/integrations_v2/vendors/pagerduty/
           eylo/pipelines/integrations_v2/vendors/sentry/
           eylo/pipelines/integrations_v2/vendors/typeform/
+          eylo/pipelines/integrations_v2/vendors/airtable/
+          eylo/pipelines/integrations_v2/vendors/confluence/
+          eylo/pipelines/integrations_v2/vendors/slack/
+          eylo/pipelines/integrations_v2/vendors/outlook/
+          eylo/pipelines/integrations_v2/vendors/gmail/
+          eylo/pipelines/integrations_v2/vendors/zoom/
+          eylo/pipelines/integrations_v2/vendors/notion/
+          eylo/pipelines/integrations_v2/vendors/shopify/
+          eylo/pipelines/integrations_v2/vendors/stripe/
+          eylo/pipelines/integrations_v2/vendors/atlassian_oauth.py
           eylo/pipelines/integrations_v2/vendors/zendesk/
           eylo/pipelines/integrations_v2/vendors/linear/
           eylo/pipelines/integrations_v2/vendors/gitlab/

@@ -1,17 +1,8 @@
-"""Curated Slack tools.
+"""Typed Slack reads and receipt-backed posting with bounded name resolution."""
 
-`post_message` takes the channel *name* a person would say and resolves it to
-an id, which is the lookup an agent would otherwise spend a whole tool call on.
-`read_channel` goes further and resolves the user ids in the returned messages
-into display names, so the model gets a transcript it can quote rather than a
-wall of `U024BE7LH`.
-"""
+import re
 
-from __future__ import annotations
-
-from typing import Any
-
-from pydantic import BaseModel, Field
+from pydantic import Field, JsonValue, TypeAdapter, field_validator
 
 from eylo.modules.integrations_v2.domain.enums import ToolEffect
 
@@ -23,255 +14,351 @@ from .definition import (
     CHAT_WRITE,
     USERS_READ,
     USERS_READ_EMAIL,
-    call,
     vendor,
 )
+from .schemas import (
+    CHANNELS,
+    CHANNEL_ID_PATTERN,
+    DEFAULT_CHANNEL_LIMIT,
+    DEFAULT_HISTORY_LIMIT,
+    HISTORY,
+    MAX_LOOKUP_PAGES,
+    MAX_MESSAGE_CHARS,
+    MAX_PAGE_SIZE,
+    POST,
+    USER,
+    USERS,
+    ChannelView,
+    ChannelsQuery,
+    ChannelsView,
+    Cursor,
+    EmailQuery,
+    HistoryQuery,
+    HistoryView,
+    MessageView,
+    PageQuery,
+    PostRequest,
+    PostView,
+    SlackErrorCode,
+    SlackMethod,
+    SlackRequest,
+    Timestamp,
+    UserView,
+    invalid_response,
+    next_cursor,
+    parse_response,
+)
 
-_MAX_CHANNEL_PAGES = 10
 
-
-class PostMessageInput(BaseModel):
+class ChannelInput(SlackRequest):
     channel: str = Field(
         min_length=1,
-        description="Channel name such as 'general' or '#general', or a channel id.",
+        max_length=255,
+        description="Public channel name, with optional #, or channel ID. Access still requires the bot's scopes and membership.",
     )
-    text: str = Field(min_length=1, description="Message text, Slack mrkdwn.")
-    thread_ts: str | None = Field(
+
+    @field_validator("channel")
+    @classmethod
+    def normalize_channel(cls, value: str) -> str:
+        value = value.strip().removeprefix("#")
+        if not value:
+            raise ValueError("Channel name or ID is required.")
+        return value
+
+
+class PostMessageInput(ChannelInput):
+    text: str = Field(
+        min_length=1,
+        max_length=MAX_MESSAGE_CHARS,
+        description="Slack mrkdwn text. Longer messages are rejected, not silently truncated.",
+    )
+    thread_ts: Timestamp | None = Field(
         default=None,
-        description="Reply inside this thread's parent timestamp.",
+        description="Parent message timestamp for a thread reply; retain it as a string.",
     )
 
 
-class ReadChannelInput(BaseModel):
-    channel: str = Field(
-        min_length=1,
-        description="Channel name such as 'general' or '#general', or a channel id.",
-    )
+class ReadChannelInput(ChannelInput):
     limit: int = Field(
-        default=20, ge=1, le=200, description="How many recent messages to return."
+        default=DEFAULT_HISTORY_LIMIT,
+        ge=1,
+        le=MAX_PAGE_SIZE,
+        description="Requested page size; Slack may return fewer messages under its app-specific limits.",
+    )
+    cursor: Cursor | None = None
+    latest: Timestamp | None = Field(
+        default=None,
+        description="Exclusive upper time boundary; use next_latest when no next_cursor is returned.",
     )
 
 
-class ListChannelsInput(BaseModel):
+class ListChannelsInput(SlackRequest):
     query: str | None = Field(
-        default=None, description="Case-insensitive filter on channel name."
+        default=None,
+        description="Case-insensitive name filter on the current page; continue with next_cursor, including after an empty page.",
     )
-    limit: int = Field(default=50, ge=1, le=200)
+    limit: int = Field(default=DEFAULT_CHANNEL_LIMIT, ge=1, le=MAX_PAGE_SIZE)
+    cursor: Cursor | None = None
 
 
-class FindUserInput(BaseModel):
-    email: str = Field(min_length=3, description="Email address to look up.")
+class FindUserInput(EmailQuery):
+    """Lookup is by the workspace email; it is not a directory substring search."""
+
+
+async def _call[T](
+    ctx: VendorToolContext,
+    method: SlackMethod,
+    payload: SlackRequest,
+    schema: TypeAdapter[T],
+) -> T:
+    body = payload.model_dump(mode="json", exclude_none=True)
+    if method is SlackMethod.POST_MESSAGE:
+        response = await ctx.mutate(f"/{method.value}", json=body)
+    else:
+        response = await ctx.read(f"/{method.value}", query=body)
+    return parse_response(response, schema)
 
 
 @curated_tool(
     vendor=vendor.vendor,
     name="list_channels",
     display_name="List Slack Channels",
-    description=(
-        "List public Slack channels the bot can see, optionally filtered by "
-        "name. Use this when you need to know what channels exist; posting and "
-        "reading accept a channel name directly and need no lookup first."
-    ),
+    description="List one page of public Slack channels. Optional name filtering applies to this page only; use next_cursor to continue, even after zero matches. Posting and reading also accept channel names directly.",
     input_model=ListChannelsInput,
     effect=ToolEffect.READ,
     scopes=(CHANNELS_READ,),
 )
 async def list_channels(
     payload: ListChannelsInput, ctx: VendorToolContext
-) -> dict[str, Any]:
-    channels = await _all_channels(ctx)
+) -> dict[str, JsonValue]:
+    page = await _call(
+        ctx,
+        SlackMethod.CHANNELS,
+        ChannelsQuery(limit=payload.limit, cursor=payload.cursor),
+        CHANNELS,
+    )
+    if len(page.channels) > payload.limit:
+        invalid_response()
     needle = (payload.query or "").strip().casefold()
-    matched = [
-        channel
-        for channel in channels
-        if not needle or needle in str(channel.get("name", "")).casefold()
-    ][: payload.limit]
-    return {
-        "channels": [
-            {
-                "id": channel.get("id"),
-                "name": channel.get("name"),
-                "is_private": channel.get("is_private"),
-                "member_count": channel.get("num_members"),
-                "topic": (channel.get("topic") or {}).get("value"),
-            }
-            for channel in matched
-        ],
-        "count": len(matched),
-    }
+    channels = [
+        ChannelView(
+            id=channel.id,
+            name=channel.name,
+            is_private=channel.is_private,
+            member_count=channel.num_members,
+            topic=channel.topic.value if channel.topic else None,
+        )
+        for channel in page.channels
+        if not needle or needle in channel.name.casefold()
+    ]
+    return ChannelsView(
+        channels=channels,
+        count=len(channels),
+        next_cursor=next_cursor(page, payload.cursor),
+    ).model_dump(mode="json")
 
 
 @curated_tool(
     vendor=vendor.vendor,
     name="post_message",
     display_name="Post Slack Message",
-    description=(
-        "Post a message to a Slack channel by name or id. The channel name is "
-        "resolved automatically, so 'general' works without looking up its id "
-        "first. Set thread_ts to reply inside an existing thread."
-    ),
+    description="Post Slack mrkdwn to a channel by ID or public channel name. The bot needs channel access; this tool does not join channels. Use thread_ts for a thread reply. Returns Slack's acknowledged message identity and text, not a delivery/read confirmation.",
     input_model=PostMessageInput,
     effect=ToolEffect.MUTATION,
     scopes=(CHAT_WRITE, CHANNELS_READ),
 )
 async def post_message(
     payload: PostMessageInput, ctx: VendorToolContext
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     channel_id = await _resolve_channel(ctx, payload.channel)
-    body: dict[str, Any] = {"channel": channel_id, "text": payload.text}
-    if payload.thread_ts:
-        body["thread_ts"] = payload.thread_ts
-    result = await call(ctx, "chat.postMessage", body, mutating=True)
-    return {
-        "channel_id": result.get("channel"),
-        "ts": result.get("ts"),
-        "permalink_hint": f"{result.get('channel')}/{result.get('ts')}",
-    }
+    result = await _call(
+        ctx,
+        SlackMethod.POST_MESSAGE,
+        PostRequest(channel=channel_id, text=payload.text, thread_ts=payload.thread_ts),
+        POST,
+    )
+    if (
+        result.channel != channel_id
+        or (result.message.ts is not None and result.message.ts != result.ts)
+        or result.message.thread_ts != payload.thread_ts
+    ):
+        invalid_response()
+    warnings = list(result.response_metadata.warnings)
+    if result.warning:
+        warnings.append(result.warning)
+    return PostView(
+        channel_id=result.channel,
+        ts=result.ts,
+        permalink_hint=f"{result.channel}/{result.ts}",
+        text=result.message.text,
+        thread_ts=result.message.thread_ts,
+        warnings=warnings,
+    ).model_dump(mode="json")
 
 
 @curated_tool(
     vendor=vendor.vendor,
     name="read_channel",
     display_name="Read Slack Channel",
-    description=(
-        "Read recent messages from a Slack channel by name or id. Author ids "
-        "are resolved to display names, so the result reads as a transcript "
-        "rather than raw user ids needing a second lookup."
-    ),
+    description="Read one page of recent public-channel messages in Slack's newest-first order. Author names are resolved with bounded directory pagination; unresolved_author_ids identifies remaining IDs. Continue with next_cursor or next_latest. This reads top-level history, not thread replies or file contents; unrendered Block Kit types are identified explicitly.",
     input_model=ReadChannelInput,
     effect=ToolEffect.READ,
     scopes=(CHANNELS_HISTORY, CHANNELS_READ, USERS_READ),
 )
 async def read_channel(
     payload: ReadChannelInput, ctx: VendorToolContext
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     channel_id = await _resolve_channel(ctx, payload.channel)
-    history = await call(
+    history = await _call(
         ctx,
-        "conversations.history",
-        {"channel": channel_id, "limit": payload.limit},
+        SlackMethod.HISTORY,
+        HistoryQuery(
+            channel=channel_id,
+            limit=payload.limit,
+            cursor=payload.cursor,
+            latest=payload.latest,
+        ),
+        HISTORY,
     )
-    messages = [m for m in history.get("messages", []) if isinstance(m, dict)]
-    names = await _display_names(
-        ctx, {str(m.get("user")) for m in messages if m.get("user")}
-    )
-    return {
-        "channel_id": channel_id,
-        "messages": [
-            {
-                "ts": message.get("ts"),
-                "author": names.get(str(message.get("user")), message.get("user")),
-                "text": message.get("text"),
-                "thread_ts": message.get("thread_ts"),
-                "reply_count": message.get("reply_count"),
-            }
-            for message in messages
-        ],
-        "count": len(messages),
-    }
+    if len(history.messages) > payload.limit:
+        invalid_response()
+    cursor = next_cursor(history, payload.cursor)
+    latest = None
+    if history.has_more and cursor is None:
+        if not history.messages:
+            invalid_response()
+        latest = min(
+            history.messages, key=lambda message: _timestamp_key(message.ts)
+        ).ts
+        if payload.latest is not None and _timestamp_key(latest) >= _timestamp_key(
+            payload.latest
+        ):
+            invalid_response()
+    user_ids = {message.user for message in history.messages if message.user}
+    names = await _display_names(ctx, user_ids)
+    messages = [
+        MessageView(
+            ts=message.ts,
+            author=names.get(message.user, message.user)
+            if message.user
+            else (message.username or message.bot_id),
+            author_id=message.user or message.bot_id,
+            text=message.text,
+            subtype=message.subtype,
+            thread_ts=message.thread_ts,
+            reply_count=message.reply_count,
+            attachments=message.attachments,
+            files=message.files,
+            unrendered_block_types=[block.type for block in message.blocks],
+        )
+        for message in history.messages
+    ]
+    return HistoryView(
+        channel_id=channel_id,
+        messages=messages,
+        count=len(messages),
+        next_cursor=cursor,
+        next_latest=latest,
+        unresolved_author_ids=sorted(user_ids - names.keys()),
+    ).model_dump(mode="json")
 
 
 @curated_tool(
     vendor=vendor.vendor,
     name="find_user_by_email",
     display_name="Find Slack User By Email",
-    description=(
-        "Look up a Slack user by email address and return their id, display "
-        "name, and whether the account is active."
-    ),
+    description="Find a Slack workspace user by their registered email address. Returns native identity, display name and reported account flags. A successful lookup does not establish channel membership or permission to message them.",
     input_model=FindUserInput,
     effect=ToolEffect.READ,
     scopes=(USERS_READ, USERS_READ_EMAIL),
 )
 async def find_user_by_email(
     payload: FindUserInput, ctx: VendorToolContext
-) -> dict[str, Any]:
-    result = await call(ctx, "users.lookupByEmail", {"email": payload.email})
-    user = result.get("user")
-    if not isinstance(user, dict):
-        raise VendorToolError("user_not_found", "Slack returned no user.")
-    profile = user.get("profile") or {}
-    return {
-        "id": user.get("id"),
-        "name": user.get("name"),
-        "real_name": profile.get("real_name") or user.get("real_name"),
-        "email": profile.get("email"),
-        "is_bot": user.get("is_bot"),
-        "deleted": user.get("deleted"),
-    }
+) -> dict[str, JsonValue]:
+    result = await _call(ctx, SlackMethod.USER_BY_EMAIL, payload, USER)
+    user = result.user
+    if (
+        user.profile.email is not None
+        and user.profile.email.casefold() != payload.email.casefold()
+    ):
+        invalid_response()
+    return UserView(
+        id=user.id,
+        name=user.name,
+        real_name=user.profile.real_name or user.real_name,
+        display_name=user.display_name,
+        email=user.profile.email,
+        is_bot=user.is_bot,
+        deleted=user.deleted,
+    ).model_dump(mode="json")
 
 
 async def _resolve_channel(ctx: VendorToolContext, channel: str) -> str:
-    """Accept a channel id or a name, and return an id.
-
-    Slack ids start with C/G/D and never contain lowercase words, so an input
-    that already looks like an id is passed through untouched rather than
-    costing a channel listing.
-    """
-    candidate = channel.strip().lstrip("#")
-    if _looks_like_channel_id(candidate):
-        return candidate
-    wanted = candidate.casefold()
-    for entry in await _all_channels(ctx):
-        if str(entry.get("name", "")).casefold() == wanted:
-            return str(entry["id"])
-    raise VendorToolError(
-        "channel_not_found",
-        f"No Slack channel named '{channel}' is visible to this connection.",
-    )
-
-
-def _looks_like_channel_id(value: str) -> bool:
-    return (
-        len(value) >= 9
-        and value[0] in {"C", "G", "D"}
-        and value.upper() == value
-        and value.isalnum()
-    )
-
-
-async def _all_channels(ctx: VendorToolContext) -> list[dict[str, Any]]:
-    """Page through visible channels, bounded so one call cannot run away."""
-    channels: list[dict[str, Any]] = []
-    cursor: str | None = None
-    for _page in range(_MAX_CHANNEL_PAGES):
-        body: dict[str, Any] = {"limit": 200, "exclude_archived": True}
-        if cursor:
-            body["cursor"] = cursor
-        result = await call(ctx, "conversations.list", body)
-        channels.extend(
-            entry for entry in result.get("channels", []) if isinstance(entry, dict)
+    """Resolve a public name without treating a bounded search as exhaustive."""
+    if re.fullmatch(CHANNEL_ID_PATTERN, channel):
+        return channel
+    cursor = None
+    seen: set[str] = set()
+    for _ in range(MAX_LOOKUP_PAGES):
+        page = await _call(
+            ctx,
+            SlackMethod.CHANNELS,
+            ChannelsQuery(limit=MAX_PAGE_SIZE, cursor=cursor),
+            CHANNELS,
         )
-        cursor = ((result.get("response_metadata") or {}).get("next_cursor")) or None
+        matches = [
+            entry
+            for entry in page.channels
+            if entry.name.casefold() == channel.casefold()
+        ]
+        if len(matches) > 1:
+            raise VendorToolError(
+                SlackErrorCode.CHANNEL_AMBIGUOUS,
+                "Use a channel ID to disambiguate this Slack channel.",
+            )
+        if matches:
+            return matches[0].id
+        cursor = next_cursor(page, cursor)
         if not cursor:
-            break
-    return channels
+            raise VendorToolError(
+                SlackErrorCode.CHANNEL_NOT_FOUND,
+                "No matching public channel is visible to this connection.",
+            )
+        if cursor in seen:
+            invalid_response()
+        seen.add(cursor)
+    raise VendorToolError(
+        SlackErrorCode.LOOKUP_INCOMPLETE,
+        "Channel lookup reached its page budget. Supply the channel ID instead.",
+    )
 
 
 async def _display_names(ctx: VendorToolContext, user_ids: set[str]) -> dict[str, str]:
-    """Resolve author ids to names in one call rather than one call per author."""
-    if not user_ids:
-        return {}
-    result = await call(ctx, "users.list", {"limit": 200})
+    """Page a bounded directory, not one vendor request per message author."""
     names: dict[str, str] = {}
-    for member in result.get("members", []):
-        if not isinstance(member, dict):
-            continue
-        member_id = str(member.get("id"))
-        if member_id in user_ids:
-            profile = member.get("profile") or {}
-            names[member_id] = (
-                profile.get("display_name")
-                or profile.get("real_name")
-                or member.get("name")
-                or member_id
-            )
+    cursor = None
+    seen: set[str] = set()
+    for _ in range(MAX_LOOKUP_PAGES):
+        if user_ids <= names.keys():
+            break
+        page = await _call(
+            ctx, SlackMethod.USERS, PageQuery(limit=MAX_PAGE_SIZE, cursor=cursor), USERS
+        )
+        for member in page.members:
+            if member.id in user_ids:
+                names[member.id] = member.display_name
+        cursor = next_cursor(page, cursor)
+        if not cursor:
+            break
+        if cursor in seen:
+            invalid_response()
+        seen.add(cursor)
     return names
 
 
-__all__ = [
-    "find_user_by_email",
-    "list_channels",
-    "post_message",
-    "read_channel",
-]
+def _timestamp_key(value: str) -> tuple[int, int]:
+    seconds, micros = value.split(".")
+    return int(seconds), int(micros)
+
+
+__all__ = ["find_user_by_email", "list_channels", "post_message", "read_channel"]

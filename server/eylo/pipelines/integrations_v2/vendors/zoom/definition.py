@@ -7,12 +7,11 @@ from eylo.modules.integrations_v2.domain.enums import VendorAuthKind
 from ...contracts import CuratedVendorSpec, VendorOAuthConfig
 from ...registry import registry
 
-# Zoom's own scope names.
+# Legacy user-level scopes, accepted by these endpoints alongside granular scopes.
 MEETING_READ = "meeting:read"
 MEETING_WRITE = "meeting:write"
-USER_READ = "user:read"
 
-OAUTH_SCOPES: tuple[str, ...] = (MEETING_READ, MEETING_WRITE, USER_READ)
+OAUTH_SCOPES: tuple[str, ...] = (MEETING_READ, MEETING_WRITE)
 
 vendor = registry.register_vendor(
     CuratedVendorSpec(
@@ -35,4 +34,4 @@ vendor = registry.register_vendor(
     )
 )
 
-__all__ = ["MEETING_READ", "MEETING_WRITE", "OAUTH_SCOPES", "USER_READ", "vendor"]
+__all__ = ["MEETING_READ", "MEETING_WRITE", "OAUTH_SCOPES", "vendor"]
