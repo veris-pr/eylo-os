@@ -2,17 +2,52 @@
 
 from __future__ import annotations
 
-from typing import Any
-
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, FiniteFloat, JsonValue, StrictInt
 
 from eylo.modules.integrations_v2.domain.enums import ToolEffect
 
 from ...contracts import VendorToolContext, VendorToolError
 from ...registry import curated_tool
 from .definition import vendor
-
-MAX_NOTE_CHARS = 6_000
+from .schemas import (
+    DEALS_PATH,
+    DEALS_RESPONSE,
+    DEAL_RESPONSE,
+    DEFAULT_DEAL_LIMIT,
+    MAX_DEAL_LIMIT,
+    MAX_NOTE_CHARS,
+    MAX_STAGE_PAGES,
+    NOTES_PATH,
+    NOTE_RESPONSE,
+    PERSONS_PATH,
+    PERSONS_RESPONSE,
+    PERSON_RESPONSE,
+    PERSON_SEARCH_PATH,
+    SEARCH_RESPONSE,
+    STAGES_PATH,
+    STAGES_RESPONSE,
+    PipedriveDeal,
+    PipedriveDealFilter,
+    PipedriveDealStatus,
+    PipedriveDealView,
+    PipedriveDealWrite,
+    PipedriveDealsQuery,
+    PipedriveDealsView,
+    PipedriveErrorCode,
+    PipedriveNoteView,
+    PipedriveNoteWrite,
+    PipedrivePersonDetailQuery,
+    PipedrivePersonMissing,
+    PipedrivePersonSearchQuery,
+    PipedrivePersonView,
+    PipedrivePersonsQuery,
+    PipedriveSearchPerson,
+    PipedriveStage,
+    PipedriveStageWrite,
+    PipedriveStagesQuery,
+    parse_response,
+    require_identity,
+)
 
 
 class FindPersonInput(BaseModel):
@@ -20,18 +55,21 @@ class FindPersonInput(BaseModel):
 
 
 class ListDealsInput(BaseModel):
-    status: str = Field(
-        default="open", description="open, won, lost, deleted, or all_not_deleted."
+    status: PipedriveDealFilter = Field(
+        default=PipedriveDealFilter.OPEN,
+        description="open, won, lost, deleted, or all_not_deleted.",
     )
     person_email: str | None = Field(
         default=None, description="Only deals for this person."
     )
-    limit: int = Field(default=25, ge=1, le=100)
+    limit: StrictInt = Field(default=DEFAULT_DEAL_LIMIT, ge=1, le=MAX_DEAL_LIMIT)
 
 
 class CreateDealInput(BaseModel):
     title: str = Field(min_length=1, description="What the deal is.")
-    value: float | None = Field(default=None, description="Deal value as a number.")
+    value: FiniteFloat | None = Field(
+        default=None, description="Deal value as a number."
+    )
     currency: str | None = Field(
         default=None, description="Three-letter code, e.g. GBP."
     )
@@ -42,13 +80,15 @@ class CreateDealInput(BaseModel):
 
 
 class MoveDealStageInput(BaseModel):
-    deal_id: int = Field(ge=1)
+    deal_id: StrictInt = Field(ge=1)
     stage: str = Field(min_length=1, description="Target stage name, e.g. Negotiation.")
 
 
 class AddNoteInput(BaseModel):
     content: str = Field(min_length=1, description="Note text.")
-    deal_id: int | None = Field(default=None, description="Attach to this deal.")
+    deal_id: StrictInt | None = Field(
+        default=None, ge=1, description="Attach to this deal."
+    )
     person_email: str | None = Field(
         default=None, description="Attach to this person instead."
     )
@@ -68,11 +108,30 @@ class AddNoteInput(BaseModel):
 )
 async def find_person(
     payload: FindPersonInput, ctx: VendorToolContext
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     person = await _person_or_none(ctx, payload.email)
     if person is None:
-        return {"found": False, "email": payload.email}
-    return {"found": True, **_person_view(person)}
+        return PipedrivePersonMissing(email=payload.email).model_dump(mode="json")
+    response = await ctx.read(
+        f"{PERSONS_PATH}/{person.id}",
+        query=PipedrivePersonDetailQuery().model_dump(mode="json"),
+    )
+    detail = parse_response(response, PERSON_RESPONSE).data
+    require_identity(detail, person.id)
+    # Search includes the organization name; the v2 detail only includes its id.
+    organization = person.organization
+    organization_name = (
+        organization.name if organization and organization.id == detail.org_id else None
+    )
+    return PipedrivePersonView(
+        id=detail.id,
+        name=detail.name,
+        emails=[entry.value for entry in detail.emails],
+        phones=[entry.value for entry in detail.phones],
+        organization=organization_name,
+        open_deals=detail.open_deals_count,
+        closed_deals=detail.closed_deals_count,
+    ).model_dump(mode="json")
 
 
 @curated_tool(
@@ -88,23 +147,52 @@ async def find_person(
     input_model=ListDealsInput,
     effect=ToolEffect.READ,
 )
-async def list_deals(payload: ListDealsInput, ctx: VendorToolContext) -> dict[str, Any]:
-    query: dict[str, Any] = {"status": payload.status, "limit": payload.limit}
-    person_name = None
+async def list_deals(
+    payload: ListDealsInput, ctx: VendorToolContext
+) -> dict[str, JsonValue]:
+    person = None
     if payload.person_email:
         person = await _person_or_none(ctx, payload.person_email)
         if person is None:
-            return {"deals": [], "count": 0, "person_found": False}
-        query["person_id"] = person.get("id")
-        person_name = person.get("name")
-
-    deals = _collection(await ctx.read("/deals", query=query))
+            return PipedriveDealsView(deals=[], count=0, person_found=False).model_dump(
+                mode="json", exclude_unset=True
+            )
+    status = (
+        None
+        if payload.status is PipedriveDealFilter.ALL_NOT_DELETED
+        else PipedriveDealStatus(payload.status.value)
+    )
+    response = await ctx.read(
+        DEALS_PATH,
+        query=PipedriveDealsQuery(
+            status=status, limit=payload.limit, person_id=person.id if person else None
+        ).model_dump(mode="json", exclude_none=True),
+    )
+    deals = parse_response(response, DEALS_RESPONSE).data
     stages = await _stage_names(ctx)
-    return {
-        "person": person_name,
-        "deals": [_deal_view(deal, stages) for deal in deals],
-        "count": len(deals),
-    }
+    people: dict[int, str] = {person.id: person.name} if person else {}
+    missing = sorted(
+        {deal.person_id for deal in deals if deal.person_id is not None} - people.keys()
+    )
+    if missing:
+        response = await ctx.read(
+            PERSONS_PATH,
+            query=PipedrivePersonsQuery(
+                ids=",".join(str(person_id) for person_id in missing)
+            ).model_dump(mode="json"),
+        )
+        resolved = parse_response(response, PERSONS_RESPONSE).data
+        if any(item.id not in missing for item in resolved):
+            raise VendorToolError(
+                PipedriveErrorCode.RESPONSE_INVALID,
+                "Pipedrive returned an unrequested person.",
+            )
+        people.update({item.id: item.name for item in resolved})
+    return PipedriveDealsView(
+        person=person.name if person else None,
+        deals=[_deal_view(deal, stages, people) for deal in deals],
+        count=len(deals),
+    ).model_dump(mode="json", exclude_unset=True)
 
 
 @curated_tool(
@@ -121,29 +209,42 @@ async def list_deals(payload: ListDealsInput, ctx: VendorToolContext) -> dict[st
 )
 async def create_deal(
     payload: CreateDealInput, ctx: VendorToolContext
-) -> dict[str, Any]:
-    body: dict[str, Any] = {"title": payload.title}
-    if payload.value is not None:
-        body["value"] = payload.value
-    if payload.currency:
-        body["currency"] = payload.currency.upper()
+) -> dict[str, JsonValue]:
+    person = None
     if payload.person_email:
         person = await _person_or_none(ctx, payload.person_email)
         if person is None:
             raise VendorToolError(
-                "person_not_found",
-                f"No person in Pipedrive has the email '{payload.person_email}'.",
+                PipedriveErrorCode.PERSON_NOT_FOUND, "No matching Pipedrive person."
             )
-        body["person_id"] = person.get("id")
-    if payload.stage:
-        body["stage_id"] = await _stage_id(ctx, payload.stage)
-
-    created = _payload(await ctx.mutate("/deals", json=body))
-    if not isinstance(created, dict):
+    stages = await _stage_names(ctx)
+    stage_id = _stage_id(stages, payload.stage) if payload.stage else None
+    body = PipedriveDealWrite(
+        title=payload.title,
+        value=payload.value,
+        currency=payload.currency.upper() if payload.currency else None,
+        person_id=person.id if person else None,
+        stage_id=stage_id,
+    )
+    created = parse_response(
+        await ctx.mutate(
+            DEALS_PATH, json=body.model_dump(mode="json", exclude_none=True)
+        ),
+        DEAL_RESPONSE,
+    ).data
+    if stage_id is not None and created.stage_id != stage_id:
         raise VendorToolError(
-            "vendor_response_invalid", "Pipedrive did not return the new deal."
+            PipedriveErrorCode.RESPONSE_INVALID,
+            "Pipedrive returned a different deal stage.",
         )
-    return _deal_view(created, await _stage_names(ctx))
+    if person is not None and created.person_id != person.id:
+        raise VendorToolError(
+            PipedriveErrorCode.RESPONSE_INVALID,
+            "Pipedrive returned a deal linked to a different person.",
+        )
+    return _deal_view(
+        created, stages, {person.id: person.name} if person else {}
+    ).model_dump(mode="json")
 
 
 @curated_tool(
@@ -160,18 +261,24 @@ async def create_deal(
 )
 async def move_deal_stage(
     payload: MoveDealStageInput, ctx: VendorToolContext
-) -> dict[str, Any]:
-    stage_id = await _stage_id(ctx, payload.stage)
-    updated = _payload(
+) -> dict[str, JsonValue]:
+    stages = await _stage_names(ctx)
+    stage_id = _stage_id(stages, payload.stage)
+    updated = parse_response(
         await ctx.mutate(
-            f"/deals/{payload.deal_id}", method="PUT", json={"stage_id": stage_id}
-        )
-    )
-    if not isinstance(updated, dict):
+            f"{DEALS_PATH}/{payload.deal_id}",
+            method="PATCH",
+            json=PipedriveStageWrite(stage_id=stage_id).model_dump(mode="json"),
+        ),
+        DEAL_RESPONSE,
+    ).data
+    require_identity(updated, payload.deal_id)
+    if updated.stage_id != stage_id:
         raise VendorToolError(
-            "vendor_response_invalid", "Pipedrive did not return the updated deal."
+            PipedriveErrorCode.RESPONSE_INVALID,
+            "Pipedrive did not confirm the requested stage.",
         )
-    return _deal_view(updated, await _stage_names(ctx))
+    return _deal_view(updated, stages, {}).model_dump(mode="json")
 
 
 @curated_tool(
@@ -186,135 +293,145 @@ async def move_deal_stage(
     input_model=AddNoteInput,
     effect=ToolEffect.MUTATION,
 )
-async def add_note(payload: AddNoteInput, ctx: VendorToolContext) -> dict[str, Any]:
-    body: dict[str, Any] = {"content": payload.content[:MAX_NOTE_CHARS]}
-    if payload.deal_id:
-        body["deal_id"] = payload.deal_id
-    elif payload.person_email:
+async def add_note(
+    payload: AddNoteInput, ctx: VendorToolContext
+) -> dict[str, JsonValue]:
+    person_id = None
+    if payload.deal_id is None:
+        if not payload.person_email:
+            raise VendorToolError(
+                PipedriveErrorCode.TARGET_MISSING, "Give a deal_id or a person_email."
+            )
         person = await _person_or_none(ctx, payload.person_email)
         if person is None:
             raise VendorToolError(
-                "person_not_found",
-                f"No person in Pipedrive has the email '{payload.person_email}'.",
+                PipedriveErrorCode.PERSON_NOT_FOUND, "No matching Pipedrive person."
             )
-        body["person_id"] = person.get("id")
-    else:
+        person_id = person.id
+    body = PipedriveNoteWrite(
+        content=payload.content[:MAX_NOTE_CHARS],
+        deal_id=payload.deal_id,
+        person_id=person_id,
+    )
+    note = parse_response(
+        await ctx.mutate(
+            NOTES_PATH, json=body.model_dump(mode="json", exclude_none=True)
+        ),
+        NOTE_RESPONSE,
+    ).data
+    if (payload.deal_id is not None and note.deal_id != payload.deal_id) or (
+        person_id is not None and note.person_id != person_id
+    ):
         raise VendorToolError(
-            "target_missing", "Give a deal_id or a person_email to attach the note to."
+            PipedriveErrorCode.RESPONSE_INVALID,
+            "Pipedrive returned a note linked to a different record.",
         )
-
-    note = _payload(await ctx.mutate("/notes", json=body))
-    return {
-        "note_id": note.get("id") if isinstance(note, dict) else None,
-        "deal_id": body.get("deal_id"),
-        "person_id": body.get("person_id"),
-        "added": True,
-    }
+    return PipedriveNoteView(
+        note_id=note.id, deal_id=payload.deal_id, person_id=person_id
+    ).model_dump(mode="json")
 
 
-async def _person_or_none(ctx: VendorToolContext, email: str) -> dict[str, Any] | None:
+async def _person_or_none(
+    ctx: VendorToolContext, email: str
+) -> PipedriveSearchPerson | None:
+    if not email.strip():
+        raise VendorToolError(
+            PipedriveErrorCode.TARGET_MISSING, "Give an email address."
+        )
     response = await ctx.read(
-        "/persons/search",
-        query={
-            "term": email.strip(),
-            "fields": "email",
-            "exact_match": True,
-            "limit": 5,
-        },
+        PERSON_SEARCH_PATH,
+        query=PipedrivePersonSearchQuery(term=email.strip()).model_dump(mode="json"),
     )
-    data = _payload(response)
-    items = (data or {}).get("items") if isinstance(data, dict) else None
-    for item in items or []:
-        if isinstance(item, dict) and isinstance(item.get("item"), dict):
-            return item["item"]
-    return None
-
-
-async def _stage_names(ctx: VendorToolContext) -> dict[int, str]:
-    """Stage ids mean nothing on their own; map them to what people call them."""
-    stages = _collection(await ctx.read("/stages"))
-    return {
-        int(stage["id"]): str(stage.get("name"))
-        for stage in stages
-        if isinstance(stage.get("id"), int)
+    results = parse_response(response, SEARCH_RESPONSE).data.items
+    matches = {
+        entry.item.id: entry.item
+        for entry in results
+        if any(
+            value.casefold() == email.strip().casefold() for value in entry.item.emails
+        )
     }
-
-
-async def _stage_id(ctx: VendorToolContext, stage: str) -> int:
-    wanted = stage.strip().casefold()
-    names = await _stage_names(ctx)
-    for stage_id, name in names.items():
-        if name.casefold() == wanted:
-            return stage_id
-    available = ", ".join(sorted(names.values()))
-    raise VendorToolError(
-        "stage_not_found", f"No stage named '{stage}'. Available: {available}."
-    )
-
-
-def _person_view(person: dict[str, Any]) -> dict[str, Any]:
-    emails = [e for e in person.get("email") or [] if isinstance(e, dict)]
-    phones = [p for p in person.get("phone") or [] if isinstance(p, dict)]
-    organization = person.get("organization") or person.get("org_id")
-    return {
-        "id": person.get("id"),
-        "name": person.get("name"),
-        "emails": [e.get("value") for e in emails],
-        "phones": [p.get("value") for p in phones],
-        "organization": (
-            organization.get("name") if isinstance(organization, dict) else organization
-        ),
-        "open_deals": person.get("open_deals_count"),
-        "closed_deals": person.get("closed_deals_count"),
-    }
-
-
-def _deal_view(deal: dict[str, Any], stages: dict[int, str]) -> dict[str, Any]:
-    stage_id = deal.get("stage_id")
-    person = deal.get("person_id")
-    return {
-        "id": deal.get("id"),
-        "title": deal.get("title"),
-        "status": deal.get("status"),
-        "value": deal.get("value"),
-        "currency": deal.get("currency"),
-        "formatted_value": (
-            f"{deal.get('value')} {deal.get('currency')}"
-            if deal.get("value") is not None and deal.get("currency")
-            else None
-        ),
-        "stage": stages.get(stage_id) if isinstance(stage_id, int) else None,
-        "stage_id": stage_id,
-        "person": person.get("name") if isinstance(person, dict) else person,
-        "expected_close": deal.get("expected_close_date"),
-        "won_at": deal.get("won_time"),
-        "lost_reason": deal.get("lost_reason"),
-        "updated_at": deal.get("update_time"),
-    }
-
-
-def _collection(response: Any) -> list[dict[str, Any]]:
-    data = _payload(response)
-    if not isinstance(data, list):
-        return []
-    return [item for item in data if isinstance(item, dict)]
-
-
-def _payload(response: Any) -> Any:
-    """Read Pipedrive's `success` envelope, which reports failure at HTTP 200."""
-    body = getattr(response, "data", response)
-    if not isinstance(body, dict):
+    if len(matches) > 1:
         raise VendorToolError(
-            "vendor_response_invalid", "Pipedrive returned a non-object response."
+            PipedriveErrorCode.PERSON_AMBIGUOUS,
+            "More than one Pipedrive person has that email.",
         )
-    if body.get("success") is False:
-        message = (
-            body.get("error")
-            or body.get("error_info")
-            or "Pipedrive rejected the request."
+    if results and not matches:
+        raise VendorToolError(
+            PipedriveErrorCode.RESPONSE_INVALID,
+            "Pipedrive returned a person that does not match the email.",
         )
-        raise VendorToolError("vendor_rejected", str(message)[:500])
-    return body.get("data")
+    return next(iter(matches.values()), None)
+
+
+async def _stage_names(ctx: VendorToolContext) -> dict[int, PipedriveStage]:
+    stages: dict[int, PipedriveStage] = {}
+    cursor = None
+    seen: set[str] = set()
+    for _ in range(MAX_STAGE_PAGES):
+        response = await ctx.read(
+            STAGES_PATH,
+            query=PipedriveStagesQuery(cursor=cursor).model_dump(
+                mode="json", exclude_none=True
+            ),
+        )
+        page = parse_response(response, STAGES_RESPONSE)
+        stages.update({stage.id: stage for stage in page.data})
+        cursor = page.additional_data.next_cursor if page.additional_data else None
+        if not cursor:
+            return stages
+        if cursor in seen:
+            break
+        seen.add(cursor)
+    raise VendorToolError(
+        PipedriveErrorCode.STAGE_CATALOG_INCOMPLETE,
+        "Pipedrive stage lookup could not complete within its bounded page limit.",
+    )
+
+
+def _stage_id(stages: dict[int, PipedriveStage], name: str) -> int:
+    matches = [
+        stage.id
+        for stage in stages.values()
+        if stage.name.casefold() == name.strip().casefold()
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise VendorToolError(
+            PipedriveErrorCode.STAGE_AMBIGUOUS,
+            "The stage name is not unique across Pipedrive pipelines.",
+        )
+    available = ", ".join(sorted(stage.name for stage in stages.values()))
+    raise VendorToolError(
+        PipedriveErrorCode.STAGE_NOT_FOUND,
+        f"No matching stage. Available: {available}.",
+    )
+
+
+def _deal_view(
+    deal: PipedriveDeal, stages: dict[int, PipedriveStage], people: dict[int, str]
+) -> PipedriveDealView:
+    stage = stages.get(deal.stage_id)
+    person = (
+        people.get(deal.person_id, deal.person_id)
+        if deal.person_id is not None
+        else None
+    )
+    return PipedriveDealView(
+        id=deal.id,
+        title=deal.title,
+        status=deal.status,
+        value=deal.value,
+        currency=deal.currency,
+        formatted_value=f"{deal.value} {deal.currency}" if deal.currency else None,
+        stage=stage.name if stage else None,
+        stage_id=deal.stage_id,
+        person=person,
+        expected_close=deal.expected_close_date,
+        won_at=deal.won_time,
+        lost_reason=deal.lost_reason,
+        updated_at=deal.update_time,
+    )
 
 
 __all__ = [

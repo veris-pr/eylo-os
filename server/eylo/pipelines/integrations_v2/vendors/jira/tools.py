@@ -3,21 +3,53 @@
 `create_issue` is the composition that earns its keep: an agent supplies a
 project key and an issue type by name, and the tool resolves both, converts the
 description into Atlassian Document Format, and creates the issue. Done through
-the raw API that is three calls plus knowing that a plain string description is
-rejected.
+the raw API requires project/type resolution and an optional user lookup before
+the single write. Native responses are validated before result projection.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from urllib.parse import quote
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, JsonValue, StrictInt
 
 from eylo.modules.integrations_v2.domain.enums import ToolEffect
 
 from ...contracts import VendorToolContext, VendorToolError
 from ...registry import curated_tool
-from .definition import READ_JIRA_WORK, WRITE_JIRA_WORK, vendor
+from .definition import READ_JIRA_USER, READ_JIRA_WORK, WRITE_JIRA_WORK, vendor
+from .schemas import (
+    CREATED_COMMENT_RESPONSE,
+    CREATED_ISSUE_RESPONSE,
+    DEFAULT_SEARCH_LIMIT,
+    ISSUE_RESPONSE,
+    MAX_SEARCH_LIMIT,
+    PROJECT_RESPONSE,
+    SEARCH_FIELDS,
+    SEARCH_RESPONSE,
+    USERS_RESPONSE,
+    JiraAdfDocument,
+    JiraAdfNode,
+    JiraAdfNodeKind,
+    JiraAdfParagraph,
+    JiraAdfReadDocument,
+    JiraAdfText,
+    JiraCommentRequest,
+    JiraCreateFields,
+    JiraCreateRequest,
+    JiraCreatedCommentView,
+    JiraCreatedIssueView,
+    JiraErrorCode,
+    JiraIdReference,
+    JiraIssue,
+    JiraIssueDetailView,
+    JiraIssueView,
+    JiraProjectQuery,
+    JiraSearchRequest,
+    JiraSearchView,
+    JiraUserQuery,
+    parse_response,
+)
 
 
 class SearchIssuesInput(BaseModel):
@@ -33,7 +65,7 @@ class SearchIssuesInput(BaseModel):
     )
     status: str | None = Field(default=None, description="Status name such as 'Done'.")
     assignee_email: str | None = Field(default=None)
-    limit: int = Field(default=25, ge=1, le=100)
+    limit: StrictInt = Field(default=DEFAULT_SEARCH_LIMIT, ge=1, le=MAX_SEARCH_LIMIT)
 
 
 class GetIssueInput(BaseModel):
@@ -74,36 +106,26 @@ class AddCommentInput(BaseModel):
 )
 async def search_issues(
     payload: SearchIssuesInput, ctx: VendorToolContext
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     jql = payload.jql.strip() if payload.jql else _build_jql(payload)
     if not jql:
         raise VendorToolError(
-            "search_too_broad",
+            JiraErrorCode.SEARCH_TOO_BROAD,
             "Supply JQL or at least one filter; an unbounded search is refused.",
         )
     response = await ctx.read(
         "/search/jql",
         method="POST",
-        json={
-            "jql": jql,
-            "maxResults": payload.limit,
-            "fields": [
-                "summary",
-                "status",
-                "assignee",
-                "issuetype",
-                "created",
-                "updated",
-            ],
-        },
+        json=JiraSearchRequest(
+            jql=jql, maxResults=payload.limit, fields=list(SEARCH_FIELDS)
+        ).model_dump(mode="json"),
     )
-    body = _object(response.data)
-    issues = [i for i in body.get("issues", []) if isinstance(i, dict)]
-    return {
-        "jql": jql,
-        "issues": [_issue_view(issue) for issue in issues],
-        "count": len(issues),
-    }
+    body = parse_response(response, SEARCH_RESPONSE)
+    return JiraSearchView(
+        jql=jql,
+        issues=[_issue_view(issue) for issue in body.issues],
+        count=len(body.issues),
+    ).model_dump(mode="json")
 
 
 @curated_tool(
@@ -118,12 +140,15 @@ async def search_issues(
     effect=ToolEffect.READ,
     scopes=(READ_JIRA_WORK,),
 )
-async def get_issue(payload: GetIssueInput, ctx: VendorToolContext) -> dict[str, Any]:
-    response = await ctx.read(f"/issue/{payload.issue_key}")
-    view = _issue_view(_object(response.data))
-    fields = _object(response.data).get("fields") or {}
-    view["description"] = _adf_to_text(fields.get("description"))
-    return view
+async def get_issue(
+    payload: GetIssueInput, ctx: VendorToolContext
+) -> dict[str, JsonValue]:
+    response = await ctx.read(f"/issue/{quote(payload.issue_key, safe='')}")
+    issue = parse_response(response, ISSUE_RESPONSE)
+    return JiraIssueDetailView(
+        **_issue_view(issue).model_dump(),
+        description=_adf_to_text(issue.fields.description),
+    ).model_dump(mode="json")
 
 
 @curated_tool(
@@ -134,38 +159,42 @@ async def get_issue(payload: GetIssueInput, ctx: VendorToolContext) -> dict[str,
         "Create a Jira issue from a project key and an issue type name. The "
         "project and type are resolved automatically, the description is "
         "converted to Atlassian Document Format, and an assignee email is "
-        "looked up if supplied."
+        "looked up if supplied. Assignment requires one exact visible email "
+        "match; hidden, missing or ambiguous email refuses creation."
     ),
     input_model=CreateIssueInput,
     effect=ToolEffect.MUTATION,
-    scopes=(WRITE_JIRA_WORK, READ_JIRA_WORK),
+    scopes=(WRITE_JIRA_WORK, READ_JIRA_WORK, READ_JIRA_USER),
 )
 async def create_issue(
     payload: CreateIssueInput, ctx: VendorToolContext
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     project_id, type_id = await _resolve_project_and_type(
         ctx, payload.project_key, payload.issue_type
     )
-    fields: dict[str, Any] = {
-        "project": {"id": project_id},
-        "issuetype": {"id": type_id},
-        "summary": payload.summary,
-    }
-    if payload.description:
-        fields["description"] = _text_to_adf(payload.description)
-    if payload.labels:
-        fields["labels"] = payload.labels
-    if payload.assignee_email:
-        fields["assignee"] = {
-            "id": await _resolve_account_id(ctx, payload.assignee_email)
-        }
-
-    response = await ctx.mutate("/issue", method="POST", json={"fields": fields})
-    created = _object(response.data)
-    key = created.get("key")
-    if not key:
-        raise VendorToolError("vendor_rejected", "Jira did not return an issue key.")
-    return {"key": key, "id": created.get("id"), "summary": payload.summary}
+    fields = JiraCreateFields(
+        project=JiraIdReference(id=project_id),
+        issuetype=JiraIdReference(id=type_id),
+        summary=payload.summary,
+        description=_text_to_adf(payload.description) if payload.description else None,
+        labels=payload.labels or None,
+        assignee=(
+            JiraIdReference(id=await _resolve_account_id(ctx, payload.assignee_email))
+            if payload.assignee_email
+            else None
+        ),
+    )
+    response = await ctx.mutate(
+        "/issue",
+        method="POST",
+        json=JiraCreateRequest(fields=fields).model_dump(
+            mode="json", exclude_none=True
+        ),
+    )
+    created = parse_response(response, CREATED_ISSUE_RESPONSE)
+    return JiraCreatedIssueView(
+        key=created.key, id=created.id, summary=payload.summary
+    ).model_dump(mode="json")
 
 
 @curated_tool(
@@ -182,18 +211,18 @@ async def create_issue(
 )
 async def add_comment(
     payload: AddCommentInput, ctx: VendorToolContext
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     response = await ctx.mutate(
-        f"/issue/{payload.issue_key}/comment",
+        f"/issue/{quote(payload.issue_key, safe='')}/comment",
         method="POST",
-        json={"body": _text_to_adf(payload.body)},
+        json=JiraCommentRequest(body=_text_to_adf(payload.body)).model_dump(
+            mode="json", exclude_none=True
+        ),
     )
-    created = _object(response.data)
-    return {
-        "id": created.get("id"),
-        "issue_key": payload.issue_key,
-        "created": created.get("created"),
-    }
+    created = parse_response(response, CREATED_COMMENT_RESPONSE)
+    return JiraCreatedCommentView(
+        id=created.id, issue_key=payload.issue_key, created=created.created
+    ).model_dump(mode="json")
 
 
 async def _resolve_project_and_type(
@@ -201,121 +230,101 @@ async def _resolve_project_and_type(
 ) -> tuple[str, str]:
     """One call resolves both: Jira returns issue types inside the project."""
     response = await ctx.read(
-        f"/project/{project_key.strip().upper()}", query={"expand": "issueTypes"}
+        f"/project/{quote(project_key.strip().upper(), safe='')}",
+        query=JiraProjectQuery().model_dump(mode="json"),
     )
-    project = _object(response.data)
-    project_id = project.get("id")
-    if not project_id:
-        raise VendorToolError(
-            "project_not_found", f"No Jira project with key '{project_key}'."
-        )
+    project = parse_response(response, PROJECT_RESPONSE)
     wanted = issue_type.strip().casefold()
-    for entry in project.get("issueTypes", []):
-        if isinstance(entry, dict) and str(entry.get("name", "")).casefold() == wanted:
-            return str(project_id), str(entry["id"])
-    available = ", ".join(
-        str(e.get("name")) for e in project.get("issueTypes", []) if isinstance(e, dict)
-    )
+    matches = [entry for entry in project.issueTypes if entry.name.casefold() == wanted]
+    if len(matches) == 1:
+        return project.id, matches[0].id
     raise VendorToolError(
-        "issue_type_not_found",
-        f"Project '{project_key}' has no issue type '{issue_type}'. Available: {available}.",
+        JiraErrorCode.ISSUE_TYPE_NOT_FOUND,
+        "The project did not return one matching issue type.",
     )
 
 
 async def _resolve_account_id(ctx: VendorToolContext, email: str) -> str:
-    response = await ctx.read("/user/search", query={"query": email})
-    users = response.data if isinstance(response.data, list) else []
-    for user in users:
-        if isinstance(user, dict) and user.get("accountId"):
-            return str(user["accountId"])
-    raise VendorToolError("user_not_found", f"No Jira user matches '{email}'.")
+    response = await ctx.read(
+        "/user/search", query=JiraUserQuery(query=email).model_dump(mode="json")
+    )
+    users = parse_response(response, USERS_RESPONSE)
+    matches = [
+        user
+        for user in users
+        if user.emailAddress
+        and user.emailAddress.casefold() == email.strip().casefold()
+    ]
+    if len(matches) == 1:
+        return matches[0].accountId
+    raise VendorToolError(
+        JiraErrorCode.USER_NOT_FOUND,
+        "Jira did not return one user with the exact visible email; no issue was created.",
+    )
 
 
 def _build_jql(payload: SearchIssuesInput) -> str:
     clauses: list[str] = []
     if payload.project_key:
-        clauses.append(f'project = "{payload.project_key.strip().upper()}"')
+        clauses.append(f'project = "{_jql_value(payload.project_key.strip().upper())}"')
     if payload.status:
-        clauses.append(f'status = "{payload.status.strip()}"')
+        clauses.append(f'status = "{_jql_value(payload.status.strip())}"')
     if payload.assignee_email:
-        clauses.append(f'assignee = "{payload.assignee_email.strip()}"')
+        clauses.append(f'assignee = "{_jql_value(payload.assignee_email.strip())}"')
     if payload.text:
-        clauses.append(f'text ~ "{payload.text.strip()}"')
+        clauses.append(f'text ~ "{_jql_value(payload.text.strip())}"')
     return " AND ".join(clauses) + (" ORDER BY updated DESC" if clauses else "")
 
 
-def _issue_view(issue: dict[str, Any]) -> dict[str, Any]:
-    fields = issue.get("fields") or {}
-    status = fields.get("status") or {}
-    assignee = fields.get("assignee") or {}
-    issue_type = fields.get("issuetype") or {}
-    return {
-        "key": issue.get("key"),
-        "id": issue.get("id"),
-        "summary": fields.get("summary"),
-        "status": status.get("name"),
-        "type": issue_type.get("name"),
-        "assignee_name": assignee.get("displayName"),
-        "assignee_email": assignee.get("emailAddress"),
-        "created": fields.get("created"),
-        "updated": fields.get("updated"),
-    }
+def _jql_value(value: str) -> str:
+    """Quote simple-filter data; explicit raw JQL remains an advanced input."""
+    return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def _text_to_adf(text: str) -> dict[str, Any]:
-    """Wrap plain text in the minimal Atlassian Document Format envelope.
+def _issue_view(issue: JiraIssue) -> JiraIssueView:
+    fields = issue.fields
+    return JiraIssueView(
+        key=issue.key,
+        id=issue.id,
+        summary=fields.summary,
+        status=fields.status.name if fields.status else None,
+        type=fields.issuetype.name if fields.issuetype else None,
+        assignee_name=fields.assignee.displayName if fields.assignee else None,
+        assignee_email=fields.assignee.emailAddress if fields.assignee else None,
+        created=fields.created,
+        updated=fields.updated,
+    )
 
-    Jira's v3 API rejects a plain string here. Every curated Jira tool that
-    writes prose goes through this so no caller has to know that.
-    """
-    return {
-        "type": "doc",
-        "version": 1,
-        "content": [
-            {"type": "paragraph", "content": [{"type": "text", "text": line}]}
+
+def _text_to_adf(text: str) -> JiraAdfDocument:
+    """Preserve line boundaries in Jira v3's required rich-text envelope."""
+    return JiraAdfDocument(
+        content=[
+            JiraAdfParagraph(content=[JiraAdfText(text=line)])
             if line
-            else {"type": "paragraph"}
+            else JiraAdfParagraph()
             for line in text.split("\n")
-        ],
-    }
+        ]
+    )
 
 
-def _adf_to_text(document: Any) -> str | None:
-    """Flatten Atlassian Document Format back to readable text."""
-    if document is None:
-        return None
-    if isinstance(document, str):
+def _adf_to_text(document: JiraAdfReadDocument | str | None) -> str | None:
+    """Project text and paragraph breaks; non-text media/attributes are not prose."""
+    if document is None or isinstance(document, str):
         return document
-    if not isinstance(document, dict):
-        return None
     parts: list[str] = []
 
-    def walk(node: Any) -> None:
-        if isinstance(node, dict):
-            if node.get("type") == "text" and isinstance(node.get("text"), str):
-                parts.append(node["text"])
-            for child in node.get("content", []) or []:
-                walk(child)
-            if node.get("type") == "paragraph":
-                parts.append("\n")
-        elif isinstance(node, list):
-            for child in node:
-                walk(child)
+    def walk(node: JiraAdfNode) -> None:
+        if node.type == JiraAdfNodeKind.TEXT and node.text is not None:
+            parts.append(node.text)
+        for child in node.content:
+            walk(child)
+        if node.type == JiraAdfNodeKind.PARAGRAPH:
+            parts.append("\n")
 
-    walk(document)
+    for node in document.content:
+        walk(node)
     return "".join(parts).strip() or None
-
-
-def _object(payload: Any) -> dict[str, Any]:
-    if not isinstance(payload, dict):
-        raise VendorToolError(
-            "vendor_response_invalid", "Jira returned a non-object response."
-        )
-    if payload.get("errorMessages"):
-        raise VendorToolError(
-            "vendor_rejected", "; ".join(str(m) for m in payload["errorMessages"])[:500]
-        )
-    return payload
 
 
 __all__ = ["add_comment", "create_issue", "get_issue", "search_issues"]

@@ -6,7 +6,14 @@ import re
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Protocol, Self, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field, InstanceOf, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    InstanceOf,
+    model_validator,
+)
 from pydantic.json_schema import SkipJsonSchema
 
 from eylo.modules.integrations_v2.domain.enums import (
@@ -142,6 +149,8 @@ class VendorToolContext(_FrozenContract):
     http: SkipJsonSchema[InstanceOf[VendorHttpClient]] = Field(repr=False, exclude=True)
     account: VendorAccount
     effect: ToolEffect
+    # Set by durable execution, not by the LLM or a vendor-local wall clock.
+    started_at: AwareDatetime | None = None
 
     async def read(
         self,

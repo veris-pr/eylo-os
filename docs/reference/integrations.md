@@ -258,6 +258,239 @@ Authorities: [issues](https://docs.gitlab.com/api/issues/),
 Local probes and public examples are not live GitLab acceptance. The named-project
 transport limitation below remains open.
 
+### Jira request and response contracts
+
+All four curated Jira tools use vendor-owned Cloud REST v3 models. They retain
+the instance-specific `/rest/api/3` route and existing auth configuration; this
+does not establish Data Center compatibility or live OAuth acceptance.
+
+- Search uses one enhanced `/search/jql` POST page, up to 100 requested records.
+  `count` counts returned records, not all matches; continuation is not exposed.
+  Simple-filter values escape quotes/backslashes; explicit raw JQL stays explicit.
+- Project/type resolution and optional user lookup precede one create write.
+  User search is prefix-based across attributes, so assignment now requires one
+  exact visible email match in the returned page. Hidden/missing/ambiguous email
+  refuses creation, without guessing or falling back to an unassigned issue.
+  Lookup retains the vendor-default 50-result page; it does not scan every user.
+- Consumed fields validate before projection. Missing optional selected fields
+  and privacy-hidden email remain null. Resource IDs and mutation acknowledgements
+  cannot silently disappear. HTTP failures and field-keyed errors are failures,
+  not empty success. Invalid post-write replies do not cause a second send.
+- Plain-text writes use typed ADF paragraphs. Reads flatten text and paragraph
+  breaks; this is not a full document/media renderer. Existing plain-string
+  descriptions are accepted. Published issue examples contain integer `updated`
+  values; those remain integers, without inventing a timestamp unit.
+- Existing request ordering, omission and result shapes are preserved for valid
+  inputs. Issue/project path values are encoded as components. Historical issue
+  keys may resolve to a new key, so returned keys are not compared for equality.
+
+Authorities: [enhanced search](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-search/#api-rest-api-3-search-jql-post),
+[issues](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issues/),
+[projects](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-projects/),
+[user search](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-user-search/#api-rest-api-3-user-search-get),
+[comments](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-comments/),
+and the [published v3 schema](https://dac-static.atlassian.com/cloud/jira/platform/swagger-v3.v3.json).
+The create tool declares classic `read:jira-user` for its lookup; that scope was
+already part of the vendor OAuth configuration. Local contract checks are not
+native Jira, persisted-receipt or widget acceptance.
+
+### Asana request and response contracts
+
+All six curated tools use Asana-owned API 1.0 requests, native `data` envelopes,
+nested task/project/story models and result projections. PAT/Bearer transport
+remains unchanged; this does not add OAuth support.
+
+- Task and project lists remain one page, at most 100 requested records. Project
+  name lookup checks the first 100 projects in the first visible workspace;
+  duplicate names require a gid. The existing optional workspace behavior still
+  selects the first returned workspace. No cross-workspace search is implied.
+- Project plus assignee filters now work together. One additional read obtains
+  that project's workspace, because the native assignee filter requires it.
+  A mismatched project response refuses the query; no workspace is guessed.
+- Task detail uses the returned story page, filters `type=comment` and clips
+  notes/comment text at 6,000 characters. This is not complete comment history.
+  Notification delivery after adding a comment is not confirmed by the receipt.
+- Bad HTTP statuses, missing native envelopes, malformed records and nested
+  values fail rather than becoming empty success. Completion requires a matching
+  task gid and a true completion flag. No invalid response triggers a resend.
+- Existing valid request omission, ordering and projections are retained, except
+  the deliberately corrected combined filter. Public predicates/limits are now
+  strict: string booleans and boolean-as-integer limits are rejected.
+
+Authorities: [task queries](https://developers.asana.com/reference/gettasks),
+[task creation](https://developers.asana.com/reference/createtask),
+[task models](https://developers.asana.com/reference/tasks),
+[project reads](https://developers.asana.com/reference/getproject),
+[stories](https://developers.asana.com/reference/stories), and the
+[official OpenAPI](https://raw.githubusercontent.com/Asana/openapi/master/defs/asana_oas.yaml).
+Local transport/contract probes do not prove native acceptance or durable DB recovery.
+
+### Google Docs request and response contracts
+
+All four tools use Google Docs v1 request, response and result models. Reads
+request `includeTabsContent=true`, traverse nested tabs in display order, and
+return tab IDs alongside body text. An optional `tab_id` selects one tab. Heading,
+table and table-of-contents text is preserved; non-text paragraph elements receive
+a visible marker. This is not a rich-document renderer: headers, footers,
+footnotes and image content are not read. Output is bounded to 20,000 characters,
+with the full extracted character count and a truncation flag.
+
+Append targets the first tab unless one is selected. It uses the final native
+UTF-16 index, not Python string length, and sends `requiredRevisionId` so a
+concurrent edit refuses the write instead of silently shifting its position.
+Replace retains Google's all-tabs behavior unless a tab is selected. Its reply
+must contain the matching operation; an omitted zero occurrence count within
+that operation is valid, but an absent reply is not.
+
+Creation with content is two separately receipted writes, not atomic. A body
+write failure can leave an empty document. Every successful mutation validates
+its document ID and corresponding reply slot before reporting success. Invalid
+acknowledgements never authorize a resend; durable replay still reports
+`vendor_outcome_unknown` when the shared receipt cannot reconstruct the response.
+
+Authorities: [document tabs](https://developers.google.com/workspace/docs/api/how-tos/tabs),
+[native requests](https://developers.google.com/workspace/docs/api/reference/rest/v1/documents/request)
+and [batch updates and revision control](https://developers.google.com/workspace/docs/api/reference/rest/v1/documents/batchUpdate).
+
+### Google Drive request and response contracts
+
+All six tools use selected Drive v3 fields and typed projections. Search returns
+one page, a continuation token and Google's incomplete-search flag; it does not
+claim exhaustive results. The explicit `drive#fileList` discriminator distinguishes
+a valid empty page from an unrelated empty object. File size retains the native
+numeric-string representation; privacy-hidden owner email remains null.
+
+Folder-name resolution follows at most five pages, rejects ambiguous or partial
+results, and validates ID fallbacks as active folders. The `root` alias resolves
+to Google's actual folder ID before parent comparisons. Create, move and trash
+validate the returned identity/type/parent or trash state as applicable. A move
+already at its destination performs no write.
+
+Sharing retains the existing curated reader/commenter/writer choices. Explicit
+public-link sharing always requests read-only, non-discoverable access. Native
+permission type/role and recipient presence are validated before reporting success;
+the returned email is retained because Google can resolve an alias to its account
+address. This does not add group/domain/ownership-grant tools. Requests still use
+the origin-bound credential and durable outbound-attempt boundary.
+
+Authorities: [file listing](https://developers.google.com/workspace/drive/api/reference/rest/v3/files/list),
+[file updates](https://developers.google.com/workspace/drive/api/reference/rest/v3/files/update)
+and [permission fields](https://developers.google.com/workspace/drive/api/reference/rest/v3/permissions).
+Docs/Drive function and guarded-client checks use substituted HTTP and receipt
+persistence. They do not prove native account acceptance or crash recovery.
+
+### Google Tasks request and response contracts
+
+All five tools use vendor-owned Tasks v1 request, response and result models.
+List lookup follows at most three pages of 1,000 lists, rejects repeated cursors
+and duplicate IDs, and refuses ambiguous names before a mutation. Exact IDs take
+precedence over names; omitting the list retains the existing first-list behavior.
+This bounded lookup is not an unbounded account export.
+
+Task listing returns one page and `next_page_token`; use `page_token` with the
+same list and filters to continue. Valid empty pages have Google's resource-kind
+discriminator; malformed pages cannot become empty results. Date inputs require
+`YYYY-MM-DD`. Title and notes follow native length limits. Creation validates the
+returned content, parent and status; completion validates identity and completed
+status. Deletion requires a successful empty response. Deleting an assigned task
+also deletes its original task in Docs or Chat Spaces; completion preserves it.
+
+Authorities: [task fields](https://developers.google.com/workspace/tasks/reference/rest/v1/tasks),
+[list catalog](https://developers.google.com/workspace/tasks/reference/rest/v1/tasklists/list),
+[task pagination](https://developers.google.com/workspace/tasks/reference/rest/v1/tasks/list)
+and [deletion](https://developers.google.com/workspace/tasks/reference/rest/v1/tasks/delete).
+
+### Dropbox request and response contracts
+
+All six tools validate API v2 tagged metadata, operation responses and projections.
+Folder creation consumes untagged folder metadata; file/folder/deleted unions
+remain distinct elsewhere. Listing and search expose `next_cursor`; pass it as
+`cursor` to continue the original query. Cursor requests use the vendor's original
+filters, not newly supplied filters. Folder limits are approximate; search indexing
+can lag and repeat or omit matches. These are not exhaustive filesystem snapshots.
+
+Root maps to empty text only for reads. Mutations refuse root; native `id:` and
+`ns:` identifiers are preserved. Creation and movement retain autorename behavior.
+Deleted results no longer invent a 30-day retention guarantee:
+`recoverable_for_days` is null because this tool does not read account policy.
+
+Sharing now declares `sharing.read` alongside `sharing.write`. Existing connections
+missing the read scope need reauthorization before using this tool. The tool checks
+direct links first, reuses one without changing permissions, or creates a link with
+Dropbox's defaults. Results expose actual visibility, audience and access when
+available; they never promise public access against team/folder policy. Incomplete
+empty lookup refuses creation. A concurrent creation may still conflict; this is
+not an atomic get-or-create operation. No error-message substring matching or
+automatic mutation resend is used.
+
+Authorities: Dropbox's maintained API v2 [file schemas](https://github.com/dropbox/dropbox-api-spec/blob/main/files.stone)
+and [sharing schemas](https://github.com/dropbox/dropbox-api-spec/blob/main/sharing.stone).
+Google Tasks and Dropbox function checks cover all eleven tools; guarded-client
+checks cover all seven mutation handlers. HTTP and receipt persistence are
+substituted, so these checks do not prove live account acceptance or DB recovery.
+
+## HubSpot request and response contracts
+
+All six curated HubSpot tools validate selected CRM v3 fields at the vendor
+boundary. Missing IDs, malformed collections, HTTP failures and mismatched update
+identities are errors, not empty results or successful writes. Unknown CRM
+properties remain vendor-owned; selected nullable property values are preserved.
+An empty string still clears a supplied contact property, while omitted properties
+are not written. Stage names are scoped by pipeline, separate from pipeline names.
+
+Note creation includes the required `hs_timestamp` and its contact association
+in one request. The curated executor checkpoints an invocation timestamp per
+tool-use message before mutations; retries reuse it, keeping timestamp-bearing
+request fingerprints stable. Invalid mutation responses do not trigger a resend.
+Contact resolution requires an exact email match. Note tools declare contact-read
+as well as contact-write scope. Deal creation resolves display labels before the
+write and declares its existing deal-read requirement explicitly.
+
+Lists remain bounded to the requested first page. Associated deals currently
+require one detail read per returned association (at most 50); this work does not
+claim batch-read optimization or exhaustive history. Local checks cover all six
+tools, invalid replies, native payloads, timestamp checkpoint reuse and the guarded
+mutation boundary. Live HubSpot curated-tool acceptance remains pending.
+
+Authorities: HubSpot CRM v3 [notes](https://developers.hubspot.com/docs/api-reference/legacy/crm/activities/notes/guide),
+[deals](https://developers.hubspot.com/docs/api-reference/legacy/crm/objects/deals/guide)
+and [contact search](https://developers.hubspot.com/docs/api-reference/legacy/crm/objects/contacts/search/search-contacts).
+
+## Pipedrive request and response contracts
+
+The five curated tools use API v2 for deals, person search/detail, batched person
+names and stages. Notes remain on the supported `/v1/notes` endpoint. The registered
+base is the same pinned `api.pipedrive.com` origin; the API token remains in its
+origin-bound query credential bucket. Existing connections need no schema change.
+Deal updates use PATCH. The public `all_not_deleted` filter omits the native v2
+status parameter, as documented by Pipedrive; the other statuses remain explicit.
+
+Search and detail person responses have separate contracts. `find_person` reads
+details with the requested deal counters; search alone cannot provide those
+counters. Duplicate exact-email matches refuse an ambiguous target. Deal lists
+resolve distinct person IDs in one batch, retaining the ID when a name is not
+visible. Stage lookup follows cursors with a ten-page, 500-items-per-page bound;
+an incomplete or repeating cursor fails before selecting a stage. Duplicate stage
+names across pipelines are refused rather than selecting the first match.
+
+HTTP failure, false or malformed `success`, missing IDs and malformed nested
+values cannot become empty success. Updates validate deal identity and stage;
+notes validate their owning deal/person. Display-label reads precede mutations.
+No invalid response retries a potentially accepted write. Note text retains the
+existing 6,000-character bound. Deal lists remain one requested page and do not
+claim archived-deal history. Mutation results retain a numeric person ID when
+no person name was already resolved.
+
+Eight literal response examples from the vendor's published schemas pass local
+validation. Focused tool and guarded-client probes also pass. These checks do not
+prove live Pipedrive credentials, account-specific data or persisted DB recovery.
+
+Authorities: [migration guide](https://pipedrive.readme.io/docs/pipedrive-api-v2-migration-guide),
+[v2 OpenAPI](https://developers.pipedrive.com/docs/api/v1/openapi-v2.yaml),
+[v1 OpenAPI](https://developers.pipedrive.com/docs/api/v1/openapi.yaml),
+[deals](https://developers.pipedrive.com/docs/api/v1/Deals) and
+[notes](https://developers.pipedrive.com/docs/api/v1/Notes).
+
 ## Known transport limitation
 
 GitLab project paths such as `group/project` currently fail with

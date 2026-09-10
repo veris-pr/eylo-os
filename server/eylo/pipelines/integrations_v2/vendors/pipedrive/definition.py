@@ -26,7 +26,8 @@ vendor = registry.register_vendor(
             "the pipeline by stage name, and log a note against a contact."
         ),
         auth_kinds=(VendorAuthKind.API_KEY,),
-        base_url="https://api.pipedrive.com/v1",
+        # Supported CRM operations are v2; notes still use v1 on this origin.
+        base_url="https://api.pipedrive.com",
         categories=("crm", "sales"),
         homepage_url="https://www.pipedrive.com",
         # Pipedrive reads its token from the query string.

@@ -2,20 +2,50 @@
 
 from __future__ import annotations
 
-from typing import Any
+from urllib.parse import quote
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, JsonValue, StrictBool, StrictInt
 
 from eylo.modules.integrations_v2.domain.enums import ToolEffect
 
 from ...contracts import VendorToolContext, VendorToolError
 from ...registry import curated_tool
 from .definition import vendor
-
-MAX_BODY_CHARS = 6_000
-_TASK_FIELDS = (
-    "name,notes,completed,completed_at,due_on,created_at,modified_at,"
-    "assignee.name,assignee.email,projects.name,tags.name,permalink_url"
+from .schemas import (
+    CREATED_STORY_RESPONSE,
+    DEFAULT_PROJECT_LIMIT,
+    DEFAULT_TASK_LIMIT,
+    MAX_BODY_CHARS,
+    MAX_PAGE_LIMIT,
+    PROJECTS_RESPONSE,
+    PROJECT_FIELDS,
+    PROJECT_WORKSPACE_RESPONSE,
+    STORIES_RESPONSE,
+    STORY_FIELDS,
+    TASKS_RESPONSE,
+    TASK_FIELDS,
+    TASK_RESPONSE,
+    WORKSPACES_RESPONSE,
+    AsanaCommentView,
+    AsanaCompleteTask,
+    AsanaCreateStory,
+    AsanaCreateTask,
+    AsanaCreatedCommentView,
+    AsanaErrorCode,
+    AsanaFieldQuery,
+    AsanaNamedResource,
+    AsanaProjectQuery,
+    AsanaProjectView,
+    AsanaProjectsView,
+    AsanaStoryType,
+    AsanaTask,
+    AsanaTaskDetailView,
+    AsanaTaskQuery,
+    AsanaTaskView,
+    AsanaTasksView,
+    AsanaWriteEnvelope,
+    parse_response,
+    require_task_identity,
 )
 
 
@@ -23,7 +53,7 @@ class ListProjectsInput(BaseModel):
     workspace: str = Field(
         default="", description="Workspace name or gid. Defaults to the first one."
     )
-    limit: int = Field(default=50, ge=1, le=100)
+    limit: StrictInt = Field(default=DEFAULT_PROJECT_LIMIT, ge=1, le=MAX_PAGE_LIMIT)
 
 
 class SearchTasksInput(BaseModel):
@@ -33,13 +63,13 @@ class SearchTasksInput(BaseModel):
     assignee_email: str | None = Field(
         default=None, description="Only tasks assigned to this person."
     )
-    include_completed: bool = Field(default=False)
-    limit: int = Field(default=25, ge=1, le=100)
+    include_completed: StrictBool = Field(default=False)
+    limit: StrictInt = Field(default=DEFAULT_TASK_LIMIT, ge=1, le=MAX_PAGE_LIMIT)
 
 
 class GetTaskInput(BaseModel):
     task_id: str = Field(min_length=1, description="Task gid, or its permalink URL.")
-    include_comments: bool = Field(default=True)
+    include_comments: StrictBool = Field(default=True)
 
 
 class CreateTaskInput(BaseModel):
@@ -74,26 +104,26 @@ class AddCommentInput(BaseModel):
 )
 async def list_projects(
     payload: ListProjectsInput, ctx: VendorToolContext
-) -> dict[str, Any]:
-    workspace_gid, workspace_name = await _resolve_workspace(ctx, payload.workspace)
+) -> dict[str, JsonValue]:
+    workspace = await _resolve_workspace(ctx, payload.workspace)
     response = await ctx.read(
         "/projects",
-        query={
-            "workspace": workspace_gid,
-            "limit": payload.limit,
-            "archived": False,
-            "opt_fields": "name,archived,color,notes",
-        },
+        query=AsanaProjectQuery(
+            workspace=workspace.gid,
+            limit=payload.limit,
+            archived=False,
+            opt_fields=PROJECT_FIELDS,
+        ).model_dump(mode="json"),
     )
-    projects = _data(response.data)
-    return {
-        "workspace": workspace_name,
-        "projects": [
-            {"gid": p.get("gid"), "name": p.get("name"), "notes": _clip(p.get("notes"))}
+    projects = parse_response(response, PROJECTS_RESPONSE).data
+    return AsanaProjectsView(
+        workspace=workspace.name,
+        projects=[
+            AsanaProjectView(gid=p.gid, name=p.name, notes=_clip(p.notes))
             for p in projects
         ],
-        "count": len(projects),
-    }
+        count=len(projects),
+    ).model_dump(mode="json")
 
 
 @curated_tool(
@@ -110,33 +140,48 @@ async def list_projects(
 )
 async def search_tasks(
     payload: SearchTasksInput, ctx: VendorToolContext
-) -> dict[str, Any]:
-    query: dict[str, Any] = {"limit": payload.limit, "opt_fields": _TASK_FIELDS}
-    if not payload.include_completed:
-        # Asana wants a timestamp here; "now" means "nothing completed yet".
-        query["completed_since"] = "now"
-
-    project_name = None
+) -> dict[str, JsonValue]:
+    project = None
+    workspace_gid = None
     if payload.project:
-        project_gid, project_name = await _resolve_project(ctx, payload.project)
-        query["project"] = project_gid
+        project = await _resolve_project(ctx, payload.project)
+        if payload.assignee_email:
+            response = await ctx.read(
+                f"/projects/{quote(project.gid, safe='')}",
+                query=AsanaFieldQuery(opt_fields="workspace.gid").model_dump(
+                    mode="json"
+                ),
+            )
+            resolved = parse_response(response, PROJECT_WORKSPACE_RESPONSE).data
+            if resolved.gid != project.gid:
+                raise VendorToolError(
+                    AsanaErrorCode.RESPONSE_INVALID,
+                    "Asana returned a different project.",
+                )
+            workspace_gid = resolved.workspace.gid
     elif payload.assignee_email:
-        workspace_gid, _ = await _resolve_workspace(ctx, "")
-        query["assignee"] = payload.assignee_email
-        query["workspace"] = workspace_gid
+        workspace_gid = (await _resolve_workspace(ctx, "")).gid
     else:
         raise VendorToolError(
-            "search_unbounded",
+            AsanaErrorCode.SEARCH_UNBOUNDED,
             "Give a project, or an assignee's email, to search within.",
         )
-
-    response = await ctx.read("/tasks", query=query)
-    tasks = _data(response.data)
-    return {
-        "project": project_name,
-        "tasks": [_task_view(task) for task in tasks],
-        "count": len(tasks),
-    }
+    query = AsanaTaskQuery(
+        limit=payload.limit,
+        completed_since=None if payload.include_completed else "now",
+        project=project.gid if project else None,
+        assignee=payload.assignee_email or None,
+        workspace=workspace_gid,
+    )
+    response = await ctx.read(
+        "/tasks", query=query.model_dump(mode="json", exclude_none=True)
+    )
+    tasks = parse_response(response, TASKS_RESPONSE).data
+    return AsanaTasksView(
+        project=project.name if project else None,
+        tasks=[_task_view(task) for task in tasks],
+        count=len(tasks),
+    ).model_dump(mode="json")
 
 
 @curated_tool(
@@ -144,34 +189,43 @@ async def search_tasks(
     name="get_task",
     display_name="Get Asana Task",
     description=(
-        "Read one task in full together with its comment history. Asana keeps "
+        "Read one task with the comments in the returned story page. Asana keeps "
         "comments at a separate endpoint and mixes them with automated "
         "activity records; only what people actually wrote is returned."
     ),
     input_model=GetTaskInput,
     effect=ToolEffect.READ,
 )
-async def get_task(payload: GetTaskInput, ctx: VendorToolContext) -> dict[str, Any]:
+async def get_task(
+    payload: GetTaskInput, ctx: VendorToolContext
+) -> dict[str, JsonValue]:
     task_gid = _task_gid(payload.task_id)
-    response = await ctx.read(f"/tasks/{task_gid}", query={"opt_fields": _TASK_FIELDS})
-    view = _task_view(_object(_envelope(response.data)))
-
-    if payload.include_comments:
-        stories = await ctx.read(
-            f"/tasks/{task_gid}/stories",
-            query={"opt_fields": "text,created_at,created_by.name,type"},
-        )
-        view["comments"] = [
-            {
-                "author": (story.get("created_by") or {}).get("name"),
-                "body": _clip(story.get("text")),
-                "created_at": story.get("created_at"),
-            }
-            for story in _data(stories.data)
-            # Asana records assignments and status changes as stories too.
-            if story.get("type") == "comment"
-        ]
-    return view
+    response = await ctx.read(
+        f"/tasks/{quote(task_gid, safe='')}",
+        query=AsanaFieldQuery(opt_fields=TASK_FIELDS).model_dump(mode="json"),
+    )
+    task = parse_response(response, TASK_RESPONSE).data
+    require_task_identity(task, task_gid)
+    view = _task_view(task)
+    if not payload.include_comments:
+        return view.model_dump(mode="json")
+    response = await ctx.read(
+        f"/tasks/{quote(task_gid, safe='')}/stories",
+        query=AsanaFieldQuery(opt_fields=STORY_FIELDS).model_dump(mode="json"),
+    )
+    stories = parse_response(response, STORIES_RESPONSE).data
+    return AsanaTaskDetailView(
+        **view.model_dump(),
+        comments=[
+            AsanaCommentView(
+                author=story.created_by.name if story.created_by else None,
+                body=_clip(story.text),
+                created_at=story.created_at,
+            )
+            for story in stories
+            if story.type == AsanaStoryType.COMMENT
+        ],
+    ).model_dump(mode="json")
 
 
 @curated_tool(
@@ -188,26 +242,25 @@ async def get_task(payload: GetTaskInput, ctx: VendorToolContext) -> dict[str, A
 )
 async def create_task(
     payload: CreateTaskInput, ctx: VendorToolContext
-) -> dict[str, Any]:
-    body: dict[str, Any] = {"name": payload.name}
-    if payload.notes:
-        body["notes"] = payload.notes
-    if payload.assignee_email:
-        body["assignee"] = payload.assignee_email
-    if payload.due_on:
-        body["due_on"] = payload.due_on
-
-    if payload.project:
-        project_gid, _ = await _resolve_project(ctx, payload.project)
-        body["projects"] = [project_gid]
-    else:
-        workspace_gid, _ = await _resolve_workspace(ctx, "")
-        body["workspace"] = workspace_gid
-
-    response = await ctx.mutate(
-        "/tasks", json={"data": body}, query={"opt_fields": _TASK_FIELDS}
+) -> dict[str, JsonValue]:
+    project = await _resolve_project(ctx, payload.project) if payload.project else None
+    workspace = None if project else await _resolve_workspace(ctx, "")
+    body = AsanaCreateTask(
+        name=payload.name,
+        notes=payload.notes or None,
+        assignee=payload.assignee_email or None,
+        due_on=payload.due_on or None,
+        projects=[project.gid] if project else None,
+        workspace=workspace.gid if workspace else None,
     )
-    return _task_view(_object(_envelope(response.data)))
+    response = await ctx.mutate(
+        "/tasks",
+        json=AsanaWriteEnvelope(data=body).model_dump(mode="json", exclude_none=True),
+        query=AsanaFieldQuery(opt_fields=TASK_FIELDS).model_dump(mode="json"),
+    )
+    return _task_view(parse_response(response, TASK_RESPONSE).data).model_dump(
+        mode="json"
+    )
 
 
 @curated_tool(
@@ -223,156 +276,135 @@ async def create_task(
 )
 async def complete_task(
     payload: CompleteTaskInput, ctx: VendorToolContext
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     task_gid = _task_gid(payload.task_id)
     response = await ctx.mutate(
-        f"/tasks/{task_gid}",
+        f"/tasks/{quote(task_gid, safe='')}",
         method="PUT",
-        json={"data": {"completed": True}},
-        query={"opt_fields": _TASK_FIELDS},
+        json=AsanaWriteEnvelope(data=AsanaCompleteTask()).model_dump(mode="json"),
+        query=AsanaFieldQuery(opt_fields=TASK_FIELDS).model_dump(mode="json"),
     )
-    return _task_view(_object(_envelope(response.data)))
+    task = parse_response(response, TASK_RESPONSE).data
+    require_task_identity(task, task_gid)
+    if not task.completed:
+        raise VendorToolError(
+            AsanaErrorCode.RESPONSE_INVALID, "Asana did not confirm task completion."
+        )
+    return _task_view(task).model_dump(mode="json")
 
 
 @curated_tool(
     vendor=vendor.vendor,
     name="add_comment",
     display_name="Comment on Asana Task",
-    description="Add a comment to a task. Everyone following the task is notified.",
+    description="Add a comment to a task. Notification delivery depends on Asana settings.",
     input_model=AddCommentInput,
     effect=ToolEffect.MUTATION,
 )
 async def add_comment(
     payload: AddCommentInput, ctx: VendorToolContext
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     task_gid = _task_gid(payload.task_id)
     response = await ctx.mutate(
-        f"/tasks/{task_gid}/stories", json={"data": {"text": payload.body}}
+        f"/tasks/{quote(task_gid, safe='')}/stories",
+        json=AsanaWriteEnvelope(data=AsanaCreateStory(text=payload.body)).model_dump(
+            mode="json"
+        ),
     )
-    story = _object(_envelope(response.data))
-    return {
-        "task_id": task_gid,
-        "comment_id": story.get("gid"),
-        "created_at": story.get("created_at"),
-    }
+    story = parse_response(response, CREATED_STORY_RESPONSE).data
+    return AsanaCreatedCommentView(
+        task_id=task_gid,
+        comment_id=story.gid,
+        created_at=story.created_at,
+    ).model_dump(mode="json")
 
 
-async def _resolve_workspace(ctx: VendorToolContext, workspace: str) -> tuple[str, str]:
-    response = await ctx.read("/workspaces", query={"opt_fields": "name"})
-    workspaces = _data(response.data)
+async def _resolve_workspace(
+    ctx: VendorToolContext, workspace: str
+) -> AsanaNamedResource:
+    response = await ctx.read(
+        "/workspaces", query=AsanaFieldQuery(opt_fields="name").model_dump(mode="json")
+    )
+    workspaces = parse_response(response, WORKSPACES_RESPONSE).data
     if not workspaces:
         raise VendorToolError(
-            "workspace_missing", "This token can see no Asana workspaces."
+            AsanaErrorCode.WORKSPACE_MISSING, "This token can see no Asana workspaces."
         )
     candidate = workspace.strip()
     if not candidate:
-        first = workspaces[0]
-        return str(first.get("gid")), str(first.get("name"))
+        return workspaces[0]
     wanted = candidate.casefold()
     for item in workspaces:
-        if (
-            str(item.get("gid")) == candidate
-            or str(item.get("name", "")).casefold() == wanted
-        ):
-            return str(item.get("gid")), str(item.get("name"))
-    available = ", ".join(str(item.get("name")) for item in workspaces)
+        if item.gid == candidate or item.name.casefold() == wanted:
+            return item
     raise VendorToolError(
-        "workspace_not_found",
-        f"No workspace named '{workspace}'. Available: {available}.",
+        AsanaErrorCode.WORKSPACE_NOT_FOUND,
+        "No workspace matched the supplied name or gid.",
     )
 
 
-async def _resolve_project(ctx: VendorToolContext, project: str) -> tuple[str, str]:
-    """Accept a project name or gid, so a numeric id never has to be known."""
+async def _resolve_project(ctx: VendorToolContext, project: str) -> AsanaNamedResource:
+    """Name resolution searches only the existing first-workspace page."""
     candidate = project.strip()
     if candidate.isdigit():
-        return candidate, candidate
-    workspace_gid, _ = await _resolve_workspace(ctx, "")
+        return AsanaNamedResource(gid=candidate, name=candidate)
+    workspace = await _resolve_workspace(ctx, "")
     response = await ctx.read(
         "/projects",
-        query={"workspace": workspace_gid, "limit": 100, "opt_fields": "name"},
+        query=AsanaProjectQuery(
+            workspace=workspace.gid,
+            limit=MAX_PAGE_LIMIT,
+            opt_fields="name",
+        ).model_dump(mode="json", exclude_none=True),
     )
-    projects = _data(response.data)
+    projects = parse_response(response, PROJECTS_RESPONSE).data
     wanted = candidate.casefold()
-    matches = [p for p in projects if str(p.get("name", "")).casefold() == wanted]
+    matches = [p for p in projects if p.name.casefold() == wanted]
     if len(matches) == 1:
-        return str(matches[0].get("gid")), str(matches[0].get("name"))
+        return AsanaNamedResource(gid=matches[0].gid, name=matches[0].name)
     if len(matches) > 1:
         raise VendorToolError(
-            "project_ambiguous",
-            f"More than one project is named '{project}'. Give its gid instead.",
+            AsanaErrorCode.PROJECT_AMBIGUOUS,
+            "More than one project has this name. Give its gid instead.",
         )
-    available = ", ".join(str(p.get("name")) for p in projects[:20])
     raise VendorToolError(
-        "project_not_found", f"No project named '{project}'. Available: {available}."
+        AsanaErrorCode.PROJECT_NOT_FOUND,
+        "No project matched the supplied name in the returned page.",
     )
 
 
 def _task_gid(value: str) -> str:
-    """Accept a gid or a pasted permalink, which ends in the gid."""
+    """Accept a gid or the existing permalink format ending in the gid."""
     candidate = value.strip().rstrip("/")
     if candidate.startswith("https://"):
         candidate = candidate.rsplit("/", 1)[-1]
     if not candidate:
-        raise VendorToolError("task_invalid", f"'{value}' is not an Asana task.")
+        raise VendorToolError(
+            AsanaErrorCode.TASK_INVALID, "Supply an Asana task gid or permalink."
+        )
     return candidate
 
 
-def _task_view(task: dict[str, Any]) -> dict[str, Any]:
-    assignee = task.get("assignee") or {}
-    projects = [p for p in task.get("projects") or [] if isinstance(p, dict)]
-    tags = [t for t in task.get("tags") or [] if isinstance(t, dict)]
-    return {
-        "gid": task.get("gid"),
-        "name": task.get("name"),
-        "notes": _clip(task.get("notes")),
-        "completed": task.get("completed"),
-        "completed_at": task.get("completed_at"),
-        "due_on": task.get("due_on"),
-        "assignee": assignee.get("name"),
-        "assignee_email": assignee.get("email"),
-        "projects": [p.get("name") for p in projects],
-        "tags": [t.get("name") for t in tags],
-        "created_at": task.get("created_at"),
-        "modified_at": task.get("modified_at"),
-        "web_link": task.get("permalink_url"),
-    }
+def _task_view(task: AsanaTask) -> AsanaTaskView:
+    return AsanaTaskView(
+        gid=task.gid,
+        name=task.name,
+        notes=_clip(task.notes),
+        completed=task.completed,
+        completed_at=task.completed_at,
+        due_on=task.due_on,
+        assignee=task.assignee.name if task.assignee else None,
+        assignee_email=task.assignee.email if task.assignee else None,
+        projects=[project.name for project in task.projects],
+        tags=[tag.name for tag in task.tags],
+        created_at=task.created_at,
+        modified_at=task.modified_at,
+        web_link=task.permalink_url,
+    )
 
 
-def _clip(value: Any) -> str | None:
-    if not isinstance(value, str):
-        return None
-    return value[:MAX_BODY_CHARS]
-
-
-def _envelope(payload: Any) -> Any:
-    """Every Asana response nests its content under `data`."""
-    if isinstance(payload, dict) and "data" in payload:
-        return payload["data"]
-    return payload
-
-
-def _data(payload: Any) -> list[dict[str, Any]]:
-    _object(payload)
-    inner = _envelope(payload)
-    if not isinstance(inner, list):
-        return []
-    return [item for item in inner if isinstance(item, dict)]
-
-
-def _object(payload: Any) -> dict[str, Any]:
-    if not isinstance(payload, dict):
-        raise VendorToolError(
-            "vendor_response_invalid", "Asana returned a non-object response."
-        )
-    errors = payload.get("errors")
-    if isinstance(errors, list) and errors:
-        first = errors[0] if isinstance(errors[0], dict) else {}
-        raise VendorToolError(
-            "vendor_rejected",
-            str(first.get("message", "Asana rejected the request."))[:500],
-        )
-    return payload
+def _clip(value: str | None) -> str | None:
+    return value[:MAX_BODY_CHARS] if value is not None else None
 
 
 __all__ = [

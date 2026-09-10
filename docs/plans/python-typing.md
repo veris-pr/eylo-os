@@ -1,5 +1,94 @@
 # Python typing and literal-removal plan
 
+## Remaining-work checklist — current checkpoint
+
+This is the short completion tracker. The chronological evidence below is not a
+percentage-complete claim; local contracts and live product acceptance are separate.
+
+- [ ] Finish curated native contracts: 15/29 vendors, 81/148 tools locally covered
+  (Asana, Freshdesk, Zendesk, Intercom, GitHub, GitLab, Jira, Linear, Google Sheets,
+  HubSpot, Pipedrive, Google Docs, Google Drive, Google Tasks, Dropbox).
+  Next: remaining document/file, communication and operational vendors. Close
+  GitLab named-project transport refusal without weakening shared egress policy.
+  Pipedrive now uses supported v2 CRM operations and v1 notes; live acceptance
+  remains pending, alongside the other curated vendors.
+- [ ] Reconcile all 11 SOR profile/vendor registrations against sync, commands,
+  OAuth and webhook operation coverage; finish missing native contracts.
+- [ ] Close remaining voice lifecycle/config gaps, Smallest protocol compatibility
+  and Murf native acceptance. Local native STT/TTS checks are not live call QA.
+- [ ] Finish MCP, durable checkpoint and cross-module readback/output omissions;
+  reconcile every provider factory and consumer against F0–F10 below.
+- [ ] Fix outstanding product findings: generated-card text presentation and SOR
+  duplicate field descriptors; verify other recorded findings remain applicable.
+- [ ] Repeat deployment/acceptance after the remaining implementation without
+  resetting operator data. A current-build text/retrieval checkpoint passed on
+  2026-09-10 (below); full voice, upload, vendor and recovery acceptance stays open.
+- [ ] Run final backend/frontend/widget/docs gates; publish a bounded acceptance
+  summary identifying any vendor-specific missing credentials or human QA.
+
+Completed foundation: all eight LLM native branches, shared execution/config/
+identity contracts, and substantial retrieval, storage, voice, email, telephony,
+campaign and session typing. The detailed evidence remains below. No entire flow
+is closed merely because its enums, config or type checker pass.
+
+Latest Google batch (2026-09-10): Google Docs four tools and Google Drive six
+tools now use native request/response and result models. Docs traverses tabs,
+uses native UTF-16/revision-checked append and validates update reply slots.
+Drive validates list discrimination, continuation, folder identity and mutation
+acknowledgements. Local evidence: 243 function assertions across all ten tools;
+real guarded-client checks across all seven mutation handlers, including two
+distinct receipts for document creation plus content, and no resend after an
+accepted malformed acknowledgement. HTTP and receipt persistence were substituted;
+live Google account acceptance remains pending.
+
+Tasks/Dropbox batch (2026-09-10): eleven tools now use native request/response
+and projection models. Reproduced and fixed null-filled successful mutations,
+first-page-only list lookup and duplicate-name selection. Pagination is explicit;
+Google task acknowledgements validate content/identity/status. Dropbox preserves
+native IDs, uses direct-link preflight with declared read scope, reports actual
+sharing visibility and stops asserting a fixed retention period. Local evidence:
+319 function assertions; real guarded-client checks for seven mutation handlers
+confirm one receipt per mutation and no resend after an invalid accepted response.
+HTTP and receipt persistence were substituted; live account acceptance and DB
+recovery are not claimed. This batch is not yet in the running application image.
+Milestone review: vendor types stay at their owning adapter boundary; registry
+still exposes 29 vendors/148 tools; existing grant/origin/outbound ownership is
+unchanged. Pagination, omission and typed acknowledgements were traced from tool
+input to request to result. Review corrected empty extension-filter omission and
+refused an asynchronous deletion acknowledgement. Backend lint, full Pyrefly
+(two pre-existing suppressed diagnostics), expanded curated hook and documentation
+verification passed. No DB, migration, frontend or dependency changes were needed.
+
+Current-build browser checkpoint (2026-09-10, 17:56–18:00 IST): rebuilt and
+recreated only the four application services; DB/Redis volumes and operator
+configuration preserved, Alembic remained `eylo0012`. Source fingerprints for
+the execution/Google contracts matched in every application container. Console
+lint/type/build and both widget builds passed (console bundle-size warning).
+Using the existing Eylo Development org, the real widget created conversation
+`01a08b48-b7f1-7c92-8f2e-efc322ab64ad`: memory recall and knowledge query succeeded,
+`top_k=2` was persisted, Bedrock ranking was applied, and K1 identified Cedar
+Lantern. The console showed the actual tool arguments/results and terminal
+message states; a second widget turn retained that result without another query.
+Groq conversation `01a08b4b-54f4-7f03-ac70-cbac4a5b427d` returned 493 for 29 × 17;
+both messages were Completed in the console. The widget history listed both new
+conversations. These are live text/retrieval proofs, not voice or vendor mutation
+acceptance. Configured integrations is empty in this org, so no curated Google
+account calls were attempted. Login succeeded despite a trapped Passlib/bcrypt
+version-introspection warning; no password dependency change was made. Follow-up:
+verify why the chooser offers the named background observer as a Start conversation
+option before treating it as a confirmed eligibility bug.
+
+CRM batch (2026-09-10): HubSpot six tools and Pipedrive five tools now use
+native request/response and result models. HubSpot notes carry a durable,
+retry-stable invocation timestamp. Pipedrive uses v2 CRM and v1 notes, separate
+search/detail person shapes, batched person-name resolution and bounded stage
+pagination. Local evidence: 154 HubSpot and 191 Pipedrive function assertions,
+eight literal Pipedrive OpenAPI responses, guarded-client write/no-replay checks,
+and actual executor-to-HubSpot timestamp propagation. Transport, auth lookup and
+receipt persistence were substituted in those probes; native account acceptance,
+DB crash recovery and current-build browser QA remain open. Backend lint,
+Pyrefly, the curated-contract hook and documentation verification pass.
+
 Status: implementation started; existing-enum cleanup, browser voice termination,
 recording disclosure, telephony opener/transfer typing, and four curated vendors'
 closed tool-input choices implemented. All eight LLM branches now have locally
@@ -1309,6 +1398,56 @@ console QA gate remains required on a deployed changed runtime.
 
 The local type hook now covers the full GitLab directory. No retained probes,
 test suite, CI, credentials, provider changes, DB migration or deployment added.
+
+### F3 progress: Jira curated native contracts — 2026-09-10
+
+Four tools now use Jira-owned Cloud v3 request, nested response/ADF, error and
+result models. Scope is curated Jira, not SOR. Reproduced HTTP-404 empty-search
+success, empty comment acknowledgement success and first-user misassignment;
+fixed by status/shape validation and one exact visible-email match before write.
+Unknown/missing private email refuses assignment. The create scope list now
+includes the existing classic `read:jira-user` requirement. Simple JQL filters
+escape quotes/backslashes; path values are encoded. One-page limits and single
+mutation authority remain unchanged. No API/SDK upgrade or configuration edits.
+
+Evidence: 165 assertions across 12 valid before/after cases; malformed/error,
+privacy, ambiguous identity and no-write cases; six official OpenAPI response
+examples across search/detail/create/comment/project/user operations. The
+published numeric `updated: 1` example is explicitly preserved, not converted
+to a guessed date. Full source authority and operation limits are in
+[integration reference](../reference/integrations.md#jira-request-and-response-contracts).
+
+The actual guarded client verifies POST-as-read, ADF serialization and origin
+pinning; a malformed accepted comment produces one receipt and replay does not
+send again. Transport and receipt persistence are substituted, so this is not
+native acceptance, durable DB recovery or widget QA. Jira native installation
+QA and the final changed-build browser matrix remain open. No retained probes,
+operator DB changes or deployment were introduced.
+
+### F3 progress: Asana curated native contracts — 2026-09-10
+
+Six tools now retain Asana API 1.0 request/envelope/nested result contracts.
+Reproduced failed search becoming empty success and malformed task completion
+returning unknown state. HTTP/error envelopes, required data/identity and consumed
+fields now validate; completion requires the same task and `completed: true`.
+Malformed accepted writes never authorize a second send.
+
+The old project-plus-assignee query discarded the assignee. Asana requires the
+workspace with an assignee filter: that combination now adds exactly one project
+workspace read, checks project identity and sends both filters. Other valid
+paths preserve request counts, byte ordering and projections. First-workspace
+selection, first-page limits and 6,000-character clipping remain explicit
+compatibility behavior; no implicit OAuth support was introduced.
+
+Evidence: 136 assertions, 13 before/after valid cases; mixed-filter regression,
+strict predicates/limits, malformed/error envelopes, ambiguous project lookup,
+identity/completion failures and read-only refusal. Actual guarded-client task
+reads and story writes verify serialization, one accepted receipt and no replay
+resend; final transport and persistence are substituted. Native selected fields
+are grounded in the official current API/OpenAPI, not live vendor execution.
+See [integration reference](../reference/integrations.md#asana-request-and-response-contracts).
+No retained probes, operator data changes or deployment. Native Asana and final
+changed-build widget/console acceptance remain pending.
 
 ### F2 in progress: typed inference config and OpenAI request boundary
 

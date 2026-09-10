@@ -15,9 +15,10 @@ from ...registry import registry
 # Dropbox's own scope names.
 FILES_READ = "files.metadata.read"
 FILES_WRITE = "files.content.write"
+SHARING_READ = "sharing.read"
 SHARING_WRITE = "sharing.write"
 
-OAUTH_SCOPES: tuple[str, ...] = (FILES_READ, FILES_WRITE, SHARING_WRITE)
+OAUTH_SCOPES: tuple[str, ...] = (FILES_READ, FILES_WRITE, SHARING_READ, SHARING_WRITE)
 
 vendor = registry.register_vendor(
     CuratedVendorSpec(
@@ -42,4 +43,11 @@ vendor = registry.register_vendor(
     )
 )
 
-__all__ = ["FILES_READ", "FILES_WRITE", "OAUTH_SCOPES", "SHARING_WRITE", "vendor"]
+__all__ = [
+    "FILES_READ",
+    "FILES_WRITE",
+    "OAUTH_SCOPES",
+    "SHARING_READ",
+    "SHARING_WRITE",
+    "vendor",
+]

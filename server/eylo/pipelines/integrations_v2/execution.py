@@ -11,11 +11,13 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from contextlib import nullcontext
+from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 from uuid import UUID
 
 from pydantic import (
+    AwareDatetime,
     BaseModel,
     ConfigDict,
     Field,
@@ -29,6 +31,7 @@ from pydantic import (
 from eylo.common.database import current_transaction, start_transaction
 from eylo.events.py_events.emitter import emit_ephemeral
 from eylo.events.schema.py_events.base import AuthRequiredEvent
+from eylo.modules.integrations_v2.domain.enums import ToolEffect
 from eylo.modules.integrations_v2.domain.errors import (
     IntegrationsV2Error,
     ToolApprovalRequiredError,
@@ -49,6 +52,28 @@ if TYPE_CHECKING:
 
 _ARGUMENTS = TypeAdapter(dict[str, JsonValue], config=ConfigDict(allow_inf_nan=False))
 _RESULT = TypeAdapter(JsonValue, config=ConfigDict(allow_inf_nan=False))
+INVOCATION_STAMP_VERSION = 1
+
+
+class CuratedInvocationStamp(BaseModel):
+    """Retry-stable occurrence time for vendor writes requiring a timestamp."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
+    started_at: AwareDatetime
+
+
+async def _invocation_started_at(
+    context: CommandStepContext, tool_use_message_id: UUID
+) -> datetime:
+    async def capture() -> str:
+        return CuratedInvocationStamp(started_at=datetime.now(UTC)).model_dump_json()
+
+    snapshot = await context.step(
+        key=f"curated.invocation.{tool_use_message_id}",
+        version=INVOCATION_STAMP_VERSION,
+        operation=capture,
+    )
+    return CuratedInvocationStamp.model_validate_json(snapshot, strict=True).started_at
 
 
 class CuratedToolExecutionOutcome(BaseModel):
@@ -153,6 +178,15 @@ async def execute_curated_tool(
             vendor=grant.vendor,
         )
 
+    started_at = None
+    if spec.effect is ToolEffect.MUTATION:
+        try:
+            started_at = await _invocation_started_at(
+                durable_context, tool_use_message_id
+            )
+        except ValidationError:
+            return _error_outcome("tool_invocation_invalid", vendor=grant.vendor)
+
     client = GuardedVendorClient(
         base_url=resolved.base_url,
         auth=resolved.auth,
@@ -170,6 +204,7 @@ async def execute_curated_tool(
         http=client,
         account=resolved.account,
         effect=spec.effect,
+        started_at=started_at,
     )
 
     try:

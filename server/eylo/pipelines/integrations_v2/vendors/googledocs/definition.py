@@ -17,7 +17,7 @@ vendor = registry.register_vendor(
         display_name="Google Docs",
         description=(
             "Documents. Curated tools read a document as plain text, create "
-            "one with its opening content in a single step, append to the end "
+            "one with opening content through separate writes, append to the end "
             "without computing indexes, and replace text throughout. Find "
             "documents with the Google Drive tools."
         ),

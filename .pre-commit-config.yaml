@@ -645,12 +645,20 @@ repos:
           eylo/pipelines/integrations_v2/resolution.py
           eylo/pipelines/integrations_v2/credentials.py
           eylo/pipelines/integrations_v2/http_client.py
+          eylo/pipelines/integrations_v2/vendors/asana/
+          eylo/pipelines/integrations_v2/vendors/hubspot/
+          eylo/pipelines/integrations_v2/vendors/pipedrive/
           eylo/pipelines/integrations_v2/vendors/github/
           eylo/pipelines/integrations_v2/vendors/freshdesk/
           eylo/pipelines/integrations_v2/vendors/googlesheets/
+          eylo/pipelines/integrations_v2/vendors/googledocs/
+          eylo/pipelines/integrations_v2/vendors/googledrive/
+          eylo/pipelines/integrations_v2/vendors/googletasks/
+          eylo/pipelines/integrations_v2/vendors/dropbox/
           eylo/pipelines/integrations_v2/vendors/zendesk/
           eylo/pipelines/integrations_v2/vendors/linear/
           eylo/pipelines/integrations_v2/vendors/gitlab/
+          eylo/pipelines/integrations_v2/vendors/jira/
           eylo/pipelines/integrations_v2/vendors/intercom/'
         language: system
         files: ^server/(pyproject\.toml|eylo/(common/contracts/tool_platform\.py|modules/(integrations_v2|tools)/|pipelines/(integrations_v2/|conversation/domain\.py)))
