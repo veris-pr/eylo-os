@@ -1,8 +1,10 @@
 import type {
   Campaign,
   CampaignChannel,
+  CampaignChannelConfig,
   CampaignCreate,
   CampaignFormValues,
+  CampaignRetryPolicy,
   CampaignUpdate,
 } from "@/features/campaigns/campaigns.types";
 
@@ -77,8 +79,11 @@ function validateCampaignForm(
   return errors;
 }
 
-function toCampaignCreate(values: CampaignFormValues): CampaignCreate {
-  const channel = values.channel as CampaignChannel;
+function toCampaignCreate(
+  values: CampaignFormValues,
+): Omit<CampaignCreate, "scheduleConfig"> {
+  const channel = values.channel;
+  if (channel === "") throw new Error("Choose an outreach channel.");
   return {
     agentId: values.agentId,
     channel,
@@ -97,13 +102,13 @@ function toCampaignUpdate(
   expectedRevision: number,
 ): CampaignUpdate {
   const create = toCampaignCreate(values);
-  return { ...create, expectedRevision };
+  return { ...create, retryPolicy: retryPolicy(values), expectedRevision };
 }
 
 function channelConfig(
   values: CampaignFormValues,
   channel: CampaignChannel,
-): Record<string, unknown> {
+): CampaignChannelConfig {
   if (channel !== "email") return {};
   return {
     body_template: values.emailBodyTemplate,
@@ -112,7 +117,7 @@ function channelConfig(
   };
 }
 
-function retryPolicy(values: CampaignFormValues): Record<string, unknown> {
+function retryPolicy(values: CampaignFormValues): CampaignRetryPolicy {
   return {
     backoff_seconds: Number(values.retryBackoffSeconds),
     max_retries: Number(values.retryMaxRetries),

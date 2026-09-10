@@ -17,16 +17,16 @@ def get_channel_adapter(channel: str) -> CampaignChannelAdapter:
     if channel == CampaignChannel.VOICE.value:
         from eylo.products.campaigns.channels.voice import VoiceChannelAdapter
 
-        return VoiceChannelAdapter()  # type: ignore[return-value]
+        return VoiceChannelAdapter()
 
     if channel == CampaignChannel.EMAIL.value:
         from eylo.products.campaigns.channels.email import EmailChannelAdapter
 
-        return EmailChannelAdapter()  # type: ignore[return-value]
+        return EmailChannelAdapter()
 
     if channel == CampaignChannel.WIDGET.value:
         from eylo.products.campaigns.channels.widget import WidgetChannelAdapter
 
-        return WidgetChannelAdapter()  # type: ignore[return-value]
+        return WidgetChannelAdapter()
 
     raise ValueError(f"Unsupported campaign channel: {channel}")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -78,24 +79,24 @@ async def consume_campaign_call_outcome(
             "Canonical campaign call has incomplete campaign authority."
         )
 
-    channel = CampaignChannel.VOICE.value
-    outcome = CampaignOutreachOutcome(
-        organization_id=call.organization_id,
-        campaign_id=call.campaign_id,
-        campaign_contact_id=call.campaign_contact_id,
-        campaign_attempt_id=call.campaign_attempt_id,
-        tracking_id=call.call_sid,
-        channel=channel,
-        outcome=call.ended_reason,
-        connected=call.ended_reason
-        in CHANNEL_CONNECTED_OUTCOMES[CampaignChannel.VOICE],
-        duration_seconds=(
-            float(call.duration_seconds)
-            if call.duration_seconds is not None
-            else None
-        ),
-    )
+    channel = CampaignChannel.VOICE
     try:
+        outcome = CampaignOutreachOutcome(
+            organization_id=call.organization_id,
+            campaign_id=call.campaign_id,
+            campaign_contact_id=call.campaign_contact_id,
+            campaign_attempt_id=call.campaign_attempt_id,
+            tracking_id=call.call_sid,
+            channel=channel,
+            outcome=call.ended_reason,
+            connected=call.ended_reason
+            in CHANNEL_CONNECTED_OUTCOMES[CampaignChannel.VOICE],
+            duration_seconds=call.duration_seconds,
+        )
         await apply_campaign_outreach_outcome(session=session, outcome=outcome)
+    except ValidationError as error:
+        raise PermanentEventConsumerError(
+            "Canonical campaign outcome or retry policy is invalid."
+        ) from error
     except CampaignOutcomeAuthorityMissing as error:
         raise PermanentEventConsumerError(str(error)) from error

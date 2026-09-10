@@ -7489,6 +7489,362 @@ values and delivery classifications are unchanged. The common egress error
 vocabulary remains common-owned rather than being duplicated as a vendor enum.
 The 357-assertion outbound contract probe and repository Python lint pass again.
 
+### Shared revision contracts and campaign consumer follow-through
+
+2026-09-10: following campaign publication and dispatch exposed common revision
+values still implemented as dataclasses. `DefinitionRef`,
+`DefinitionHeaderState` and `PublishedRevisionState` now use strict frozen
+Pydantic models. Owning services explicitly decode persisted lifecycle and
+availability strings to their enums. UUID library normalization remains local;
+positive revisions, revocation metadata and timezone checks remain enforced.
+Header transitions and revocation construct validated values, not unchecked
+`model_copy(update=...)` projections. The intrinsic `draft_dirty` predicate is
+unchanged; it does not replace the lifecycle enum.
+
+Native constructors now reject wrong primitive types and extra fields with
+Pydantic validation errors. Existing valid transitions and domain-invariant
+errors retain their outcomes. JSON round trips use Pydantic's explicit JSON
+boundary; arbitrary native UUID strings are not silently accepted. No persisted
+enum values, columns or publication policy changed.
+
+Verification:
+
+- Earlier function matrix: **895 assertions**, including real ORM translation
+  helpers for agents, swarms, templates, MCP servers and tools.
+- Current recheck: **768 assertions**, including lifecycle comparison against
+  the pinned pre-conversion `fbb877f1`, strictness, JSON round trips, all revocation
+  metadata presence combinations, and campaign/MCP exact revision reads. The
+  latter exercise actual repositories and query construction with controlled DB
+  responses: organization, resource, exact revision and deletion scope remain
+  present. They do not prove live DB isolation or commit behavior.
+- Full type checking found a positional `DefinitionRef` call in swarm handoff.
+  Converted it to named arguments; **10 assertions** execute that branch with
+  real context/agent/ref models and a controlled downstream handoff, covering
+  borrowed-session and owned-transaction routing without committing or closing
+  borrowed resources. This is not live handoff execution.
+- Expanded the local publication type hook to include common revision values
+  and the handoff dispatcher. It passes, as does Python lint.
+- Full-project Pyrefly: **244 errors, three suppressions**, down from 256 before
+  this revision slice. No remaining diagnostics reference these revision types.
+
+The checkout advanced to `5ed452db` during continuation, incorporating the
+revision-model edits. A temporary parity probe initially compared against this
+new `HEAD`; it was corrected to the verified pre-conversion commit, not by
+weakening assertions. No commit was created by this continuation.
+
+Remaining campaign work: nullable exact template references, typed channel and
+outcome contracts, contact selection/preparation and repository projections.
+The broad plan also still requires remaining dataclass/value conversions,
+vendor request/response contracts and changed-build product QA. Passing this
+slice does not establish platform-wide completion.
+
+### Template values and exact campaign message references
+
+2026-09-10: converted `CompiledTemplate`, `TemplateSegment` and
+`RenderedTemplate` from dataclasses to strict frozen Pydantic values. Compiled
+variables retain independently owned read-only mapping semantics, with explicit
+serialization. Program validation also runs on native/JSON restoration. Render
+validators check segment/text agreement, declared variables, renderer version
+and draft-versus-exact source identity. Preview and exact rendering use validated
+source binding rather than `dataclasses.replace` or unchecked model copying.
+
+Campaign start/render now resolves optional template ID/revision columns through
+`campaign_message_template_ref`. Both absent means no template; incomplete pairs
+fail instead of silently treating an orphan revision as absent. Valid references
+retain the filed revision, never a latest-revision fallback. Campaign rendering
+uses compiler-owned variable declarations rather than reading raw stored keys;
+unrelated contact fields remain excluded. Service inputs use read-only `Mapping`
+contracts, fixing the API schema-to-service variance mismatch without casts.
+
+Executed **1,061 function/contract assertions**:
+
+- Compare all four variable types and all six consumer kinds against the pinned
+  `5ed452db` renderer, including repeated placeholders, HTML escaping, limits,
+  nonfinite values, malformed schemas and missing/unknown variables.
+- Check frozen variable maps, Pydantic JSON round trips, program/provenance
+  refusals and draft/exact source disagreement.
+- Run actual template services/repositories/models for create, edit, publish,
+  preview and exact rendering with controlled DB responses. Exercise campaign
+  rendering through the actual template service, including two scoped exact
+  reads, unrelated contact fields, missing reference pairs and revoked renders.
+- Confirm response projection and no service-owned commit. No live DB,
+  provider call, worker or browser was exercised; no persisted test suite added.
+
+Focused milestone review, in order:
+
+1. DDD: template invariants remain in the template domain; campaign pair decoding
+   remains campaign-owned and reuses the common exact reference.
+2. Architecture: API and stored JSON remain boundary representations; neither
+   sockets nor framework acquire module dependencies.
+3. Data flow: valid output and failure classification match the prior renderer;
+   restored internal values and incomplete campaign references now fail early.
+4. Plan: implements the user's Pydantic preference and follows campaign rendering
+   into templates. Other campaign config/outcome contracts remain open.
+5. Maintainability/performance: no casts, suppression or new dependency; immutable
+   variables remain readable through a typed mapping. Query counts are unchanged
+   in the probes. Added validation is bounded by existing program limits; no
+   live latency or throughput claim is made.
+
+Expanded the local publication type gate to cover the template module; it passes.
+Python lint passes. Full Pyrefly: **239 errors, three suppressions**, down from
+244. An unrelated `pipelines/agents/config_deletion.py` diagnostic remains when
+checking the entire agents pipeline directory; it is not hidden by this gate.
+Campaign service's remaining nullable-delete diagnostic is still open.
+
+### Campaign preparation summary contracts
+
+2026-09-10: converted `CampaignPreparationIssue` and `CampaignPreparation` to
+frozen, strict Pydantic values. Counts are nonnegative integers; booleans and
+coerced strings are rejected. Nested issues are revalidated. Warning facts may
+exceed the audience count because one contact can contribute several facts.
+
+The existing preparation flow still validates every address and counts every
+audience row, including rows without a resolved organization contact. An explicit
+missing-ID guard precedes the optional contact lookup; it does not filter the
+audience or turn preference/address warnings into blockers. Contact resolution
+remains bulk, once per page, with organization authority passed explicitly.
+
+Verification: **80 function-contract assertions passed**, including all issue
+codes/levels, immutable and JSON-restored values, invalid counts, a 501-row
+paginated audience, repeated/missing/unbound contacts, empty audience, and the
+actual API response projection. Repository/contact reads were controlled; this
+does not prove live campaign dispatch or database execution. No messages were
+sent by the probe. Python lint and touched-file formatting pass; full Pyrefly
+now reports **238 errors, three suppressions**. Campaign outcome tracking,
+retry/config dictionaries and the other previously listed gaps remain open.
+
+### Campaign outcome projection and remaining static diagnostics
+
+2026-09-10: traced terminal telephony state through the durable consumer, exact
+campaign attempt/revision lookups, retry selection, contact/campaign counters
+and status aggregates. Converted `CampaignOutreachOutcome` to frozen, strict
+Pydantic: normalized UUID-library identities, `CampaignChannel`, bounded opaque
+channel outcome codes, optional tracking ID and finite nonnegative duration.
+`connected` remains an intrinsic predicate. Channel-owned provider rejection
+codes are not converted into campaign lifecycle states or a closed voice enum.
+
+Added immutable `CampaignRetryPolicy` for runtime projection. Existing partial
+policies keep zero/empty defaults and legacy `retry_on: null` becomes an empty
+tuple. Strings/booleans are not coerced to counts. Relevant policy validation
+happens before any outcome/counter mutation. Already-terminal contacts, replayed
+attempts, connected outcomes and non-running campaigns retain their existing
+branches; they do not begin evaluating an irrelevant retry policy. The durable
+consumer translates malformed canonical outcome/policy values into a permanent
+failure. No retry formula, connected-outcome classification or transaction owner
+was changed.
+
+Closed the remaining static campaign diagnostics along this flow:
+
+- Aggregate repositories consume SQLAlchemy tuple results explicitly; the
+  outcome projection narrows nullable reason values consistently with its SQL
+  non-null predicate.
+- Contact-selection input keeps its scalar-or-list wire contract but normalizes
+  to an internally typed list before field validation. Its validation JSON schema
+  is identical to the prior schema; no generated client change is needed.
+- Campaign deletion checks and passes one resolved ORM row, preserving the
+  missing-entity error category and draft/canceled eligibility, without a second
+  nullable row lookup. This does not add a new concurrency/locking guarantee.
+
+Verification: **827 assertions**: 763 outcome/policy checks (180 baseline
+projection cases plus invalid boundaries and the actual durable-consumer path),
+12 aggregate checks with real SQLAlchemy result objects, 34 scalar/list request
+and input-schema checks, and 18 deletion guards. DB reads/writes were controlled
+in these function probes; no live campaign was dispatched or deleted. An initial
+probe fixture evaluated an invalid string count before reaching product code;
+that fixture was corrected and the unchanged rejection assertions passed.
+
+The complete campaign product and pipeline directories pass Pyrefly and are now
+included in the local publication contract gate. Python lint and touched-file
+format checks pass. Full Pyrefly reports **233 errors, three suppressions**, down
+from 238 at the start of this slice. Documentation verification and whitespace
+checks pass. Remaining semantic typing scope includes campaign API/ORM
+retry, schedule and channel-config dictionaries; a green directory check does
+not establish their conversion. Changed-build live QA remains open below.
+
+### Campaign retry configuration: API to pinned execution
+
+Completed the next vertical slice without changing DB columns or retry timing:
+
+- API create/update and internal schemas accept `CampaignRetryPolicy`; services
+  consume that value, repositories serialize its explicit JSONB keys, revision
+  snapshots validate it, and attempt preparation validates the pinned definition.
+- Create preserves omitted/null/empty channel policy. Explicit update `{}` clears
+  retries; omitted update leaves it unchanged. Explicit update null is rejected
+  before writes and is not advertised as valid in OpenAPI.
+- Removed the unused dictionary policy catalog. Replaced unchecked runtime
+  `model_copy(update=...)` with validated construction from pinned definition
+  fields and current progress fields. A newer header cannot substitute its retry
+  configuration for an existing attempt's revision.
+- Regenerated console API types from a temporary running schema-only server.
+  Campaign form builders now return the generated policy type. No UI layout,
+  provider configuration, migration or operator data changed.
+
+Verification: **241 API/service/repository/revision assertions** preserve prior
+channel policies and JSON shape, plus **10 pinned-attempt assertions** cover
+header/revision divergence and invalid pinned policy. Re-ran **763 outcome** and
+**80 preparation** assertions. These use real product models/functions with
+controlled DB dependencies, not live provider dispatch. Campaign directories
+have zero Pyrefly errors; full-project baseline remains **233 errors, three
+suppressions**. Console lint, TypeScript and production build pass; the build
+still warns about large chunks.
+
+Milestone review, in order: (1) policy remains campaign-owned, neutral call
+reasons remain common contracts; (2) existing JSONB and revision architecture
+remain unchanged; (3) create/update/snapshot/attempt/outcome paths are covered;
+(4) this closes retry configuration, not schedule/channel dictionaries or the
+broader platform backlog; (5) no cast, suppression, new dependency, extra DB
+query or new retry authority was introduced. Changed-build product QA remains
+required below; function probes do not replace it.
+
+### Campaign reserved schedule contract
+
+The next scheduling trace found no executable time-window consumer. Source
+search plus `file_due_attempts`, attempt preparation and dispatch inspection show
+that schedule config is stored/copied only; preparation already warns local-time
+policy is not enforced. This slice therefore hardens the actual storage contract
+and marks it inert, rather than introducing unrequested scheduling behavior.
+
+- `CampaignScheduleConfig` replaces schedule dictionaries in API and internal
+  schemas, service inputs and pinned attempt views. The three optional fields
+  are strings; clock/timezone semantics remain uninterpreted in V1. Unknown keys
+  and non-string field values now fail validation instead of entering JSONB.
+- Create retains historical omitted/null/empty settings. Storage preserves
+  partial keys and explicit field nulls. Update omission preserves data, `{}`
+  clears it, and a null config is rejected before a non-null DB column write.
+- The existing `experimental()` field metadata now lives in a neutral common
+  utility used by voice and campaigns. API descriptions explicitly say schedule
+  settings have no effect; existing voice metadata and limits are unchanged.
+- Regenerated console API types; the form's return contract explicitly omits
+  schedule settings because there is no schedule editor. The generated stricter
+  update contract exposed the previous broad return annotation; no cast or
+  invented default was added to bypass it.
+
+Function verification: **132 assertions** across API/service/repository/revision
+transforms and experimental metadata, **15 pinned-attempt assertions**, and
+**241 retry-flow regression assertions**. DB dependencies are controlled; these
+do not prove live campaign dispatch. An initial pinned fixture omitted required
+retry data; correcting that fixture preserved the production validation guard.
+Existing campaign and voice local type gates include the shared metadata module.
+Schedule enforcement remains unimplemented by design; channel-config dictionaries
+and the broader platform typing backlog remain open.
+
+### Campaign channel config: binding through email dispatch
+
+Closed the campaign configuration dictionary path with product-owned models:
+
+- `CampaignChannelFields` couples the channel enum to a validated config in
+  complete API/internal projections. Empty voice/widget settings and email's
+  four known settings have separate frozen contracts; partial update input is
+  checked against the resulting channel by the service/repository.
+- Draft email config may omit required operational settings. Valid UUIDs and
+  positive integer revisions are typed, unknown keys rejected. Incomplete drafts
+  remain distinguishable from ready-to-dispatch campaigns.
+- The service still resolves organization-owned email authority and overwrites
+  caller-supplied revisions. JSONB stores primitive values only. Unrelated edits
+  preserve existing pins; explicit clearing removes them. Exact attempt revision
+  preparation validates its config before asking the provider pipeline for access.
+- Email adapter consumes attributes rather than raw key lookups and `str(...)`
+  coercion. Missing/null templates cannot become a literal `"None"` email body.
+  Existing outbound ownership, idempotency and unknown-outcome handling remain.
+- Generated console types now describe channel and config. Response config is
+  required because the service always supplies it. Form builders use those types,
+  refuse a missing channel without a cast, and never submit a provider revision.
+
+Executed: **115 API/service/repository/revision/email-dispatch assertions**,
+**11 pinned-attempt assertions**, **19 actual TypeScript form assertions**,
+**241 retry-flow**, **10 pinned-retry**, and **132 schedule-flow** regressions.
+DB/resolver/provider I/O are controlled; native product models and actual
+transforms are used. A probe initially used nonexistent outbound state `FAILED`;
+it was corrected to the source-defined `TERMINAL` before claiming dispatch proof.
+
+Milestone review, sequentially:
+
+1. DDD: channel settings remain campaign-owned; provider material/secrets remain
+   in email configuration/pipeline ownership. No vendor SDK type moved outward.
+2. Architecture fit: existing JSONB columns, resolver, revision authority and
+   channel factory remain; no migration, queue or alternate binding registry.
+3. Data flow: create → pin → JSONB → revision → exact attempt → email dispatch
+   and the form/API projection are exercised. Malformed values fail before
+   provider access; caller revisions cannot replace resolver authority.
+4. Plan alignment: campaign retry/schedule/channel dictionaries are now typed;
+   schedule enforcement is still intentionally absent. Contact variable payloads,
+   dispatch-state contracts and broader platform diagnostics remain separate work.
+5. Maintainability/performance: removed duplicate raw provider parsers, preserved
+   existing query/transaction boundaries, no extra provider request or new runtime
+   dependency. Config validation traverses a fixed small field set. No throughput
+   claim is inferred from controlled-I/O probes.
+
+Changed-build product QA and human review remain open; this milestone does not
+establish live campaign delivery or full platform readiness.
+
+### Campaign dispatch outcomes and replay policy
+
+Reproduced a recovery defect in the actual worker branch with controlled I/O:
+both an unknown receipt and a rejected receipt containing a tracking ID called
+`_complete_dispatch`. The branch tested identity presence and ignored outcome.
+This affects recovery-only execution of previously started effects; current
+adapters declare replay safety, so the probe does not establish a live incident.
+
+- `ChannelDispatchState` makes accepted/rejected/unknown explicit. The frozen
+  result validates identity/error coherence; unknown/rejected can retain a
+  tracking identity without being treated as accepted.
+- All three adapters construct explicit states. Worker recovery completes only
+  accepted results, rejects rejected results, and fences unknown/missing results.
+  Normal dispatch validates checkpoint data instead of coercing dictionary values.
+- `ChannelReplayPolicy` replaces the adapter flag. The start-effect boundary
+  requires affirmative historical and current replay permission. Existing DB
+  booleans remain translated at that boundary; no migration was introduced.
+- An explicit private checkpoint model retains the existing v1 JSON fields and
+  step name. New serialization remains readable by old workers; old valid
+  checkpoints decode to current typed results. Malformed values fail validation
+  and follow the existing replay-safe retry versus recover-only fencing rule.
+- Removed six now-unnecessary protocol/factory type-ignore comments. Actual
+  adapters satisfy the protocol under the scoped type check.
+
+Verified **152 worker/checkpoint/effect-start assertions**, **45 voice/widget
+outcome and replay assertions**, and **115 email/config flow regressions**.
+These execute real models, adapters and worker branches with DB/provider I/O
+controlled; no live call/email was sent and no worker crash was injected.
+
+Milestone review: (1) result/replay vocabulary stays campaign-owned; (2) existing
+outbound, DB and Absurd authorities remain; (3) adapter → saved step → worker
+projection and recovered receipts are checked, including missing/invalid data;
+(4) dispatch params, receipts, preparation tuples and projection dictionaries
+remain further typing work; (5) no new query, dependency, retry engine or resource
+lifetime was introduced. Current type/lint gates pass; full-project baseline
+remains 233 errors with three suppressions. Changed-build QA remains required.
+
+### Campaign worker input and internal control-flow contracts
+
+Replaced the worker's ID tuple parser, preparation tuple, recovery dictionary
+sentinel and untyped receipts with pipeline-owned Pydantic contracts and
+`CampaignEffectAction`. The producer's ID-only payload, task name, idempotency
+key, dispatch step name and receipt JSON fields are unchanged. UUID input accepts
+UUIDs or valid strings, not arbitrary objects coerced through `str()`; invalid
+input is rejected before product work and hides raw values in exception text.
+
+`PreparedCampaignDispatch` preserves the validated adapter's identity and carries
+detached campaign/contact values. Adapter and raw contact/message content are
+excluded from snapshots and repr. The adapter remains a behavioral protocol,
+runtime-checkable for model admission and statically checked for signatures; it
+was not replaced by a data model. Worker helpers now return typed receipts and
+declare their transaction session dependency. Only the public worker boundary
+serializes receipts. The existing receipt ambiguity Boolean is compatibility
+data, not a new runtime decision flag.
+
+Verified **99 producer/input/receipt/preflight assertions**, **152 dispatch and
+recovery regressions**, and **12 pinned-config/prepared-context assertions**.
+These use actual worker/producer functions and real models with controlled DB
+and provider I/O. They verify terminal preflight does not dispatch, invalid IDs
+do not enter execution, ID-only spawn compatibility, binding-pending propagation,
+all durable receipt states, snapshot exclusions and pinned provider authority.
+No live delivery, worker crash or DB concurrency is claimed. Campaign type gates
+and Ruff pass; full-project baseline remains **233 errors (3 suppressed)**.
+
+Remaining campaign typing includes contact variable payloads, projection values
+and failure vocabulary; shared durable infrastructure and broader provider flows
+remain part of the platform goal. No migration or operator data changed.
+
 ### Changed-build product QA acceptance gate
 
 2026-09-10 user requirement: after implementation, run the real widget and
@@ -7504,7 +7860,7 @@ Ordered acceptance checklist:
 - [x] Confirm console `/login` on port 5173, widget on port 5174 and API `/health`
   on port 8000 respond. All returned HTTP 200 on 2026-09-10; existing servers
   did not need another start. API, PostgreSQL and Redis reported healthy.
-- [ ] Log in through the browser and confirm the existing organization.
+- [x] Log in through the browser and confirm the existing organization.
 - [ ] Converse with configured agents through the widget: ordinary conversation,
   knowledge retrieval/citations, memory and configured read-only integration/SOR
   tools. Exercise conversation navigation, reopening and message pagination.
@@ -7514,17 +7870,37 @@ Ordered acceptance checklist:
   distinguish automated checks from human audio-quality validation.
 - [ ] Record exact exercised agents/conversations, failures and unrun cases.
 
-Current blocker: browser automation reported that the Mac is locked and automatic
-unlock failed. Manual unlock is required for UI navigation. The deployed API
-still contains the older telephony config implementation and lacks the new
-`pipelines/webrtc/requests.py`; HTTP health checks are not changed-build QA.
-Voice and telephony typed-contract hooks passed again. No deployment, provider
-configuration, database or conversation was changed during this readiness check.
+Earlier readiness checks were blocked by a native Mac-lock error. On the latest
+2026-09-10 attempt, the in-app browser remained usable despite that inventory
+warning. Login succeeded in the existing Eylo Development organization; neither
+frontend needed another server process. The API and workers were already up;
+the API container has no checkout mount, so this smoke check does not cover the
+unrebuilt local edits. No provider configuration or deployment was changed.
 
-Latest recheck: console `/login` and widget `/` both returned HTTP 200; neither
-needed a duplicate server process. Browser automation again reported the locked
-Mac. Login, agent conversations and console tool-call inspection remain unrun
-for this source build; an HTTP response is not evidence of those interactions.
+Deployed-build browser evidence:
+
+- `QA Core Mixed Agent`, conversation
+  `01a08910-4ce5-70a1-87bb-e09de648cb7c`: actual `memory_recall` and `kb_query`
+  calls returned one result each. Both result envelopes reported Bedrock ranking
+  applied; the knowledge result included citation `K1`. The response used that
+  label. `compound_render_widget` subsequently returned `delivered`, and the
+  widget displayed the requested title, subtitle and sections.
+- The same console conversation displayed **15 of 15 persisted messages**, all
+  in completed states, including tool arguments/results, widget output and both
+  background task/result pairs. Background results reported the configured
+  Claude Haiku model; no external mutation was requested.
+- Widget back-navigation and loading older conversations worked: the loaded
+  list grew from six to ten. Reopened the existing `QA Minimal Groq Agent`
+  conversation, asked it to subtract one from the prior multiplication result,
+  and received `390`, correctly using its stored `391` context.
+- UI finding: generated card text displayed literal Markdown markers from the
+  model's `text` props. Delivery succeeded; presentation-contract diagnosis and
+  remediation remain pending. No claim that the full UI is polished.
+
+Changed-build QA, additional providers, SOR/integration tools, file ingestion,
+message-page boundaries and voice/media quality remain unrun in this checkpoint.
+The widget and signed-in console tabs were retained for continued QA. This
+updates the former blanket browser blocker; it does not close the release gate.
 
 ### F5 next slice: Smallest protocol evidence gap
 

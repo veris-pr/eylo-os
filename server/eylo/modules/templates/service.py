@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -115,7 +115,7 @@ class TemplateService:
         name: str,
         kind: TemplateKind | str,
         body: str,
-        variable_schema: dict[str, object],
+        variable_schema: Mapping[str, object],
     ) -> TemplateModel:
         name = _name(name)
         kind = TemplateKind(kind)
@@ -156,7 +156,7 @@ class TemplateService:
         template_id: UUID,
         expected_draft_version: int,
         body: str | None = None,
-        variable_schema: dict[str, object] | None = None,
+        variable_schema: Mapping[str, object] | None = None,
     ) -> TemplateModel:
         row = await self._repository.get_header(
             organization_id,
@@ -258,7 +258,7 @@ class TemplateService:
         organization_id: UUID,
         template_id: UUID,
         consumer_kind: TemplateConsumerKind | str,
-        values: dict[str, object],
+        values: Mapping[str, object],
     ) -> RenderedTemplate:
         row = await self._repository.get_header(organization_id, template_id)
         compiled = compile_template(row.draft_body, row.draft_variable_schema)
@@ -268,8 +268,7 @@ class TemplateService:
             consumer_kind=consumer_kind,
             values=values,
         )
-        return replace(
-            rendered,
+        return rendered.with_source(
             template_id=row.id,
             draft_version=row.draft_version,
         )
@@ -281,7 +280,7 @@ class TemplateService:
         template_id: UUID,
         revision: int,
         consumer_kind: TemplateConsumerKind | str,
-        values: dict[str, object],
+        values: Mapping[str, object],
     ) -> RenderedTemplate:
         row = await self._repository.get_revision(
             organization_id,
@@ -296,8 +295,7 @@ class TemplateService:
             consumer_kind=consumer_kind,
             values=values,
         )
-        return replace(
-            rendered,
+        return rendered.with_source(
             template_ref=DefinitionRef(
                 definition_id=template_id,
                 revision=revision,

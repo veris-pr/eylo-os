@@ -133,7 +133,8 @@ async def execute_handoff(
         )
 
     swarm_ref = DefinitionRef(
-        context.conversation.swarm_id, context.conversation.swarm_revision
+        definition_id=context.conversation.swarm_id,
+        revision=context.conversation.swarm_revision,
     )
     session = current_transaction()
     if session is not None:

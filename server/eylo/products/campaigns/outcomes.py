@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from eylo.common.identifiers import normalize_uuid_like
 from eylo.products.campaigns.constants import (
+    CampaignChannel,
     CampaignContactStatus,
     CampaignStatus,
 )
+from eylo.products.campaigns.domain import CampaignRetryPolicy
 from eylo.products.campaigns.models import (
     CampaignAttemptModel,
     CampaignContactModel,
@@ -35,19 +38,41 @@ class CampaignOutcomeAuthorityMissing(Exception):
     """The exact organization/campaign/contact/attempt authority is unavailable."""
 
 
-@dataclass(frozen=True, slots=True)
-class CampaignOutreachOutcome:
-    """One exact channel result derived from canonical provider state."""
+class CampaignOutreachOutcome(BaseModel):
+    """Exact channel result; rejected calls may never acquire a provider ID.
+
+    Outcome reasons are channel-owned codes, including provider rejection codes,
+    not a campaign lifecycle enum. Connected is an intrinsic result predicate.
+    """
+
+    model_config = ConfigDict(
+        frozen=True,
+        strict=True,
+        extra="forbid",
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+    )
 
     organization_id: UUID
     campaign_id: UUID
     campaign_contact_id: UUID
     campaign_attempt_id: UUID
-    tracking_id: str
-    channel: str
-    outcome: str
+    tracking_id: str | None = Field(max_length=256)
+    channel: CampaignChannel
+    outcome: str = Field(min_length=1, max_length=64)
     connected: bool
-    duration_seconds: float | None = None
+    duration_seconds: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+
+    @field_validator(
+        "organization_id",
+        "campaign_id",
+        "campaign_contact_id",
+        "campaign_attempt_id",
+        mode="before",
+    )
+    @classmethod
+    def normalize_identifiers(cls, value: object) -> object:
+        return normalize_uuid_like(value)
 
 
 async def apply_campaign_outreach_outcome(
@@ -62,9 +87,8 @@ async def apply_campaign_outreach_outcome(
             CampaignAttemptModel.id == outcome.campaign_attempt_id,
             CampaignAttemptModel.organization_id == outcome.organization_id,
             CampaignAttemptModel.campaign_id == outcome.campaign_id,
-            CampaignAttemptModel.campaign_contact_id
-            == outcome.campaign_contact_id,
-            CampaignAttemptModel.channel == outcome.channel,
+            CampaignAttemptModel.campaign_contact_id == outcome.campaign_contact_id,
+            CampaignAttemptModel.channel == outcome.channel.value,
             CampaignAttemptModel.deleted.is_(False),
         )
         .with_for_update()
@@ -106,6 +130,14 @@ async def apply_campaign_outreach_outcome(
             "Campaign outcome projection authority is unavailable."
         )
 
+    policy = None
+    if (
+        contact.status not in _TERMINAL_CONTACT_STATES
+        and not outcome.connected
+        and campaign.status == CampaignStatus.RUNNING.value
+    ):
+        policy = CampaignRetryPolicy.model_validate(revision.retry_policy or {})
+
     now = datetime.now(timezone.utc)
     attempt.tracking_id = outcome.tracking_id
     attempt.outcome = outcome.outcome
@@ -123,15 +155,10 @@ async def apply_campaign_outreach_outcome(
     if outcome.connected:
         contact.status = CampaignContactStatus.COMPLETED.value
         campaign.completed_contacts += 1
-    elif _should_retry(
-        campaign=campaign,
-        revision=revision,
-        attempt=attempt,
-        outcome=outcome,
+    elif policy is not None and policy.allows_retry(
+        attempt_number=attempt.attempt_number, outcome=outcome.outcome
     ):
-        policy = revision.retry_policy or {}
-        backoff_seconds = int(policy.get("backoff_seconds", 0))
-        delay = backoff_seconds * (2 ** max(attempt.attempt_number - 1, 0))
+        delay = policy.delay_seconds(attempt_number=attempt.attempt_number)
         contact.status = CampaignContactStatus.RETRY.value
         contact.next_retry_at = now + timedelta(seconds=delay)
     else:
@@ -140,23 +167,6 @@ async def apply_campaign_outreach_outcome(
 
     await _complete_campaign_if_terminal(session=session, campaign=campaign)
     return True
-
-
-def _should_retry(
-    *,
-    campaign: CampaignModel,
-    revision: CampaignRevisionModel,
-    attempt: CampaignAttemptModel,
-    outcome: CampaignOutreachOutcome,
-) -> bool:
-    if campaign.status != CampaignStatus.RUNNING.value:
-        return False
-    policy = revision.retry_policy or {}
-    max_retries = int(policy.get("max_retries", 0))
-    retry_on = set(policy.get("retry_on") or [])
-    return attempt.attempt_number <= max_retries and (
-        not retry_on or outcome.outcome in retry_on
-    )
 
 
 async def _complete_campaign_if_terminal(

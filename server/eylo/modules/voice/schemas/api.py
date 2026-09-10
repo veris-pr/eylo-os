@@ -15,36 +15,13 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from pydantic.fields import FieldInfo
 
 from eylo.common.contracts.voice import InterruptionType as InterruptionType
+from eylo.common.schema_fields import experimental
 from eylo.modules.voice.schemas.capabilities import VoicePlatformFeature
 from eylo.modules.voice.schemas.capabilities import (
     VoiceProviderCapabilityRead as VoiceProviderCapabilityRead,
 )
-
-
-def experimental(*, ge: float | None = None, le: float | None = None) -> FieldInfo:
-    """Mark a field as stored but not yet acted on at runtime.
-
-    Setting one of these has no effect. The marker is deliberately visible in
-    two places: the description reaches the generated API docs, so an operator
-    reading them is told before they rely on it, and `json_schema_extra` is
-    machine-readable so callers can identify an unwired field.
-
-    Razor R2 forbids configuration that does nothing. A field may be inert only
-    while it is explicitly marked; remove the marker when the runtime lands.
-    """
-    description = (
-        "EXPERIMENTAL — stored but not yet enforced. Setting this has no "
-        "effect on behaviour."
-    )
-    return Field(
-        description=description,
-        json_schema_extra={"experimental": True},
-        ge=ge,
-        le=le,
-    )
 
 
 class StopSpeakingPlan(BaseModel):

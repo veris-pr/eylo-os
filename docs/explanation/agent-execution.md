@@ -5,6 +5,14 @@ achieve a goal under explicit provider, tool, budget, and principal authority.
 
 ## Publication bindings
 
+Shared exact references, definition headers and published-revision availability
+are frozen Pydantic values in `common/revisions.py`. Owning services decode ORM
+lifecycle strings into enums before construction. Transitions construct validated
+values; they do not mutate a snapshot or use an unchecked model copy. Withdrawal
+blocks new selection while emergency revocation also blocks pinned execution.
+The header's `draft_dirty` remains an intrinsic changed-since-publication
+predicate, separate from the lifecycle enum.
+
 Publication resolves each explicitly selected provider in the Agent's organization
 and keeps its config ID and positive revision together in a typed binding. Missing
 optional providers stay absent; publication does not select a fallback. The stable
@@ -26,6 +34,16 @@ schema, including validated LLM overrides. A template reference must contain bot
 its ID and a positive revision, or neither for a code-owned background Agent.
 Incomplete references are refused before rendering; runtime never substitutes the
 template's latest revision or the Agent's current draft.
+
+The template compiler, provenance segments and rendered result also use frozen
+Pydantic values. Compiled variable declarations remain an independently owned,
+read-only mapping. Native restoration revalidates the interpolation program;
+rendered text must agree with its instruction/runtime-data segments. Services
+bind a render to either a draft version or an exact template reference through
+validated construction. Campaign rendering uses this same compiler to select
+declared contact variables and rejects incomplete template ID/revision pairs.
+The renderer still treats Agent substitutions as untrusted runtime data and
+escapes them; campaign messages retain plain interpolation.
 
 Executable Agent, swarm member/topology and swarm-worker carriers use frozen
 Pydantic models. Their validators enforce exact Agent identity/revision and

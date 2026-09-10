@@ -6412,6 +6412,13 @@ export interface components {
                 [key: string]: number;
             };
         };
+        /**
+         * CampaignChannel
+         * @description Supported campaign outreach channels.
+         * @enum {string}
+         */
+        CampaignChannel: "voice" | "email" | "widget";
+        CampaignChannelConfig: components["schemas"]["EmptyCampaignChannelConfig"] | components["schemas"]["EmailCampaignChannelConfig"];
         /** CampaignContactResponse */
         CampaignContactResponse: {
             /**
@@ -6521,19 +6528,13 @@ export interface components {
         };
         /** CampaignCreateRequest */
         CampaignCreateRequest: {
+            /** @default voice */
+            channel: components["schemas"]["CampaignChannel"];
+            channelConfig?: components["schemas"]["CampaignChannelConfig"];
             /** Name */
             name: string;
             /** Description */
             description?: string | null;
-            /**
-             * Channel
-             * @default voice
-             */
-            channel: string;
-            /** Channelconfig */
-            channelConfig?: {
-                [key: string]: unknown;
-            };
             /**
              * Agentid
              * Format: uuid
@@ -6541,14 +6542,9 @@ export interface components {
             agentId: string;
             /** Initialmessagetemplateid */
             initialMessageTemplateId?: string | null;
-            /** Scheduleconfig */
-            scheduleConfig?: {
-                [key: string]: unknown;
-            } | null;
-            /** Retrypolicy */
-            retryPolicy?: {
-                [key: string]: unknown;
-            } | null;
+            /** @description EXPERIMENTAL — stored but not yet enforced. Setting this has no effect on behaviour. */
+            scheduleConfig?: components["schemas"]["CampaignScheduleConfig"] | null;
+            retryPolicy?: components["schemas"]["CampaignRetryPolicy"] | null;
             /**
              * Concurrencylimit
              * @default 5
@@ -6594,6 +6590,9 @@ export interface components {
         };
         /** CampaignResponse */
         CampaignResponse: {
+            /** @default voice */
+            channel: components["schemas"]["CampaignChannel"];
+            channelConfig: components["schemas"]["CampaignChannelConfig"];
             /**
              * Id
              * Format: uuid
@@ -6630,18 +6629,6 @@ export interface components {
             /** Status */
             status: string;
             /**
-             * Channel
-             * @default voice
-             */
-            channel: string;
-            /**
-             * Channelconfig
-             * @default {}
-             */
-            channelConfig: {
-                [key: string]: unknown;
-            };
-            /**
              * Agentid
              * Format: uuid
              */
@@ -6656,20 +6643,9 @@ export interface components {
             initialMessageTemplateId?: string | null;
             /** Initialmessagetemplaterevision */
             initialMessageTemplateRevision?: number | null;
-            /**
-             * Scheduleconfig
-             * @default {}
-             */
-            scheduleConfig: {
-                [key: string]: unknown;
-            };
-            /**
-             * Retrypolicy
-             * @default {}
-             */
-            retryPolicy: {
-                [key: string]: unknown;
-            };
+            /** @description EXPERIMENTAL — stored but not yet enforced. Setting this has no effect on behaviour. */
+            scheduleConfig: components["schemas"]["CampaignScheduleConfig"];
+            retryPolicy: components["schemas"]["CampaignRetryPolicy"];
             /**
              * Concurrencylimit
              * @default 5
@@ -6697,10 +6673,43 @@ export interface components {
             /** Organizationid */
             organizationId?: string | null;
         };
+        /**
+         * CampaignRetryPolicy
+         * @description Pinned retry settings; empty reasons match every unsuccessful outcome.
+         */
+        CampaignRetryPolicy: {
+            /**
+             * Max Retries
+             * @default 0
+             */
+            max_retries: number;
+            /**
+             * Backoff Seconds
+             * @default 0
+             */
+            backoff_seconds: number;
+            /**
+             * Retry On
+             * @default []
+             */
+            retry_on: string[];
+        };
         /** CampaignRevisionRevokeRequest */
         CampaignRevisionRevokeRequest: {
             /** Reason */
             reason: string;
+        };
+        /**
+         * CampaignScheduleConfig
+         * @description Reserved window settings; V1 stores these but does not enforce a schedule.
+         */
+        CampaignScheduleConfig: {
+            /** Time Window Start */
+            time_window_start?: string | null;
+            /** Time Window End */
+            time_window_end?: string | null;
+            /** Timezone */
+            timezone?: string | null;
         };
         /** CampaignUpdateRequest */
         CampaignUpdateRequest: {
@@ -6710,24 +6719,15 @@ export interface components {
             name?: string | null;
             /** Description */
             description?: string | null;
-            /** Channel */
-            channel?: string | null;
-            /** Channelconfig */
-            channelConfig?: {
-                [key: string]: unknown;
-            } | null;
+            channel?: components["schemas"]["CampaignChannel"] | null;
+            channelConfig?: components["schemas"]["CampaignChannelConfig"] | null;
             /** Agentid */
             agentId?: string | null;
             /** Initialmessagetemplateid */
             initialMessageTemplateId?: string | null;
-            /** Scheduleconfig */
-            scheduleConfig?: {
-                [key: string]: unknown;
-            } | null;
-            /** Retrypolicy */
-            retryPolicy?: {
-                [key: string]: unknown;
-            } | null;
+            /** @description EXPERIMENTAL — stored but not yet enforced. Setting this has no effect on behaviour. */
+            scheduleConfig?: components["schemas"]["CampaignScheduleConfig"];
+            retryPolicy?: components["schemas"]["CampaignRetryPolicy"];
             /** Concurrencylimit */
             concurrencyLimit?: number | null;
         };
@@ -8028,6 +8028,20 @@ export interface components {
          * @enum {string}
          */
         DurableState: "pending" | "running" | "succeeded" | "failed" | "cancelled";
+        /**
+         * EmailCampaignChannelConfig
+         * @description Draft settings may be incomplete; dispatch requires an exact provider pair.
+         */
+        EmailCampaignChannelConfig: {
+            /** Provider Config Id */
+            provider_config_id?: string | null;
+            /** Provider Config Revision */
+            provider_config_revision?: number | null;
+            /** Subject Template */
+            subject_template?: string | null;
+            /** Body Template */
+            body_template?: string | null;
+        };
         /** EmailConfigCreate */
         EmailConfigCreate: {
             /** Provider */
@@ -8208,6 +8222,11 @@ export interface components {
             /** Normalize */
             normalize?: boolean | null;
         };
+        /**
+         * EmptyCampaignChannelConfig
+         * @description Voice and widget take authority from the agent, not per-campaign settings.
+         */
+        EmptyCampaignChannelConfig: Record<string, never>;
         /** EventHealthResponse */
         EventHealthResponse: {
             durable: components["schemas"]["DurableDeliveryHealthResponse"];

@@ -82,39 +82,7 @@ CHANNEL_CONNECTED_OUTCOMES: dict[str, frozenset[str]] = {
     CampaignChannel.WIDGET: frozenset({"delivered", "replied"}),
 }
 
-CHANNEL_DEFAULT_RETRY_POLICY: dict[str, dict] = {
-    CampaignChannel.VOICE: {
-        "max_retries": 2,
-        "backoff_seconds": 300,
-        "retry_on": [
-            "customer_busy",
-            "customer_did_not_answer",
-            "voicemail_detected",
-            "error_system",
-            "error_provider_disconnected",
-        ],
-    },
-    CampaignChannel.EMAIL: {
-        "max_retries": 1,
-        "backoff_seconds": 3600,
-        "retry_on": ["bounced", "deferred"],
-    },
-    CampaignChannel.WIDGET: {
-        "max_retries": 0,
-        "backoff_seconds": 0,
-        "retry_on": [],
-    },
-}
-
 # Channels where successful dispatch = delivery (no async callback)
 IMMEDIATE_DELIVERY_CHANNELS: frozenset[str] = frozenset(
     {CampaignChannel.WIDGET, CampaignChannel.EMAIL}
 )
-DEFAULT_RETRY_POLICY = CHANNEL_DEFAULT_RETRY_POLICY[CampaignChannel.VOICE]
-
-# Default schedule config
-DEFAULT_SCHEDULE_CONFIG = {
-    "time_window_start": "09:00",
-    "time_window_end": "18:00",
-    "timezone": "UTC",
-}

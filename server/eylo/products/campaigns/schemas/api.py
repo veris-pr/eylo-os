@@ -1,21 +1,31 @@
 """API-facing schemas for campaigns (camelCase)."""
 
 import datetime
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Dict, List, Optional
 from uuid import UUID
 
 from pydantic import ConfigDict, Field, field_validator
 
+from eylo.common.identifiers import normalize_uuid_like
+from eylo.common.schema_fields import experimental
 from eylo.common.schemas import (
     EyloBaseApiSchema,
     EyloBaseRequestSchema,
     EyloBaseResponseSchema,
     PaginatedResponseSchema,
 )
+from eylo.products.campaigns.channel_config import (
+    CampaignChannelConfig,
+    CampaignChannelFields,
+)
+from eylo.products.campaigns.constants import CampaignChannel
 from eylo.products.campaigns.domain import (
     CampaignPreparation,
     CampaignPreparationIssueCode,
     CampaignPreparationIssueLevel,
+    CampaignRetryPolicy,
+    CampaignScheduleConfig,
+    CampaignVariables,
 )
 
 _PREPARATION_MESSAGES = {
@@ -39,15 +49,13 @@ _PREPARATION_MESSAGES = {
 # --- Campaign request schemas ---
 
 
-class CampaignCreateRequest(EyloBaseRequestSchema):
+class CampaignCreateRequest(EyloBaseRequestSchema, CampaignChannelFields):
     name: str = Field(..., min_length=1, max_length=256)
     description: Optional[str] = None
-    channel: str = Field(default="voice", pattern="^(voice|email|widget)$")
-    channel_config: Dict[str, Any] = Field(default_factory=dict)
     agent_id: UUID
     initial_message_template_id: Optional[UUID] = None
-    schedule_config: Optional[Dict[str, Any]] = None
-    retry_policy: Optional[Dict[str, Any]] = None
+    schedule_config: Annotated[CampaignScheduleConfig | None, experimental()] = None
+    retry_policy: CampaignRetryPolicy | None = None
     concurrency_limit: int = Field(default=5, ge=1, le=50)
 
 
@@ -55,13 +63,31 @@ class CampaignUpdateRequest(EyloBaseRequestSchema):
     expected_revision: int = Field(..., ge=1)
     name: Optional[str] = Field(None, min_length=1, max_length=256)
     description: Optional[str] = None
-    channel: Optional[str] = Field(None, pattern="^(voice|email|widget)$")
-    channel_config: Optional[Dict[str, Any]] = None
+    channel: CampaignChannel | None = None
+    channel_config: CampaignChannelConfig | None = None
     agent_id: Optional[UUID] = None
     initial_message_template_id: Optional[UUID] = None
-    schedule_config: Optional[Dict[str, Any]] = None
-    retry_policy: Optional[Dict[str, Any]] = None
+    schedule_config: Annotated[CampaignScheduleConfig | None, experimental()] = None
+    retry_policy: CampaignRetryPolicy | None = None
     concurrency_limit: Optional[int] = Field(None, ge=1, le=50)
+
+    @field_validator(
+        "schedule_config", mode="before", json_schema_input_type=CampaignScheduleConfig
+    )
+    @classmethod
+    def require_supplied_schedule_config(cls, value: object) -> object:
+        if value is None:
+            raise ValueError("A supplied schedule config cannot be null.")
+        return value
+
+    @field_validator(
+        "retry_policy", mode="before", json_schema_input_type=CampaignRetryPolicy
+    )
+    @classmethod
+    def require_supplied_retry_policy(cls, value: object) -> object:
+        if value is None:
+            raise ValueError("A supplied retry policy cannot be null.")
+        return value
 
 
 class CampaignRevisionRevokeRequest(EyloBaseRequestSchema):
@@ -71,22 +97,21 @@ class CampaignRevisionRevokeRequest(EyloBaseRequestSchema):
 # --- Campaign response schemas ---
 
 
-class CampaignResponse(EyloBaseResponseSchema):
+class CampaignResponse(EyloBaseResponseSchema, CampaignChannelFields):
     model_config = ConfigDict(from_attributes=True)
 
+    channel_config: CampaignChannelConfig
     name: str
     description: Optional[str] = None
     status: str
-    channel: str = "voice"
-    channel_config: Dict[str, Any] = {}
     agent_id: UUID
     agent_revision: int
     published_revision: int
     active_revision: Optional[int] = None
     initial_message_template_id: Optional[UUID] = None
     initial_message_template_revision: Optional[int] = None
-    schedule_config: Dict[str, Any] = {}
-    retry_policy: Dict[str, Any] = {}
+    schedule_config: Annotated[CampaignScheduleConfig, experimental()]
+    retry_policy: CampaignRetryPolicy
     concurrency_limit: int = 5
     total_contacts: int = 0
     completed_contacts: int = 0
@@ -142,9 +167,11 @@ class CampaignPreparationResponse(EyloBaseApiSchema):
 
 
 class ContactUploadRow(EyloBaseApiSchema):
+    model_config = ConfigDict(revalidate_instances="always")
+
     contact_address: str = Field(..., min_length=1)
     name: Optional[str] = None
-    variables: Dict[str, Any] = {}
+    variables: CampaignVariables = Field(default_factory=dict)
 
 
 class CampaignContactsUploadRequest(EyloBaseRequestSchema):
@@ -154,13 +181,18 @@ class CampaignContactsUploadRequest(EyloBaseRequestSchema):
 class CampaignContactsSelectRequest(EyloBaseRequestSchema):
     """Select existing contacts by ID to add to a campaign."""
 
-    contact_ids: List[UUID] | UUID
+    contact_ids: List[UUID]
 
-    @field_validator("contact_ids", mode="after")
-    def validate_contact_ids(cls, v):
-        if isinstance(v, UUID):
-            return [v]
-        return v
+    @field_validator(
+        "contact_ids", mode="before", json_schema_input_type=List[UUID] | UUID
+    )
+    @classmethod
+    def validate_contact_ids(cls, value: object) -> object:
+        """Accept the existing scalar wire form, but expose only a list internally."""
+        value = normalize_uuid_like(value)
+        if isinstance(value, (UUID, str)):
+            return [value]
+        return value
 
 
 # --- Campaign contact response schemas ---
@@ -179,7 +211,7 @@ class CampaignContactResponse(EyloBaseResponseSchema):
     next_retry_at: Optional[datetime.datetime] = None
     last_tracking_id: Optional[str] = None
     last_outcome_reason: Optional[str] = None
-    variables: Dict[str, Any] = {}
+    variables: CampaignVariables = Field(default_factory=dict)
     organization_id: Optional[UUID] = None
 
 

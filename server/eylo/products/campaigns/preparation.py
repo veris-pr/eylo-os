@@ -68,6 +68,8 @@ class CampaignPreparationService:
                     CampaignContactInDb.model_validate(row)
                 ):
                     invalid_channel_addresses += 1
+                if row.contact_id is None:
+                    continue
                 contact = contacts.get(row.contact_id)
                 if contact is None:
                     continue

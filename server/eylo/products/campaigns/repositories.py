@@ -8,7 +8,9 @@ import uuid_utils
 from sqlalchemy import func, insert, select, update
 
 from eylo.common.repositories import BaseORMRepository
+from eylo.products.campaigns.channel_config import decode_campaign_channel_config
 from eylo.products.campaigns.constants import CampaignContactStatus, CampaignStatus
+from eylo.products.campaigns.domain import validate_campaign_variables
 from eylo.products.campaigns.models import (
     CampaignContactModel,
     CampaignModel,
@@ -33,7 +35,17 @@ class CampaignRepository(BaseORMRepository[CampaignModel]):
     ) -> CampaignModel:
         campaign = self.model(
             organization_id=organization_id,
-            **request.model_dump(exclude={"organization_id"}),
+            **request.model_dump(
+                exclude={
+                    "organization_id",
+                    "retry_policy",
+                    "schedule_config",
+                    "channel_config",
+                }
+            ),
+            retry_policy=request.retry_policy.to_storage(),
+            schedule_config=request.schedule_config.to_storage(),
+            channel_config=request.channel_config.to_storage(),
         )
         return await self.save_(campaign)
 
@@ -46,10 +58,35 @@ class CampaignRepository(BaseORMRepository[CampaignModel]):
 
         update_data = request.model_dump(
             exclude_unset=True,
-            exclude={"expected_revision"},
+            exclude={
+                "expected_revision",
+                "retry_policy",
+                "schedule_config",
+                "channel_config",
+            },
         )
         for key, value in update_data.items():
             setattr(campaign, key, value)
+
+        if {"channel", "channel_config"} & request.model_fields_set:
+            config = (
+                request.channel_config
+                if "channel_config" in request.model_fields_set
+                else campaign.channel_config
+            )
+            campaign.channel_config = decode_campaign_channel_config(
+                campaign.channel, config
+            ).to_storage()
+
+        if "schedule_config" in request.model_fields_set:
+            if request.schedule_config is None:
+                raise ValueError("A supplied schedule config cannot be null.")
+            campaign.schedule_config = request.schedule_config.to_storage()
+
+        if "retry_policy" in request.model_fields_set:
+            if request.retry_policy is None:
+                raise ValueError("A supplied retry policy cannot be null.")
+            campaign.retry_policy = request.retry_policy.to_storage()
 
         return await self.partial_update_(entity=campaign)
 
@@ -207,7 +244,7 @@ class CampaignContactRepository(BaseORMRepository[CampaignContactModel]):
                     "contact_id": (
                         _uuid.UUID(str(c.contact_id)) if c.contact_id else None
                     ),
-                    "variables": c.variables,
+                    "variables": validate_campaign_variables(c.variables),
                     "status": CampaignContactStatus.PENDING.value,
                 }
             )
@@ -284,7 +321,7 @@ class CampaignContactRepository(BaseORMRepository[CampaignContactModel]):
             .group_by(self.model.status)
         )
         result = await self.db_session.execute(stmt)
-        return dict(result.all())
+        return dict(result.tuples().all())
 
     async def get_next_batch(
         self, campaign_id: UUID, now: datetime, limit: int
@@ -353,4 +390,8 @@ class CampaignContactRepository(BaseORMRepository[CampaignContactModel]):
             .group_by(self.model.last_outcome_reason)
         )
         result = await self.db_session.execute(stmt)
-        return dict(result.all())
+        return {
+            reason: count
+            for reason, count in result.tuples().all()
+            if reason is not None
+        }

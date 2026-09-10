@@ -4,6 +4,8 @@ import type { FilterGroup } from "@/lib/filters";
 type Campaign = components["schemas"]["CampaignResponse"];
 type CampaignCreate = components["schemas"]["CampaignCreateRequest"];
 type CampaignUpdate = components["schemas"]["CampaignUpdateRequest"];
+type CampaignRetryPolicy = components["schemas"]["CampaignRetryPolicy"];
+type CampaignChannelConfig = components["schemas"]["CampaignChannelConfig"];
 type CampaignPreparation = components["schemas"]["CampaignPreparationResponse"];
 type CampaignAnalytics = components["schemas"]["CampaignAnalyticsResponse"];
 type CampaignContact = components["schemas"]["CampaignContactResponse"];
@@ -11,7 +13,7 @@ type CampaignAgent = components["schemas"]["AgentResponseSchema"];
 type CampaignTemplate = components["schemas"]["TemplateResponse"];
 type CampaignEmailConfig = components["schemas"]["EmailConfigResponse"];
 type OrganizationContact = components["schemas"]["ContactApiResponseSchema"];
-type CampaignChannel = "email" | "voice" | "widget";
+type CampaignChannel = components["schemas"]["CampaignChannel"];
 
 type CampaignFilterProperty = "channel" | "status";
 type CampaignSortField = "name" | "progress" | "status" | "updated_at";
@@ -39,17 +41,14 @@ interface CampaignFormValues {
   retryOn: string;
 }
 
-interface CampaignUploadContact {
-  contactAddress: string;
-  name?: string | null;
-  variables: Record<string, unknown>;
-}
+type CampaignUploadContact = components["schemas"]["ContactUploadRow"];
 
 export type {
   Campaign,
   CampaignAgent,
   CampaignAnalytics,
   CampaignChannel,
+  CampaignChannelConfig,
   CampaignCollectionQuery,
   CampaignContact,
   CampaignCreate,
@@ -57,6 +56,7 @@ export type {
   CampaignFilterProperty,
   CampaignFormValues,
   CampaignPreparation,
+  CampaignRetryPolicy,
   CampaignSortDirection,
   CampaignSortField,
   CampaignTemplate,

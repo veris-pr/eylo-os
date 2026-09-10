@@ -18,6 +18,8 @@ from eylo.modules.telephony.schemas import CallStatus
 from eylo.products.campaigns.channels.base import (
     CampaignChannelAdapter,
     ChannelDispatchResult,
+    ChannelDispatchState,
+    ChannelReplayPolicy,
 )
 from eylo.products.campaigns.constants import CampaignChannel
 from eylo.products.campaigns.schemas.indb import CampaignContactInDb, CampaignInDb
@@ -36,7 +38,7 @@ class VoiceChannelAdapter:
     """
 
     channel: str = CampaignChannel.VOICE.value
-    replay_safe = True
+    replay_policy: ChannelReplayPolicy = ChannelReplayPolicy.REPLAY_SAFE
 
     async def validate_campaign(self, campaign: CampaignInDb) -> list[str]:
         from eylo.modules.telephony.services import PhoneNumberService
@@ -75,14 +77,17 @@ class VoiceChannelAdapter:
         if call is None:
             return None
         if call.call_sid:
-            return ChannelDispatchResult(tracking_id=call.call_sid)
+            return ChannelDispatchResult(
+                state=ChannelDispatchState.ACCEPTED, tracking_id=call.call_sid
+            )
         if call.provider_status == CallInitiationMarker.UNKNOWN.value:
             return ChannelDispatchResult(
+                state=ChannelDispatchState.UNKNOWN,
                 tracking_id=str(call.id),
-                dispatch_unknown=True,
             )
         if call.status == CallStatus.FAILED.value:
             return ChannelDispatchResult(
+                state=ChannelDispatchState.REJECTED,
                 tracking_id=str(call.id),
                 error=call.ended_reason or OUTBOUND_CALL_REJECTED,
             )
@@ -118,11 +123,12 @@ class VoiceChannelAdapter:
         tracking_id = response.call_sid or str(response.call_id)
         if response.status is OutboundAttemptState.UNKNOWN:
             return ChannelDispatchResult(
+                state=ChannelDispatchState.UNKNOWN,
                 tracking_id=tracking_id,
-                dispatch_unknown=True,
             )
         if response.status is not OutboundAttemptState.SUCCEEDED:
             return ChannelDispatchResult(
+                state=ChannelDispatchState.REJECTED,
                 tracking_id=tracking_id,
                 error=response.failure_code or OUTBOUND_CALL_REJECTED,
             )
@@ -133,8 +139,10 @@ class VoiceChannelAdapter:
             contact.id,
             tracking_id,
         )
-        return ChannelDispatchResult(tracking_id=tracking_id)
+        return ChannelDispatchResult(
+            state=ChannelDispatchState.ACCEPTED, tracking_id=tracking_id
+        )
 
 
 # Type check: ensure VoiceChannelAdapter satisfies the protocol
-_: CampaignChannelAdapter = VoiceChannelAdapter()  # type: ignore[assignment]
+_: CampaignChannelAdapter = VoiceChannelAdapter()

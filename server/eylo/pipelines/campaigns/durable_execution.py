@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any
 from uuid import UUID
 
 from absurd_sdk import AsyncTaskContext, CancelledTask
+from pydantic import JsonValue, ValidationError
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.absurd_work import (
     AbsurdBoundWorkService,
@@ -21,7 +22,18 @@ from eylo.common.database import start_transaction
 from eylo.durable_runtime import PlatformDurableRuntime, run_with_durable_heartbeat
 from eylo.modules.contacts.domain import ContactLifecycle
 from eylo.modules.contacts.models import ContactsModel
+from eylo.pipelines.campaigns.work_contracts import (
+    CampaignAttemptParams,
+    CampaignAttemptReceipt,
+    CampaignEffectAction,
+    PreparedCampaignDispatch,
+)
 from eylo.products.campaigns.channels import get_channel_adapter
+from eylo.products.campaigns.channels.base import (
+    ChannelDispatchResult,
+    ChannelDispatchState,
+    ChannelReplayPolicy,
+)
 from eylo.products.campaigns.constants import (
     IMMEDIATE_DELIVERY_CHANNELS,
     CampaignContactStatus,
@@ -44,7 +56,6 @@ from eylo.products.campaigns.services.execution_service import (
 logger = logging.getLogger(__name__)
 
 CAMPAIGN_ATTEMPT_WORKFLOW = "eylo.campaign.attempt.v1"
-_RECOVER_DISPATCH = "recover_dispatch"
 
 
 class CampaignDispatchContractError(Exception):
@@ -152,16 +163,19 @@ class CampaignAttemptWorkflow:
 
     async def execute(
         self,
-        params: dict[str, Any],
+        params: object,
         task_context: AsyncTaskContext,
-    ) -> dict[str, Any]:
-        organization_id, attempt_id = _parse_params(params)
+    ) -> dict[str, JsonValue]:
+        work_input = CampaignAttemptParams.model_validate(params)
+        organization_id = work_input.organization_id
+        attempt_id = work_input.attempt_id
         try:
-            return await self._execute(
+            receipt = await self._execute(
                 organization_id=organization_id,
                 attempt_id=attempt_id,
                 task_context=task_context,
             )
+            return receipt.to_payload()
         except CancelledTask:
             async with start_transaction() as session:
                 await AbsurdBoundWorkService(
@@ -176,7 +190,7 @@ class CampaignAttemptWorkflow:
         organization_id: UUID,
         attempt_id: UUID,
         task_context: AsyncTaskContext,
-    ) -> dict[str, Any]:
+    ) -> CampaignAttemptReceipt:
         try:
             prepared = await _prepare_attempt(
                 organization_id=organization_id,
@@ -191,54 +205,67 @@ class CampaignAttemptWorkflow:
                 error=error,
                 skipped=False,
             )
-        if isinstance(prepared, dict):
+        if isinstance(prepared, CampaignAttemptReceipt):
             return prepared
 
-        adapter, campaign, contact, initial_message = prepared
+        adapter = prepared.adapter
+        campaign = prepared.campaign
+        contact = prepared.contact
+        initial_message = prepared.initial_message
         boundary = await _start_effect(
             organization_id=organization_id,
             attempt_id=attempt_id,
-            replay_safe=adapter.replay_safe,
+            replay_policy=adapter.replay_policy,
         )
-        if boundary is not None:
-            if boundary.get(_RECOVER_DISPATCH):
-                recovered = await adapter.recover_dispatch(
-                    campaign,
-                    contact,
-                    attempt_id,
-                )
-                if recovered is not None and recovered.tracking_id:
+        if isinstance(boundary, CampaignAttemptReceipt):
+            return boundary
+        if boundary is CampaignEffectAction.RECOVER:
+            recovered = await adapter.recover_dispatch(
+                campaign,
+                contact,
+                attempt_id,
+            )
+            if recovered is not None:
+                recovered = ChannelDispatchResult.model_validate(recovered)
+                if recovered.state is ChannelDispatchState.ACCEPTED:
                     return await _complete_dispatch(
                         organization_id=organization_id,
                         attempt_id=attempt_id,
                         tracking_id=recovered.tracking_id,
                     )
-                return await _mark_dispatch_unknown(
-                    organization_id=organization_id,
-                    attempt_id=attempt_id,
-                    error=CampaignDispatchContractError(
-                        "Worker stopped after a non-replay-safe effect began."
-                    ),
-                )
-            return boundary
+                if recovered.state is ChannelDispatchState.REJECTED:
+                    return await _reject_attempt(
+                        organization_id=organization_id,
+                        attempt_id=attempt_id,
+                        error=CampaignDispatchContractError(
+                            "Campaign adapter rejected delivery."
+                        ),
+                        skipped=False,
+                    )
+            return await _mark_dispatch_unknown(
+                organization_id=organization_id,
+                attempt_id=attempt_id,
+                error=CampaignDispatchContractError(
+                    "Worker stopped after a non-replay-safe effect began."
+                ),
+            )
 
-        async def dispatch() -> dict[str, Any]:
+        async def dispatch() -> dict[str, JsonValue]:
             result = await adapter.dispatch(
                 campaign,
                 contact,
                 initial_message,
                 attempt_id,
             )
-            return result.model_dump(mode="json")
+            return ChannelDispatchResult.model_validate(result).to_checkpoint()
 
         try:
-            result = await task_context.step(
+            checkpoint = await task_context.step(
                 f"campaign-attempt:{attempt_id}:dispatch:v1",
                 lambda: run_with_durable_heartbeat(task_context, dispatch),
             )
-            tracking_id = str(result.get("tracking_id") or "").strip()
-            error = result.get("error")
-            if result.get("dispatch_unknown"):
+            result = ChannelDispatchResult.from_checkpoint(checkpoint)
+            if result.state is ChannelDispatchState.UNKNOWN:
                 return await _mark_dispatch_unknown(
                     organization_id=organization_id,
                     attempt_id=attempt_id,
@@ -246,7 +273,7 @@ class CampaignAttemptWorkflow:
                         "Provider delivery outcome is unconfirmed."
                     ),
                 )
-            if error:
+            if result.state is ChannelDispatchState.REJECTED:
                 return await _reject_attempt(
                     organization_id=organization_id,
                     attempt_id=attempt_id,
@@ -255,12 +282,12 @@ class CampaignAttemptWorkflow:
                     ),
                     skipped=False,
                 )
-            if not tracking_id:
-                raise CampaignDispatchContractError(
-                    "Campaign adapter accepted work without a tracking ID."
-                )
         except Exception as error:  # noqa: BLE001 - provider ambiguity is explicit
-            if adapter.replay_safe:
+            if isinstance(error, ValidationError):
+                error = CampaignDispatchContractError(
+                    "Campaign adapter returned invalid dispatch data."
+                )
+            if adapter.replay_policy is ChannelReplayPolicy.REPLAY_SAFE:
                 return await _retry_replay_safe_attempt(
                     organization_id=organization_id,
                     attempt_id=attempt_id,
@@ -275,7 +302,7 @@ class CampaignAttemptWorkflow:
         return await _complete_dispatch(
             organization_id=organization_id,
             attempt_id=attempt_id,
-            tracking_id=tracking_id,
+            tracking_id=result.tracking_id,
         )
 
 
@@ -283,7 +310,7 @@ async def _prepare_attempt(
     *,
     organization_id: UUID,
     attempt_id: UUID,
-):
+) -> PreparedCampaignDispatch | CampaignAttemptReceipt:
     async with start_transaction() as session:
         work = AbsurdBoundWorkService(
             CampaignAttemptModel,
@@ -357,12 +384,25 @@ async def _prepare_attempt(
             revision=attempt.campaign_revision,
         )
         await campaign_service.require_execution_authority(definition)
-        campaign_view = CampaignInDb.model_validate(campaign).model_copy(
-            update={
+        campaign_view = CampaignInDb.model_validate(
+            {
+                "id": campaign.id,
+                "organization_id": campaign.organization_id,
+                "external_id": campaign.external_id,
+                "deleted": campaign.deleted,
+                "created_at": campaign.created_at,
+                "updated_at": campaign.updated_at,
+                "status": campaign.status,
+                "active_revision": campaign.active_revision,
+                "total_contacts": campaign.total_contacts,
+                "completed_contacts": campaign.completed_contacts,
+                "failed_contacts": campaign.failed_contacts,
+                "started_at": campaign.started_at,
+                "completed_at": campaign.completed_at,
                 "name": definition.name,
                 "description": definition.description,
                 "channel": definition.channel,
-                "channel_config": dict(definition.channel_config or {}),
+                "channel_config": definition.channel_config,
                 "agent_id": definition.agent_id,
                 "agent_revision": definition.agent_revision,
                 "published_revision": definition.revision,
@@ -370,8 +410,8 @@ async def _prepare_attempt(
                 "initial_message_template_revision": (
                     definition.initial_message_template_revision
                 ),
-                "schedule_config": dict(definition.schedule_config or {}),
-                "retry_policy": dict(definition.retry_policy or {}),
+                "schedule_config": definition.schedule_config,
+                "retry_policy": definition.retry_policy,
                 "concurrency_limit": definition.concurrency_limit,
             }
         )
@@ -393,15 +433,20 @@ async def _prepare_attempt(
             definition,
             contact.variables or {},
         )
-        return adapter, campaign_view, contact_view, initial_message
+        return PreparedCampaignDispatch(
+            adapter=adapter,
+            campaign=campaign_view,
+            contact=contact_view,
+            initial_message=initial_message,
+        )
 
 
 async def _start_effect(
     *,
     organization_id: UUID,
     attempt_id: UUID,
-    replay_safe: bool,
-) -> dict[str, Any] | None:
+    replay_policy: ChannelReplayPolicy,
+) -> CampaignEffectAction | CampaignAttemptReceipt:
     async with start_transaction() as session:
         campaign_id = await session.scalar(
             select(CampaignAttemptModel.campaign_id).where(
@@ -465,9 +510,12 @@ async def _start_effect(
             # Historical safety is the upper bound. If a deployment changes
             # this channel to non-replay-safe, an effect started under the old
             # adapter must not be resent through the new one.
-            if not attempt.effect_replay_safe or not replay_safe:
-                return {_RECOVER_DISPATCH: True}
-            return None
+            if (
+                not attempt.effect_replay_safe
+                or replay_policy is not ChannelReplayPolicy.REPLAY_SAFE
+            ):
+                return CampaignEffectAction.RECOVER
+            return CampaignEffectAction.SEND
         if not await _contact_allows_campaign_effect(
             session,
             organization_id=organization_id,
@@ -481,13 +529,13 @@ async def _start_effect(
             contact.status = CampaignContactStatus.CANCELLED.value
             return _receipt(attempt)
         attempt.effect_started_at = datetime.now(timezone.utc)
-        attempt.effect_replay_safe = replay_safe
+        attempt.effect_replay_safe = replay_policy is ChannelReplayPolicy.REPLAY_SAFE
         await session.flush()
-        return None
+        return CampaignEffectAction.SEND
 
 
 async def _contact_allows_campaign_effect(
-    session,
+    session: AsyncSession,
     *,
     organization_id: UUID,
     contact: CampaignContactModel,
@@ -512,7 +560,7 @@ async def _complete_dispatch(
     organization_id: UUID,
     attempt_id: UUID,
     tracking_id: str,
-) -> dict[str, Any]:
+) -> CampaignAttemptReceipt:
     now = datetime.now(timezone.utc)
     async with start_transaction() as session:
         service = AbsurdBoundWorkService(CampaignAttemptModel, session)
@@ -580,7 +628,7 @@ async def _retry_replay_safe_attempt(
     organization_id: UUID,
     attempt_id: UUID,
     error: Exception,
-) -> dict[str, Any]:
+) -> CampaignAttemptReceipt:
     summary = _campaign_failure_code(error)
     async with start_transaction() as session:
         service = AbsurdBoundWorkService(CampaignAttemptModel, session)
@@ -630,7 +678,7 @@ async def _reject_attempt(
     attempt_id: UUID,
     error: Exception,
     skipped: bool,
-) -> dict[str, Any]:
+) -> CampaignAttemptReceipt:
     async with start_transaction() as session:
         service = AbsurdBoundWorkService(CampaignAttemptModel, session)
         attempt = await service.get(
@@ -668,13 +716,13 @@ async def _reject_attempt(
 
 async def _reject_locked_attempt(
     *,
-    session,
+    session: AsyncSession,
     attempt: CampaignAttemptModel,
     campaign: CampaignModel,
     contact: CampaignContactModel,
     error: str,
     skipped: bool,
-) -> dict[str, Any]:
+) -> CampaignAttemptReceipt:
     if attempt.state in {
         DurableState.SUCCEEDED,
         DurableState.FAILED,
@@ -700,7 +748,7 @@ async def _reject_locked_attempt(
 
 async def _project_failed_attempt_locked(
     *,
-    session,
+    session: AsyncSession,
     attempt: CampaignAttemptModel,
     campaign: CampaignModel,
     contact: CampaignContactModel,
@@ -724,7 +772,7 @@ async def _mark_dispatch_unknown(
     organization_id: UUID,
     attempt_id: UUID,
     error: Exception,
-) -> dict[str, Any]:
+) -> CampaignAttemptReceipt:
     async with start_transaction() as session:
         attempt = await AbsurdBoundWorkService(
             CampaignAttemptModel,
@@ -751,10 +799,10 @@ def _campaign_failure_code(error: Exception, *, skipped: bool = False) -> str:
 
 async def _mark_dispatch_unknown_locked(
     *,
-    session,
+    session: AsyncSession,
     attempt: CampaignAttemptModel,
     error: str,
-) -> dict[str, Any]:
+) -> CampaignAttemptReceipt:
     if attempt.state in {
         DurableState.SUCCEEDED,
         DurableState.FAILED,
@@ -792,7 +840,7 @@ async def _mark_dispatch_unknown_locked(
 
 async def _load_projection_targets(
     *,
-    session,
+    session: AsyncSession,
     attempt: CampaignAttemptModel,
 ) -> tuple[CampaignModel | None, CampaignContactModel | None]:
     campaign = await session.scalar(
@@ -817,7 +865,9 @@ async def _load_projection_targets(
     return campaign, contact
 
 
-async def _complete_campaign_if_terminal(session, campaign: CampaignModel) -> None:
+async def _complete_campaign_if_terminal(
+    session: AsyncSession, campaign: CampaignModel
+) -> None:
     if campaign.status != CampaignStatus.RUNNING.value:
         return
     counts = await CampaignContactRepository(session).count_by_status(campaign.id)
@@ -835,23 +885,14 @@ async def _complete_campaign_if_terminal(session, campaign: CampaignModel) -> No
         campaign.completed_at = datetime.now(timezone.utc)
 
 
-def _parse_params(params: dict[str, Any]) -> tuple[UUID, UUID]:
-    if set(params) != {"organization_id", "attempt_id"}:
-        raise ValueError("Campaign attempt params must contain IDs only.")
-    try:
-        return UUID(str(params["organization_id"])), UUID(str(params["attempt_id"]))
-    except (TypeError, ValueError) as error:
-        raise ValueError("Campaign attempt params contain an invalid UUID.") from error
-
-
-def _receipt(attempt: CampaignAttemptModel) -> dict[str, Any]:
-    return {
-        "organization_id": str(attempt.organization_id),
-        "attempt_id": str(attempt.id),
-        "state": attempt.state.value,
-        "tracking_id": attempt.tracking_id,
-        "dispatch_unknown": attempt.dispatch_unknown,
-    }
+def _receipt(attempt: CampaignAttemptModel) -> CampaignAttemptReceipt:
+    return CampaignAttemptReceipt(
+        organization_id=attempt.organization_id,
+        attempt_id=attempt.id,
+        state=attempt.state,
+        tracking_id=attempt.tracking_id,
+        dispatch_unknown=attempt.dispatch_unknown,
+    )
 
 
 __all__ = [

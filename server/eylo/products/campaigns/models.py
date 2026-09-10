@@ -1,9 +1,10 @@
 """Database models for the campaigns module."""
 
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Optional
 from uuid import UUID
 
+from pydantic import JsonValue
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
@@ -142,7 +143,7 @@ class CampaignModel(EyloOrganizationModel):
     channel: Mapped[str] = mapped_column(
         String(32), nullable=False, server_default=CampaignChannel.VOICE.value
     )
-    channel_config: Mapped[Dict[str, Any]] = mapped_column(
+    channel_config: Mapped[dict[str, JsonValue]] = mapped_column(
         JSONB, nullable=False, server_default="{}"
     )
 
@@ -157,10 +158,10 @@ class CampaignModel(EyloOrganizationModel):
         Integer, nullable=True
     )
 
-    schedule_config: Mapped[Dict[str, Any]] = mapped_column(
+    schedule_config: Mapped[dict[str, JsonValue]] = mapped_column(
         JSONB, nullable=False, default=dict
     )
-    retry_policy: Mapped[Dict[str, Any]] = mapped_column(
+    retry_policy: Mapped[dict[str, JsonValue]] = mapped_column(
         JSONB, nullable=False, default=dict
     )
     concurrency_limit: Mapped[int] = mapped_column(
@@ -265,7 +266,7 @@ class CampaignRevisionModel(EyloOrganizationModel):
     name: Mapped[str] = mapped_column(String(256), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     channel: Mapped[str] = mapped_column(String(32), nullable=False)
-    channel_config: Mapped[Dict[str, Any]] = mapped_column(
+    channel_config: Mapped[dict[str, JsonValue]] = mapped_column(
         JSONB, nullable=False, server_default="{}"
     )
     agent_id: Mapped[UUID] = mapped_column(nullable=False, index=True)
@@ -274,10 +275,10 @@ class CampaignRevisionModel(EyloOrganizationModel):
     initial_message_template_revision: Mapped[Optional[int]] = mapped_column(
         Integer, nullable=True
     )
-    schedule_config: Mapped[Dict[str, Any]] = mapped_column(
+    schedule_config: Mapped[dict[str, JsonValue]] = mapped_column(
         JSONB, nullable=False, server_default="{}"
     )
-    retry_policy: Mapped[Dict[str, Any]] = mapped_column(
+    retry_policy: Mapped[dict[str, JsonValue]] = mapped_column(
         JSONB, nullable=False, server_default="{}"
     )
     concurrency_limit: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -377,7 +378,7 @@ class CampaignContactModel(EyloOrganizationModel):
         String(64), nullable=True
     )
 
-    variables: Mapped[Dict[str, Any]] = mapped_column(
+    variables: Mapped[dict[str, JsonValue]] = mapped_column(
         JSONB, nullable=False, default=dict
     )
 

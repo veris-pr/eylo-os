@@ -11,6 +11,8 @@ from eylo.modules.conversations.models.conversations import ConversationsModel
 from eylo.products.campaigns.channels.base import (
     CampaignChannelAdapter,
     ChannelDispatchResult,
+    ChannelDispatchState,
+    ChannelReplayPolicy,
 )
 from eylo.products.campaigns.constants import CampaignChannel
 from eylo.products.campaigns.schemas.indb import CampaignContactInDb, CampaignInDb
@@ -31,7 +33,7 @@ class WidgetChannelAdapter:
     """
 
     channel: str = CampaignChannel.WIDGET.value
-    replay_safe = True
+    replay_policy: ChannelReplayPolicy = ChannelReplayPolicy.REPLAY_SAFE
 
     async def validate_campaign(self, campaign: CampaignInDb) -> list[str]:
         errors: list[str] = []
@@ -62,7 +64,9 @@ class WidgetChannelAdapter:
             contact_id=contact.id,
             attempt_id=attempt_id,
         )
-        return ChannelDispatchResult(tracking_id=str(conversation.id))
+        return ChannelDispatchResult(
+            state=ChannelDispatchState.ACCEPTED, tracking_id=str(conversation.id)
+        )
 
     async def dispatch(
         self,
@@ -147,7 +151,10 @@ class WidgetChannelAdapter:
                         contact_id=contact.id,
                         attempt_id=attempt_id,
                     )
-                    return ChannelDispatchResult(tracking_id=str(conversation.id))
+                    return ChannelDispatchResult(
+                        state=ChannelDispatchState.ACCEPTED,
+                        tracking_id=str(conversation.id),
+                    )
 
                 conv_service = ConversationBaseService()
                 resolved_agent = await build_executable_agent_resolver(
@@ -169,7 +176,9 @@ class WidgetChannelAdapter:
                 contact.id,
                 conversation.id,
             )
-            return ChannelDispatchResult(tracking_id=str(conversation.id))
+            return ChannelDispatchResult(
+                state=ChannelDispatchState.ACCEPTED, tracking_id=str(conversation.id)
+            )
         except WidgetDispatchConflict:
             raise
         except Exception as error:
@@ -220,4 +229,4 @@ def _require_matching_conversation(
 
 
 # Type check
-_: CampaignChannelAdapter = WidgetChannelAdapter()  # type: ignore[assignment]
+_: CampaignChannelAdapter = WidgetChannelAdapter()

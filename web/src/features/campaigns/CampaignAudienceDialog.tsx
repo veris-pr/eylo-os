@@ -19,6 +19,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import type {
   Campaign,
+  CampaignUploadContact,
   OrganizationContact,
 } from "@/features/campaigns/campaigns.types";
 
@@ -261,13 +262,7 @@ function ContactChoice({
   );
 }
 
-function parseAddresses(value: string):
-  | {
-      contactAddress: string;
-      name: string | null;
-      variables: Record<string, unknown>;
-    }[]
-  | string {
+function parseAddresses(value: string): CampaignUploadContact[] | string {
   const rows = value
     .split(/\r?\n/)
     .map((line) => line.trim())

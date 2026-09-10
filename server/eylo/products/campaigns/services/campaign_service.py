@@ -2,14 +2,17 @@
 
 import logging
 import re
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
+from pydantic import JsonValue
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.absurd_work import AbsurdBoundWorkService, DurableState
+from eylo.common.exceptions import EntityNotFound
 from eylo.common.revisions import (
     PublishedRevisionState,
     RevisionAvailability,
@@ -21,18 +24,29 @@ from eylo.modules.contacts.domain import ContactActorKind, ContactDeletionPendin
 from eylo.modules.contacts.schemas.indb import ContactCreateSchema, ContactRef
 from eylo.modules.contacts.service import ContactService
 from eylo.modules.email_configs.wiring import build_email_config_resolver
-from eylo.modules.templates.domain import TemplateKind
+from eylo.modules.templates.domain import TemplateKind, compile_template
 from eylo.modules.templates.models import TemplateRevisionModel
 from eylo.modules.templates.service import TemplateService
+from eylo.products.campaigns.channel_config import (
+    CampaignChannelConfig,
+    EmailCampaignChannelConfig,
+    decode_campaign_channel_config,
+)
 from eylo.products.campaigns.constants import (
     CAMPAIGN_TRANSITIONS,
-    DEFAULT_RETRY_POLICY,
-    DEFAULT_SCHEDULE_CONFIG,
     CampaignChannel,
     CampaignContactStatus,
     CampaignStatus,
 )
-from eylo.products.campaigns.domain import CampaignNotFoundError, CampaignPreparation
+from eylo.products.campaigns.domain import (
+    CampaignNotFoundError,
+    CampaignPreparation,
+    CampaignRetryPolicy,
+    CampaignScheduleConfig,
+    campaign_message_template_ref,
+    campaign_retry_policy_for_create,
+    campaign_schedule_config_for_create,
+)
 from eylo.products.campaigns.models import (
     CampaignAttemptModel,
     CampaignContactModel,
@@ -81,15 +95,18 @@ class CampaignService(EyloBaseService[CampaignInDb, CampaignModel]):
         agent_id: UUID,
         description: Optional[str] = None,
         channel: str = "voice",
-        channel_config: Optional[Dict[str, Any]] = None,
+        channel_config: CampaignChannelConfig | None = None,
         initial_message_template_id: Optional[UUID] = None,
-        schedule_config: Optional[Dict[str, Any]] = None,
-        retry_policy: Optional[Dict[str, Any]] = None,
+        schedule_config: CampaignScheduleConfig | None = None,
+        retry_policy: CampaignRetryPolicy | None = None,
         concurrency_limit: int = 5,
         published_by: UUID | None = None,
     ) -> CampaignInDb:
         """Create a draft campaign whose revision 1 pins exact dependencies."""
-        from eylo.products.campaigns.constants import CHANNEL_DEFAULT_RETRY_POLICY
+        resolved_retry_policy = campaign_retry_policy_for_create(
+            channel=CampaignChannel(channel), policy=retry_policy
+        )
+        resolved_schedule_config = campaign_schedule_config_for_create(schedule_config)
 
         initial_message_template_id = (
             None
@@ -125,9 +142,8 @@ class CampaignService(EyloBaseService[CampaignInDb, CampaignModel]):
             initial_message_template_revision=(
                 template_revision.revision if template_revision is not None else None
             ),
-            schedule_config=schedule_config or DEFAULT_SCHEDULE_CONFIG,
-            retry_policy=retry_policy
-            or CHANNEL_DEFAULT_RETRY_POLICY.get(channel, DEFAULT_RETRY_POLICY),
+            schedule_config=resolved_schedule_config,
+            retry_policy=resolved_retry_policy,
             concurrency_limit=concurrency_limit,
         )
         campaign = await self._campaign_repo.create(organization_id, request)
@@ -222,20 +238,34 @@ class CampaignService(EyloBaseService[CampaignInDb, CampaignModel]):
             "name",
             "description",
             "channel",
-            "channel_config",
-            "schedule_config",
-            "retry_policy",
             "concurrency_limit",
         ):
             if field in fields:
                 setattr(campaign, field, getattr(request, field))
 
+        if "schedule_config" in fields:
+            if request.schedule_config is None:
+                raise ValueError("A supplied schedule config cannot be null.")
+            campaign.schedule_config = request.schedule_config.to_storage()
+
+        if "retry_policy" in fields:
+            if request.retry_policy is None:
+                raise ValueError("A supplied retry policy cannot be null.")
+            campaign.retry_policy = request.retry_policy.to_storage()
+
         if {"channel", "channel_config"} & fields:
-            campaign.channel_config = await self._pin_channel_config_for_new_revision(
+            config = decode_campaign_channel_config(
+                campaign.channel,
+                request.channel_config
+                if "channel_config" in fields
+                else campaign.channel_config,
+            )
+            pinned_config = await self._pin_channel_config_for_new_revision(
                 organization_id=organization_id,
                 channel=campaign.channel,
-                channel_config=campaign.channel_config,
+                channel_config=config,
             )
+            campaign.channel_config = pinned_config.to_storage()
 
         revision = campaign.published_revision + 1
         campaign.published_revision = revision
@@ -251,7 +281,9 @@ class CampaignService(EyloBaseService[CampaignInDb, CampaignModel]):
 
     async def delete_campaign(self, campaign_id: UUID) -> None:
         """Soft-delete a campaign. Only DRAFT or CANCELED campaigns."""
-        campaign = await self.get_(campaign_id)
+        campaign = await self._campaign_repo.get_(campaign_id)
+        if campaign is None:
+            raise EntityNotFound("Campaign not found.")
         if campaign.status not in (
             CampaignStatus.DRAFT.value,
             CampaignStatus.CANCELED.value,
@@ -265,8 +297,7 @@ class CampaignService(EyloBaseService[CampaignInDb, CampaignModel]):
                 f"Cannot delete campaign in {campaign.status} status. "
                 "Only DRAFT or CANCELED campaigns can be deleted."
             )
-        orm_entity = await self._campaign_repo.get_(campaign_id)
-        await self._campaign_repo.delete_(orm_entity)
+        await self._campaign_repo.delete_(campaign)
         logger.info("Campaign deleted: id=%s", campaign_id)
 
     async def list_campaigns(
@@ -392,17 +423,21 @@ class CampaignService(EyloBaseService[CampaignInDb, CampaignModel]):
             revision=revision.agent_revision,
             for_update=True,
         )
-        if revision.initial_message_template_id is not None:
+        template_ref = campaign_message_template_ref(
+            revision.initial_message_template_id,
+            revision.initial_message_template_revision,
+        )
+        if template_ref is not None:
             templates = TemplateService(self._campaign_repo.db_session)
             await templates.resolve_for_new_work(
                 organization_id=organization_id,
-                template_id=revision.initial_message_template_id,
+                template_id=template_ref.definition_id,
                 for_update=True,
             )
             template = await templates.get_revision(
                 organization_id=organization_id,
-                template_id=revision.initial_message_template_id,
-                revision=revision.initial_message_template_revision,
+                template_id=template_ref.definition_id,
+                revision=template_ref.revision,
                 for_update=True,
             )
             if template.kind != TemplateKind.CAMPAIGN_MESSAGE.value:
@@ -616,6 +651,7 @@ class CampaignService(EyloBaseService[CampaignInDb, CampaignModel]):
 
         Deduplicates by contact_address within the upload batch.
         """
+        rows = [ContactUploadRow.model_validate(row) for row in rows]
         campaign = await self.get_(campaign_id)
         if campaign.status not in (
             CampaignStatus.DRAFT.value,
@@ -811,26 +847,30 @@ class CampaignService(EyloBaseService[CampaignInDb, CampaignModel]):
     async def render_initial_message(
         self,
         definition: CampaignRevisionModel,
-        variables: Dict[str, Any],
+        variables: Mapping[str, object],
     ) -> Optional[str]:
-        if definition.initial_message_template_id is None:
+        template_ref = campaign_message_template_ref(
+            definition.initial_message_template_id,
+            definition.initial_message_template_revision,
+        )
+        if template_ref is None:
             return None
         templates = TemplateService(self._campaign_repo.db_session)
         template = await templates.get_revision(
             organization_id=definition.organization_id,
-            template_id=definition.initial_message_template_id,
-            revision=definition.initial_message_template_revision,
+            template_id=template_ref.definition_id,
+            revision=template_ref.revision,
         )
-        variable_names = {
-            item["name"] for item in template.variable_schema.get("variables", [])
-        }
+        variable_names = compile_template(
+            template.body, template.variable_schema
+        ).variables
         values = {name: variables[name] for name in variable_names if name in variables}
         from eylo.modules.templates.domain import TemplateConsumerKind
 
         rendered = await templates.render_exact(
             organization_id=definition.organization_id,
-            template_id=definition.initial_message_template_id,
-            revision=definition.initial_message_template_revision,
+            template_id=template_ref.definition_id,
+            revision=template_ref.revision,
             consumer_kind=TemplateConsumerKind.CAMPAIGN_MESSAGE,
             values=values,
         )
@@ -871,27 +911,32 @@ class CampaignService(EyloBaseService[CampaignInDb, CampaignModel]):
         *,
         organization_id: UUID,
         channel: str,
-        channel_config: Dict[str, Any] | None,
-    ) -> Dict[str, Any]:
+        channel_config: CampaignChannelConfig | None,
+    ) -> CampaignChannelConfig:
         """Pin mutable channel authority while creating an immutable revision."""
-        config = dict(channel_config or {})
-        if channel != CampaignChannel.EMAIL.value:
+        config = decode_campaign_channel_config(channel, channel_config)
+        if not isinstance(config, EmailCampaignChannelConfig):
             return config
-        raw_id = config.get("provider_config_id")
-        try:
-            provider_config_id = UUID(str(raw_id))
-        except (TypeError, ValueError):
-            config.pop("provider_config_revision", None)
-            return config
+        provider_config_id = config.provider_config_id
+        if provider_config_id is None:
+            return EmailCampaignChannelConfig.model_validate(
+                config.model_dump(
+                    exclude={"provider_config_revision"}, exclude_unset=True
+                )
+            )
         resolved = await build_email_config_resolver(
             self._campaign_repo.db_session
         ).resolve(
             organization_id,
             provider_config_id=provider_config_id,
         )
-        config["provider_config_id"] = str(resolved.provider_config_id)
-        config["provider_config_revision"] = resolved.provider_config_revision
-        return config
+        return EmailCampaignChannelConfig.model_validate(
+            {
+                **config.to_storage(),
+                "provider_config_id": resolved.provider_config_id,
+                "provider_config_revision": resolved.provider_config_revision,
+            }
+        )
 
     @staticmethod
     def _revision_from_campaign(
@@ -907,15 +952,21 @@ class CampaignService(EyloBaseService[CampaignInDb, CampaignModel]):
             name=campaign.name,
             description=campaign.description,
             channel=campaign.channel,
-            channel_config=dict(campaign.channel_config or {}),
+            channel_config=decode_campaign_channel_config(
+                campaign.channel, campaign.channel_config
+            ).to_storage(),
             agent_id=campaign.agent_id,
             agent_revision=campaign.agent_revision,
             initial_message_template_id=campaign.initial_message_template_id,
             initial_message_template_revision=(
                 campaign.initial_message_template_revision
             ),
-            schedule_config=dict(campaign.schedule_config or {}),
-            retry_policy=dict(campaign.retry_policy or {}),
+            schedule_config=CampaignScheduleConfig.model_validate(
+                campaign.schedule_config
+            ).to_storage(),
+            retry_policy=CampaignRetryPolicy.model_validate(
+                campaign.retry_policy
+            ).to_storage(),
             concurrency_limit=campaign.concurrency_limit,
             published_at=datetime.now(timezone.utc),
             published_by=published_by,
@@ -924,7 +975,7 @@ class CampaignService(EyloBaseService[CampaignInDb, CampaignModel]):
     @staticmethod
     def render_template(
         template: Optional[str],
-        variables: Dict[str, Any],
+        variables: Mapping[str, JsonValue],
     ) -> Optional[str]:
         """Substitute simple ``{{variable}}`` placeholders without conditions."""
         if not template:

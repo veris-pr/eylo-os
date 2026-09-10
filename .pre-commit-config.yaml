@@ -54,15 +54,21 @@ repos:
         stages: [pre-commit, pre-push]
 
       - id: python-typed-agent-publication-contracts
-        name: Python Agent definitions, swarms and explicit binding types
+        name: Python Agent definitions, swarms, campaigns and explicit binding types
         entry: >-
           bash -c 'cd server && .venv/bin/pyrefly check
+          eylo/common/revisions.py
+          eylo/common/schema_fields.py
+          eylo/modules/templates/
           eylo/modules/agents/
           eylo/pipelines/agents/resolver.py
           eylo/pipelines/agents/swarm.py
+          eylo/pipelines/conversation/tool_dispatch.py
+          eylo/products/campaigns/
+          eylo/pipelines/campaigns/
           eylo/pipelines/parallel_agents/swarm_agent_worker.py'
         language: system
-        files: ^server/(pyproject\.toml|eylo/(common/(schemas\.py|repositories\.py|services\.py|revisions\.py|contracts/provider_config\.py)|pipelines/(agents/|parallel_agents/swarm_agent_worker\.py)|modules/(agents/|tools/|templates/|voice/|voice_configs/|provider_configs/|llm_configs/|email_configs/|webrtc_configs/|embedding_configs/|reranking_configs/|memory_configs/)))
+        files: ^server/(pyproject\.toml|eylo/(common/(schemas\.py|schema_fields\.py|repositories\.py|services\.py|revisions\.py|contracts/provider_config\.py)|products/campaigns/|pipelines/(agents/|campaigns/|conversation/tool_dispatch\.py|parallel_agents/swarm_agent_worker\.py)|modules/(agents/|tools/|templates/|voice/|voice_configs/|provider_configs/|llm_configs/|email_configs/|webrtc_configs/|embedding_configs/|reranking_configs/|memory_configs/)))
         pass_filenames: false
         stages: [pre-commit, pre-push]
 
@@ -226,6 +232,7 @@ repos:
         entry: >-
           bash -c 'cd server && .venv/bin/pyrefly check
           eylo/common/contracts/voice.py
+          eylo/common/schema_fields.py
           eylo/common/contracts/realtime_runtime.py
           eylo/common/contracts/speech_runtime.py
           eylo/modules/voice/schemas/api.py
@@ -339,7 +346,7 @@ repos:
           eylo/pipelines/telephony/sessions.py
           eylo/pipelines/voice/lifecycle_policy.py'
         language: system
-        files: ^server/(pyproject\.toml|eylo/(common/contracts/|audio/|runtime/tasks\.py|modules/(voice|voice_configs|voice_transcripts|conversations|webrtc_configs)/|pipelines/(voice|webrtc|websocket|telephony)/|sockets/(realtime|stt|tts|stun_turn|voice/vendors/(assemblyai|cartesia|deepgram|gladia|google|revai|speechmatics))/))
+        files: ^server/(pyproject\.toml|eylo/(common/(contracts/|schema_fields\.py)|audio/|runtime/tasks\.py|modules/(voice|voice_configs|voice_transcripts|conversations|webrtc_configs)/|pipelines/(voice|webrtc|websocket|telephony)/|sockets/(realtime|stt|tts|stun_turn|voice/vendors/(assemblyai|cartesia|deepgram|gladia|google|revai|speechmatics))/))
         pass_filenames: false
         stages: [pre-commit, pre-push]
 

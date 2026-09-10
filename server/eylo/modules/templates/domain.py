@@ -6,11 +6,20 @@ import html
 import math
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
 from enum import Enum
 from types import MappingProxyType
+from typing import Self
 from uuid import UUID
 
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
+
+from eylo.common.identifiers import normalize_uuid_like
 from eylo.common.revisions import DefinitionRef
 
 RENDERER_VERSION = "interpolation-v1"
@@ -76,13 +85,41 @@ _AGENT_CONSUMERS = frozenset(
 )
 
 
-@dataclass(frozen=True, slots=True)
-class CompiledTemplate:
+class _TemplateValue(BaseModel):
+    """Immutable domain values; API/storage decoding remains at the boundary."""
+
+    model_config = ConfigDict(
+        frozen=True,
+        strict=True,
+        extra="forbid",
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+    )
+
+
+class CompiledTemplate(_TemplateValue):
+    """Validated interpolation body and independently owned read-only variables."""
+
     body: str
     variables: Mapping[str, TemplateVariableType]
 
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "variables", MappingProxyType(dict(self.variables)))
+    @field_validator("variables")
+    @classmethod
+    def freeze_variables(
+        cls, value: Mapping[str, TemplateVariableType]
+    ) -> Mapping[str, TemplateVariableType]:
+        return MappingProxyType(dict(value))
+
+    @field_serializer("variables")
+    def serialize_variables(
+        self, value: Mapping[str, TemplateVariableType]
+    ) -> dict[str, TemplateVariableType]:
+        return dict(value)
+
+    @model_validator(mode="after")
+    def validate_program(self) -> Self:
+        _validate_program(self.body, self.variables)
+        return self
 
     def to_storage(self) -> dict[str, list[dict[str, str]]]:
         return {
@@ -93,15 +130,32 @@ class CompiledTemplate:
         }
 
 
-@dataclass(frozen=True, slots=True)
-class TemplateSegment:
+class TemplateSegment(_TemplateValue):
+    """Instruction or escaped runtime-data fragment with explicit provenance."""
+
     authority: TemplateSegmentAuthority
     text: str
     variable_name: str | None = None
 
+    @model_validator(mode="after")
+    def validate_provenance(self) -> Self:
+        if self.authority is TemplateSegmentAuthority.RUNTIME_DATA:
+            if self.variable_name is None or not _VARIABLE_NAME.fullmatch(
+                self.variable_name
+            ):
+                raise InvalidTemplateError(
+                    "Runtime data requires a declared variable name."
+                )
+        elif self.variable_name is not None:
+            raise InvalidTemplateError(
+                "Authored instruction cannot claim a runtime variable."
+            )
+        return self
 
-@dataclass(frozen=True, slots=True)
-class RenderedTemplate:
+
+class RenderedTemplate(_TemplateValue):
+    """Complete render with optional draft or exact-revision source identity."""
+
     text: str
     segments: tuple[TemplateSegment, ...]
     renderer_version: str
@@ -111,9 +165,81 @@ class RenderedTemplate:
     template_id: UUID | None = None
     draft_version: int | None = None
 
+    @field_validator("template_id", mode="before")
+    @classmethod
+    def normalize_template_id(cls, value: object) -> object:
+        return normalize_uuid_like(value)
 
-def compile_template(body: str, variable_schema: Mapping[str, object]) -> CompiledTemplate:
+    @model_validator(mode="after")
+    def validate_render(self) -> Self:
+        if self.text != "".join(segment.text for segment in self.segments):
+            raise InvalidTemplateError(
+                "Rendered text must agree with its provenance segments."
+            )
+        if len(self.text) > MAX_RENDERED_CHARS:
+            raise InvalidTemplateError(
+                f"Rendered template exceeds {MAX_RENDERED_CHARS} characters."
+            )
+        if self.renderer_version != RENDERER_VERSION:
+            raise InvalidTemplateError("Unsupported template renderer version.")
+        used = {
+            segment.variable_name
+            for segment in self.segments
+            if segment.variable_name is not None
+        }
+        if len(set(self.variable_names)) != len(self.variable_names) or used != set(
+            self.variable_names
+        ):
+            raise InvalidTemplateError(
+                "Rendered variable names must agree with its segments."
+            )
+        if self.template_ref is not None:
+            if (
+                self.template_id != self.template_ref.definition_id
+                or self.draft_version is not None
+            ):
+                raise InvalidTemplateError(
+                    "Exact render requires matching template identity and no draft version."
+                )
+        elif self.template_id is not None:
+            if self.draft_version is None or self.draft_version < 1:
+                raise InvalidTemplateError(
+                    "Draft render requires a positive draft version."
+                )
+        elif self.draft_version is not None:
+            raise InvalidTemplateError("Draft version requires a template identity.")
+        return self
+
+    def with_source(
+        self,
+        *,
+        template_id: UUID,
+        template_ref: DefinitionRef | None = None,
+        draft_version: int | None = None,
+    ) -> RenderedTemplate:
+        """Bind service-owned identity while revalidating the complete render."""
+        return RenderedTemplate(
+            text=self.text,
+            segments=self.segments,
+            renderer_version=self.renderer_version,
+            consumer_kind=self.consumer_kind,
+            variable_names=self.variable_names,
+            template_id=template_id,
+            template_ref=template_ref,
+            draft_version=draft_version,
+        )
+
+
+def compile_template(
+    body: str, variable_schema: Mapping[str, object]
+) -> CompiledTemplate:
     """Validate the complete declared V1 interpolation program."""
+    _validate_body(body)
+    variables = _variable_types(variable_schema)
+    return CompiledTemplate(body=body, variables=variables)
+
+
+def _validate_body(body: str) -> None:
     if not isinstance(body, str):
         raise InvalidTemplateError("Template body must be text.")
     if not body or len(body) > MAX_TEMPLATE_BODY_CHARS:
@@ -121,7 +247,14 @@ def compile_template(body: str, variable_schema: Mapping[str, object]) -> Compil
             f"Template body must contain 1 to {MAX_TEMPLATE_BODY_CHARS} characters."
         )
 
-    variables = _variable_types(variable_schema)
+
+def _validate_program(body: str, variables: Mapping[str, TemplateVariableType]) -> None:
+    """Apply the same program invariants to compilation and model restoration."""
+    _validate_body(body)
+    if len(variables) > MAX_VARIABLES or any(
+        not _VARIABLE_NAME.fullmatch(name) for name in variables
+    ):
+        raise InvalidTemplateError("Invalid compiled template variable declarations.")
     placeholders = tuple(match.group(1) for match in _PLACEHOLDER.finditer(body))
     unsupported = _PLACEHOLDER.sub("", body)
     if "{{" in unsupported or "}}" in unsupported:
@@ -138,8 +271,9 @@ def compile_template(body: str, variable_schema: Mapping[str, object]) -> Compil
             details.append(f"undeclared placeholders: {', '.join(missing)}")
         if unused:
             details.append(f"unused variables: {', '.join(unused)}")
-        raise InvalidTemplateError("Variable schema mismatch; " + "; ".join(details) + ".")
-    return CompiledTemplate(body=body, variables=variables)
+        raise InvalidTemplateError(
+            "Variable schema mismatch; " + "; ".join(details) + "."
+        )
 
 
 def render_template(
@@ -223,7 +357,9 @@ def render_template(
 def _variable_types(
     variable_schema: Mapping[str, object],
 ) -> dict[str, TemplateVariableType]:
-    if not isinstance(variable_schema, Mapping) or set(variable_schema) != {"variables"}:
+    if not isinstance(variable_schema, Mapping) or set(variable_schema) != {
+        "variables"
+    }:
         raise InvalidTemplateError(
             "Variable schema must contain only a variables list."
         )
@@ -238,9 +374,7 @@ def _variable_types(
             "name",
             "type",
         }:
-            raise InvalidTemplateError(
-                "Each variable requires exactly name and type."
-            )
+            raise InvalidTemplateError("Each variable requires exactly name and type.")
         name = raw_variable["name"]
         if not isinstance(name, str) or not _VARIABLE_NAME.fullmatch(name):
             raise InvalidTemplateError(
