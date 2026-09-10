@@ -19,7 +19,14 @@ from typing import Any
 from urllib.parse import urlencode
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, InstanceOf
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    InstanceOf,
+    TypeAdapter,
+    ValidationError,
+)
 from pydantic.json_schema import SkipJsonSchema
 
 from eylo.common.http_egress import (
@@ -50,7 +57,13 @@ from eylo.pipelines.outbound.durable_execution import (
 )
 from eylo.sockets.http.transport import SafeHttpTransport
 
-from .contracts import RESERVED_HEADER_NAMES, VendorResponse, VendorToolError
+from .contracts import (
+    DEFAULT_JSON_MEDIA_TYPE,
+    RESERVED_HEADER_NAMES,
+    JsonMediaType,
+    VendorResponse,
+    VendorToolError,
+)
 from .credentials import VendorWireAuth
 
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
@@ -99,6 +112,7 @@ class GuardedVendorClient:
         transport: VendorTransport | None = None,
         owner: DurableMutationOwner | None = None,
         static_headers: Mapping[str, str] | None = None,
+        accept_media_type: JsonMediaType = DEFAULT_JSON_MEDIA_TYPE,
         total_timeout_seconds: float = 20.0,
     ) -> None:
         try:
@@ -120,6 +134,15 @@ class GuardedVendorClient:
         self._timeout = total_timeout_seconds
         self._mutation_sequence = 0
         self._static_headers = self._checked_static_headers(static_headers)
+        try:
+            self._accept_media_type = TypeAdapter(JsonMediaType).validate_python(
+                accept_media_type, strict=True
+            )
+        except ValidationError:
+            raise VendorToolError(
+                "vendor_accept_invalid",
+                "Curated vendors may negotiate only JSON media types.",
+            ) from None
 
     @staticmethod
     def _checked_static_headers(
@@ -256,7 +279,7 @@ class GuardedVendorClient:
         # win. `CuratedVendorSpec` already refuses credential and transport
         # header names, so this cannot become a second credential channel.
         headers: dict[str, str] = dict(self._static_headers)
-        headers["Accept"] = "application/json"
+        headers["Accept"] = self._accept_media_type
         if payload is not None:
             if method in _SAFE_METHODS:
                 raise VendorToolError(
@@ -319,9 +342,12 @@ def _query_pairs(query: Mapping[str, Any] | None) -> list[tuple[str, str]]:
 
 
 def _parse(response: HttpEgressResponse) -> VendorResponse:
-    """Read one bounded vendor reply without leaking headers to the tool."""
+    """Expose parsed data and Link pagination only; never credential/cookie headers."""
+    link_headers = response.header_values("link")
     if not response.body:
-        return VendorResponse(status_code=response.status_code, data=None)
+        return VendorResponse(
+            status_code=response.status_code, data=None, link_headers=link_headers
+        )
     media = _media_type(response)
     if media and media != "application/json" and not media.endswith("+json"):
         raise VendorToolError(
@@ -335,7 +361,9 @@ def _parse(response: HttpEgressResponse) -> VendorResponse:
             "vendor_response_invalid",
             "Vendor returned a body that is not valid JSON.",
         ) from error
-    return VendorResponse(status_code=response.status_code, data=data)
+    return VendorResponse(
+        status_code=response.status_code, data=data, link_headers=link_headers
+    )
 
 
 def _media_type(response: HttpEgressResponse) -> str:

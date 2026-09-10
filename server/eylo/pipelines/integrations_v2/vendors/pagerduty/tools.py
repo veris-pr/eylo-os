@@ -1,290 +1,353 @@
-"""Curated PagerDuty tools, read-only.
+"""Read-only PagerDuty tools with validated references and explicit pagination."""
 
-Answering "who do I wake up about this?" from the raw API takes three calls:
-find the service, read its escalation policy, then resolve the on-call
-schedules attached to it. `who_is_on_call` does that in one, and answers with
-names and emails rather than resource ids.
+from datetime import UTC, datetime
 
-Writes are absent for a concrete reason: every PagerDuty mutation requires a
-`From` header naming the acting user's email, which is per-installation
-configuration this contract has no place to put. See the vendor definition.
-"""
-
-from __future__ import annotations
-
-from typing import Any
-
-from pydantic import BaseModel, Field
+from pydantic import (
+    BaseModel,
+    Field,
+    JsonValue,
+    StrictBool,
+    StrictInt,
+    field_validator,
+    model_validator,
+)
 
 from eylo.modules.integrations_v2.domain.enums import ToolEffect
 
 from ...contracts import VendorToolContext, VendorToolError
 from ...registry import curated_tool
 from .definition import vendor
-
-MAX_BODY_CHARS = 4_000
-_STATUSES = ("triggered", "acknowledged", "resolved")
-_URGENCIES = ("high", "low")
+from .schemas import (
+    DEFAULT_PAGE_SIZE,
+    DEFAULT_SERVICE_PAGE_SIZE,
+    INCIDENTS_RESPONSE,
+    INCIDENT_RESPONSE,
+    MAX_BODY_CHARS,
+    MAX_PAGE_SIZE,
+    MAX_SERVICE_LOOKUP_PAGES,
+    NOTES_RESPONSE,
+    ONCALLS_RESPONSE,
+    SERVICES_RESPONSE,
+    Identifier,
+    Incident,
+    IncidentDetail,
+    IncidentStatus,
+    IncidentView,
+    IncidentsQuery,
+    IncidentsView,
+    NoteView,
+    OnCallView,
+    OnCallsQuery,
+    OnCallsView,
+    PageQuery,
+    PagerDutyErrorCode,
+    Service,
+    ServiceView,
+    ServicesPage,
+    ServicesView,
+    Timestamp,
+    Urgency,
+    invalid_response,
+    next_offset,
+    parse_response,
+)
 
 
 class ListIncidentsInput(BaseModel):
-    statuses: list[str] | None = Field(
-        default=None, description="Any of triggered, acknowledged, resolved."
-    )
-    urgency: str | None = Field(default=None, description="high or low.")
+    statuses: list[IncidentStatus] | None = None
+    urgency: Urgency | None = None
     service_name: str | None = Field(
-        default=None, description="Only incidents on this service."
+        default=None, min_length=1, description="Exact service name or ID."
     )
-    limit: int = Field(default=25, ge=1, le=100)
+    limit: StrictInt = Field(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE)
+    offset: StrictInt = Field(
+        default=0, ge=0, description="Use next_offset with the same filters."
+    )
+
+    @field_validator("statuses", mode="before")
+    @classmethod
+    def normalize_statuses(cls, value: object) -> object:
+        if isinstance(value, list):
+            return [
+                item.strip().casefold() if isinstance(item, str) else item
+                for item in value
+            ]
+        return value
+
+    @field_validator("urgency", mode="before")
+    @classmethod
+    def normalize_urgency(cls, value: object) -> object:
+        if value == "":
+            return None
+        return value.strip().casefold() if isinstance(value, str) else value
 
 
 class GetIncidentInput(BaseModel):
-    incident_id: str = Field(min_length=1, description="Incident id or its number.")
-    include_notes: bool = Field(default=True)
+    incident_id: Identifier = Field(description="Incident ID or its number.")
+    include_notes: StrictBool = True
 
 
 class WhoIsOnCallInput(BaseModel):
     service_name: str | None = Field(
         default=None,
-        description="Service to check. Omit for every current on-call shift.",
+        min_length=1,
+        description="Exact service name or ID; omit for all policies.",
     )
+    limit: StrictInt = Field(default=DEFAULT_SERVICE_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE)
+    offset: StrictInt = Field(default=0, ge=0)
+    as_of: Timestamp | None = Field(
+        default=None,
+        description="Omit for now. Reuse returned as_of with next_offset to continue the same time window.",
+    )
+
+    @model_validator(mode="after")
+    def continuation_window(self) -> "WhoIsOnCallInput":
+        if self.offset > 0 and self.as_of is None:
+            raise ValueError("Continuing on-call pages requires the returned as_of.")
+        return self
 
 
 class ListServicesInput(BaseModel):
-    limit: int = Field(default=50, ge=1, le=100)
+    limit: StrictInt = Field(default=DEFAULT_SERVICE_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE)
+    offset: StrictInt = Field(default=0, ge=0)
 
 
 @curated_tool(
     vendor=vendor.vendor,
     name="list_incidents",
     display_name="List PagerDuty Incidents",
-    description=(
-        "List incidents, by default everything still open. Narrow by status, "
-        "urgency, or service name. Each incident reports its title, service, "
-        "urgency, who it is assigned to, and how long it has been running."
-    ),
+    description="List incidents across all dates, by default triggered and acknowledged. Narrow by status, urgency or exact service name/ID. Reports assignment and timestamps. Count is this page; continue using next_offset with the same filters.",
     input_model=ListIncidentsInput,
     effect=ToolEffect.READ,
 )
 async def list_incidents(
     payload: ListIncidentsInput, ctx: VendorToolContext
-) -> dict[str, Any]:
-    statuses = [
-        _one_of(status, _STATUSES, "status") for status in payload.statuses or []
-    ] or ["triggered", "acknowledged"]
-    query: dict[str, Any] = {
-        "statuses[]": statuses,
-        "limit": payload.limit,
-        "sort_by": "created_at:desc",
-    }
-    if payload.urgency:
-        query["urgencies[]"] = [_one_of(payload.urgency, _URGENCIES, "urgency")]
-    if payload.service_name:
-        query["service_ids[]"] = [await _service_id(ctx, payload.service_name)]
-
-    response = await ctx.read("/incidents", query=query)
-    incidents = _items(response.data, "incidents")
-    return {
-        "incidents": [_incident_view(item) for item in incidents],
-        "count": len(incidents),
-        "statuses": statuses,
-    }
+) -> dict[str, JsonValue]:
+    statuses = payload.statuses or [
+        IncidentStatus.TRIGGERED,
+        IncidentStatus.ACKNOWLEDGED,
+    ]
+    service_ids = None
+    if payload.service_name is not None:
+        service_ids = [(await _service(ctx, payload.service_name)).id]
+    query = IncidentsQuery(
+        statuses=statuses,
+        urgencies=[payload.urgency] if payload.urgency is not None else None,
+        service_ids=service_ids,
+        limit=payload.limit,
+        offset=payload.offset,
+    )
+    page = parse_response(
+        await ctx.read(
+            "/incidents",
+            query=query.model_dump(mode="json", by_alias=True, exclude_none=True),
+        ),
+        INCIDENTS_RESPONSE,
+    )
+    continuation = next_offset(page, requested=query, count=len(page.incidents))
+    return IncidentsView(
+        incidents=[_incident_view(item) for item in page.incidents],
+        count=len(page.incidents),
+        statuses=statuses,
+        next_offset=continuation,
+    ).model_dump(mode="json")
 
 
 @curated_tool(
     vendor=vendor.vendor,
     name="get_incident",
     display_name="Get PagerDuty Incident",
-    description=(
-        "Read one incident with its full detail and, by default, the notes "
-        "responders have left on it — which is where the actual story of what "
-        "happened lives."
-    ),
+    description="Read one incident by ID or number, with responder notes unless include_notes is false. Notes and description are capped at 4,000 characters each.",
     input_model=GetIncidentInput,
     effect=ToolEffect.READ,
 )
 async def get_incident(
     payload: GetIncidentInput, ctx: VendorToolContext
-) -> dict[str, Any]:
-    body = _object((await ctx.read(f"/incidents/{payload.incident_id}")).data)
-    incident = body.get("incident")
-    if not isinstance(incident, dict):
-        raise VendorToolError("incident_not_found", "PagerDuty returned no incident.")
-    view = _incident_view(incident)
-    view["description"] = _clip(incident.get("description"))
-    view["resolve_reason"] = incident.get("resolve_reason")
-
+) -> dict[str, JsonValue]:
+    incident = parse_response(
+        await ctx.read(f"/incidents/{payload.incident_id}"), INCIDENT_RESPONSE
+    ).incident
+    if payload.incident_id not in {incident.id, str(incident.incident_number)}:
+        invalid_response()
+    notes = None
     if payload.include_notes:
-        notes = await ctx.read(f"/incidents/{payload.incident_id}/notes")
-        view["notes"] = [
-            {
-                "content": _clip(note.get("content")),
-                "author": (note.get("user") or {}).get("summary"),
-                "created_at": note.get("created_at"),
-            }
-            for note in _items(notes.data, "notes")
+        response = parse_response(
+            await ctx.read(f"/incidents/{incident.id}/notes"), NOTES_RESPONSE
+        )
+        notes = [
+            NoteView(
+                content=note.content[:MAX_BODY_CHARS],
+                author=note.user.summary,
+                created_at=note.created_at,
+            )
+            for note in response.notes
         ]
-    return view
+    return IncidentDetail(
+        **_incident_view(incident).model_dump(),
+        description=incident.description[:MAX_BODY_CHARS]
+        if incident.description is not None
+        else None,
+        resolve_reason=incident.resolve_reason,
+        notes=notes,
+    ).model_dump(mode="json", exclude_unset=True)
 
 
 @curated_tool(
     vendor=vendor.vendor,
     name="who_is_on_call",
     display_name="Who Is On Call",
-    description=(
-        "Report who is on call right now, with their name and email and the "
-        "escalation level they sit at. Given a service name, this resolves the "
-        "service, its escalation policy, and the people currently covering it "
-        "— three lookups the caller would otherwise have to chain."
-    ),
+    description="Report current on-call shifts, optionally for an exact service name/ID. Preserve separate policies and shifts for the same person. Email is returned when PagerDuty provides it. Count is this page; use next_offset and returned as_of to continue.",
     input_model=WhoIsOnCallInput,
     effect=ToolEffect.READ,
 )
 async def who_is_on_call(
     payload: WhoIsOnCallInput, ctx: VendorToolContext
-) -> dict[str, Any]:
-    query: dict[str, Any] = {"limit": 50, "include[]": ["users"]}
-    service_name = None
-    if payload.service_name:
-        service = await _service(ctx, payload.service_name)
-        service_name = service.get("name")
-        policy = service.get("escalation_policy") or {}
-        policy_id = policy.get("id")
-        if not policy_id:
-            raise VendorToolError(
-                "escalation_policy_missing",
-                f"Service '{payload.service_name}' has no escalation policy.",
-            )
-        query["escalation_policy_ids[]"] = [policy_id]
-
-    response = await ctx.read("/oncalls", query=query)
-    oncalls = _items(response.data, "oncalls")
-    people = []
-    seen: set[str] = set()
-    for entry in oncalls:
-        user = entry.get("user") or {}
-        email = str(user.get("email") or user.get("summary") or "")
-        key = f"{email}:{entry.get('escalation_level')}"
-        if key in seen:
-            continue
-        seen.add(key)
-        people.append(
-            {
-                "name": user.get("summary"),
-                "email": user.get("email"),
-                "escalation_level": entry.get("escalation_level"),
-                "policy": (entry.get("escalation_policy") or {}).get("summary"),
-                "shift_end": entry.get("end"),
-            }
+) -> dict[str, JsonValue]:
+    service = (
+        await _service(ctx, payload.service_name)
+        if payload.service_name is not None
+        else None
+    )
+    if service is not None and service.escalation_policy is None:
+        raise VendorToolError(
+            PagerDutyErrorCode.POLICY_MISSING, "The service has no escalation policy."
         )
-    people.sort(key=lambda p: p.get("escalation_level") or 99)
-    return {"service": service_name, "on_call": people, "count": len(people)}
+    policy_ids = (
+        [service.escalation_policy.id]
+        if service is not None and service.escalation_policy is not None
+        else None
+    )
+    as_of = payload.as_of or datetime.now(UTC).isoformat()
+    query = OnCallsQuery(
+        limit=payload.limit,
+        offset=payload.offset,
+        escalation_policy_ids=policy_ids,
+        since=as_of,
+        until=as_of,
+    )
+    page = parse_response(
+        await ctx.read(
+            "/oncalls",
+            query=query.model_dump(mode="json", by_alias=True, exclude_none=True),
+        ),
+        ONCALLS_RESPONSE,
+    )
+    continuation = next_offset(page, requested=query, count=len(page.oncalls))
+    people = [
+        OnCallView(
+            user_id=entry.user.id,
+            name=entry.user.summary,
+            email=entry.user.email,
+            escalation_level=entry.escalation_level,
+            policy_id=entry.escalation_policy.id,
+            policy=entry.escalation_policy.summary,
+            schedule=entry.schedule.summary if entry.schedule is not None else None,
+            shift_start=entry.start,
+            shift_end=entry.end,
+        )
+        for entry in page.oncalls
+    ]
+    people.sort(key=lambda item: item.escalation_level)
+    return OnCallsView(
+        service=service.name if service is not None else None,
+        on_call=people,
+        count=len(people),
+        as_of=as_of,
+        next_offset=continuation,
+    ).model_dump(mode="json")
 
 
 @curated_tool(
     vendor=vendor.vendor,
     name="list_services",
     display_name="List PagerDuty Services",
-    description=(
-        "List the services PagerDuty monitors, with their current status and "
-        "escalation policy. Other tools accept a service name directly, so "
-        "this is mainly for discovering what exists."
-    ),
+    description="List PagerDuty services with IDs, names, state and escalation policy. Other tools accept an exact service name or ID. Count is this page; continue using next_offset.",
     input_model=ListServicesInput,
     effect=ToolEffect.READ,
 )
 async def list_services(
     payload: ListServicesInput, ctx: VendorToolContext
-) -> dict[str, Any]:
-    services = await _services(ctx, payload.limit)
-    return {
-        "services": [
-            {
-                "id": service.get("id"),
-                "name": service.get("name"),
-                "status": service.get("status"),
-                "escalation_policy": (service.get("escalation_policy") or {}).get(
-                    "summary"
-                ),
-            }
-            for service in services
+) -> dict[str, JsonValue]:
+    query = PageQuery(limit=payload.limit, offset=payload.offset)
+    page = await _services(ctx, query)
+    continuation = next_offset(page, requested=query, count=len(page.services))
+    return ServicesView(
+        services=[
+            ServiceView(
+                id=item.id,
+                name=item.name,
+                status=item.status,
+                escalation_policy=item.escalation_policy.summary
+                if item.escalation_policy is not None
+                else None,
+            )
+            for item in page.services
         ],
-        "count": len(services),
-    }
+        count=len(page.services),
+        next_offset=continuation,
+    ).model_dump(mode="json")
 
 
-async def _services(ctx: VendorToolContext, limit: int = 100) -> list[dict[str, Any]]:
-    response = await ctx.read("/services", query={"limit": limit})
-    return _items(response.data, "services")
-
-
-async def _service(ctx: VendorToolContext, name: str) -> dict[str, Any]:
-    wanted = name.strip().casefold()
-    services = await _services(ctx)
-    for service in services:
-        if str(service.get("name", "")).casefold() == wanted:
-            return service
-        if str(service.get("id")) == name.strip():
-            return service
-    available = ", ".join(str(s.get("name")) for s in services[:20])
-    raise VendorToolError(
-        "service_not_found", f"No service named '{name}'. Available: {available}."
+async def _services(ctx: VendorToolContext, query: PageQuery) -> ServicesPage:
+    return parse_response(
+        await ctx.read("/services", query=query.model_dump(mode="json")),
+        SERVICES_RESPONSE,
     )
 
 
-async def _service_id(ctx: VendorToolContext, name: str) -> str:
-    return str((await _service(ctx, name)).get("id"))
-
-
-def _incident_view(incident: dict[str, Any]) -> dict[str, Any]:
-    assignments = [a for a in incident.get("assignments") or [] if isinstance(a, dict)]
-    return {
-        "id": incident.get("id"),
-        "number": incident.get("incident_number"),
-        "title": incident.get("title"),
-        "status": incident.get("status"),
-        "urgency": incident.get("urgency"),
-        "service": (incident.get("service") or {}).get("summary"),
-        "assigned_to": [(a.get("assignee") or {}).get("summary") for a in assignments],
-        "escalation_policy": (incident.get("escalation_policy") or {}).get("summary"),
-        "created_at": incident.get("created_at"),
-        "last_status_change": incident.get("last_status_change_at"),
-        "web_link": incident.get("html_url"),
-    }
-
-
-def _one_of(value: str, allowed: tuple[str, ...], label: str) -> str:
-    candidate = value.strip().casefold()
-    if candidate not in allowed:
+async def _service(ctx: VendorToolContext, name: str) -> Service:
+    """Select only from a complete bounded catalog; duplicate names are not authority."""
+    query = PageQuery(limit=MAX_PAGE_SIZE)
+    services: dict[str, Service] = {}
+    for _ in range(MAX_SERVICE_LOOKUP_PAGES):
+        page = await _services(ctx, query)
+        for service in page.services:
+            if service.id in services:
+                invalid_response()
+            services[service.id] = service
+        continuation = next_offset(page, requested=query, count=len(page.services))
+        if continuation is None:
+            break
+        query = PageQuery(limit=MAX_PAGE_SIZE, offset=continuation)
+    else:
         raise VendorToolError(
-            f"{label}_invalid", f"{label} must be one of: {', '.join(allowed)}."
+            PagerDutyErrorCode.LOOKUP_INCOMPLETE,
+            "The service catalog exceeded the lookup bound; the name cannot be resolved safely.",
         )
-    return candidate
-
-
-def _clip(value: Any) -> str | None:
-    if not isinstance(value, str):
-        return None
-    return value[:MAX_BODY_CHARS]
-
-
-def _items(payload: Any, key: str) -> list[dict[str, Any]]:
-    body = _object(payload)
-    return [item for item in body.get(key) or [] if isinstance(item, dict)]
-
-
-def _object(payload: Any) -> dict[str, Any]:
-    if not isinstance(payload, dict):
+    wanted = name.strip()
+    if wanted in services:
+        return services[wanted]
+    matches = [
+        item for item in services.values() if item.name.casefold() == wanted.casefold()
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
         raise VendorToolError(
-            "vendor_response_invalid", "PagerDuty returned a non-object response."
+            PagerDutyErrorCode.SERVICE_AMBIGUOUS,
+            "Several services have this name. Use the intended service ID.",
         )
-    error = payload.get("error")
-    if isinstance(error, dict):
-        raise VendorToolError(
-            "vendor_rejected",
-            str(error.get("message", "PagerDuty rejected the request."))[:500],
-        )
-    return payload
+    raise VendorToolError(
+        PagerDutyErrorCode.SERVICE_NOT_FOUND,
+        "No service matches the requested name or ID.",
+    )
 
 
-__all__ = ["get_incident", "list_incidents", "list_services", "who_is_on_call"]
+def _incident_view(incident: Incident) -> IncidentView:
+    return IncidentView(
+        id=incident.id,
+        number=incident.incident_number,
+        title=incident.title,
+        status=incident.status,
+        urgency=incident.urgency,
+        service=incident.service.summary,
+        assigned_to=[
+            assignment.assignee.summary for assignment in incident.assignments
+        ],
+        escalation_policy=incident.escalation_policy.summary
+        if incident.escalation_policy is not None
+        else None,
+        created_at=incident.created_at,
+        last_status_change=incident.last_status_change_at,
+        web_link=incident.html_url,
+    )

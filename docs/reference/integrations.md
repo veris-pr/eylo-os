@@ -48,7 +48,9 @@ the curated-vendor API and defined under
 
 - `CuratedVendorSpec`: identity, categories, fixed or installation-specific
   origin, auth kinds, API-key placement, OAuth metadata, scopes, and static
-  non-secret headers.
+  non-secret headers. JSON-only `accept_media_type` carries vendor media
+  versioning through the executor to the transport; arbitrary `Accept`,
+  credential and framing headers remain forbidden in `static_headers`.
 - `CuratedToolSpec`: stable `vendor.name` wire ID, display text, effect, input
   model, required scopes, and Python handler.
 - `VendorToolContext`: connection identity plus origin-bound `read()` and
@@ -65,6 +67,92 @@ sets the `approval_required` result metadata flag. This flag alone is not a
 durable approval wait.
 
 ## Typed tool choices
+
+### Typeform form and submission contracts
+
+All three read tools validate native payloads before projecting agent results.
+`list_forms` exposes `page`/`next_page`; `list_responses` exposes
+`before`/`next_before` tokens. Keep filters unchanged while continuing. A full
+response page can require one final empty request; the tool does not silently
+declare that a capped collection is complete. See the vendor's
+[form listing](https://www.typeform.com/developers/create/reference/retrieve-forms/)
+and [response pagination](https://www.typeform.com/developers/responses/walkthroughs/).
+
+Response selection uses `response_type`: `completed`, `partial`, or `started`.
+The deprecated `completed_only` input remains compatible (`true` selects
+completed; `false` selects started), but cannot be combined with the enum.
+The native request uses the supported enum parameter rather than the deprecated
+boolean. The selected filter, checked against any returned native state, owns
+completion—not the truthiness of Typeform's legacy year-one timestamp.
+[Responses reference](https://www.typeform.com/developers/responses/reference/retrieve-responses/).
+
+Nested form fields are flattened in document order with `parent_id`; answer IDs
+are joined to that complete question map. A removed question retains its field
+ID and answer with an explicit unresolved label. Tagged answer models cover text,
+contact/link values, dates, numbers, booleans, choices, payments, media and
+signatures. Unknown or malformed variants fail visibly, not as empty answers.
+Media/file URLs remain references; the tools do not download them. Hidden fields
+remain a string map because their names belong to the form author. Payment fields
+follow the vendor's native type declaration; no financial outcome is inferred.
+[Answer contracts](https://www.typeform.com/developers/responses/JSON-response-explanation/),
+[vendor types](https://github.com/Typeform/js-api-client/blob/main/src/typeform-types.ts).
+
+The configured origin remains `api.typeform.com`; separate EU stacks are not
+added by this contract pass. Native account acceptance remains unverified.
+
+### PagerDuty and Sentry operations
+
+PagerDuty's four read-only tools validate native incidents, notes, services and
+on-call entries against vendor-owned models. The catalog pins REST v2 through
+`application/vnd.pagerduty+json;version=2`. Incident searches explicitly cover
+all dates rather than silently inheriting the API's default date window.
+
+- Incident, service and on-call lists expose `next_offset`; counts describe
+  the returned page. On-call continuation also requires the returned `as_of`
+  so pagination keeps the same time window.
+- Service lookup scans at most ten 100-item pages. It refuses an incomplete
+  catalog or ambiguous name, gives an exact ID priority over a name match, and
+  never chooses the first similarly named service.
+- Incident detail confirms the returned ID or incident number before reading
+  notes. Separate on-call policies/shifts for one person remain separate;
+  missing email is not inferred from a display name.
+- Missing collections, invalid pagination and malformed references fail as
+  tool errors, not empty successful results.
+
+These contracts follow the maintained
+[PagerDuty REST v2 OpenAPI](https://github.com/PagerDuty/api-schema/blob/main/reference/REST/openapiv3.json).
+
+Sentry's four tools validate issues, event exception entries, stack frames and
+status-change acknowledgements. Decimal event counts become integers; source
+context becomes structured line/text pairs, capped at 4,000 text characters per
+frame. Unknown non-exception entry bodies are discarded, but malformed exception
+entries cannot bypass validation as an unknown entry.
+
+- Lists expose `next_cursor` from the
+  [Sentry pagination Link header](https://docs.sentry.io/api/pagination/).
+  Only Link metadata crosses the private response boundary; cookies and other
+  headers do not. Pagination URLs are never followed. The adapter validates the
+  origin/path and forwards only the cursor to its fixed route.
+- Resolve/ignore confirm the returned issue ID and status. A null body, wrong
+  ID or unchanged status is a failure. Results no longer assert future reopening,
+  notification or retention behavior that the acknowledgement cannot prove.
+- Existing ID-only tools retain the currently served legacy issue routes;
+  project issue listing is deprecated by Sentry. The
+  [current route source](https://github.com/getsentry/sentry/blob/master/src/sentry/api/urls.py)
+  still serves these paths. Migrating to organization-scoped inputs is a separate
+  compatibility change; this implementation does not guess an organization.
+  Native issue/event shapes follow the
+  [issue](https://docs.sentry.io/api/events/retrieve-an-issue/) and
+  [event](https://docs.sentry.io/api/events/retrieve-an-issue-event/) references;
+  the [update handler](https://github.com/getsentry/sentry/blob/master/src/sentry/issues/endpoints/group_details.py)
+  returns the updated issue.
+
+PagerDuty status/urgency and Sentry state inputs retain case/whitespace
+normalization. Limits and offsets require integers rather than booleans.
+These changes do not add grants, vendor writes or alternate receipt ownership.
+Response-validation failure does not authorize a repeated mutation.
+
+### Existing typed choices
 
 GitHub issue search and pull-request listing expose `open`, `closed`, and `all`
 as enum choices. `all` is a query option, not an issue or pull-request state.
@@ -506,6 +594,55 @@ Curated tools receive neither credentials nor DB access. They address relative
 paths only. The transport pins the configured credential to the registered or
 installation-specific origin, rejects redirects, bounds replies, and separates
 read calls from durable mutations.
+
+## Google Calendar scheduling contracts
+
+The six tools validate Calendar v3 responses before reporting results. Calendar
+name lookup reads a bounded complete catalog, rejects ambiguous names and resolves
+multiple names from one catalog. Event lists expose `next_page_token`; continue
+with the same calendar and filters. Google's lower time bound applies to an
+event's **end**, while the upper bound applies to its **start**.
+
+Availability requires a valid response for every requested calendar and the same
+time window. Missing calendars, per-calendar errors or malformed busy intervals
+never become free slots. Calendar groups are not a supported input.
+
+Creation and rescheduling operate on timed events. Supply a timestamp offset or
+an explicit IANA timezone; ambiguous/nonexistent local DST times require an offset.
+Rescheduling preserves elapsed duration, including seconds, unless explicitly
+changed. It refuses all-day/cancelled events and validates returned identity and
+times. The read followed by patch is not atomic. Cancellation confirms an empty
+successful deletion acknowledgement, not email delivery; no new notification
+policy is imposed by this typing change.
+
+Authorities: Google's [events resource](https://developers.google.com/workspace/calendar/api/v3/reference/events),
+[event list](https://developers.google.com/workspace/calendar/api/v3/reference/events/list),
+[free/busy query](https://developers.google.com/workspace/calendar/api/v3/reference/freebusy/query)
+and [event deletion](https://developers.google.com/workspace/calendar/api/v3/reference/events/delete).
+
+## Calendly scheduling contracts
+
+The five tools validate native account, event-type, scheduled-event, invitee and
+cancellation responses. List tools expose `next_page_token`; keep filters unchanged
+when continuing. Counts describe the returned page. Meeting window filters are
+timezone-qualified and sent in UTC. Event arguments accept a bare identifier or
+the corresponding `api.calendly.com/scheduled_events/…` URI, not arbitrary links.
+
+Cancellation requires HTTP 201 and a valid cancellation resource. The returned
+`invitee_notified` is `null`: this acknowledgement does not prove email delivery.
+Malformed acknowledgements fail visibly without retrying an accepted mutation.
+
+OAuth requests `users:read`, `event_types:read`, `scheduled_events:read` and
+`scheduled_events:write`, matching the tools and their identity lookups. Personal
+access tokens must have the applicable permissions as well. Calendly's documented
+write-to-read implications are applied only to Calendly during auth resolution;
+read access never implies write access. Existing connections without recorded
+required scopes must reauthorize; the platform does not infer an unrecorded grant.
+
+Authorities: Calendly's [authorization scopes](https://developer.calendly.com/docs/authentication/scopes),
+[scheduled events](https://developer.calendly.com/api-docs/calendly-api/scheduled-events/list-scheduled-events),
+[invitees](https://developer.calendly.com/api-docs/calendly-api/scheduled-events/list-event-invitees)
+and [cancellation](https://developer.calendly.com/api-docs/calendly-api/scheduled-events/create-scheduled-event-cancellation).
 
 ## OAuth token contracts
 

@@ -34,6 +34,8 @@ from eylo.pipelines.external_connections.credentials import (
 from .contracts import CuratedVendorSpec, VendorAccount
 from .credentials import VendorWireAuth, build_vendor_wire_auth
 from .registry import CuratedRegistry, load_vendors
+from .vendors.calendly.schemas import VENDOR_KEY as CALENDLY_VENDOR_KEY
+from .vendors.calendly.schemas import effective_scopes as calendly_effective_scopes
 
 NO_AUTH_CONNECTION_ID = "no-auth"
 _REQUEST_BUDGET_SECONDS: Final = 20.0
@@ -123,8 +125,11 @@ async def resolve_vendor_auth(
             "auth_required",
             f"The stored '{grant.vendor}' authorization no longer matches its install.",
         )
+    granted_scopes = set(connection.granted_scopes)
+    if grant.vendor == CALENDLY_VENDOR_KEY:
+        granted_scopes = calendly_effective_scopes(granted_scopes)
     if grant.auth_kind is VendorAuthKind.OAUTH2 and not set(required_scopes).issubset(
-        connection.granted_scopes
+        granted_scopes
     ):
         raise CredentialUnavailableError(
             "auth_required",

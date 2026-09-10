@@ -193,6 +193,7 @@ async def execute_curated_tool(
         vendor=resolved.vendor.vendor,
         transport=transport,
         static_headers=dict(resolved.vendor.static_headers),
+        accept_media_type=resolved.vendor.accept_media_type,
         owner=DurableMutationOwner(
             organization_id=organization_id,
             tool_use_message_id=tool_use_message_id,

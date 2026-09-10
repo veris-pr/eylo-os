@@ -9,10 +9,11 @@ from eylo.modules.integrations_v2.domain.enums import (
 
 from ...contracts import ApiKeyPlacement, CuratedVendorSpec, VendorOAuthConfig
 from ...registry import registry
+from .schemas import API_ORIGIN, AUTHORIZATION_URL, TOKEN_URL, VENDOR_KEY, CalendlyScope
 
 vendor = registry.register_vendor(
     CuratedVendorSpec(
-        vendor="calendly",
+        vendor=VENDOR_KEY,
         display_name="Calendly",
         description=(
             "Scheduling links and booked meetings. Curated tools list the "
@@ -20,13 +21,16 @@ vendor = registry.register_vendor(
             "reveal who booked each meeting, and cancel with a reason."
         ),
         auth_kinds=(VendorAuthKind.OAUTH2, VendorAuthKind.API_KEY),
-        base_url="https://api.calendly.com",
+        base_url=API_ORIGIN,
         oauth=VendorOAuthConfig(
-            authorization_url="https://auth.calendly.com/oauth/authorize",
-            token_url="https://auth.calendly.com/oauth/token",
-            # Calendly issues one level of access and its authorize endpoint
-            # takes no scope parameter.
-            scopes=(),
+            authorization_url=AUTHORIZATION_URL,
+            token_url=TOKEN_URL,
+            scopes=(
+                CalendlyScope.USERS_READ,
+                CalendlyScope.EVENT_TYPES_READ,
+                CalendlyScope.EVENTS_READ,
+                CalendlyScope.EVENTS_WRITE,
+            ),
         ),
         categories=("scheduling", "productivity"),
         homepage_url="https://calendly.com",

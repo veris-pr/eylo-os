@@ -655,6 +655,11 @@ repos:
           eylo/pipelines/integrations_v2/vendors/googledrive/
           eylo/pipelines/integrations_v2/vendors/googletasks/
           eylo/pipelines/integrations_v2/vendors/dropbox/
+          eylo/pipelines/integrations_v2/vendors/googlecalendar/
+          eylo/pipelines/integrations_v2/vendors/calendly/
+          eylo/pipelines/integrations_v2/vendors/pagerduty/
+          eylo/pipelines/integrations_v2/vendors/sentry/
+          eylo/pipelines/integrations_v2/vendors/typeform/
           eylo/pipelines/integrations_v2/vendors/zendesk/
           eylo/pipelines/integrations_v2/vendors/linear/
           eylo/pipelines/integrations_v2/vendors/gitlab/

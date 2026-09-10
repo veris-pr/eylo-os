@@ -1,14 +1,7 @@
-"""PagerDuty vendor identity.
+"""PagerDuty REST v2 identity for the existing read-only tool catalog.
 
-This vendor is read-only, and the reason is a concrete gap rather than a
-preference. Every PagerDuty write — acknowledging, resolving, reassigning —
-requires a `From` header naming the acting user's email. That value is per
-*installation*, not per vendor, and `static_headers` is deliberately
-vendor-level: it carries facts that are true of the API itself, and letting an
-operator inject arbitrary headers is a different and larger decision.
-
-Reads need no such header, and "what is on fire, and who is holding the pager"
-is most of what an agent is asked anyway.
+An acting-user configuration for incident mutations is not part of this
+connection contract. This catalog does not infer one or expose writes.
 """
 
 from __future__ import annotations
@@ -20,6 +13,7 @@ from eylo.modules.integrations_v2.domain.enums import (
 
 from ...contracts import ApiKeyPlacement, CuratedVendorSpec
 from ...registry import registry
+from .schemas import API_ACCEPT
 
 vendor = registry.register_vendor(
     CuratedVendorSpec(
@@ -32,6 +26,7 @@ vendor = registry.register_vendor(
         ),
         auth_kinds=(VendorAuthKind.API_KEY,),
         base_url="https://api.pagerduty.com",
+        accept_media_type=API_ACCEPT,
         categories=("operations", "monitoring"),
         homepage_url="https://www.pagerduty.com",
         # PagerDuty's REST keys use their own scheme word, not Bearer.

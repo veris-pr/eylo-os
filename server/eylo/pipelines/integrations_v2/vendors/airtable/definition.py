@@ -16,9 +16,8 @@ vendor = registry.register_vendor(
         display_name="Airtable",
         description=(
             "Bases, tables, and records. Curated tools list what a token can "
-            "reach, read records as plain values rather than Airtable's field "
-            "envelopes, and filter without writing Airtable's formula "
-            "language."
+            "reach, preserve record identity alongside custom field values, "
+            "and filter without writing Airtable's formula language."
         ),
         auth_kinds=(VendorAuthKind.API_KEY,),
         base_url="https://api.airtable.com/v0",

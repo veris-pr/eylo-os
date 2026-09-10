@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import re
 from collections.abc import Awaitable, Callable, Mapping
-from typing import Any, Protocol, Self, runtime_checkable
+from typing import Annotated, Any, Protocol, Self, runtime_checkable
 
 from pydantic import (
+    AfterValidator,
     AwareDatetime,
     BaseModel,
     ConfigDict,
@@ -48,6 +49,19 @@ RESERVED_HEADER_NAMES = frozenset(
 
 MAX_TOOL_DESCRIPTION_CHARS = 5_000
 MIN_TOOL_DESCRIPTION_CHARS = 20
+DEFAULT_JSON_MEDIA_TYPE = "application/json"
+_JSON_ACCEPT = re.compile(
+    r"application/(?:json|[A-Za-z0-9._-]+\+json)(?:;version=[0-9.]+)?"
+)
+
+
+def _json_media_type(value: str) -> str:
+    if _JSON_ACCEPT.fullmatch(value) is None:
+        raise ValueError("Curated vendors may negotiate only JSON media types.")
+    return value
+
+
+JsonMediaType = Annotated[str, AfterValidator(_json_media_type)]
 
 
 class VendorToolError(Exception):
@@ -86,6 +100,7 @@ class VendorResponse(_FrozenContract):
 
     status_code: int
     data: object = Field(repr=False, exclude=True)
+    link_headers: tuple[str, ...] = Field(default=(), repr=False, exclude=True)
 
     @property
     def ok(self) -> bool:
@@ -266,6 +281,7 @@ class CuratedVendorSpec(_FrozenContract):
     homepage_url: str | None = None
     api_key_placement: ApiKeyPlacement | None = None
     oauth: VendorOAuthConfig | None = None
+    accept_media_type: JsonMediaType = DEFAULT_JSON_MEDIA_TYPE
     static_headers: tuple[tuple[str, str], ...] = ()
     """Non-secret headers this vendor's API requires on every request.
 

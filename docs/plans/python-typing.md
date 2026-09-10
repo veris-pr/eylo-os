@@ -5,11 +5,14 @@
 This is the short completion tracker. The chronological evidence below is not a
 percentage-complete claim; local contracts and live product acceptance are separate.
 
-- [ ] Finish curated native contracts: 15/29 vendors, 81/148 tools locally covered
+- [ ] Finish curated native contracts: 20/29 vendors, 103/148 tools locally covered
   (Asana, Freshdesk, Zendesk, Intercom, GitHub, GitLab, Jira, Linear, Google Sheets,
-  HubSpot, Pipedrive, Google Docs, Google Drive, Google Tasks, Dropbox).
+  HubSpot, Pipedrive, Google Docs, Google Drive, Google Tasks, Dropbox,
+  Google Calendar, Calendly, PagerDuty, Sentry, Typeform).
   Next: remaining document/file, communication and operational vendors. Close
   GitLab named-project transport refusal without weakening shared egress policy.
+  Plan Sentry's deprecated project-list/ID-only route migration explicitly rather
+  than guessing an organization in existing tool inputs.
   Pipedrive now uses supported v2 CRM operations and v1 notes; live acceptance
   remains pending, alongside the other curated vendors.
 - [ ] Reconcile all 11 SOR profile/vendor registrations against sync, commands,
@@ -30,6 +33,92 @@ Completed foundation: all eight LLM native branches, shared execution/config/
 identity contracts, and substantial retrieval, storage, voice, email, telephony,
 campaign and session typing. The detailed evidence remains below. No entire flow
 is closed merely because its enums, config or type checker pass.
+
+Typeform slice (2026-09-10): all three read handlers now use native form,
+submission, tagged-answer and request/result models. Page continuation, nested
+question joins, explicit response selection, stable response tokens, and strict
+malformed-data refusals replace dictionary decoding. The old boolean input is
+deprecated but remains compatible; no provider installation or DB change is
+required. Official response examples include the year-one unsubmitted timestamp
+that the old truthiness check incorrectly treated as completed.
+
+Verified locally: 102 function assertions, two literal official JSON examples
+(eight submissions), and all three real executor/guarded-client paths using
+substituted HTTP/grant/auth boundaries. Invalid input sends nothing; wrong form
+identity cannot become a successful tool result. Native account acceptance and
+deployment of this Typeform slice remain pending. The earlier retrieval browser
+checkpoint below does not validate these new Typeform changes.
+
+Full backend lint and Pyrefly passed (two existing suppressions and two unrelated
+SOR redundant-cast warnings); documentation verification and diff whitespace
+checks passed. Typeform was added to the curated-contract local hook. No source
+schema, migration, dependency, runtime credential, or external vendor data changed.
+
+Operations batch (2026-09-10): PagerDuty four tools and Sentry four tools now use
+native request/response and result contracts. Missing collections no longer
+become empty success; Sentry mutations confirm the returned identity and status.
+PagerDuty exposes offset/time-window continuation and preserves policy/shift
+identity. Sentry exposes validated Link cursors and structured source context.
+JSON-only media negotiation is catalog-owned and carried through the executor;
+arbitrary static credential/framing headers remain forbidden. Native vendor
+enums stay in the owning vendor, not the canonical SOR domain.
+
+Local evidence: 141 function assertions; five literal current vendor examples
+(three PagerDuty OpenAPI, Sentry issue and event); two real guarded-client
+mutation/replay checks; actual executor-to-PagerDuty media negotiation and
+Sentry transport-to-result cursor checks. HTTP, grants/auth lookup and receipt
+persistence were substituted. Scheduling's 196 function assertions, Calendly
+scope-resolution checks and 18 earlier guarded mutation-handler probes also
+passed again. No live PagerDuty/Sentry account acceptance or DB recovery is
+claimed by these probes.
+
+One batch review covered boundaries, architecture fit, data flow, plan alignment
+and readability. It preserved case/whitespace normalization and the source-text
+budget. Full lint and Pyrefly passed (two existing suppressions/two unrelated
+SOR cast warnings), the expanded curated pre-commit hook passed, and all
+29 vendors/148 input schemas still generate. Documentation verification passed.
+Deployment checkpoint (2026-09-10): the API, durable worker, ordinary task
+worker and scheduler now run image `0c53fb6b523e`, including the accumulated
+scheduling and operations batches. Existing operator DB/provider data was
+preserved. Image identities were rechecked after deployment.
+
+Real widget/console acceptance in Eylo Development used conversation
+`01a08b8f-bc37-7601-b585-6403cf032f69`: memory recall returned the saved color;
+KB retrieval returned the release codename with citation; a no-tool follow-up
+retained both values without further tool calls. All 19 persisted messages,
+including three background-observer tasks/results, reached completed states.
+The first KB rerank hit the pipeline's three-second timeout and truthfully
+recorded `degraded/provider_timeout`; one repeat of the identical query returned
+`applied`, no reason, and a comparable Bedrock score. Memory reranking also
+succeeded. This proves both persisted outcomes, not the underlying cause of
+the first latency spike or sustained provider reliability. Bounded logs for
+the QA window contained no matching error/timeout lines; they do not establish
+a vendor-side RCA. No timeout/config change was made to hide the degradation.
+Native Calendar/Calendly/PagerDuty/Sentry account acceptance and full voice,
+upload and recovery QA remain open; this retrieval smoke is not their proof.
+
+Scheduling batch (2026-09-10): Google Calendar six tools and Calendly five tools
+now have native request/response and result contracts. Calendar availability
+refuses missing/error-bearing calendars; rescheduling preserves exact duration
+and refuses implicit all-day conversion. Calendly cancellation requires a valid
+acknowledgement and no longer asserts email delivery. Both expose pagination;
+calendar names resolve from one bounded catalog. Calendly OAuth scopes now follow
+current vendor documentation, including vendor-local write-to-read implications.
+Local evidence: 196 function assertions across all eleven handlers, four real
+guarded-client mutation/replay checks, and auth-resolution checks with real grant
+and connection schemas. HTTP, credential lookup/decryption and receipt persistence
+were substituted. Native scheduling account acceptance, browser use of these tools
+and DB crash recovery are not claimed. No operator data or DB schema changed.
+This batch is not yet in the running application image.
+
+Scheduling milestone gates: full backend lint passed; full Pyrefly reported zero
+errors with two existing suppressed diagnostics and two unrelated SOR cast warnings.
+The expanded curated pre-commit hook passed. All 29 vendors/148 tool input schemas
+still register and generate. Documentation verification passed (46 pages, 288 links,
+1239 Python modules, 47 diagrams). Review checked domain/vendor boundaries, shared
+grant and receipt ownership, request/result transformations, plan alignment and
+readability once for the batch. Frontend builds and live vendor calls were not rerun
+for this backend-only batch; deployment/acceptance remains a separate open gate.
 
 Latest Google batch (2026-09-10): Google Docs four tools and Google Drive six
 tools now use native request/response and result models. Docs traverses tabs,
