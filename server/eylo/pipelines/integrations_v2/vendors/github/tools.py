@@ -2,36 +2,51 @@
 
 from __future__ import annotations
 
-from enum import StrEnum
-from typing import Any, Self
-
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, JsonValue, StrictBool, StrictInt
 
 from eylo.modules.integrations_v2.domain.enums import ToolEffect
 
 from ...contracts import VendorToolContext, VendorToolError
 from ...registry import curated_tool
 from .definition import REPO, vendor
-
-MAX_BODY_CHARS = 6_000
-MAX_COMMENTS = 20
-MAX_FILES = 50
-
-
-class GitHubQueryState(StrEnum):
-    """GitHub issue/PR filter choices; ALL is not an entity lifecycle state."""
-
-    OPEN = "open"
-    CLOSED = "closed"
-    ALL = "all"
-
-    @classmethod
-    def _missing_(cls, value: object) -> Self | None:
-        """Keep the tools' existing case/whitespace tolerance at input parsing."""
-        if not isinstance(value, str):
-            return None
-        normalized = value.strip().casefold()
-        return next((state for state in cls if state.value == normalized), None)
+from .schemas import (
+    COMMENTS_RESPONSE,
+    COMMENT_RESPONSE,
+    DEFAULT_LIST_LIMIT,
+    FILES_RESPONSE,
+    ISSUE_RESPONSE,
+    ISSUE_SEARCH_RESPONSE,
+    LEGACY_BASE_BRANCH,
+    MAX_BODY_CHARS,
+    MAX_COMMENTS,
+    MAX_FILES,
+    MAX_LIST_LIMIT,
+    PULLS_RESPONSE,
+    PULL_DETAIL_RESPONSE,
+    PULL_RESPONSE,
+    REVIEWS_RESPONSE,
+    SEARCH_PATH,
+    GitHubComment,
+    GitHubCommentRequest,
+    GitHubCommentView,
+    GitHubCreateIssueRequest,
+    GitHubCreatePullRequest,
+    GitHubIssue,
+    GitHubIssueView,
+    GitHubPageQuery,
+    GitHubPull,
+    GitHubPullView,
+    GitHubPullsQuery,
+    GitHubPullsResult,
+    GitHubQueryState,
+    GitHubReviewState,
+    GitHubReviewView,
+    GitHubSearchQuery,
+    GitHubSearchResult,
+    GitHubToolErrorCode,
+    parse_response,
+    require_number,
+)
 
 
 class SearchIssuesInput(BaseModel):
@@ -47,17 +62,17 @@ class SearchIssuesInput(BaseModel):
     labels: list[str] | None = Field(default=None, description="All must be present.")
     assignee: str | None = Field(default=None, description="GitHub username.")
     author: str | None = Field(default=None, description="GitHub username.")
-    include_pull_requests: bool = Field(
+    include_pull_requests: StrictBool = Field(
         default=False,
         description="GitHub counts pull requests as issues; this keeps them out.",
     )
-    limit: int = Field(default=20, ge=1, le=50)
+    limit: StrictInt = Field(default=DEFAULT_LIST_LIMIT, ge=1, le=MAX_LIST_LIMIT)
 
 
 class GetIssueInput(BaseModel):
     repository: str = Field(min_length=1, description="Repository as owner/name.")
-    number: int = Field(ge=1, description="Issue number as shown in its URL.")
-    include_comments: bool = Field(default=True)
+    number: StrictInt = Field(ge=1, description="Issue number as shown in its URL.")
+    include_comments: StrictBool = Field(default=True)
 
 
 class CreateIssueInput(BaseModel):
@@ -70,7 +85,7 @@ class CreateIssueInput(BaseModel):
 
 class AddCommentInput(BaseModel):
     repository: str = Field(min_length=1)
-    number: int = Field(ge=1, description="Issue or pull request number.")
+    number: StrictInt = Field(ge=1, description="Issue or pull request number.")
     body: str = Field(min_length=1, description="Markdown comment.")
 
 
@@ -82,23 +97,25 @@ class ListPullRequestsInput(BaseModel):
     base_branch: str | None = Field(
         default=None, description="Only requests targeting this branch."
     )
-    limit: int = Field(default=20, ge=1, le=50)
+    limit: StrictInt = Field(default=DEFAULT_LIST_LIMIT, ge=1, le=MAX_LIST_LIMIT)
 
 
 class GetPullRequestInput(BaseModel):
     repository: str = Field(min_length=1)
-    number: int = Field(ge=1)
-    include_files: bool = Field(default=True)
-    include_reviews: bool = Field(default=True)
+    number: StrictInt = Field(ge=1)
+    include_files: StrictBool = Field(default=True)
+    include_reviews: StrictBool = Field(default=True)
 
 
 class CreatePullRequestInput(BaseModel):
     repository: str = Field(min_length=1)
     title: str = Field(min_length=1)
     head_branch: str = Field(min_length=1, description="Branch holding the changes.")
-    base_branch: str = Field(default="main", description="Branch to merge into.")
+    base_branch: str = Field(
+        default=LEGACY_BASE_BRANCH, description="Branch to merge into."
+    )
     body: str | None = None
-    draft: bool = Field(default=False)
+    draft: StrictBool = Field(default=False)
 
 
 @curated_tool(
@@ -117,7 +134,7 @@ class CreatePullRequestInput(BaseModel):
 )
 async def search_issues(
     payload: SearchIssuesInput, ctx: VendorToolContext
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     terms: list[str] = []
     if payload.repository:
         terms.append(f"repo:{_repository(payload.repository)}")
@@ -135,23 +152,24 @@ async def search_issues(
         terms.append(payload.text)
     if not terms:
         raise VendorToolError(
-            "search_unbounded",
+            GitHubToolErrorCode.SEARCH_UNBOUNDED,
             "Give at least a repository or some text to search for.",
         )
 
     query = " ".join(terms)
     response = await ctx.read(
-        "/search/issues",
-        query={"q": query, "per_page": payload.limit, "sort": "updated"},
+        SEARCH_PATH,
+        query=GitHubSearchQuery(q=query, per_page=payload.limit).model_dump(
+            mode="json"
+        ),
     )
-    body = _object(response.data)
-    items = [item for item in body.get("items") or [] if isinstance(item, dict)]
-    return {
-        "issues": [_issue_view(item) for item in items],
-        "count": len(items),
-        "total_matches": body.get("total_count"),
-        "query": query,
-    }
+    body = parse_response(response, ISSUE_SEARCH_RESPONSE)
+    return GitHubSearchResult(
+        issues=[_issue_view(item) for item in body.items],
+        count=len(body.items),
+        total_matches=body.total_count,
+        query=query,
+    ).model_dump(mode="json", exclude_unset=True)
 
 
 @curated_tool(
@@ -159,28 +177,32 @@ async def search_issues(
     name="get_issue",
     display_name="Get GitHub Issue",
     description=(
-        "Read one issue together with its comment thread, so the discussion "
-        "arrives with the issue rather than costing a second call. Labels, "
-        "assignees, and state are included."
+        "Read one issue with up to the first 20 comments. Bodies are clipped "
+        "to 6000 characters. Labels, assignees, and state are included."
     ),
     input_model=GetIssueInput,
     effect=ToolEffect.READ,
     scopes=(REPO,),
 )
-async def get_issue(payload: GetIssueInput, ctx: VendorToolContext) -> dict[str, Any]:
+async def get_issue(
+    payload: GetIssueInput, ctx: VendorToolContext
+) -> dict[str, JsonValue]:
     repository = _repository(payload.repository)
-    issue = _object(
-        (await ctx.read(f"/repos/{repository}/issues/{payload.number}")).data
+    issue = parse_response(
+        await ctx.read(f"/repos/{repository}/issues/{payload.number}"), ISSUE_RESPONSE
     )
+    require_number(issue.number, payload.number)
     view = _issue_view(issue)
-    view["body"] = _clip(issue.get("body"))
+    view.body = _clip(issue.body)
     if payload.include_comments:
         response = await ctx.read(
             f"/repos/{repository}/issues/{payload.number}/comments",
-            query={"per_page": MAX_COMMENTS},
+            query=GitHubPageQuery(per_page=MAX_COMMENTS).model_dump(mode="json"),
         )
-        view["comments"] = [_comment_view(item) for item in _list(response.data)]
-    return view
+        view.comments = [
+            _comment_view(item) for item in parse_response(response, COMMENTS_RESPONSE)
+        ]
+    return view.model_dump(mode="json", exclude_unset=True)
 
 
 @curated_tool(
@@ -197,17 +219,21 @@ async def get_issue(payload: GetIssueInput, ctx: VendorToolContext) -> dict[str,
 )
 async def create_issue(
     payload: CreateIssueInput, ctx: VendorToolContext
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     repository = _repository(payload.repository)
-    body: dict[str, Any] = {"title": payload.title}
-    if payload.body:
-        body["body"] = payload.body
-    if payload.labels:
-        body["labels"] = payload.labels
-    if payload.assignees:
-        body["assignees"] = payload.assignees
-    response = await ctx.mutate(f"/repos/{repository}/issues", json=body)
-    return _issue_view(_object(response.data))
+    body = GitHubCreateIssueRequest(
+        title=payload.title,
+        body=payload.body or None,
+        labels=payload.labels or None,
+        assignees=payload.assignees or None,
+    )
+    response = await ctx.mutate(
+        f"/repos/{repository}/issues",
+        json=body.model_dump(mode="json", exclude_none=True),
+    )
+    return _issue_view(parse_response(response, ISSUE_RESPONSE)).model_dump(
+        mode="json", exclude_unset=True
+    )
 
 
 @curated_tool(
@@ -224,13 +250,15 @@ async def create_issue(
 )
 async def add_comment(
     payload: AddCommentInput, ctx: VendorToolContext
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     repository = _repository(payload.repository)
     response = await ctx.mutate(
         f"/repos/{repository}/issues/{payload.number}/comments",
-        json={"body": payload.body},
+        json=GitHubCommentRequest(body=payload.body).model_dump(mode="json"),
     )
-    return _comment_view(_object(response.data))
+    return _comment_view(parse_response(response, COMMENT_RESPONSE)).model_dump(
+        mode="json"
+    )
 
 
 @curated_tool(
@@ -248,23 +276,21 @@ async def add_comment(
 )
 async def list_pull_requests(
     payload: ListPullRequestsInput, ctx: VendorToolContext
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     repository = _repository(payload.repository)
-    query: dict[str, Any] = {
-        "state": payload.state.value,
-        "per_page": payload.limit,
-        "sort": "updated",
-        "direction": "desc",
-    }
-    if payload.base_branch:
-        query["base"] = payload.base_branch
-    response = await ctx.read(f"/repos/{repository}/pulls", query=query)
-    items = _list(response.data)
-    return {
-        "repository": repository,
-        "pull_requests": [_pull_view(item) for item in items],
-        "count": len(items),
-    }
+    query = GitHubPullsQuery(
+        state=payload.state, per_page=payload.limit, base=payload.base_branch or None
+    )
+    response = await ctx.read(
+        f"/repos/{repository}/pulls",
+        query=query.model_dump(mode="json", exclude_none=True),
+    )
+    items = parse_response(response, PULLS_RESPONSE)
+    return GitHubPullsResult(
+        repository=repository,
+        pull_requests=[_pull_view(item) for item in items],
+        count=len(items),
+    ).model_dump(mode="json", exclude_unset=True)
 
 
 @curated_tool(
@@ -272,10 +298,10 @@ async def list_pull_requests(
     name="get_pull_request",
     display_name="Get GitHub Pull Request",
     description=(
-        "Read a pull request together with the files it changes and the "
-        "reviews left on it. GitHub splits these across three endpoints; this "
-        "returns the whole picture at once, which is what deciding anything "
-        "about a pull request actually needs."
+        "Read a pull request with up to the first 50 changed files and first "
+        "20 reviews. Its body is clipped to 6000 characters. The approved "
+        "flag means an approval occurs in that page, not that current branch "
+        "protection or merge requirements are satisfied."
     ),
     input_model=GetPullRequestInput,
     effect=ToolEffect.READ,
@@ -283,48 +309,45 @@ async def list_pull_requests(
 )
 async def get_pull_request(
     payload: GetPullRequestInput, ctx: VendorToolContext
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     repository = _repository(payload.repository)
-    pull = _object((await ctx.read(f"/repos/{repository}/pulls/{payload.number}")).data)
+    pull = parse_response(
+        await ctx.read(f"/repos/{repository}/pulls/{payload.number}"),
+        PULL_DETAIL_RESPONSE,
+    )
+    require_number(pull.number, payload.number)
     view = _pull_view(pull)
-    view["body"] = _clip(pull.get("body"))
-    view["additions"] = pull.get("additions")
-    view["deletions"] = pull.get("deletions")
-    view["changed_files"] = pull.get("changed_files")
-    view["mergeable"] = pull.get("mergeable")
+    view.body = _clip(pull.body)
+    view.additions = pull.additions
+    view.deletions = pull.deletions
+    view.changed_files = pull.changed_files
+    view.mergeable = pull.mergeable
 
     if payload.include_files:
         response = await ctx.read(
             f"/repos/{repository}/pulls/{payload.number}/files",
-            query={"per_page": MAX_FILES},
+            query=GitHubPageQuery(per_page=MAX_FILES).model_dump(mode="json"),
         )
-        view["files"] = [
-            {
-                "filename": item.get("filename"),
-                "status": item.get("status"),
-                "additions": item.get("additions"),
-                "deletions": item.get("deletions"),
-            }
-            for item in _list(response.data)
-        ]
+        files = parse_response(response, FILES_RESPONSE)
+        view.files = files
     if payload.include_reviews:
         response = await ctx.read(
             f"/repos/{repository}/pulls/{payload.number}/reviews",
-            query={"per_page": MAX_COMMENTS},
+            query=GitHubPageQuery(per_page=MAX_COMMENTS).model_dump(mode="json"),
         )
-        reviews = _list(response.data)
-        view["reviews"] = [
-            {
-                "reviewer": (item.get("user") or {}).get("login"),
-                "state": item.get("state"),
-                "submitted_at": item.get("submitted_at"),
-            }
+        reviews = parse_response(response, REVIEWS_RESPONSE)
+        view.reviews = [
+            GitHubReviewView(
+                reviewer=item.user.login if item.user else None,
+                state=item.state,
+                submitted_at=item.submitted_at,
+            )
             for item in reviews
         ]
-        view["approved"] = any(
-            str(item.get("state")).upper() == "APPROVED" for item in reviews
+        view.approved = any(
+            item.state.upper() == GitHubReviewState.APPROVED for item in reviews
         )
-    return view
+    return view.model_dump(mode="json", exclude_unset=True)
 
 
 @curated_tool(
@@ -341,107 +364,87 @@ async def get_pull_request(
 )
 async def create_pull_request(
     payload: CreatePullRequestInput, ctx: VendorToolContext
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     repository = _repository(payload.repository)
-    body: dict[str, Any] = {
-        "title": payload.title,
-        "head": payload.head_branch,
-        "base": payload.base_branch,
-        "draft": payload.draft,
-    }
-    if payload.body:
-        body["body"] = payload.body
-    response = await ctx.mutate(f"/repos/{repository}/pulls", json=body)
-    return _pull_view(_object(response.data))
+    body = GitHubCreatePullRequest(
+        title=payload.title,
+        head=payload.head_branch,
+        base=payload.base_branch,
+        draft=payload.draft,
+        body=payload.body or None,
+    )
+    response = await ctx.mutate(
+        f"/repos/{repository}/pulls",
+        json=body.model_dump(mode="json", exclude_none=True),
+    )
+    return _pull_view(parse_response(response, PULL_RESPONSE)).model_dump(
+        mode="json", exclude_unset=True
+    )
 
 
 def _repository(value: str) -> str:
-    """Accept `owner/name`, which is how people write a repository."""
+    """Accept owner/name and pasted repository URLs; the HTTP layer pins origin."""
     candidate = value.strip().strip("/")
     if candidate.startswith("https://"):
-        # Tolerate a pasted URL rather than failing on something recognisable.
         parts = [part for part in candidate.split("/") if part]
         candidate = "/".join(parts[-2:]) if len(parts) >= 2 else ""
     pieces = candidate.split("/")
     if len(pieces) != 2 or not all(piece.strip() for piece in pieces):
         raise VendorToolError(
-            "repository_invalid",
-            f"'{value}' is not a repository. Use owner/name, e.g. acme/api.",
+            GitHubToolErrorCode.REPOSITORY_INVALID,
+            "Use a repository as owner/name, e.g. acme/api.",
         )
     return f"{pieces[0]}/{pieces[1]}"
 
 
-def _issue_view(issue: dict[str, Any]) -> dict[str, Any]:
-    labels = [label for label in issue.get("labels") or [] if isinstance(label, dict)]
-    assignees = [a for a in issue.get("assignees") or [] if isinstance(a, dict)]
-    return {
-        "number": issue.get("number"),
-        "title": issue.get("title"),
-        "state": issue.get("state"),
-        "author": (issue.get("user") or {}).get("login"),
-        "labels": [label.get("name") for label in labels],
-        "assignees": [a.get("login") for a in assignees],
-        "comment_count": issue.get("comments"),
-        "created_at": issue.get("created_at"),
-        "updated_at": issue.get("updated_at"),
-        "closed_at": issue.get("closed_at"),
-        "web_link": issue.get("html_url"),
-        "is_pull_request": "pull_request" in issue,
-    }
+def _issue_view(issue: GitHubIssue) -> GitHubIssueView:
+    return GitHubIssueView(
+        number=issue.number,
+        title=issue.title,
+        state=issue.state,
+        author=issue.user.login if issue.user else None,
+        labels=[
+            label if isinstance(label, str) else label.name for label in issue.labels
+        ],
+        assignees=[assignee.login for assignee in issue.assignees or []],
+        comment_count=issue.comments,
+        created_at=issue.created_at,
+        updated_at=issue.updated_at,
+        closed_at=issue.closed_at,
+        web_link=issue.html_url,
+        is_pull_request="pull_request" in issue.model_fields_set,
+    )
 
 
-def _pull_view(pull: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "number": pull.get("number"),
-        "title": pull.get("title"),
-        "state": pull.get("state"),
-        "author": (pull.get("user") or {}).get("login"),
-        "head_branch": (pull.get("head") or {}).get("ref"),
-        "base_branch": (pull.get("base") or {}).get("ref"),
-        "draft": pull.get("draft"),
-        "merged": pull.get("merged_at") is not None,
-        "merged_at": pull.get("merged_at"),
-        "created_at": pull.get("created_at"),
-        "updated_at": pull.get("updated_at"),
-        "web_link": pull.get("html_url"),
-    }
+def _pull_view(pull: GitHubPull) -> GitHubPullView:
+    return GitHubPullView(
+        number=pull.number,
+        title=pull.title,
+        state=pull.state,
+        author=pull.user.login if pull.user else None,
+        head_branch=pull.head.ref,
+        base_branch=pull.base.ref,
+        draft=pull.draft,
+        merged=pull.merged_at is not None,
+        merged_at=pull.merged_at,
+        created_at=pull.created_at,
+        updated_at=pull.updated_at,
+        web_link=pull.html_url,
+    )
 
 
-def _comment_view(comment: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "id": comment.get("id"),
-        "author": (comment.get("user") or {}).get("login"),
-        "body": _clip(comment.get("body")),
-        "created_at": comment.get("created_at"),
-        "web_link": comment.get("html_url"),
-    }
+def _comment_view(comment: GitHubComment) -> GitHubCommentView:
+    return GitHubCommentView(
+        id=comment.id,
+        author=comment.user.login if comment.user else None,
+        body=_clip(comment.body),
+        created_at=comment.created_at,
+        web_link=comment.html_url,
+    )
 
 
-def _clip(value: Any) -> str | None:
-    if not isinstance(value, str):
-        return None
-    return value[:MAX_BODY_CHARS]
-
-
-def _list(payload: Any) -> list[dict[str, Any]]:
-    if isinstance(payload, dict) and isinstance(payload.get("message"), str):
-        raise VendorToolError("vendor_rejected", str(payload["message"])[:500])
-    if not isinstance(payload, list):
-        raise VendorToolError(
-            "vendor_response_invalid", "GitHub returned an unexpected response."
-        )
-    return [item for item in payload if isinstance(item, dict)]
-
-
-def _object(payload: Any) -> dict[str, Any]:
-    if not isinstance(payload, dict):
-        raise VendorToolError(
-            "vendor_response_invalid", "GitHub returned a non-object response."
-        )
-    # GitHub reports failures as a plain `message` rather than an error object.
-    if "message" in payload and "id" not in payload and "number" not in payload:
-        raise VendorToolError("vendor_rejected", str(payload["message"])[:500])
-    return payload
+def _clip(value: str | None) -> str | None:
+    return value[:MAX_BODY_CHARS] if value is not None else None
 
 
 __all__ = [

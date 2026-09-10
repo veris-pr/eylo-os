@@ -552,6 +552,8 @@ repos:
           eylo/sockets/tts/adapters/hume_wire.py
           eylo/sockets/tts/adapters/hume_adapter.py
           eylo/sockets/tts/adapters/murf_adapter.py
+          eylo/sockets/tts/adapters/murf_wire.py
+          eylo/sockets/tts/adapters/murf_audio.py
           eylo/sockets/tts/adapters/smallest_adapter.py
           eylo/sockets/voice/audio/resampler.py
           eylo/pipelines/voice/live_transcript.py
@@ -643,12 +645,13 @@ repos:
           eylo/pipelines/integrations_v2/resolution.py
           eylo/pipelines/integrations_v2/credentials.py
           eylo/pipelines/integrations_v2/http_client.py
-          eylo/pipelines/integrations_v2/vendors/github/tools.py
+          eylo/pipelines/integrations_v2/vendors/github/
           eylo/pipelines/integrations_v2/vendors/freshdesk/
           eylo/pipelines/integrations_v2/vendors/googlesheets/
+          eylo/pipelines/integrations_v2/vendors/zendesk/
           eylo/pipelines/integrations_v2/vendors/linear/
-          eylo/pipelines/integrations_v2/vendors/gitlab/tools.py
-          eylo/pipelines/integrations_v2/vendors/intercom/tools.py'
+          eylo/pipelines/integrations_v2/vendors/gitlab/
+          eylo/pipelines/integrations_v2/vendors/intercom/'
         language: system
         files: ^server/(pyproject\.toml|eylo/(common/contracts/tool_platform\.py|modules/(integrations_v2|tools)/|pipelines/(integrations_v2/|conversation/domain\.py)))
         pass_filenames: false

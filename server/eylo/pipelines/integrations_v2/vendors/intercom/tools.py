@@ -2,46 +2,48 @@
 
 from __future__ import annotations
 
-from enum import StrEnum
-from typing import Any, Self
-
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, JsonValue, StrictBool, StrictInt, field_validator
 
 from eylo.modules.integrations_v2.domain.enums import ToolEffect
 
 from ...contracts import VendorToolContext, VendorToolError
 from ...registry import curated_tool
 from .definition import vendor
-
-MAX_BODY_CHARS = 6_000
-MAX_PARTS = 50
-ADMIN_REPLY_AUTHOR_TYPE = "admin"
-
-
-class IntercomConversationState(StrEnum):
-    """Native conversation states accepted by the curated search tool."""
-
-    OPEN = "open"
-    CLOSED = "closed"
-    SNOOZED = "snoozed"
-
-    @classmethod
-    def _missing_(cls, value: object) -> Self | None:
-        if not isinstance(value, str):
-            return None
-        normalized = value.strip().casefold()
-        return next((state for state in cls if state.value == normalized), None)
-
-
-class IntercomMessageType(StrEnum):
-    """Admin reply choices; NOTE must never be sent as a customer comment."""
-
-    COMMENT = "comment"
-    NOTE = "note"
-
-
-# Part types that carry something a person said, as opposed to state changes.
-_SPEECH = frozenset(message_type.value for message_type in IntercomMessageType)
+from .schemas import (
+    CONTACT_LOOKUP_LIMIT,
+    CONTACT_SEARCH_PATH,
+    CONVERSATION_SEARCH_PATH,
+    DEFAULT_SEARCH_LIMIT,
+    MAX_BODY_CHARS,
+    MAX_PARTS,
+    MAX_SEARCH_LIMIT,
+    SEARCH_METHOD,
+    IntercomContact,
+    IntercomContactSearch,
+    IntercomContactView,
+    IntercomConversation,
+    IntercomConversationDetail,
+    IntercomConversationDetailView,
+    IntercomConversationQuery,
+    IntercomConversationSearch,
+    IntercomConversationState,
+    IntercomConversationView,
+    IntercomFilter,
+    IntercomFilterGroup,
+    IntercomMessageType,
+    IntercomMessageView,
+    IntercomMissingContact,
+    IntercomPagination,
+    IntercomReply,
+    IntercomReplyRequest,
+    IntercomReplyResult,
+    IntercomSearchField,
+    IntercomSearchRequest,
+    IntercomSearchResult,
+    IntercomToolErrorCode,
+    parse_response,
+    require_conversation_identity,
+)
 
 
 class FindContactInput(BaseModel):
@@ -55,7 +57,7 @@ class SearchConversationsInput(BaseModel):
     state: IntercomConversationState | None = Field(
         default=None, description="Only conversations with this native state."
     )
-    limit: int = Field(default=20, ge=1, le=50)
+    limit: StrictInt = Field(default=DEFAULT_SEARCH_LIMIT, ge=1, le=MAX_SEARCH_LIMIT)
 
     @field_validator("state", mode="before")
     @classmethod
@@ -71,7 +73,7 @@ class GetConversationInput(BaseModel):
 class ReplyToConversationInput(BaseModel):
     conversation_id: str = Field(min_length=1)
     body: str = Field(min_length=1, description="Reply text. HTML is accepted.")
-    visible_to_customer: bool = Field(
+    visible_to_customer: StrictBool = Field(
         description=(
             "Required. True sends the reply to the customer; false leaves an "
             "internal note. There is no default because a message sent to a "
@@ -95,7 +97,7 @@ class AddNoteInput(BaseModel):
     display_name="Find Intercom Contact",
     description=(
         "Look a person up by email. Returns their Intercom id, name, when they "
-        "were last seen, and their company — the id is what every other "
+        "were last seen, and returned company count — the id is what every other "
         "conversation lookup needs."
     ),
     input_model=FindContactInput,
@@ -103,13 +105,11 @@ class AddNoteInput(BaseModel):
 )
 async def find_contact(
     payload: FindContactInput, ctx: VendorToolContext
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     contact = await _contact_by_email(ctx, payload.email)
     if contact is None:
-        return {"found": False, "email": payload.email}
-    view = _contact_view(contact)
-    view["found"] = True
-    return view
+        return IntercomMissingContact(email=payload.email).model_dump(mode="json")
+    return _contact_view(contact).model_dump(mode="json")
 
 
 @curated_tool(
@@ -126,43 +126,45 @@ async def find_contact(
 )
 async def search_conversations(
     payload: SearchConversationsInput, ctx: VendorToolContext
-) -> dict[str, Any]:
-    filters: list[dict[str, Any]] = []
+) -> dict[str, JsonValue]:
+    filters: list[IntercomFilter] = []
     if payload.contact_email:
         contact = await _contact_by_email(ctx, payload.contact_email)
         if contact is None:
-            return {"conversations": [], "count": 0, "contact_found": False}
+            return IntercomSearchResult(
+                conversations=[], count=0, contact_found=False
+            ).model_dump(mode="json", exclude_unset=True)
         filters.append(
-            {"field": "contact_ids", "operator": "=", "value": contact.get("id")}
+            IntercomFilter(field=IntercomSearchField.CONTACT_IDS, value=contact.id)
         )
     if payload.state:
         filters.append(
-            {"field": "state", "operator": "=", "value": payload.state.value}
+            IntercomFilter(field=IntercomSearchField.STATE, value=payload.state.value)
         )
     if not filters:
         raise VendorToolError(
-            "search_unbounded", "Give a contact email or a state to search by."
+            IntercomToolErrorCode.SEARCH_UNBOUNDED,
+            "Give a contact email or a state to search by.",
         )
 
     response = await ctx.read(
-        "/conversations/search",
-        method="POST",
-        json={
-            "query": (
+        CONVERSATION_SEARCH_PATH,
+        method=SEARCH_METHOD,
+        json=IntercomSearchRequest(
+            query=(
                 filters[0]
                 if len(filters) == 1
-                else {"operator": "AND", "value": filters}
+                else IntercomFilterGroup(value=filters)
             ),
-            "pagination": {"per_page": payload.limit},
-        },
+            pagination=IntercomPagination(per_page=payload.limit),
+        ).model_dump(mode="json"),
     )
-    body = _object(response.data)
-    items = [c for c in body.get("conversations") or [] if isinstance(c, dict)]
-    return {
-        "conversations": [_conversation_view(item) for item in items],
-        "count": len(items),
-        "total_matches": body.get("total_count"),
-    }
+    body = parse_response(response, IntercomConversationSearch)
+    return IntercomSearchResult(
+        conversations=[_conversation_view(item) for item in body.conversations],
+        count=len(body.conversations),
+        total_matches=body.total_count,
+    ).model_dump(mode="json", exclude_unset=True)
 
 
 @curated_tool(
@@ -170,7 +172,9 @@ async def search_conversations(
     name="get_conversation",
     display_name="Get Intercom Conversation",
     description=(
-        "Read a conversation with its whole message history in order. "
+        "Read a conversation's opening message and speech from the first 50 "
+        "returned parts in vendor order, clipped to 6,000 characters per body. "
+        "This is a bounded history, not a complete export. "
         "Intercom stores the opening message separately from later replies and "
         "mixes state changes in with them; this returns just what was said, "
         "each message labelled by author and by whether the customer saw it."
@@ -180,51 +184,53 @@ async def search_conversations(
 )
 async def get_conversation(
     payload: GetConversationInput, ctx: VendorToolContext
-) -> dict[str, Any]:
-    conversation = _object(
-        (
-            await ctx.read(
-                f"/conversations/{payload.conversation_id}",
-                query={"display_as": "plaintext"},
-            )
-        ).data
+) -> dict[str, JsonValue]:
+    conversation = parse_response(
+        await ctx.read(
+            f"/conversations/{payload.conversation_id}",
+            query=IntercomConversationQuery().model_dump(mode="json"),
+        ),
+        IntercomConversationDetail,
     )
+    require_conversation_identity(conversation.id, payload.conversation_id)
     view = _conversation_view(conversation)
-
-    messages: list[dict[str, Any]] = []
-    source = conversation.get("source")
-    if isinstance(source, dict):
-        messages.append(
-            {
-                "author": _author(source.get("author")),
-                "body": _clip(source.get("body")),
-                "visible_to_customer": True,
-                "created_at": conversation.get("created_at"),
-                "is_opening_message": True,
-            }
+    messages = [
+        IntercomMessageView(
+            author=conversation.source.author,
+            body=_clip(conversation.source.body),
+            visible_to_customer=True,
+            created_at=conversation.created_at,
+            is_opening_message=True,
         )
-
-    parts = (conversation.get("conversation_parts") or {}).get("conversation_parts")
-    for part in (parts or [])[:MAX_PARTS]:
-        if not isinstance(part, dict):
-            continue
-        part_type = str(part.get("part_type", ""))
-        if part_type not in _SPEECH:
+    ]
+    for part in conversation.conversation_parts.conversation_parts[:MAX_PARTS]:
+        if part.part_type not in IntercomMessageType:
             # Assignments, closes and opens are state, not conversation.
             continue
         messages.append(
-            {
-                "author": _author(part.get("author")),
-                "body": _clip(part.get("body")),
-                "visible_to_customer": part_type == IntercomMessageType.COMMENT.value,
-                "created_at": part.get("created_at"),
-                "is_opening_message": False,
-            }
+            IntercomMessageView(
+                author=part.author,
+                body=_clip(part.body),
+                visible_to_customer=part.part_type == IntercomMessageType.COMMENT,
+                created_at=part.created_at,
+                is_opening_message=False,
+            )
         )
 
-    view["messages"] = messages
-    view["message_count"] = len(messages)
-    return view
+    return IntercomConversationDetailView(
+        id=view.id,
+        title=view.title,
+        state=view.state,
+        open=view.open,
+        read=view.read,
+        priority=view.priority,
+        assignee_id=view.assignee_id,
+        contact_ids=view.contact_ids,
+        created_at=view.created_at,
+        updated_at=view.updated_at,
+        messages=messages,
+        message_count=len(messages),
+    ).model_dump(mode="json")
 
 
 @curated_tool(
@@ -242,7 +248,7 @@ async def get_conversation(
 )
 async def reply_to_conversation(
     payload: ReplyToConversationInput, ctx: VendorToolContext
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     return await _reply(
         ctx,
         conversation_id=payload.conversation_id,
@@ -268,7 +274,7 @@ async def reply_to_conversation(
     input_model=AddNoteInput,
     effect=ToolEffect.MUTATION,
 )
-async def add_note(payload: AddNoteInput, ctx: VendorToolContext) -> dict[str, Any]:
+async def add_note(payload: AddNoteInput, ctx: VendorToolContext) -> dict[str, JsonValue]:
     return await _reply(
         ctx,
         conversation_id=payload.conversation_id,
@@ -285,102 +291,68 @@ async def _reply(
     body: str,
     admin_id: str,
     message_type: IntercomMessageType,
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     response = await ctx.mutate(
         f"/conversations/{conversation_id}/reply",
-        json={
-            "type": ADMIN_REPLY_AUTHOR_TYPE,
-            "admin_id": admin_id,
-            "message_type": message_type.value,
-            "body": body,
-        },
+        json=IntercomReplyRequest(
+            admin_id=admin_id, message_type=message_type, body=body
+        ).model_dump(mode="json"),
     )
-    replied = _object(response.data)
-    return {
-        "conversation_id": replied.get("id") or conversation_id,
-        "message_type": message_type.value,
-        "visible_to_customer": message_type is IntercomMessageType.COMMENT,
-        "state": replied.get("state"),
-    }
+    replied = parse_response(response, IntercomReply)
+    require_conversation_identity(replied.id, conversation_id)
+    return IntercomReplyResult(
+        conversation_id=replied.id,
+        message_type=message_type,
+        visible_to_customer=message_type is IntercomMessageType.COMMENT,
+        state=replied.state,
+    ).model_dump(mode="json")
 
 
 async def _contact_by_email(
     ctx: VendorToolContext, email: str
-) -> dict[str, Any] | None:
+) -> IntercomContact | None:
     response = await ctx.read(
-        "/contacts/search",
-        method="POST",
-        json={
-            "query": {"field": "email", "operator": "=", "value": email.strip()},
-            "pagination": {"per_page": 1},
-        },
+        CONTACT_SEARCH_PATH,
+        method=SEARCH_METHOD,
+        json=IntercomSearchRequest(
+            query=IntercomFilter(field=IntercomSearchField.EMAIL, value=email.strip()),
+            pagination=IntercomPagination(per_page=CONTACT_LOOKUP_LIMIT),
+        ).model_dump(mode="json"),
     )
-    results = _object(response.data).get("data") or []
-    for item in results:
-        if isinstance(item, dict):
-            return item
-    return None
+    results = parse_response(response, IntercomContactSearch).data
+    return results[0] if results else None
 
 
-def _contact_view(contact: dict[str, Any]) -> dict[str, Any]:
-    companies = (contact.get("companies") or {}).get("data") or []
-    return {
-        "id": contact.get("id"),
-        "name": contact.get("name"),
-        "email": contact.get("email"),
-        "phone": contact.get("phone"),
-        "role": contact.get("role"),
-        "last_seen_at": contact.get("last_seen_at"),
-        "created_at": contact.get("created_at"),
-        "company_count": len(companies),
-    }
+def _contact_view(contact: IntercomContact) -> IntercomContactView:
+    return IntercomContactView(
+        id=contact.id,
+        name=contact.name,
+        email=contact.email,
+        phone=contact.phone,
+        role=contact.role,
+        last_seen_at=contact.last_seen_at,
+        created_at=contact.created_at,
+        company_count=len(contact.companies.data) if contact.companies else 0,
+    )
 
 
-def _conversation_view(conversation: dict[str, Any]) -> dict[str, Any]:
-    contacts = (conversation.get("contacts") or {}).get("contacts") or []
-    return {
-        "id": conversation.get("id"),
-        "title": conversation.get("title"),
-        "state": conversation.get("state"),
-        "open": conversation.get("open"),
-        "read": conversation.get("read"),
-        "priority": conversation.get("priority"),
-        "assignee_id": (conversation.get("admin_assignee_id")),
-        "contact_ids": [c.get("id") for c in contacts if isinstance(c, dict)],
-        "created_at": conversation.get("created_at"),
-        "updated_at": conversation.get("updated_at"),
-    }
+def _conversation_view(conversation: IntercomConversation) -> IntercomConversationView:
+    return IntercomConversationView(
+        id=conversation.id,
+        title=conversation.title,
+        state=conversation.state,
+        open=conversation.open,
+        read=conversation.read,
+        priority=conversation.priority,
+        assignee_id=conversation.admin_assignee_id,
+        contact_ids=[contact.id for contact in conversation.contacts.contacts],
+        created_at=conversation.created_at,
+        updated_at=conversation.updated_at,
+    )
 
 
-def _author(author: Any) -> dict[str, Any] | None:
-    if not isinstance(author, dict):
-        return None
-    return {
-        "type": author.get("type"),
-        "name": author.get("name"),
-        "email": author.get("email"),
-    }
-
-
-def _clip(value: Any) -> str | None:
-    if not isinstance(value, str):
-        return None
-    return value[:MAX_BODY_CHARS]
-
-
-def _object(payload: Any) -> dict[str, Any]:
-    if not isinstance(payload, dict):
-        raise VendorToolError(
-            "vendor_response_invalid", "Intercom returned a non-object response."
-        )
-    if payload.get("type") == "error.list":
-        errors = payload.get("errors") or []
-        first = errors[0] if errors and isinstance(errors[0], dict) else {}
-        raise VendorToolError(
-            "vendor_rejected",
-            str(first.get("message", "Intercom rejected the request."))[:500],
-        )
-    return payload
+def _clip(value: str | None) -> str | None:
+    return value[:MAX_BODY_CHARS] if value is not None else None
 
 
 __all__ = [

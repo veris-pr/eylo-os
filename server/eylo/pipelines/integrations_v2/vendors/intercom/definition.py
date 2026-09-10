@@ -24,7 +24,7 @@ vendor = registry.register_vendor(
         description=(
             "Customer messaging and support conversations. Curated tools find "
             "a contact by email, search and read conversations with their "
-            "whole message history, reply to a customer, and leave an internal "
+            "bounded message history, reply to a customer, and leave an internal "
             "note."
         ),
         auth_kinds=(VendorAuthKind.OAUTH2, VendorAuthKind.API_KEY),

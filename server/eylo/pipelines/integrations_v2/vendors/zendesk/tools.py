@@ -2,25 +2,68 @@
 
 from __future__ import annotations
 
-from typing import Any
-
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, JsonValue, StrictBool, StrictInt, field_validator
 
 from eylo.modules.integrations_v2.domain.enums import ToolEffect
 
 from ...contracts import VendorToolContext, VendorToolError
 from ...registry import curated_tool
 from .definition import vendor
+from .schemas import (
+    DEFAULT_TICKET_LIMIT,
+    MAX_BODY_CHARS,
+    MAX_TICKET_LIMIT,
+    SEARCH_TICKETS_PATH,
+    SEARCH_USERS_PATH,
+    TICKETS_PATH,
+    TICKET_SEARCH_TERM,
+    UPDATE_METHOD,
+    ZendeskAddCommentRequest,
+    ZendeskCommentRequest,
+    ZendeskCommentResult,
+    ZendeskCommentUpdate,
+    ZendeskCommentView,
+    ZendeskComments,
+    ZendeskCommentsQuery,
+    ZendeskCreateRequest,
+    ZendeskCreateTicket,
+    ZendeskFoundUser,
+    ZendeskInitialComment,
+    ZendeskMissingUser,
+    ZendeskPriority,
+    ZendeskRequester,
+    ZendeskSearchQuery,
+    ZendeskSearchResult,
+    ZendeskStatus,
+    ZendeskTicket,
+    ZendeskTicketDetail,
+    ZendeskTicketSearch,
+    ZendeskTicketView,
+    ZendeskToolErrorCode,
+    ZendeskUpdateRequest,
+    ZendeskUpdateTicket,
+    ZendeskUser,
+    ZendeskUserQuery,
+    ZendeskUsers,
+    parse_response,
+    ticket_from_response,
+)
 
-MAX_BODY_CHARS = 6_000
-MAX_COMMENTS = 30
-_STATUSES = ("new", "open", "pending", "hold", "solved", "closed")
-_PRIORITIES = ("low", "normal", "high", "urgent")
+
+class ZendeskToolInput(BaseModel):
+    """Keep historical case-insensitive choices while exposing their enums."""
+
+    @field_validator("status", "priority", mode="before", check_fields=False)
+    @classmethod
+    def normalize_choice(cls, value: object) -> object:
+        if value == "":
+            return None
+        return value.strip().casefold() if isinstance(value, str) else value
 
 
-class SearchTicketsInput(BaseModel):
+class SearchTicketsInput(ZendeskToolInput):
     text: str | None = Field(default=None, description="Free text to match.")
-    status: str | None = Field(
+    status: ZendeskStatus | None = Field(
         default=None,
         description="One of new, open, pending, hold, solved, closed.",
     )
@@ -31,15 +74,15 @@ class SearchTicketsInput(BaseModel):
         default=None, description="Agent the ticket is assigned to."
     )
     tags: list[str] | None = None
-    limit: int = Field(default=25, ge=1, le=100)
+    limit: StrictInt = Field(default=DEFAULT_TICKET_LIMIT, ge=1, le=MAX_TICKET_LIMIT)
 
 
 class GetTicketInput(BaseModel):
-    ticket_id: int = Field(ge=1)
-    include_comments: bool = Field(default=True)
+    ticket_id: StrictInt = Field(ge=1)
+    include_comments: StrictBool = Field(default=True)
 
 
-class CreateTicketInput(BaseModel):
+class CreateTicketInput(ZendeskToolInput):
     subject: str = Field(min_length=1)
     description: str = Field(min_length=1, description="The first comment's body.")
     requester_email: str | None = Field(
@@ -49,14 +92,16 @@ class CreateTicketInput(BaseModel):
     requester_name: str | None = Field(
         default=None, description="Used only when creating a new requester."
     )
-    priority: str | None = Field(default=None, description="low, normal, high, urgent.")
+    priority: ZendeskPriority | None = Field(
+        default=None, description="low, normal, high, urgent."
+    )
     tags: list[str] | None = None
 
 
 class AddCommentInput(BaseModel):
-    ticket_id: int = Field(ge=1)
+    ticket_id: StrictInt = Field(ge=1)
     body: str = Field(min_length=1)
-    public: bool = Field(
+    public: StrictBool = Field(
         description=(
             "Required. True emails the comment to the customer; false leaves "
             "an internal note only other agents can see. There is no default "
@@ -65,12 +110,14 @@ class AddCommentInput(BaseModel):
     )
 
 
-class UpdateTicketInput(BaseModel):
-    ticket_id: int = Field(ge=1)
-    status: str | None = Field(
+class UpdateTicketInput(ZendeskToolInput):
+    ticket_id: StrictInt = Field(ge=1)
+    status: ZendeskStatus | None = Field(
         default=None, description="new, open, pending, hold, solved, closed."
     )
-    priority: str | None = Field(default=None, description="low, normal, high, urgent.")
+    priority: ZendeskPriority | None = Field(
+        default=None, description="low, normal, high, urgent."
+    )
     assignee_email: str | None = Field(default=None, description="Agent to assign to.")
     tags: list[str] | None = Field(default=None, description="Replaces existing tags.")
 
@@ -94,10 +141,10 @@ class FindUserInput(BaseModel):
 )
 async def search_tickets(
     payload: SearchTicketsInput, ctx: VendorToolContext
-) -> dict[str, Any]:
-    terms = ["type:ticket"]
+) -> dict[str, JsonValue]:
+    terms = [TICKET_SEARCH_TERM]
     if payload.status:
-        terms.append(f"status:{_one_of(payload.status, _STATUSES, 'status')}")
+        terms.append(f"status:{payload.status.value}")
     if payload.requester_email:
         terms.append(f"requester:{payload.requester_email}")
     if payload.assignee_email:
@@ -109,16 +156,18 @@ async def search_tickets(
 
     query = " ".join(terms)
     response = await ctx.read(
-        "/search.json", query={"query": query, "per_page": payload.limit}
+        SEARCH_TICKETS_PATH,
+        query=ZendeskSearchQuery(query=query, per_page=payload.limit).model_dump(
+            mode="json"
+        ),
     )
-    body = _object(response.data)
-    results = [item for item in body.get("results") or [] if isinstance(item, dict)]
-    return {
-        "tickets": [_ticket_view(item) for item in results],
-        "count": len(results),
-        "total_matches": body.get("count"),
-        "query": query,
-    }
+    body = parse_response(response, ZendeskTicketSearch)
+    return ZendeskSearchResult(
+        tickets=[_ticket_view(item) for item in body.results],
+        count=len(body.results),
+        total_matches=body.count,
+        query=query,
+    ).model_dump(mode="json")
 
 
 @curated_tool(
@@ -134,33 +183,38 @@ async def search_tickets(
     input_model=GetTicketInput,
     effect=ToolEffect.READ,
 )
-async def get_ticket(payload: GetTicketInput, ctx: VendorToolContext) -> dict[str, Any]:
-    ticket = _object((await ctx.read(f"/tickets/{payload.ticket_id}.json")).data).get(
-        "ticket"
+async def get_ticket(
+    payload: GetTicketInput, ctx: VendorToolContext
+) -> dict[str, JsonValue]:
+    ticket = ticket_from_response(
+        await ctx.read(f"/tickets/{payload.ticket_id}.json"),
+        expected_id=payload.ticket_id,
     )
-    if not isinstance(ticket, dict):
-        raise VendorToolError("ticket_not_found", "That ticket does not exist.")
-    view = _ticket_view(ticket)
-    view["description"] = _clip(ticket.get("description"))
+    view = ZendeskTicketDetail(
+        **_ticket_view(ticket).model_dump(),
+        description=_clip(ticket.description),
+    )
 
     if payload.include_comments:
         response = await ctx.read(
             f"/tickets/{payload.ticket_id}/comments.json",
-            query={"per_page": MAX_COMMENTS},
+            query=ZendeskCommentsQuery().model_dump(mode="json"),
         )
-        comments = _object(response.data).get("comments") or []
-        view["comments"] = [
-            {
-                "id": comment.get("id"),
-                "author_id": comment.get("author_id"),
-                "body": _clip(comment.get("plain_body") or comment.get("body")),
-                "public": comment.get("public"),
-                "created_at": comment.get("created_at"),
-            }
-            for comment in comments
-            if isinstance(comment, dict)
-        ]
-    return view
+        comments = parse_response(response, ZendeskComments)
+        view = ZendeskTicketDetail(
+            **view.model_dump(exclude_unset=True),
+            comments=[
+                ZendeskCommentView(
+                    id=comment.id,
+                    author_id=comment.author_id,
+                    body=_clip(comment.plain_body or comment.body),
+                    public=comment.public,
+                    created_at=comment.created_at,
+                )
+                for comment in comments.comments
+            ],
+        )
+    return view.model_dump(mode="json", exclude_unset=True)
 
 
 @curated_tool(
@@ -177,30 +231,28 @@ async def get_ticket(payload: GetTicketInput, ctx: VendorToolContext) -> dict[st
 )
 async def create_ticket(
     payload: CreateTicketInput, ctx: VendorToolContext
-) -> dict[str, Any]:
-    ticket: dict[str, Any] = {
-        "subject": payload.subject,
-        "comment": {"body": payload.description},
-    }
+) -> dict[str, JsonValue]:
+    requester = None
     if payload.requester_email:
         # Zendesk creates or links the requester from this object, which is
         # why no separate user lookup is needed.
-        requester: dict[str, Any] = {"email": payload.requester_email}
-        if payload.requester_name:
-            requester["name"] = payload.requester_name
-        ticket["requester"] = requester
-    if payload.priority:
-        ticket["priority"] = _one_of(payload.priority, _PRIORITIES, "priority")
-    if payload.tags:
-        ticket["tags"] = payload.tags
-
-    response = await ctx.mutate("/tickets.json", json={"ticket": ticket})
-    created = _object(response.data).get("ticket")
-    if not isinstance(created, dict):
-        raise VendorToolError(
-            "vendor_response_invalid", "Zendesk did not return the new ticket."
+        requester = ZendeskRequester(
+            email=payload.requester_email,
+            name=payload.requester_name or None,
         )
-    return _ticket_view(created)
+    body = ZendeskCreateRequest(
+        ticket=ZendeskCreateTicket(
+            subject=payload.subject,
+            comment=ZendeskInitialComment(body=payload.description),
+            requester=requester,
+            priority=payload.priority,
+            tags=payload.tags or None,
+        )
+    )
+    response = await ctx.mutate(
+        TICKETS_PATH, json=body.model_dump(mode="json", exclude_none=True)
+    )
+    return _ticket_view(ticket_from_response(response)).model_dump(mode="json")
 
 
 @curated_tool(
@@ -218,19 +270,24 @@ async def create_ticket(
 )
 async def add_comment(
     payload: AddCommentInput, ctx: VendorToolContext
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
+    body = ZendeskAddCommentRequest(
+        ticket=ZendeskCommentUpdate(
+            comment=ZendeskCommentRequest(body=payload.body, public=payload.public),
+        )
+    )
     response = await ctx.mutate(
         f"/tickets/{payload.ticket_id}.json",
-        method="PUT",
-        json={"ticket": {"comment": {"body": payload.body, "public": payload.public}}},
+        method=UPDATE_METHOD,
+        json=body.model_dump(mode="json"),
     )
-    updated = _object(response.data).get("ticket") or {}
-    return {
-        "ticket_id": payload.ticket_id,
-        "public": payload.public,
-        "emailed_customer": payload.public,
-        "status": updated.get("status") if isinstance(updated, dict) else None,
-    }
+    updated = ticket_from_response(response, expected_id=payload.ticket_id)
+    return ZendeskCommentResult(
+        ticket_id=payload.ticket_id,
+        public=payload.public,
+        emailed_customer=payload.public,
+        status=updated.status,
+    ).model_dump(mode="json")
 
 
 @curated_tool(
@@ -247,36 +304,39 @@ async def add_comment(
 )
 async def update_ticket(
     payload: UpdateTicketInput, ctx: VendorToolContext
-) -> dict[str, Any]:
-    ticket: dict[str, Any] = {}
-    if payload.status:
-        ticket["status"] = _one_of(payload.status, _STATUSES, "status")
-    if payload.priority:
-        ticket["priority"] = _one_of(payload.priority, _PRIORITIES, "priority")
-    if payload.tags is not None:
-        ticket["tags"] = payload.tags
+) -> dict[str, JsonValue]:
+    assignee_id = None
     if payload.assignee_email:
         user = await _user_by_email(ctx, payload.assignee_email)
         if user is None:
             raise VendorToolError(
-                "assignee_not_found",
-                f"No Zendesk user with email '{payload.assignee_email}'.",
+                ZendeskToolErrorCode.ASSIGNEE_NOT_FOUND,
+                "No Zendesk user matches that email.",
             )
-        ticket["assignee_id"] = user.get("id")
-    if not ticket:
+        assignee_id = user.id
+    ticket = ZendeskUpdateTicket(
+        status=payload.status,
+        priority=payload.priority,
+        tags=payload.tags,
+        assignee_id=assignee_id,
+    )
+    if all(
+        value is None
+        for value in (ticket.status, ticket.priority, ticket.tags, ticket.assignee_id)
+    ):
         raise VendorToolError(
-            "no_change_requested", "Give at least one field to change."
+            ZendeskToolErrorCode.NO_CHANGE, "Give at least one field to change."
         )
 
     response = await ctx.mutate(
-        f"/tickets/{payload.ticket_id}.json", method="PUT", json={"ticket": ticket}
+        f"/tickets/{payload.ticket_id}.json",
+        method=UPDATE_METHOD,
+        json=ZendeskUpdateRequest(ticket=ticket).model_dump(
+            mode="json", exclude_none=True
+        ),
     )
-    updated = _object(response.data).get("ticket")
-    if not isinstance(updated, dict):
-        raise VendorToolError(
-            "vendor_response_invalid", "Zendesk did not return the updated ticket."
-        )
-    return _ticket_view(updated)
+    updated = ticket_from_response(response, expected_id=payload.ticket_id)
+    return _ticket_view(updated).model_dump(mode="json")
 
 
 @curated_tool(
@@ -291,72 +351,45 @@ async def update_ticket(
     input_model=FindUserInput,
     effect=ToolEffect.READ,
 )
-async def find_user(payload: FindUserInput, ctx: VendorToolContext) -> dict[str, Any]:
+async def find_user(
+    payload: FindUserInput, ctx: VendorToolContext
+) -> dict[str, JsonValue]:
     user = await _user_by_email(ctx, payload.email)
     if user is None:
-        return {"found": False, "email": payload.email}
-    return {
-        "found": True,
-        "id": user.get("id"),
-        "name": user.get("name"),
-        "email": user.get("email"),
-        "role": user.get("role"),
-        "suspended": user.get("suspended"),
-        "created_at": user.get("created_at"),
-    }
+        return ZendeskMissingUser(email=payload.email).model_dump(mode="json")
+    return ZendeskFoundUser(**user.model_dump()).model_dump(mode="json")
 
 
-async def _user_by_email(ctx: VendorToolContext, email: str) -> dict[str, Any] | None:
-    response = await ctx.read("/users/search.json", query={"query": email})
-    users = _object(response.data).get("users") or []
-    for user in users:
-        if isinstance(user, dict) and str(user.get("email", "")).casefold() == (
+async def _user_by_email(ctx: VendorToolContext, email: str) -> ZendeskUser | None:
+    response = await ctx.read(
+        SEARCH_USERS_PATH, query=ZendeskUserQuery(query=email).model_dump(mode="json")
+    )
+    users = parse_response(response, ZendeskUsers)
+    for user in users.users:
+        if user.email is not None and user.email.casefold() == (
             email.strip().casefold()
         ):
             return user
     return None
 
 
-def _one_of(value: str, allowed: tuple[str, ...], field: str) -> str:
-    candidate = value.strip().casefold()
-    if candidate not in allowed:
-        raise VendorToolError(
-            f"{field}_invalid", f"{field} must be one of: {', '.join(allowed)}."
-        )
-    return candidate
+def _ticket_view(ticket: ZendeskTicket) -> ZendeskTicketView:
+    return ZendeskTicketView(
+        id=ticket.id,
+        subject=ticket.subject,
+        status=ticket.status,
+        priority=ticket.priority,
+        requester_id=ticket.requester_id,
+        assignee_id=ticket.assignee_id,
+        tags=ticket.tags or [],
+        created_at=ticket.created_at,
+        updated_at=ticket.updated_at,
+        via=ticket.via.channel if ticket.via is not None else None,
+    )
 
 
-def _ticket_view(ticket: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "id": ticket.get("id"),
-        "subject": ticket.get("subject"),
-        "status": ticket.get("status"),
-        "priority": ticket.get("priority"),
-        "requester_id": ticket.get("requester_id"),
-        "assignee_id": ticket.get("assignee_id"),
-        "tags": ticket.get("tags") or [],
-        "created_at": ticket.get("created_at"),
-        "updated_at": ticket.get("updated_at"),
-        "via": (ticket.get("via") or {}).get("channel"),
-    }
-
-
-def _clip(value: Any) -> str | None:
-    if not isinstance(value, str):
-        return None
-    return value[:MAX_BODY_CHARS]
-
-
-def _object(payload: Any) -> dict[str, Any]:
-    if not isinstance(payload, dict):
-        raise VendorToolError(
-            "vendor_response_invalid", "Zendesk returned a non-object response."
-        )
-    error = payload.get("error")
-    if error is not None:
-        detail = payload.get("description") or payload.get("details") or error
-        raise VendorToolError("vendor_rejected", str(detail)[:500])
-    return payload
+def _clip(value: str | None) -> str | None:
+    return value[:MAX_BODY_CHARS] if value is not None else None
 
 
 __all__ = [

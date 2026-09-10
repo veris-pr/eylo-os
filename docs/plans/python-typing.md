@@ -171,6 +171,53 @@ Acceptance criteria:
 - Work is selected by complete data flows and their dependencies. Literal/`Any`
   searches are secondary omission checks, never the implementation sequence.
 
+### Browser QA completion gate
+
+User requirement: after implementation and documentation updates, run the real
+product through the widget and operator console, not only adapter probes.
+
+1. Check/start the existing console and widget services; verify the API and
+   workers are healthy. Identify the deployed build before attributing results
+   to pending source changes.
+2. Use the existing **Eylo Development** test organization and its configured
+   providers. Read local login details from
+   `test_organisation_credentials.txt__private` when needed; never copy secrets
+   into documentation, screenshots, or retained QA artifacts. Do not reset or
+   replace the organization or its provider configurations.
+3. Navigate the widget's agent and conversation lists. Run fresh, uniquely
+   identified conversations against agents with the relevant configured provider
+   and tool bindings. Exercise the affected product flows, including tool
+   results, citations, generated interactions, and history navigation where
+   applicable. Prefer read-only external operations; use only explicitly
+   authorized disposable targets for mutation checks.
+4. Open each tested conversation in the console. Compare the widget outcome
+   against persisted messages, tool inputs/results, terminal states, and errors.
+   A plausible agent answer alone does not prove a tool executed successfully.
+5. Record the tested build, conversation references, outcomes, and untested
+   boundaries. Report missing configuration or human-only interaction separately
+   from product failures. Browser smoke checks on an older running build do not
+   close acceptance for undeployed implementation changes.
+
+Readiness smoke check (2026-09-10): console `5173` and widget `5174` were already
+running; the API health endpoint returned `200`, with the API, durable worker,
+ordinary-task worker, and scheduler running. The existing authenticated console
+session and widget contact session remained usable; no login credentials or
+provider configuration needed changing. Running backend image:
+`8c5c17de9edf78aaa260e387e4ef842f712bc7711cdfd764c966141aee82e243`.
+
+The fresh widget prompt `QA_BROWSER_ACCEPTANCE_20260910` in conversation
+`01a08910-4ce5-70a1-87bb-e09de648cb7c` invoked `memory_recall` and
+`kb_query(top_k=2)`. Console readback showed three memories and one knowledge
+result with citation `K1`; both returned successful Bedrock ranking metadata.
+The widget displayed the matching Cedar Lantern answer. Console readback showed
+43 persisted messages, including the new tool calls/results and final response
+in Completed state. The configured background observer also completed; its
+summary reported memory updates, so this is not a claim of a wholly write-free
+run. Widget back-navigation returned to the conversation list; loading older
+conversations expanded it from 10 to 15 entries, and the tested conversation
+could be reopened. This check does not exercise pending Murf/Zendesk source changes, fresh
+login, voice/media, uploads, or every configured vendor/tool.
+
 ## Evidence and limits
 
 The following is the pre-implementation review baseline. See implementation
@@ -1022,6 +1069,246 @@ the provider plane complete.
   this is not live Freshdesk, widget/LLM conversation, or DB durability proof.
   Human product review and live account QA remain pending. No operator data,
   credentials, migrations, Git history, or running services were changed.
+
+### F3 progress: Zendesk curated native contracts
+
+2026-09-10: completed the request/response typing slice for all six curated
+Zendesk tools. This is separate from Zendesk SOR and does not close F3 or F10.
+
+Authority: current Zendesk Ticketing v2 references for
+[tickets](https://developer.zendesk.com/api-reference/ticketing/tickets/tickets/),
+[comments](https://developer.zendesk.com/api-reference/ticketing/tickets/ticket_comments/),
+[search](https://developer.zendesk.com/api-reference/ticketing/ticket-management/search/)
+and [users](https://developer.zendesk.com/api-reference/ticketing/users/users/).
+The large ticket/user pages exceeded browser-fetch limits; targeted official
+search excerpts supplied the relevant operation and field definitions. No SDK,
+credential, scope, API version or provider configuration changed.
+
+Flow: registered input → `execute_curated_tool` → installation/tool grant and
+connection resolution → `VendorToolContext` → `GuardedVendorClient` → relative
+native request → typed envelope/entity → curated result JSON → conversation tool
+result. Native models remain under `vendors/zendesk/schemas.py`, not module or
+SOR canonical contracts. No DB transaction or per-record request was added.
+
+| Tool | Request and response authority | Consumer/result and I/O bound |
+| --- | --- | --- |
+| `search_tickets` | `ZendeskSearchQuery` → `ZendeskTicketSearch` | Typed ticket views; one search page, configured limit ≤100 |
+| `get_ticket` | Integer ticket path + `ZendeskCommentsQuery` → ticket/comments envelopes | Typed detail; one ticket read plus optional first 30 comments |
+| `find_user` | `ZendeskUserQuery` → `ZendeskUsers` | Typed found/missing variant; one page, case-insensitive exact email match |
+| `create_ticket` | `ZendeskCreateRequest`, nested requester/comment → ticket envelope | Typed ticket view; one durable mutation, no requester lookup |
+| `update_ticket` | `ZendeskUpdateRequest` → ticket envelope | Optional one user read, one durable mutation; empty tags replace |
+| `add_comment` | `ZendeskAddCommentRequest` → ticket envelope | Typed comment outcome; one durable mutation, explicit public predicate |
+
+All paths share named error codes. Invalid native payloads produce
+`vendor_response_invalid`; HTTP/vendor rejections produce `vendor_rejected`
+without raw diagnostics. Ticket responses must match the requested identity.
+Baseline probes reproduced missing comment lists becoming empty and absent
+mutation ticket receipts becoming successful null-status results. Both now fail
+explicitly. Known consumed fields use attributes; no `Any` or `.get()` remains
+in this curated vendor's tool implementation.
+
+Input schema change: status/priority are named enums with prior case/whitespace
+normalization and empty-string omission. IDs/limits reject boolean coercion.
+Existing `public` and `include_comments` tool keys are retained as strict JSON
+predicates; no silent migration to renamed visibility options. Unknown native
+status/priority/role/channel strings remain readable. Outbound fields are closed;
+native extensions are ignored. Nullable values, clipping and request ordering
+remain deliberate.
+
+Verification on installed Pydantic 2.11.10: 76 assertions, including 12 valid
+before/after scenarios comparing request bodies, counts and result values;
+malformed/null/list/member/ID/visibility/enum/error cases exercise typed refusals.
+A local parsing sample took 13.23 ms for 100 repetitions of a 100-ticket response;
+this is parser-only timing, not native latency or a product-throughput benchmark.
+Guarded-client probes use real egress request construction and parsing,
+with substituted transport and receipt persistence: malformed successful mutation
+reply produces a tool error after one recorded send; replay does not send again;
+read authority refuses mutation. This is not a real DB crash-recovery proof.
+Added the vendor to the local curated type hook. No retained tests or CI added.
+Full Python lint, Pyrefly, the curated type hook, documentation verification and
+`git diff --check` pass. Pyrefly retains two existing suppressions and two existing
+redundant-cast warnings in `sor/runtime/agent_reads.py`; none were added here.
+
+Remaining live QA: active curated Zendesk Basic-auth installation, published tool
+binding, deployed changed code, widget invocation and console result inspection.
+Existing SOR OAuth credentials do not prove that separate curated connection is
+configured. No native writes were sent by these probes.
+
+Existing semantic limitation: `emailed_customer` is derived from requested public
+visibility, not notification delivery evidence. Retained for result-shape parity;
+do not claim delivery correctness. Also retained: one-page search/user lookup and
+first-page comments. Exhaustive pagination and explicit coverage are not silently
+added by this typing slice.
+
+### F3 progress: Intercom curated native contracts
+
+All five curated tools now pass through vendor-owned Pydantic wire models and
+explicit projections. This does not close the shared OAuth lifecycle, Intercom
+SOR paths, or the remaining curated vendor inventory. The API remains pinned to
+2.11; native authorities were checked against that version's official reference
+and downloadable OpenAPI definition, not the site's current default version.
+
+Flow: published tool/grant preparation → validated tool input → resolved
+connection → origin-bound client → typed Intercom request → native response
+validation → typed result → existing curated execution outcome. No platform/SOR
+entity imports, DB calls, or independent mutation authority were added inside the
+vendor implementation. Search POSTs remain reads; reply POSTs retain the existing
+durable outbound-attempt owner and one mutation per invocation.
+
+RCA reproduced: missing contact lists became not-found results; empty reply
+responses became successful-looking results with the input conversation ID and
+null state. Root cause was dict fallback rather than validation of the native
+response. Both now return `vendor_response_invalid`. Detail/reply identity
+mismatches, malformed nested authors/contacts/parts, invalid field types, and HTTP
+or native error envelopes fail explicitly. Vendor diagnostics remain private.
+
+Preserved contracts: exact-email lookup uses one result; conversation search uses
+one page, up to 50 results; contact and state filters combine with AND. Retrieval
+keeps the opening message and speech from the first 50 returned parts, clipping
+bodies to 6,000 characters. The inaccurate whole-history description is removed:
+Intercom itself returns at most 500 recent parts. Native dates, explicit nulls,
+unknown response vocabulary, request field order and omission remain unchanged.
+`visible_to_customer` remains a required strict JSON boolean; search limits reject
+booleans. No new UI setting or public tool argument was introduced.
+
+Verification: **116 function assertions**, including **13 before/after scenarios**
+comparing serialized request bodies, request counts and result values. Error
+cases cover missing/null/non-object lists and members, missing/mismatched IDs,
+invalid predicates, invalid state input, unbounded search, and private vendor
+diagnostics. The parity check caught a temporary serialization regression where
+`exclude_none` removed nested explicit nulls; `exclude_unset` preserves them.
+Guarded-client checks exercise real request construction, origin-bound OAuth
+placement, JSON response parsing and mutation identity, with substituted native
+transport and receipt persistence. A malformed successful mutation response is
+recorded once, then refused; replay returns `vendor_outcome_unknown` without a
+second send. Read authority refuses mutation. This is not a real DB crash or
+native-vendor acceptance test.
+
+Full Ruff and Pyrefly pass; two existing redundant-cast warnings and two existing
+suppressed diagnostics remain outside this slice. The local curated type hook
+now includes the whole Intercom directory. No retained probes, test suite, CI,
+credentials, deployment, database changes or external mutations were added.
+
+Browser check on 2026-09-10: **Eylo Development → Configured integrations**
+loaded successfully and showed **No integrations configured yet**, with no search
+or filters applied. There is no configured curated Intercom installation to use
+for live acceptance in this org; separate SOR sources do not supply that binding.
+
+Remaining acceptance: configure a curated Intercom installation and
+published agent binding, deploy the changed code, run the configured widget agent,
+then verify persisted calls/results in the console. General browser KB/memory QA
+on the older image does not establish Intercom acceptance. Exhaustive history,
+company pagination and explicit coverage metadata are not silently added here.
+
+### F3 in progress: GitHub curated native contracts — 2026-09-10
+
+**Implemented and locally verified; native acceptance pending.** All seven
+curated GitHub tools now carry typed request/query, consumed native response and
+agent result models. Vendor schemas stay in the curated vendor directory; no
+SOR/platform entities, DB access or second mutation authority enter this layer.
+Input → grant/resolver → pinned client → native parser → result → existing tool
+outcome is the inspected flow. Read/detail calls keep their existing bounded
+requests; mutations retain the same request ordering and omission/fingerprint.
+
+Reproduced RCA: HTTP 201 with `{}` reported a created issue with null number and
+link; search with `{}` reported no matches. Dict defaults bypassed meaningful
+validation. Missing/malformed records, nested fields and identity mismatches now
+return coded failures. HTTP/native error diagnostics are not echoed. String
+labels allowed by GitHub's schema were previously discarded; their names are now
+preserved. This is an explicit projection repair, not a parity claim for that bug.
+
+Function evidence: **148 assertions, 16 before/after parity scenarios** covering
+all seven tools, exact serialized requests/counts, omission versus empty pages,
+explicit nulls, clipping, query normalization, native open vocabulary, nested
+invalid payloads, strict IDs/limits/predicates, read-only mutation refusal and
+single-write counts. Guarded-client probe uses real HTTP construction, pinned
+OAuth placement and parsing, but substitutes native transport and receipt
+persistence. A malformed accepted mutation is recorded once; replay returns
+`vendor_outcome_unknown` without a second send. It is not a real DB crash test.
+
+Source authority: GitHub's official `2022-11-28` OpenAPI and versioning guide.
+The adapter remains unversioned, whose documented current default is that
+version; no automatic upgrade/pin was introduced. Public examples are validation
+fixtures, not successful configured-vendor calls. **11 public examples across
+10 endpoint/method contracts pass**. One literal `items: ["..."]` documentation
+placeholder is excluded; nested example references are resolved. No parser
+relaxation was needed for those documentation representations.
+
+Limits remain explicit: first 20 comments/reviews, 50 files, one search/list page.
+`approved` still describes any approval in that review page, not current merge
+eligibility. Tool descriptions now state that boundary. Full pagination,
+`incomplete_results` projection, current-review reduction and replacement of the
+legacy `main` target-branch default remain separate accepted-contract work.
+
+The type hook includes the entire GitHub directory. No retained test suite, CI,
+credentials, provider configuration, DB migration or deployment is added. The
+earlier browser check found no curated installations in Eylo Development; SOR
+sources do not supply them. Live GitHub tool acceptance remains pending a
+configured installation and published binding on the changed runtime. The final
+widget → agent → persisted console conversation gate remains required.
+
+Browser recheck in this slice: both existing servers respond; the console session
+is authenticated. Widget back-navigation shows 15 loaded conversations. Opening
+the existing mixed-agent conversation in the console shows 43/43 persisted
+messages, including completed `memory_recall` and `kb_query` calls/results and
+the cited final reply from the earlier 15:46–15:47 run. This is fresh navigation
+over earlier data on the old runtime, not a new agent run or GitHub acceptance.
+Full Ruff, full Pyrefly, scoped curated type hook, docs verification and diff
+whitespace checks pass; pre-existing type warnings/suppressions remain.
+
+### F3 in progress: GitLab curated native contracts — 2026-09-10
+
+**Six tools typed; local evidence only, named-project transport still open.**
+The flow now carries explicit input/query/request → native response → result
+models through issue search/detail/create, comments and MR list/detail. Vendor
+models stay inside the curated GitLab package. Existing origin-bound PAT
+placement, grant resolution and durable write authority are unchanged.
+
+Reproduced RCA: create sent `assignee_usernames`, which is not a supported v4
+create field, and accepted `{}` as an issue with null IID/link. New lookup models
+resolve exact usernames before the single mutation. Missing/ambiguous/invalid
+users refuse the operation before any write. Case-insensitive repeated names
+resolve once. Input is bounded at 20 supplied usernames to bound lookup I/O;
+there is no truncation. One resolved user sends `assignee_id`; multiple send
+`assignee_ids`, subject to GitLab tier support. Query `assignee_username` is now
+encoded as the documented array parameter. These are deliberate wire repairs,
+not before/after parity claims for the old bugs.
+
+Native success validation rejects malformed nested authors, IDs, note system
+flags, lists and changes. Detail IID and numeric-project identity mismatches are
+refused. Created notes validate returned issue identity before reporting it.
+HTTP and native error envelopes use stable codes and private diagnostics.
+
+Evidence: **185 function assertions, 15 before/after parity scenarios** cover
+every tool, exact request order/JSON and result values where preserved, explicit
+nulls, omitted versus empty sections, clipping, query normalization and native
+open vocabulary. Additional assertions prove the repaired assignment/search
+wire, bounded and duplicate lookup behavior, no writes after failed resolution,
+malformed payload refusal and strict IDs/predicates. Guarded-client checks use
+real request building, PAT origin binding and response parsing with substituted
+transport/receipt persistence: numeric-ID read succeeds, array query survives
+serialization, malformed accepted mutation is recorded once, replay does not
+send, and read authority refuses mutation. Named project input still reproduces
+`vendor_request_invalid` before network I/O. This is not a real DB crash test.
+
+Source authority is the current official GitLab REST v4 issue/user/note/MR and
+deprecation documentation. Three directly parseable public examples (issue
+creation, note list, user list) validate. MR documentation blocks are not valid
+JSON as published; they were inspected but not counted as executable fixtures.
+No native GitLab installation was configured or called. Self-managed version
+compatibility and tier-specific assignment acceptance remain unverified.
+
+Preserved/deferred: lists read one page up to 100; notes scan the first 20 and
+exclude system entries; body clipping remains 6,000 characters. `/changes` is
+retained for existing v4 behavior, not silently upgraded to `/diffs`. Pagination,
+native overflow projection and merge-eligibility/approval evaluation remain
+explicit limitations. The shared encoded-separator control is not weakened;
+the separate transport repair and adversarial path checks remain required before
+named-project GitLab acceptance can close. The final widget → agent → persisted
+console QA gate remains required on a deployed changed runtime.
+
+The local type hook now covers the full GitLab directory. No retained probes,
+test suite, CI, credentials, provider changes, DB migration or deployment added.
 
 ### F2 in progress: typed inference config and OpenAI request boundary
 
@@ -9305,6 +9592,86 @@ contracts and changed-build browser/provider QA remain open below.
 
 ### Changed-build product QA acceptance gate
 
+#### 2026-09-10 Murf native-message slice
+
+Target: installed Pydantic 2.11.10 / websockets 15.0.1; existing Murf WebSocket
+adapter and configured values. Native request/response schemas now live in
+`sockets/tts/adapters/murf_wire.py`; SDK/vendor shapes do not enter modules or
+framework contracts. Initialization, text, clear and audio parsing use those
+models, with strict payload fields, bounded input and private diagnostics.
+The initial slice validated audio/final alternatives without repairing lifecycle.
+The follow-up below now consumes final/context identity and fails malformed turns.
+This is not a completed native Murf runtime acceptance claim.
+
+Source-backed request correction: buffering values were URL query parameters
+(`max_buffer_delay_ms`), but the
+[Murf AsyncAPI](https://murf.ai/api/docs/api-reference/text-to-speech/stream-input)
+defines a WebSocket settings message using `max_buffer_delay_in_ms`. Initialization
+now sends configured buffering explicitly. Its documented bounds and variation
+bounds are enforced before opening the connection. Query values are escaped;
+keys containing query delimiters no longer change the handshake structure.
+
+Compatibility caveat: the generated schema uses `voice_id`/`api_key`, whereas
+the [quickstart](https://murf.ai/api/docs/text-to-speech/web-sockets) uses
+`voiceId`/`api-key`. Retained the established quickstart spellings and endpoint;
+did not silently switch to a newer model or edit stored configs.
+
+Verification: 113 new function assertions cover native serialization, field
+constraints, strict audio/final parsing, malformed encodings, credential escaping,
+private snapshots and a real local WebSocket exchange through the adapter.
+The previous 46 assertions across six Murf/Smallest loopback connections pass
+unchanged. Full Python lint and Pyrefly pass (zero errors, two existing
+suppressions; two existing redundant-cast warnings). Added the wire module to
+the local voice type hook. No native Murf provider, deployed-image or human
+audio-quality claim; no migration, provider reconfiguration or retained tests.
+
+Lifecycle follow-up: the old adapter reproduced two contexts for two chunks of
+one turn, no completion after final, and connected state after socket EOF. The
+receiver forwarded bytes without owning the native turn lifecycle. The adapter
+now uses an explicit stream-state enum, one context per turn, exactly one flush
+marker, and matching final completion. Interruption invalidates identity before
+clear. Direct socket consumption removes the adapter's dropping queue; this does
+not claim that all downstream voice queues have non-dropping backpressure.
+
+An incremental private-state decoder validates mono PCM16/WAV framing, configured
+sample rate and bounded headers, retaining incomplete samples across frames.
+Malformed messages/media and unexpected EOF report terminal synthesis errors.
+Connection initialization/send/close are bounded; close tasks retain ownership
+through cancellation. Empty synthesis returns without waiting for native output.
+
+Executed 632 assertions: all two-way WAV splits, bytewise WAV/PCM, streaming WAV
+lengths, malformed/truncated audio, snapshot exclusion, concurrent connect,
+same-context chunks, idempotent flush, cancellation-safe receive polls, late
+interrupted output, 600-frame delivery, provider errors, absent context, binary
+frames, invalid base64 and EOF across eight real local WebSocket connections.
+These intentionally replace old private receiver/queue expectations; the earlier
+113/46 assertion counts above describe the wire-only checkpoint, not a rerun of
+those old lifecycle expectations against this replacement.
+
+Additional checks passed: initialization failure/cancellation, send cancellation,
+and caller cancellation during close (retained cleanup owner, exactly one close,
+zero unhandled tasks). The real `TTSFactory` and `TTSRealtime` request/consumer
+queues ran against a local WebSocket peer: matching final produced `DRAINED`,
+exact PCM bytes reached the consumer, and unexpected EOF produced `FAILED` plus
+an unsuccessful flush. Event emission was captured locally; these probes do not
+exercise browser playback or the native vendor. Full Python lint and Pyrefly
+pass (zero type errors, two existing suppressions and redundant-cast warnings).
+
+Remaining: native verification and widget/console voice QA. Legacy model/endpoint
+compatibility must be resolved explicitly, not inferred from a green type check.
+This lifecycle follow-up is not in the deployed image below.
+
+Browser smoke follow-up: console and widget were already running on ports 5173
+and 5174. After the console session expired, signed in using the existing private
+test-account file; the original conversation deep link was restored. In the
+existing mixed-agent conversation `01a08910-4ce5-70a1-87bb-e09de648cb7c`, marker
+`QA_BROWSER_20260910_RECHECK` triggered fresh `memory_recall` and `kb_query`
+(`top_k=2`) calls. Widget showed Cedar Lantern with citation K1; console showed
+35/35 completed persisted messages, three recalled memories, one KB result and
+Bedrock ranking applied. The configured background observer also completed and
+reported memory consolidation; this is not a claim that the entire run made no
+writes. No provider reconfiguration or database reset occurred.
+
 #### 2026-09-10 rebuilt-backend browser checkpoint
 
 Rebuilt image `8c5c17de9edf` and recreated only the development API, Absurd
@@ -9334,6 +9701,19 @@ Executed through the actual widget and verified in console conversation details:
   selection, new conversation, back navigation and loading older conversations
   worked. A visual console check confirmed readable, wrapped transcript content
   at the active browser width. No exhaustive responsive or accessibility claim.
+- Follow-on form QA at 15:00–15:03 local time: existing `QA Dynamic Widget Agent`
+  conversation `01a0849a-fac4-7c72-9e60-92f2efec9a58` rendered a fresh form through
+  `compound_render_widget`. Empty submission displayed `Result is required.`;
+  valid submission `QA_BROWSER_20260910_FORM_OK` became read-only and reached the
+  configured Bedrock agent. Leaving and reopening the conversation retained the
+  submitted value and disabled input. Console showed 14 of 14 completed messages,
+  including the new tool arguments, delivered result, widget message and linked
+  widget response. No provider, organization or external source was changed.
+
+Follow-up observation from the SOR transcript: `issue_list_projects` returned
+duplicate field descriptors for `name`, `description` and `key` within the same
+source. The returned record was usable, but descriptor aggregation needs a
+focused diagnosis; this browser check does not establish its root cause.
 
 The old widget dev-server process exited during this session. The offline UI
 and failed history retries coincided with port 5174 no longer listening, which

@@ -123,6 +123,141 @@ A response-validation failure does not authorize a repeat send. Replaying an
 existing outbound receipt still cannot reconstruct its response body; the shared
 client returns `vendor_outcome_unknown` without sending again.
 
+### Zendesk request and response contracts
+
+All six curated Zendesk tools use vendor-owned nested request, response and
+result models. The separate Zendesk SOR implementation is not reused here.
+Ticket status and priority inputs expose named enums; case/whitespace normalization
+and optional empty-string omission remain supported. IDs and limits require JSON
+integers, not booleans; the existing `public` and `include_comments` arguments
+require JSON booleans. `public` remains required, without a default.
+
+- Search reads one page, at most 100 tickets. Detail optionally reads the first
+  30 comments, not the complete conversation. User lookup reads one search page.
+  These operations do not follow returned pagination URLs or add per-record I/O.
+- Comments prefer `plain_body`, falling back to `body`, clipped to 6,000 characters.
+  Dates keep their native spelling. Unknown native status, priority, role and
+  channel values remain readable; unrelated extensions are not projected.
+- Missing lists, malformed records and mismatched ticket IDs fail rather than
+  becoming empty/successful results. Error diagnostics are not echoed to agents.
+- Mutation bodies preserve omission/null behavior and empty-tag replacement.
+  Response validation happens after the existing durable outbound owner; an
+  invalid reply does not authorize a resend.
+
+Native authorities: [tickets](https://developer.zendesk.com/api-reference/ticketing/tickets/tickets/),
+[comments](https://developer.zendesk.com/api-reference/ticketing/tickets/ticket_comments/),
+[search](https://developer.zendesk.com/api-reference/ticketing/ticket-management/search/),
+and [users](https://developer.zendesk.com/api-reference/ticketing/users/users/).
+Local contract/guarded-client probes are not live Zendesk verification.
+
+Existing result caveat: `add_comment.emailed_customer` reflects the requested
+`public` flag, not confirmed email delivery. Do not interpret it as a delivery
+receipt; notification behavior depends on Zendesk configuration. Correcting that
+legacy result contract remains tracked in the typing plan.
+
+### Intercom request and response contracts
+
+All five curated Intercom tools validate consumed native fields and use
+vendor-owned request and result models, separate from SOR entities. The adapter
+retains `Intercom-Version: 2.11`; this work does not migrate the app's API version.
+
+- Contact lookup sends one exact-email search with `per_page=1`. A valid empty
+  list means not found; a missing/malformed list means tool failure. The company
+  count is the number of embedded company references, not an exhaustive total.
+- Conversation search requires a contact email or state. It reads one page,
+  capped at 50 results; multiple filters use AND. POST searches remain read-only
+  operations, not durable mutations.
+- Detail requests plain text and retains the opening message plus comment/note
+  entries from the first 50 returned parts, in vendor order. Bodies are clipped
+  to 6,000 characters. This is not a complete history export: Intercom also caps
+  native retrieval at its 500 most recent parts.
+- Reply visibility remains an explicit required JSON boolean. An internal note
+  sends `message_type=note`; a customer reply sends `comment`. Malformed or
+  mismatched response IDs fail rather than borrowing the requested ID as proof
+  of success. Validation failure never authorizes a repeat send.
+- Known request choices use enums; native response extensions remain readable.
+  Explicit null fields stay present in projections. Vendor error text is not
+  echoed to the agent. No additional per-record I/O or retry loop is introduced.
+
+Version-matched authorities: [contact search](https://developers.intercom.com/docs/references/2.11/rest-api/api.intercom.io/contacts/searchcontacts),
+[conversation search](https://developers.intercom.com/docs/references/2.11/rest-api/api.intercom.io/conversations/searchconversations),
+[retrieval](https://developers.intercom.com/docs/references/2.11/rest-api/api.intercom.io/conversations/retrieveconversation),
+and [replies](https://developers.intercom.com/docs/references/2.11/rest-api/api.intercom.io/conversations/replyconversation).
+Local contract and guarded-client checks do not prove live Intercom acceptance.
+
+### GitHub request and response contracts
+
+All seven curated GitHub tools use vendor-owned request, response and result
+models. SOR types do not enter this boundary. Responses validate consumed fields;
+unrelated additions and native open vocabulary remain compatible.
+
+- Search/list operations read one page, at most 50 records. Issue detail reads
+  the first 20 comments; pull request detail reads the first 50 files and first
+  20 reviews. Bodies are clipped to 6,000 characters. These are bounded views,
+  not exhaustive histories. Search does not currently project GitHub's
+  `incomplete_results` indicator; its total is not proof of exhaustive coverage.
+- The existing `approved` result means an approval appears in the returned
+  review page. It does not evaluate the latest review per reviewer, branch
+  protection, required checks or whether merging is permitted.
+- Native label names are preserved for both string and object label forms.
+  Nullable users remain null authors; absent optional pages remain absent.
+  Explicit null dates/body/mergeability remain visible. Dates are not rewritten.
+- Missing/malformed lists or identities fail instead of becoming empty results
+  or null-filled successes. Requested issue/pull numbers must match the reply.
+  Fixed error codes/text replace raw vendor diagnostics. A malformed mutation
+  reply never authorizes a repeat send.
+- Request field order, omission, single-write authority and public defaults are
+  unchanged. IDs/limits require JSON integers; existing boolean arguments require
+  JSON booleans. The legacy create-PR `base_branch=main` default remains; this is
+  not automatic repository-default-branch discovery.
+
+The current adapter sends no API-version header. GitHub's documented unversioned
+default is `2022-11-28`; the consumed contracts were checked against its
+[version-specific OpenAPI schema](https://github.com/github/rest-api-description/blob/main/descriptions/api.github.com/api.github.com.2022-11-28.json).
+No upgrade to `2026-03-10` was performed. An explicit pin/version migration remains
+separate work; see [GitHub API versioning](https://docs.github.com/en/rest/about-the-rest-api/api-versions).
+Local contract/guarded-client probes and public examples are not live acceptance
+with an organization's configured GitHub installation.
+
+### GitLab request and response contracts
+
+The six curated GitLab tools use vendor-owned REST v4 models, separate from SOR
+types. Consumed nested records, lists, resource IDs and predicates are validated;
+raw vendor diagnostics are not echoed. The instance URL still supplies the
+origin and `/api/v4` prefix; no self-managed GitLab release is inferred or pinned.
+
+- Issue creation resolves up to 20 supplied usernames through exact username
+  lookup before writing. Repeated names resolve once, case-insensitively. Missing,
+  ambiguous or malformed lookup results refuse creation; no partial assignment
+  or fallback unassigned issue is sent. This is an Eylo lookup bound, not a
+  vendor tier limit. A single assignee uses `assignee_id`; multiple use
+  `assignee_ids` and require the vendor's corresponding tier support.
+- Search sends its optional assignee as the documented array query parameter.
+  Issue/MR lists remain one page, at most 100 records. Issue detail filters system
+  activity from the first 20 notes ordered oldest-first; it does not fetch the
+  complete conversation. Descriptions/comment bodies retain the 6,000-character
+  clipping bound. Dates and explicit nulls are preserved.
+- Detail replies must match the requested IID and, for numeric project inputs,
+  project ID. A created comment uses its returned issue identity after checking
+  it, rather than treating the requested IID as confirmation of success.
+  Missing change lists fail; they do not become zero-change summaries.
+- Merge-request detail retains the existing v4 `/changes` endpoint, deprecated
+  in GitLab 15.7 and planned for removal in v5. No migration to paginated `/diffs`
+  is implied. The existing result does not project native `overflow`; file count
+  reflects the returned changes, not proof of exhaustive diff coverage. Merge
+  status/conflict data is not an approval or merge-permission decision.
+- Creation without assignees and comment writes preserve their existing body
+  ordering/omission and single durable write. Username resolution deliberately
+  replaces the unsupported create-body `assignee_usernames` field. Validation of
+  a bad post-write response never authorizes a second send.
+
+Authorities: [issues](https://docs.gitlab.com/api/issues/),
+[users](https://docs.gitlab.com/api/users/), [notes](https://docs.gitlab.com/api/notes/),
+[merge requests](https://docs.gitlab.com/api/merge_requests/), and
+[v4 deprecations](https://docs.gitlab.com/api/rest/deprecations/).
+Local probes and public examples are not live GitLab acceptance. The named-project
+transport limitation below remains open.
+
 ## Known transport limitation
 
 GitLab project paths such as `group/project` currently fail with

@@ -26,6 +26,27 @@ Catalog membership means the implementation carries a configuration and
 adapter path. It does not mean every vendor has been live-tested in the current
 deployment. Verification state is per organization configuration.
 
+### Murf WebSocket contracts
+
+Murf's adapter uses private typed handshake, voice, buffering, text and clear
+messages. Buffer size is 40–160; buffer delay is 0–1000 ms. The configured values
+are sent in a WebSocket settings command, not URL parameters. Variation is 0–5;
+the voice pipeline accepts PCM/WAV. See the
+[native reference](https://murf.ai/api/docs/api-reference/text-to-speech/stream-input).
+
+The existing endpoint and `voiceId` spelling are retained: Murf's
+[quickstart](https://murf.ai/api/docs/text-to-speech/web-sockets) uses `voiceId`
+while its generated AsyncAPI says `voice_id`. No model migration is implicit.
+Each turn keeps one native context until flush; a matching final event completes
+the turn. Interruption invalidates that context before sending clear, so late
+audio cannot enter the next turn. The manager consumes the bounded WebSocket
+buffer directly, without a detached receiver or an adapter-level dropping queue.
+Malformed frames, missing active-context identity, invalid PCM16/WAV framing and
+unexpected socket closure fail the turn without logging raw content. WAV headers
+are parsed incrementally; only mono PCM16 matching the configured rate is accepted.
+Local contract probes cover these paths. Native endpoint/model acceptance and
+deployed voice QA remain open in the [typing plan](../plans/python-typing.md).
+
 ### Typed retrieval configuration
 
 Embedding and reranking API schemas expose their provider enums and existing
