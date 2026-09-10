@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from enum import StrEnum
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict, Field, InstanceOf
+from pydantic.json_schema import SkipJsonSchema
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -44,30 +46,29 @@ from .services import (
     snapshot_objects,
 )
 
+SOR_SYNC_DEFAULT_MAX_ATTEMPTS = 3
+SOR_SYNC_MAX_ATTEMPTS = 10
+SOR_TOMBSTONE_BATCH_MAX = 1_000
 
-@dataclass(frozen=True, slots=True)
-class SorSyncCounts:
+
+class SorSyncFailureCode(StrEnum):
+    """Source-generation failures owned by Eylo, not vendor error codes."""
+
+    DEPENDENCY_FAILED = "DEPENDENCY_FAILED"
+    GENERATION_INCOMPLETE = "GENERATION_INCOMPLETE"
+    STREAM_DEGRADED = "STREAM_DEGRADED"
+
+
+class SorSyncCounts(BaseModel):
     """Bounded counters committed with a sync page or terminal run."""
 
-    added: int = 0
-    updated: int = 0
-    tombstoned: int = 0
-    unchanged: int = 0
-    rejected: int = 0
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
-    def __post_init__(self) -> None:
-        if (
-            min(
-                self.added,
-                self.updated,
-                self.tombstoned,
-                self.unchanged,
-                self.rejected,
-            )
-            < 0
-        ):
-            raise ValueError("SOR sync counts cannot be negative.")
-
+    added: int = Field(default=0, ge=0)
+    updated: int = Field(default=0, ge=0)
+    tombstoned: int = Field(default=0, ge=0)
+    unchanged: int = Field(default=0, ge=0)
+    rejected: int = Field(default=0, ge=0)
     def add(self, other: "SorSyncCounts") -> "SorSyncCounts":
         return SorSyncCounts(
             added=self.added + other.added,
@@ -92,21 +93,29 @@ class SorSyncCounts:
         )
 
 
-@dataclass(frozen=True, slots=True)
-class SorStreamRunContext:
-    """Locked DB state required to commit one fetched page."""
+class SorStreamRunContext(BaseModel):
+    """Locked rows for page commits; retain identity and exclude snapshots."""
 
-    source: SorSourceModel
-    stream: SorSourceStreamModel
-    run: SorSyncRunModel
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+    source: SkipJsonSchema[InstanceOf[SorSourceModel]] = Field(exclude=True, repr=False)
+    stream: SkipJsonSchema[InstanceOf[SorSourceStreamModel]] = Field(
+        exclude=True, repr=False
+    )
+    run: SkipJsonSchema[InstanceOf[SorSyncRunModel]] = Field(exclude=True, repr=False)
 
 
-@dataclass(frozen=True, slots=True)
-class SorSyncGenerationPlan:
-    """One committed source generation plus every ordered stream intent."""
+class SorSyncGenerationPlan(BaseModel):
+    """Generation and ordered intent rows remain transaction-owned, not JSON."""
 
-    generation: SorSyncGenerationModel
-    runs: tuple[SorSyncRunModel, ...]
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+    generation: SkipJsonSchema[InstanceOf[SorSyncGenerationModel]] = Field(
+        exclude=True, repr=False
+    )
+    runs: SkipJsonSchema[tuple[InstanceOf[SorSyncRunModel], ...]] = Field(
+        exclude=True, repr=False
+    )
 
     @property
     def ready_run_ids(self) -> tuple[UUID, ...]:
@@ -323,7 +332,7 @@ class SorSyncRunService:
         source_id: UUID,
         stream_ids: Sequence[UUID],
         kind: SorSyncRunKind,
-        max_attempts: int = 3,
+        max_attempts: int = SOR_SYNC_DEFAULT_MAX_ATTEMPTS,
     ) -> SorSyncGenerationPlan:
         """Persist one source-level DAG before any root run can be spawned."""
         self._validate_run_request(kind=kind, max_attempts=max_attempts)
@@ -425,7 +434,7 @@ class SorSyncRunService:
         source_id: UUID,
         stream_id: UUID,
         kind: SorSyncRunKind,
-        max_attempts: int = 3,
+        max_attempts: int = SOR_SYNC_DEFAULT_MAX_ATTEMPTS,
     ) -> tuple[SorSyncRunModel, bool]:
         """Create one serialized stream run or return the already-active run."""
         self._validate_run_request(kind=kind, max_attempts=max_attempts)
@@ -467,7 +476,7 @@ class SorSyncRunService:
             SorSyncRunKind.RECONCILIATION,
         }:
             raise SorConfigurationError("This sync run kind is not stream-based.")
-        if not 1 <= max_attempts <= 10:
+        if not 1 <= max_attempts <= SOR_SYNC_MAX_ATTEMPTS:
             raise SorConfigurationError("Sync max attempts must be between 1 and 10.")
 
     async def mark_generation_started(
@@ -534,6 +543,7 @@ class SorSyncRunService:
             )
         }
         runs_by_key: dict[str, SorSyncRunModel] = {}
+        streams_by_key: dict[str, SorSourceStreamModel] = {}
         for run in runs:
             if run.stream_id is None or run.stream_id not in streams:
                 raise SorConflictError(
@@ -543,6 +553,7 @@ class SorSyncRunService:
             if key in runs_by_key:
                 raise SorConflictError("SOR sync generation repeats a source stream.")
             runs_by_key[key] = run
+            streams_by_key[key] = streams[run.stream_id]
 
         now = datetime.now(timezone.utc)
         released: list[UUID] = []
@@ -552,7 +563,7 @@ class SorSyncRunService:
             for key, run in runs_by_key.items():
                 if run.state is not SorWorkState.WAITING:
                     continue
-                stream = streams[run.stream_id]
+                stream = streams_by_key[key]
                 dependencies = [
                     runs_by_key[dependency]
                     for dependency in stream.depends_on
@@ -563,14 +574,14 @@ class SorSyncRunService:
                     for dependency in dependencies
                 ):
                     run.state = SorWorkState.FAILED
-                    run.safe_error_code = "DEPENDENCY_FAILED"
+                    run.safe_error_code = SorSyncFailureCode.DEPENDENCY_FAILED
                     run.safe_error_summary = (
                         f"A required stream failed before {key} could run."
                     )
                     run.finished_at = now
                     stream.state = SorStreamState.DEGRADED
                     stream.last_failure_at = now
-                    stream.last_error_code = "DEPENDENCY_FAILED"
+                    stream.last_error_code = SorSyncFailureCode.DEPENDENCY_FAILED
                     changed = True
                 elif all(
                     dependency.state is SorWorkState.SUCCEEDED
@@ -593,7 +604,7 @@ class SorSyncRunService:
             generation.state = SorWorkState.FAILED if failed else SorWorkState.SUCCEEDED
             generation.finished_at = now
             if failed:
-                generation.safe_error_code = "GENERATION_INCOMPLETE"
+                generation.safe_error_code = SorSyncFailureCode.GENERATION_INCOMPLETE
                 generation.safe_error_summary = (
                     "One or more source streams did not synchronize successfully."
                 )
@@ -613,7 +624,9 @@ class SorSyncRunService:
                             if failed
                             else SorSourceTransition.BOOTSTRAP_SUCCEEDED
                         ),
-                        error_code=("GENERATION_INCOMPLETE" if failed else None),
+                        error_code=(
+                            SorSyncFailureCode.GENERATION_INCOMPLETE if failed else None
+                        ),
                         error_summary=(
                             "One or more source streams did not synchronize "
                             "successfully."
@@ -778,7 +791,9 @@ class SorSyncRunService:
                     organization_id=context.source.organization_id,
                     source_id=context.source.id,
                     transition=SorSourceTransition.SYNC_FAILED,
-                    error_code=degraded.last_error_code or "STREAM_DEGRADED",
+                    error_code=(
+                        degraded.last_error_code or SorSyncFailureCode.STREAM_DEGRADED
+                    ),
                     error_summary="One or more SOR source streams are degraded.",
                 )
         register_sync_completed(
@@ -808,7 +823,7 @@ class SorSyncRunService:
             return 0
         if context.stream.strategy is not SorChangeStrategy.FULL_RECONCILE:
             return 0
-        if isinstance(limit, bool) or not 1 <= limit <= 1_000:
+        if isinstance(limit, bool) or not 1 <= limit <= SOR_TOMBSTONE_BATCH_MAX:
             raise ValueError("SOR tombstone batch limit must be between 1 and 1000.")
         scan_started_at = context.run.started_at
         if scan_started_at is None:

@@ -104,6 +104,13 @@ class ConfluenceStream(StrEnum):
     ATTACHMENTS = "attachments"
 
 
+class _PageUpdateMode(StrEnum):
+    """How one existing page's content is changed by a document command."""
+
+    UPDATE = "update"
+    APPEND = "append"
+
+
 _STREAM_ENTITY = {
     ConfluenceStream.SPACES: KnowledgeEntityKind.SPACE,
     ConfluenceStream.AUTHORS: KnowledgeEntityKind.AUTHOR,
@@ -219,7 +226,10 @@ CONFLUENCE_MANIFEST = SorAdapterCapabilityManifest(
         ConfluenceStream.ATTACHMENTS: (READ_ATTACHMENT_SCOPE,),
     },
     tool_required_scopes={tool_name: (WRITE_PAGE_SCOPE,) for tool_name in _WRITE_TOOLS},
-    tool_streams=_TOOL_STREAMS,
+    tool_streams={
+        tool.value: frozenset(stream.value for stream in streams)
+        for tool, streams in _TOOL_STREAMS.items()
+    },
     mutation_result_streams={
         tool_name: ConfluenceStream.PAGES for tool_name in _WRITE_TOOLS
     },
@@ -399,18 +409,17 @@ class ConfluenceKnowledgeAdapter:
                 "The Confluence source selects no streams.",
             )
         streams = {stream.key: stream for stream in CONFLUENCE_MANIFEST.streams}
+        selected_streams = tuple(
+            _require_stream(key, selected=self._context.selected_objects)
+            for key in self._context.selected_objects
+        )
         objects = tuple(
             SorDiscoveredObject(
                 key=stream_key,
-                label=streams[
-                    _require_stream(
-                        stream_key,
-                        selected=self._context.selected_objects,
-                    )
-                ].label,
+                label=streams[stream_key].label,
                 fields=_SCHEMA_FIELDS[stream_key],
             )
-            for stream_key in self._context.selected_objects
+            for stream_key in selected_streams
         )
         return SorDiscoveredSchema(
             objects=objects,
@@ -589,13 +598,18 @@ class ConfluenceKnowledgeAdapter:
                 SorVendorErrorCode.VENDOR_TOOL_UNSUPPORTED,
                 "This Confluence adapter does not execute the requested document action.",
             )
-        if command.tool_name == KnowledgeToolName.CREATE:
+        tool_name = KnowledgeToolName(command.tool_name)
+        if tool_name is KnowledgeToolName.CREATE:
             return await self._create_page(command)
         target_id = _required_target(command)
         return await self._replace_page(
             target_id,
             command,
-            append=command.tool_name == KnowledgeToolName.APPEND,
+            mode=(
+                _PageUpdateMode.APPEND
+                if tool_name is KnowledgeToolName.APPEND
+                else _PageUpdateMode.UPDATE
+            ),
         )
 
     def normalize_space(
@@ -986,7 +1000,7 @@ class ConfluenceKnowledgeAdapter:
     async def _read_nested(
         self,
         *,
-        stream_key: str,
+        stream_key: ConfluenceStream,
         cursor: str | None,
         limit: int,
     ) -> SorRecordPage:
@@ -1084,7 +1098,7 @@ class ConfluenceKnowledgeAdapter:
     async def _read_children(
         self,
         *,
-        stream_key: str,
+        stream_key: ConfluenceStream,
         page_id: str,
         cursor: str | None,
         limit: int,
@@ -1106,7 +1120,7 @@ class ConfluenceKnowledgeAdapter:
 
     def _external_nested(
         self,
-        stream_key: str,
+        stream_key: ConfluenceStream,
         page_id: str,
         row: Mapping[str, object],
     ) -> SorExternalRecord:
@@ -1380,7 +1394,7 @@ class ConfluenceKnowledgeAdapter:
         page_id: str,
         command: SorCommandRequest,
         *,
-        append: bool,
+        mode: _PageUpdateMode,
     ) -> SorCommandResult:
         current_response = await self._request(
             f"/pages/{page_id}",
@@ -1399,30 +1413,32 @@ class ConfluenceKnowledgeAdapter:
                 SorVendorErrorCode.VENDOR_SOURCE_CONFLICT,
                 "The Confluence page changed after the Agent read it.",
             )
-        if append:
+        if mode is _PageUpdateMode.APPEND:
             if not isinstance(command.payload, KnowledgeTextCommandPayload):
                 raise _invalid_command("Confluence append payload is invalid.")
             requested_title = None
-            requested_text = command.payload.normalized_text
+            payload: KnowledgeTextCommandPayload | KnowledgeUpdateCommandPayload = (
+                command.payload
+            )
         else:
             if not isinstance(command.payload, KnowledgeUpdateCommandPayload):
                 raise _invalid_command("Confluence update payload is invalid.")
             requested_title = command.payload.title
-            requested_text = command.payload.normalized_text
+            payload = command.payload
         current_body = _storage_body(current)
         current_title = _required_string(
             current.get("title"),
             field="Confluence page title",
         )
-        if append:
+        if isinstance(payload, KnowledgeTextCommandPayload):
             storage_body = _bounded_storage_body(
-                current_body + _plain_text_storage(requested_text),
+                current_body + _plain_text_storage(payload.normalized_text),
                 response=False,
             )
-        elif requested_text is None:
+        elif payload.normalized_text is None:
             storage_body = current_body
         else:
-            storage_body = _plain_text_storage(requested_text)
+            storage_body = _plain_text_storage(payload.normalized_text)
         response = await self._request(
             f"/pages/{page_id}",
             method="PUT",
@@ -1966,13 +1982,13 @@ def _required_target(command: SorCommandRequest) -> str:
     return _identifier(command.target_external_id)
 
 
-def _require_stream(value: str, *, selected: tuple[str, ...]) -> str:
+def _require_stream(value: str, *, selected: tuple[str, ...]) -> ConfluenceStream:
     if value not in _STREAM_ENTITY or value not in selected:
         raise _invalid_operation(
             SorVendorErrorCode.VENDOR_STREAM_UNSUPPORTED,
             "The requested Confluence stream is not selected for this source.",
         )
-    return value
+    return ConfluenceStream(value)
 
 
 def _body_page_id(value: str) -> str:

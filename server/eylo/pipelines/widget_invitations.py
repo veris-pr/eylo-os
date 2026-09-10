@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from urllib.parse import quote, urlparse
 from uuid import UUID
+
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.config import settings
 from eylo.common.database import start_transaction
@@ -36,20 +38,34 @@ from eylo.modules.templates.domain import TemplateConsumerKind
 from eylo.pipelines.agents import build_executable_agent_resolver
 
 
-@dataclass(frozen=True, slots=True)
-class IssuedWidgetInvitation:
-    invitation: WidgetInvitationModel
-    invitation_url: str
+class IssuedWidgetInvitation(BaseModel):
+    """Live issuance result; expose bearer URL only through explicit projection."""
+
+    model_config = ConfigDict(
+        frozen=True,
+        strict=True,
+        extra="forbid",
+        arbitrary_types_allowed=True,
+        hide_input_in_errors=True,
+    )
+
+    invitation: WidgetInvitationModel = Field(exclude=True, repr=False)
+    invitation_url: str = Field(exclude=True, repr=False, min_length=1)
     warning_codes: tuple[str, ...]
 
 
-@dataclass(frozen=True, slots=True)
-class ExchangedWidgetInvitation:
+class ExchangedWidgetInvitation(BaseModel):
+    """Bounded session result without bearer credentials in incidental snapshots."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
     organization_id: UUID
     contact_id: UUID
     conversation_id: UUID
-    session_token: str
-    session_expires_at: datetime
+    session_token: str = Field(exclude=True, repr=False, min_length=1)
+    session_expires_at: AwareDatetime
 
 
 async def issue_widget_invitation(
@@ -200,7 +216,7 @@ async def _load_existing_exchange(
     invitation: WidgetInvitationModel,
     *,
     now: datetime,
-    db,
+    db: AsyncSession,
 ) -> ExchangedWidgetInvitation:
     if invitation.session_id is None or invitation.conversation_id is None:
         raise WidgetInvitationUnavailable

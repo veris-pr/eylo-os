@@ -12,7 +12,7 @@ from uuid import UUID
 import arrow
 from fastapi import APIRouter, WebSocket, status
 from fastapi.websockets import WebSocketState
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 from starlette.websockets import WebSocketDisconnect
 from uuid_utils import uuid7
 
@@ -30,6 +30,7 @@ from eylo.pipelines.websocket.schemas import (
     WSSessionState,
     WSSessionType,
     WsEventAction,
+    WsRequestEvent,
     WsResponse,
 )
 
@@ -56,6 +57,30 @@ _CONVERSATION_SCOPED_PUBSUB_EVENTS = frozenset(
         WsEventAction.AGENT_RESPONSE_COMPLETE,
     }
 )
+
+
+class ContactDelivery(BaseModel):
+    """Decoded pubsub event with explicit contact and conversation authority."""
+
+    model_config = ConfigDict(frozen=True, hide_input_in_errors=True)
+
+    contact_id: UUID
+    organization_id: UUID
+    conversation_id: UUID | None = None
+    kind: WsEventAction
+    payload: dict[str, JsonValue] = Field(repr=False)
+
+    @model_validator(mode="after")
+    def require_conversation_authority(self) -> "ContactDelivery":
+        if (
+            self.conversation_id is None
+            and self.kind in _CONVERSATION_SCOPED_PUBSUB_EVENTS
+        ):
+            raise ValueError(
+                "Conversation-scoped delivery requires conversation authority."
+            )
+        return self
+
 
 class WSPubSubManager:
     def __init__(self, default_channel: str):
@@ -348,23 +373,16 @@ class WsConnectionManager:
                         logger.debug("WebSocket pubsub message received")
 
                         try:
-                            data = message["data"].decode("utf-8")
-                            data = json.loads(data)
-
-                            contact_id = UUID(data["contact_id"])
-                            organization_id = UUID(data["organization_id"])
-                            payload = data["payload"]
-                            kind = WsEventAction(data["kind"])
-                            conversation_id = _pubsub_conversation_id(
-                                data,
-                                kind=kind,
-                            )
+                            raw = message["data"]
+                            if not isinstance(raw, (str, bytes, bytearray)):
+                                raise ValueError("Contact pubsub requires JSON text.")
+                            delivery = ContactDelivery.model_validate_json(raw)
                             await self._send_response_to_contact(
-                                contact_id=contact_id,
-                                organization_id=organization_id,
-                                conversation_id=conversation_id,
-                                payload=payload,
-                                kind=kind,
+                                contact_id=delivery.contact_id,
+                                organization_id=delivery.organization_id,
+                                conversation_id=delivery.conversation_id,
+                                payload=delivery.payload,
+                                kind=delivery.kind,
                             )
 
                         except (
@@ -639,18 +657,7 @@ class WsConnectionManager:
         *,
         expected_websocket: WebSocket | None = None,
     ) -> bool:
-        """Send a message to a WebSocket client with metrics tracking.
-
-        Args:
-            payload: The message payload to send
-            organization_id: Organization ID
-            session_id: Session ID
-            priority: Message priority (0-9, higher is more important)
-
-        Returns:
-            True if message sent successfully, False otherwise
-
-        """
+        """Return delivery success; failed sends clean up only the owned socket."""
         key = self._get_session_key(organization_id, session_id)
         websocket = self._active_connections.get(key)
         session_state = self.sessions.get(key)
@@ -796,6 +803,8 @@ class WsConnectionManager:
                 )
             return False
 
+        return False
+
     async def broadcast(
         self,
         payload: Union[str, dict, BaseModel, bytes],
@@ -911,18 +920,15 @@ class WsConnectionManager:
 
     async def validate_incoming_message(
         self,
-        message: Union[dict, bytes],
+        message: object,
         session_state: WSSessionState,
-    ):
+    ) -> WsRequestEvent | None:
+        """Rate-limit decoded text before event validation; audio has its own path."""
         # Update activity timestamp
         organization_id = session_state.organization_id
         session_id = session_state.session_id
         now = arrow.utcnow().timestamp()
         session_state.last_activity_at = now
-        # For binary messages, return directly
-        if isinstance(message, bytes):
-            return message
-
         # Check rate limits for text messages
         if not await self._check_rate_limit(organization_id, session_id):
             logger.warning(
@@ -943,7 +949,7 @@ class WsConnectionManager:
             )
             return None
 
-        return message
+        return WsRequestEvent.model_validate(message)
 
     async def reply_to_contact(
         self,
@@ -1070,19 +1076,3 @@ class WsConnectionManager:
                 payload=payload,
             ),
         )
-
-
-def _pubsub_conversation_id(
-    envelope: dict,
-    *,
-    kind: WsEventAction,
-) -> UUID | None:
-    """Resolve conversation authority from the canonical pubsub envelope."""
-    raw_conversation_id = envelope.get("conversation_id")
-    if raw_conversation_id is None:
-        if kind in _CONVERSATION_SCOPED_PUBSUB_EVENTS:
-            raise ValueError(
-                f"{kind.value} pubsub message is missing conversation authority."
-            )
-        return None
-    return UUID(str(raw_conversation_id))

@@ -31,6 +31,10 @@ class PlatformToolInputSchema(BaseModel):
 
     """
 
+    # Existing tool rows may contain Python names from model_dump(). Accept both
+    # forms on read; to_json_schema() always emits canonical JSON Schema keywords.
+    model_config = ConfigDict(populate_by_name=True)
+
     type: Literal["object"] = "object"
     properties: Dict[str, Any] = Field(
         default_factory=dict,

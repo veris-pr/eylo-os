@@ -37,6 +37,42 @@ All routes are mounted below `/api`.
 The console and CLI use the member API. The widget uses public session exchange,
 widget routes, WebSocket, and WebRTC rather than member credentials.
 
+Registration uses one auth-owned request contract; the auth service hashes its
+password once and explicitly builds the organization-owned member-create value.
+The request itself is not overwritten with the hash. Members without a stored
+password cannot authenticate by password. Resetting a missing member returns the
+existing invalid-reset response rather than dereferencing an absent ORM row.
+
+Signed invitation/reset tokens have separate frozen claim models: purpose,
+organization/member ID, email and expiry are required. The existing seven-day
+invite and one-hour reset lifetimes remain unchanged. Malformed claims use the
+same invalid-token path as failed signature/expiry checks. NumericDate encoding
+is retained; ordinary JSON datetime serialization is not used for JWT payloads.
+Signature verification alone does not require application claims to exist:
+see [PyJWT claim-presence guidance](https://pyjwt.readthedocs.io/en/stable/usage.html#requiring-presence-of-claims).
+
+Provider-config HTTP handlers accept the framework's general exception contract,
+then narrow to their registered error family. Missing capabilities retain their
+409 response; lifecycle validation retains 404/409/422 responses; unavailable
+encrypted credentials retain 503. Cipher errors expose neither secret material
+nor the underlying exception message in responses or logs. Unrelated exceptions
+are re-raised rather than translated into a provider error.
+
+## Analytics API contracts
+
+Member analytics uses `/{organization_id}/analytics/{entity}/created` for
+conversations, contacts, messages and members, plus
+`/{organization_id}/analytics/conversations/created-per-agent`. These paths
+are below `/api`. Optional `startDate` and `endDate` retain inclusive bounds;
+`timeslice` accepts `day`, `week` or `month` and defaults to `day`.
+
+The analytics domain owns these enums and frozen query/result models. SQL binds
+the time unit as a parameter and validates named aggregate columns before the
+read transaction closes. Responses preserve `count` and `date` (`YYYY-MM-DD`),
+with `agentId` on per-agent points. The generated OpenAPI contract now describes
+these response fields rather than an untyped list. Existing counting and
+organization-authorization behavior is unchanged.
+
 ## Runtime processes
 
 - `eylo.app` registers ORM models, pipeline extensions, and API-process
@@ -68,6 +104,18 @@ keys include ownership columns when a relationship must not cross tenants.
 Soft deletion preserves histories where product ownership requires it.
 
 ## Contract authorities
+
+Tool API schemas and native execution schemas share definition metadata, not
+mutable inherited fields with incompatible types. HTTP translation converts
+camel-case envelopes into `PlatformTool`; organization ownership comes from the
+authenticated route. Registered local tools use their code-owned schema. System
+tools cannot be created through the local-tool endpoint.
+
+Tool JSON columns retain JSON Schema keywords such as `$defs`, `oneOf` and
+`additionalProperties`. Native input schemas also accept Python field names from
+older stored rows; projection emits canonical keywords. This read compatibility
+does not reconstruct fields already removed from a stored definition. Tool patch
+conversion preserves omitted fields separately from explicit nulls.
 
 - Generated OpenAPI: HTTP paths and schemas.
 - Catalogs: supported provider identifiers and selectable fields.

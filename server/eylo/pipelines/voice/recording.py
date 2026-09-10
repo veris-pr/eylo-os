@@ -13,6 +13,7 @@ import logging
 import shutil
 import tempfile
 import wave
+from enum import StrEnum
 from pathlib import Path
 from uuid import UUID
 
@@ -47,6 +48,13 @@ _MULAW_ENCODINGS = {
     "audio/x-mulaw",
 }
 _PCM_SAMPLE_WIDTH = 2
+
+
+class RecordingCaptureFailure(StrEnum):
+    """Platform capture refusals; values preserve persisted operator messages."""
+
+    UNSUPPORTED_ENCODING = "Recording encoding is unsupported."
+    INCONSISTENT_OWNER = "Recording owner authority is inconsistent."
 
 
 def _normalize_encoding(encoding: str | None) -> str:
@@ -138,8 +146,8 @@ class AudioRecorder:
         self._agent_encoding = _normalize_encoding(agent_encoding)
         self._channels = channels
         unsupported_tracks = self._unsupported_tracks()
-        self._recording_failure = (
-            "Recording encoding is unsupported." if unsupported_tracks else None
+        self._recording_failure: RecordingCaptureFailure | None = (
+            RecordingCaptureFailure.UNSUPPORTED_ENCODING if unsupported_tracks else None
         )
         self._user_recording_enabled = not unsupported_tracks
         self._agent_recording_enabled = not unsupported_tracks
@@ -209,7 +217,7 @@ class AudioRecorder:
         self._user_sample_rate = sample_rate
         self._user_encoding = normalized_encoding
         if not _is_supported_recording_encoding(self._user_encoding):
-            self._mark_recording_failure("Recording encoding is unsupported.")
+            self._mark_recording_failure(RecordingCaptureFailure.UNSUPPORTED_ENCODING)
 
     def bind_voice_session(
         self,
@@ -227,7 +235,7 @@ class AudioRecorder:
             self._telephony_call_id is not None
             and self._telephony_call_id != telephony_call_id
         ):
-            self._mark_recording_failure("Recording owner authority is inconsistent.")
+            self._mark_recording_failure(RecordingCaptureFailure.INCONSISTENT_OWNER)
             return
         self._voice_session_id = voice_session_id
         self._telephony_call_id = telephony_call_id
@@ -260,7 +268,7 @@ class AudioRecorder:
 
         if self._recording_failure is not None:
             await self._record_filing_failure(
-                self._recording_failure,
+                self._recording_failure.value,
                 recording_id=UUID(str(uuid_utils.uuid7())),
             )
             self._cleanup_temp_files()
@@ -293,7 +301,7 @@ class AudioRecorder:
                 "user" if is_user else "agent",
                 self._organization_id,
             )
-            self._mark_recording_failure("Recording encoding is unsupported.")
+            self._mark_recording_failure(RecordingCaptureFailure.UNSUPPORTED_ENCODING)
             return
 
         with path.open("ab") as handle:
@@ -503,7 +511,7 @@ class AudioRecorder:
             if not _is_supported_recording_encoding(encoding)
         ]
 
-    def _mark_recording_failure(self, reason: str) -> None:
+    def _mark_recording_failure(self, reason: RecordingCaptureFailure) -> None:
         self._recording_failure = reason
         self._user_recording_enabled = False
         self._agent_recording_enabled = False

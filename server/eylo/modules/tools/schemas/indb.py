@@ -11,33 +11,38 @@ from eylo.modules.tools.models import ToolExecutionMode, ToolKind
 from eylo.modules.tools.schemas.platform import PlatformTool, PlatformToolInputSchema
 
 
-class ToolModelSchema(EyloBaseOrganizationModelSchema):
+class ToolDefinitionFields(BaseModel):
+    """Shared definition fields, without transport-specific tool schemas or ownership."""
+
     name: str = Field(..., description="Tool name")
-    slug: str = Field(..., description="Tool slug")
     kind: ToolKind = Field(..., description="Tool execution boundary")
     display_name: str = Field(..., description="Tool display name")
     description: str = Field(..., description="Tool description")
     mcp_server_id: Optional[UUID] = Field(None, description="MCP server ID")
-    mcp_server_revision: Optional[int] = None
     wire_id: Optional[str] = None
-    lifecycle: DefinitionLifecycle = DefinitionLifecycle.DRAFT
-    published_revision: Optional[int] = None
-    draft_version: int = 1
-    draft_dirty: bool = True
     execution_mode: ToolExecutionMode = ToolExecutionMode.AUTO
-
-    # Platform-native LLM tool configuration - vendor-agnostic
-    # Always stored as PlatformTool for type safety and consistency
-    llm_config: PlatformTool = Field(
-        ...,
-        description="LLM schema for the tool - platform-native format",
-    )
-
-    # Executor configuration for tool execution
     executor_config: Optional[dict] = Field(
         default_factory=dict, description="Executor schema for the tool"
     )
     output_schema: Optional[dict] = None
+
+
+class ToolHeaderFields(ToolDefinitionFields):
+    """Revision metadata shared by persisted definitions and operator responses."""
+
+    slug: str = Field(..., description="Tool slug")
+    mcp_server_revision: Optional[int] = None
+    lifecycle: DefinitionLifecycle = DefinitionLifecycle.DRAFT
+    published_revision: Optional[int] = None
+    draft_version: int = 1
+    draft_dirty: bool = True
+
+
+class ToolModelSchema(ToolHeaderFields, EyloBaseOrganizationModelSchema):
+    llm_config: PlatformTool = Field(
+        ...,
+        description="LLM schema for the tool - platform-native format",
+    )
 
     @field_validator("llm_config", mode="before")
     @classmethod
@@ -61,24 +66,11 @@ class ToolModelSchema(EyloBaseOrganizationModelSchema):
         return v
 
 
-class ToolCreateSchema(BaseModel):
-    name: str = Field(..., description="Tool name")
-    kind: ToolKind = Field(..., description="Tool execution boundary")
-    display_name: str = Field(..., description="Tool display name")
-    description: str = Field(..., description="Tool description")
-    mcp_server_id: Optional[UUID] = Field(None, description="MCP server ID")
-    wire_id: Optional[str] = None
-
-    # Platform-native LLM configuration - strongly typed
+class ToolCreateSchema(ToolDefinitionFields):
     llm_config: PlatformTool = Field(
         ..., description="LLM schema for the tool - platform-native format"
     )
 
-    executor_config: Optional[dict] = Field(
-        default_factory=dict, description="Executor schema for the tool"
-    )
-    output_schema: Optional[dict] = None
-    execution_mode: ToolExecutionMode = ToolExecutionMode.AUTO
     organization_id: UUID = Field(..., description="Organization ID for the tool")
 
     @field_validator("llm_config", mode="before")
@@ -98,22 +90,25 @@ class ToolCreateSchema(BaseModel):
         return v
 
 
-class ToolUpdateSchema(BaseModel):
+class ToolUpdateFields(BaseModel):
+    """Patch metadata; omitted fields must remain distinct from explicit nulls."""
+
     expected_draft_version: int
     name: Optional[str] = Field(None, description="Tool name")
     display_name: Optional[str] = Field(None, description="Tool display name")
     description: Optional[str] = Field(None, description="Tool description")
-
-    # Platform-native LLM configuration - strongly typed
-    llm_config: Optional[PlatformTool] = Field(
-        None, description="LLM schema for the tool - platform-native format"
-    )
 
     executor_config: Optional[dict] = Field(
         None, description="Executor schema for the tool"
     )
     output_schema: Optional[dict] = None
     execution_mode: Optional[ToolExecutionMode] = None
+
+
+class ToolUpdateSchema(ToolUpdateFields):
+    llm_config: Optional[PlatformTool] = Field(
+        None, description="LLM schema for the tool - platform-native format"
+    )
 
     @field_validator("llm_config", mode="before")
     @classmethod

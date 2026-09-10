@@ -8,6 +8,11 @@ from __future__ import annotations
 
 from typing import Optional
 
+from eylo.common.contracts.tool_metadata import (
+    ToolFeatureFlag,
+    ToolFunctionMetadata,
+    set_tool_metadata,
+)
 from eylo.modules.conversations.schemas.conversations import ConversationContext
 from eylo.modules.conversations.schemas.messages import MessageKind
 from eylo.modules.parallel_agents.schemas import (
@@ -71,5 +76,10 @@ async def spawn_task_fnf(
     return result.model_dump_json()
 
 
-spawn_task_fnf.__eylo_schema_model__ = SpawnTaskFnfInput
-spawn_task_fnf.__eylo_feature_flag__ = "ENABLE_SPAWN_TASK_FNF"
+set_tool_metadata(
+    spawn_task_fnf,
+    ToolFunctionMetadata(
+        input_schema=SpawnTaskFnfInput,
+        feature_flag=ToolFeatureFlag.SPAWN_TASK_FNF,
+    ),
+)

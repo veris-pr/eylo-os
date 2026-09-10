@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 from uuid import UUID
 
 from absurd_sdk import AsyncTaskContext
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import and_, delete, or_, select, update
+from sqlalchemy.sql.elements import ColumnElement
 
 from eylo.absurd_work import TERMINAL_STATES, DurableState
 from eylo.common.contracts.memory import MemoryLevel, MemoryScope
@@ -61,15 +62,31 @@ WORK_POLL_SECONDS = 5.0
 _DeleteObject = Callable[[StorageLocator], Awaitable[bool]]
 
 
-@dataclass(frozen=True, slots=True)
-class _BoundWork:
+class _BoundWork(BaseModel):
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
     state: DurableState
 
 
-@dataclass(frozen=True, slots=True)
-class _RecordingObjects:
+class _RecordingObjects(BaseModel):
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
     recording_id: UUID
     locators: tuple[StorageLocator, ...]
+
+
+def _call_children_predicate(
+    model: type[VoiceSessionModel] | type[VoiceRecordingModel],
+    *,
+    organization_id: UUID,
+    call_id: UUID,
+    conversation_id: UUID | None,
+) -> ColumnElement[bool]:
+    """Find candidate children within the org; null is never a conversation scope."""
+    ownership = model.telephony_call_id == call_id
+    if conversation_id is not None:
+        ownership = or_(ownership, model.conversation_id == conversation_id)
+    return and_(model.organization_id == organization_id, ownership)
 
 
 class _OwnershipConflict(Exception):
@@ -262,18 +279,15 @@ async def _load_bound_work(
         if call is None:
             return (), ()
         recordings = tuple(
-            _BoundWork(row.state)
+            _BoundWork(state=row.state)
             for row in (
                 await session.scalars(
                     select(VoiceRecordingModel).where(
-                        VoiceRecordingModel.organization_id == organization_id,
-                        or_(
-                            VoiceRecordingModel.telephony_call_id == call_id,
-                            and_(
-                                call.conversation_id is not None,
-                                VoiceRecordingModel.conversation_id
-                                == call.conversation_id,
-                            ),
+                        _call_children_predicate(
+                            VoiceRecordingModel,
+                            organization_id=organization_id,
+                            call_id=call_id,
+                            conversation_id=call.conversation_id,
                         ),
                     )
                 )
@@ -282,7 +296,7 @@ async def _load_bound_work(
         if call.conversation_id is None:
             return recordings, ()
         memory_jobs = tuple(
-            _BoundWork(row.state)
+            _BoundWork(state=row.state)
             for row in (
                 await session.scalars(
                     select(MemoryFormationJobModel).where(
@@ -293,12 +307,11 @@ async def _load_bound_work(
             ).all()
         )
         reconciliation_jobs = tuple(
-            _BoundWork(row.state)
+            _BoundWork(state=row.state)
             for row in (
                 await session.scalars(
                     select(MemoryReconciliationJobModel).where(
-                        MemoryReconciliationJobModel.organization_id
-                        == organization_id,
+                        MemoryReconciliationJobModel.organization_id == organization_id,
                         MemoryReconciliationJobModel.conversation_id
                         == call.conversation_id,
                     )
@@ -327,14 +340,11 @@ async def _load_recording_objects(
                 await session.scalars(
                     select(VoiceRecordingModel)
                     .where(
-                        VoiceRecordingModel.organization_id == organization_id,
-                        or_(
-                            VoiceRecordingModel.telephony_call_id == call_id,
-                            and_(
-                                call.conversation_id is not None,
-                                VoiceRecordingModel.conversation_id
-                                == call.conversation_id,
-                            ),
+                        _call_children_predicate(
+                            VoiceRecordingModel,
+                            organization_id=organization_id,
+                            call_id=call_id,
+                            conversation_id=call.conversation_id,
                         ),
                     )
                     .order_by(VoiceRecordingModel.id)
@@ -344,7 +354,7 @@ async def _load_recording_objects(
     targets = []
     for recording in rows:
         locators = await _recording_locators(recording)
-        targets.append(_RecordingObjects(recording.id, locators))
+        targets.append(_RecordingObjects(recording_id=recording.id, locators=locators))
     return tuple(targets)
 
 
@@ -413,13 +423,11 @@ async def _erase_call_graph(
                 await session.scalars(
                     select(VoiceSessionModel)
                     .where(
-                        VoiceSessionModel.organization_id == organization_id,
-                        or_(
-                            VoiceSessionModel.telephony_call_id == call_id,
-                            and_(
-                                conversation_id is not None,
-                                VoiceSessionModel.conversation_id == conversation_id,
-                            ),
+                        _call_children_predicate(
+                            VoiceSessionModel,
+                            organization_id=organization_id,
+                            call_id=call_id,
+                            conversation_id=conversation_id,
                         ),
                     )
                     .with_for_update()
@@ -431,13 +439,11 @@ async def _erase_call_graph(
                 await session.scalars(
                     select(VoiceRecordingModel)
                     .where(
-                        VoiceRecordingModel.organization_id == organization_id,
-                        or_(
-                            VoiceRecordingModel.telephony_call_id == call_id,
-                            and_(
-                                conversation_id is not None,
-                                VoiceRecordingModel.conversation_id == conversation_id,
-                            ),
+                        _call_children_predicate(
+                            VoiceRecordingModel,
+                            organization_id=organization_id,
+                            call_id=call_id,
+                            conversation_id=conversation_id,
                         ),
                     )
                     .with_for_update()

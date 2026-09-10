@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy import exists, select
+from sqlalchemy import SQLColumnExpression, exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.database import start_transaction
@@ -18,7 +18,10 @@ from eylo.pipelines.memory.dependency_references import (
     MemoryDependencyReferenceLookup,
 )
 
-_REFERENCE_COLUMNS = {
+_REFERENCE_COLUMNS: dict[
+    Capability,
+    tuple[SQLColumnExpression[UUID | None], SQLColumnExpression[UUID | None]],
+] = {
     Capability.LLM: (
         AgentsModel.llm_provider_config_id,
         AgentRevisionModel.llm_provider_config_id,

@@ -37,7 +37,10 @@ from eylo.pipelines.external_connections.credentials import (
     encrypt_connection_credentials,
 )
 from eylo.sockets.http.transport import SafeHttpTransport
-from eylo.sor.runtime.action_events import file_sor_connection_event
+from eylo.sor.runtime.action_events import (
+    SorConnectionEventType,
+    file_sor_connection_event,
+)
 from eylo.sor.runtime.catalog import get_sor_registry
 from eylo.sor.runtime.oauth_endpoints import (
     SorOAuthEndpointError,
@@ -797,7 +800,7 @@ async def _activate_connection(
             connection_id=context.connection_id,
             connection_revision=activated_connection.revision,
             event_sequence=f"connected:{activated_connection.revision}",
-            event_type="sor.connection.connected",
+            event_type=SorConnectionEventType.CONNECTED,
             occurred_at=activated_connection.updated_at,
             profile=connector.profile,
             vendor_key=context.vendor_key,
@@ -979,7 +982,7 @@ async def _revoke_initiated_connection(context: _AuthorizationContext) -> None:
                     connection_id=connection.id,
                     connection_revision=connection.revision,
                     event_sequence=f"revoked:{connection.revision}",
-                    event_type="sor.connection.revoked",
+                    event_type=SorConnectionEventType.REVOKED,
                     occurred_at=connection.updated_at,
                     profile=connector.profile,
                     vendor_key=context.vendor_key,

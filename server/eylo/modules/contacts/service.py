@@ -1,12 +1,11 @@
 """Application services for the `contacts` domain."""
 
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Literal, override
 from uuid import UUID, uuid4
 
-from pydantic import EmailStr
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -49,22 +48,28 @@ class ContactIdentifierKind(str, Enum):
     PHONE = "phone"
 
 
-@dataclass(frozen=True, slots=True)
-class ContactIdentity:
-    """Canonical identify-time values in their fixed priority order."""
+class ContactIdentity(BaseModel):
+    """Normalized lookup values; snapshots omit external identifiers and PII."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     organization_id: UUID
     contact_id: UUID | None = None
-    external_id: str | None = None
-    email: str | None = None
-    phone: str | None = None
+    external_id: str | None = Field(default=None, exclude=True, repr=False)
+    email: str | None = Field(default=None, exclude=True, repr=False)
+    phone: str | None = Field(default=None, exclude=True, repr=False)
 
 
-@dataclass(frozen=True, slots=True)
-class ContactResolution:
-    """Priority winner plus safe ambiguity facts for product presentation."""
+class ContactResolution(BaseModel):
+    """Priority winner plus safe ambiguity facts; snapshots omit contact data."""
 
-    contact: ContactInDb | None
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    contact: ContactInDb | None = Field(exclude=True, repr=False)
     matched_by: ContactIdentifierKind | None
     conflicting_identifiers: tuple[ContactIdentifierKind, ...] = ()
     created: bool = False

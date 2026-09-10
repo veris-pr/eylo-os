@@ -4,21 +4,25 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic.json_schema import SkipJsonSchema
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
-class ActionContext:
+class ActionContext(BaseModel):
     """What a handler is told about the run it is serving.
 
     Deliberately small. A handler that needs more should take it in its
     payload, where an operator can see it, rather than reaching for platform
     state the schedule never mentioned.
     """
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
     organization_id: UUID
     schedule_id: UUID
@@ -38,12 +42,20 @@ class ActionContext:
 ActionHandler = Callable[..., Awaitable[dict]]
 
 
-@dataclass(frozen=True)
-class ActionSpec:
+class AgentSchedulingAccess(StrEnum):
+    """Whether a registered action is exposed to model-driven scheduling."""
+
+    OPERATOR_ONLY = "operator_only"
+    AGENT_ALLOWED = "agent_allowed"
+
+
+class ActionSpec(BaseModel):
     """A handler, and which of its payload keys the platform owns."""
 
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
     name: str
-    handler: ActionHandler
+    handler: SkipJsonSchema[ActionHandler] = Field(exclude=True, repr=False)
 
     # Payload keys the *platform* fills from the caller's context, never the
     # caller. `conversation.reengage` needs a conversation id, and an agent
@@ -59,7 +71,7 @@ class ActionSpec:
     # Whether an agent may schedule this at all. Some actions are operator-only
     # — anything that spends money or reaches outside the organization — and
     # the default is the restrictive one.
-    agent_schedulable: bool = False
+    agent_access: AgentSchedulingAccess = AgentSchedulingAccess.OPERATOR_ONLY
 
 
 _HANDLERS: dict[str, ActionSpec] = {}
@@ -79,14 +91,14 @@ def schedulable(
     name: str,
     *,
     context_keys: tuple[str, ...] = (),
-    agent_schedulable: bool = False,
+    agent_access: AgentSchedulingAccess = AgentSchedulingAccess.OPERATOR_ONLY,
 ) -> Callable[[ActionHandler], ActionHandler]:
     """Register a handler under an action name.
 
     Names are namespaced by convention — `module.verb` — so a reader of a
     schedule row can tell which module owns it without a lookup.
 
-    `agent_schedulable` defaults to False. An action an agent can reach is one
+    `agent_access` defaults to OPERATOR_ONLY. An action an agent can reach is one
     a model can be persuaded to reach, so opting in is a decision the module
     author makes rather than one they get by omission.
     """
@@ -101,7 +113,7 @@ def schedulable(
             name=name,
             handler=handler,
             context_keys=context_keys,
-            agent_schedulable=agent_schedulable,
+            agent_access=agent_access,
         )
         return handler
 
@@ -115,7 +127,13 @@ def registered_actions() -> tuple[str, ...]:
 
 def agent_actions() -> tuple[str, ...]:
     """Actions an agent may schedule."""
-    return tuple(sorted(n for n, spec in _HANDLERS.items() if spec.agent_schedulable))
+    return tuple(
+        sorted(
+            name
+            for name, spec in _HANDLERS.items()
+            if spec.agent_access is AgentSchedulingAccess.AGENT_ALLOWED
+        )
+    )
 
 
 def action_spec(name: str) -> ActionSpec | None:

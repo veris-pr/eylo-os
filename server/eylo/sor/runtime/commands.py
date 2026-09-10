@@ -1241,7 +1241,7 @@ async def _project_and_complete(
             command=row,
             source=source,
             result_record_id=outcome.record_id,
-            projection=outcome.disposition.value,
+            projection=outcome.disposition,
             source_revision=record.source_revision,
         )
         if action_event_id is not None:

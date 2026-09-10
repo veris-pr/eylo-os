@@ -9,6 +9,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
 
+from eylo.common.contracts.tool_metadata import ToolFunctionMetadata, set_tool_metadata
 from eylo.sor.knowledge.contracts import KnowledgeToolName
 from eylo.sor.runtime.catalog import get_sor_registry
 from eylo.sor.runtime.command_payloads import command_payload_type
@@ -167,10 +168,13 @@ def _declaration_function(
 
     execute_through_sor_pipeline.__name__ = spec.name
     execute_through_sor_pipeline.__doc__ = _tool_description(spec)
-    execute_through_sor_pipeline.__eylo_schema_model__ = (  # type: ignore[attr-defined]
+    input_schema = (
         read_tool_input_model(spec)
         if spec.effect is SorToolEffect.READ
         else mutation_tool_input_model(profile=profile, spec=spec)
+    )
+    set_tool_metadata(
+        execute_through_sor_pipeline, ToolFunctionMetadata(input_schema=input_schema)
     )
     return execute_through_sor_pipeline
 

@@ -12,6 +12,10 @@ import logging
 import arrow
 
 from eylo.common.database import get_transaction, start_transaction
+from eylo.modules.conversations.constants import (
+    CONVERSATION_REENGAGE_ACTION,
+    CONVERSATION_SCHEDULE_CONTEXT_KEY,
+)
 from eylo.modules.conversations.schemas.message_content import UserMessageContent
 from eylo.modules.conversations.schemas.messages import (
     MessageContentKind,
@@ -22,17 +26,21 @@ from eylo.modules.conversations.services.messages import MessageService
 from eylo.modules.conversations.services.participants import (
     ConversationParticipantService,
 )
-from eylo.modules.scheduler.actions import ActionContext, schedulable
+from eylo.modules.scheduler.actions import (
+    ActionContext,
+    AgentSchedulingAccess,
+    schedulable,
+)
 
 logger = logging.getLogger(__name__)
 
 
 @schedulable(
-    "conversation.reengage",
+    CONVERSATION_REENGAGE_ACTION,
     # The platform fills this from the conversation the agent is in. An agent
     # that could name a conversation could name someone else's.
-    context_keys=("conversation_id",),
-    agent_schedulable=True,
+    context_keys=(CONVERSATION_SCHEDULE_CONTEXT_KEY,),
+    agent_access=AgentSchedulingAccess.AGENT_ALLOWED,
 )
 async def reengage(payload: dict, *, context: ActionContext) -> dict:
     """Restart a conversation by posting a message as if the contact sent it."""

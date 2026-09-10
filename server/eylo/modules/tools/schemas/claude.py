@@ -75,7 +75,7 @@ class ClaudeToolUsage(BaseModel):
 
 class ClaudeToolCallResponse(BaseModel):
     id: str
-    type: Literal["tool_result"]
+    type: str
     cache_control: Optional[Any]
     content: Union[str, Iterable[ClaudeTextBlock]]
     is_error: bool
@@ -83,7 +83,6 @@ class ClaudeToolCallResponse(BaseModel):
     role: Literal["assistant"]
     stop_reason: Optional[str]
     stop_sequence: Optional[str]
-    type: str
     usage: ClaudeToolUsage
 
 

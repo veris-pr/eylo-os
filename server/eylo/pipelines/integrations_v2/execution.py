@@ -11,12 +11,20 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from contextlib import nullcontext
-from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from pydantic import ConfigDict, JsonValue, TypeAdapter, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    TypeAdapter,
+    ValidationError,
+    field_serializer,
+    field_validator,
+)
 
 from eylo.common.database import current_transaction, start_transaction
 from eylo.events.py_events.emitter import emit_ephemeral
@@ -43,17 +51,31 @@ _ARGUMENTS = TypeAdapter(dict[str, JsonValue], config=ConfigDict(allow_inf_nan=F
 _RESULT = TypeAdapter(JsonValue, config=ConfigDict(allow_inf_nan=False))
 
 
-@dataclass(frozen=True, slots=True)
-class CuratedToolExecutionOutcome:
+class CuratedToolExecutionOutcome(BaseModel):
     """Safe content and metadata consumed by the conversation adapter."""
 
-    content: dict[str, JsonValue] = field(repr=False)
+    model_config = ConfigDict(
+        frozen=True,
+        strict=True,
+        extra="forbid",
+        allow_inf_nan=False,
+        hide_input_in_errors=True,
+    )
+
+    content: dict[str, JsonValue] = Field(repr=False)
     is_error: bool
     metadata: Mapping[str, JsonValue]
 
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "content", dict(self.content))
-        object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
+    @field_validator("metadata", mode="after")
+    @classmethod
+    def freeze_metadata(cls, value: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
+        return MappingProxyType(dict(value))
+
+    @field_serializer("metadata")
+    def serialize_metadata(
+        self, value: Mapping[str, JsonValue]
+    ) -> dict[str, JsonValue]:
+        return dict(value)
 
 
 async def execute_curated_tool(

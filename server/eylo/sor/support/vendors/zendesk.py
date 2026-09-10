@@ -296,8 +296,13 @@ ZENDESK_MANIFEST = SorAdapterCapabilityManifest(
     ),
     required_scopes={stream_key: (READ_SCOPE,) for stream_key in _STREAM_ENTITY},
     tool_required_scopes={name: (WRITE_SCOPE,) for name in _WRITE_TOOLS},
-    tool_streams=_TOOL_STREAMS,
-    mutation_result_streams=_MUTATION_RESULT_STREAMS,
+    tool_streams={
+        tool.value: frozenset(stream.value for stream in streams)
+        for tool, streams in _TOOL_STREAMS.items()
+    },
+    mutation_result_streams={
+        tool.value: stream.value for tool, stream in _MUTATION_RESULT_STREAMS.items()
+    },
     oauth=SorOAuthSpec(
         authorization_path="/oauth/authorizations/new",
         token_path="/oauth/tokens",
@@ -519,7 +524,9 @@ class ZendeskSupportAdapter:
         streams = {stream.key: stream for stream in ZENDESK_MANIFEST.streams}
         objects: list[SorDiscoveredObject] = []
         for stream_key in self._context.selected_objects:
-            _require_stream(stream_key, selected=self._context.selected_objects)
+            stream_key = _require_stream(
+                stream_key, selected=self._context.selected_objects
+            )
             fields = _SCHEMA_FIELDS[stream_key]
             if stream_key == ZendeskStream.TICKETS:
                 fields = (*fields, *custom_fields)
@@ -1211,7 +1218,7 @@ class ZendeskSupportAdapter:
     async def _read_reconcile_page(
         self,
         *,
-        stream_key: str,
+        stream_key: ZendeskStream,
         cursor: str | None,
         limit: int,
     ) -> SorRecordPage:
@@ -1848,7 +1855,7 @@ def _credential(credentials: Mapping[str, object], key: str) -> str:
     return value.strip()
 
 
-def _require_stream(stream_key: str, *, selected: Sequence[str]) -> str:
+def _require_stream(stream_key: str, *, selected: Sequence[str]) -> ZendeskStream:
     if stream_key not in _STREAM_ENTITY:
         raise SorVendorOperationError(
             SorVendorErrorCode.VENDOR_STREAM_UNSUPPORTED,
@@ -1861,7 +1868,7 @@ def _require_stream(stream_key: str, *, selected: Sequence[str]) -> str:
             "The requested Zendesk stream is not selected for this source.",
             recovery=SorRecoveryPolicy.TERMINAL,
         )
-    return stream_key
+    return ZendeskStream(stream_key)
 
 
 def _custom_ticket_field(row: Mapping[str, object]) -> SorDiscoveredField:

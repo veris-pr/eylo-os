@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
+from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
 from absurd_sdk import AsyncTaskContext, CancelledTask
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 
 from eylo.common.database import start_transaction
@@ -94,7 +96,56 @@ _NONTERMINAL_SYNC_STATES = (
     SorWorkState.RUNNING,
     SorWorkState.WAITING,
 )
-_TERMINAL_ENGINE_STATES = frozenset({"cancelled", "completed", "failed"})
+SOR_SYNC_RECOVERY_LIMIT = 100
+SOR_SYNC_RECOVERY_MAX_LIMIT = 1_000
+
+
+class _TerminalEngineState(StrEnum):
+    """Absurd terminal values interpreted at the SOR recovery boundary."""
+
+    CANCELLED = "cancelled"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class _SyncErrorCode(StrEnum):
+    DURABLE_EXECUTION_FAILED = "DURABLE_EXECUTION_FAILED"
+    DURABLE_RESULT_MISSING = "DURABLE_RESULT_MISSING"
+    CURSOR_AUTHENTICATION_FAILED = "CURSOR_AUTHENTICATION_FAILED"
+    SYNC_CONTRACT_INVALID = "SYNC_CONTRACT_INVALID"
+    SYNC_PROVIDER_FAILED = "SYNC_PROVIDER_FAILED"
+
+
+class _SyncFailure(BaseModel):
+    """Safe failure projection; recovery policy owns retry and reauth decisions."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+    code: str
+    summary: str
+    recovery: SorRecoveryPolicy
+
+
+class _SyncRecoveryCandidate(BaseModel):
+    """Detached identity only; the task binding is rechecked under the write lock."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", from_attributes=True
+    )
+
+    id: UUID
+    organization_id: UUID
+    absurd_task_id: UUID | None
+
+
+class _SyncRecoveryCounts(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid", validate_assignment=True)
+
+    checked: int = 0
+    failed: int = 0
+    cancelled: int = 0
+    raced: int = 0
+    errors: int = 0
 
 
 def register_sor_sync_workflow(runtime: PlatformDurableRuntime) -> None:
@@ -163,13 +214,16 @@ async def cancel_sor_sync_run(*, organization_id: UUID, run_id: UUID) -> bool:
     return cancelled
 
 
-async def reconcile_terminal_sor_sync_runs(*, limit: int = 100) -> dict[str, int]:
+async def reconcile_terminal_sor_sync_runs(
+    *, limit: int = SOR_SYNC_RECOVERY_LIMIT
+) -> dict[str, int]:
     """Converge nonterminal sync receipts whose exact Absurd task has stopped."""
-    if isinstance(limit, bool) or not 1 <= limit <= 1_000:
+    if isinstance(limit, bool) or not 1 <= limit <= SOR_SYNC_RECOVERY_MAX_LIMIT:
         raise ValueError("SOR sync reconciliation limit must be between 1 and 1000.")
     async with start_transaction(ro=True) as session:
-        rows = list(
-            (
+        rows = tuple(
+            _SyncRecoveryCandidate.model_validate(row)
+            for row in (
                 await session.execute(
                     select(
                         SorSyncRunModel.id,
@@ -187,13 +241,7 @@ async def reconcile_terminal_sor_sync_runs(*, limit: int = 100) -> dict[str, int
             ).all()
         )
 
-    counts = {
-        "checked": 0,
-        "failed": 0,
-        "cancelled": 0,
-        "raced": 0,
-        "errors": 0,
-    }
+    counts = _SyncRecoveryCounts()
     runtime = PlatformDurableRuntime()
     try:
         for candidate in rows:
@@ -203,16 +251,21 @@ async def reconcile_terminal_sor_sync_runs(*, limit: int = 100) -> dict[str, int
             try:
                 engine_state = await runtime.task_state(task_id)
             except Exception as error:  # noqa: BLE001 - one task must not block others
-                counts["errors"] += 1
+                counts.errors += 1
                 logger.error(
                     "Could not inspect SOR sync task run_id=%s error_type=%s",
                     candidate.id,
                     type(error).__name__,
                 )
                 continue
-            counts["checked"] += 1
-            if engine_state not in _TERMINAL_ENGINE_STATES:
+            counts.checked += 1
+            if engine_state is None:
                 continue
+            try:
+                terminal_state = _TerminalEngineState(engine_state)
+            except ValueError:
+                continue
+            failure = _engine_terminal_failure(terminal_state)
 
             try:
                 async with start_transaction() as session:
@@ -226,47 +279,46 @@ async def reconcile_terminal_sor_sync_runs(*, limit: int = 100) -> dict[str, int
                         raise SorWorkConflict(
                             "SOR sync task binding changed during reconciliation."
                         )
-                    if engine_state == "cancelled":
+                    if failure is None:
                         changed, _ = await work.cancel(
                             work_id=candidate.id,
                             organization_id=candidate.organization_id,
                         )
                     else:
-                        code, summary = _engine_terminal_failure(engine_state)
                         row, changed = await work.converge_engine_failure(
                             work_id=candidate.id,
                             organization_id=candidate.organization_id,
                             task_id=task_id,
-                            error_code=code,
-                            error_summary=summary,
+                            error_code=failure.code,
+                            error_summary=failure.summary,
                         )
                     generation_id = row.generation_id
                 if not changed:
-                    counts["raced"] += 1
+                    counts.raced += 1
                     continue
-                if engine_state == "cancelled":
+                if failure is None:
                     await _advance_and_spawn(
                         organization_id=candidate.organization_id,
                         generation_id=generation_id,
                     )
-                    counts["cancelled"] += 1
+                    counts.cancelled += 1
                     continue
                 await _project_sync_failure(
                     organization_id=candidate.organization_id,
                     run_id=candidate.id,
-                    error_code=code,
+                    error_code=failure.code,
                     requires_reauthorization=False,
                 )
                 await _advance_and_spawn(
                     organization_id=candidate.organization_id,
                     generation_id=generation_id,
                 )
-                counts["failed"] += 1
+                counts.failed += 1
             except (SorWorkConflict, SorWorkNotFound):
-                counts["raced"] += 1
+                counts.raced += 1
     finally:
         await runtime.close()
-    return counts
+    return counts.model_dump()
 
 
 async def reconcile_unadvanced_sor_sync_generations(
@@ -661,7 +713,7 @@ async def _handle_failure(
     run_id: UUID,
     error: Exception,
 ) -> dict[str, Any]:
-    code, summary, permanent, reauthorization = _classify_failure(error)
+    failure = _classify_failure(error)
     async with start_transaction() as session:
         work = SorBoundWorkService(SOR_SYNC_WORK, session)
         row = await work.get(
@@ -674,9 +726,9 @@ async def _handle_failure(
         state = await work.fail(
             work_id=run_id,
             organization_id=organization_id,
-            error_code=code,
-            error_summary=summary,
-            permanent=permanent,
+            error_code=failure.code,
+            error_summary=failure.summary,
+            permanent=not failure.recovery.retryable,
         )
         generation_id = row.generation_id
         receipt = _receipt(row)
@@ -686,14 +738,14 @@ async def _handle_failure(
         await _project_sync_failure(
             organization_id=organization_id,
             run_id=run_id,
-            error_code=code,
-            requires_reauthorization=reauthorization,
+            error_code=failure.code,
+            requires_reauthorization=failure.recovery.requires_reauthorization,
         )
         await _advance_and_spawn(
             organization_id=organization_id,
             generation_id=generation_id,
         )
-    logger.warning("SOR sync failed id=%s code=%s", run_id, code)
+    logger.warning("SOR sync failed id=%s code=%s", run_id, failure.code)
     return receipt
 
 
@@ -722,43 +774,57 @@ async def _project_sync_failure(
         )
 
 
-def _engine_terminal_failure(engine_state: str) -> tuple[str, str]:
-    if engine_state == "failed":
-        return (
-            "DURABLE_EXECUTION_FAILED",
-            "Durable synchronization exhausted its execution attempts.",
+def _engine_terminal_failure(engine_state: _TerminalEngineState) -> _SyncFailure | None:
+    """A stopped engine without a product result fails, except explicit cancellation."""
+    if engine_state is _TerminalEngineState.CANCELLED:
+        return None
+    if engine_state is _TerminalEngineState.FAILED:
+        return _SyncFailure(
+            code=_SyncErrorCode.DURABLE_EXECUTION_FAILED,
+            summary="Durable synchronization exhausted its execution attempts.",
+            recovery=SorRecoveryPolicy.TERMINAL,
         )
-    return (
-        "DURABLE_RESULT_MISSING",
-        "Durable synchronization completed without committing a product result.",
+    return _SyncFailure(
+        code=_SyncErrorCode.DURABLE_RESULT_MISSING,
+        summary="Durable synchronization completed without committing a product result.",
+        recovery=SorRecoveryPolicy.TERMINAL,
     )
 
 
-def _classify_failure(error: Exception) -> tuple[str, str, bool, bool]:
+def _classify_failure(error: Exception) -> _SyncFailure:
     if isinstance(error, SorAdapterUnavailableError):
-        return (
-            error.error_code,
-            str(error),
-            error.requires_reauthorization,
-            error.requires_reauthorization,
+        return _SyncFailure(
+            code=error.error_code,
+            summary=str(error),
+            recovery=(
+                SorRecoveryPolicy.REAUTH_REQUIRED
+                if error.requires_reauthorization
+                else SorRecoveryPolicy.RETRY
+            ),
         )
     if isinstance(error, SorVendorOperationError):
-        return (
-            error.code.value,
-            str(error),
-            error.recovery
-            in {
-                SorRecoveryPolicy.TERMINAL,
-                SorRecoveryPolicy.REAUTH_REQUIRED,
-                SorRecoveryPolicy.RECONCILE_REQUIRED,
-            },
-            error.requires_reauthorization,
+        return _SyncFailure(
+            code=error.code.value,
+            summary=str(error),
+            recovery=error.recovery,
         )
     if isinstance(error, SorSecretEnvelopeError):
-        return "CURSOR_AUTHENTICATION_FAILED", str(error), True, False
+        return _SyncFailure(
+            code=_SyncErrorCode.CURSOR_AUTHENTICATION_FAILED,
+            summary=str(error),
+            recovery=SorRecoveryPolicy.TERMINAL,
+        )
     if isinstance(error, (SorConfigurationError, SorConflictError, SorProjectionError)):
-        return "SYNC_CONTRACT_INVALID", str(error), True, False
-    return "SYNC_PROVIDER_FAILED", "SOR provider synchronization failed.", False, False
+        return _SyncFailure(
+            code=_SyncErrorCode.SYNC_CONTRACT_INVALID,
+            summary=str(error),
+            recovery=SorRecoveryPolicy.TERMINAL,
+        )
+    return _SyncFailure(
+        code=_SyncErrorCode.SYNC_PROVIDER_FAILED,
+        summary="SOR provider synchronization failed.",
+        recovery=SorRecoveryPolicy.RETRY,
+    )
 
 
 def _encode_page(page: SorRecordPage) -> dict[str, Any]:

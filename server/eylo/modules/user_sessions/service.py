@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.modules.user_sessions.domain import (
     TERMINAL_USER_SESSION_STATES,
     UserSessionEntryChannel,
     UserSessionNotFound,
+    UserSessionStartOutcome,
     UserSessionState,
     UserSessionTerminal,
 )
@@ -24,11 +26,27 @@ from eylo.modules.user_sessions.models import (
 )
 
 
-@dataclass(frozen=True, slots=True)
-class UserSessionStartResult:
-    user_session: UserSessionModel
-    created: bool
-    reconnected: bool
+class UserSessionStartResult(BaseModel):
+    """Immutable outcome retaining its transaction-owned row by identity."""
+
+    model_config = ConfigDict(
+        frozen=True,
+        strict=True,
+        extra="forbid",
+        arbitrary_types_allowed=True,
+        hide_input_in_errors=True,
+    )
+
+    user_session: UserSessionModel = Field(exclude=True, repr=False)
+    outcome: UserSessionStartOutcome
+
+    @property
+    def created(self) -> bool:
+        return self.outcome is UserSessionStartOutcome.CREATED
+
+    @property
+    def reconnected(self) -> bool:
+        return self.outcome is UserSessionStartOutcome.RECONNECTED
 
 
 class UserSessionService:
@@ -71,7 +89,9 @@ class UserSessionService:
                     "connection_sequence": 1,
                 },
             )
-            return UserSessionStartResult(user_session, True, False)
+            return UserSessionStartResult(
+                user_session=user_session, outcome=UserSessionStartOutcome.CREATED
+            )
 
         user_session = await self._get_exact(
             organization_id=organization_id,
@@ -97,7 +117,9 @@ class UserSessionService:
             occurred_at=now,
             payload={"connection_sequence": user_session.connection_sequence},
         )
-        return UserSessionStartResult(user_session, False, True)
+        return UserSessionStartResult(
+            user_session=user_session, outcome=UserSessionStartOutcome.RECONNECTED
+        )
 
     async def get_owned(
         self,
@@ -147,6 +169,8 @@ class UserSessionService:
             )
             .values(last_activity_at=datetime.now(timezone.utc))
         )
+        if not isinstance(result, CursorResult):
+            raise TypeError("Session activity update did not return a DML cursor result.")
         return bool(result.rowcount)
 
     async def disconnect(

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.modules.conversations.exceptions import ConversationNotFound
@@ -15,13 +15,16 @@ from eylo.modules.conversations.services.participants import (
 )
 
 
-@dataclass(frozen=True, slots=True)
-class WidgetConversationAuthority:
+class WidgetConversationAuthority(BaseModel):
+    """Validated contact and pinned primary-agent authority for one conversation."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
     organization_id: UUID
     contact_id: UUID
     conversation_id: UUID
     agent_id: UUID
-    agent_revision: int
+    agent_revision: int = Field(gt=0)
 
 
 async def resolve_widget_conversation_authority(
@@ -40,26 +43,30 @@ async def resolve_widget_conversation_authority(
     participants = await ConversationParticipantService(session).list_by_conversation(
         conversation_id
     )
-    primary_agents = [
-        participant
-        for participant in participants
-        if participant.entity_kind == ParticipantKind.AGENT
-        and participant.is_primary
-        and participant.is_active
-        and not participant.deleted
-        and participant.agent_id is not None
-        and participant.agent_revision is not None
-    ]
-    if len(primary_agents) != 1:
+    authorities: list[WidgetConversationAuthority] = []
+    for participant in participants:
+        agent_id = participant.agent_id
+        agent_revision = participant.agent_revision
+        if (
+            participant.entity_kind == ParticipantKind.AGENT
+            and participant.is_primary
+            and participant.is_active
+            and not participant.deleted
+            and agent_id is not None
+            and agent_revision is not None
+        ):
+            authorities.append(
+                WidgetConversationAuthority(
+                    organization_id=organization_id,
+                    contact_id=contact_id,
+                    conversation_id=conversation_id,
+                    agent_id=agent_id,
+                    agent_revision=agent_revision,
+                )
+            )
+    if len(authorities) != 1:
         raise ConversationNotFound
-    primary_agent = primary_agents[0]
-    return WidgetConversationAuthority(
-        organization_id=organization_id,
-        contact_id=contact_id,
-        conversation_id=conversation_id,
-        agent_id=primary_agent.agent_id,
-        agent_revision=primary_agent.agent_revision,
-    )
+    return authorities[0]
 
 
 __all__ = [

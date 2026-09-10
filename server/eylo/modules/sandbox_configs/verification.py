@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
+from pydantic import BaseModel, ConfigDict, Field
+
+from eylo.modules.sandbox_configs.catalog import SandboxProviders
 from eylo.modules.sandbox_configs.domain import SandboxProviderConfig
 
 
@@ -13,16 +15,22 @@ class SandboxVerificationError(Exception):
     """The selected sandbox runtime failed bounded verification."""
 
 
-@dataclass(frozen=True)
-class SandboxVerificationEvidence:
-    verified_image_id: str
-    docker_server_version: str
+class SandboxVerificationEvidence(BaseModel):
+    """Bounded runtime identity produced only after both verification probes."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+    verified_image_id: str = Field(min_length=1, max_length=512)
+    docker_server_version: str = Field(min_length=1, max_length=512)
 
 
-@dataclass(frozen=True)
-class SandboxVerificationResult:
-    provider: str
-    revision: int
+class SandboxVerificationResult(BaseModel):
+    """The exact config revision successfully verified by the use case."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+    provider: SandboxProviders
+    revision: int = Field(gt=0)
     verified_at: datetime
 
 

@@ -1,10 +1,11 @@
 """Persistence access for the `conversations` domain."""
 
-from dataclasses import dataclass
 from typing import List, Optional
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import exists, func, select, text, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -23,14 +24,20 @@ from eylo.modules.conversations.schemas.messages import (
 )
 
 
-@dataclass(frozen=True, slots=True)
-class AgentRunOutputAuthority:
+class AgentRunOutputAuthority(BaseModel):
+    """Validated owner of a run's output; a user session may not exist."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
     organization_id: UUID
     user_session_id: UUID | None
 
 
-@dataclass(frozen=True, slots=True)
-class RequestTimelineAuthority:
+class RequestTimelineAuthority(BaseModel):
+    """Validated owner required before filing a request's user-session fact."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
     organization_id: UUID
     user_session_id: UUID
     conversation_id: UUID
@@ -283,34 +290,36 @@ class MessageRepository(BaseORMRepository[MessagesModel]):
         request_id: UUID,
         conversation_id: UUID,
     ) -> RequestTimelineAuthority | None:
-        row = (
-            await self.db_session.execute(
-                select(
-                    ConversationsModel.organization_id,
-                    self.model.user_session_id,
-                    self.model.conversation_id,
-                )
-                .join(
-                    ConversationsModel,
-                    ConversationsModel.id == self.model.conversation_id,
-                )
-                .where(
-                    self.model.request_id == request_id,
-                    self.model.conversation_id == conversation_id,
-                    self.model.user_session_id.is_not(None),
-                    self.model.deleted.is_(False),
-                    ConversationsModel.deleted.is_(False),
-                )
-                .order_by(self.model.created_at.asc(), self.model.id.asc())
-                .limit(1)
+        result = await self.db_session.execute(
+            select(
+                ConversationsModel.organization_id,
+                self.model.user_session_id,
+                self.model.conversation_id,
             )
-        ).one_or_none()
-        if row is None or row.user_session_id is None:
+            .join(
+                ConversationsModel,
+                ConversationsModel.id == self.model.conversation_id,
+            )
+            .where(
+                self.model.request_id == request_id,
+                self.model.conversation_id == conversation_id,
+                self.model.user_session_id.is_not(None),
+                self.model.deleted.is_(False),
+                ConversationsModel.deleted.is_(False),
+            )
+            .order_by(self.model.created_at.asc(), self.model.id.asc())
+            .limit(1)
+        )
+        row = result.tuples().one_or_none()
+        if row is None:
+            return None
+        organization_id, user_session_id, owning_conversation_id = row
+        if user_session_id is None:
             return None
         return RequestTimelineAuthority(
-            organization_id=row.organization_id,
-            user_session_id=row.user_session_id,
-            conversation_id=row.conversation_id,
+            organization_id=organization_id,
+            user_session_id=user_session_id,
+            conversation_id=owning_conversation_id,
         )
 
     async def get_next_pending_user_message(
@@ -413,6 +422,8 @@ class MessageRepository(BaseORMRepository[MessagesModel]):
             )
         )
         result = await self.db_session.execute(update_query)
+        if not isinstance(result, CursorResult):
+            raise TypeError("Request status update did not return a DML cursor result.")
         return result.rowcount or 0
 
     async def list_by_request_id(
@@ -652,42 +663,41 @@ class MessageAgentRunRepository:
         sender_participant_id: UUID,
     ) -> AgentRunOutputAuthority | None:
         origin_message = aliased(MessagesModel)
-        row = (
-            await self.session.execute(
-                select(
-                    AgentRunModel.organization_id,
-                    AgentRunModel.user_session_id,
-                )
-                .select_from(AgentRunModel)
-                .join(
-                    origin_message,
-                    origin_message.id == AgentRunModel.origin_message_id,
-                )
-                .join(
-                    ConversationsModel,
-                    ConversationsModel.id == origin_message.conversation_id,
-                )
-                .join(
-                    ParticipantsModel,
-                    ParticipantsModel.conversation_id == ConversationsModel.id,
-                )
-                .where(
-                    AgentRunModel.id == run_id,
-                    AgentRunModel.deleted.is_(False),
-                    origin_message.conversation_id == conversation_id,
-                    origin_message.deleted.is_(False),
-                    ParticipantsModel.id == sender_participant_id,
-                    ParticipantsModel.is_active.is_(True),
-                    ParticipantsModel.deleted.is_(False),
-                    ConversationsModel.organization_id
-                    == AgentRunModel.organization_id,
-                    ConversationsModel.deleted.is_(False),
-                )
+        result = await self.session.execute(
+            select(
+                AgentRunModel.organization_id,
+                AgentRunModel.user_session_id,
             )
-        ).one_or_none()
+            .select_from(AgentRunModel)
+            .join(
+                origin_message,
+                origin_message.id == AgentRunModel.origin_message_id,
+            )
+            .join(
+                ConversationsModel,
+                ConversationsModel.id == origin_message.conversation_id,
+            )
+            .join(
+                ParticipantsModel,
+                ParticipantsModel.conversation_id == ConversationsModel.id,
+            )
+            .where(
+                AgentRunModel.id == run_id,
+                AgentRunModel.deleted.is_(False),
+                origin_message.conversation_id == conversation_id,
+                origin_message.deleted.is_(False),
+                ParticipantsModel.id == sender_participant_id,
+                ParticipantsModel.is_active.is_(True),
+                ParticipantsModel.deleted.is_(False),
+                ConversationsModel.organization_id == AgentRunModel.organization_id,
+                ConversationsModel.deleted.is_(False),
+            )
+        )
+        row = result.tuples().one_or_none()
         if row is None:
             return None
+        organization_id, user_session_id = row
         return AgentRunOutputAuthority(
-            organization_id=row.organization_id,
-            user_session_id=row.user_session_id,
+            organization_id=organization_id,
+            user_session_id=user_session_id,
         )

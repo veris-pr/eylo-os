@@ -11,11 +11,37 @@ This module provides:
 """
 
 from enum import Enum
+from typing import Protocol, runtime_checkable
 
 import numpy as np
+from numpy.typing import NDArray
 from scipy import signal
 
 from .buffer import AudioFrame
+
+type Pcm16Samples = NDArray[np.int16]
+type ResampledSamples = NDArray[np.float32] | NDArray[np.float64]
+
+_PCM16_MIN = np.iinfo(np.int16).min
+_PCM16_MAX = np.iinfo(np.int16).max
+_CONTINUITY_BUFFER_SAMPLES = 10
+
+
+@runtime_checkable
+class _ScipyResampling(Protocol):
+    """Public SciPy calls used here; lazy module exports lack bundled types."""
+
+    def resample(self, x: Pcm16Samples, num: int) -> ResampledSamples: ...
+
+    def resample_poly(
+        self, x: Pcm16Samples, up: int, down: int
+    ) -> ResampledSamples: ...
+
+
+def _scipy_resampling() -> _ScipyResampling:
+    if not isinstance(signal, _ScipyResampling):
+        raise TypeError("SciPy signal resampling functions are unavailable.")
+    return signal
 
 
 class AudioResamplerQuality(str, Enum):
@@ -69,7 +95,7 @@ class AudioResampler:
         self.ratio = output_rate / input_rate
 
         # Buffer for partial samples (streaming)
-        self._buffer: np.ndarray | None = None
+        self._buffer: Pcm16Samples | None = None
 
     def push(self, data: bytes | AudioFrame) -> list[AudioFrame]:
         """Push audio data and get resampled output.
@@ -126,7 +152,7 @@ class AudioResampler:
 
         # For streaming: buffer last few samples for smooth transitions
         # This prevents edge artifacts when concatenating frames
-        buffer_size = 10  # samples to keep for next push
+        buffer_size = _CONTINUITY_BUFFER_SAMPLES
         if len(resampled) > buffer_size:
             self._buffer = resampled[-buffer_size:]
             resampled = resampled[:-buffer_size]
@@ -189,7 +215,7 @@ class AudioResampler:
             )
         ]
 
-    def _resample_array(self, samples: np.ndarray) -> np.ndarray:
+    def _resample_array(self, samples: Pcm16Samples) -> Pcm16Samples:
         """Resample numpy array using configured quality.
 
         Args:
@@ -228,8 +254,8 @@ class AudioResampler:
             return self._resample_poly(samples, num_output_samples)
 
     def _resample_linear(
-        self, samples: np.ndarray, num_output_samples: int
-    ) -> np.ndarray:
+        self, samples: Pcm16Samples, num_output_samples: int
+    ) -> Pcm16Samples:
         """Fast linear interpolation resampling.
 
         Args:
@@ -258,8 +284,8 @@ class AudioResampler:
             return np.column_stack(resampled_channels).astype(np.int16)
 
     def _resample_scipy(
-        self, samples: np.ndarray, num_output_samples: int
-    ) -> np.ndarray:
+        self, samples: Pcm16Samples, num_output_samples: int
+    ) -> Pcm16Samples:
         """Scipy FFT-based resampling (medium quality).
 
         Args:
@@ -270,22 +296,23 @@ class AudioResampler:
             Resampled samples
 
         """
+        resampling = _scipy_resampling()
         if samples.ndim == 1:
             # Mono
-            resampled = signal.resample(samples, num_output_samples)
-            return np.clip(resampled, -32768, 32767).astype(np.int16)
+            resampled = resampling.resample(samples, num_output_samples)
+            return np.clip(resampled, _PCM16_MIN, _PCM16_MAX).astype(np.int16)
         else:
             # Multi-channel: resample each channel
             resampled_channels = []
             for ch in range(samples.shape[1]):
-                resampled = signal.resample(samples[:, ch], num_output_samples)
+                resampled = resampling.resample(samples[:, ch], num_output_samples)
                 resampled_channels.append(resampled)
             resampled = np.column_stack(resampled_channels)
-            return np.clip(resampled, -32768, 32767).astype(np.int16)
+            return np.clip(resampled, _PCM16_MIN, _PCM16_MAX).astype(np.int16)
 
     def _resample_poly(
-        self, samples: np.ndarray, num_output_samples: int
-    ) -> np.ndarray:
+        self, samples: Pcm16Samples, num_output_samples: int
+    ) -> Pcm16Samples:
         """Scipy polyphase filtering resampling (highest quality).
 
         Args:
@@ -300,25 +327,26 @@ class AudioResampler:
         # Find greatest common divisor for optimal performance
         from math import gcd
 
+        resampling = _scipy_resampling()
         g = gcd(self.input_rate, self.output_rate)
         up = self.output_rate // g
         down = self.input_rate // g
 
         if samples.ndim == 1:
             # Mono
-            resampled = signal.resample_poly(samples, up, down)
+            resampled = resampling.resample_poly(samples, up, down)
             # Trim to exact length (resample_poly may overshoot)
             resampled = resampled[:num_output_samples]
-            return np.clip(resampled, -32768, 32767).astype(np.int16)
+            return np.clip(resampled, _PCM16_MIN, _PCM16_MAX).astype(np.int16)
         else:
             # Multi-channel: resample each channel
             resampled_channels = []
             for ch in range(samples.shape[1]):
-                resampled = signal.resample_poly(samples[:, ch], up, down)
+                resampled = resampling.resample_poly(samples[:, ch], up, down)
                 resampled = resampled[:num_output_samples]
                 resampled_channels.append(resampled)
             resampled = np.column_stack(resampled_channels)
-            return np.clip(resampled, -32768, 32767).astype(np.int16)
+            return np.clip(resampled, _PCM16_MIN, _PCM16_MAX).astype(np.int16)
 
     def __repr__(self) -> str:
         return (

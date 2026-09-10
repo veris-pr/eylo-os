@@ -33,7 +33,7 @@ from uuid import UUID
 from pydantic import BaseModel, EmailStr, Field
 
 from eylo.common.schemas import (
-    BaseResponseSchema,
+    BaseResponseStatus,
     EyloBaseApiSchema,
     EyloBaseModelSchema,
     EyloBaseRequestSchema,
@@ -148,10 +148,12 @@ class SessionInitiateResponseData(EyloBaseApiSchema):
     )
 
 
-class SessionInitiateResponse(BaseResponseSchema):
+class SessionInitiateResponse(EyloBaseApiSchema):
     """Response schema after successfully initiating a session."""
 
+    status: BaseResponseStatus
     data: SessionInitiateResponseData
+    message: str | None = None
 
 
 class AuthSessionCreate(EyloBaseSchema):

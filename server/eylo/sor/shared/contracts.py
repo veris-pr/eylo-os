@@ -16,6 +16,8 @@ from pydantic import (
     Field,
     JsonValue,
     TypeAdapter,
+    field_serializer,
+    field_validator,
     model_validator,
 )
 
@@ -59,15 +61,21 @@ class SorVendorErrorCode(str, Enum):
     VENDOR_HISTORY_TRUNCATED = "vendor_history_truncated"
     VENDOR_IDENTIFIER_INVALID = "vendor_identifier_invalid"
     VENDOR_MUTATION_OUTCOME_UNKNOWN = "vendor_mutation_outcome_unknown"
+    VENDOR_MEDIA_UNSUPPORTED = "vendor_media_unsupported"
     VENDOR_DNS_UNAVAILABLE = "vendor_dns_unavailable"
     VENDOR_EGRESS_REJECTED = "vendor_egress_rejected"
     VENDOR_ORIGIN_INVALID = "vendor_origin_invalid"
+    VENDOR_PATH_INVALID = "vendor_path_invalid"
     VENDOR_PAGE_INVALID = "vendor_page_invalid"
     VENDOR_RATE_LIMITED = "vendor_rate_limited"
+    VENDOR_QUERY_INVALID = "vendor_query_invalid"
+    VENDOR_REDIRECT_INVALID = "vendor_redirect_invalid"
+    VENDOR_REDIRECT_LIMIT = "vendor_redirect_limit"
     VENDOR_REAUTHORIZATION_REQUIRED = "vendor_reauthorization_required"
     VENDOR_REGION_MISMATCH = "vendor_region_mismatch"
     VENDOR_RELATIONSHIP_LIMIT_EXCEEDED = "vendor_relationship_limit_exceeded"
     VENDOR_REQUEST_FAILED = "vendor_request_failed"
+    VENDOR_REQUEST_INVALID = "vendor_request_invalid"
     VENDOR_REQUEST_REJECTED = "vendor_request_rejected"
     VENDOR_RESOURCE_UNAVAILABLE = "vendor_resource_unavailable"
     VENDOR_RESPONSE_INVALID = "vendor_response_invalid"
@@ -85,6 +93,7 @@ class SorVendorErrorCode(str, Enum):
     VENDOR_TIMEOUT = "vendor_timeout"
     VENDOR_TOOL_UNSUPPORTED = "vendor_tool_unsupported"
     VENDOR_TRANSPORT_FAILED = "vendor_transport_failed"
+    VENDOR_TRANSPORT_INVALID = "vendor_transport_invalid"
     VENDOR_WEBHOOK_AMBIGUOUS = "vendor_webhook_ambiguous"
     VENDOR_WEBHOOK_IDENTITY_INVALID = "vendor_webhook_identity_invalid"
     VENDOR_WEBHOOK_INVALID = "vendor_webhook_invalid"
@@ -658,9 +667,10 @@ class SorVendorCandidate:
     setup_notes: tuple[str, ...] = ()
 
 
-@dataclass(frozen=True, slots=True)
-class SorVendorStreamSpec:
+class SorVendorStreamSpec(BaseModel):
     """One explicit vendor object operators may select for synchronization."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
     key: str
     label: str
@@ -669,15 +679,15 @@ class SorVendorStreamSpec:
     change_strategies: frozenset[SorChangeStrategy]
     scope_category: str | None = None
     depends_on: frozenset[str] = frozenset()
-    relationship_targets: SorRelationshipTargets = field(
+    relationship_targets: SorRelationshipTargets = Field(
         default_factory=SorRelationshipTargets
     )
 
-    def __post_init__(self) -> None:
-        if not isinstance(self.relationship_targets, SorRelationshipTargets):
-            raise TypeError(
-                "SOR vendor streams require typed relationship targets."
-            )
+    @field_serializer("relationship_targets")
+    def _relationship_snapshot(
+        self, value: SorRelationshipTargets
+    ) -> dict[str, dict[str, str]]:
+        return {"by_role": value.to_wire()}
 
 
 @dataclass(frozen=True, slots=True)
@@ -759,9 +769,12 @@ class SorAdapterConfigurationFieldSpec:
     maximum_items: int = 100
 
 
-@dataclass(frozen=True, slots=True)
-class SorAdapterCapabilityManifest:
+class SorAdapterCapabilityManifest(BaseModel):
     """Executable facts declared only beside a real adapter factory."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", validate_default=True
+    )
 
     profile: SorProfile
     vendor_key: str
@@ -773,12 +786,12 @@ class SorAdapterCapabilityManifest:
     writable_tools: frozenset[str]
     change_strategies: frozenset[SorChangeStrategy]
     configuration_fields: tuple[SorAdapterConfigurationFieldSpec, ...] = ()
-    required_scopes: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    required_scopes: Mapping[str, tuple[str, ...]] = Field(default_factory=dict)
     custom_object_required_scopes: tuple[str, ...] = ()
     custom_object_change_strategies: frozenset[SorChangeStrategy] = frozenset()
-    tool_required_scopes: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
-    tool_streams: Mapping[str, frozenset[str]] = field(default_factory=dict)
-    mutation_result_streams: Mapping[str, str] = field(default_factory=dict)
+    tool_required_scopes: Mapping[str, tuple[str, ...]] = Field(default_factory=dict)
+    tool_streams: Mapping[str, frozenset[str]] = Field(default_factory=dict)
+    mutation_result_streams: Mapping[str, str] = Field(default_factory=dict)
     oauth: SorOAuthSpec | None = None
     fixed_origin: str | None = None
     requires_instance_origin: bool = False
@@ -791,6 +804,36 @@ class SorAdapterCapabilityManifest:
     supports_comments: bool = False
     supports_attachments: bool = False
     supports_structured_documents: bool = False
+
+    @field_validator("required_scopes", "tool_required_scopes")
+    @classmethod
+    def _freeze_scopes(
+        cls, value: Mapping[str, tuple[str, ...]]
+    ) -> Mapping[str, tuple[str, ...]]:
+        return MappingProxyType(dict(value))
+
+    @field_validator("tool_streams")
+    @classmethod
+    def _freeze_tool_streams(
+        cls, value: Mapping[str, frozenset[str]]
+    ) -> Mapping[str, frozenset[str]]:
+        return MappingProxyType(dict(value))
+
+    @field_validator("mutation_result_streams")
+    @classmethod
+    def _freeze_result_streams(cls, value: Mapping[str, str]) -> Mapping[str, str]:
+        return MappingProxyType(dict(value))
+
+    @field_serializer(
+        "required_scopes", "tool_required_scopes", "tool_streams", "mutation_result_streams"
+    )
+    def _mapping_snapshot(
+        self,
+        value: Mapping[str, tuple[str, ...]]
+        | Mapping[str, frozenset[str]]
+        | Mapping[str, str],
+    ) -> dict[str, tuple[str, ...] | frozenset[str] | str]:
+        return dict(value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -939,8 +982,6 @@ class SorMappedFieldsCommandPayload(SorCommandPayload):
     """
 
     model_config = ConfigDict(extra="allow", frozen=True)
-    __pydantic_extra__: dict[str, object] = Field(init=False)
-
     @model_validator(mode="before")
     @classmethod
     def validate_json_fields(cls, value: object) -> dict[str, JsonValue]:

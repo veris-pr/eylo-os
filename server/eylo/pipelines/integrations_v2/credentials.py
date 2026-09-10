@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import base64
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+
+from pydantic import BaseModel, ConfigDict, Field, InstanceOf
+from pydantic.json_schema import SkipJsonSchema
 
 from eylo.common.http_egress import (
     HttpEgressPolicyError,
@@ -39,12 +41,19 @@ USERNAME_KEY = "username"
 PASSWORD_KEY = "password"
 
 
-@dataclass(frozen=True, slots=True)
-class VendorWireAuth:
-    """Credential material already bound to one permitted origin."""
+class VendorWireAuth(BaseModel):
+    """Live origin-bound credentials; never copied into snapshots or schemas."""
 
-    origin_headers: OriginBoundHeaders | None = field(default=None, repr=False)
-    origin_query: OriginBoundQuery | None = field(default=None, repr=False)
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    origin_headers: SkipJsonSchema[InstanceOf[OriginBoundHeaders] | None] = Field(
+        default=None, repr=False, exclude=True
+    )
+    origin_query: SkipJsonSchema[InstanceOf[OriginBoundQuery] | None] = Field(
+        default=None, repr=False, exclude=True
+    )
 
 
 def build_vendor_wire_auth(

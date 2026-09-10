@@ -8,6 +8,7 @@ from eylo.common.services import EyloBaseService
 from eylo.modules.conversations.models.conversations import ConversationsModel
 from eylo.modules.conversations.repositories.aggregates import (
     ConversationAggregateRepository,
+    ConversationAggregateRows,
 )
 from eylo.modules.conversations.schemas.aggregates import (
     AgentSummary,
@@ -94,7 +95,7 @@ class ConversationAggregateService(
         if not results:
             return None
 
-        return self._map_dict_to_schema(results[0])
+        return self._map_rows_to_schema(results[0])
 
     async def get_conversations_with_relations(
         self,
@@ -120,7 +121,7 @@ class ConversationAggregateService(
             List of ConversationAggregateResponse instances
 
         """
-        aggregate_dicts = await self.repository.get_aggregates_by_ids(
+        aggregates = await self.repository.get_aggregates_by_ids(
             conversation_ids=conversation_ids,
             organization_id=organization_id,
             include_messages=include_messages,
@@ -130,27 +131,15 @@ class ConversationAggregateService(
             message_kinds=message_kinds,
         )
 
-        return [self._map_dict_to_schema(agg_dict) for agg_dict in aggregate_dicts]
+        return [self._map_rows_to_schema(aggregate) for aggregate in aggregates]
 
-    def _map_dict_to_schema(
-        self, aggregate_dict: dict
+    def _map_rows_to_schema(
+        self, aggregate: ConversationAggregateRows
     ) -> ConversationAggregateResponse:
-        """Map repository aggregate dict to ConversationAggregateResponse schema.
-
-        Args:
-            aggregate_dict: Dictionary from repository
-
-        Returns:
-            ConversationAggregateResponse instance
-
-        """
-        conversation = aggregate_dict["conversation"]
-        contact = aggregate_dict["contact"]
-        primary_agent = aggregate_dict["primary_agent"]
-        all_agents = aggregate_dict["all_agents"]
-        participants_data = aggregate_dict["participants"]
-        messages = aggregate_dict["messages"]
-        message_count = aggregate_dict["message_count"]
+        """Project selected fields; attached rows never escape in API output."""
+        conversation = aggregate.conversation
+        contact = aggregate.contact
+        primary_agent = aggregate.primary_agent
 
         # Map contact to ContactSummary
         contact_summary = None
@@ -180,47 +169,34 @@ class ConversationAggregateService(
                 slug=agent.slug,
                 status=agent.status.value,
             )
-            for agent in all_agents
+            for agent in aggregate.all_agents
         ]
 
         # Map participants to ParticipantSummary
         participants_summary = [
             ParticipantSummary(
-                id=p_data["participant"].id,
-                entity_kind=p_data["participant"].entity_kind,
-                entity_id=p_data["participant"].entity_id,
-                has_initiated=p_data["participant"].has_initiated,
-                is_active=p_data["participant"].is_active,
-                is_primary=p_data["participant"].is_primary,
-                joined_at=p_data["participant"].joined_at,
-                left_at=p_data["participant"].left_at,
-                entity_name=p_data["entity_name"],
+                id=entry.participant.id,
+                entity_kind=entry.participant.entity_kind,
+                entity_id=entry.participant.entity_id,
+                has_initiated=entry.participant.has_initiated,
+                is_active=entry.participant.is_active,
+                is_primary=entry.participant.is_primary,
+                joined_at=entry.participant.joined_at,
+                left_at=entry.participant.left_at,
+                entity_name=entry.entity_name,
             )
-            for p_data in participants_data
+            for entry in aggregate.participants
         ]
 
-        # Map messages to MessageSummary
-        messages_summary = [
-            MessageSummary(
-                id=msg.id,
-                kind=msg.kind,
-                content_kind=msg.content_kind,
-                content=msg.content,
-                sender_participant_id=msg.sender_participant_id,
-                request_id=msg.request_id,
-                request_feedback=msg.request_feedback,
-                sender_kind=next(
-                    (
-                        p["participant"].entity_kind
-                        for p in participants_data
-                        if p["participant"].id == msg.sender_participant_id
-                    ),
-                    None,
-                ),
-                created_at=msg.created_at,
-            )
-            for msg in messages
-        ]
+        sender_kinds = {
+            participant.id: participant.entity_kind
+            for participant in participants_summary
+        }
+        messages_summary: list[MessageSummary] = []
+        for row in aggregate.messages:
+            message = MessageSummary.model_validate(row, from_attributes=True)
+            message.sender_kind = sender_kinds.get(row.sender_participant_id)
+            messages_summary.append(message)
 
         # Build ConversationAggregateResponse
         return ConversationAggregateResponse(
@@ -244,5 +220,5 @@ class ConversationAggregateService(
             all_agents=all_agents_summary,
             participants=participants_summary,
             messages=messages_summary,
-            message_count=message_count,
+            message_count=aggregate.message_count,
         )

@@ -41,11 +41,6 @@ class MemberUpdateRequestSchema(EyloBaseRequestSchema):
     password: Optional[str] = Field(None, min_length=8, description="User's password")
 
 
-class MemberRegisterSchema(EyloBaseRequestSchema):
-    email: EmailStr = Field(..., description="User's email address")
-    password: str = Field(..., min_length=8, description="User's password")
-
-
 class MemberFilterSchema(EyloBaseApiSchema):
     member_ids: Annotated[Optional[list[UUID]], Field(None, max_length=100)] = None
 

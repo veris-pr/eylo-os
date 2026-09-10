@@ -1,10 +1,18 @@
 """Application services for the `analytics` domain."""
 
 import datetime
-from typing import Literal
 from uuid import UUID
 
 from eylo.modules.agents.models import AgentsModel
+from eylo.modules.analytics.contracts import (
+    ANALYTICS_DATE_FORMAT,
+    AnalyticsAgentBucket,
+    AnalyticsAgentPoint,
+    AnalyticsCountBucket,
+    AnalyticsCountPoint,
+    AnalyticsPeriod,
+    AnalyticsTimeSlice,
+)
 from eylo.modules.analytics.repositories import AnalyticsRepository
 from eylo.modules.contacts.models import ContactsModel
 from eylo.modules.conversations.models.conversations import ConversationsModel
@@ -14,8 +22,7 @@ from eylo.modules.members.models import MemberModel
 
 
 class AnalyticsService:
-    def __init__(self):
-        # Initialize any required resources or connections here
+    def __init__(self) -> None:
         self._repository = AnalyticsRepository()
 
     async def _base_created_between_dates(
@@ -24,12 +31,12 @@ class AnalyticsService:
         organization_id: UUID,
         start_date: datetime.datetime,
         end_date: datetime.datetime,
-        timeslice: Literal["day", "week", "month"] = "day",
-    ) -> list:
+        timeslice: AnalyticsTimeSlice = AnalyticsTimeSlice.DAY,
+    ) -> list[AnalyticsCountPoint]:
         sql = f"""
             SELECT
                 COUNT(*),
-                DATE_TRUNC('{timeslice}', created_at) AS day_created
+                DATE_TRUNC(:timeslice, created_at) AS day_created
             FROM
                 {table_name}
             WHERE
@@ -41,19 +48,20 @@ class AnalyticsService:
             ORDER BY
                 day_created
         """
-        params = {
-            "organization_id": organization_id,
-            "start_date": start_date,
-            "end_date": end_date,
-        }
-        result = await self._repository.execute_query(sql, params)
+        period = AnalyticsPeriod(
+            organization_id=organization_id,
+            start_date=start_date,
+            end_date=end_date,
+            timeslice=timeslice,
+        )
+        result = await self._repository.execute_query(sql, period, AnalyticsCountBucket)
         if not result:
             return []
         return [
-            {
-                "count": row[0],
-                "date": row[1].strftime("%Y-%m-%d"),
-            }
+            AnalyticsCountPoint(
+                count=row.count,
+                date=row.day_created.strftime(ANALYTICS_DATE_FORMAT),
+            )
             for row in result
         ]
 
@@ -62,8 +70,8 @@ class AnalyticsService:
         organization_id: UUID,
         start_date: datetime.datetime,
         end_date: datetime.datetime,
-        timeslice: Literal["day", "week", "month"] = "day",
-    ) -> list:
+        timeslice: AnalyticsTimeSlice = AnalyticsTimeSlice.DAY,
+    ) -> list[AnalyticsCountPoint]:
         table_name = ConversationsModel.__tablename__
         return await self._base_created_between_dates(
             table_name, organization_id, start_date, end_date, timeslice
@@ -74,8 +82,8 @@ class AnalyticsService:
         organization_id: UUID,
         start_date: datetime.datetime,
         end_date: datetime.datetime,
-        timeslice: Literal["day", "week", "month"] = "day",
-    ) -> list:
+        timeslice: AnalyticsTimeSlice = AnalyticsTimeSlice.DAY,
+    ) -> list[AnalyticsCountPoint]:
         table_name = MemberModel.__tablename__
         return await self._base_created_between_dates(
             table_name, organization_id, start_date, end_date, timeslice
@@ -86,9 +94,8 @@ class AnalyticsService:
         organization_id: UUID,
         start_date: datetime.datetime,
         end_date: datetime.datetime,
-        timeslice: Literal["day", "week", "month"] = "day",
-    ) -> list:
-        # Assuming a similar structure for contacts as other models
+        timeslice: AnalyticsTimeSlice = AnalyticsTimeSlice.DAY,
+    ) -> list[AnalyticsCountPoint]:
         table_name = ContactsModel.__tablename__
         return await self._base_created_between_dates(
             table_name, organization_id, start_date, end_date, timeslice
@@ -99,13 +106,13 @@ class AnalyticsService:
         organization_id: UUID,
         start_date: datetime.datetime,
         end_date: datetime.datetime,
-        timeslice: Literal["day", "week", "month"] = "day",
-    ) -> list:
+        timeslice: AnalyticsTimeSlice = AnalyticsTimeSlice.DAY,
+    ) -> list[AnalyticsCountPoint]:
         table_name = MessagesModel.__tablename__
         sql = f"""
             SELECT
                 COUNT(*),
-                DATE_TRUNC('{timeslice}', messages.created_at) AS day_created
+                DATE_TRUNC(:timeslice, messages.created_at) AS day_created
             FROM
                 {table_name} as messages
             INNER JOIN
@@ -121,19 +128,20 @@ class AnalyticsService:
             ORDER BY
                 day_created
         """
-        params = {
-            "organization_id": organization_id,
-            "start_date": start_date,
-            "end_date": end_date,
-        }
-        result = await self._repository.execute_query(sql, params)
+        period = AnalyticsPeriod(
+            organization_id=organization_id,
+            start_date=start_date,
+            end_date=end_date,
+            timeslice=timeslice,
+        )
+        result = await self._repository.execute_query(sql, period, AnalyticsCountBucket)
         if not result:
             return []
         return [
-            {
-                "count": row[0],
-                "date": row[1].strftime("%Y-%m-%d"),
-            }
+            AnalyticsCountPoint(
+                count=row.count,
+                date=row.day_created.strftime(ANALYTICS_DATE_FORMAT),
+            )
             for row in result
         ]
 
@@ -142,13 +150,13 @@ class AnalyticsService:
         organization_id: UUID,
         start_date: datetime.datetime,
         end_date: datetime.datetime,
-        timeslice: Literal["day", "week", "month"] = "day",
-    ) -> list:
+        timeslice: AnalyticsTimeSlice = AnalyticsTimeSlice.DAY,
+    ) -> list[AnalyticsAgentPoint]:
         sql = f"""
             SELECT
                 agents.id AS agent_id,
                 COUNT(*) AS count,
-                DATE_TRUNC('{timeslice}', conversations.created_at) AS day_created
+                DATE_TRUNC(:timeslice, conversations.created_at) AS day_created
             FROM
                 {ConversationsModel.__tablename__} as conversations
             INNER JOIN
@@ -165,19 +173,20 @@ class AnalyticsService:
             ORDER BY
                 day_created
         """
-        params = {
-            "organization_id": organization_id,
-            "start_date": start_date,
-            "end_date": end_date,
-        }
-        result = await self._repository.execute_query(sql, params)
+        period = AnalyticsPeriod(
+            organization_id=organization_id,
+            start_date=start_date,
+            end_date=end_date,
+            timeslice=timeslice,
+        )
+        result = await self._repository.execute_query(sql, period, AnalyticsAgentBucket)
         if not result:
             return []
         return [
-            {
-                "agentId": str(row[0]),
-                "count": row[1],
-                "date": row[2].strftime("%Y-%m-%d"),
-            }
+            AnalyticsAgentPoint(
+                agent_id=row.agent_id,
+                count=row.count,
+                date=row.day_created.strftime(ANALYTICS_DATE_FORMAT),
+            )
             for row in result
         ]

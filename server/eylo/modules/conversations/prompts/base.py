@@ -1,10 +1,11 @@
 """Prompt-section identifiers and structured prompt input contracts."""
 
 import json
+from collections.abc import Sequence
 from enum import Enum
-from typing import Any, Dict, List, Literal, Optional, Self, Union
+from typing import List, Optional, Self
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, JsonValue, model_validator
 
 
 class Sections(str, Enum):
@@ -74,30 +75,45 @@ class AdditionalContextKey(str, Enum):
     CONVERSATION_MEMORY_CONTEXT = "conversation_memory_context"
 
 
+class PromptRenderMode(str, Enum):
+    """Presentation of section headings; body text remains unchanged."""
+
+    MARKDOWN = "md"
+    TEXT = "text"
+
+
+class PromptContextMode(str, Enum):
+    """Whether context replaces existing text or adds another entry."""
+
+    REPLACE = "replace"
+    APPEND = "append"
+
+
+type PromptContent = str | list[str | list[str]]
+
+
 class PromptSection(BaseModel):
     """A section of a prompt with title, description, and optional additional context."""
 
-    kind: Union[Sections, DynamicSections]
-    description: Union[str, List[Union[str, List[str]]]]
-    mode: Literal["md", "text"] = "md"
+    kind: Sections | DynamicSections
+    description: PromptContent
+    mode: PromptRenderMode = PromptRenderMode.MARKDOWN
     additional_context_key: Optional[str] = None
-    additional_context_value: Optional[Union[str, List[Union[str, List[str]]]]] = None
-    examples: Optional[Union[str, List[Union[str, List[str]]]]] = None
+    additional_context_value: PromptContent | None = None
+    examples: PromptContent | None = None
     version: str = Field(default="1.0")  # Added for versioning
-    title: Optional[str] = Field(..., max_length=100)
+    title: str | None = Field(default=None, max_length=100)
 
-    @model_validator(mode="before")
-    def run_validators(cls, data: Any):
-        def _generate_title():
-            data["title"] = data.get("title") or data["kind"].value
-
-        _generate_title()
-        return data
+    @model_validator(mode="after")
+    def generate_title(self) -> Self:
+        """Resolve an omitted title from the validated kind without mutating input."""
+        self.title = self.title or self.kind.value
+        return self
 
     def _process_list(
         self,
         template: str,
-        items: Optional[Union[str, List[Union[str, List[str]]]]] = None,
+        items: str | Sequence[str | Sequence[str]] | None = None,
         depth: int = 0,
     ) -> str:
         """Recursively processes lists of strings into formatted template text."""
@@ -106,30 +122,19 @@ class PromptSection(BaseModel):
         if isinstance(items, str):
             _tabs = "  " * (depth - 1) if depth > 0 else ""
             return f"{template}\n{_tabs}{items}"
-        elif isinstance(items, list):
-            for item in items:
-                template = self._process_list(template, item, depth=depth + 1)
-            return template
+        for item in items:
+            template = self._process_list(template, item, depth=depth + 1)
         return template
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, JsonValue]:
         """Convert the section to a dictionary for serialization."""
-        return {
-            "kind": self.kind,
-            "title": self.title,
-            "description": self.description,
-            "mode": self.mode,
-            "additional_context_key": self.additional_context_key,
-            "additional_context_value": self.additional_context_value,
-            "examples": self.examples,
-            "version": self.version,
-        }
+        return self.model_dump(mode="json")
 
     def __str__(self) -> str:
         """Renders the section as a formatted string."""
-        if self.mode == "md":
+        if self.mode == PromptRenderMode.MARKDOWN:
             _template = f"# {self.title}"
-        elif self.mode == "text":
+        elif self.mode == PromptRenderMode.TEXT:
             _template = f"{self.title}"
         else:
             raise ValueError(f"Unknown mode: {self.mode}")
@@ -199,16 +204,21 @@ class Prompt(BaseModel):
     def set_additional_context(
         self,
         context_key: AdditionalContextKey,
-        context: str | List[str | List[str]],
-        mode: Literal["replace", "append"] = "replace",
+        context: PromptContent,
+        mode: PromptContextMode = PromptContextMode.REPLACE,
     ) -> "Prompt":
         """Sets the additional context for each section."""
         for section in self.sections:
             if section.additional_context_key == context_key:
-                if mode == "replace":
+                if mode == PromptContextMode.REPLACE:
                     section.additional_context_value = context
-                elif mode == "append":
-                    _prev = list(section.additional_context_value or [])
+                elif mode == PromptContextMode.APPEND:
+                    previous = section.additional_context_value
+                    _prev: list[str | list[str]] = (
+                        [previous]
+                        if isinstance(previous, str)
+                        else list(previous or [])
+                    )
                     if isinstance(context, str):
                         _prev.append(context)
                     else:
@@ -216,9 +226,7 @@ class Prompt(BaseModel):
                     section.additional_context_value = _prev
         return self
 
-    def append_to_section(
-        self, title: str, content: Union[str, List[Union[str, List[str]]]]
-    ) -> "Prompt":
+    def append_to_section(self, title: str, content: PromptContent) -> "Prompt":
         """Appends content to an existing section's description."""
         section = self.get_section(title)
         if section:
@@ -236,31 +244,29 @@ class Prompt(BaseModel):
 
     def compile(self) -> str:
         """Returns the complete prompt template as a string."""
-        _template = []
+        _template: list[str] = []
         for section in self.sections:
             _template.append(str(section))
 
         return "\n\n".join(_template)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, JsonValue]:
         """Converts the prompt to a dictionary for serialization."""
-        return {"sections": [section.to_dict() for section in self.sections]}
+        return self.model_dump(mode="json")
 
     def to_json(self) -> str:
         """Serializes the prompt to JSON."""
         return json.dumps(self.to_dict(), indent=2)
 
-    def from_dict(self, data: Dict[str, Any]) -> "Prompt":
-        """Loads prompt configuration from a dict, replacing sections on the instance."""
-        custom_sections_data = data.get("sections", [])
-        for section_data in custom_sections_data:
-            new_section = PromptSection(**section_data)
+    def from_dict(self, data: dict[str, JsonValue]) -> Self:
+        """Validate all sections before merging by title; retain unmentioned sections."""
+        for new_section in Prompt.model_validate(data).sections:
             if new_section.title:
                 self.replace_section(new_section.title, new_section)
         return self
 
     @classmethod
-    def from_json(cls, json_str: str) -> "Prompt":
+    def from_json(cls, json_str: str) -> Self:
         """Creates a prompt from a JSON string."""
         data = json.loads(json_str)
         # Create a new instance and then load the data into it.
@@ -286,7 +292,7 @@ class ConversationPrompt(Prompt):
             sections = self._list_default_sections()
         super().__init__(sections=sections)
 
-    def _list_default_sections(self):
+    def _list_default_sections(self) -> list[PromptSection]:
         dynamic_sections = ", ".join(
             [
                 f"""
@@ -443,7 +449,7 @@ class ConversationPrompt(Prompt):
         self.set_additional_context(
             context_key=AdditionalContextKey.USER_INFO_CONTEXT,
             context=user_info,
-            mode="append",
+            mode=PromptContextMode.APPEND,
         )
         return self
 
@@ -455,13 +461,13 @@ class ConversationPrompt(Prompt):
             self.set_additional_context(
                 context_key=AdditionalContextKey.INTRO_CONTEXT,
                 context=f"Your name is {name}.",
-                mode="append",
+                mode=PromptContextMode.APPEND,
             )
         if description:
             self.set_additional_context(
                 context_key=AdditionalContextKey.INTRO_CONTEXT,
                 context=f"You can be described as: {description}.",
-                mode="append",
+                mode=PromptContextMode.APPEND,
             )
         return self
 
@@ -475,7 +481,7 @@ class ConversationPrompt(Prompt):
                 "Use natural pauses in the wording instead of SSML, XML, or markup tags.",
                 "Use [laughter] sparingly for warmth. One emotion cue per utterance — don't stack.",
             ],
-            mode="append",
+            mode=PromptContextMode.APPEND,
         )
         return self
 
@@ -488,7 +494,7 @@ class ConversationPrompt(Prompt):
                 "Keep responses short and conversational. No markdown, lists, or formatting.",
                 "Spell out numbers, dates, and emails clearly (e.g., 'j-o-h-n dot d-o-e at example dot com').",
             ],
-            mode="append",
+            mode=PromptContextMode.APPEND,
         )
         return self
 
@@ -497,7 +503,7 @@ class ConversationPrompt(Prompt):
         self.set_additional_context(
             context_key=AdditionalContextKey.MISC_CONTEXT,
             context=context,
-            mode="replace",
+            mode=PromptContextMode.REPLACE,
         )
         return self
 
@@ -519,7 +525,7 @@ class ConversationPrompt(Prompt):
         self.set_additional_context(
             context_key=AdditionalContextKey.CONVERSATION_MEMORY_CONTEXT,
             context=facts,
-            mode="replace",
+            mode=PromptContextMode.REPLACE,
         )
         return self
 

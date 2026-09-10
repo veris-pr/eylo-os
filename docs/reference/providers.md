@@ -412,6 +412,37 @@ truncation behavior is declared with `RerankingTruncation`, independently from
 the platform candidate/content budgets. Public ranking status/reason strings
 remain unchanged.
 
+### Sandbox configuration and verified authority
+
+Sandbox config is parsed into frozen `SandboxExecutionSettings`: endpoint,
+image and every resource limit are explicit. Docker V1 accepts only an absolute
+Unix socket, no credentials, no network access and a tmpfs workspace no larger
+than its memory ceiling. Storage retains the existing config keys.
+
+Verification and live acquisition use the same typed manifest builder. Resolved
+work pins the verified image identity, not the operator's mutable image tag.
+Verification metadata must match the endpoint, configured image, network mode
+and workspace backend. Callers can supply staged files/environment values but
+cannot override the manifest's resource or network policy.
+
+Verification runs provider probes outside the DB transaction, then marks only
+the unchanged config revision verified. New, reused and restored AgentRun
+workspaces require current grant authority; restore also compares pinned config
+policy. Reservation commits before container creation. A failed creation,
+restore or activation follows the existing cleanup path. These contracts do not
+imply that a Docker daemon is installed or reachable on a deployment.
+
+The Docker adapter keeps native SDK `Container`/`Image` resource owners inside
+the vendor boundary. Frozen response models validate consumed execution IDs,
+exit status, isolation evidence and server version before platform use; unknown
+vendor fields are ignored. Demultiplexed output must contain bytes or null per
+channel. Socket-based file writes/restores close their channel on every exit;
+stream consumers close their SDK stream even when validation or a byte limit
+rejects output. This targets the locked/installed Docker SDK 7.2.0 contract:
+[detached container returns](https://docker-py.readthedocs.io/en/stable/containers.html#docker.models.containers.ContainerCollection.run)
+and [execution sockets](https://docker-py.readthedocs.io/en/stable/api.html#docker.api.exec_api.ExecApiMixin.exec_start).
+It does not establish abrupt-process recovery or live daemon readiness.
+
 ## Readiness
 
 A provider config is ready when all of these are true:

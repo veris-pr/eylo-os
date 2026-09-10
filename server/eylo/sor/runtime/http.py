@@ -141,7 +141,7 @@ class SorJsonHttpClient:
             )
         except HttpEgressPolicyError as error:
             raise SorVendorTransportError(
-                "vendor_transport_invalid",
+                SorVendorErrorCode.VENDOR_TRANSPORT_INVALID,
                 "The vendor transport configuration is invalid.",
                 recovery=SorRecoveryPolicy.TERMINAL,
             ) from error
@@ -202,13 +202,13 @@ class SorJsonHttpClient:
             locations = response.header_values("location")
             if len(locations) != 1 or not locations[0].strip():
                 raise SorVendorTransportError(
-                    "vendor_redirect_invalid",
+                    SorVendorErrorCode.VENDOR_REDIRECT_INVALID,
                     "The vendor returned an invalid download redirect.",
                     recovery=SorRecoveryPolicy.TERMINAL,
                 )
             if redirects >= _MAX_BINARY_REDIRECTS:
                 raise SorVendorTransportError(
-                    "vendor_redirect_limit",
+                    SorVendorErrorCode.VENDOR_REDIRECT_LIMIT,
                     "The vendor download exceeded its redirect limit.",
                     recovery=SorRecoveryPolicy.TERMINAL,
                 )
@@ -242,7 +242,7 @@ class SorJsonHttpClient:
                 )
             except HttpEgressPolicyError as error:
                 raise SorVendorTransportError(
-                    "vendor_redirect_invalid",
+                    SorVendorErrorCode.VENDOR_REDIRECT_INVALID,
                     "The vendor returned an invalid download redirect.",
                     recovery=SorRecoveryPolicy.TERMINAL,
                 ) from error
@@ -285,7 +285,7 @@ class SorJsonHttpClient:
     ) -> HttpEgressRequest:
         if "://" in path or not path.startswith("/"):
             raise SorVendorTransportError(
-                "vendor_path_invalid",
+                SorVendorErrorCode.VENDOR_PATH_INVALID,
                 "A SOR adapter must use an absolute path on its pinned origin.",
                 recovery=SorRecoveryPolicy.TERMINAL,
             )
@@ -309,7 +309,7 @@ class SorJsonHttpClient:
             )
         except HttpEgressPolicyError as error:
             raise SorVendorTransportError(
-                "vendor_request_invalid",
+                SorVendorErrorCode.VENDOR_REQUEST_INVALID,
                 "The vendor request was rejected before network access.",
                 recovery=SorRecoveryPolicy.TERMINAL,
             ) from error
@@ -326,14 +326,14 @@ class SorJsonHttpClient:
     ) -> HttpEgressRequest:
         if "://" in path or not path.startswith("/"):
             raise SorVendorTransportError(
-                "vendor_path_invalid",
+                SorVendorErrorCode.VENDOR_PATH_INVALID,
                 "A SOR adapter must use an absolute path on its pinned origin.",
                 recovery=SorRecoveryPolicy.TERMINAL,
             )
         normalized_method = method.strip().upper()
         if payload is not None and normalized_method in _SAFE_METHODS:
             raise SorVendorTransportError(
-                "vendor_request_invalid",
+                SorVendorErrorCode.VENDOR_REQUEST_INVALID,
                 "A safe-method vendor request cannot carry a body.",
                 recovery=SorRecoveryPolicy.TERMINAL,
             )
@@ -353,7 +353,7 @@ class SorJsonHttpClient:
                 ).encode()
             except (TypeError, ValueError) as error:
                 raise SorVendorTransportError(
-                    "vendor_request_invalid",
+                    SorVendorErrorCode.VENDOR_REQUEST_INVALID,
                     "The vendor request payload is not JSON serializable.",
                     recovery=SorRecoveryPolicy.TERMINAL,
                 ) from error
@@ -368,7 +368,7 @@ class SorJsonHttpClient:
                 or "\n" in if_unmodified_since
             ):
                 raise SorVendorTransportError(
-                    "vendor_request_invalid",
+                    SorVendorErrorCode.VENDOR_REQUEST_INVALID,
                     "The conditional source revision is invalid.",
                     recovery=SorRecoveryPolicy.TERMINAL,
                 )
@@ -390,7 +390,7 @@ class SorJsonHttpClient:
             )
         except HttpEgressPolicyError as error:
             raise SorVendorTransportError(
-                "vendor_request_invalid",
+                SorVendorErrorCode.VENDOR_REQUEST_INVALID,
                 "The vendor request was rejected before network access.",
                 recovery=SorRecoveryPolicy.TERMINAL,
             ) from error
@@ -413,13 +413,13 @@ def _query_pairs(
                     pairs.append((name, str(item)))
                 else:
                     raise SorVendorTransportError(
-                        "vendor_query_invalid",
+                        SorVendorErrorCode.VENDOR_QUERY_INVALID,
                         "Vendor query lists must contain scalar values.",
                         recovery=SorRecoveryPolicy.TERMINAL,
                     )
         else:
             raise SorVendorTransportError(
-                "vendor_query_invalid",
+                SorVendorErrorCode.VENDOR_QUERY_INVALID,
                 "Vendor query values must be scalar values or scalar lists.",
                 recovery=SorRecoveryPolicy.TERMINAL,
             )
@@ -448,7 +448,7 @@ def _validated_default_headers(
             or len(normalized_value) > 4096
         ):
             raise SorVendorTransportError(
-                "vendor_transport_invalid",
+                SorVendorErrorCode.VENDOR_TRANSPORT_INVALID,
                 "The vendor transport headers are invalid.",
                 recovery=SorRecoveryPolicy.TERMINAL,
             )
@@ -465,7 +465,7 @@ def _parse_json(response: HttpEgressResponse) -> object | None:
         media_type = media_types[0].split(";", 1)[0].strip().casefold()
         if media_type != "application/json" and not media_type.endswith("+json"):
             raise SorVendorTransportError(
-                "vendor_media_unsupported",
+                SorVendorErrorCode.VENDOR_MEDIA_UNSUPPORTED,
                 "The vendor returned an unsupported response media type.",
                 recovery=SorRecoveryPolicy.TERMINAL,
             )

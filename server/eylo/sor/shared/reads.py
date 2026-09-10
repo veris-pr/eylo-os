@@ -8,12 +8,13 @@ import hashlib
 import json
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
-from typing import Any, cast
+from typing import Any, Self, cast
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict, Field, InstanceOf, model_validator
+from pydantic.json_schema import SkipJsonSchema
 from sqlalchemy import (
     String,
     and_,
@@ -27,7 +28,7 @@ from sqlalchemy import (
 )
 from sqlalchemy import cast as sql_cast
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased, load_only
+from sqlalchemy.orm import QueryableAttribute, aliased, load_only
 from sqlalchemy.sql import Select
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -300,18 +301,21 @@ def _truncate_grid_label(value: str, limit: int) -> str:
     return f"{value[: limit - 1].rstrip()}…"
 
 
-@dataclass(frozen=True, slots=True)
-class SorReadFieldSpec:
+class SorReadFieldSpec(BaseModel):
     """One canonical field exposed to filters, grids, and response values."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
     key: str
     label: str
     kind: SorGridColumnKind
     importance: SorGridColumnImportance
-    expression: ColumnElement[Any]
-    read_value: Callable[
-        [SorRecordModel, SorProfileRecordModel | None, SorSourceModel], object
-    ]
+    expression: SkipJsonSchema[
+        InstanceOf[QueryableAttribute[Any]] | InstanceOf[ColumnElement[Any]]
+    ] = Field(exclude=True, repr=False)
+    read_value: SkipJsonSchema[
+        Callable[[SorRecordModel, SorProfileRecordModel | None, SorSourceModel], object]
+    ] = Field(exclude=True, repr=False)
     default_visible: bool = True
     filterable: bool = True
     sortable: bool = True
@@ -320,10 +324,11 @@ class SorReadFieldSpec:
     reference_entity: str | None = None
     value_key: str | None = None
 
-    def __post_init__(self) -> None:
+    @model_validator(mode="after")
+    def validate_reference(self) -> Self:
         """Keep human-reference metadata attached only to reference-shaped fields."""
         if self.reference_entity is None:
-            return
+            return self
         if self.kind not in {
             SorGridColumnKind.REFERENCE,
             SorGridColumnKind.STRING_ARRAY,
@@ -335,6 +340,21 @@ class SorReadFieldSpec:
             raise ValueError(f"SOR field '{self.key}' reference entity is empty.")
         if self.value_key is None or not self.value_key.strip():
             raise ValueError(f"SOR field '{self.key}' reference value key is empty.")
+        return self
+
+    @property
+    def orm_attribute(self) -> QueryableAttribute[Any]:
+        """Selective ORM loading accepts mapped attributes, never computed SQL."""
+        if not isinstance(self.expression, QueryableAttribute):
+            raise ValueError(f"SOR field '{self.key}' is not a mapped ORM attribute.")
+        return self.expression
+
+    @property
+    def sql_expression(self) -> ColumnElement[Any]:
+        """Keep custom-dataset expressions intact and translate mapped attributes."""
+        if isinstance(self.expression, QueryableAttribute):
+            return self.expression.__clause_element__()
+        return self.expression
 
     def grid_column(self) -> SorGridColumn:
         return SorGridColumn(
@@ -350,17 +370,21 @@ class SorReadFieldSpec:
         )
 
 
-@dataclass(frozen=True, slots=True)
-class SorEntityReadSpec:
+class SorEntityReadSpec(BaseModel):
     """Explicit profile-owned query contract for one canonical entity."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
     profile: SorProfile
     entity: str
-    model: type[SorProfileRecordModel] | None
+    model: SkipJsonSchema[type[SorProfileRecordModel] | None] = Field(
+        exclude=True, repr=False
+    )
     fields: tuple[SorReadFieldSpec, ...]
     vendor_object_key: str | None = None
 
-    def __post_init__(self) -> None:
+    @model_validator(mode="after")
+    def validate_fields(self) -> Self:
         """Reject ambiguous profile contracts before an API request reaches them."""
         field_keys = tuple(field.key for field in self.fields)
         if len(field_keys) != len(set(field_keys)):
@@ -373,44 +397,80 @@ class SorEntityReadSpec:
                 f"SOR {self.profile.value}/{self.entity} cannot redefine shared grid "
                 "columns: " + ", ".join(conflicts) + "."
             )
+        if self.model is not None:
+            for field in self.fields:
+                field.orm_attribute
+        return self
 
 
-@dataclass(frozen=True, slots=True)
-class _CustomColumn:
+class _CustomColumn(BaseModel):
+    """Runtime custom-column context; ORM and SQL dependencies are not snapshots."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
     key: str
-    definition: SorCustomFieldDefinitionModel
-    field_mapping: SorFieldMappingModel
-    expression: ColumnElement[Any]
+    definition: SkipJsonSchema[InstanceOf[SorCustomFieldDefinitionModel]] = Field(
+        exclude=True, repr=False
+    )
+    field_mapping: SkipJsonSchema[InstanceOf[SorFieldMappingModel]] = Field(
+        exclude=True, repr=False
+    )
+    expression: SkipJsonSchema[InstanceOf[ColumnElement[Any]]] = Field(
+        exclude=True, repr=False
+    )
     grid_column: SorGridColumn
 
 
-@dataclass(frozen=True, slots=True)
-class _FieldContract:
-    expression: ColumnElement[Any]
+class _FieldContract(BaseModel):
+    """Filter semantics with identity-preserved SQL and optional custom authority."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+    expression: SkipJsonSchema[InstanceOf[ColumnElement[Any]]] = Field(
+        exclude=True, repr=False
+    )
     grid_column: SorGridColumn
-    custom_definition: SorCustomFieldDefinitionModel | None = None
+    custom_definition: SkipJsonSchema[InstanceOf[SorCustomFieldDefinitionModel] | None] = (
+        Field(default=None, exclude=True, repr=False)
+    )
     reference_entity: str | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class _OrderTerm:
-    expression: ColumnElement[Any]
+class _OrderTerm(BaseModel):
+    """Validated ordering semantics; SQL expressions remain runtime-only."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+    expression: SkipJsonSchema[InstanceOf[ColumnElement[Any]]] = Field(
+        exclude=True, repr=False
+    )
     direction: SorSortDirection
     nulls: SorNullPlacement
 
 
-@dataclass(frozen=True, slots=True)
-class _Cursor:
-    values: tuple[object, ...]
+type _CursorScalar = str | int | float | bool | Decimal | datetime | date | UUID | None
+
+
+class _Cursor(BaseModel):
+    """Decoded keyset values after wire validation and query binding."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+    values: tuple[_CursorScalar, ...]
     record_id: UUID
 
 
-@dataclass(frozen=True, slots=True)
-class _ReadRow:
-    record: SorRecordModel
-    extension: SorProfileRecordModel | None
-    source: SorSourceModel
-    sort_values: tuple[object, ...]
+class _ReadRow(BaseModel):
+    """Transaction-owned projection rows, not serializable API response values."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+    record: SkipJsonSchema[InstanceOf[SorRecordModel]] = Field(exclude=True, repr=False)
+    extension: SkipJsonSchema[InstanceOf[SorProfileRecordModel] | None] = Field(
+        exclude=True, repr=False
+    )
+    source: SkipJsonSchema[InstanceOf[SorSourceModel]] = Field(exclude=True, repr=False)
+    sort_values: tuple[object, ...] = Field(exclude=True, repr=False)
 
 
 async def resolve_reference_labels(
@@ -653,7 +713,7 @@ class SorCollectionReadService:
             load_options.append(
                 load_only(
                     spec.model.record_id,
-                    *(field.expression for field in selected_fields),
+                    *(field.orm_attribute for field in selected_fields),
                 )
             )
         statement = statement.options(*load_options)
@@ -1290,8 +1350,8 @@ class SorCollectionReadService:
     ) -> dict[str, _FieldContract]:
         contract: dict[str, _FieldContract] = {
             field.key: _FieldContract(
-                field.expression,
-                field.grid_column(),
+                expression=field.sql_expression,
+                grid_column=field.grid_column(),
                 reference_entity=field.reference_entity,
             )
             for field in spec.fields
@@ -1299,7 +1359,7 @@ class SorCollectionReadService:
         contract.update(
             {
                 "source": _FieldContract(
-                    expression=cast(ColumnElement[Any], SorSourceModel.name),
+                    expression=SorSourceModel.name.__clause_element__(),
                     grid_column=SorGridColumn(
                         key="source",
                         label="Source",
@@ -1309,9 +1369,7 @@ class SorCollectionReadService:
                     ),
                 ),
                 "source_updated_at": _FieldContract(
-                    expression=cast(
-                        ColumnElement[Any], SorRecordModel.source_updated_at
-                    ),
+                    expression=SorRecordModel.source_updated_at.__clause_element__(),
                     grid_column=SorGridColumn(
                         key="source_updated_at",
                         label="Updated in source",
@@ -1322,7 +1380,7 @@ class SorCollectionReadService:
                     ),
                 ),
                 "projected_at": _FieldContract(
-                    expression=cast(ColumnElement[Any], SorRecordModel.projected_at),
+                    expression=SorRecordModel.projected_at.__clause_element__(),
                     grid_column=SorGridColumn(
                         key="projected_at",
                         label="Synced",
@@ -1639,7 +1697,7 @@ def _compile_order_terms(
     if not ordering:
         ordering.append(
             _OrderTerm(
-                expression=cast(ColumnElement[Any], SorRecordModel.projected_at),
+                expression=SorRecordModel.projected_at.__clause_element__(),
                 direction=SorSortDirection.DESC,
                 nulls=SorNullPlacement.LAST,
             )
@@ -1933,7 +1991,7 @@ def _cursor_value(value: object) -> object:
     raise SorReadInvariantError("SOR ordering produced an unsupported cursor value.")
 
 
-def _restore_cursor_value(value: object) -> object:
+def _restore_cursor_value(value: object) -> _CursorScalar:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     if not isinstance(value, dict) or set(value) != {"type", "value"}:

@@ -5,13 +5,16 @@ from uuid import UUID, uuid4
 
 import arrow
 
-from eylo.modules.agents.schemas.indb import AgentInDb
+from eylo.modules.conversations.constants import CONVERSATION_REENGAGE_ACTION
 from eylo.modules.conversations.schemas.conversations import ConversationContext
 from eylo.modules.tools.services.executors.system_tools import logger
+from eylo.modules.tools.services.executors.system_tools.schedule_tools import (
+    AgentScheduleContext,
+)
 
 
 async def set_agent_reminder(
-    datetime_str: str, message: str, ctx: ConversationContext
+    datetime_str: str, message: str, ctx: AgentScheduleContext
 ) -> Dict[str, Any]:
     """Schedule one user-requested conversation re-engagement.
 
@@ -40,16 +43,18 @@ async def set_agent_reminder(
                 "action_required": "ask_user_for_new_time",
             }
 
-        agent_indb: AgentInDb = ctx.primary_agent
-        conversation_id: UUID = ctx.conversation.id
-        sender_participant_id: UUID = ctx.get_primary_contact().id
-
-        if not all([agent_indb, conversation_id, sender_participant_id]):
+        if (
+            not isinstance(ctx, ConversationContext)
+            or ctx.primary_agent is None
+            or ctx.get_primary_contact() is None
+        ):
             return {
                 "success": False,
                 "message": "System error: Missing conversation context",
                 "action_required": "apologize_and_ask_to_retry",
             }
+        agent_indb = ctx.primary_agent
+        conversation_id: UUID = ctx.conversation.id
 
         # Through the scheduler, as a one-shot schedule. This used to write to
         # `tool_agent_schedules` and be picked up by a cron that only looked
@@ -70,7 +75,7 @@ async def set_agent_reminder(
             # stable key would have the second silently overwrite the first.
             key=f"reminder:{conversation_id}:{uuid4()}",
             name=f"Reminder for conversation {conversation_id}",
-            action="conversation.reengage",
+            action=CONVERSATION_REENGAGE_ACTION,
             payload={
                 "conversation_id": str(conversation_id),
                 "message": message,

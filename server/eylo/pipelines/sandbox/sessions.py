@@ -27,10 +27,12 @@ from eylo.modules.sandbox.models import (
     SandboxSessionModel,
     SandboxWorkspaceCheckpointModel,
 )
+from eylo.modules.sandbox_configs.domain import ResolvedSandbox
 from eylo.pipelines.sandbox.resolver import (
     resolve_pinned_sandbox_adapter,
     resolve_sandbox_adapter,
 )
+from eylo.sockets.sandbox.base import SandboxVendorAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -210,7 +212,7 @@ async def acquire(
     agent_run_id: UUID | None = None,
     files: dict[str, str] | None = None,
     env: dict[str, str] | None = None,
-):
+) -> tuple[SandboxVendorAdapter, SandboxSession]:
     """Authorize current access, then atomically reserve one pinned workspace."""
     checkpoint_archive: bytes | None = None
     checkpoint_digest: str | None = None
@@ -281,24 +283,23 @@ async def acquire(
             )
             checkpoint_archive = bytes(checkpoint.workspace_archive)
             checkpoint_digest = checkpoint.workspace_digest
-        if checkpoint is None and agent_id is not None:
-            assert grant_row is not None
-            selected_config_id = grant_row.sandbox_provider_config_id
-            if sandbox_provider_config_id is not None and not _same_identifier(
-                sandbox_provider_config_id,
-                selected_config_id,
-            ):
-                raise SandboxAccessError(
-                    "Requested sandbox config does not match the agent's grant."
+        else:
+            if agent_id is not None:
+                assert grant_row is not None
+                selected_config_id = grant_row.sandbox_provider_config_id
+                if sandbox_provider_config_id is not None and not _same_identifier(
+                    sandbox_provider_config_id,
+                    selected_config_id,
+                ):
+                    raise SandboxAccessError(
+                        "Requested sandbox config does not match the agent's grant."
+                    )
+            elif sandbox_provider_config_id is not None:
+                selected_config_id = sandbox_provider_config_id
+            else:
+                raise SandboxError(
+                    "A direct sandbox invocation requires sandbox_provider_config_id."
                 )
-        elif checkpoint is None and sandbox_provider_config_id is None:
-            raise SandboxError(
-                "A direct sandbox invocation requires sandbox_provider_config_id."
-            )
-        elif checkpoint is None:
-            selected_config_id = sandbox_provider_config_id
-
-        if checkpoint is None:
             adapter, resolved = await resolve_sandbox_adapter(
                 organization_id,
                 provider_config_id=selected_config_id,
@@ -332,7 +333,7 @@ async def acquire(
             effective_policy=effective_policy,
             state=SandboxState.STARTING,
             workspace="/workspace",
-            expires_at=now.shift(seconds=int(resolved.config["ttl_seconds"])).datetime,
+            expires_at=now.shift(seconds=resolved.config.ttl_seconds).datetime,
             last_used_at=now.datetime,
         )
         db.add(reservation)
@@ -372,7 +373,7 @@ async def acquire(
 
 async def _cleanup_failed_acquisition(
     *,
-    adapter,
+    adapter: SandboxVendorAdapter,
     session: SandboxSession | None,
     reservation_id: UUID,
 ) -> None:
@@ -871,16 +872,16 @@ async def _assert_capacity(
         )
 
 
-def _config_policy(resolved) -> dict[str, object]:
+def _config_policy(resolved: ResolvedSandbox) -> dict[str, object]:
     return {
-        **dict(resolved.config),
+        **resolved.config.to_storage(),
         "verified_image_id": resolved.verified_image_id,
         "network": False,
     }
 
 
 def _effective_policy(
-    resolved,
+    resolved: ResolvedSandbox,
     *,
     grant_max_sessions: object = None,
 ) -> dict[str, object]:
@@ -890,7 +891,9 @@ def _effective_policy(
     }
 
 
-def _assert_checkpoint_matches_resolved(checkpoint, resolved) -> None:
+def _assert_checkpoint_matches_resolved(
+    checkpoint: SandboxWorkspaceCheckpointModel, resolved: ResolvedSandbox
+) -> None:
     checkpoint_config_policy = dict(checkpoint.effective_policy)
     checkpoint_config_policy.pop("grant_max_sessions", None)
     if (

@@ -278,10 +278,15 @@ INTERCOM_MANIFEST = SorAdapterCapabilityManifest(
     change_strategies=frozenset(
         {SorChangeStrategy.UPDATED_AT, SorChangeStrategy.FULL_RECONCILE}
     ),
-    required_scopes=_STREAM_SCOPES,
-    tool_required_scopes=_TOOL_SCOPES,
-    tool_streams=_TOOL_STREAMS,
-    mutation_result_streams=_MUTATION_RESULT_STREAMS,
+    required_scopes={stream.value: scopes for stream, scopes in _STREAM_SCOPES.items()},
+    tool_required_scopes={tool.value: scopes for tool, scopes in _TOOL_SCOPES.items()},
+    tool_streams={
+        tool.value: frozenset(stream.value for stream in streams)
+        for tool, streams in _TOOL_STREAMS.items()
+    },
+    mutation_result_streams={
+        tool.value: stream.value for tool, stream in _MUTATION_RESULT_STREAMS.items()
+    },
     oauth=SorOAuthSpec(
         authorization_path="/oauth",
         token_url="https://api.intercom.io/auth/eagle/token",
@@ -548,7 +553,9 @@ class IntercomSupportAdapter:
         streams = {stream.key: stream for stream in INTERCOM_MANIFEST.streams}
         objects: list[SorDiscoveredObject] = []
         for stream_key in self._context.selected_objects:
-            _require_stream(stream_key, selected=self._context.selected_objects)
+            stream_key = _require_stream(
+                stream_key, selected=self._context.selected_objects
+            )
             fields = _SCHEMA_FIELDS[stream_key]
             if stream_key == IntercomStream.CONTACTS:
                 fields = (*fields, *contact_attributes)
@@ -1105,7 +1112,7 @@ class IntercomSupportAdapter:
     async def _read_reconcile_page(
         self,
         *,
-        stream_key: str,
+        stream_key: IntercomStream,
         cursor: str | None,
         limit: int,
     ) -> SorRecordPage:
@@ -1127,7 +1134,9 @@ class IntercomSupportAdapter:
             has_more=has_more,
         )
 
-    async def _reconcile_rows(self, stream_key: str) -> list[dict[str, object]]:
+    async def _reconcile_rows(
+        self, stream_key: IntercomStream
+    ) -> list[dict[str, object]]:
         endpoint, response_key = {
             IntercomStream.ADMINS: ("/admins", IntercomStream.ADMINS),
             IntercomStream.TEAMS: ("/teams", IntercomStream.TEAMS),
@@ -1696,14 +1705,14 @@ def _credential(credentials: Mapping[str, object], name: str) -> str:
     return value.strip()
 
 
-def _require_stream(stream_key: str, *, selected: Sequence[str]) -> str:
+def _require_stream(stream_key: str, *, selected: Sequence[str]) -> IntercomStream:
     if stream_key not in _STREAM_ENTITY or stream_key not in selected:
         raise SorVendorOperationError(
             SorVendorErrorCode.VENDOR_STREAM_UNAVAILABLE,
             "The requested Intercom stream is not selected for this source.",
             recovery=SorRecoveryPolicy.TERMINAL,
         )
-    return stream_key
+    return IntercomStream(stream_key)
 
 
 def _attribute_fields(
@@ -1725,14 +1734,14 @@ def _attribute_fields(
                 _custom_attribute_key(name),
                 _optional_string(attribute.get("label")) or name,
                 {
-                    "boolean": "boolean",
-                    "date": "timestamp",
-                    "datetime": "timestamp",
-                    "float": "decimal",
-                    "integer": "integer",
-                    "list": "bounded_json",
-                    "object": "bounded_json",
-                }.get(native_type, "text"),
+                    "boolean": SorFieldDataType.BOOLEAN,
+                    "date": SorFieldDataType.TIMESTAMP,
+                    "datetime": SorFieldDataType.TIMESTAMP,
+                    "float": SorFieldDataType.DECIMAL,
+                    "integer": SorFieldDataType.INTEGER,
+                    "list": SorFieldDataType.BOUNDED_JSON,
+                    "object": SorFieldDataType.BOUNDED_JSON,
+                }.get(native_type, SorFieldDataType.TEXT),
                 writable=writable,
                 description=_optional_string(attribute.get("description")),
             )

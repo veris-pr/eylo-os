@@ -154,10 +154,10 @@ class CaseInSensitiveEnum(str, Enum):
                 return member
 
         try:
-            return cls[value.upper()]  # Try to access directly with uppercase
+            return cls.__members__[value.upper()]
         except KeyError:
             try:
-                return cls[value.lower()]  # Try to access directly with lowercase
+                return cls.__members__[value.lower()]
             except KeyError:
                 logger.warning("Invalid enum value enum=%s", cls.__name__)
                 try:

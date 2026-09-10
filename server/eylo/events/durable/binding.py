@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 
 from eylo.common.database import start_transaction
@@ -22,14 +22,25 @@ logger = logging.getLogger(__name__)
 
 EVENT_DELIVERY_WORKFLOW = "eylo.events.deliver.v1"
 EVENT_DELIVERY_IDEMPOTENCY_PREFIX = "event-delivery:v1"
+EVENT_DELIVERY_RECOVERY_LIMIT = 100
 
 
-@dataclass(frozen=True, slots=True)
-class EventDeliverySpawnBatch:
+class EventDeliverySpawnBatch(BaseModel):
     """Independent spawn outcomes; one failure never hides another."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
     task_ids: tuple[UUID, ...]
     failures: tuple[tuple[UUID, str], ...]
+
+
+class _DeliveryIdentity(BaseModel):
+    """Detached delivery ownership, never an ORM row or request session."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+    organization_id: UUID
+    delivery_id: UUID
 
 
 async def spawn_event_delivery(
@@ -69,20 +80,24 @@ async def spawn_event_deliveries(
             ).all()
         )
     return await _spawn_batch(
-        tuple((organization_id, delivery_id) for delivery_id in delivery_ids)
+        tuple(
+            _DeliveryIdentity(organization_id=organization_id, delivery_id=delivery_id)
+            for delivery_id in delivery_ids
+        )
     )
 
 
 async def spawn_unbound_event_deliveries(
     *,
-    limit: int = 100,
+    limit: int = EVENT_DELIVERY_RECOVERY_LIMIT,
 ) -> EventDeliverySpawnBatch:
     """Recover commit-before-spawn gaps without adding another claim protocol."""
     if limit < 1:
         raise ValueError("Event delivery recovery limit must be positive.")
     async with start_transaction(ro=True) as session:
         rows = tuple(
-            (
+            _DeliveryIdentity(organization_id=organization_id, delivery_id=delivery_id)
+            for organization_id, delivery_id in (
                 await session.execute(
                     select(
                         EventDeliveryModel.organization_id,
@@ -108,7 +123,7 @@ async def spawn_unbound_event_deliveries(
 
 
 async def _spawn_batch(
-    rows: tuple[tuple[UUID, UUID], ...],
+    rows: tuple[_DeliveryIdentity, ...],
 ) -> EventDeliverySpawnBatch:
     if not rows:
         return EventDeliverySpawnBatch(task_ids=(), failures=())
@@ -118,10 +133,10 @@ async def _spawn_batch(
             *(
                 _spawn_with_runtime(
                     runtime,
-                    organization_id=organization_id,
-                    delivery_id=delivery_id,
+                    organization_id=row.organization_id,
+                    delivery_id=row.delivery_id,
                 )
-                for organization_id, delivery_id in rows
+                for row in rows
             ),
             return_exceptions=True,
         )
@@ -130,9 +145,9 @@ async def _spawn_batch(
 
     task_ids: list[UUID] = []
     failures: list[tuple[UUID, str]] = []
-    for (_, delivery_id), result in zip(rows, results, strict=True):
+    for row, result in zip(rows, results, strict=True):
         if isinstance(result, BaseException):
-            failures.append((delivery_id, str(result) or type(result).__name__))
+            failures.append((row.delivery_id, str(result) or type(result).__name__))
         else:
             task_ids.append(result)
     return EventDeliverySpawnBatch(

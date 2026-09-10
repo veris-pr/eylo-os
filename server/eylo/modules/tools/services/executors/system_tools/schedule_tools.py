@@ -1,11 +1,13 @@
 """Registered scheduling system tools."""
 
-from typing import Any
+from typing import Any, Protocol
 from uuid import uuid4
 
 import arrow
 
 from eylo.common.contracts.scheduler import InvalidRecurrence, Recurrence
+from eylo.modules.agents.schemas.indb import AgentInDb
+from eylo.modules.conversations.constants import CONVERSATION_SCHEDULE_CONTEXT_KEY
 from eylo.modules.conversations.schemas.conversations import ConversationContext
 from eylo.modules.scheduler.actions import action_spec, agent_actions
 from eylo.modules.scheduler.discovery import register_scheduled_actions
@@ -18,6 +20,14 @@ from eylo.modules.scheduler.service import (
 from eylo.modules.tools.services.executors.system_tools import logger
 
 MAX_LISTED = 20
+LIST_ACTIONS_COMMAND = "list"
+
+
+class AgentScheduleContext(Protocol):
+    """Agent authority shared by conversation and non-conversation tool runtimes."""
+
+    @property
+    def primary_agent(self) -> AgentInDb | None: ...
 
 
 async def schedule_create(
@@ -27,7 +37,7 @@ async def schedule_create(
     timezone: str | None = None,
     payload: dict | None = None,
     name: str | None = None,
-    ctx: ConversationContext = None,
+    ctx: AgentScheduleContext | None = None,
 ) -> dict[str, Any]:
     """Schedule something to happen later, once or on a repeating rule.
 
@@ -61,7 +71,7 @@ async def schedule_create(
         - message (str): On failure, what to fix.
 
     """
-    agent = getattr(ctx, "primary_agent", None) if ctx else None
+    agent = ctx.primary_agent if ctx is not None else None
     if agent is None:
         return {"success": False, "message": "No agent in context."}
     if agent.published_revision is None:
@@ -72,8 +82,9 @@ async def schedule_create(
 
     register_scheduled_actions()
     available = agent_actions()
+    spec = action_spec(action)
 
-    if action == "list" or action not in available:
+    if action == LIST_ACTIONS_COMMAND or action not in available or spec is None:
         return {
             "success": False,
             "available_actions": list(available),
@@ -109,7 +120,6 @@ async def schedule_create(
 
     # Context-owned keys overwrite model input so tenant and conversation
     # identity never become model-supplied authority.
-    spec = action_spec(action)
     resolved = dict(payload or {})
     supplied = [key for key in spec.context_keys if key in resolved]
     if supplied:
@@ -155,7 +165,7 @@ async def schedule_create(
     }
 
 
-async def schedule_list(ctx: ConversationContext = None) -> dict[str, Any]:
+async def schedule_list(ctx: AgentScheduleContext | None = None) -> dict[str, Any]:
     """List the schedules you have created, and when each next runs.
 
     Only your own. Schedules an operator set up are not yours to see or change.
@@ -167,7 +177,7 @@ async def schedule_list(ctx: ConversationContext = None) -> dict[str, Any]:
           whether it is still active.
 
     """
-    agent = getattr(ctx, "primary_agent", None) if ctx else None
+    agent = ctx.primary_agent if ctx is not None else None
     if agent is None:
         return {"success": False, "schedules": [], "message": "No agent in context."}
 
@@ -192,7 +202,7 @@ async def schedule_list(ctx: ConversationContext = None) -> dict[str, Any]:
 
 
 async def schedule_cancel(
-    schedule_id: str, ctx: ConversationContext = None
+    schedule_id: str, ctx: AgentScheduleContext | None = None
 ) -> dict[str, Any]:
     """Cancel a schedule you created, so it stops running.
 
@@ -204,7 +214,7 @@ async def schedule_cancel(
         yours fails — it does not silently do nothing.
 
     """
-    agent = getattr(ctx, "primary_agent", None) if ctx else None
+    agent = ctx.primary_agent if ctx is not None else None
     if agent is None:
         return {"success": False, "message": "No agent in context."}
 
@@ -229,13 +239,14 @@ async def schedule_cancel(
     return {"success": True, "message": "Cancelled."}
 
 
-def _from_context(key: str, ctx: ConversationContext):
+def _from_context(key: str, ctx: AgentScheduleContext | None) -> str | None:
     """Resolve a platform-owned payload key from the conversation.
 
     Only keys named here can ever be filled, so an action declaring a key this
     does not know fails loudly rather than scheduling with it missing.
     """
-    if key == "conversation_id":
-        conversation = getattr(ctx, "conversation", None)
-        return str(conversation.id) if conversation else None
+    if key == CONVERSATION_SCHEDULE_CONTEXT_KEY and isinstance(
+        ctx, ConversationContext
+    ):
+        return str(ctx.conversation.id)
     return None

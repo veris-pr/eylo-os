@@ -83,6 +83,14 @@ snapshot deliberately excludes artifacts created during tool execution.
 
 ## Tool availability
 
+Code-owned declaration metadata uses frozen `ToolFunctionMetadata` values:
+an optional input-schema class, a feature flag, and catalog visibility. Producers
+attach it through `set_tool_metadata`; registration reads it through
+`get_tool_metadata`. These helpers retain the original Python function, its
+signature and its LLM-facing docstring. The live schema class is excluded from
+JSON snapshots and public metadata schemas. Tools without metadata still use
+signature inference. These declarations are not grants or provider permissions.
+
 Tool assignment and tool availability are different facts.
 
 - Assignment: the published Agent revision contains the tool relation.
@@ -92,6 +100,26 @@ Tool assignment and tool availability are different facts.
 For example, `place_call` needs ready telephony, an Agent telephony mapping,
 and durable execution. `dial_keypad` needs an active call. `end_call` needs an
 active voice session and works for widget/realtime voice as well as telephony.
+
+## Scheduling from an agent
+
+The action registry distinguishes operator-only actions from agent-allowed actions
+with `AgentSchedulingAccess`. Registry metadata and action-context values are
+frozen Pydantic models; handler references are excluded from snapshots and public
+schema generation. Action names remain registry-owned strings, not a closed enum
+shared between unrelated modules.
+
+Schedule tools use the executing agent's organization and identity. Listing and
+cancellation also work for non-conversation agent runs. An action requiring a
+conversation ID can obtain it only from a real `ConversationContext`; the scope
+ID of a durable/background run is not a conversation. Submitted scope IDs never
+override context-owned values. Conversation reminders additionally require the
+contact participant to be present.
+
+The due-job path persists an occurrence and creates a scheduled AgentRun from its
+action and payload. It does not directly invoke the registry's older action
+handler dispatcher. Registration and tool-input checks alone do not prove that
+the agent completed the scheduled action or delivered a later message.
 
 ## Durable waits
 

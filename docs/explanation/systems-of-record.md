@@ -25,6 +25,77 @@ The shared `connections` module owns encrypted external-account credentials.
 Vendor HTTP remains inside explicit SOR adapters. Core `modules/` do not absorb
 vendor records, and generic integrations do not define SOR policy.
 
+Vendor implementations retain their own stream enums and each profile's tool
+enums. At registration, manifests expose validated string identifiers to shared
+catalog, OAuth and command consumers; shared code does not import a vendor's
+enum. Manifests and stream specifications are frozen Pydantic values. Scope,
+tool-stream and mutation-result mappings are copied and frozen so changing a
+vendor's source dictionary cannot change an already registered capability.
+Factory callables retain their identity and never enter catalog snapshots.
+
+On execution, HubSpot validates shared stream/tool identifiers against its own
+enum and the active source selection before constructing HTTP requests. Custom
+property names remain dynamic mapping data. Its webhook normalizer retains the
+vendor's required timestamp in a frozen Pydantic hint while deduplicating, then
+translates to the shared signal contract. Other vendors are not forced to supply
+a timestamp merely because HubSpot requires one.
+
+Salesforce similarly validates fixed CRM tool names, but its custom-object and
+custom-field names remain dynamic source data. Confluence validates its fixed
+stream vocabulary before discovery and nested reads. Its page-update mode and
+validated command payload distinguish appending required text from updating a
+title, replacing content, or preserving content when the update omits it.
+
+Linear's Knowledge and Ticketing adapters validate their separate stream enums
+before discovery and reads. Read cursors are frozen Pydantic values with aware
+timestamps; attachment offsets are non-negative integers. Explicit encoders keep
+the existing durable cursor formats independent of the model representation.
+Workflow-state projection accepts the canonical integer or Decimal position,
+refusing fractional Decimal values before the integer-only typed projection.
+
+Both Linear adapters share a vendor-owned, typed GraphQL error envelope, separate
+from canonical SOR record schemas. Partial data accompanied by errors is never a
+successful projection. Linear reports [GraphQL rate limits as HTTP 400 with
+`RATELIMITED`](https://linear.app/developers/rate-limiting); Eylo classifies that
+response as retryable before the generic client-error rejection. HTTP auth and
+server failures retain precedence. The adapter classifies the failure; the SOR
+runtime still owns retries.
+
+Linear Knowledge also validates the selected document, author, related-entity
+and pagination fields into vendor-owned models before projecting source records.
+The same document model supports attachment lookup/download. Null content and
+deleted related users remain valid; missing required fields or malformed nodes
+fail the page instead of producing partial records. A null record means not
+found; a missing result field means a malformed response. Read-query variables
+are typed and serialized at the HTTP boundary. Timestamp strings retain their
+original spelling in source payloads, avoiding hash churn; cursor comparisons
+and source metadata use parsed timestamps. This does not imply equivalent native
+record coverage for the other adapters.
+
+Linear Ticketing has its own native projections for all nine selected streams,
+plus typed read variables, issue inputs and mutation replies. Native models stay
+inside the adapter; selected source fields still cross the dynamic mapping
+boundary before canonical Ticketing normalization. Omitted update fields remain
+omitted; explicit null assignees still clear assignments. Linear's integer-only
+estimate input rejects fractional values before sending a request, while read
+estimates preserve the vendor's numeric representation. Create requires a team.
+Mutation replies consume identity and revision, not an invented full issue.
+Create-like operations with an uncertain transport outcome still require
+reconciliation, never a blind adapter retry.
+
+Jira, GitHub, Notion, Zendesk and Intercom return their native stream enums from
+the selected-stream guard; discovery and downstream reads keep that validated
+type rather than indexing a native catalog with unchecked strings. Freshdesk
+also supports dynamic custom-object keys, so it converts only fixed-catalog
+lookups to `FreshdeskStream`. This does not narrow custom-object selection.
+
+Custom-field discovery translates vendor type descriptions into the shared
+`SorFieldDataType` enum. Vendor field names and unsupported native descriptions
+remain source data; existing JSON/text fallback mappings are preserved rather
+than inventing new vendor support. Freshdesk's known numeric status, priority
+and source codes use native enums, while unknown read-side values remain visible
+as text. Writes still require a recognized code.
+
 ## Source lifecycle
 
 An organization configures a source in this order:
@@ -130,6 +201,18 @@ releases children. The periodic worker repairs a terminal run newer than its
 nonterminal generation if the process stops between those commits. Vendor
 latency therefore cannot extend a row-lock lifetime, and sibling finalization
 does not hold one stream's locks while waiting for another stream.
+
+Recovery reads the exact bound engine task outside the DB transaction, then
+rechecks the binding under the product-row lock. A cancelled task cancels the
+unfinished receipt; a failed task, or completed task without a committed product
+result, fails it. Terminal product rows are not overwritten. Source projection
+and generation advancement happen after the receipt transaction commits.
+
+HTTP contract refusals (invalid requests, query values, redirects or response
+media) retain typed terminal vendor errors. They must not become generic Python
+errors and enter provider retries. Transient transport failures retain their
+retry policy; authorization failures retain their separate reauthorization
+policy.
 
 Only incremental work inherits a stream's committed cursor. Bootstrap and
 reconciliation are complete scans with an empty, run-local cursor. They update
@@ -243,6 +326,16 @@ installed Atlassian app delivery contract exists.
 
 ## Revocation and durable recovery
 
+Onboarding results, sync-generation plans and locked page contexts use frozen
+Pydantic contracts. Their ORM rows remain the exact transaction-owned instances;
+those fields are excluded from representations, JSON snapshots and generated
+JSON schemas. These results must not be passed to detached work. Sync counters
+are separate serializable values and accept only non-negative integers.
+
+DAG advancement retains each validated run-to-stream association while
+releasing dependencies, rather than re-reading an optional stream identity.
+Generation failure codes belong to the SOR domain, separate from vendor errors.
+
 Connection revocation is a DB authority fence, not only a request to a worker.
 One transaction clears the stored credential, marks every dependent source as
 requiring reauthorization, files the safe organization-visible event, and
@@ -253,6 +346,21 @@ The persisted fence remains authoritative if the API process exits between the
 commit and task cancellation. Periodic SOR recovery finds active work under a
 fenced source and cancels it, while unbound-work recovery excludes that source
 instead of respawning its work.
+
+Recovery converts selected DB rows into frozen Pydantic ownership values while
+the read transaction is open. Only organization/work IDs leave that transaction;
+SQLAlchemy rows and sessions do not. Cancellation runs afterward, independently
+for each captured task. One failure does not hide other outcomes, while caller
+cancellation still propagates. Event delivery recovery uses the same detached-ID
+boundary before spawning and binding existing durable delivery rows.
+
+SOR action and connection event payloads are explicit frozen Pydantic contracts.
+SOR-owned enums describe their event types and projection dispositions; the
+generic event subsystem still accepts a JSON envelope. Serialization occurs at
+that boundary, preserving the existing event names, deterministic IDs and JSON
+fields. The payload allowlist excludes vendor content, credentials, scopes and
+arbitrary custom fields. Adding fields to a vendor response or ORM model does
+not automatically add them to the user-visible event.
 
 Command cancellation preserves ambiguity honestly:
 
@@ -268,6 +376,20 @@ grant. Revocation uses the same lock order. Whichever commits first defines the
 result; a later projection cannot cross an already committed revocation fence.
 
 ## Eylo-owned grid contract
+
+Canonical read fields identify mapped SQLAlchemy attributes, which support
+selective ORM loading. Filter and ordering compilation explicitly derives SQL
+expressions from those attributes. Runtime-discovered custom fields retain
+their separate computed-expression path; this does not widen the fixed entity
+schema or load extra columns.
+
+Read specs, custom-column contexts, ordering terms, decoded cursors and query
+rows use frozen Pydantic contracts. SQL expressions, callbacks, model classes
+and live ORM rows are instance-validated where applicable, retain identity, and
+are excluded from snapshots and generated schemas. Only the explicit grid and
+row response projections go to the API. A custom dataset has no profile
+extension and may use a computed field such as its coalesced record label;
+canonical entity specs reject such fields before selective ORM loading.
 
 The console grid is an audit surface for the same projection Agents use. Eylo
 owns the renderer-independent `sor-grid-v1` contract:

@@ -300,8 +300,13 @@ FRESHDESK_MANIFEST = SorAdapterCapabilityManifest(
         {SorChangeStrategy.UPDATED_AT, SorChangeStrategy.FULL_RECONCILE}
     ),
     custom_object_change_strategies=frozenset({SorChangeStrategy.FULL_RECONCILE}),
-    tool_streams=_TOOL_STREAMS,
-    mutation_result_streams=_MUTATION_RESULT_STREAMS,
+    tool_streams={
+        tool.value: frozenset(stream.value for stream in streams)
+        for tool, streams in _TOOL_STREAMS.items()
+    },
+    mutation_result_streams={
+        tool.value: stream.value for tool, stream in _MUTATION_RESULT_STREAMS.items()
+    },
     requires_instance_origin=True,
     supports_custom_fields=True,
     supports_custom_objects=True,
@@ -505,7 +510,7 @@ class FreshdeskSupportAdapter:
             if stream_key not in manifest_streams and not _is_custom_stream(stream_key):
                 raise _invalid_stream("Freshdesk does not recognize a selected stream.")
             if stream_key in manifest_streams:
-                fields = _SCHEMA_FIELDS[stream_key]
+                fields = _SCHEMA_FIELDS[FreshdeskStream(stream_key)]
                 if stream_key == FreshdeskStream.TICKETS:
                     fields = (
                         *fields,
@@ -654,7 +659,7 @@ class FreshdeskSupportAdapter:
             FreshdeskStream.AGENTS: f"/api/v2/agents/{_path_id(external_id)}",
             FreshdeskStream.GROUPS: f"/api/v2/groups/{_path_id(external_id)}",
             FreshdeskStream.EMAIL_CONFIGS: f"/api/v2/email_configs/{_path_id(external_id)}",
-        }[stream_key]
+        }[FreshdeskStream(stream_key)]
         response = await self._client.request(
             endpoint,
             query={"include": "stats"}
@@ -1198,7 +1203,7 @@ class FreshdeskSupportAdapter:
             {
                 FreshdeskStream.TICKETS: "/api/v2/tickets",
                 FreshdeskStream.CONTACTS: "/api/v2/contacts",
-            }[stream_key],
+            }[FreshdeskStream(stream_key)],
             query=query,
         )
         rows = _object_list(
@@ -1904,6 +1909,7 @@ def _credential(credentials: Mapping[str, object], key: str) -> str:
 
 
 def _require_stream(stream_key: str, *, selected: Sequence[str]) -> str:
+    """Selected custom object keys stay open; static catalog lookups use enums."""
     if stream_key not in _STREAM_ENTITY and not _is_custom_stream(stream_key):
         raise _invalid_stream("This Freshdesk adapter does not recognize the stream.")
     if stream_key not in selected:
@@ -1957,40 +1963,40 @@ def _custom_object_field(row: Mapping[str, object]) -> SorDiscoveredField:
     )
 
 
-def _freshdesk_field_type(value: object) -> str:
+def _freshdesk_field_type(value: object) -> SorFieldDataType:
     normalized = (_optional_string(value) or "").casefold()
     if "checkbox" in normalized:
-        return "boolean"
+        return SorFieldDataType.BOOLEAN
     if "date" in normalized:
-        return "date"
+        return SorFieldDataType.DATE
     if "number" in normalized or "decimal" in normalized:
-        return "decimal"
+        return SorFieldDataType.DECIMAL
     if "dropdown" in normalized:
-        return "enum"
+        return SorFieldDataType.ENUM
     if "lookup" in normalized:
-        return "reference"
+        return SorFieldDataType.REFERENCE
     if "multi" in normalized:
-        return "string_array"
+        return SorFieldDataType.STRING_ARRAY
     if any(name in normalized for name in ("text", "paragraph", "url", "phone")):
-        return "text"
-    return "json"
+        return SorFieldDataType.TEXT
+    return SorFieldDataType.JSON
 
 
-def _freshdesk_custom_object_type(value: object) -> str:
+def _freshdesk_custom_object_type(value: object) -> SorFieldDataType:
     normalized = (_optional_string(value) or "").casefold()
     return {
-        "boolean": "boolean",
-        "checkbox": "boolean",
-        "date": "date",
-        "datetime": "timestamp",
-        "decimal": "decimal",
-        "number": "decimal",
-        "integer": "integer",
-        "lookup": "reference",
-        "multi_select": "string_array",
-        "primary": "text",
-        "text": "text",
-    }.get(normalized, "json")
+        "boolean": SorFieldDataType.BOOLEAN,
+        "checkbox": SorFieldDataType.BOOLEAN,
+        "date": SorFieldDataType.DATE,
+        "datetime": SorFieldDataType.TIMESTAMP,
+        "decimal": SorFieldDataType.DECIMAL,
+        "number": SorFieldDataType.DECIMAL,
+        "integer": SorFieldDataType.INTEGER,
+        "lookup": SorFieldDataType.REFERENCE,
+        "multi_select": SorFieldDataType.STRING_ARRAY,
+        "primary": SorFieldDataType.TEXT,
+        "text": SorFieldDataType.TEXT,
+    }.get(normalized, SorFieldDataType.JSON)
 
 
 def _field_choices(value: object) -> tuple[str, ...]:
@@ -2353,10 +2359,14 @@ def _status_name(value: object) -> str | None:
             value = int(normalized)
         else:
             return normalized
-    return _STATUS_NAMES.get(value, str(value))
+    try:
+        status = FreshdeskTicketStatusCode(value)
+    except ValueError:
+        return str(value)
+    return _STATUS_NAMES[status]
 
 
-def _status_code(value: object) -> int:
+def _status_code(value: object) -> FreshdeskTicketStatusCode:
     name = _status_name(value)
     if name is None or name not in _STATUS_CODES:
         raise _invalid_command(
@@ -2378,10 +2388,14 @@ def _priority_name(value: object) -> str | None:
             value = int(normalized)
         else:
             return normalized
-    return _PRIORITY_NAMES.get(value, str(value))
+    try:
+        priority = FreshdeskTicketPriorityCode(value)
+    except ValueError:
+        return str(value)
+    return _PRIORITY_NAMES[priority]
 
 
-def _priority_code(value: object) -> int:
+def _priority_code(value: object) -> FreshdeskTicketPriorityCode:
     name = _priority_name(value)
     if name is None or name not in _PRIORITY_CODES:
         raise _invalid_command(
@@ -2398,7 +2412,11 @@ def _source_name(value: object) -> str | None:
     if isinstance(value, str) and not value.isdecimal():
         return value.strip().casefold() or None
     code = int(value)
-    return _SOURCE_NAMES.get(code, str(code))
+    try:
+        source = FreshdeskTicketSourceCode(code)
+    except ValueError:
+        return str(code)
+    return _SOURCE_NAMES[source]
 
 
 class _TextExtractor(HTMLParser):

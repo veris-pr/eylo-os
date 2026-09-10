@@ -1,11 +1,11 @@
 """Application services for the `auth` domain."""
 
 import logging
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional, override
 
 from fastapi import Depends, HTTPException, status
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,11 +32,14 @@ from eylo.modules.contacts.service import (
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True, slots=True)
-class AuthSessionInitiation:
-    """A session plus safe identify-time warnings for product presentation."""
+class AuthSessionInitiation(BaseModel):
+    """A live session plus identify warnings; snapshots never contain its token."""
 
-    session: AuthSessionInDb
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    session: AuthSessionInDb = Field(exclude=True, repr=False)
     contact_resolution: ContactResolution
 
 

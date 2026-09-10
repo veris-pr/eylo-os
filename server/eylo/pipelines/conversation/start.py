@@ -7,7 +7,10 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.modules.agents.domain import InvalidSwarmDefinitionError
-from eylo.modules.conversations.schemas.conversations import ConversationStartRequest
+from eylo.modules.conversations.schemas.conversations import (
+    ConversationInDb,
+    ConversationStartRequest,
+)
 from eylo.modules.conversations.schemas.participants import ParticipantKind
 from eylo.modules.conversations.services.conversations import ConversationBaseService
 from eylo.modules.templates.domain import TemplateConsumerKind
@@ -24,7 +27,7 @@ async def start_conversation_for_new_work(
     request: ConversationStartRequest,
     db: AsyncSession | None = None,
     consumer_kind: TemplateConsumerKind = TemplateConsumerKind.CONVERSATIONAL_TEXT,
-):
+) -> ConversationInDb:
     """Resolve the published agent or swarm once, then persist exact refs."""
     participant_kinds = {request.from_.kind, request.to_.kind}
     if participant_kinds != {ParticipantKind.AGENT, ParticipantKind.CONTACT}:

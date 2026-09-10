@@ -77,10 +77,10 @@ class SmallestTTSAdapter(TTSVendorAdapter):
             )
         )
         self._config = config
-        self._response_queue: asyncio.Queue = asyncio.Queue(maxsize=500)
+        self._response_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=500)
         self._ws: Optional[ClientConnection] = None
         self._connected = False
-        self._recv_task: Optional[asyncio.Task] = None
+        self._recv_task: asyncio.Task[None] | None = None
         self._consecutive_errors = 0
 
     async def connect(self):
@@ -89,7 +89,7 @@ class SmallestTTSAdapter(TTSVendorAdapter):
         Raises TTSConnectionFailed if connection cannot be established.
         """
         try:
-            self._ws = await asyncio.wait_for(
+            connection = await asyncio.wait_for(
                 websockets.connect(
                     _WS_URL,
                     additional_headers={
@@ -98,8 +98,9 @@ class SmallestTTSAdapter(TTSVendorAdapter):
                 ),
                 timeout=10.0,
             )
+            self._ws = connection
             self._connected = True
-            self._recv_task = asyncio.create_task(self._receive_loop())
+            self._recv_task = asyncio.create_task(self._receive_loop(connection))
             logger.info(
                 "Smallest TTS adapter connected (voice=%s, lang=%s)",
                 self._config.voice_id,
@@ -111,10 +112,10 @@ class SmallestTTSAdapter(TTSVendorAdapter):
         except Exception as error:
             raise TTSConnectionFailed("Smallest TTS: Failed to connect.") from error
 
-    async def _receive_loop(self):
-        """Background loop reading audio frames from Smallest WebSocket."""
+    async def _receive_loop(self, connection: ClientConnection) -> None:
+        """Read audio from the connection captured by this connect operation."""
         try:
-            async for message in self._ws:
+            async for message in connection:
                 if not self._connected:
                     break
 

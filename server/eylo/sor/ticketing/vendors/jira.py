@@ -268,8 +268,13 @@ JIRA_MANIFEST = SorAdapterCapabilityManifest(
         JiraStream.ISSUE_RELATIONS: (READ_WORK_SCOPE,),
     },
     tool_required_scopes={tool_name: (WRITE_SCOPE,) for tool_name in _WRITE_TOOLS},
-    tool_streams=_TOOL_STREAMS,
-    mutation_result_streams=_MUTATION_RESULT_STREAMS,
+    tool_streams={
+        tool.value: frozenset(stream.value for stream in streams)
+        for tool, streams in _TOOL_STREAMS.items()
+    },
+    mutation_result_streams={
+        tool.value: stream.value for tool, stream in _MUTATION_RESULT_STREAMS.items()
+    },
     oauth=SorOAuthSpec(
         authorization_url=ATLASSIAN_AUTHORIZATION_URL,
         token_url=ATLASSIAN_TOKEN_URL,
@@ -550,7 +555,9 @@ class JiraTicketingAdapter:
         objects: list[SorDiscoveredObject] = []
         streams = {stream.key: stream for stream in JIRA_MANIFEST.streams}
         for stream_key in self._context.selected_objects:
-            _require_stream(stream_key, selected=self._context.selected_objects)
+            stream_key = _require_stream(
+                stream_key, selected=self._context.selected_objects
+            )
             fields = _SCHEMA_FIELDS[stream_key]
             if stream_key == JiraStream.ISSUES:
                 fields = (*fields, *custom_fields)
@@ -2451,17 +2458,17 @@ def _jira_custom_field(row: Mapping[str, object]) -> SorDiscoveredField:
     schema = _optional_object(row.get("schema"))
     vendor_type = _optional_string(schema.get("custom"))
     data_type = (
-        "reference"
+        SorFieldDataType.REFERENCE
         if vendor_type == JIRA_SPRINT_FIELD_TYPE
         else {
-            "array": "string_array",
-            "date": "date",
-            "datetime": "timestamp",
-            "number": "decimal",
-            "option": "text",
-            "string": "text",
-            "user": "reference",
-        }.get(_optional_string(schema.get("type")) or "", "bounded_json")
+            "array": SorFieldDataType.STRING_ARRAY,
+            "date": SorFieldDataType.DATE,
+            "datetime": SorFieldDataType.TIMESTAMP,
+            "number": SorFieldDataType.DECIMAL,
+            "option": SorFieldDataType.TEXT,
+            "string": SorFieldDataType.TEXT,
+            "user": SorFieldDataType.REFERENCE,
+        }.get(_optional_string(schema.get("type")) or "", SorFieldDataType.BOUNDED_JSON)
     )
     return _field(
         key,
@@ -3155,14 +3162,14 @@ def _invalid_cursor(stream_key: str) -> SorVendorOperationError:
     )
 
 
-def _require_stream(value: str, *, selected: tuple[str, ...]) -> str:
+def _require_stream(value: str, *, selected: tuple[str, ...]) -> JiraStream:
     if value not in _STREAM_ENTITY or value not in selected:
         raise SorVendorOperationError(
             SorVendorErrorCode.VENDOR_STREAM_UNSUPPORTED,
             "The requested Jira stream is not selected for this source.",
             recovery=SorRecoveryPolicy.TERMINAL,
         )
-    return value
+    return JiraStream(value)
 
 
 def _jira_site_origin(value: str | None) -> str:

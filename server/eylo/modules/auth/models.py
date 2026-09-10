@@ -1,12 +1,13 @@
 """Persistence models for the `auth` domain."""
 
 import secrets
+from datetime import datetime
+from uuid import UUID as PythonUUID
 
 import arrow
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
-    Column,
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
@@ -17,6 +18,7 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column
 
 from eylo.common.models import EyloOrganizationModel
 from eylo.modules.contacts.constants import APP_DB_PREFIX as CONTACTS_APP_DB_PREFIX
@@ -34,7 +36,7 @@ class AuthSessionModel(EyloOrganizationModel):
     __tablename__ = f"{APP_DB_PREFIX}sessions"
 
     # The secure token sent to the client.
-    session_token = Column(
+    session_token: Mapped[str] = mapped_column(
         String,
         unique=True,
         index=True,
@@ -43,21 +45,23 @@ class AuthSessionModel(EyloOrganizationModel):
     )
 
     # Link to the contact this session belongs to.
-    contact_id = Column(
+    contact_id: Mapped[PythonUUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey(f"{CONTACTS_APP_DB_PREFIX}contacts.id"),
         nullable=False,
     )
 
     # Timestamps for lifecycle management.
-    expires_at = Column(DateTime(timezone=True), nullable=False)
-    last_active_at = Column(
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    last_active_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=arrow.utcnow().datetime, nullable=False
     )
 
     # Optional security/audit fields.
-    user_agent = Column(String, nullable=True)
-    ip_address = Column(String, nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String, nullable=True)
+    ip_address: Mapped[str | None] = mapped_column(String, nullable=True)
 
     __table_args__ = (
         *EyloOrganizationModel.get_organization_constraints(__tablename__),
@@ -83,18 +87,28 @@ class WidgetInvitationModel(EyloOrganizationModel):
 
     __tablename__ = f"{APP_DB_PREFIX}widget_invitations"
 
-    contact_id = Column(UUID(as_uuid=True), nullable=False)
-    agent_id = Column(UUID(as_uuid=True), nullable=False)
-    agent_revision = Column(Integer, nullable=False)
-    token_digest = Column(String(64), nullable=False, unique=True)
-    opener = Column(Text, nullable=False)
-    expires_at = Column(DateTime(timezone=True), nullable=False)
-    issued_by_kind = Column(String(16), nullable=False)
-    issued_by_id = Column(UUID(as_uuid=True), nullable=False)
-    consumed_request_id = Column(UUID(as_uuid=True), nullable=True)
-    consumed_at = Column(DateTime(timezone=True), nullable=True)
-    session_id = Column(UUID(as_uuid=True), nullable=True, unique=True)
-    conversation_id = Column(UUID(as_uuid=True), nullable=True, unique=True)
+    contact_id: Mapped[PythonUUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    agent_id: Mapped[PythonUUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    agent_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    token_digest: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    opener: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    issued_by_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    issued_by_id: Mapped[PythonUUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    consumed_request_id: Mapped[PythonUUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    consumed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    session_id: Mapped[PythonUUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True, unique=True
+    )
+    conversation_id: Mapped[PythonUUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True, unique=True
+    )
 
     __table_args__ = (
         *EyloOrganizationModel.get_organization_constraints(__tablename__),
@@ -178,21 +192,27 @@ class ApiKeyModel(EyloOrganizationModel):
     __tablename__ = f"{APP_DB_PREFIX}api_keys"
 
     # Label for the key (e.g., "Zapier Integration")
-    name = Column(String, nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
 
     # Prefix for easier identification and secret scanning (e.g., "eylo_pk_")
-    key_prefix = Column(String, nullable=False, index=True)
+    key_prefix: Mapped[str] = mapped_column(String, nullable=False, index=True)
 
     # The SHA-256 hash of the full API key.
-    hashed_key = Column(String, unique=True, index=True, nullable=False)
+    hashed_key: Mapped[str] = mapped_column(
+        String, unique=True, index=True, nullable=False
+    )
 
     # Status and expiration
-    is_active = Column(Boolean, default=True, nullable=False)
-    expires_at = Column(DateTime(timezone=True), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # Usage tracking
-    last_used_at = Column(DateTime(timezone=True), nullable=True)
-    usage_count = Column(Integer, default=0, nullable=False)
+    last_used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    usage_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     __table_args__ = (
         *EyloOrganizationModel.get_organization_constraints(__tablename__),

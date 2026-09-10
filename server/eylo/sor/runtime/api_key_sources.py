@@ -23,7 +23,10 @@ from eylo.modules.connections.services.external import ExternalConnectionService
 from eylo.pipelines.external_connections.credentials import (
     encrypt_connection_credentials,
 )
-from eylo.sor.runtime.action_events import file_sor_connection_event
+from eylo.sor.runtime.action_events import (
+    SorConnectionEventType,
+    file_sor_connection_event,
+)
 from eylo.sor.runtime.catalog import get_sor_registry
 from eylo.sor.runtime.registry import SorRegistry
 from eylo.sor.shared.contracts import SorAdapterContext, SorProfile
@@ -205,7 +208,7 @@ async def create_api_key_source(
         connection_id=connection.id,
         connection_revision=connection.revision,
         event_sequence=f"connected:{connection.revision}",
-        event_type="sor.connection.connected",
+        event_type=SorConnectionEventType.CONNECTED,
         occurred_at=connection.created_at,
         profile=candidate.profile,
         vendor_key=candidate.vendor_key,

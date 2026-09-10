@@ -2,20 +2,40 @@
 
 from __future__ import annotations
 
-from typing import Any
-
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, JsonValue
 
 from eylo.modules.integrations_v2.domain.enums import ToolEffect
 
 from ...contracts import VendorToolContext, VendorToolError
 from ...registry import curated_tool
+from .client import parse_response
 from .definition import SPREADSHEETS, vendor
-
-MAX_ROWS = 500
-# Values typed by a person are interpreted the same way: "5" becomes a number
-# and "=A1+1" becomes a formula, which is what a caller writing a sheet means.
-_INPUT_OPTION = "USER_ENTERED"
+from .schemas import (
+    DEFAULT_ROW_LIMIT,
+    MAX_ROWS,
+    SPREADSHEET_FIELDS,
+    SheetsAddSheetRequest,
+    SheetsAddedSheet,
+    SheetsAppendQuery,
+    SheetsAppendedValues,
+    SheetsBatchUpdate,
+    SheetsCell,
+    SheetsCreateSpreadsheet,
+    SheetsCreatedSpreadsheet,
+    SheetsDimension,
+    SheetsErrorCode,
+    SheetsInsertDataOption,
+    SheetsNewSheet,
+    SheetsReadQuery,
+    SheetsSpreadsheet,
+    SheetsTitle,
+    SheetsToolName,
+    SheetsUpdateQuery,
+    SheetsUpdatedValues,
+    SheetsValueInputOption,
+    SheetsValues,
+    SheetsWriteValues,
+)
 
 
 class ListSheetsInput(BaseModel):
@@ -40,20 +60,20 @@ class ReadRowsInput(BaseModel):
             "keyed by them. Turn off to get raw positional cells."
         ),
     )
-    limit: int = Field(default=100, ge=1, le=MAX_ROWS)
+    limit: int = Field(default=DEFAULT_ROW_LIMIT, ge=1, le=MAX_ROWS)
 
 
 class AppendRowInput(BaseModel):
     spreadsheet_id: str = Field(min_length=1)
     sheet: str = Field(default="", description="Sheet name. Defaults to the first.")
-    record: dict[str, Any] | None = Field(
+    record: dict[str, SheetsCell] | None = Field(
         default=None,
         description=(
             "Values keyed by column header, e.g. {'Name': 'Ana', 'Status': "
             "'Open'}. Missing columns are left blank."
         ),
     )
-    values: list[Any] | None = Field(
+    values: list[SheetsCell] | None = Field(
         default=None,
         description="Positional cell values, used instead of record when given.",
     )
@@ -62,7 +82,7 @@ class AppendRowInput(BaseModel):
 class UpdateCellsInput(BaseModel):
     spreadsheet_id: str = Field(min_length=1)
     range: str = Field(min_length=1, description="A1 range such as 'Orders!B2:C3'.")
-    rows: list[list[Any]] = Field(
+    rows: list[list[SheetsCell]] = Field(
         min_length=1, description="Rows of cell values, matching the range's shape."
     )
 
@@ -84,7 +104,7 @@ class AddSheetInput(BaseModel):
 
 @curated_tool(
     vendor=vendor.vendor,
-    name="list_sheets",
+    name=SheetsToolName.LIST_SHEETS,
     display_name="List Sheets in a Spreadsheet",
     description=(
         "List the sheets (tabs) inside a spreadsheet with their names and "
@@ -97,22 +117,22 @@ class AddSheetInput(BaseModel):
 )
 async def list_sheets(
     payload: ListSheetsInput, ctx: VendorToolContext
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     info = await _spreadsheet(ctx, payload.spreadsheet_id)
-    sheets = _sheets(info)
+    sheets = info.sheets
     return {
         "spreadsheet_id": payload.spreadsheet_id,
-        "title": (info.get("properties") or {}).get("title"),
+        "title": info.properties.title,
         "sheets": [
             {
-                "name": (sheet.get("properties") or {}).get("title"),
-                "sheet_id": (sheet.get("properties") or {}).get("sheetId"),
-                "rows": (
-                    (sheet.get("properties") or {}).get("gridProperties") or {}
-                ).get("rowCount"),
-                "columns": (
-                    (sheet.get("properties") or {}).get("gridProperties") or {}
-                ).get("columnCount"),
+                "name": sheet.properties.title,
+                "sheet_id": sheet.properties.sheet_id,
+                "rows": sheet.properties.grid_properties.row_count
+                if sheet.properties.grid_properties
+                else None,
+                "columns": sheet.properties.grid_properties.column_count
+                if sheet.properties.grid_properties
+                else None,
             }
             for sheet in sheets
         ],
@@ -122,7 +142,7 @@ async def list_sheets(
 
 @curated_tool(
     vendor=vendor.vendor,
-    name="read_rows",
+    name=SheetsToolName.READ_ROWS,
     display_name="Read Spreadsheet Rows",
     description=(
         "Read rows from a sheet. By default the first row is treated as column "
@@ -134,15 +154,19 @@ async def list_sheets(
     effect=ToolEffect.READ,
     scopes=(SPREADSHEETS,),
 )
-async def read_rows(payload: ReadRowsInput, ctx: VendorToolContext) -> dict[str, Any]:
+async def read_rows(
+    payload: ReadRowsInput, ctx: VendorToolContext
+) -> dict[str, JsonValue]:
     target = payload.range.strip() or await _first_sheet_name(
         ctx, payload.spreadsheet_id
     )
     response = await ctx.read(
         f"/spreadsheets/{payload.spreadsheet_id}/values/{_quote(target)}",
-        query={"majorDimension": "ROWS"},
+        query=SheetsReadQuery(majorDimension=SheetsDimension.ROWS).model_dump(
+            mode="json", by_alias=True
+        ),
     )
-    grid = _rows(_object(response.data))
+    grid = parse_response(response, SheetsValues).values
     if not payload.as_records:
         limited = grid[: payload.limit]
         return {"range": target, "rows": limited, "count": len(limited)}
@@ -151,7 +175,7 @@ async def read_rows(payload: ReadRowsInput, ctx: VendorToolContext) -> dict[str,
         return {"range": target, "headers": [], "records": [], "count": 0}
     headers = [str(cell) for cell in grid[0]]
     body = grid[1 : payload.limit + 1]
-    records = [
+    records: list[JsonValue] = [
         {
             header: (row[index] if index < len(row) else None)
             for index, header in enumerate(headers)
@@ -169,7 +193,7 @@ async def read_rows(payload: ReadRowsInput, ctx: VendorToolContext) -> dict[str,
 
 @curated_tool(
     vendor=vendor.vendor,
-    name="append_row",
+    name=SheetsToolName.APPEND_ROW,
     display_name="Append Spreadsheet Row",
     description=(
         "Add a row to the bottom of a sheet. Give the values keyed by column "
@@ -181,24 +205,26 @@ async def read_rows(payload: ReadRowsInput, ctx: VendorToolContext) -> dict[str,
     effect=ToolEffect.MUTATION,
     scopes=(SPREADSHEETS,),
 )
-async def append_row(payload: AppendRowInput, ctx: VendorToolContext) -> dict[str, Any]:
+async def append_row(
+    payload: AppendRowInput, ctx: VendorToolContext
+) -> dict[str, JsonValue]:
     if payload.record is None and payload.values is None:
         raise VendorToolError(
-            "row_missing", "Give either a record keyed by header, or positional values."
+            SheetsErrorCode.ROW_MISSING,
+            "Give either a record keyed by header, or positional values.",
         )
     sheet = payload.sheet.strip() or await _first_sheet_name(
         ctx, payload.spreadsheet_id
     )
 
     if payload.values is not None:
-        row: list[Any] = list(payload.values)
+        row: list[SheetsCell] = list(payload.values)
         headers: list[str] = []
-        unknown: list[str] = []
-    else:
+    elif payload.record is not None:
         headers = await _headers(ctx, payload.spreadsheet_id, sheet)
         if not headers:
             raise VendorToolError(
-                "headers_missing",
+                SheetsErrorCode.HEADERS_MISSING,
                 f"Sheet '{sheet}' has no header row, so a record cannot be placed. "
                 "Give positional values instead.",
             )
@@ -211,34 +237,38 @@ async def append_row(payload: AppendRowInput, ctx: VendorToolContext) -> dict[st
         ]
         if unknown:
             raise VendorToolError(
-                "column_not_found",
+                SheetsErrorCode.COLUMN_NOT_FOUND,
                 f"No column named {', '.join(sorted(unknown))}. "
                 f"Columns are: {', '.join(headers)}.",
             )
+    else:
+        raise VendorToolError(SheetsErrorCode.ROW_MISSING, "No row was supplied.")
 
     response = await ctx.mutate(
         f"/spreadsheets/{payload.spreadsheet_id}/values/{_quote(sheet)}:append",
-        json={"values": [row]},
-        query={
-            "valueInputOption": _INPUT_OPTION,
-            "insertDataOption": "INSERT_ROWS",
-            "includeValuesInResponse": True,
-        },
+        json=SheetsWriteValues(values=[row]).model_dump(mode="json"),
+        query=SheetsAppendQuery(
+            valueInputOption=SheetsValueInputOption.USER_ENTERED,
+            insertDataOption=SheetsInsertDataOption.INSERT_ROWS,
+            includeValuesInResponse=True,
+        ).model_dump(mode="json", by_alias=True),
     )
-    result = _object(response.data)
-    updates = result.get("updates") or {}
+    result = parse_response(response, SheetsAppendedValues)
+    _check_spreadsheet(result.spreadsheet_id, payload.spreadsheet_id)
+    _check_spreadsheet(result.updates.spreadsheet_id, payload.spreadsheet_id)
+    updates = result.updates
     return {
         "spreadsheet_id": payload.spreadsheet_id,
         "sheet": sheet,
-        "updated_range": updates.get("updatedRange"),
-        "cells_written": updates.get("updatedCells"),
+        "updated_range": updates.updated_range,
+        "cells_written": updates.updated_cells,
         "headers": headers,
     }
 
 
 @curated_tool(
     vendor=vendor.vendor,
-    name="update_cells",
+    name=SheetsToolName.UPDATE_CELLS,
     display_name="Update Spreadsheet Cells",
     description=(
         "Overwrite a rectangular range with new values. The rows given must "
@@ -252,25 +282,28 @@ async def append_row(payload: AppendRowInput, ctx: VendorToolContext) -> dict[st
 )
 async def update_cells(
     payload: UpdateCellsInput, ctx: VendorToolContext
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     response = await ctx.mutate(
         f"/spreadsheets/{payload.spreadsheet_id}/values/{_quote(payload.range)}",
         method="PUT",
-        json={"values": payload.rows},
-        query={"valueInputOption": _INPUT_OPTION},
+        json=SheetsWriteValues(values=payload.rows).model_dump(mode="json"),
+        query=SheetsUpdateQuery(
+            valueInputOption=SheetsValueInputOption.USER_ENTERED
+        ).model_dump(mode="json", by_alias=True),
     )
-    result = _object(response.data)
+    result = parse_response(response, SheetsUpdatedValues)
+    _check_spreadsheet(result.spreadsheet_id, payload.spreadsheet_id)
     return {
         "spreadsheet_id": payload.spreadsheet_id,
-        "updated_range": result.get("updatedRange"),
-        "rows_written": result.get("updatedRows"),
-        "cells_written": result.get("updatedCells"),
+        "updated_range": result.updated_range,
+        "rows_written": result.updated_rows,
+        "cells_written": result.updated_cells,
     }
 
 
 @curated_tool(
     vendor=vendor.vendor,
-    name="create_spreadsheet",
+    name=SheetsToolName.CREATE_SPREADSHEET,
     display_name="Create Spreadsheet",
     description=(
         "Create a spreadsheet, optionally naming its sheets and writing a "
@@ -283,32 +316,47 @@ async def update_cells(
 )
 async def create_spreadsheet(
     payload: CreateSpreadsheetInput, ctx: VendorToolContext
-) -> dict[str, Any]:
-    body: dict[str, Any] = {"properties": {"title": payload.title}}
-    if payload.sheet_names:
-        body["sheets"] = [
-            {"properties": {"title": name}} for name in payload.sheet_names
+) -> dict[str, JsonValue]:
+    body = SheetsCreateSpreadsheet(
+        properties=SheetsTitle(title=payload.title),
+        sheets=[
+            SheetsNewSheet(properties=SheetsTitle(title=name))
+            for name in payload.sheet_names
         ]
-    created = _object((await ctx.mutate("/spreadsheets", json=body)).data)
-    spreadsheet_id = str(created.get("spreadsheetId") or "")
-    if not spreadsheet_id:
-        raise VendorToolError(
-            "vendor_response_invalid", "Google did not return a spreadsheet id."
-        )
-
-    first = _sheets(created)
-    first_name = (first[0].get("properties") or {}).get("title") if first else "Sheet1"
-    if payload.headers:
+        if payload.sheet_names
+        else None,
+    )
+    created = parse_response(
         await ctx.mutate(
-            f"/spreadsheets/{spreadsheet_id}/values/{_quote(str(first_name))}!A1",
+            "/spreadsheets", json=body.model_dump(mode="json", exclude_none=True)
+        ),
+        SheetsCreatedSpreadsheet,
+    )
+    spreadsheet_id = created.spreadsheet_id
+    sheets = created.sheets
+    if payload.headers:
+        if not sheets:
+            raise VendorToolError(
+                SheetsErrorCode.SHEET_MISSING,
+                "Google created the spreadsheet without a sheet for the headers.",
+            )
+        first_name = sheets[0].properties.title
+        response = await ctx.mutate(
+            f"/spreadsheets/{spreadsheet_id}/values/{_quote(first_name)}!A1",
             method="PUT",
-            json={"values": [payload.headers]},
-            query={"valueInputOption": _INPUT_OPTION},
+            json=SheetsWriteValues(values=[list(payload.headers)]).model_dump(
+                mode="json"
+            ),
+            query=SheetsUpdateQuery(
+                valueInputOption=SheetsValueInputOption.USER_ENTERED
+            ).model_dump(mode="json", by_alias=True),
         )
+        updated = parse_response(response, SheetsUpdatedValues)
+        _check_spreadsheet(updated.spreadsheet_id, spreadsheet_id)
     return {
         "spreadsheet_id": spreadsheet_id,
-        "title": (created.get("properties") or {}).get("title"),
-        "sheets": [(s.get("properties") or {}).get("title") for s in first],
+        "title": created.properties.title,
+        "sheets": [sheet.properties.title for sheet in sheets],
         "web_link": f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit",
         "headers_written": bool(payload.headers),
     }
@@ -316,41 +364,53 @@ async def create_spreadsheet(
 
 @curated_tool(
     vendor=vendor.vendor,
-    name="add_sheet",
+    name=SheetsToolName.ADD_SHEET,
     display_name="Add Sheet to Spreadsheet",
     description="Add a new sheet (tab) to an existing spreadsheet.",
     input_model=AddSheetInput,
     effect=ToolEffect.MUTATION,
     scopes=(SPREADSHEETS,),
 )
-async def add_sheet(payload: AddSheetInput, ctx: VendorToolContext) -> dict[str, Any]:
+async def add_sheet(
+    payload: AddSheetInput, ctx: VendorToolContext
+) -> dict[str, JsonValue]:
     response = await ctx.mutate(
         f"/spreadsheets/{payload.spreadsheet_id}:batchUpdate",
-        json={"requests": [{"addSheet": {"properties": {"title": payload.title}}}]},
+        json=SheetsBatchUpdate(
+            requests=[
+                SheetsAddSheetRequest(
+                    addSheet=SheetsNewSheet(properties=SheetsTitle(title=payload.title))
+                )
+            ]
+        ).model_dump(mode="json", by_alias=True),
     )
-    result = _object(response.data)
-    replies = [r for r in result.get("replies") or [] if isinstance(r, dict)]
-    properties = (replies[0].get("addSheet") or {}).get("properties") if replies else {}
+    result = parse_response(response, SheetsAddedSheet)
+    _check_spreadsheet(result.spreadsheet_id, payload.spreadsheet_id)
+    properties = result.replies[0].add_sheet.properties
     return {
         "spreadsheet_id": payload.spreadsheet_id,
-        "sheet": (properties or {}).get("title", payload.title),
-        "sheet_id": (properties or {}).get("sheetId"),
+        "sheet": properties.title,
+        "sheet_id": properties.sheet_id,
     }
 
 
-async def _spreadsheet(ctx: VendorToolContext, spreadsheet_id: str) -> dict[str, Any]:
+async def _spreadsheet(
+    ctx: VendorToolContext, spreadsheet_id: str
+) -> SheetsSpreadsheet:
     response = await ctx.read(
         f"/spreadsheets/{spreadsheet_id}",
-        query={"fields": "properties.title,sheets.properties"},
+        query={"fields": SPREADSHEET_FIELDS},
     )
-    return _object(response.data)
+    return parse_response(response, SheetsSpreadsheet)
 
 
 async def _first_sheet_name(ctx: VendorToolContext, spreadsheet_id: str) -> str:
-    sheets = _sheets(await _spreadsheet(ctx, spreadsheet_id))
+    sheets = (await _spreadsheet(ctx, spreadsheet_id)).sheets
     if not sheets:
-        raise VendorToolError("sheet_missing", "This spreadsheet has no sheets.")
-    return str((sheets[0].get("properties") or {}).get("title") or "Sheet1")
+        raise VendorToolError(
+            SheetsErrorCode.SHEET_MISSING, "This spreadsheet has no sheets."
+        )
+    return sheets[0].properties.title
 
 
 async def _headers(
@@ -360,7 +420,7 @@ async def _headers(
     response = await ctx.read(
         f"/spreadsheets/{spreadsheet_id}/values/{_quote(sheet)}!1:1"
     )
-    rows = _rows(_object(response.data))
+    rows = parse_response(response, SheetsValues).values
     return [str(cell) for cell in rows[0]] if rows else []
 
 
@@ -374,29 +434,13 @@ def _quote(value: str) -> str:
     )
 
 
-def _rows(payload: dict[str, Any]) -> list[list[Any]]:
-    values = payload.get("values")
-    if not isinstance(values, list):
-        return []
-    return [row for row in values if isinstance(row, list)]
-
-
-def _sheets(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    return [sheet for sheet in payload.get("sheets") or [] if isinstance(sheet, dict)]
-
-
-def _object(payload: Any) -> dict[str, Any]:
-    if not isinstance(payload, dict):
+def _check_spreadsheet(actual: str, expected: str) -> None:
+    """A receipt for another spreadsheet cannot prove this tool's write."""
+    if actual != expected:
         raise VendorToolError(
-            "vendor_response_invalid", "Google Sheets returned a non-object response."
+            SheetsErrorCode.RESPONSE_INVALID,
+            "Google returned a result for a different spreadsheet.",
         )
-    error = payload.get("error")
-    if isinstance(error, dict):
-        raise VendorToolError(
-            "vendor_rejected",
-            str(error.get("message", "Google rejected the request."))[:500],
-        )
-    return payload
 
 
 __all__ = [

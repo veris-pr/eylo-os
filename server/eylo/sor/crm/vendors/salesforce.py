@@ -184,7 +184,10 @@ SALESFORCE_MANIFEST = SorAdapterCapabilityManifest(
     custom_object_required_scopes=(API_SCOPE,),
     custom_object_change_strategies=frozenset({SorChangeStrategy.UPDATED_AT}),
     tool_required_scopes={key: (API_SCOPE,) for key in _TOOL_STREAM},
-    tool_streams=_TOOL_STREAMS,
+    tool_streams={
+        tool.value: frozenset(stream.value for stream in streams)
+        for tool, streams in _TOOL_STREAMS.items()
+    },
     mutation_result_streams={
         tool_name: stream_key
         for tool_name, (stream_key, _creates) in _TOOL_STREAM.items()
@@ -378,8 +381,9 @@ class SalesforceCrmAdapter:
 
     async def execute_command(self, command: SorCommandRequest) -> SorCommandResult:
         try:
-            stream_key, operation = _TOOL_STREAM[command.tool_name]
-        except KeyError as error:
+            tool_name = CrmToolName(command.tool_name)
+            stream_key, operation = _TOOL_STREAM[tool_name]
+        except (ValueError, KeyError) as error:
             raise SorVendorOperationError(
                 SorVendorErrorCode.VENDOR_TOOL_UNSUPPORTED,
                 "This Salesforce adapter does not execute the requested CRM action.",
@@ -404,7 +408,7 @@ class SalesforceCrmAdapter:
                 "A CRM update action requires an existing record.",
                 recovery=SorRecoveryPolicy.TERMINAL,
             )
-        if command.tool_name == CrmToolName.MOVE_DEAL:
+        if tool_name is CrmToolName.MOVE_DEAL:
             if not isinstance(command.payload, CrmMoveDealCommandPayload):
                 raise SorVendorOperationError(
                     SorVendorErrorCode.VENDOR_COMMAND_INVALID,

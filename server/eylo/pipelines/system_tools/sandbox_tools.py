@@ -18,7 +18,7 @@ _DURABLE_REQUIRED = (
 async def sandbox_exec(
     command: str,
     timeout_seconds: int = DEFAULT_TIMEOUT,
-    ctx: ConversationContext = None,
+    ctx: ConversationContext | None = None,
 ) -> dict[str, Any]:
     """Run a shell command in your workspace and get its output.
 
@@ -54,7 +54,7 @@ async def sandbox_exec(
 
 
 async def sandbox_write(
-    path: str, content: str, ctx: ConversationContext = None
+    path: str, content: str, ctx: ConversationContext | None = None
 ) -> dict[str, Any]:
     """Write a file into your workspace, creating or replacing it.
 
@@ -74,7 +74,9 @@ async def sandbox_write(
     }
 
 
-async def sandbox_read(path: str, ctx: ConversationContext = None) -> dict[str, Any]:
+async def sandbox_read(
+    path: str, ctx: ConversationContext | None = None
+) -> dict[str, Any]:
     """Read a file from your workspace.
 
     Args:

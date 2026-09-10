@@ -90,10 +90,10 @@ class MurfTTSAdapter(TTSVendorAdapter):
             )
         )
         self._config = config
-        self._response_queue: asyncio.Queue = asyncio.Queue(maxsize=500)
+        self._response_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=500)
         self._ws: Optional[ClientConnection] = None
         self._connected = False
-        self._recv_task: Optional[asyncio.Task] = None
+        self._recv_task: asyncio.Task[None] | None = None
         self._voice_config_sent = False
         self._active_context_id: Optional[str] = None
         self._first_chunk = True
@@ -121,12 +121,13 @@ class MurfTTSAdapter(TTSVendorAdapter):
         """
         try:
             url = self._build_ws_url()
-            self._ws = await asyncio.wait_for(
+            connection = await asyncio.wait_for(
                 websockets.connect(url),
                 timeout=10.0,
             )
+            self._ws = connection
             self._connected = True
-            self._recv_task = asyncio.create_task(self._receive_loop())
+            self._recv_task = asyncio.create_task(self._receive_loop(connection))
             logger.info(
                 "Murf TTS adapter connected (voice=%s, format=%s)",
                 self._config.voice_id,
@@ -157,14 +158,15 @@ class MurfTTSAdapter(TTSVendorAdapter):
         await self._ws.send(json.dumps(voice_config))
         self._voice_config_sent = True
 
-    async def _receive_loop(self):
+    async def _receive_loop(self, connection: ClientConnection) -> None:
         """Background loop reading audio from Murf WebSocket.
 
         Murf sends JSON messages with base64-encoded audio.
         WAV headers are stripped for raw PCM output.
+        The receiver owns the connection captured by its connect operation.
         """
         try:
-            async for message in self._ws:
+            async for message in connection:
                 if not self._connected:
                     break
 

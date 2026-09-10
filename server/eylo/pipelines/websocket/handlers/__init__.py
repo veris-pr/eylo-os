@@ -79,11 +79,11 @@ __PRIVATE_ACTIONS: Dict[
 
 
 async def handle_event(
-    request_payload: dict,
+    request_payload: WsRequestEvent,
     ctx: SessionContext,
 ) -> Optional[WsResponse]:
     """Process WebSocket events based on their kind using a handler map."""
-    event = WsRequestEvent.from_dict(request_payload)
+    event = request_payload
 
     handler = None
 

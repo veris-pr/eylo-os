@@ -83,6 +83,8 @@ class MemberService(EyloBaseService[MemberInDb, MemberModel]):
     async def verify_password(self, entity: MemberInDb, plain_password: str) -> bool:
         from eylo.modules.auth.services.auth_service import AuthService
 
+        if entity.password is None:
+            return False
         return AuthService.verify_password(plain_password, entity.password)
 
     async def create_(
@@ -107,9 +109,9 @@ class MemberService(EyloBaseService[MemberInDb, MemberModel]):
         )
         if not member:
             raise MemberNotFound(f"{member_id=} not found")
-        s_organization = await OrganizationService(
-            self.repository.db_session
-        ).get_(organization_id)
+        s_organization = await OrganizationService(self.repository.db_session).get_(
+            organization_id
+        )
         s_member = self.orm_to_schema(member)
         s_member.organization = s_organization
         return s_member

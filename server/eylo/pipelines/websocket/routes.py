@@ -3,7 +3,7 @@
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request, WebSocket
+from fastapi import APIRouter, Depends, Query, WebSocket
 
 from eylo.pipelines.websocket.controllers import (
     WebSocketController,
@@ -21,7 +21,6 @@ async def websocket_endpoint(
     organization_id: UUID,
     session_id: str,
     user_session_id: UUID | None = Query(default=None),
-    request: Request = None,
     controller: WebSocketController = Depends(get_websocket_controller),
 ):
     """WebSocket endpoint that delegates connection handling to a controller."""
@@ -30,5 +29,5 @@ async def websocket_endpoint(
         organization_id=organization_id,
         session_id=session_id,
         requested_user_session_id=user_session_id,
-        request=request,
+        request=websocket,
     )

@@ -9,7 +9,11 @@ from eylo.common.database import register_ephemeral_event_post_txn
 from eylo.common.services import EyloBaseService
 from eylo.events.schema.py_events.base import ParticipantCreatedEvent
 from eylo.modules.agents.schemas.indb import AgentInDb
-from eylo.modules.contacts.schemas.indb import ContactCreateSchema, ContactRef
+from eylo.modules.contacts.schemas.indb import (
+    ContactCreateSchema,
+    ContactInDb,
+    ContactRef,
+)
 from eylo.modules.conversations.models.participants import ParticipantsModel
 from eylo.modules.conversations.repositories.participants import (
     ConversationParticipantRepository,
@@ -233,7 +237,7 @@ class ConversationParticipantService(
 
     async def get_or_create_contact(
         self, organization_id: UUID, participant: ConversationParticipant
-    ):
+    ) -> ContactInDb:
         _id = participant.id
         _external_id = participant.external_id
         _profiles = participant.profiles

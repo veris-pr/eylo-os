@@ -16,6 +16,7 @@ from eylo.modules.auth.schemas import (
     ForgotPasswordRequestSchema,
     InviteMemberRequestSchema,
     LoginRequestSchema,
+    RegistrationRequestSchema,
     ResetPasswordRequestSchema,
     SessionInitiateRequest,
     SessionInitiateResponse,
@@ -34,10 +35,7 @@ from eylo.modules.members.exceptions import (
     MemberNotFound,
     MemberPasswordMismatch,
 )
-from eylo.modules.members.schemas.api import (
-    MemberApiResponseSchema,
-    MemberRegisterSchema,
-)
+from eylo.modules.members.schemas.api import MemberApiResponseSchema
 from eylo.modules.members.services import MemberService
 
 
@@ -61,14 +59,15 @@ class AuthController:
     ) -> MemberApiResponseSchema:
         temp_password = uuid7().hex
         return await self.register(
-            MemberRegisterSchema(
+            RegistrationRequestSchema(
                 email=request.email,
                 password=temp_password,
             )
         )
 
-    async def register(self, request: MemberRegisterSchema) -> MemberApiResponseSchema:
-        request.password = self.auth_service.get_password_hash(request.password)
+    async def register(
+        self, request: RegistrationRequestSchema
+    ) -> MemberApiResponseSchema:
         try:
             member = await self.auth_service.register(request)
         except MemberDuplicateException:
@@ -120,15 +119,15 @@ class AuthController:
     async def get_me(self, member: CurrentUserSchema) -> MemberApiResponseSchema:
         organization_id = member.organization_id
         member_id = member.member_id
-        member = await self.member_service.get_by_id_email_organization(
+        resolved_member = await self.member_service.get_by_id_email_organization(
             member_id, member.email, organization_id
         )
-        if not member:
+        if not resolved_member:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Member not found",
             )
-        return MemberApiResponseSchema.model_validate(member.model_dump())
+        return MemberApiResponseSchema.model_validate(resolved_member.model_dump())
 
     async def initiate_widget_session(
         self, request: SessionInitiateRequest

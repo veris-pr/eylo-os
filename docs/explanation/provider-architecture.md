@@ -583,6 +583,19 @@ from its adapter, validates chunk format agreement, and converts before sending
 identical bytes to the playback queue and recording callback. The recorder no
 longer guesses native rates from vendor/config dictionaries.
 
+Murf and Smallest receiver tasks capture their concrete WebSocket connection at
+creation; they do not start by dereferencing a nullable, mutable adapter field.
+Their response queues hold bytes and receiver tasks return no result. This
+declares resource ownership without changing the native payloads or retry policy.
+The connection iteration and cancellation contract was checked against
+[websockets 15.0.1](https://websockets.readthedocs.io/en/15.0.1/reference/asyncio/client.html)
+and actual loopback connections, not those vendors' hosted endpoints.
+
+Capture refusal reasons use the pipeline-owned `RecordingCaptureFailure` enum.
+Persisted operator messages remain unchanged. Authenticated recording downloads
+use `StreamingResponse` with the resolved content type; WAV documentation is
+declared on the route rather than an inherited mutable class attribute.
+
 Streaming conversion retains filter state within an utterance. On successful
 native completion, the manager emits the resampler tail before reporting that
 the producer is drained. Interruption/failure discards that tail. Dequeue and
@@ -1413,3 +1426,48 @@ not interchangeable runtime capabilities such as LLM or storage. Their
 registry, installations, connections, origin-pinned tool context, and mutation
 receipts therefore live in the integrations boundary rather than provider
 configs.
+
+The shared catalog and invocation values are frozen Pydantic contracts. Vendor
+metadata retains its auth/origin/header invariants and tool metadata retains
+its published input-model class and handler. Those executable dependencies and
+the live HTTP client keep identity; they are excluded from generic snapshots
+and JSON Schema. The HTTP client remains a behavioral protocol. `VendorResponse`
+holds a parsed but untrusted `object`; the raw payload remains available for
+native validation and is excluded from representations and snapshots. Converting these
+values does not make vendor data trustworthy or create another retry authority.
+
+Credential resolution and mutation ownership follow the same convention:
+`VendorWireAuth` retains existing origin-bound credential containers without
+copying them and serializes no secret fields. `ResolvedVendorAuth` can project
+the safe origin/account/catalog metadata, not authentication material.
+`DurableMutationOwner` projects committed product IDs, not the live step context.
+`CuratedToolExecutionOutcome` validates JSON content and retains read-only
+metadata; it is the serializable result, unlike those live dependencies.
+
+The curated Linear tools keep native GraphQL selections, requests and flat tool
+results in integration-owned Pydantic models. These are separate from Linear's
+SOR contracts: curated tools act on the vendor directly; SOR adapters synchronize
+canonical records. All selected nodes and nested label identities validate before
+projection or follow-up mutations. Malformed replies are tool errors, not empty
+lists or permission to retry a write. Mutation JSON, origin-pinned credentials,
+attempt identities and the durable outbound owner remain the HTTP boundary's
+responsibility. Native field authority is Linear's current
+[GraphQL schema](https://raw.githubusercontent.com/linear/linear/master/packages/sdk/src/schema.graphql).
+
+Google Sheets uses its own native models for spreadsheet metadata, cell ranges,
+append/update receipts and the single `addSheet` batch reply. Cells accept only
+JSON scalar values: text, booleans, finite numbers and null. Null skips a cell;
+an empty string clears it, following Google's
+[ValueRange contract](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets.values).
+Omitted values on an empty range remain an empty result; malformed rows do not.
+Object sheets can omit grid dimensions, and sheet ID zero remains valid.
+
+All six tools validate HTTP/envelope errors before consuming typed results.
+Creating a spreadsheet with headers performs two separately owned mutations:
+create, then write headers. The second response is validated before reporting
+`headers_written`; failure does not undo creation or authorize another send.
+Write receipts must identify the requested spreadsheet. Missing counters remain
+unknown rather than being fabricated. The response contracts follow Google's
+[update receipt](https://developers.google.com/workspace/sheets/api/reference/rest/v4/UpdateValuesResponse),
+[append receipt](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets.values/append)
+and [batch reply](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets/batchUpdate).

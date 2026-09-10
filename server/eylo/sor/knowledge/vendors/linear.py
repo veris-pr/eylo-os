@@ -6,12 +6,13 @@ import hashlib
 import json
 import mimetypes
 import re
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from http import HTTPStatus
 from urllib.parse import parse_qsl, unquote, urlsplit
+
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError
 
 from eylo.modules.connections.domain import ConnectionAuthKind
 from eylo.sor.knowledge.contracts import (
@@ -28,12 +29,31 @@ from eylo.sor.knowledge.contracts import (
     KnowledgeEntityKind,
     KnowledgeProperty,
     KnowledgePropertyPayload,
+    KnowledgeSourceFormat,
     KnowledgeSpace,
     KnowledgeSpacePayload,
     KnowledgeToolName,
     KnowledgeVersion,
     KnowledgeVersionPayload,
     knowledge_source_body,
+)
+from eylo.sor.knowledge.vendors.linear_contracts import (
+    MAX_DOCUMENT_CHARS,
+    MAX_PAGE_RECORDS,
+    LinearDateComparator,
+    LinearDocument,
+    LinearDocumentResult,
+    LinearDocumentsResult,
+    LinearIssueReference,
+    LinearNativeModel,
+    LinearPageVariables,
+    LinearRecord,
+    LinearRecordVariables,
+    LinearUpdatedFilter,
+    LinearUser,
+    LinearUserResult,
+    LinearUsersResult,
+    LinearWorkspaceResult,
 )
 from eylo.sor.runtime.http import SorHttpTransport, SorJsonHttpClient, SorJsonResponse
 from eylo.sor.shared.contracts import (
@@ -64,13 +84,14 @@ from eylo.sor.shared.contracts import (
     SorWebhookSignal,
     SorWebhookSubscription,
 )
+from eylo.sor.shared.linear import linear_graphql_data
 
 LINEAR_ORIGIN = "https://api.linear.app"
 LINEAR_GRAPHQL_PATH = "/graphql"
 LINEAR_API_VERSION = "graphql-current"
 LINEAR_CURSOR_VERSION = 1
 LINEAR_RECONCILIATION_OVERLAP = timedelta(minutes=2)
-MAX_DOCUMENT_CHARS = 1_000_000
+_ATTACHMENT_DOCUMENT_PAGE_SIZE = 25
 
 READ_SCOPE = "read"
 
@@ -81,6 +102,31 @@ class LinearKnowledgeStream(StrEnum):
     DOCUMENTS = "documents"
     AUTHORS = "authors"
     ATTACHMENTS = "attachments"
+
+
+class _DocumentParentKind(StrEnum):
+    """Native document parent kinds exposed in the existing source metadata."""
+
+    INITIATIVE = "initiative"
+    ISSUE = "issue"
+    PROJECT = "project"
+    RELEASE = "release"
+
+
+class _DocumentLifecycle(StrEnum):
+    """Projected document states derived from Linear's flags and timestamps."""
+
+    ACTIVE = "ACTIVE"
+    HIDDEN = "HIDDEN"
+    ARCHIVED = "ARCHIVED"
+    TRASHED = "TRASHED"
+
+
+class _AuthorKind(StrEnum):
+    """Existing Knowledge author labels derived from a native user predicate."""
+
+    USER = "user"
+    INACTIVE_USER = "inactive_user"
 
 
 _STREAM_ENTITY = {
@@ -144,7 +190,10 @@ LINEAR_KNOWLEDGE_MANIFEST = SorAdapterCapabilityManifest(
     writable_tools=frozenset(),
     change_strategies=frozenset({SorChangeStrategy.UPDATED_AT}),
     required_scopes={stream_key: (READ_SCOPE,) for stream_key in _STREAM_ENTITY},
-    tool_streams=_TOOL_STREAMS,
+    tool_streams={
+        tool.value: frozenset(stream.value for stream in streams)
+        for tool, streams in _TOOL_STREAMS.items()
+    },
     oauth=SorOAuthSpec(
         authorization_url="https://linear.app/oauth/authorize",
         token_url="https://api.linear.app/oauth/token",
@@ -249,26 +298,35 @@ _PAGE_QUERIES = {
 }
 
 
-@dataclass(frozen=True, slots=True)
-class _LinearCursor:
-    floor: datetime | None
+class _LinearCursor(BaseModel):
+    """Validated continuation state; the encoder owns the durable wire format."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    floor: AwareDatetime | None
     after: str | None
-    high: datetime | None
-    started_at: datetime
+    high: AwareDatetime | None
+    started_at: AwareDatetime
 
 
-@dataclass(frozen=True, slots=True)
-class _LinearAttachmentCursor:
-    floor: datetime | None
+class _LinearAttachmentCursor(BaseModel):
+    """Resume within one document's attachments without losing page progress."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    floor: AwareDatetime | None
     page_after: str | None
-    document_index: int
-    attachment_index: int
-    high: datetime | None
-    started_at: datetime
+    document_index: int = Field(ge=0)
+    attachment_index: int = Field(ge=0)
+    high: AwareDatetime | None
+    started_at: AwareDatetime
 
 
-@dataclass(frozen=True, slots=True)
-class _LinearAttachment:
+class _LinearAttachment(BaseModel):
+    """One upload reference extracted after validating its document and origin."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
     external_id: str
     name: str
     media_type: str | None
@@ -313,30 +371,29 @@ class LinearKnowledgeAdapter:
             """,
             operation="verify Linear workspace",
         )
-        organization = _object(data.get("organization"), field="Linear organization")
+        organization = _parse_native(data, LinearWorkspaceResult).organization
         return SorConnectionVerification(
-            account_external_id=_required_id(
-                organization.get("id"), field="Linear organization ID"
-            ),
+            account_external_id=organization.id,
             account_display_name=(
-                _optional_string(organization.get("name")) or "Linear workspace"
+                _optional_string(organization.name) or "Linear workspace"
             ),
             granted_scopes=tuple(sorted(self._context.granted_scopes)),
             vendor_api_version=LINEAR_API_VERSION,
         )
 
     async def discover_schema(self) -> SorDiscoveredSchema:
+        selected_streams = tuple(
+            _require_stream(key, selected=self._context.selected_objects)
+            for key in self._context.selected_objects
+        )
+        streams = {stream.key: stream for stream in LINEAR_KNOWLEDGE_MANIFEST.streams}
         objects = tuple(
             SorDiscoveredObject(
                 key=stream_key,
-                label=next(
-                    stream.label
-                    for stream in LINEAR_KNOWLEDGE_MANIFEST.streams
-                    if stream.key == stream_key
-                ),
+                label=streams[stream_key].label,
                 fields=_SCHEMA_FIELDS[stream_key],
             )
-            for stream_key in self._context.selected_objects
+            for stream_key in selected_streams
         )
         if not objects:
             raise SorVendorOperationError(
@@ -410,17 +467,20 @@ class LinearKnowledgeAdapter:
                 {singular}(id: $id) {{ {selection} }}
               }}
             """,
-            {"id": record_id},
+            LinearRecordVariables(id=record_id),
             operation="read Linear knowledge record",
         )
-        row = data.get(singular)
-        if row is None:
+        record = (
+            _parse_native(data, LinearDocumentResult).document
+            if stream_key == LinearKnowledgeStream.DOCUMENTS
+            else _parse_native(data, LinearUserResult).user
+        )
+        if record is None:
             raise SorExternalRecordNotFound(
                 vendor_object_key=stream_key,
                 external_id=record_id,
             )
-        record = _object(row, field="Linear knowledge record")
-        archived_at = _optional_datetime(record.get("archivedAt"))
+        archived_at = record.archived_datetime
         if archived_at is not None:
             raise SorExternalRecordNotFound(
                 vendor_object_key=stream_key,
@@ -428,7 +488,7 @@ class LinearKnowledgeAdapter:
                 deleted_at=archived_at,
                 reason="Archived in Linear",
             )
-        return self._external_record(stream_key, record)
+        return self._external_record(record)
 
     async def fetch_deleted(
         self,
@@ -641,7 +701,7 @@ class LinearKnowledgeAdapter:
             stream_key,
             selected=self._context.selected_objects,
         )
-        if not 1 <= limit <= 200:
+        if isinstance(limit, bool) or not 1 <= limit <= MAX_PAGE_RECORDS:
             raise SorVendorOperationError(
                 SorVendorErrorCode.VENDOR_PAGE_INVALID,
                 "Linear page limit must be between 1 and 200.",
@@ -651,38 +711,24 @@ class LinearKnowledgeAdapter:
             return await self._read_attachment_page(cursor=cursor, limit=limit)
         selected_fields = self._selected_fields(stream_key)
         checkpoint = _decode_cursor(cursor)
-        variables: dict[str, object] = {
-            "first": limit,
-            "after": checkpoint.after,
-            "filter": (
-                {"updatedAt": {"gte": _linear_datetime(checkpoint.floor)}}
-                if checkpoint.floor is not None
-                else None
-            ),
-        }
+        variables = _page_variables(
+            limit=limit, after=checkpoint.after, floor=checkpoint.floor
+        )
         data, _response = await self._graphql(
             _PAGE_QUERIES[stream_key],
             variables,
             operation=f"list Linear {stream_key}",
         )
-        connection_name = (
-            LinearKnowledgeStream.DOCUMENTS
+        connection = (
+            _parse_native(data, LinearDocumentsResult).documents
             if stream_key == LinearKnowledgeStream.DOCUMENTS
-            else "users"
+            else _parse_native(data, LinearUsersResult).users
         )
-        connection = _object(
-            data.get(connection_name), field=f"Linear {stream_key} page"
-        )
-        rows = _object_list(connection.get("nodes"), field="Linear page nodes")
+        rows = connection.nodes
         if len(rows) > limit:
             raise _invalid_response("Linear returned more records than requested.")
-        page_info = _object(connection.get("pageInfo"), field="Linear page info")
-        has_more = page_info.get("hasNextPage")
-        if not isinstance(has_more, bool):
-            raise _invalid_response("Linear returned no page completion flag.")
-        end_cursor = _optional_string(page_info.get("endCursor"))
-        if has_more and end_cursor is None:
-            raise _invalid_response("Linear returned no cursor for a partial page.")
+        has_more = connection.page_info.has_next_page
+        end_cursor = _optional_string(connection.page_info.end_cursor)
         high = _maximum_updated_at(rows, current=checkpoint.high)
         next_cursor = _encode_cursor(
             _LinearCursor(
@@ -701,12 +747,11 @@ class LinearKnowledgeAdapter:
         return SorRecordPage(
             records=tuple(
                 self._external_record(
-                    stream_key,
                     row,
                     selected_fields=selected_fields,
                 )
                 for row in rows
-                if _optional_datetime(row.get("archivedAt")) is None
+                if row.archived_at is None
             ),
             next_cursor=next_cursor,
             has_more=has_more,
@@ -722,28 +767,17 @@ class LinearKnowledgeAdapter:
         checkpoint = _decode_attachment_cursor(cursor)
         data, _response = await self._graphql(
             _PAGE_QUERIES[LinearKnowledgeStream.DOCUMENTS],
-            {
-                "first": min(limit, 25),
-                "after": checkpoint.page_after,
-                "filter": (
-                    {"updatedAt": {"gte": _linear_datetime(checkpoint.floor)}}
-                    if checkpoint.floor is not None
-                    else None
-                ),
-            },
+            _page_variables(
+                limit=min(limit, _ATTACHMENT_DOCUMENT_PAGE_SIZE),
+                after=checkpoint.page_after,
+                floor=checkpoint.floor,
+            ),
             operation="list Linear document images",
         )
-        connection = _object(
-            data.get(LinearKnowledgeStream.DOCUMENTS), field="Linear document page"
-        )
-        documents = _object_list(connection.get("nodes"), field="Linear documents")
-        page_info = _object(connection.get("pageInfo"), field="Linear page info")
-        page_has_more = page_info.get("hasNextPage")
-        if not isinstance(page_has_more, bool):
-            raise _invalid_response("Linear returned no page completion flag.")
-        end_cursor = _optional_string(page_info.get("endCursor"))
-        if page_has_more and end_cursor is None:
-            raise _invalid_response("Linear returned no cursor for a partial page.")
+        connection = _parse_native(data, LinearDocumentsResult).documents
+        documents = connection.nodes
+        page_has_more = connection.page_info.has_next_page
+        end_cursor = _optional_string(connection.page_info.end_cursor)
 
         high = _maximum_updated_at(documents, current=checkpoint.high)
         records: list[SorExternalRecord] = []
@@ -825,7 +859,7 @@ class LinearKnowledgeAdapter:
             has_more=has_more,
         )
 
-    def _selected_fields(self, stream_key: str) -> tuple[str, ...]:
+    def _selected_fields(self, stream_key: LinearKnowledgeStream) -> tuple[str, ...]:
         fields = tuple(
             sorted(
                 {
@@ -853,31 +887,32 @@ class LinearKnowledgeAdapter:
 
     def _external_record(
         self,
-        stream_key: str,
-        row: Mapping[str, object],
+        row: LinearDocument | LinearUser,
         *,
         selected_fields: tuple[str, ...] | None = None,
     ) -> SorExternalRecord:
-        selected = selected_fields or self._selected_fields(stream_key)
-        values = _linear_payload(stream_key, row)
-        payload = {field: values.get(field) for field in selected}
-        record_id = _required_id(row.get("id"), field="Linear record ID")
-        updated_at = _required_datetime(
-            row.get("updatedAt"), field="Linear record update time"
+        stream_key = (
+            LinearKnowledgeStream.DOCUMENTS
+            if isinstance(row, LinearDocument)
+            else LinearKnowledgeStream.AUTHORS
         )
+        selected = selected_fields or self._selected_fields(stream_key)
+        values = _linear_payload(row)
+        payload = {field: values.get(field) for field in selected}
+        updated_at = row.updated_datetime
         return SorExternalRecord(
             vendor_object_key=stream_key,
-            external_id=record_id,
+            external_id=row.id,
             payload=payload,
-            source_created_at=_optional_datetime(row.get("createdAt")),
+            source_created_at=row.created_datetime,
             source_updated_at=updated_at,
             source_revision=updated_at.isoformat(),
-            source_url=_safe_linear_url(row.get("url")),
+            source_url=_safe_linear_url(row.url),
         )
 
     def _external_attachment(
         self,
-        document: Mapping[str, object],
+        document: LinearDocument,
         attachment: _LinearAttachment,
         *,
         selected_fields: tuple[str, ...] | None = None,
@@ -886,59 +921,60 @@ class LinearKnowledgeAdapter:
             LinearKnowledgeStream.ATTACHMENTS
         )
         values: dict[str, object | None] = {
-            "document_external_id": _required_id(
-                document.get("id"), field="attachment document ID"
-            ),
+            "document_external_id": document.id,
             "name": attachment.name,
             "media_type": attachment.media_type,
             "size_bytes": None,
             "source_url": attachment.source_url,
         }
         payload = {field: values.get(field) for field in selected}
-        updated_at = _required_datetime(
-            document.get("updatedAt"), field="attachment document update time"
-        )
+        updated_at = document.updated_datetime
         return SorExternalRecord(
             vendor_object_key=LinearKnowledgeStream.ATTACHMENTS,
             external_id=attachment.external_id,
             payload=payload,
-            source_created_at=_optional_datetime(document.get("createdAt")),
+            source_created_at=document.created_datetime,
             source_updated_at=updated_at,
             source_revision=f"{updated_at.isoformat()}:{attachment.external_id}",
             source_url=attachment.source_url,
         )
 
-    async def _fetch_document(self, document_id: str) -> dict[str, object]:
+    async def _fetch_document(self, document_id: str) -> LinearDocument:
         data, _response = await self._graphql(
             f"""
               query EyloLinearDocument($id: String!) {{
                 document(id: $id) {{ {_DOCUMENT_FIELDS} }}
               }}
             """,
-            {"id": document_id},
+            LinearRecordVariables(id=document_id),
             operation="read Linear document",
         )
-        row = data.get("document")
+        row = _parse_native(data, LinearDocumentResult).document
         if row is None:
             raise SorExternalRecordNotFound(
                 vendor_object_key=LinearKnowledgeStream.DOCUMENTS,
                 external_id=document_id,
             )
-        return _object(row, field="Linear document")
+        return row
 
     async def _graphql(
         self,
         document: str,
-        variables: Mapping[str, object] | None = None,
+        variables: LinearPageVariables | LinearRecordVariables | None = None,
         *,
         operation: str,
     ) -> tuple[dict[str, object], SorJsonResponse]:
         response = await self._client.request(
             LINEAR_GRAPHQL_PATH,
             method="POST",
-            payload={"query": document, "variables": dict(variables or {})},
+            payload={
+                "query": document,
+                "variables": variables.model_dump(by_alias=True)
+                if variables is not None
+                else {},
+            },
         )
-        return _graphql_data(response, operation=operation), response
+        return linear_graphql_data(response, operation=operation), response
 
 
 def create_linear_knowledge_adapter(
@@ -949,147 +985,83 @@ def create_linear_knowledge_adapter(
 
 
 def _linear_payload(
-    stream_key: str,
-    row: Mapping[str, object],
+    row: LinearDocument | LinearUser,
 ) -> dict[str, object | None]:
-    if stream_key == LinearKnowledgeStream.AUTHORS:
+    if isinstance(row, LinearUser):
         return {
-            "name": row.get("displayName") or row.get("name"),
-            "primary_email": row.get("email"),
-            "kind": "user" if row.get("active") is True else "inactive_user",
-            "avatar_url": row.get("avatarUrl"),
+            "name": row.display_name or row.name,
+            "primary_email": row.email,
+            "kind": _AuthorKind.USER if row.active else _AuthorKind.INACTIVE_USER,
+            "avatar_url": row.avatar_url,
         }
-    content = _bounded_string(row.get("content"), field="document content")
-    title = _optional_string(row.get("title")) or "Untitled document"
-    creator = _optional_object(row.get("creator"))
-    owner = _optional_object(row.get("owner"))
-    updated_by = _optional_object(row.get("updatedBy"))
+    content = row.content or ""
+    title = _optional_string(row.title) or "Untitled document"
     parent_type, parent_id, parent_label = _document_parent(row)
     return {
         "title": title,
         "normalized_text": content,
-        "source_format": "linear_markdown",
+        "source_format": KnowledgeSourceFormat.LINEAR_MARKDOWN,
         "source_body": knowledge_source_body(
             KnowledgeBodyRepresentation.MARKDOWN,
             content,
         ),
         "content_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
-        "version": row.get("documentContentId"),
+        "version": row.document_content_id,
         "lifecycle_state": _document_lifecycle(row),
-        "author_external_id": creator.get("id"),
-        "source_created_at": row.get("createdAt"),
-        "source_updated_at": row.get("updatedAt"),
+        "author_external_id": row.creator.id if row.creator is not None else None,
+        "source_created_at": row.created_at,
+        "source_updated_at": row.updated_at,
         "custom_fields": {
-            "document_content_id": row.get("documentContentId"),
-            "slug_id": row.get("slugId"),
-            "icon": row.get("icon"),
-            "color": row.get("color"),
+            "document_content_id": row.document_content_id,
+            "slug_id": row.slug_id,
+            "icon": row.icon,
+            "color": row.color,
             "parent_type": parent_type,
             "parent_external_id": parent_id,
             "parent_label": parent_label,
-            "owner_external_id": owner.get("id"),
-            "updated_by_external_id": updated_by.get("id"),
+            "owner_external_id": row.owner.id if row.owner is not None else None,
+            "updated_by_external_id": row.updated_by.id
+            if row.updated_by is not None
+            else None,
         },
         "path": [parent_label, title] if parent_label else [title],
     }
 
 
 def _document_parent(
-    row: Mapping[str, object],
-) -> tuple[str | None, object | None, str | None]:
-    for parent_type in ("initiative", "issue", "project", "release"):
-        parent = _optional_object(row.get(parent_type))
-        parent_id = parent.get("id")
-        if parent_id is None:
+    row: LinearDocument,
+) -> tuple[_DocumentParentKind | None, str | None, str | None]:
+    for parent_type, parent in (
+        (_DocumentParentKind.INITIATIVE, row.initiative),
+        (_DocumentParentKind.ISSUE, row.issue),
+        (_DocumentParentKind.PROJECT, row.project),
+        (_DocumentParentKind.RELEASE, row.release),
+    ):
+        if parent is None:
             continue
         label = (
-            _optional_string(parent.get("identifier"))
-            or _optional_string(parent.get("name"))
-            or _optional_string(parent.get("title"))
+            _optional_string(parent.identifier) or _optional_string(parent.title)
+            if isinstance(parent, LinearIssueReference)
+            else _optional_string(parent.name)
         )
-        return parent_type, parent_id, label
+        return parent_type, parent.id, label
     return None, None, None
 
 
-def _document_lifecycle(row: Mapping[str, object]) -> str:
-    if row.get("trashed") is True:
-        return "TRASHED"
-    if _optional_datetime(row.get("archivedAt")) is not None:
-        return "ARCHIVED"
-    if _optional_datetime(row.get("hiddenAt")) is not None:
-        return "HIDDEN"
-    return "ACTIVE"
+def _document_lifecycle(row: LinearDocument) -> _DocumentLifecycle:
+    if row.trashed is True:
+        return _DocumentLifecycle.TRASHED
+    if row.archived_at is not None:
+        return _DocumentLifecycle.ARCHIVED
+    if row.hidden_at is not None:
+        return _DocumentLifecycle.HIDDEN
+    return _DocumentLifecycle.ACTIVE
 
 
 def _normalization_unavailable(entity: str) -> SorCapabilityUnavailable:
     return SorCapabilityUnavailable(
         f"Linear Documents does not project {entity} records in this adapter revision."
     )
-
-
-def _graphql_data(
-    response: SorJsonResponse,
-    *,
-    operation: str,
-) -> dict[str, object]:
-    if response.status_code in {HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN}:
-        raise SorVendorOperationError(
-            SorVendorErrorCode.VENDOR_AUTHORIZATION_FAILED,
-            f"Linear refused authorization while attempting to {operation}.",
-            recovery=(
-                SorRecoveryPolicy.REFRESH_AND_RETRY
-                if response.status_code == HTTPStatus.UNAUTHORIZED
-                else SorRecoveryPolicy.REAUTH_REQUIRED
-            ),
-        )
-    if response.status_code == HTTPStatus.TOO_MANY_REQUESTS:
-        raise SorVendorOperationError(
-            SorVendorErrorCode.VENDOR_RATE_LIMITED,
-            "Linear rate limited the operation.",
-            recovery=SorRecoveryPolicy.RETRY,
-        )
-    if response.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR:
-        raise SorVendorOperationError(
-            SorVendorErrorCode.VENDOR_SERVER_FAILED,
-            "Linear could not complete the operation.",
-            recovery=SorRecoveryPolicy.RETRY,
-        )
-    if not response.ok:
-        raise SorVendorOperationError(
-            SorVendorErrorCode.VENDOR_REQUEST_REJECTED,
-            f"Linear rejected the request while attempting to {operation}.",
-            recovery=SorRecoveryPolicy.TERMINAL,
-        )
-    payload = _object(response.data, field="Linear GraphQL response")
-    errors = payload.get("errors")
-    if errors:
-        rows = _object_list(errors, field="Linear GraphQL errors")
-        first = rows[0] if rows else {}
-        extensions = _optional_object(first.get("extensions"))
-        native_code = str(extensions.get("code") or "").upper()
-        if native_code in {"AUTHENTICATION_ERROR", "UNAUTHENTICATED", "FORBIDDEN"}:
-            raise SorVendorOperationError(
-                SorVendorErrorCode.VENDOR_AUTHORIZATION_FAILED,
-                "Linear authorization is no longer valid.",
-                recovery=SorRecoveryPolicy.REFRESH_AND_RETRY,
-            )
-        if native_code in {"RATELIMITED", "RATE_LIMITED", "INTERNAL_SERVER_ERROR"}:
-            raise SorVendorOperationError(
-                (
-                    SorVendorErrorCode.VENDOR_RATE_LIMITED
-                    if "RATE" in native_code
-                    else SorVendorErrorCode.VENDOR_SERVER_FAILED
-                ),
-                "Linear could not complete the operation yet.",
-                recovery=SorRecoveryPolicy.RETRY,
-            )
-        message = _optional_string(first.get("message"))
-        raise SorVendorOperationError(
-            SorVendorErrorCode.VENDOR_REQUEST_REJECTED,
-            (message or "Linear rejected the operation.")[:500],
-            recovery=SorRecoveryPolicy.TERMINAL,
-        )
-    return _object(payload.get("data"), field="Linear GraphQL data")
 
 
 def _decode_cursor(value: str | None) -> _LinearCursor:
@@ -1238,14 +1210,14 @@ def _completed_attachment_cursor(
 
 
 def _maximum_updated_at(
-    rows: tuple[dict[str, object], ...],
+    rows: Sequence[LinearRecord],
     *,
     current: datetime | None,
 ) -> datetime | None:
     result = current
     for row in rows:
-        value = _optional_datetime(row.get("updatedAt"))
-        if value is not None and (result is None or value > result):
+        value = row.updated_datetime
+        if result is None or value > result:
             result = value
     return result
 
@@ -1256,6 +1228,21 @@ def _linear_datetime(value: datetime | None) -> str | None:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _page_variables(
+    *, limit: int, after: str | None, floor: datetime | None
+) -> LinearPageVariables:
+    timestamp = _linear_datetime(floor)
+    return LinearPageVariables(
+        first=limit,
+        after=after,
+        filter=(
+            LinearUpdatedFilter(updatedAt=LinearDateComparator(gte=timestamp))
+            if timestamp is not None
+            else None
+        ),
+    )
+
+
 def _credential(values: Mapping[str, object], key: str) -> str:
     value = values.get(key)
     if not isinstance(value, str) or not value.strip():
@@ -1263,14 +1250,16 @@ def _credential(values: Mapping[str, object], key: str) -> str:
     return value.strip()
 
 
-def _require_stream(value: str, *, selected: tuple[str, ...]) -> str:
+def _require_stream(
+    value: str, *, selected: tuple[str, ...]
+) -> LinearKnowledgeStream:
     if value not in _STREAM_ENTITY or value not in selected:
         raise SorVendorOperationError(
             SorVendorErrorCode.VENDOR_STREAM_UNSUPPORTED,
             "The requested Linear Documents stream is not selected.",
             recovery=SorRecoveryPolicy.TERMINAL,
         )
-    return value
+    return LinearKnowledgeStream(value)
 
 
 def _required_id(value: object, *, field: str) -> str:
@@ -1327,18 +1316,6 @@ def _object(value: object, *, field: str) -> dict[str, object]:
     return {str(key): item for key, item in value.items()}
 
 
-def _optional_object(value: object) -> dict[str, object]:
-    if not isinstance(value, Mapping):
-        return {}
-    return {str(key): item for key, item in value.items()}
-
-
-def _object_list(value: object, *, field: str) -> tuple[dict[str, object], ...]:
-    if not isinstance(value, list):
-        raise _invalid_response(f"{field} is invalid.")
-    return tuple(_object(item, field=field) for item in value)
-
-
 def _mapping(value: object, *, field: str) -> Mapping[str, object]:
     return _object(value, field=field)
 
@@ -1380,10 +1357,10 @@ _LINEAR_UPLOAD_PATTERN = re.compile(
 
 
 def _document_attachments(
-    document: Mapping[str, object],
+    document: LinearDocument,
 ) -> tuple[_LinearAttachment, ...]:
-    document_id = _required_id(document.get("id"), field="document ID")
-    content = _bounded_string(document.get("content"), field="document content")
+    document_id = document.id
+    content = document.content or ""
     result: list[_LinearAttachment] = []
     seen: set[str] = set()
     for match in _LINEAR_UPLOAD_PATTERN.finditer(content):
@@ -1429,6 +1406,17 @@ def _invalid_response(message: str) -> SorVendorOperationError:
         message,
         recovery=SorRecoveryPolicy.TERMINAL,
     )
+
+
+def _parse_native[ModelT: LinearNativeModel](
+    value: object, model: type[ModelT]
+) -> ModelT:
+    try:
+        return model.model_validate(value)
+    except ValidationError:
+        raise _invalid_response(
+            "Linear returned an invalid knowledge response."
+        ) from None
 
 
 __all__ = [

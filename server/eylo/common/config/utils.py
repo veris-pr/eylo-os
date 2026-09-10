@@ -2,12 +2,21 @@
 
 import os
 from types import UnionType
-from typing import Any, Union, get_args, get_origin
+from typing import Any, Union, get_args, get_origin, overload
 
 from pydantic import TypeAdapter
 
 
-def ge(var, default=None):
+@overload
+def ge(var: str, default: None = None) -> str | None: ...
+
+
+@overload
+def ge[Default](var: str, default: Default) -> str | Default: ...
+
+
+def ge[Default](var: str, default: Default | None = None) -> str | Default | None:
+    """Use the supplied fallback for absent or empty environment values."""
     return os.getenv(var) or default
 
 

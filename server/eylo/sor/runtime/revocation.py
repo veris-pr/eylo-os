@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.database import start_transaction
-from eylo.sor.runtime.action_events import file_sor_connection_event
+from eylo.sor.runtime.action_events import (
+    SorConnectionEventType,
+    file_sor_connection_event,
+)
 from eylo.sor.runtime.commands import cancel_sor_command
 from eylo.sor.runtime.sync import cancel_sor_sync_run
 from eylo.sor.runtime.webhooks import cancel_sor_webhook_receipt
@@ -33,11 +37,30 @@ from eylo.sor.shared.models import (
 from eylo.sor.shared.services import SorSourceService
 
 logger = logging.getLogger(__name__)
+SOR_REVOCATION_RECOVERY_LIMIT = 100
+SOR_REVOCATION_RECOVERY_MAX = 1000
+SOR_CONNECTION_REVOKED_CODE = "CONNECTION_REVOKED"
 
 
-@dataclass(frozen=True, slots=True)
-class SorConnectionRevocationPlan:
+class _RevokedWorkKind(StrEnum):
+    SYNC_RUN = "sync run"
+    WEBHOOK_RECEIPT = "webhook receipt"
+    COMMAND = "command"
+
+
+class _RevocationWork(BaseModel):
+    """Only validated work/tenant identities leave the read transaction."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+    organization_id: UUID
+    work_id: UUID
+
+
+class SorConnectionRevocationPlan(BaseModel):
     """Exact durable SOR work fenced by one committed connection revocation."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
     organization_id: UUID
     source_ids: tuple[UUID, ...]
@@ -46,23 +69,27 @@ class SorConnectionRevocationPlan:
     command_ids: tuple[UUID, ...]
 
 
-@dataclass(frozen=True, slots=True)
-class SorConnectionStopResult:
+class SorConnectionStopResult(BaseModel):
     """Best-effort cancellation counts after the revocation transaction commits."""
 
-    sync_runs: int = 0
-    webhook_receipts: int = 0
-    commands: int = 0
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+    sync_runs: int = Field(default=0, ge=0)
+    webhook_receipts: int = Field(default=0, ge=0)
+    commands: int = Field(default=0, ge=0)
 
 
-async def recover_fenced_sor_work(*, limit: int = 100) -> SorConnectionStopResult:
+async def recover_fenced_sor_work(
+    *, limit: int = SOR_REVOCATION_RECOVERY_LIMIT
+) -> SorConnectionStopResult:
     """Stop active work left behind after a committed source authority fence."""
-    if not 1 <= limit <= 1000:
+    if not 1 <= limit <= SOR_REVOCATION_RECOVERY_MAX:
         raise ValueError("SOR revocation recovery limit must be between 1 and 1000.")
     fenced_states = (SorSourceState.REAUTH_REQUIRED, SorSourceState.DISABLED)
     async with start_transaction(ro=True) as session:
         sync_runs = tuple(
-            (
+            _RevocationWork(organization_id=organization_id, work_id=work_id)
+            for organization_id, work_id in (
                 await session.execute(
                     select(SorSyncRunModel.organization_id, SorSyncRunModel.id)
                     .join(
@@ -93,7 +120,8 @@ async def recover_fenced_sor_work(*, limit: int = 100) -> SorConnectionStopResul
             ).all()
         )
         webhook_receipts = tuple(
-            (
+            _RevocationWork(organization_id=organization_id, work_id=work_id)
+            for organization_id, work_id in (
                 await session.execute(
                     select(
                         SorWebhookReceiptModel.organization_id,
@@ -127,7 +155,8 @@ async def recover_fenced_sor_work(*, limit: int = 100) -> SorConnectionStopResul
             ).all()
         )
         commands = tuple(
-            (
+            _RevocationWork(organization_id=organization_id, work_id=work_id)
+            for organization_id, work_id in (
                 await session.execute(
                     select(SorCommandModel.organization_id, SorCommandModel.id)
                     .join(
@@ -156,7 +185,7 @@ async def recover_fenced_sor_work(*, limit: int = 100) -> SorConnectionStopResul
     return SorConnectionStopResult(
         sync_runs=await _stop_owned_each(
             sync_runs,
-            kind="sync run",
+            kind=_RevokedWorkKind.SYNC_RUN,
             stop=lambda organization_id, work_id: cancel_sor_sync_run(
                 organization_id=organization_id,
                 run_id=work_id,
@@ -164,7 +193,7 @@ async def recover_fenced_sor_work(*, limit: int = 100) -> SorConnectionStopResul
         ),
         webhook_receipts=await _stop_owned_each(
             webhook_receipts,
-            kind="webhook receipt",
+            kind=_RevokedWorkKind.WEBHOOK_RECEIPT,
             stop=lambda organization_id, work_id: cancel_sor_webhook_receipt(
                 organization_id=organization_id,
                 receipt_id=work_id,
@@ -172,7 +201,7 @@ async def recover_fenced_sor_work(*, limit: int = 100) -> SorConnectionStopResul
         ),
         commands=await _stop_owned_each(
             commands,
-            kind="command",
+            kind=_RevokedWorkKind.COMMAND,
             stop=lambda organization_id, work_id: cancel_sor_command(
                 organization_id=organization_id,
                 command_id=work_id,
@@ -220,7 +249,7 @@ async def prepare_sor_connection_revocation(
                 organization_id=organization_id,
                 source_id=source.id,
                 transition=SorSourceTransition.REAUTHORIZATION_REQUIRED,
-                error_code="CONNECTION_REVOKED",
+                error_code=SOR_CONNECTION_REVOKED_CODE,
                 error_summary="The source connection was revoked.",
             )
         await file_sor_connection_event(
@@ -229,7 +258,7 @@ async def prepare_sor_connection_revocation(
             connection_id=connection_id,
             connection_revision=connection_revision,
             event_sequence=f"revoked:{connection_revision}:source:{source.id}",
-            event_type="sor.connection.revoked",
+            event_type=SorConnectionEventType.REVOKED,
             occurred_at=occurred_at,
             profile=source.profile,
             vendor_key=source.vendor_key,
@@ -243,7 +272,7 @@ async def prepare_sor_connection_revocation(
             connection_id=connection_id,
             connection_revision=connection_revision,
             event_sequence=f"revoked:{connection_revision}:connector:{connector.id}",
-            event_type="sor.connection.revoked",
+            event_type=SorConnectionEventType.REVOKED,
             occurred_at=occurred_at,
             profile=connector.profile,
             vendor_key=connector.vendor_key,
@@ -332,7 +361,7 @@ async def stop_revoked_sor_connection_work(
     """Cancel every captured task without undoing the committed revocation."""
     sync_runs = await _stop_each(
         plan.sync_run_ids,
-        kind="sync run",
+        kind=_RevokedWorkKind.SYNC_RUN,
         stop=lambda work_id: cancel_sor_sync_run(
             organization_id=plan.organization_id,
             run_id=work_id,
@@ -340,7 +369,7 @@ async def stop_revoked_sor_connection_work(
     )
     webhook_receipts = await _stop_each(
         plan.webhook_receipt_ids,
-        kind="webhook receipt",
+        kind=_RevokedWorkKind.WEBHOOK_RECEIPT,
         stop=lambda work_id: cancel_sor_webhook_receipt(
             organization_id=plan.organization_id,
             receipt_id=work_id,
@@ -348,7 +377,7 @@ async def stop_revoked_sor_connection_work(
     )
     commands = await _stop_each(
         plan.command_ids,
-        kind="command",
+        kind=_RevokedWorkKind.COMMAND,
         stop=lambda work_id: cancel_sor_command(
             organization_id=plan.organization_id,
             command_id=work_id,
@@ -364,7 +393,7 @@ async def stop_revoked_sor_connection_work(
 async def _stop_each(
     work_ids: Sequence[UUID],
     *,
-    kind: str,
+    kind: _RevokedWorkKind,
     stop: Callable[[UUID], Awaitable[bool]],
 ) -> int:
     stopped = 0
@@ -384,21 +413,21 @@ async def _stop_each(
 
 
 async def _stop_owned_each(
-    work: Sequence[tuple[UUID, UUID]],
+    work: Sequence[_RevocationWork],
     *,
-    kind: str,
+    kind: _RevokedWorkKind,
     stop: Callable[[UUID, UUID], Awaitable[bool]],
 ) -> int:
     stopped = 0
-    for organization_id, work_id in work:
+    for item in work:
         try:
-            if await stop(organization_id, work_id):
+            if await stop(item.organization_id, item.work_id):
                 stopped += 1
         except Exception as error:  # noqa: BLE001 - persisted fence is authoritative
             logger.error(
                 "Could not recover fenced SOR %s work_id=%s error_type=%s",
                 kind,
-                work_id,
+                item.work_id,
                 type(error).__name__,
             )
     return stopped

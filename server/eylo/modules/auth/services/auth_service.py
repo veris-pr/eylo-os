@@ -14,7 +14,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from uuid_utils import uuid7
 
 from eylo.common.database import start_transaction
-from eylo.modules.auth.schemas import CurrentUserSchema, TokenDataSchema
+from eylo.modules.auth.schemas import (
+    CurrentUserSchema,
+    RegistrationRequestSchema,
+    TokenDataSchema,
+)
+from eylo.modules.auth.schemas.token_claims import (
+    AuthActionTokenKind,
+    InviteTokenClaims,
+    ResetTokenClaims,
+)
 from eylo.modules.members.constants import (
     ACCESS_TOKEN_EXPIRE_MINUTES,
     ALGORITHM,
@@ -25,7 +34,6 @@ from eylo.modules.members.exceptions import (
     MemberNotFound,
     MemberPasswordMismatch,
 )
-from eylo.modules.members.schemas.api import MemberRegisterSchema
 from eylo.modules.members.schemas.indb import MemberCreateSchema, MemberInDb
 from eylo.modules.organizations.schemas import OrganisationCreateSchema
 
@@ -103,8 +111,12 @@ class AuthService:
         try:
             payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
             token_data = TokenDataSchema.model_validate(payload)
+        except (JWTError, ValidationError, TypeError):
+            raise _member_credentials_exception()
+
+        try:
             member = await self.member_service.get_active_by_id(token_data.member_id)
-        except (JWTError, MemberNotFound, ValidationError):
+        except MemberNotFound:
             raise _member_credentials_exception()
 
         return CurrentUserSchema(
@@ -113,8 +125,8 @@ class AuthService:
             email=member.email,
         )
 
-    async def register(self, request: MemberRegisterSchema) -> MemberInDb:
-        """Register New Member."""
+    async def register(self, request: RegistrationRequestSchema) -> MemberInDb:
+        """Create an organization/member; hash once without mutating API input."""
 
         def _get_domain_from_email(email: EmailStr) -> str:
             """Extract the domain from an email address."""
@@ -143,7 +155,14 @@ class AuthService:
         )
 
         # Create the member linked to the organization
-        return await self.member_service.create_(organization.id, request)
+        return await self.member_service.create_(
+            organization.id,
+            MemberCreateSchema(
+                organization_id=organization.id,
+                email=request.email,
+                password=self.get_password_hash(request.password),
+            ),
+        )
 
     async def invite_member(
         self,
@@ -171,8 +190,8 @@ class AuthService:
         the email is already registered.
         """
         payload = decode_invite_token(token)
-        email = payload["email"]
-        organization_id = UUID(payload["organization_id"])
+        email = payload.email
+        organization_id = payload.organization_id
 
         existing = None
         try:
@@ -216,13 +235,12 @@ class AuthService:
         no longer exists.
         """
         payload = decode_reset_token(token)
-        member_id = UUID(payload["member_id"])
-
-        member = await self.member_service.get_(member_id)
-        member.password = self.get_password_hash(new_password)
+        member_id = payload.member_id
 
         raw = await self.member_service.repository.get_(member_id)
-        raw.password = member.password
+        if raw is None:
+            raise MemberNotFound
+        raw.password = self.get_password_hash(new_password)
         await self.member_service.repository.save_(raw)
 
 
@@ -244,8 +262,6 @@ async def get_current_user(
 
 _INVITE_TOKEN_EXPIRE_HOURS = 168  # 7 days
 _RESET_TOKEN_EXPIRE_HOURS = 1
-_INVITE_TOKEN_TYPE = "invite"
-_RESET_TOKEN_TYPE = "reset"
 
 
 def create_invite_token(
@@ -257,13 +273,13 @@ def create_invite_token(
 ) -> str:
     """Create a signed JWT invite token for joining an organization."""
     expire = datetime.now(timezone.utc) + timedelta(hours=_INVITE_TOKEN_EXPIRE_HOURS)
-    payload = {
-        "type": _INVITE_TOKEN_TYPE,
-        "organization_id": str(organization_id),
-        "email": email,
-        "exp": expire,
-    }
-    return jwt.encode(payload, secret_key, algorithm=algorithm)
+    claims = InviteTokenClaims(
+        type=AuthActionTokenKind.INVITE,
+        organization_id=organization_id,
+        email=email,
+        exp=expire,
+    )
+    return jwt.encode(claims.to_payload(), secret_key, algorithm=algorithm)
 
 
 def decode_invite_token(
@@ -271,12 +287,13 @@ def decode_invite_token(
     *,
     secret_key: str = SECRET_KEY,
     algorithm: str = ALGORITHM,
-) -> dict:
+) -> InviteTokenClaims:
     """Decode and validate an invite token.  Raises JWTError on failure."""
-    payload = jwt.decode(token, secret_key, algorithms=[algorithm])
-    if payload.get("type") != _INVITE_TOKEN_TYPE:
-        raise JWTError("Invalid token type")
-    return payload
+    try:
+        payload = jwt.decode(token, secret_key, algorithms=[algorithm])
+        return InviteTokenClaims.model_validate(payload)
+    except (ValidationError, TypeError) as error:
+        raise JWTError("Invalid invite token claims") from error
 
 
 def create_reset_token(
@@ -288,13 +305,13 @@ def create_reset_token(
 ) -> str:
     """Create a signed JWT password-reset token."""
     expire = datetime.now(timezone.utc) + timedelta(hours=_RESET_TOKEN_EXPIRE_HOURS)
-    payload = {
-        "type": _RESET_TOKEN_TYPE,
-        "member_id": str(member_id),
-        "email": email,
-        "exp": expire,
-    }
-    return jwt.encode(payload, secret_key, algorithm=algorithm)
+    claims = ResetTokenClaims(
+        type=AuthActionTokenKind.RESET,
+        member_id=member_id,
+        email=email,
+        exp=expire,
+    )
+    return jwt.encode(claims.to_payload(), secret_key, algorithm=algorithm)
 
 
 def decode_reset_token(
@@ -302,9 +319,10 @@ def decode_reset_token(
     *,
     secret_key: str = SECRET_KEY,
     algorithm: str = ALGORITHM,
-) -> dict:
+) -> ResetTokenClaims:
     """Decode and validate a password-reset token.  Raises JWTError on failure."""
-    payload = jwt.decode(token, secret_key, algorithms=[algorithm])
-    if payload.get("type") != _RESET_TOKEN_TYPE:
-        raise JWTError("Invalid token type")
-    return payload
+    try:
+        payload = jwt.decode(token, secret_key, algorithms=[algorithm])
+        return ResetTokenClaims.model_validate(payload)
+    except (ValidationError, TypeError) as error:
+        raise JWTError("Invalid reset token claims") from error

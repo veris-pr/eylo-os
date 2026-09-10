@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from pydantic import ValidationError
+
 from eylo.modules.provider_configs.constants import Capability
+from eylo.modules.provider_configs.domain import EffectiveProviderConfig
 from eylo.modules.provider_configs.errors import NotConfiguredError
 from eylo.modules.sandbox_configs.domain import InvalidSandboxConfig, ResolvedSandbox
 from eylo.modules.sandbox_configs.service import SandboxConfigService
@@ -47,10 +50,10 @@ class SandboxConfigResolver:
         return self._to_resolved(effective)
 
     @staticmethod
-    def _to_resolved(effective) -> ResolvedSandbox:
+    def _to_resolved(effective: EffectiveProviderConfig) -> ResolvedSandbox:
         try:
             return ResolvedSandbox.from_effective(effective)
-        except InvalidSandboxConfig:
+        except (InvalidSandboxConfig, ValidationError):
             raise _not_configured("valid_provider_config") from None
 
 

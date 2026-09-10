@@ -12,6 +12,7 @@ from slugify import slugify
 
 from eylo.common.contracts.provider_config import Capability
 from eylo.common.contracts.tool_availability import ToolRequirements
+from eylo.common.contracts.tool_metadata import ToolCatalogVisibility, get_tool_metadata
 from eylo.common.schemas import CaseInSensitiveEnum
 from eylo.modules.tools.schemas.platform import PlatformTool, PlatformToolInputSchema
 
@@ -66,7 +67,7 @@ def _is_function(obj: Any) -> bool:
 
 
 def build_fn_declaration(func: Callable) -> type[BaseModel]:
-    custom_schema_model = getattr(func, "__eylo_schema_model__", None)
+    custom_schema_model = get_tool_metadata(func).input_schema
     if custom_schema_model is not None:
         if inspect.isclass(custom_schema_model) and issubclass(
             custom_schema_model, BaseModel
@@ -79,7 +80,9 @@ def build_fn_declaration(func: Callable) -> type[BaseModel]:
     signature = inspect.signature(func)
     # ctx: conversation context should be ignored
     ignore_params = ["self", "cls", "args", "kwargs", "ctx"]
-    fields = {}
+    # Pydantic field definitions contain runtime annotations and defaults; their
+    # validity is checked by create_model, not a platform-owned payload schema.
+    fields: dict[str, Any] = {}
     for name, param in signature.parameters.items():
         if name in ignore_params:
             continue
@@ -136,6 +139,10 @@ class ToolRegistrationService:
             raise ValueError(f"Tool '{tool_name}' is not registered.")
         return self.registered_tools[tool_name]
 
+    def has_tool(self, tool_name: str) -> bool:
+        """Membership checks do not invoke the missing-tool error contract."""
+        return tool_name in self.registered_tools
+
     def unregister_tool(self, tool_name: str):
         """Unregister a tool by its name."""
         self.get_tool(tool_name)
@@ -174,8 +181,7 @@ class ToolRegistrationService:
     ) -> list:
         """Return all registered tools as virtual ToolInDb objects for API discovery.
 
-        Respects __eylo_feature_flag__ on tool functions — tools with a disabled
-        flag are excluded from the catalog.
+        Code-owned tool metadata excludes hidden tools and disabled feature flags.
 
         Args:
             organization_id: Org to scope deterministic UUIDs to.
@@ -198,11 +204,12 @@ class ToolRegistrationService:
                 is not provider_capability
             ):
                 continue
-            if getattr(tool_func, "__eylo_catalog_hidden__", False):
+            metadata = get_tool_metadata(tool_func)
+            if metadata.visibility is ToolCatalogVisibility.HIDDEN:
                 continue
             # Respect feature flag gating
-            flag_name = getattr(tool_func, "__eylo_feature_flag__", None)
-            if flag_name and not getattr(settings, flag_name, False):
+            flag_name = metadata.feature_flag
+            if flag_name is not None and not getattr(settings, flag_name.value, False):
                 continue
 
             # A tool backed by infrastructure the organization has not
@@ -251,6 +258,15 @@ class ToolRegistrationService:
 
 local_tools_registry = ToolRegistrationService()
 system_tools_registry = ToolRegistrationService()
+
+
+def get_local_tool_config(tool_name: str) -> PlatformTool:
+    """Only code-registered local tools may be created through the operator API."""
+    if system_tools_registry.has_tool(tool_name):
+        raise ValueError(f"Tool '{tool_name}' is part of system tools.")
+    if not local_tools_registry.has_tool(tool_name):
+        raise ValueError(f"Tool '{tool_name}' is not part of local tools.")
+    return PlatformTool.model_validate(local_tools_registry.get_llm_config(tool_name))
 
 
 def register_tool(tool_name: str | None = None) -> Callable:

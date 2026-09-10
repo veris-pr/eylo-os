@@ -78,11 +78,15 @@ class ToolService(EyloBaseService[ToolInDb, ToolModel]):
         state = _header_state(row).edit(
             expected_draft_version=data.expected_draft_version
         )
-        values = data.model_dump(exclude_unset=True)
+        values = data.model_dump(exclude_unset=True, exclude={"llm_config"})
+        if "llm_config" in data.model_fields_set:
+            values["llm_config"] = (
+                data.llm_config.model_dump(by_alias=True, exclude_none=True)
+                if data.llm_config is not None
+                else None
+            )
         values.pop("expected_draft_version")
         for field, value in values.items():
-            if hasattr(value, "model_dump"):
-                value = value.model_dump(mode="json", by_alias=True, exclude_none=True)
             setattr(row, field, value)
         _validate_publishable(row, require_executor=False)
         _apply_header_state(row, state)

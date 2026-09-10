@@ -91,10 +91,11 @@ def _canonicalize_widget_start_request(
     ):
         raise ConversationNotFound
 
-    return request.model_copy(
-        update={
+    return ConversationStartRequest.model_validate(
+        {
+            **request.model_dump(by_alias=True),
             "channel": ConversationChannels.WIDGET,
-            "from_": ConversationParticipant(
+            "from": ConversationParticipant(
                 kind=ParticipantKind.CONTACT,
                 id=contact.id,
             ),
@@ -281,7 +282,8 @@ class ConversationWsController:
     ) -> WsResponse:
         try:
             request = ConversationStartRequest.model_validate(event.data or {})
-            if not contact_id or ctx.user_session_id is None:
+            ws = ctx.ws
+            if not contact_id or ctx.user_session_id is None or ws is None:
                 return await self._conversation_not_found(event, ctx)
             if ctx.authorized_conversation_id is not None:
                 return await self._conversation_not_found(event, ctx)
@@ -334,7 +336,7 @@ class ConversationWsController:
                 ctx.organization_id,
                 conversation_indb.id,
             )
-            ctx.ws.agent_id = request.to_.id
+            ws.agent_id = request.to_.id
 
             return WsResponse(
                 status=status.HTTP_200_OK,

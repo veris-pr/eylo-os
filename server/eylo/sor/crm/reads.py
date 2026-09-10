@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
+
+from sqlalchemy.orm import QueryableAttribute
 
 from eylo.sor.shared.contracts import SorProfile
 from eylo.sor.shared.models import (
@@ -30,7 +33,7 @@ def _field(
     label: str,
     kind: SorGridColumnKind,
     importance: SorGridColumnImportance,
-    expression,
+    expression: QueryableAttribute[Any],
     attribute: str,
     default_visible: bool = True,
     filterable: bool = True,

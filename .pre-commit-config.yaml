@@ -42,6 +42,32 @@ repos:
         pass_filenames: false
         stages: [pre-commit, pre-push]
 
+      - id: python-typed-bootstrap-contracts
+        name: Python deployment config and shared declaration contracts
+        entry: >-
+          bash -c 'cd server && .venv/bin/pyrefly check
+          eylo/app.py eylo/common/config/
+          eylo/common/schemas.py eylo/common/utils/cache.py
+          eylo/common/contracts/tool_metadata.py
+          eylo/modules/tools/services/tool_register.py
+          eylo/modules/tools/schemas/claude.py
+          eylo/pipelines/system_tools/spawn_task_fnf.py
+          eylo/modules/provider_configs/exception_handlers.py'
+        language: system
+        files: ^server/(pyproject\.toml|eylo/(app\.py|common/(config/|schemas\.py|utils/cache\.py|contracts/tool_metadata\.py)|modules/(provider_configs/exception_handlers\.py|tools/(services/tool_register\.py|schemas/claude\.py))|pipelines/system_tools/spawn_task_fnf\.py))
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+
+      - id: python-typed-analytics-contracts
+        name: Python analytics query and public response types
+        entry: >-
+          bash -c 'cd server && .venv/bin/pyrefly check
+          eylo/modules/analytics/'
+        language: system
+        files: ^server/(pyproject\.toml|eylo/modules/analytics/)
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+
       - id: python-typed-provider-config-contracts
         name: Python provider-config persistence, encryption and resolution types
         entry: >-
@@ -69,6 +95,191 @@ repos:
           eylo/pipelines/parallel_agents/swarm_agent_worker.py'
         language: system
         files: ^server/(pyproject\.toml|eylo/(common/(schemas\.py|schema_fields\.py|repositories\.py|services\.py|revisions\.py|contracts/provider_config\.py)|products/campaigns/|pipelines/(agents/|campaigns/|conversation/tool_dispatch\.py|parallel_agents/swarm_agent_worker\.py)|modules/(agents/|tools/|templates/|voice/|voice_configs/|provider_configs/|llm_configs/|email_configs/|webrtc_configs/|embedding_configs/|reranking_configs/|memory_configs/)))
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+
+      - id: python-typed-sandbox-authority
+        name: Python sandbox config, adapter and session authority types
+        entry: >-
+          bash -c 'cd server && .venv/bin/pyrefly check
+          eylo/modules/sandbox_configs/
+          eylo/pipelines/sandbox/
+          eylo/sockets/sandbox/
+          eylo/pipelines/system_tools/sandbox_tools.py'
+        language: system
+        files: ^server/(pyproject\.toml|eylo/(common/contracts/sandbox\.py|modules/sandbox_configs/|pipelines/sandbox/|pipelines/system_tools/sandbox_tools\.py|sockets/sandbox/))
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+
+      - id: python-typed-widget-invitation-authority
+        name: Python member auth, contact and widget authority types
+        entry: >-
+          bash -c 'cd server && .venv/bin/pyrefly check
+          eylo/modules/auth/
+          eylo/modules/members/
+          eylo/modules/contacts/
+          eylo/pipelines/widget_invitations.py
+          eylo/pipelines/conversation/widget_authority.py'
+        language: system
+        files: ^server/(pyproject\.toml|eylo/(common/(models|schemas)\.py|modules/(auth|members|contacts)/|modules/conversations/(models|schemas)/participants\.py|pipelines/widget_invitations\.py|pipelines/conversation/widget_authority\.py))
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+
+      - id: python-typed-conversation-aggregates
+        name: Python conversation start, read, prompt and message contracts
+        entry: >-
+          bash -c 'cd server && .venv/bin/pyrefly check
+          eylo/modules/conversations/repositories/aggregates.py
+          eylo/modules/conversations/repositories/messages.py
+          eylo/modules/conversations/prompts/base.py
+          eylo/modules/conversations/services/aggregates.py
+          eylo/modules/conversations/controllers/aggregates.py
+          eylo/modules/conversations/schemas/aggregates.py
+          eylo/modules/conversations/schemas/conversations.py
+          eylo/modules/conversations/operator_service.py
+          eylo/modules/conversations/services/conversations.py
+          eylo/modules/conversations/services/participants.py
+          eylo/modules/conversations/controllers/ws_conversations.py
+          eylo/pipelines/conversation/start.py'
+        language: system
+        files: ^server/(pyproject\.toml|eylo/(common/(models|schemas)\.py|modules/(agents/models\.py|contacts/models\.py|session_context/|conversations/)|pipelines/conversation/start\.py))
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+
+      - id: python-typed-tool-definition-contracts
+        name: Python tool definition API, persistence and projection types
+        entry: >-
+          bash -c 'cd server && .venv/bin/pyrefly check
+          eylo/common/contracts/tool_platform.py
+          eylo/modules/tools/schemas/api.py
+          eylo/modules/tools/schemas/indb.py
+          eylo/modules/tools/controllers.py
+          eylo/modules/tools/repositories/
+          eylo/modules/tools/services/indb.py
+          eylo/modules/tools/services/tool_register.py
+          eylo/modules/agents/schemas/api.py'
+        language: system
+        files: ^server/(pyproject\.toml|eylo/(common/(schemas\.py|contracts/tool_platform\.py)|modules/(tools/|agents/schemas/)))
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+
+      - id: python-typed-scheduling-tool-contracts
+        name: Python scheduling context, registration and tool contracts
+        entry: >-
+          bash -c 'cd server && .venv/bin/pyrefly check
+          eylo/modules/scheduler/
+          eylo/modules/conversations/scheduled_actions.py
+          eylo/pipelines/telephony/scheduled_actions.py
+          eylo/modules/tools/services/executors/system_tools/
+          eylo/jobs/scheduler.py
+          eylo/pipelines/scheduler/'
+        language: system
+        files: ^server/(pyproject\.toml|eylo/(common/contracts/scheduler\.py|modules/(scheduler/|conversations/(constants|scheduled_actions)\.py|tools/services/(tool_register\.py|executors/system_tools/))|jobs/scheduler\.py|pipelines/(scheduler/|telephony/scheduled_actions\.py|agent_execution_context\.py)))
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+
+      - id: python-typed-sor-catalog-contracts
+        name: Python SOR registry and catalog projection contracts
+        entry: >-
+          bash -c 'cd server && .venv/bin/pyrefly check
+          eylo/sor/runtime/registry.py
+          eylo/sor/runtime/catalog.py
+          eylo/sor/shared/catalog_service.py
+          eylo/sor/shared/dependencies.py
+          eylo/sor/shared/contracts.py
+          eylo/sor/shared/onboarding.py
+          eylo/sor/shared/sync_services.py
+          eylo/sor/shared/reads.py
+          eylo/sor/shared/custom_datasets.py
+          eylo/sor/shared/custom_dataset_reads.py
+          eylo/sor/crm/reads.py
+          eylo/sor/ticketing/reads.py
+          eylo/sor/support/reads.py
+          eylo/sor/knowledge/reads.py'
+        language: system
+        files: ^server/(pyproject\.toml|eylo/sor/(runtime/(registry|catalog|command_payloads|tools)\.py|shared/(contracts|schemas|catalog_service|dependencies|onboarding|sync_services|reads|custom_datasets|custom_dataset_reads)\.py|(crm|ticketing|support|knowledge)/))
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+
+      - id: python-typed-sor-vendor-contracts
+        name: Python verified SOR adapter contracts
+        entry: >-
+          bash -c 'cd server && .venv/bin/pyrefly check
+          eylo/sor/crm/vendors/hubspot.py
+          eylo/sor/crm/vendors/salesforce.py
+          eylo/sor/knowledge/vendors/confluence.py
+          eylo/sor/knowledge/vendors/notion.py
+          eylo/sor/knowledge/vendors/linear.py
+          eylo/sor/knowledge/vendors/linear_contracts.py
+          eylo/sor/ticketing/vendors/linear.py
+          eylo/sor/ticketing/vendors/linear_contracts.py
+          eylo/sor/ticketing/vendors/github.py
+          eylo/sor/ticketing/vendors/jira.py
+          eylo/sor/support/vendors/freshdesk.py
+          eylo/sor/support/vendors/intercom.py
+          eylo/sor/support/vendors/zendesk.py
+          eylo/sor/shared/linear.py'
+        language: system
+        files: ^server/(pyproject\.toml|eylo/(common/http_egress\.py|sor/((crm|knowledge|ticketing|support)/|runtime/http\.py|shared/(contracts|atlassian|linear)\.py)))
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+
+      - id: python-typed-sor-recovery-contracts
+        name: Python SOR transport, events, and recovery contracts
+        entry: >-
+          bash -c 'cd server && .venv/bin/pyrefly check
+          eylo/sor/runtime/http.py
+          eylo/sor/runtime/sync.py
+          eylo/sor/runtime/work.py
+          eylo/sor/runtime/revocation.py
+          eylo/sor/runtime/action_events.py
+          eylo/sor/runtime/oauth.py
+          eylo/sor/runtime/refresh.py
+          eylo/sor/runtime/api_key_sources.py
+          eylo/sor/runtime/commands.py
+          eylo/events/durable/binding.py
+          eylo/jobs/sor.py'
+        language: system
+        files: ^server/(pyproject\.toml|eylo/(durable_runtime\.py|events/durable/|common/http_egress\.py|sockets/http/|jobs/sor\.py|sor/(runtime/(http|sync|work|adapters|revocation|action_events|oauth|refresh|api_key_sources|commands)\.py|shared/(contracts|models|sync_services)\.py)))
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+
+      - id: python-typed-deletion-contracts
+        name: Python provider references and owned deletion contracts
+        entry: >-
+          bash -c 'cd server && .venv/bin/pyrefly check
+          eylo/pipelines/embedding/config_deletion.py
+          eylo/pipelines/agents/config_deletion.py
+          eylo/pipelines/memory/dependency_references.py
+          eylo/pipelines/deletions/
+          eylo/modules/embedding_configs/service.py
+          eylo/modules/llm_configs/service.py
+          eylo/modules/email_configs/service.py
+          eylo/modules/webrtc_configs/service.py'
+        language: system
+        files: ^server/(pyproject\.toml|eylo/(pipelines/(deletions/|embedding/config_deletion\.py|agents/config_deletion\.py|memory/dependency_references\.py)|common/(models\.py|contracts/storage\.py)|modules/(agents/models\.py|memory/models\.py|knowledgebase/(models|jobs)\.py|voice/recording/model\.py|voice_transcripts/models\.py|telephony/models\.py|(embedding|llm|email|webrtc)_configs/service\.py)|products/campaigns/models\.py))
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+
+      - id: python-typed-user-session-contracts
+        name: Python user-session lifecycle and query contracts
+        entry: >-
+          bash -c 'cd server && .venv/bin/pyrefly check
+          eylo/modules/user_sessions
+          eylo/pipelines/websocket/controllers.py
+          eylo/pipelines/telephony/conversation.py'
+        language: system
+        files: ^server/(pyproject\.toml|eylo/(common/models\.py|modules/user_sessions/|pipelines/(websocket/controllers|telephony/conversation)\.py))
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+
+      - id: python-typed-websocket-contracts
+        name: Python WebSocket ingress, delivery and routing contracts
+        entry: >-
+          bash -c 'cd server && .venv/bin/pyrefly check
+          eylo/pipelines/websocket eylo/common/contracts/websocket.py'
+        language: system
+        files: ^server/(pyproject\.toml|eylo/(common/contracts/(websocket|session_state)\.py|pipelines/websocket/|modules/(auth/schemas/|session_context/)))
         pass_filenames: false
         stages: [pre-commit, pre-push]
 
@@ -245,6 +456,8 @@ repos:
           eylo/modules/voice_configs/domain.py
           eylo/modules/voice_configs/resolver.py
           eylo/pipelines/voice/provider_runtime.py
+          eylo/pipelines/voice/recording.py
+          eylo/modules/voice/recording/routes.py
           eylo/pipelines/voice/recording_storage.py
           eylo/pipelines/voice/recording_outbound.py
           eylo/pipelines/voice/recording_contracts.py
@@ -338,6 +551,9 @@ repos:
           eylo/sockets/tts/adapters/elevenlabs_adapter.py
           eylo/sockets/tts/adapters/hume_wire.py
           eylo/sockets/tts/adapters/hume_adapter.py
+          eylo/sockets/tts/adapters/murf_adapter.py
+          eylo/sockets/tts/adapters/smallest_adapter.py
+          eylo/sockets/voice/audio/resampler.py
           eylo/pipelines/voice/live_transcript.py
           eylo/pipelines/voice/post_call.py
           eylo/pipelines/voice/policy_speech.py
@@ -346,7 +562,7 @@ repos:
           eylo/pipelines/telephony/sessions.py
           eylo/pipelines/voice/lifecycle_policy.py'
         language: system
-        files: ^server/(pyproject\.toml|eylo/(common/(contracts/|schema_fields\.py)|audio/|runtime/tasks\.py|modules/(voice|voice_configs|voice_transcripts|conversations|webrtc_configs)/|pipelines/(voice|webrtc|websocket|telephony)/|sockets/(realtime|stt|tts|stun_turn|voice/vendors/(assemblyai|cartesia|deepgram|gladia|google|revai|speechmatics))/))
+        files: ^server/(pyproject\.toml|eylo/(common/(contracts/|schema_fields\.py)|audio/|runtime/tasks\.py|modules/(voice|voice_configs|voice_transcripts|conversations|webrtc_configs)/|pipelines/(voice|webrtc|websocket|telephony)/|sockets/(realtime|stt|tts|stun_turn|voice/audio|voice/vendors/(assemblyai|cartesia|deepgram|gladia|google|revai|speechmatics))/))
         pass_filenames: false
         stages: [pre-commit, pre-push]
 
@@ -422,11 +638,15 @@ repos:
           bash -c 'cd server && .venv/bin/pyrefly check
           eylo/modules/integrations_v2/models.py
           eylo/modules/integrations_v2/services/installations.py
+          eylo/pipelines/integrations_v2/contracts.py
           eylo/pipelines/integrations_v2/execution.py
           eylo/pipelines/integrations_v2/resolution.py
           eylo/pipelines/integrations_v2/credentials.py
+          eylo/pipelines/integrations_v2/http_client.py
           eylo/pipelines/integrations_v2/vendors/github/tools.py
           eylo/pipelines/integrations_v2/vendors/freshdesk/
+          eylo/pipelines/integrations_v2/vendors/googlesheets/
+          eylo/pipelines/integrations_v2/vendors/linear/
           eylo/pipelines/integrations_v2/vendors/gitlab/tools.py
           eylo/pipelines/integrations_v2/vendors/intercom/tools.py'
         language: system

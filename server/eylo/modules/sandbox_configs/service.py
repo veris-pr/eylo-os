@@ -39,7 +39,7 @@ class SandboxConfigService:
         config: Mapping[str, object] | None = None,
         secrets: Mapping[str, str] | None = None,
     ) -> ProviderConfig:
-        validated = SandboxProviderConfig.validate(
+        validated = SandboxProviderConfig.from_config(
             provider=provider,
             config=config,
             secrets=secrets,
@@ -49,7 +49,7 @@ class SandboxConfigService:
             capability=Capability.SANDBOX,
             provider=validated.provider.value,
             name=name,
-            config=validated.config,
+            config=validated.config.to_storage(),
             secrets=validated.secrets,
         )
 
@@ -88,7 +88,7 @@ class SandboxConfigService:
             if secret_patch is None
             else apply_secret_patch(existing.secrets, secret_patch)
         )
-        validated = SandboxProviderConfig.validate(
+        validated = SandboxProviderConfig.from_config(
             provider=existing.provider,
             config=next_config,
             secrets=next_secrets,
@@ -99,7 +99,7 @@ class SandboxConfigService:
                 organization_id=organization_id,
                 config_id=config_id,
                 name=name,
-                config=validated.config if config is not None else None,
+                config=validated.config.to_storage() if config is not None else None,
                 secret_patch=secret_patch,
             )
         if enabled is not None:

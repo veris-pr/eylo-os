@@ -1,10 +1,15 @@
 """Tenant-scoped read model for the organization Conversations Console."""
 
-from dataclasses import dataclass
+from __future__ import annotations
+
+from collections.abc import Sequence
+from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import exists, func, or_, select
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import SQLColumnExpression, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from eylo.modules.conversations.models.conversations import ConversationsModel
 from eylo.modules.conversations.models.participants import ParticipantsModel
@@ -17,10 +22,15 @@ from eylo.modules.conversations.schemas.conversations import (
 from eylo.modules.conversations.schemas.participants import ParticipantKind
 
 
-@dataclass(frozen=True, slots=True)
-class ConversationListResult:
-    items: list[ConversationApiResponseSchema]
-    total: int
+class ConversationListResult(BaseModel):
+    """A validated page and full filtered count; snapshots omit conversation data."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    items: list[ConversationApiResponseSchema] = Field(exclude=True, repr=False)
+    total: int = Field(ge=0)
 
 
 class ConversationOperatorService:
@@ -79,7 +89,7 @@ class ConversationOperatorService:
         *,
         organization_id: UUID,
         filters: ConversationFilterSchema,
-    ) -> list:
+    ) -> Sequence[ColumnElement[bool]]:
         predicates = [
             ConversationsModel.organization_id == organization_id,
             ConversationsModel.deleted.is_(False),
@@ -115,7 +125,9 @@ class ConversationOperatorService:
         return predicates
 
     @staticmethod
-    def _sort_column(sort: ConversationSort):
+    def _sort_column(
+        sort: ConversationSort,
+    ) -> SQLColumnExpression[str | datetime | None]:
         return {
             ConversationSort.TITLE: func.lower(ConversationsModel.title),
             ConversationSort.CREATED_AT: ConversationsModel.created_at,

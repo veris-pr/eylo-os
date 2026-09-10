@@ -23,9 +23,11 @@ logger = logging.getLogger(__name__)
 
 async def handle_not_configured(
     _request: Request,
-    error: NotConfiguredError,
+    error: Exception,
 ) -> JSONResponse:
     """Map missing capability details to the stable HTTP 409 contract."""
+    if not isinstance(error, NotConfiguredError):
+        raise error
     return JSONResponse(
         status_code=status.HTTP_409_CONFLICT,
         content={
@@ -38,9 +40,11 @@ async def handle_not_configured(
 
 async def handle_provider_config_error(
     _request: Request,
-    error: ProviderConfigError,
+    error: Exception,
 ) -> JSONResponse:
     """Map shared lifecycle failures identically across capability routes."""
+    if not isinstance(error, ProviderConfigError):
+        raise error
     if isinstance(error, ProviderConfigNotFound):
         return JSONResponse(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -62,7 +66,7 @@ async def handle_provider_config_error(
         (InvalidProviderConfig, InvalidSecretPatch, InvalidSecretPayload),
     ):
         return JSONResponse(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             content={
                 "error": "invalid_provider_config",
                 "detail": str(error),
@@ -80,7 +84,7 @@ async def handle_provider_config_error(
 
 async def handle_secret_cipher_error(
     _request: Request,
-    error: SecretCipherError,
+    error: Exception,
 ) -> JSONResponse:
     """Map an encryption failure to a stable HTTP 503 contract.
 
@@ -88,10 +92,11 @@ async def handle_secret_cipher_error(
     corrupted `ENCRYPTION_KEY`, a damaged envelope — surfaces as an
     unhandled 500 with a stack trace, or as an unanswered WebSocket event.
 
-    The response body deliberately carries no detail. Ciphertext, key
-    material, and the underlying message are logged server-side only: an
-    operator needs them, a caller must never receive them.
+    Response and logs exclude ciphertext, key material and the underlying
+    exception message. Only the exception type is logged.
     """
+    if not isinstance(error, SecretCipherError):
+        raise error
     logger.error(
         "Provider-config secret could not be processed error_type=%s",
         type(error).__name__,

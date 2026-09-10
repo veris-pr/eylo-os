@@ -6058,6 +6058,41 @@ export interface components {
             amplitude: number;
         };
         /**
+         * AnalyticsAgentPoint
+         * @description Agent identity keeps its established camel-case JSON name.
+         */
+        AnalyticsAgentPoint: {
+            /** Count */
+            count: number;
+            /** Date */
+            date: string;
+            /**
+             * Agentid
+             * Format: uuid
+             */
+            agentId: string;
+        };
+        /**
+         * AnalyticsCountPoint
+         * @description Existing public count/date wire shape.
+         */
+        AnalyticsCountPoint: {
+            /** Count */
+            count: number;
+            /** Date */
+            date: string;
+        };
+        /**
+         * AnalyticsEntity
+         * @enum {string}
+         */
+        AnalyticsEntity: "conversations" | "contacts" | "messages" | "members";
+        /**
+         * AnalyticsTimeSlice
+         * @enum {string}
+         */
+        AnalyticsTimeSlice: "day" | "week" | "month";
+        /**
          * ApiKeyCreate
          * @description Schema for creating a new API Key.
          */
@@ -6476,12 +6511,9 @@ export interface components {
             lastTrackingId?: string | null;
             /** Lastoutcomereason */
             lastOutcomeReason?: string | null;
-            /**
-             * Variables
-             * @default {}
-             */
-            variables: {
-                [key: string]: unknown;
+            /** Variables */
+            variables?: {
+                [key: string]: components["schemas"]["JsonValue"];
             };
             /** Organizationid */
             organizationId?: string | null;
@@ -7362,12 +7394,9 @@ export interface components {
             contactAddress: string;
             /** Name */
             name?: string | null;
-            /**
-             * Variables
-             * @default {}
-             */
-            variables: {
-                [key: string]: unknown;
+            /** Variables */
+            variables?: {
+                [key: string]: components["schemas"]["JsonValue"];
             };
         };
         /**
@@ -13980,8 +14009,8 @@ export interface components {
             mcpServerId?: string | null;
             /** Wireid */
             wireId?: string | null;
-            /** @description LLM schema for the tool */
-            llmConfig?: components["schemas"]["PlatformToolApiSchema"] | null;
+            /** @default auto */
+            executionMode: components["schemas"]["eylo__modules__tools__models__ToolExecutionMode"];
             /**
              * Executorconfig
              * @description Executor schema for the tool
@@ -13993,8 +14022,8 @@ export interface components {
             outputSchema?: {
                 [key: string]: unknown;
             } | null;
-            /** @default auto */
-            executionMode: components["schemas"]["eylo__modules__tools__models__ToolExecutionMode"];
+            /** @description LLM schema for the tool */
+            llmConfig?: components["schemas"]["PlatformToolApiSchema"] | null;
         };
         /**
          * ToolEffect
@@ -14063,11 +14092,6 @@ export interface components {
              * @description Tool name
              */
             name: string;
-            /**
-             * Slug
-             * @description Tool slug
-             */
-            slug: string;
             /** @description Tool execution boundary */
             kind: components["schemas"]["ToolKind"];
             /**
@@ -14085,10 +14109,28 @@ export interface components {
              * @description MCP server ID
              */
             mcpServerId?: string | null;
-            /** Mcpserverrevision */
-            mcpServerRevision?: number | null;
             /** Wireid */
             wireId?: string | null;
+            /** @default auto */
+            executionMode: components["schemas"]["eylo__modules__tools__models__ToolExecutionMode"];
+            /**
+             * Executorconfig
+             * @description Executor schema for the tool
+             */
+            executorConfig?: {
+                [key: string]: unknown;
+            } | null;
+            /** Outputschema */
+            outputSchema?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Slug
+             * @description Tool slug
+             */
+            slug: string;
+            /** Mcpserverrevision */
+            mcpServerRevision?: number | null;
             /** @default draft */
             lifecycle: components["schemas"]["DefinitionLifecycle"];
             /** Publishedrevision */
@@ -14103,21 +14145,8 @@ export interface components {
              * @default true
              */
             draftDirty: boolean;
-            /** @default auto */
-            executionMode: components["schemas"]["eylo__modules__tools__models__ToolExecutionMode"];
             /** @description LLM schema for the tool */
             llmConfig?: components["schemas"]["PlatformToolApiSchema"] | null;
-            /**
-             * Executorconfig
-             * @description Executor schema for the tool
-             */
-            executorConfig?: {
-                [key: string]: unknown;
-            } | null;
-            /** Outputschema */
-            outputSchema?: {
-                [key: string]: unknown;
-            } | null;
         };
         /**
          * ToolResultContent
@@ -14224,8 +14253,6 @@ export interface components {
              * @description Tool description
              */
             description?: string | null;
-            /** @description LLM schema for the tool */
-            llmConfig?: components["schemas"]["PlatformToolApiSchema"] | null;
             /**
              * Executorconfig
              * @description Executor schema for the tool
@@ -14238,6 +14265,8 @@ export interface components {
                 [key: string]: unknown;
             } | null;
             executionMode?: components["schemas"]["eylo__modules__tools__models__ToolExecutionMode"] | null;
+            /** @description LLM schema for the tool */
+            llmConfig?: components["schemas"]["PlatformToolApiSchema"] | null;
         };
         /**
          * ToolUseContent
@@ -22598,7 +22627,7 @@ export interface operations {
             query?: {
                 startDate?: string | null;
                 endDate?: string | null;
-                timeslice?: ("day" | "week" | "month") | null;
+                timeslice?: components["schemas"]["AnalyticsTimeSlice"];
             };
             header?: {
                 "X-API-Key"?: string | null;
@@ -22617,7 +22646,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown[];
+                    "application/json": components["schemas"]["AnalyticsAgentPoint"][];
                 };
             };
             /** @description Validation Error */
@@ -22636,7 +22665,7 @@ export interface operations {
             query?: {
                 startDate?: string | null;
                 endDate?: string | null;
-                timeslice?: ("day" | "week" | "month") | null;
+                timeslice?: components["schemas"]["AnalyticsTimeSlice"];
             };
             header?: {
                 "X-API-Key"?: string | null;
@@ -22644,7 +22673,7 @@ export interface operations {
             };
             path: {
                 organization_id: string;
-                entity: "conversations" | "contacts" | "messages" | "members";
+                entity: components["schemas"]["AnalyticsEntity"];
             };
             cookie?: never;
         };
@@ -22656,7 +22685,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown[];
+                    "application/json": components["schemas"]["AnalyticsCountPoint"][];
                 };
             };
             /** @description Validation Error */

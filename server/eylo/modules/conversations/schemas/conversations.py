@@ -15,9 +15,9 @@ from eylo.common.contracts.tool_availability import (
 )
 from eylo.common.schemas import (
     EyloBaseApiSchema,
-    EyloBaseOrganizationModelSchema,
     EyloBaseRequestSchema,
     EyloBaseSchema,
+    EyloOrganizationModelSchema,
     PaginatedResponseSchema,
 )
 from eylo.common.utils.toon_serde import toon_encode
@@ -51,7 +51,7 @@ logger = logging.getLogger(__name__)
 # ====================== Conversation Schemas ======================
 
 
-class ConversationBase(EyloBaseOrganizationModelSchema):
+class ConversationBase(EyloOrganizationModelSchema):
     id: UUID
     organization_id: UUID
     channel: ConversationChannels = Field(default=ConversationChannels.CHAT)
@@ -293,24 +293,11 @@ class ConversationContext(BaseModel):
         include_contact_info: bool = True,
         include_handoff_warning: bool = True,
     ) -> List[MessageInDb]:
-        """Enrich the last USER message with dynamic context.
+        """Project a widget response to text with contact/handoff context.
 
-        Adds helpful contextual information to the last user message:
-        - Current UTC timestamp
-        - User contact information (if available)
-        - Handoff loop warning (if recent handoffs detected)
-
-        This enrichment is done on a copy of the messages, not modifying the originals.
-
-        Args:
-            messages: List of messages (will not be modified)
-            include_timestamp: Whether to add current timestamp
-            include_contact_info: Whether to add user contact info
-            include_handoff_warning: Whether to add handoff loop warning
-
-        Returns:
-            New list of messages with last USER message enriched
-
+        Ordinary text/image blocks stay unchanged. Enrichment validates a new
+        message and list; it never mutates the canonical messages. If projection
+        fails, retain the original history and log only the error type.
         """
         from eylo.modules.conversations.schemas.message_content import (
             UserMessageContent,
@@ -356,36 +343,17 @@ class ConversationContext(BaseModel):
         try:
             parsed_content = last_user_msg.get_parsed_content()
 
-            # Handle different content structures
-            if isinstance(parsed_content, UserMessageContent):
-                if isinstance(parsed_content.content, str):
-                    # Simple string content - append enrichment
-                    new_content = parsed_content.content + "".join(enrichment_parts)
-                    enriched_content = UserMessageContent(
-                        role="user", content=new_content
-                    )
-                elif isinstance(parsed_content.content, list):
-                    # List of TextContent - don't modify complex structures
-                    # Vendors can handle this in their adapters if needed
-                    return messages
-                else:
-                    return messages
-            elif isinstance(parsed_content, WidgetResponseMessageContent):
-                enriched_content = UserMessageContent(
-                    role="user",
-                    content=parsed_content.get_text_content()
-                    + "".join(enrichment_parts),
-                )
-            else:
-                # Not a user message content - shouldn't happen but be safe
+            if not isinstance(parsed_content, WidgetResponseMessageContent):
                 return messages
+            enriched_content = UserMessageContent(
+                content=parsed_content.get_text_content() + "".join(enrichment_parts),
+            )
 
-            # Create new message with enriched content
-            enriched_msg = MessageInDb.model_construct(
-                **{
+            enriched_msg = MessageInDb.model_validate(
+                {
                     **last_user_msg.model_dump(),
                     "content": enriched_content,
-                    "content_kind": "TEXT",
+                    "content_kind": MessageContentKind.TEXT,
                 }
             )
 

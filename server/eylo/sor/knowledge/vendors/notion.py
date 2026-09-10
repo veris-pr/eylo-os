@@ -240,8 +240,13 @@ NOTION_MANIFEST = SorAdapterCapabilityManifest(
     readable_tools=_READ_TOOLS,
     writable_tools=_WRITE_TOOLS,
     change_strategies=frozenset({SorChangeStrategy.FULL_RECONCILE}),
-    tool_streams=_TOOL_STREAMS,
-    mutation_result_streams=_MUTATION_RESULT_STREAMS,
+    tool_streams={
+        tool.value: frozenset(stream.value for stream in streams)
+        for tool, streams in _TOOL_STREAMS.items()
+    },
+    mutation_result_streams={
+        tool.value: stream.value for tool, stream in _MUTATION_RESULT_STREAMS.items()
+    },
     oauth=SorOAuthSpec(
         authorization_url="https://api.notion.com/v1/oauth/authorize",
         token_url="https://api.notion.com/v1/oauth/token",
@@ -518,21 +523,20 @@ class NotionKnowledgeAdapter:
                 "The Notion source selects no streams.",
             )
         streams = {stream.key: stream for stream in NOTION_MANIFEST.streams}
-        objects = tuple(
-            SorDiscoveredObject(
-                key=stream_key,
-                label=streams[
-                    _require_stream(
-                        stream_key,
-                        selected=self._context.selected_objects,
-                    )
-                ].label,
-                fields=_SCHEMA_FIELDS[stream_key],
+        objects: list[SorDiscoveredObject] = []
+        for selected_key in self._context.selected_objects:
+            stream = _require_stream(
+                selected_key, selected=self._context.selected_objects
             )
-            for stream_key in self._context.selected_objects
-        )
+            objects.append(
+                SorDiscoveredObject(
+                    key=stream,
+                    label=streams[stream].label,
+                    fields=_SCHEMA_FIELDS[stream],
+                )
+            )
         return SorDiscoveredSchema(
-            objects=objects,
+            objects=tuple(objects),
             vendor_api_version=NOTION_API_VERSION,
         )
 
@@ -2422,13 +2426,13 @@ def _credential(credentials: Mapping[str, object], key: str) -> str:
     return value
 
 
-def _require_stream(value: str, *, selected: tuple[str, ...]) -> str:
+def _require_stream(value: str, *, selected: tuple[str, ...]) -> NotionStream:
     if value not in _STREAM_ENTITY or value not in selected:
         raise _invalid_operation(
             SorVendorErrorCode.VENDOR_STREAM_UNSUPPORTED,
             "The requested Notion stream is not selected for this source.",
         )
-    return value
+    return NotionStream(value)
 
 
 def _header(headers: Mapping[str, str], name: str) -> str | None:

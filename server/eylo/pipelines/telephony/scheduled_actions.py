@@ -11,7 +11,11 @@ import logging
 from uuid import UUID
 
 from eylo.common.outbound import OutboundAttemptState
-from eylo.modules.scheduler.actions import ActionContext, schedulable
+from eylo.modules.scheduler.actions import (
+    ActionContext,
+    AgentSchedulingAccess,
+    schedulable,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +26,7 @@ logger = logging.getLogger(__name__)
     # could be talked into scheduling them, and this one spends money and rings
     # a real person — `schedule_call` remains the agent's route, and it goes
     # through the same handler with the same checks.
-    agent_schedulable=False,
+    agent_access=AgentSchedulingAccess.OPERATOR_ONLY,
 )
 async def place_call(payload: dict, *, context: ActionContext) -> dict:
     """Initiate one outbound call.

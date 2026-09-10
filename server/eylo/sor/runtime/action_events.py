@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from enum import StrEnum
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.events.durable.domain import DurableEventEnvelope
 from eylo.events.durable.service import DurableEventService
 from eylo.sor.crm.contracts import CrmToolName
 from eylo.sor.knowledge.contracts import KnowledgeToolName
-from eylo.sor.shared.contracts import SorProfile
+from eylo.sor.shared.contracts import SorProfile, SorProjectionDisposition
 from eylo.sor.shared.models import SorCommandModel, SorSourceModel
 from eylo.sor.support.contracts import SupportToolName
 from eylo.sor.ticketing.contracts import TicketingToolName
@@ -20,40 +22,103 @@ SOR_RECORD_SUBJECT_TYPE = "sor.record"
 SOR_CONNECTION_SUBJECT_TYPE = "sor.connection"
 SOR_ACTION_EVENT_VERSION = 1
 
-_CONNECTION_EVENT_TYPES = frozenset(
-    {
-        "sor.connection.connected",
-        "sor.connection.reauth_required",
-        "sor.connection.revoked",
-    }
-)
+SOR_CONNECTION_EVENT_SEQUENCE_MAX = 128
 
-_ACTION_EVENT_TYPES = {
-    CrmToolName.CREATE_CONTACT: "crm.contact.created",
-    CrmToolName.UPDATE_CONTACT: "crm.contact.updated",
-    CrmToolName.CREATE_DEAL: "crm.deal.created",
-    CrmToolName.UPDATE_DEAL: "crm.deal.updated",
-    CrmToolName.MOVE_DEAL: "crm.deal.stage_changed",
-    TicketingToolName.CREATE: "issue.created",
-    TicketingToolName.UPDATE: "issue.updated",
-    TicketingToolName.ASSIGN: "issue.updated",
-    TicketingToolName.ADD_LABEL: "issue.updated",
-    TicketingToolName.REMOVE_LABEL: "issue.updated",
-    TicketingToolName.LINK: "issue.updated",
-    TicketingToolName.TRANSITION: "issue.transitioned",
-    TicketingToolName.COMMENT: "issue.commented",
-    SupportToolName.OPEN_TICKET: "support.ticket.opened",
-    SupportToolName.UPDATE_TICKET: "support.ticket.updated",
-    SupportToolName.ASSIGN_TICKET: "support.ticket.assigned",
-    SupportToolName.REPLY: "support.ticket.replied",
-    SupportToolName.ADD_NOTE: "support.ticket.noted",
-    SupportToolName.CLOSE_TICKET: "support.ticket.closed",
-    SupportToolName.ADD_TAG: "support.ticket.updated",
-    SupportToolName.REMOVE_TAG: "support.ticket.updated",
-    KnowledgeToolName.CREATE: "docs.document.created",
-    KnowledgeToolName.UPDATE: "docs.document.updated",
-    KnowledgeToolName.APPEND: "docs.document.appended",
+
+class SorConnectionEventType(StrEnum):
+    CONNECTED = "sor.connection.connected"
+    REAUTH_REQUIRED = "sor.connection.reauth_required"
+    REVOKED = "sor.connection.revoked"
+
+
+class _ActionEventType(StrEnum):
+    CONTACT_CREATED = "crm.contact.created"
+    CONTACT_UPDATED = "crm.contact.updated"
+    DEAL_CREATED = "crm.deal.created"
+    DEAL_UPDATED = "crm.deal.updated"
+    DEAL_STAGE_CHANGED = "crm.deal.stage_changed"
+    ISSUE_CREATED = "issue.created"
+    ISSUE_UPDATED = "issue.updated"
+    ISSUE_TRANSITIONED = "issue.transitioned"
+    ISSUE_COMMENTED = "issue.commented"
+    TICKET_OPENED = "support.ticket.opened"
+    TICKET_UPDATED = "support.ticket.updated"
+    TICKET_ASSIGNED = "support.ticket.assigned"
+    TICKET_REPLIED = "support.ticket.replied"
+    TICKET_NOTED = "support.ticket.noted"
+    TICKET_CLOSED = "support.ticket.closed"
+    DOCUMENT_CREATED = "docs.document.created"
+    DOCUMENT_UPDATED = "docs.document.updated"
+    DOCUMENT_APPENDED = "docs.document.appended"
+
+
+type _ActionTool = CrmToolName | TicketingToolName | SupportToolName | KnowledgeToolName
+
+_ACTION_EVENT_TYPES: dict[_ActionTool, _ActionEventType] = {
+    CrmToolName.CREATE_CONTACT: _ActionEventType.CONTACT_CREATED,
+    CrmToolName.UPDATE_CONTACT: _ActionEventType.CONTACT_UPDATED,
+    CrmToolName.CREATE_DEAL: _ActionEventType.DEAL_CREATED,
+    CrmToolName.UPDATE_DEAL: _ActionEventType.DEAL_UPDATED,
+    CrmToolName.MOVE_DEAL: _ActionEventType.DEAL_STAGE_CHANGED,
+    TicketingToolName.CREATE: _ActionEventType.ISSUE_CREATED,
+    TicketingToolName.UPDATE: _ActionEventType.ISSUE_UPDATED,
+    TicketingToolName.ASSIGN: _ActionEventType.ISSUE_UPDATED,
+    TicketingToolName.ADD_LABEL: _ActionEventType.ISSUE_UPDATED,
+    TicketingToolName.REMOVE_LABEL: _ActionEventType.ISSUE_UPDATED,
+    TicketingToolName.LINK: _ActionEventType.ISSUE_UPDATED,
+    TicketingToolName.TRANSITION: _ActionEventType.ISSUE_TRANSITIONED,
+    TicketingToolName.COMMENT: _ActionEventType.ISSUE_COMMENTED,
+    SupportToolName.OPEN_TICKET: _ActionEventType.TICKET_OPENED,
+    SupportToolName.UPDATE_TICKET: _ActionEventType.TICKET_UPDATED,
+    SupportToolName.ASSIGN_TICKET: _ActionEventType.TICKET_ASSIGNED,
+    SupportToolName.REPLY: _ActionEventType.TICKET_REPLIED,
+    SupportToolName.ADD_NOTE: _ActionEventType.TICKET_NOTED,
+    SupportToolName.CLOSE_TICKET: _ActionEventType.TICKET_CLOSED,
+    SupportToolName.ADD_TAG: _ActionEventType.TICKET_UPDATED,
+    SupportToolName.REMOVE_TAG: _ActionEventType.TICKET_UPDATED,
+    KnowledgeToolName.CREATE: _ActionEventType.DOCUMENT_CREATED,
+    KnowledgeToolName.UPDATE: _ActionEventType.DOCUMENT_UPDATED,
+    KnowledgeToolName.APPEND: _ActionEventType.DOCUMENT_APPENDED,
 }
+
+
+_ACTION_TOOLS_BY_NAME: dict[str, _ActionTool] = {
+    tool.value: tool for tool in _ACTION_EVENT_TYPES
+}
+
+
+class _ActionPayload(BaseModel):
+    """Allowlisted audit facts, never vendor content or arbitrary source fields."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+    action: _ActionTool
+    agent_id: UUID
+    agent_revision: int
+    agent_run_id: UUID
+    command_id: UUID
+    profile: SorProfile
+    projection: SorProjectionDisposition
+    result_record_id: UUID
+    source_id: UUID
+    source_revision: str | None
+    tool_call_id: str
+    vendor_key: str
+
+
+class _ConnectionPayload(BaseModel):
+    """Connection lifecycle facts without credentials or scopes."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+    action: SorConnectionEventType
+    connection_id: UUID
+    connection_revision: int
+    connector_id: UUID | None
+    error_code: str | None
+    profile: SorProfile
+    source_id: UUID | None
+    vendor_key: str
 
 
 async def file_sor_action_event(
@@ -62,13 +127,14 @@ async def file_sor_action_event(
     command: SorCommandModel,
     source: SorSourceModel,
     result_record_id: UUID,
-    projection: str,
+    projection: SorProjectionDisposition,
     source_revision: str | None,
 ) -> UUID | None:
     """File one idempotent fact without source content or arbitrary custom values."""
-    event_type = _ACTION_EVENT_TYPES.get(command.profile_tool)
-    if event_type is None:
+    action = _ACTION_TOOLS_BY_NAME.get(command.profile_tool)
+    if action is None:
         return None
+    event_type = _ACTION_EVENT_TYPES[action]
     if command.finished_at is None:
         raise ValueError("A successful SOR command must have finished_at.")
 
@@ -89,20 +155,20 @@ async def file_sor_action_event(
             recorded_at=command.finished_at,
             correlation_id=command.agent_run_id,
             causation_id=command.id,
-            payload={
-                "action": command.profile_tool,
-                "agent_id": str(command.agent_id),
-                "agent_revision": command.agent_revision,
-                "agent_run_id": str(command.agent_run_id),
-                "command_id": str(command.id),
-                "profile": command.profile.value,
-                "projection": projection,
-                "result_record_id": str(result_record_id),
-                "source_id": str(source.id),
-                "source_revision": source_revision,
-                "tool_call_id": command.tool_call_id,
-                "vendor_key": source.vendor_key,
-            },
+            payload=_ActionPayload(
+                action=action,
+                agent_id=command.agent_id,
+                agent_revision=command.agent_revision,
+                agent_run_id=command.agent_run_id,
+                command_id=command.id,
+                profile=command.profile,
+                projection=projection,
+                result_record_id=result_record_id,
+                source_id=source.id,
+                source_revision=source_revision,
+                tool_call_id=command.tool_call_id,
+                vendor_key=source.vendor_key,
+            ).model_dump(mode="json"),
         ),
         consumer_names=(),
     )
@@ -116,7 +182,7 @@ async def file_sor_connection_event(
     connection_id: UUID,
     connection_revision: int,
     event_sequence: str,
-    event_type: str,
+    event_type: SorConnectionEventType,
     occurred_at: datetime,
     profile: SorProfile,
     vendor_key: str,
@@ -125,9 +191,11 @@ async def file_sor_connection_event(
     error_code: str | None = None,
 ) -> UUID:
     """File one idempotent connection fact without scopes or credentials."""
-    if event_type not in _CONNECTION_EVENT_TYPES:
-        raise ValueError("Unsupported SOR connection event type.")
-    if not event_sequence or len(event_sequence) > 128:
+    try:
+        event_type = SorConnectionEventType(event_type)
+    except ValueError as exc:
+        raise ValueError("Unsupported SOR connection event type.") from exc
+    if not event_sequence or len(event_sequence) > SOR_CONNECTION_EVENT_SEQUENCE_MAX:
         raise ValueError("SOR connection event sequence is invalid.")
     if occurred_at.tzinfo is None or occurred_at.utcoffset() is None:
         raise ValueError("SOR connection event time must include a timezone.")
@@ -136,16 +204,16 @@ async def file_sor_connection_event(
         NAMESPACE_URL,
         f"eylo:{event_type}:v1:{organization_id}:{connection_id}:{event_sequence}",
     )
-    payload = {
-        "action": event_type,
-        "connection_id": str(connection_id),
-        "connection_revision": connection_revision,
-        "connector_id": str(connector_id) if connector_id is not None else None,
-        "error_code": error_code,
-        "profile": profile.value,
-        "source_id": str(source_id) if source_id is not None else None,
-        "vendor_key": vendor_key,
-    }
+    payload = _ConnectionPayload(
+        action=event_type,
+        connection_id=connection_id,
+        connection_revision=connection_revision,
+        connector_id=connector_id,
+        error_code=error_code,
+        profile=profile,
+        source_id=source_id,
+        vendor_key=vendor_key,
+    ).model_dump(mode="json")
     await DurableEventService(session).file(
         envelope=DurableEventEnvelope(
             event_id=event_id,

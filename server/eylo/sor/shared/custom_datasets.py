@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict, Field, InstanceOf
+from pydantic.json_schema import SkipJsonSchema
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.sor.shared.models import SorCustomDatasetModel, SorSourceModel
@@ -14,12 +15,15 @@ from eylo.sor.shared.services import SorConfigurationError, SorNotFoundError
 CUSTOM_DATASET_ENTITY = "custom_dataset"
 
 
-@dataclass(frozen=True, slots=True)
-class SorCustomDatasetView:
-    """One dataset plus its tenant-bound source identity."""
+class SorCustomDatasetView(BaseModel):
+    """Transaction-owned dataset/source rows, excluded from public snapshots."""
 
-    dataset: SorCustomDatasetModel
-    source: SorSourceModel
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+    dataset: SkipJsonSchema[InstanceOf[SorCustomDatasetModel]] = Field(
+        exclude=True, repr=False
+    )
+    source: SkipJsonSchema[InstanceOf[SorSourceModel]] = Field(exclude=True, repr=False)
 
 
 class SorCustomDatasetService:

@@ -738,7 +738,9 @@ async def _refresh_campaign_counts(
                     )
                     .group_by(CampaignContactModel.status)
                 )
-            ).all()
+            )
+            .tuples()
+            .all()
         )
         campaign.total_contacts = sum(counts.values())
         campaign.completed_contacts = counts.get(

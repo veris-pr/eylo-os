@@ -7,12 +7,14 @@ from typing import Optional
 from uuid import UUID
 
 import arrow
-from fastapi import Request, WebSocket, status
+from fastapi import WebSocket, status
 from fastapi.websockets import WebSocketState
+from pydantic import ValidationError
+from starlette.requests import HTTPConnection
 from starlette.websockets import WebSocketDisconnect
 
 from eylo.common.contracts.voice import BrowserVoiceTerminationReason
-from eylo.common.contracts.websocket import WsResponse
+from eylo.common.contracts.websocket import WsRequestEvent, WsResponse
 from eylo.common.database import start_transaction
 from eylo.modules.auth.services.session_service import AuthSessionService
 from eylo.modules.user_sessions.domain import (
@@ -30,7 +32,7 @@ from eylo.pipelines.websocket.singleton import S_ws_manager
 logger = logging.getLogger(__name__)
 
 
-def extract_client_info(request: Request) -> dict:
+def extract_client_info(request: HTTPConnection) -> dict[str, str | None]:
     """Extract client information from request headers."""
     try:
         return {
@@ -53,7 +55,7 @@ class WebSocketController:
         organization_id: UUID,
         session_id: str,
         requested_user_session_id: UUID | None = None,
-        request: Optional[Request] = None,
+        request: Optional[HTTPConnection] = None,
     ):
         """Handles the entire lifecycle of a WebSocket connection."""
         async with start_transaction() as db:
@@ -229,13 +231,13 @@ class WebSocketController:
                             )
                     elif "bytes" in message and message["bytes"] is not None:
                         # Handle binary messages
-                        request_payload = {
-                            "kind": WsEventAction.AUDIO_DATA,
-                            "data": {
+                        request_payload = WsRequestEvent(
+                            kind=WsEventAction.AUDIO_DATA,
+                            data={
                                 "audio_data": message["bytes"],
                                 "timestamp": arrow.utcnow().timestamp(),
                             },
-                        }
+                        )
                         response_payload = await handle_event(
                             request_payload=request_payload,
                             ctx=ctx,
@@ -268,6 +270,17 @@ class WebSocketController:
                         "data": {
                             "error": status.HTTP_400_BAD_REQUEST,
                             "message": "Invalid JSON format",
+                        },
+                    }
+                except ValidationError:
+                    logger.warning(
+                        "Invalid WebSocket event organization_id=%s", organization_id
+                    )
+                    response_payload = {
+                        "kind": WsEventAction.ERROR,
+                        "data": {
+                            "error": status.HTTP_400_BAD_REQUEST,
+                            "message": "Invalid event format",
                         },
                     }
                 except Exception as error:

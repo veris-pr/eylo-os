@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from contextlib import nullcontext
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Final
 from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field, InstanceOf, field_serializer
+from pydantic.json_schema import SkipJsonSchema
 
 from eylo.common.database import current_transaction, start_transaction
 from eylo.common.http_egress import (
@@ -37,15 +39,22 @@ NO_AUTH_CONNECTION_ID = "no-auth"
 _REQUEST_BUDGET_SECONDS: Final = 20.0
 
 
-@dataclass(frozen=True, slots=True)
-class ResolvedVendorAuth:
-    """Everything needed to construct a client for one curated tool call."""
+class ResolvedVendorAuth(BaseModel):
+    """Client-construction values; credentials stay live and out of snapshots."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     vendor: CuratedVendorSpec
     base_url: str
-    origin: HttpOrigin
-    auth: VendorWireAuth
+    origin: InstanceOf[HttpOrigin]
+    auth: SkipJsonSchema[VendorWireAuth] = Field(repr=False, exclude=True)
     account: VendorAccount
+
+    @field_serializer("origin")
+    def serialize_origin(self, value: HttpOrigin) -> str:
+        return str(value)
 
 
 async def resolve_vendor_auth(

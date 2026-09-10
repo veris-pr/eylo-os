@@ -7845,7 +7845,1510 @@ Remaining campaign typing includes contact variable payloads, projection values
 and failure vocabulary; shared durable infrastructure and broader provider flows
 remain part of the platform goal. No migration or operator data changed.
 
+### Campaign contact variables across upload, storage and rendering
+
+`CampaignVariables` is a validated custom-key JSON object, not an invented fixed
+schema. Contact upload and readback models, internal contact schemas and the ORM
+field no longer use `Any` for variable values. Validation rejects non-string
+keys, non-finite numbers and Python-only objects, including nested values, while
+preserving all valid JSON types. Independent copies prevent caller mutation from
+changing an already-parsed payload. Repository validation also catches mutation
+after model construction before INSERT; service batch revalidation runs before
+contact resolution. JSONB storage and schema history are unchanged.
+
+Simple email rendering accepts a read-only JSON mapping and preserves the
+existing missing-placeholder and text-conversion behavior. Published template
+rendering remains governed by its pinned declaration, not a new variable policy.
+The console upload type now derives from `ContactUploadRow` in generated OpenAPI,
+including the address parser, instead of duplicating an unconstrained record.
+
+Verified **108 API/service/INSERT/readback/render assertions**, including nested
+JSON, copied payloads, independent empty defaults, invalid values and post-parse
+mutation, upload deduplication and count updates. DB operations were controlled;
+this is not live campaign sending or product acceptance. The actual console
+address parser passes **19 assertions**; **115 email/config** and **152 dispatch**
+regression assertions also pass. OpenAPI was regenerated from a temporary
+current-code loopback server with lifespan disabled, then TypeScript, lint and
+Vite build passed (existing large-chunk warning remains). Campaign typing, Ruff
+and documentation verification pass. The temporary server was stopped; operator
+data/config and deployed services were untouched. Broader failure/outcome
+vocabulary and platform typing remain open.
+
+### Sandbox config, verification and acquisition typing
+
+The current diagnostic cluster was traced from provider config resolution through
+verification manifests and session acquisition. Immutable dataclasses carried
+`Mapping[str, object]` settings, forcing runtime casts for every numeric limit.
+Fresh and restored acquisition used correlated `if checkpoint is None` branches,
+which left adapter/config/policy initialization unproven to the checker.
+
+- Replaced config/resolved-authority and verification data contracts with frozen
+  Pydantic models. Provider values are enums; verification's network/workspace
+  vocabulary is module-owned. Additional metadata is validated JSON, not an
+  unchecked private-field override. No secret is included in config snapshots.
+- `SandboxExecutionSettings` applies the existing policy validator and exposes
+  typed fields. Both verification and live execution use its manifest conversion;
+  no caller can override ceilings or network policy. All stored settings and
+  verification metadata keys remain compatible. No migration was introduced.
+- The provider constructor is `from_config`, avoiding a collision with Pydantic's
+  existing `validate` method. Service writes explicitly serialize settings;
+  invalid resolved metadata still maps to `NotConfiguredError`.
+- Acquisition now has exhaustive fresh-versus-checkpoint branches. Current grant
+  checks, checkpoint identity/policy comparison, quota checking, reservation commit
+  and failure cleanup remain in their existing ownership/transaction boundaries.
+- Added a local pre-commit/pre-push gate for sandbox config and pipelines. Docker
+  SDK result typing remains outside that passing scope and is still unfinished.
+
+Verified **98 config/service/verification assertions** and **151 config plus
+acquisition assertions** (the latter intentionally includes shared config cases).
+The actual acquisition function covers direct/agent creation, reuse, restore,
+missing/mismatched grants, altered policy, digest failure, create/restore/activation
+failures and staged-file replacement refusal. Provider creation is checked after
+reservation commit; verification probes occur outside DB scopes and CAS the read
+revision. Tests use real models with controlled DB/Docker I/O, not live containers,
+real concurrent locks or abrupt process cancellation. These are function proofs,
+not full sandbox product QA.
+
+Sandbox config/pipeline typing passes; full-project diagnostics are now **200
+errors (3 suppressed)**, down from 233. Remaining sandbox diagnostics are Docker
+SDK values and three system-tool context signatures. Workspace checkpoint payloads,
+vendor request/response typing and broader platform semantic typing remain open.
+
+### Docker sandbox SDK boundary typing
+
+Followed config → session → Docker exec/file/verification data flow against the
+locked and installed Docker SDK 7.2.0. SDK collection methods expose broad
+inferred return unions; the adapter previously trusted generic model/dictionary
+values as containers, images, exec IDs and execution status.
+
+- Native Docker clients/resources remain inside `sockets/sandbox/vendors/`.
+  Explicit resource narrowing replaces generic model assumptions; detached
+  creation must return a container, image resolution must return one image.
+- Added frozen vendor-local response projections in `docker_contracts.py` for
+  exec creation/inspection, host isolation, container state and server version.
+  Consumed fields are strict, additional vendor fields are tolerated. Invalid
+  evidence is refused without publishing raw response contents.
+- Parsed binary output frames before buffering. SDK streams are closed on
+  normal and exceptional consumer exits. File-write/restore channels now have
+  explicit lifetime ownership; previously they were opened without a close path.
+- Sandbox tool context signatures now explicitly permit their existing `None`
+  default. Public generated tool schemas still omit injected `ctx`; direct calls
+  still refuse execution outside the durable AgentRun path.
+- Expanded the local sandbox pre-commit/pre-push gate to cover sockets and the
+  three system-tool entrypoints as well as config/session pipelines.
+
+Verification: **92 adapter contract assertions**, **14 lifecycle assertions**,
+plus the previous **98 config** and **151 config/acquisition** probes rerun.
+Native SDK resources/streams and real Unix socket pairs exercise frame parsing,
+stdin half-close, write/restore channel cleanup, command timeout/cancellation,
+and cancellation during container creation. Docker HTTP I/O is controlled;
+these are not live container, daemon-isolation, DB-concurrency or process-crash
+proofs. Fixture failures (class-spec mocks missing instance `api`, a manifest
+below the existing minimum disk limit) were corrected in temporary probes, not
+by weakening runtime contracts.
+
+Sandbox scoped typing and Ruff pass. Full-project diagnostics are **184 errors
+(3 suppressed)**, down from 200. Checkpoint/workspace payload semantics and
+remaining platform/vendor typing still need work. No dependencies, migrations,
+operator data or deployed services were changed. Changed-build browser/provider
+QA remains open below.
+
+### Widget invitation persistence and authority typing
+
+Traced issuance → locked exchange → contact session/conversation creation →
+same-request replay → authenticated session authority → primary Agent authority.
+The reported errors came from unannotated SQLAlchemy columns and nullable Agent
+references carried through a filtered list; they did not establish a live auth
+bypass. Required identity/revision fields are now checked data contracts rather
+than immutable containers holding unchecked values.
+
+- `AuthSessionModel`, `WidgetInvitationModel` and `ApiKeyModel` now use
+  `Mapped`/`mapped_column` with the existing column types, nullability and
+  constraints. Compiled PostgreSQL table/index DDL matches the pre-change
+  baseline exactly. No migration or operator DB write was needed.
+- `WidgetSessionAuthority` and `WidgetConversationAuthority` are strict frozen
+  Pydantic values with positive pinned revisions. Conversation ownership is
+  checked first; eligible primary participants are converted into authorities
+  while their required references are narrowed. Zero/multiple authorities still
+  produce the existing not-found outcome.
+- Issued/exchanged pipeline results are frozen Pydantic values. Issued ORM row
+  identity is preserved, but the row, bearer URL and session token are excluded
+  from incidental dumps/repr. Explicit public response projection retains the
+  existing token/URL response contract. `_load_existing_exchange` receives a
+  typed `AsyncSession`.
+- A local pre-commit/pre-push gate covers these persistence, service, pipeline
+  and invitation route/schema files. Other auth flows remain outside this passing
+  gate until their typing work is complete.
+
+Verification: **95 authority/service/pipeline assertions** and **11 route
+projection assertions** using real ORM/schema/result types and controlled
+transaction/cross-module I/O. Cases include expiry ceilings, token hashing,
+`FOR UPDATE`/tenant query predicates, consumption fields, same-request replay,
+different-request refusal, expired/deleted/wrong-org sessions, filtered/ambiguous
+primary Agents and secret-safe snapshots. The actual public route functions
+retain explicit response fields and the unavailable-invitation 404. No live DB
+row-lock race, HTTP transport, browser bootstrap or provider call is claimed.
+
+Scoped typing, Ruff and documentation checks pass. Full-project diagnostics are
+**171 errors (3 suppressed)**, down from 184. Next auth data flows: member
+registration/projection, password-reset nullable persistence and session-initiation
+response/contracts. Changed-build widget/admin QA remains open below.
+
+### Member registration, reset and signed-action contracts
+
+Followed public registration → auth controller/service → organization/member
+creation, then reset-token decoding → member persistence and member-token
+resolution. The previous registration DTOs were structurally similar but not
+the same contract; a registration request was also passed where member creation
+required its newly created organization identity. The reset path read the same
+member twice and dereferenced a missing second ORM row. A controlled reproduction
+confirmed `AttributeError` rather than the intended invalid-reset outcome.
+
+- `RegistrationRequestSchema` now owns route/controller/service input. Removed
+  the unused duplicate `MemberRegisterSchema`. Password hashing happens once in
+  the auth service, without mutating API input; persistence receives an explicit
+  `MemberCreateSchema` with organization, email and hash.
+- Member schemas use the existing required-organization base. Password nullability
+  matches the DB; password verification explicitly refuses a missing hash.
+  Public member projection still omits passwords. Principal and resolved member
+  values no longer overwrite the same differently typed controller variable.
+- Reset performs one guarded ORM lookup and saves that row. Absence raises the
+  already handled `MemberNotFound`. No token policy, signing key, password hash
+  algorithm or DB schema was changed.
+- Session initiation now declares its required-data envelope directly instead
+  of overriding a mutable optional generic field. Its complete generated JSON
+  schema matches the previous public shape, including required data.
+- Invite/reset decoders return frozen typed claims with enum-owned purpose,
+  UUID identity, email and aware expiry. Exact legacy issuer payloads still
+  decode. Correctly signed payloads missing claims or carrying invalid IDs were
+  reproduced as previously accepted; they now take the existing `JWTError` path.
+- Installed PyJWT 2.13.0 raises `TypeError` for `exp: null`; this was reproduced
+  in the malformed-token matrix and normalized narrowly at decoding. Member
+  token handling uses the same protection, outside the member lookup, so a
+  repository `TypeError` is not disguised as an invalid token.
+
+Verification: **32 member/auth assertions**, **56 action-token assertions** and
+**14 member-token authority assertions**. These use actual claim models, signed
+JWTs and the configured password library; DB I/O is controlled. Cases include
+one hash without input mutation, duplicate refusal, public projection, null-hash
+login refusal, missing reset rows, malformed/expired/wrong-purpose/wrong-signature
+tokens and exact existing token-wire compatibility. Passlib 1.7.4 emitted its
+existing bcrypt 4.3.0 version-reporting warning; actual hash/match/mismatch checks
+passed. No dependency upgrade or warning suppression was introduced.
+
+The local auth gate now checks both full auth/members modules plus widget
+invitation/authority pipelines. Scoped types and Ruff pass; full-project count
+is **163 errors (3 suppressed)**, down from 171. Passing auth diagnostics does
+not establish live login, concurrent-reset, browser or provider QA.
+
+### Contact resolution and widget session results
+
+Converted `ContactIdentity`, `ContactResolution` and `AuthSessionInitiation`
+from dataclasses to frozen, strict Pydantic values. Existing optional outcomes
+remain valid: no match has no contact; a new contact has no matched identifier.
+The `created` predicate still means this call created a contact, not a lifecycle
+mode. Normalization, identifier priority, ambiguity warnings, the deletion fence
+and savepoint-based concurrent insert recovery remain service-owned.
+
+External identifiers, email, phone, contact details and session tokens are
+excluded from their containing internal model snapshots/representations. Typed
+nested model instances retain identity. Public session output still explicitly
+includes its token and safe warning codes; no public schema or DB change.
+
+Verification: **60 focused assertions** exercised actual resolution, create/retry,
+session service and controller functions with controlled DB I/O. They cover
+priority and conflicts, normalization, no merging, unresolved insert failures,
+deletion/invalid-identity refusals, session owner fields, safe snapshots and public
+token projection. No live concurrency or browser coverage is claimed. The
+expanded local auth/contact/widget gate and Ruff pass. Full-project count remains
+**163 errors (3 suppressed)**; this slice removes unchecked runtime contracts.
+
+### Conversation aggregate read contracts
+
+Replaced repository-to-service dictionaries with explicit Pydantic
+`ConversationAggregateRows` and `AggregateParticipant` working values. They are
+deliberately mutable during batch assembly, validate assignments, preserve ORM
+identity and exclude attached rows/content from incidental snapshots. No public
+response fields, DB schema or tenant predicates changed. The organization lookup
+now declares its actual non-null return-or-`ConversationNotFound` contract.
+
+The existing ranked message query now selects an ORM alias of its subquery
+instead of passing raw SQL rows to consumers. This follows the
+[SQLAlchemy 2.0 entity-from-subquery contract](https://docs.sqlalchemy.org/en/20/orm/queryguide/select.html#selecting-entities-from-subqueries),
+checked against installed SQLAlchemy **2.0.45**. The same per-conversation window,
+timestamp/ID tie break, filters and bounds remain in SQL. Sender lookup uses a
+single validated participant map rather than scanning participants per message.
+
+Verification: **547 assertions** compare the previous and changed service outputs
+across **48** combinations of body/participant inclusion, kind filters, limits
+and offsets. Actual SQLAlchemy queries execute against disposable in-memory
+SQLite tables mirroring relevant columns, with JSONB represented as SQLite JSON;
+this is **not** PostgreSQL schema/migration or production QA. Both implementations
+produce identical public output, exclude another org's conversation and deleted
+messages, preserve counts/order and use at most six batch queries. Projection
+adds no lazy SQL. PostgreSQL compilation separately confirms window/bound syntax.
+
+The probe caught a first-pass regression: Text-backed participant kinds return
+strings even though the ORM annotation says enum. Direct assignment bypassed
+Pydantic validation and emitted serializer warnings. Sender labels now come from
+validated participant summaries; the full matrix passes with Pydantic warnings
+treated as errors. A probe fixture also used the wrong Agent status value;
+it was corrected to the source-defined `AgentStatus.ACTIVE`, not a DB change.
+
+The dedicated aggregate type gate and Ruff pass. Full-project diagnostics are
+**156 errors (3 suppressed)**, down from 163. Changed-build browser and live
+PostgreSQL/provider acceptance remain open. Next read-path slice: operator list
+result/predicate contracts and remaining conversation schema typing.
+
+### Conversation list and history projection contracts
+
+Converted the operator `ConversationListResult` to a frozen Pydantic result with
+a nonnegative count; incidental snapshots omit conversation data. Predicate
+output is a read-only `Sequence[ColumnElement[bool]]` and sorting returns a typed
+SQL column expression. Using `Sequence` also avoids the class's `list` method
+shadowing the builtin in annotations. No query, sorting or pagination behavior
+changed. `ConversationBase` now uses the existing required-organization base;
+complete JSON schemas for it, `ConversationInDb` and `ConversationApiResponseSchema`
+are byte-equivalent to their pre-change definitions.
+
+The context enrichment helper no longer bypasses validation with
+`MessageInDb.model_construct`. Widget-response projection builds a validated copy,
+including enum content kind and typed metadata. Removed the unreachable
+string-content branch: canonical `UserMessageContent` normalizes strings to
+content blocks. Ordinary text/image messages still take the existing unchanged
+path. Corrected the helper docstring's unsupported timestamp claim; this does
+not add a timestamp feature or change enrichment policy.
+
+Verification: **2,422 list assertions** execute old/new query functions against
+disposable SQLite mirror tables across **480** filter/sort/pagination combinations.
+Public item output and totals match, each list call makes two queries, search
+wildcards stay literal, duplicate Agent participants do not duplicate rows, and
+the direct private route rejects another org before DB access. This is not live
+PostgreSQL, HTTP-authentication or browser coverage.
+
+**181 enrichment assertions** cover context flags, no-op paths, non-mutating
+copies, typed metadata/identity preservation, `get_messages()` and downstream
+`run_message_from_indb()`. No vendor is called. The expanded local conversation
+type gate covers aggregate/list/context contracts. Full-project diagnostics are
+**153 errors (3 suppressed)**, down from 156; full-platform work and changed-build
+acceptance remain open.
+
+### Conversation-start authority contracts
+
+Typed the contact resolver result and conversation-start pipeline return. The
+domain service now narrows the required Agent ID explicitly before swarm lookup
+and constructs `ConversationCreate` directly instead of building an unchecked
+keyword dictionary. Canonical widget ingress validates its modified request
+instead of using an unchecked `model_copy(update=...)`. Channel, context
+sanitization, participant roles and exact revision binding remain unchanged.
+
+The optional WebSocket diagnostic exposed a real ordering defect: a context
+without `ws` completed its mocked conversation creation and session fact, then
+returned 500 on `ctx.ws.agent_id`. Reproduced with one transaction, one start and
+one fact. The handler now requires and retains WebSocket state before DB work;
+the same input returns 404 with zero transactions, starts or facts. The successful
+path still updates the selected Agent only after the transaction succeeds.
+
+Verification: **151 assertions** use actual request, session, executable-Agent
+and swarm models through widget controller, resolver pipeline and domain service;
+DB writes/resolver I/O are controlled. Cases include inbound/outbound starts,
+context sanitization, exact swarm/Agent refs, revision/org mismatches, missing
+runtime state, bounded sessions, wrong contact and invalid widget direction.
+No live DB commit, WebSocket connection or vendor call is claimed.
+
+The expanded conversation gate and Ruff pass. Full-project diagnostics are
+**151 errors (3 suppressed)**, down from 153. Remaining conversation diagnostics
+are prompt composition and message-update row counts; broader transport contracts
+and changed-build acceptance remain open.
+
+### Prompt utility and message-result contracts
+
+The structured prompt utility now names render/context modes with enums and
+shares an explicit content type. Rendering accepts a read-only nested sequence,
+so recursive traversal retains its actual types without widening mutable lists.
+JSON input is validated into sections before merging by title. Section titles
+are derived after kind validation without modifying the caller's dictionary.
+
+Two local defects were reproduced: a string kind with an omitted title raised
+`AttributeError`, and appending to a string context split the previous text into
+individual characters. Both are corrected. Valid section rendering and the
+utility's conversational prompt output retain baseline parity. Malformed imports
+are now rejected before any section is replaced. This utility has no callers
+outside its own module in the current checkout; these fixes are not evidence
+of a changed live-agent prompt pipeline.
+
+Message persistence now narrows the SQLAlchemy DML result to `CursorResult`
+before reading its row count. The update SQL, filters, transaction owner and
+repeat-update semantics are unchanged. An unexpected non-cursor result is an
+internal contract failure rather than a fabricated zero-row success. The two
+message/run authority values are frozen, strict Pydantic models; typed tuple
+results feed their UUID fields. Existing no-owner refusals remain intact, and
+background run output can still have no user session.
+
+Executed function checks:
+
+- **1,485 prompt assertions**: heading modes, nested descriptions/context/examples,
+  baseline rendering/payload parity, JSON round trips, enum values, append and
+  replace behavior, omitted titles, invalid input, input preservation and atomic
+  invalid-import refusal.
+- **571 message-result assertions**: actual SQLAlchemy ORM statements and cursor
+  results against disposable in-memory SQLite table mirrors. Checks cover all
+  request statuses, counts, repeat updates, deleted rows, different requests and
+  conversations, authority lookups, missing/deleted/inactive owner cases, null
+  run sessions and Pydantic validation. PostgreSQL compilation preserves the
+  same update statement; PostgreSQL execution/constraints were not tested here.
+  The async DB seam delegates to a real synchronous SQLAlchemy session; it is
+  not an async-driver or concurrency proof. An initially omitted `updated_at`
+  column in the disposable fixture was corrected; no product schema changed.
+
+The expanded conversation type gate and Ruff pass. Full-project diagnostics are
+**148 errors (3 suppressed)**, down from 151. No operator data, provider config,
+migration or running service changed. Live widget/admin acceptance remains open.
+
+### WebSocket ingress and delivery contracts
+
+Decoded text now passes the existing activity/rate-limit check before validation
+into `WsRequestEvent`. The dispatcher accepts that model, not a raw dictionary;
+binary frames construct the same envelope while preserving the original bytes.
+Invalid JSON remains a safe 400 response; invalid event/model input now produces
+a safe 400 instead of a generic 500 or a silent falsey-input skip. Private event
+dispatch still requires the authenticated contact, not IDs supplied in a frame.
+The separate binary path retains its existing text-rate-limit exemption.
+
+The route now supplies its actual WebSocket as an `HTTPConnection` for existing
+client-info extraction. Installed FastAPI dependency resolution injects HTTP
+`Request` only for HTTP requests, so the former optional route parameter was
+always absent on WebSockets. No new authentication source was added; connection
+headers remain descriptive metadata, never organization/contact authority.
+
+Pubsub ingress validates a frozen `ContactDelivery` with UUID owners, an event
+enum and JSON payload. Required conversation authority stays mandatory; malformed
+messages are rejected without killing the listener. Both encoded bytes and
+decoded JSON strings are accepted. The producer's wire dictionary remains
+unchanged, and the real publisher serializer is covered by the probe. This does
+not finish the remaining per-event body or vendor media-frame contracts.
+
+`send_response()` previously cleaned up after `WebSocketDisconnect` or
+`RuntimeError` but returned `None`. Reproduced both cases with one cleanup call.
+Both now return `False`; success, socket-identity fencing and cancellation
+propagation are unchanged. Misleading priority/metrics documentation was removed.
+
+Executed verification:
+
+- **530 manager assertions** cover every event kind, validation/rate ordering,
+  payload preservation, missing conversation authority, malformed pubsub input,
+  listener continuation, producer serialization, contact/org routing, browser
+  versus conversation-bound telephony delivery, media frame formats, failed
+  sends, socket replacement fences and cancellation. Redis and network sends are
+  controlled; this is not live Redis/provider or concurrency QA.
+- **46 ASGI route assertions** exercise the actual FastAPI route, controller,
+  event dispatcher, ping handler and WebSocket frame transport with TestClient.
+  They cover initialization, client metadata, malformed frames, safe errors,
+  correlation IDs, authoritative org/session output, binary dispatch, explicit
+  session end and cross-org refusal. Auth/session persistence, audio handling
+  and close effects are controlled; no real provider or DB is touched.
+- The first route probe incorrectly expected snake-case envelope keys. The
+  public schema's actual aliases are `organizationId`, `sessionId` and
+  `requestId`; the probe was corrected, not the API. The installed TestClient
+  emits an httpx deprecation warning; no dependency change was made.
+
+The new local WebSocket type gate passes. Full-project diagnostics are
+**144 errors (3 suppressed)**, down from 148. Updated-build deployment and real
+widget/admin/provider acceptance remain open. No operator data or running
+service changed.
+
+### User-session lifecycle and list contracts
+
+`UserSessionStartResult` is now a frozen Pydantic value with one
+`UserSessionStartOutcome`, replacing the mutually exclusive stored boolean pair.
+Read-only `created` and `reconnected` properties preserve the widget's existing
+response contract. The attached ORM row retains identity and remains mutable
+inside its owning transaction; snapshots/repr exclude it. Both constructors now
+use explicit outcome values and keyword arguments. No lifecycle policy changed.
+
+`UserSessionListQuery` is a frozen, strict model with domain enum options and
+typed tuples. It excludes private search text from snapshots without changing
+the executed search. List predicates return a read-only sequence of SQL boolean
+expressions instead of the method-shadowed bare `list` annotation. Aggregate
+projections unpack typed result tuples; their SQL and query counts are unchanged.
+The count helper accepts the common mapped base and a SQL boolean predicate.
+`touch()` requires a DML cursor before interpreting its affected-row count.
+
+Verification: **848 function assertions** execute lifecycle methods and actual
+SQLAlchemy queries against disposable in-memory SQLite table mirrors. They cover
+create/reconnect/terminal refusal, immutable outcomes, live row identity, snapshot
+exclusion, stale connection fences, owner/contact/channel matching, activity
+updates, first/repeated/restored conversation links, link authority, list/filter/
+sort/page parity, detail counts and timeline projection. The 176 list combinations
+compare old and new output and assert two queries per list call. Detail remains
+two queries; foreign/deleted detail refusal stops after ownership lookup.
+PostgreSQL compilation retains row locking and the named conflict target.
+
+The first mirror lacked `deleted = false`; it was corrected after the unchanged
+baseline refused its newly inserted row. The baseline sort probe also needed
+its original enum class for identity comparisons. Neither issue required a
+product-code fix. SQLAlchemy's actual `ScalarSelect` export path was checked by
+the installed checker. No PostgreSQL constraints, concurrent locks, event-outbox
+persistence or external providers were exercised by these function probes.
+
+The existing **46-assertion ASGI widget-route probe** passes with the new outcome
+model and unchanged response booleans. A new local hook covers the session module
+and WebSocket/telephony consumers. Full-project diagnostics are **142 errors
+(3 suppressed)**, down from 144. Operator data and deployed services are unchanged;
+changed-build browser/vendor acceptance remains open.
+
+### Tool definition API and persistence contracts
+
+Tool create, update and response contracts now share metadata fields without
+overriding native `PlatformTool` fields with incompatible API types. Explicit
+API-to-domain conversion preserves route-owned organization identity, omitted
+patch fields and JSON Schema keywords. Camel-case request validation no longer
+rewrites the caller's input dictionary. Required fields, aliases and public
+schema definitions remain equivalent; required-field ordering is immaterial.
+
+Two defects were reproduced before repair:
+
+- Creating a registered local tool failed because the system registry's
+  missing-tool lookup raises; the API used it as a membership predicate. The
+  registry now exposes membership separately, and the local-tool policy returns
+  a validated `PlatformTool`. Unknown names and system-tool names remain refused.
+- Create/update serialization used Python field names for nested input schemas.
+  Loading dropped `$defs`, `oneOf` and `additionalProperties`. Writes now use
+  canonical JSON Schema aliases. Read compatibility accepts old Python-keyed
+  input schemas without DB rewriting; it cannot recover fields already discarded
+  from persisted data. The canonical input model also honors explicit Python
+  keyword construction, rather than silently ignoring those arguments.
+
+Verification: **422 function assertions** cover registration/refusal, code-owned
+schema replacement, route organization authority, controller translation, null/
+empty/omitted patch semantics, 24 schema/casing combinations, input preservation,
+actual ORM construction, JSON-column serialization, service revision increments,
+old-row read compatibility, public responses and Anthropic tool projection.
+Persistence save/flush and transaction seams are controlled: this is not a live
+DB commit, vendor call, widget test or approval-lifecycle proof. The initial
+probe referenced a nonexistent adapter class; inspection corrected it to the
+actual `AnthropicAdapter`. Product code was not changed for that fixture error.
+
+The dynamic Pydantic field-definition dictionary is explicitly SDK-owned `Any`:
+values contain runtime annotations and defaults, validated by `create_model`.
+It is not a platform payload escape or a reason to broaden tool data contracts.
+The local hook covers definitions, persistence, controllers and Agent response
+consumers. Full-project Pyrefly reports **134 errors (3 suppressed)**, down from
+142. Broader system-tool executor typing remains pending. No migration,
+operator data change, deployment or provider configuration change was performed.
+
+### Scheduled-tool context and action registration contracts
+
+`ActionContext` and `ActionSpec` are frozen, strict Pydantic values. The handler
+reference retains identity but is excluded from dumps, repr and JSON Schema.
+`AgentSchedulingAccess` replaces the registry's access-policy boolean; both
+current registrations explicitly retain their prior access. Action names and
+context keys remain extensible registry contracts, not a cross-domain enum.
+Conversation action/key constants are owned by the conversation module.
+
+Schedule tools consume an `AgentScheduleContext` behavioral protocol rather than
+pretending every caller is a `ConversationContext`. The protocol exposes only
+the agent authority needed by listing/cancellation. Real conversation identity
+requires a validated conversation context; missing optional action metadata is
+refused before dereference or persistence. The reserved `list` command remains
+separate from executable action names.
+
+Reproduced defects and fixes:
+
+- Non-conversation `AgentExecutionContext.conversation.id` was filed as a real
+  conversation ID by `schedule_create`. The tool now refuses that re-engagement
+  before calling the schedule service. It does not consult a model-supplied ID.
+- The reminder tool dereferenced a missing primary contact before its missing-
+  context guard, producing `AttributeError` and the generic retry response. The
+  guard now checks the real conversation, agent and contact first. Its existing
+  missing-context response is reachable, with no schedule write.
+- UTC conversion's optional format annotation now permits its actual `None`
+  default. Registered input validation consequently accepts explicit null; all
+  existing non-null conversion behavior remains unchanged.
+
+Executed **196 function assertions**: frozen model validation, handler identity/
+snapshot exclusion, action registration/access, controlled dispatch, 16 valid
+schedule input combinations with baseline output/registration parity, real
+recurrence/service validation, route-independent org/agent/revision ownership,
+spoofed IDs, unavailable contexts, malformed dates/rules, reminder semantics,
+registered-tool dispatch, disabled policy, list/cancel behavior in both context
+types, and UTC conversion. The schedule adapter and list/cancel I/O are controlled;
+no operator DB, provider, delayed live execution or browser was exercised.
+
+The current due worker creates scheduled AgentRuns; it does not call `dispatch`
+from the older action-handler registry. The registry-dispatch probe is only a
+function proof, not evidence of delivered reminders. Full scheduled-agent
+delivery, remaining action payload/result contracts and changed-build QA remain
+open. No schedule, migration, provider config or running service was changed.
+The new local scheduling hook passes; full-project diagnostics are **126 errors
+(3 suppressed)**, down from 134.
+
+### Provider references and call-owned erasure contracts
+
+The next deletion-flow slice removes ambiguous class-union inference from
+provider reference queries. All 16 existing embedding queries constructed before
+the change; this was not evidence of nonexistent runtime columns. Explicit
+model/column pairs preserve lookup order, early return, organization scope and
+soft-deletion predicates. `MemoryChangeModel` retains its actual distinct ORM
+base rather than being forced into a different inheritance hierarchy.
+
+Call erasure now shares a typed candidate-child predicate: organization AND
+(call ID OR a present conversation ID). A null conversation never selects other
+null-conversation rows. Candidate selection does not establish exclusive
+ownership: the existing call/session/recording graph guard remains authoritative
+before DB erasure. Detached work/recording receipts are frozen Pydantic models;
+campaign count projection consumes SQLAlchemy's typed tuple result interface.
+No deletion policy, transaction lifetime, migration or public API changed.
+
+Executed **319 function assertions**: old/new PostgreSQL query compilation and
+query-order parity; real EXISTS/predicate execution against an in-memory SQLite
+column mirror; all 16 embedding references, three agent-bound capabilities,
+cross-org and deleted-reference refusal, null scopes, exclusive ownership and
+session-token checks, immutable receipt round-trips, service refusal without
+reference authority, and campaign count projection. Loader probes verify
+storage-locator resolution occurs after the read transaction closes.
+
+These are contract proofs with controlled service/transaction/storage ports,
+not live PostgreSQL locking, concurrent deletion, worker recovery or provider
+object-deletion proofs. No operator DB row or storage object was deleted.
+Changed-build browser QA remains open below. The local deletion-contract type
+hook, Python lint, documentation validator and diff whitespace checks pass.
+Full-project Pyrefly reports **117 errors (3 suppressed)**, down from 126.
+
+### SOR transport failure and terminal-task recovery contracts
+
+The recovery trace follows periodic `nudge_sor_work` through engine inspection,
+the locked product receipt, source failure projection and DAG advancement.
+Baseline execution passed 496 assertions: the reported possibly-uninitialized
+error variable was a narrowing diagnostic, not a reproduced runtime exception.
+The cancellation branch already exited before failure projection.
+
+Recovery now uses detached Pydantic candidate identities, named mutable counters,
+an explicit terminal engine-value enum and a frozen failure object. The failure
+object carries `SorRecoveryPolicy`, replacing positional permanence/reauth
+booleans. Existing product-state and task-binding race guards remain unchanged;
+public scheduler counters retain their existing dictionary shape. Adapter error
+codes remain strings at the existing `SorAdapterUnavailableError` boundary;
+typing that boundary and the broader sync attempt/page/receipt payloads remains
+open, not hidden by this slice.
+
+Confirmed adjacent defect: shared SOR HTTP guards still constructed
+`SorVendorOperationError` with string codes after its constructor became
+enum-only. Invalid query input raised `TypeError`, then sync classified it as
+`SYNC_PROVIDER_FAILED` / `RETRY`. Seven missing enum members and all 15 affected
+constructor sites now preserve the intended terminal error. No path, origin,
+credential, redirect, permission or request-shape policy changed.
+
+Verification: **496 recovery assertions** pass before/after with actual ORM and
+`SorBoundWorkService` code, controlled DB/engine ports. **1,191 failure assertions**
+cover every vendor error/recovery combination, HTTP guard branches, valid
+cross-origin binary redirect credential stripping, and actual sync failure
+handling through work-state mutation and post-transaction projection. Probe
+fixtures were corrected for the existing same-origin double-slash path behavior
+and the required sync-run kind; product code was not changed to fit them. Six
+additional assertions validate detached candidates from actual SQLAlchemy Row
+objects, immutable values and JSON round-trips with present/null task IDs.
+
+These checks do not establish live PostgreSQL lock/race behavior, worker-crash
+recovery, vendor connectivity or changed-build browser behavior. The focused
+runtime type check and Python lint pass. Full-project diagnostics are **100
+errors (3 suppressed)**, down from 117. No operator DB or vendor was mutated.
+
+### SOR manifest, registry and vendor identifier boundaries
+
+All 11 executable vendor registrations now explicitly project enum-keyed
+tool/stream maps into the shared manifest's string-keyed contract. Vendor-local
+maps retain their owning enums; shared consumers still accept code-owned
+identifiers without importing every vendor enum. This resolves mapping-key
+variance without casts, `Any`, a catch-all enum or a parallel registry.
+
+`SorVendorStreamSpec`, `SorAdapterCapabilityManifest`, `SorVendorRegistration`
+and the private factory registration are frozen Pydantic contracts. Manifest
+scope/result/tool maps are copied and frozen, including omitted empty maps.
+Relationship-target serialization retains its existing `by_role` shape while
+making manifest JSON snapshots serializable. The factory stays callable and
+identity-preserved, excluded from JSON, schema and representation.
+
+Executed **1,974 function assertions** across the full executable catalog:
+manifest and registration JSON round-trips; nested immutability and source-map
+alias isolation; unavailable vendor and invalid declaration refusals; every
+single/pair/all-stream OAuth scope selection for both source access modes;
+all writable tools' scope and result-stream mapping checks; org/source/mapping
+identity passed to controlled repositories; and factory snapshot exclusion.
+The canonical public catalog JSON is identical to a baseline using the prior
+dataclass definitions. Raw JSON hashing initially differed due to unordered map
+iteration across processes, not a semantic catalog change.
+
+Focused registry/catalog type checks and Python lint pass. Full-project Pyrefly
+reports **79 errors (3 suppressed)**, down from 100. The hook covers registry and
+catalog projection files, not a claim that all vendor files are type-clean.
+This work does not prove live authorization, agent tool dispatch against a
+vendor, or deployed browser behavior. No credentials, data or services changed.
+
+Remaining in this flow: vendor dispatch must narrow shared identifiers back to
+the owning enum; remaining discovery/request/response payload contracts and
+shared dataclasses need conversion. Existing manifest capability booleans and
+their public projections need the planned explicit-policy enum treatment; they
+were not silently redefined in this compatibility-preserving slice.
+
+### HubSpot discovery, synchronization and mutation identifier boundaries
+
+HubSpot now narrows shared stream strings to its `HubSpotStream` enum after
+checking source selection. Discovery, page/refetch requests, mapped properties,
+association pagination and record projection carry that enum internally. Command
+dispatch similarly validates `CrmToolName` before selecting one of the seven
+existing executable mutations. Unsupported or unselected identifiers retain the
+same terminal refusal before HTTP I/O. Dynamic custom property names remain
+mapping-owned strings rather than an invented static vocabulary.
+
+Webhook deduplication now uses a frozen vendor-owned Pydantic hint with a required
+timestamp and stream enum. Only the completed deduplicated batch is translated
+to the shared signal, whose timestamp is optional for other vendors. Latest-event
+selection, first-seen ordering and equal-timestamp behavior are unchanged; no
+timestamp fallback or type suppression was added. Pagination retains its explicit
+optional initial cursor through subsequent batches.
+
+Executed **176 function assertions** through the actual adapter, HTTP request
+model, property selection, association pagination and mutation response/error
+handling, with the final transport substituted. Four streams and all seven
+mutations are covered. The 161 pre-existing-path assertions passed before and
+after the edit with identical canonical request/result snapshots; 15 additional
+assertions cover enum identity, strict/frozen Pydantic hints, JSON round-trips and
+generic object-type webhook translation. Checks include invalid/unselected
+streams, unsupported tools, mismatched association batches, uncertain create
+outcomes, webhook timestamp/account refusal and equal-time deduplication.
+
+The initial probe incorrectly indexed `SorSourcePayload` as a dict. It was
+corrected to call the existing accessor; no product contract was loosened to
+accommodate the probe. The focused HubSpot type check passes. Its local hook
+covers this adapter, not all vendors. Python lint, documentation verification and
+`git diff --check` pass. Full-project Pyrefly reports **70 errors (3 suppressed)**,
+down from 79. Remaining vendor request/response envelopes,
+shared SOR dataclasses and broader platform typing are still open. These are
+controlled contract checks, not live HubSpot, DB persistence or browser QA.
+
+### Salesforce CRM command dispatch boundary
+
+Salesforce validates the shared tool identifier as `CrmToolName` before its
+eight-mutation dispatch map. Unknown tools and known but unsupported profile
+tools retain the existing terminal refusal before HTTP. Move-deal payload
+selection uses enum identity. Unlike HubSpot's fixed stream set, Salesforce
+custom-object discovery/read identifiers remain dynamic validated strings; they
+were not narrowed into the closed standard-object enum.
+
+Executed **177 function assertions** before and after this change with identical
+canonical requests and receipts. Checks use the actual adapter and HTTP request
+model with a substituted final transport: eight mutations with enum/string input,
+mapped custom fields, conditional-update headers, invalid targets/tools/mappings,
+unselected objects, authentication/rate-limit/conflict/server responses, uncertain
+create outcomes, probability unit conversion and custom-object discovery/readback.
+The local vendor hook now covers both CRM adapters and passes. No live Salesforce
+call, operator data mutation or browser acceptance is claimed.
+
+### Confluence discovery, nested reads and page-update contracts
+
+Confluence now validates selected strings into `ConfluenceStream` before schema
+lookup and carries the enum through nested property/attachment reads. The private
+page updater uses `_PageUpdateMode`, not an append boolean. It retains the typed
+append/update payload through storage-body construction rather than combining
+required append text and optional update text in a nullable local variable.
+
+The nullable-text diagnostic was a static loss of correlation, not a reproduced
+null append: `KnowledgeTextCommandPayload` already requires text. No empty-string
+fallback or cast was introduced. Title-only updates preserve existing storage
+markup; explicit empty text still replaces it with an empty paragraph. Source
+revision comparison and next-version writes remain unchanged.
+
+Executed **92 function assertions** before and after the edit with identical
+canonical request/result snapshots. Coverage: all seven discovery streams;
+invalid/empty selection; pages, bodies and latest-version projections; nested
+properties and attachments through page scanning; append escaping, title-only,
+text replacement and empty replacement; invalid payload refusal and version
+conflict without a write. The final transport is substituted, while site
+resolution, request construction, body projection and mutation dispatch are real.
+The focused Confluence type check passes and joins the local vendor hook. These
+checks do not prove live Confluence synchronization, persisted relationship
+resolution or deployed document rendering. Broader native envelopes, remaining
+policy booleans and shared SOR dataclasses remain open.
+
+Combined checkpoint: all **445 assertions** across HubSpot, Salesforce and
+Confluence pass against the final checkout. The expanded local vendor hook,
+Python lint, documentation verification (46 pages, 285 links) and diff whitespace
+check pass. Full-project Pyrefly reports **66 errors (3 suppressed)**, down from
+79 at the start of these slices; a clean focused hook is not full-platform
+completion. No service rebuild, DB change, live vendor call, browser QA, commit
+or retained probe file occurred in these slices.
+
+### Linear Knowledge and Ticketing read-path contracts
+
+Both Linear adapters validate selected identifiers into their own stream enum
+before discovery, query selection, mapped-field lookup and record projection.
+Knowledge and Ticketing enums remain separate; the platform does not import a
+combined vendor vocabulary. Valid requests and field projections retain their
+existing shapes.
+
+Two reproduced failures were resolved in this flow:
+
+- Invalid discovery selection raised `RuntimeError: generator raised
+  StopIteration`, with zero HTTP calls. Catalog label lookup assumed a known
+  string before validating it. Both adapters now use their existing terminal
+  `VENDOR_STREAM_UNSUPPORTED` refusal before catalog lookup. Empty selection
+  retains `SOURCE_SELECTION_EMPTY`.
+- `TicketingWorkflowStatePayload.order` accepts integer, Decimal or missing
+  values, but Linear called `to_integral_value()` on every non-null value.
+  Integer `1` raised `AttributeError`; Decimal `1` and `None` passed. Fractional
+  validation now applies only to Decimal values, preserving the integer-only
+  projected result and existing fractional refusal. This proves the accepted
+  payload/normalizer contract, not that a configured live sync hit this branch.
+
+Four internal values are now frozen, strict, extra-forbidden Pydantic models:
+the two read cursors, Knowledge's attachment cursor and extracted attachment
+reference. Cursor timestamps must be aware; attachment indexes must be
+non-negative integers. Existing decode normalization and explicit durable
+encoders remain in place, including the distinct Knowledge `version` and
+Ticketing `v` cursor keys. No stored cursor rewrite or DB migration is needed.
+
+Executed **397 function assertions** against the final checkout:
+
+- Knowledge: 68 assertions covering three discovery streams, document/author
+  pagination and refetch, attachment discovery/refetch, mapping/selection
+  refusals, archived/not-found records and enum identity. Valid-path snapshots
+  match the pre-edit baseline.
+- Ticketing: 235 assertions across all nine discovery/read/refetch streams,
+  full-reconciliation versus filtered query variables, mapped field projections,
+  not-found/selection failures, integer/Decimal/missing workflow positions and
+  canonical payload JSON readback. Valid-path snapshots match the baseline;
+  the previously failing integer/discovery branches have explicit regressions.
+- Cursors and attachment values: 94 assertions covering continuation encodings,
+  overlap floors, attachment offsets, strict construction, timezone awareness,
+  immutability, identity preservation and JSON round-trips. The existing cursor
+  wire snapshots match their baseline.
+
+The probes use real adapter/request/payload/normalizer functions with the final
+HTTP transport substituted. They do not prove live Linear access, persisted
+projection or relationship resolution, worker recovery or deployed browser
+behavior. The local vendor hook now checks both Linear adapters alongside the
+two CRM adapters and Confluence. Native GraphQL envelopes/record models, remaining
+vendor payload contracts, shared SOR dataclasses and broader platform typing
+remain open; eliminating these checker errors is not the full objective.
+
+Checkpoint: full-project Pyrefly reports **56 errors (3 suppressed)**, down from
+66. The five-adapter local hook, Python lint, documentation verification
+(46 pages, 285 links) and diff whitespace checks pass. No operator DB changes,
+live vendor operations, deployment, migration, commit or retained probe files.
+The changed-build widget/admin acceptance gate remains open.
+
+### Linear GraphQL envelope and rate-limit classification
+
+The Knowledge and Ticketing adapters now share Linear-native Pydantic response,
+error and extension contracts in `sor/shared/linear.py`, following the existing
+shared vendor-protocol placement used by Atlassian. Known native codes use
+`LinearGraphQLErrorCode`; unknown string codes remain terminal vendor errors,
+not new platform enum members. Selected GraphQL data is still an operation-owned
+mapping: document/user/issue response schemas remain open work.
+
+RCA: both adapters rejected every non-success HTTP response before inspecting
+GraphQL errors. A literal HTTP-400 `RATELIMITED` response produced
+`VENDOR_REQUEST_REJECTED` / `TERMINAL`; the identical body at HTTP 200 or 429
+produced `VENDOR_RATE_LIMITED` / `RETRY`. This contradicts Linear's current
+[rate-limit documentation](https://linear.app/developers/rate-limiting).
+The fix recognizes that HTTP-400 response before generic rejection. It does not
+add adapter retries or change the runtime's mutation/idempotency authority.
+
+Compatibility: successful data, first-error precedence, HTTP 401/403/429/5xx
+handling, unknown error codes and bounded error text retain their prior
+contracts. Partial data plus errors is rejected, as required by the existing
+adapter behavior and [Linear's GraphQL guidance](https://linear.app/developers/graphql).
+Malformed native shapes (including boolean `errors` or numeric error codes) now
+fail typed validation; raw validation inputs are not placed in the resulting
+platform exception. Additional vendor fields are ignored by the narrow envelope.
+
+Executed checks:
+
+- 576 function assertions: old/new classification matrix across both adapters,
+  HTTP-400 regression, malformed envelopes, unknown codes, partial results,
+  safe model representations and actual adapter → HTTP request → parser paths.
+- Re-ran 397 prior Linear read/projection/cursor assertions. All three valid-path
+  snapshot hashes remain unchanged.
+- Expanded local type hook passes for the five adapters and shared envelope.
+  Python lint, documentation validation (46 pages, 285 links) and diff checks
+  pass. Full-project Pyrefly remains at 56 errors (3 suppressed); no new
+  diagnostics were introduced by this slice.
+- Final HTTP transport was substituted. No live throttling was induced and no
+  operator source was changed. These checks do not prove deployed worker retries
+  or browser behavior. The changed-build acceptance gate below remains open.
+
+The operation-specific Linear Knowledge continuation is recorded below. Remaining
+vendor flows still need native contracts; a clean checker alone does not complete
+the platform-wide contract work.
+
+### Linear Knowledge native request and response contracts
+
+`knowledge/vendors/linear_contracts.py` now owns the consumed Linear GraphQL
+document/user/reference fields, result wrappers, pagination and read variables.
+The field types and nullability were checked against Linear's current official
+[GraphQL schema](https://raw.githubusercontent.com/linear/linear/master/packages/sdk/src/schema.graphql).
+These are operation projections, not a claim to model the entire Linear API.
+The source uses the unversioned hosted GraphQL API; no SDK upgrade, new query,
+scope or capability was introduced.
+
+The adapter keeps models through pagination, archive checks, attachment
+discovery/download and source projection. Dynamic mapped field selection remains
+at `SorSourcePayload`, with canonical Knowledge payloads on the other side; the
+core does not import vendor models. Record type determines the source stream,
+removing the possibility of a separate record/stream pair disagreeing internally.
+Known document parent/lifecycle and author labels use local enums; source format
+uses the existing `KnowledgeSourceFormat` enum.
+
+Contract refinements:
+
+- Required native fields and nested reference IDs are validated. Nullable
+  content/references remain optional. Unknown additional fields are ignored.
+- Every page node validates before any record projection; malformed response
+  data raises terminal `VENDOR_RESPONSE_INVALID`, without raw validation inputs.
+- Explicit null document/user results mean not found. Missing result fields are
+  malformed responses, no longer silently treated as deletion/not-found.
+- Typed read variables retain the existing JSON names, nulls, bounds, filters
+  and cursors. Boolean page limits are refused as `VENDOR_PAGE_INVALID` before
+  HTTP work rather than entering the integer request path.
+- Validated timestamp strings retain their original source-payload spelling.
+  Cursor/source metadata conversion preserves the existing UTC interpretation
+  of offset-free timestamps. Canonical `KnowledgeDocumentPayload` still accepts
+  naive datetime values: the probe confirmed its existing normalizer prefers
+  those payload dates over aware source metadata. Review this in the shared
+  canonical timestamp pass; this slice did not silently alter that contract.
+
+Executed function checks:
+
+- 953 native-contract assertions: parent/lifecycle/date combinations compared
+  with pre-edit projection functions, canonical document/author conversion,
+  required/nullable/malformed fields, full-page refusal, model immutability and
+  JSON round-trips, query variables, and real adapter/request/parser execution.
+- 29 image-path assertions: current document lookup, attachment identity,
+  bounded download request and origin-scoped headers, content result, 404/410,
+  mismatched attachment and malformed/missing document refusal before download.
+- 68 existing Knowledge flow assertions with complete vendor-shaped fixtures.
+  Baseline captured before changing adapter consumption and final snapshot hash
+  both equal `4eea7cf8dc179c70c1f3a09e3dbb558994569ad6122b3d8838aaba79e64a608c`.
+  Fixtures now include required slug/user metadata fields; the earlier sparse
+  fixtures were not used to weaken the vendor contract.
+
+Final vendor send was substituted; these are not live Linear, persisted sync,
+worker recovery, or browser claims. No operator data changes, migrations,
+deployments, commits or retained test files. Next: native Linear Ticketing
+read/mutation contracts, followed by remaining vendor/provider flows and the
+shared canonical model cleanup. The product QA gate remains open.
+
+Checkpoint: 1,955 function assertions passed including the existing envelope,
+Ticketing and cursor checks. The expanded vendor type hook and full Python lint
+pass. Full-project Pyrefly remains at 56 errors (3 suppressed), with no errors in
+the changed native contract path. Documentation and diff checks pass.
+
+### Linear Ticketing native request and response contracts
+
+`ticketing/vendors/linear_contracts.py` owns the nine native record projections,
+selected references, page metadata, query variables and mutation inputs/replies.
+Types and required/nullable fields were checked against Linear's current official
+[GraphQL schema](https://raw.githubusercontent.com/linear/linear/master/packages/sdk/src/schema.graphql),
+including the input definitions and relation enum. This is the consumed API
+surface, not a generated copy of the entire vendor schema. Knowledge and
+Ticketing keep separate native contracts; canonical SOR types do not import them.
+
+Read flow: HTTP/GraphQL envelope → typed connection/record → source-field mapping
+→ existing canonical normalizers. All page nodes validate before projection.
+Missing result fields are malformed responses; explicit null or archived records
+remain not found. Native numeric and timestamp spelling is preserved in mapped
+payloads. Source metadata uses timezone-aware parsed timestamps. Known native
+state/priority/relation vocabularies and label actions have named enums; unknown
+state categories still map to the existing canonical unknown state.
+
+Mutation flow: canonical command → typed vendor input → alias-aware JSON at HTTP
+boundary → typed mutation identity/revision → existing receipt. Omission and
+explicit null remain distinct. No query, scope, tool name or idempotency-header
+change. Persisted command hashes are computed from canonical intent before vendor
+translation, not from HTTP body bytes.
+
+Two request defects were reproduced before correction:
+
+- A fractional estimate was sent to GraphQL despite `IssueCreateInput` and
+  `IssueUpdateInput` declaring `Int`. Integral values now serialize as integers;
+  fractional or out-of-range values are refused before HTTP.
+- A present-but-null create team passed the mapping check despite Linear's
+  required `teamId`. Typed create input now rejects it before HTTP.
+
+Validation preserves the adapter's existing terminal rejection conventions.
+Required mutation result shapes validate before success/receipt processing;
+malformed replies are not accepted merely because a success flag is present.
+Create/comment/relation transport uncertainty retains reconciliation-required
+outcomes and sends no second request. Legacy dynamic-field helpers still use
+mixed command/request/response error classifications for malformed local fields;
+normalizing those diagnostics belongs in the command-boundary follow-up, not a
+claim that all vendor error contracts are now uniform.
+
+Executed function checks:
+
+- 235 existing read/discovery/projection/cursor assertions using complete
+  vendor-shaped fixtures. Pre-edit and post-edit source snapshots both hash to
+  `c9b77e8e7c6de0dc5f1416dc17a8925fe765cc415f550a634a2c505faff13c5a`.
+- 388 mutation assertions across 47 cases: compare pre-edit and typed adapter
+  results, request semantics, idempotency headers, update omission/null behavior,
+  all eight tool paths, rejected inputs, provider refusals and uncertain outcomes.
+- 2,422 native-boundary assertions: registry coverage, required/malformed fields,
+  full-page refusal, frozen models, JSON round-trips, extra vendor fields,
+  numeric representation, archive/null/missing handling, paging bounds and safe
+  error/representation output.
+
+The final vendor transport was substituted. No live mutation, persisted sync,
+worker recovery or changed-build browser coverage is claimed here. No operator
+data, migration, deployment or Git history changes. The local vendor type hook
+includes both Linear native contract files. Remaining vendors/providers and the
+shared canonical cleanup still precede the final product acceptance gate.
+
+Checkpoint: all 3,045 assertions re-ran successfully after formatting. The actual
+expanded vendor hook reports zero errors; full Python lint and diff checks pass.
+Documentation validation reports 46 pages, 285 links, 1,218 Python modules,
+6,592 docstrings and 47 diagrams. Full-project Pyrefly remains at 56 errors
+(3 suppressed), with no diagnostics in this changed native contract path.
+
+### Curated Linear integration native contracts
+
+The three curated Linear tools now use integration-owned models in
+`pipelines/integrations_v2/vendors/linear/schemas.py`: selected issues, labels,
+teams/users, result wrappers, filters, mutation variables, GraphQL envelope and
+flat tool results. Native field types/nullability and filter/create/update input
+shapes were checked against the current official
+[Linear schema](https://raw.githubusercontent.com/linear/linear/master/packages/sdk/src/schema.graphql).
+The hosted GraphQL API is unversioned; no package/API upgrade or scope change.
+These contracts do not import SOR models. The shared curated context still owns
+credential placement, the read/mutation split and durable outbound execution.
+
+Reproduced defects, then repaired at native validation:
+
+- `issues.nodes = [null]` previously returned an empty successful issue list.
+  The permissive connection helper silently dropped malformed nodes.
+- A retained label without an ID became `"None"` inside the replacement
+  `labelIds` mutation input. A full selected issue/label set now validates before
+  label removal can send anything.
+- A mutation `success = "false"` was truthy and returned a successful issue.
+  Success now requires a native boolean; false is rejected and true still needs
+  an actual issue. Null issue reads retain not-found behavior; missing selections
+  are malformed replies.
+
+The underlying mistake was treating dictionaries as validated responses and
+using best-effort extraction at an authoritative read/write boundary. The change
+does not infer an author's intent or claim live incidents from these probes.
+Known error/tool/priority values and query bounds now have owned enums/constants.
+Additional vendor response fields and unknown native state categories remain
+forward-compatible. Registered tool names, input schemas, descriptions, valid
+flat output shapes and query documents remain unchanged.
+
+Executed function checks:
+
+- 478 assertions, including 56 pre-edit/current valid tool cases: input-schema
+  parity, exact request structures/serialization, null assignees, all priorities,
+  team/email resolution, case-insensitive label removal, malformed nested fields,
+  whole-selection rejection, GraphQL errors and frozen/round-trip models.
+- 108 guarded-HTTP assertions: real `GuardedVendorClient`, credential builder,
+  request objects, response parser and mutation-owner handoff. Old/new raw body
+  bytes, fingerprints, idempotency keys and attempt identities match. Reads
+  bypass mutation ownership; writes without an owner or read-declared writes
+  are refused. Timeout and malformed mutation replies cause no second send.
+
+Final network transport and DB-backed outbound execution were substituted.
+Therefore this verifies boundary wiring, not persisted receipts, deployed
+recovery, vendor compatibility or browser behavior. The expanded local curated
+type hook includes the full Linear integration directory. Shared curated
+dataclass/context conversion and other vendor flows remain future slices of
+the same platform-wide goal; final changed-build product QA is still required.
+
+Checkpoint: all 586 assertions pass after final edits. The actual expanded
+curated-tool type hook reports zero errors. Full Python lint, documentation
+validation and diff checks pass. Full-project Pyrefly decreased from 56 to 52
+errors (3 suppressed); the four resolved diagnostics were in Linear's untyped
+nested result projection. No deployment, DB changes, commits or retained probes.
+
+### Shared curated catalog and invocation contracts
+
+Converted the eight dataclasses in
+`pipelines/integrations_v2/contracts.py` to frozen, strict Pydantic values:
+`VendorResponse`, `VendorAccount`, `VendorToolContext`, `ApiKeyPlacement`,
+`InstanceUrlRequirement`, `VendorOAuthConfig`, `CuratedVendorSpec` and
+`CuratedToolSpec`. Existing origin/auth/header and tool-metadata invariants moved
+from `__post_init__` to after-validation rules. Wrong types, unknown fields,
+string enums in Python constructors and coercible boolean strings are refused.
+JSON round-trips for pure catalog values remain supported.
+
+Live-resource boundary:
+
+- `VendorHttpClient` remains a runtime-checkable behavioral protocol. An
+  `InstanceOf` field validates structural membership without copying the client.
+- HTTP clients, handler callables and input-model classes are excluded from
+  snapshots and JSON Schema. They remain required execution dependencies,
+  preserving identity; a metadata snapshot is not a runnable tool/context.
+- `VendorResponse.data` is now `object` rather than `Any`: parsed data remains
+  untrusted until a vendor-specific schema validates it. The raw object retains
+  identity and is excluded from representations and generic serialization.
+- The heterogeneous registry callable's input/result type erasure remains at
+  its existing boundary: registered input models validate arguments, and
+  execution validates returned JSON. This conversion does not claim every
+  vendor's native fields have been modeled.
+
+Verification:
+
+- Pre/post catalog, input-schema and LLM projection snapshots cover all
+  29 vendors and 148 tools. Both hashes are
+  `ea680dd7633ee04a2056b670d8a4a6ebec44bbe128bde824a6b0c23fea009c3a`.
+- 1,147 function assertions: pre-existing invariant failures, catalog JSON
+  round-trips, hash/equality and duplicate-registration behavior, wrong-type
+  refusals, frozen state, HTTP/account/handler/model identity, snapshot exclusion,
+  exact context forwarding and read-declared mutation refusal.
+- Re-ran the 586 curated Linear tool/guarded-HTTP assertions successfully with
+  the converted shared values. The complete application imports with the dummy
+  configuration; no lifecycle or live provider calls were started by this probe.
+- Full-project Pyrefly remains at 52 errors (3 suppressed), with no additional
+  diagnostics from changing the raw response annotation to `object`.
+
+No operator data, migration, deployment or Git-history changes. Auth policy and
+the existing PKCE option were not redesigned. Remaining provider/vendor schemas,
+other platform values and the changed-build product QA gate remain open.
+
+### Curated credential resolution, mutation owner and execution outcome
+
+Replaced the remaining four dataclasses along the shared curated invocation path:
+`VendorWireAuth`, `ResolvedVendorAuth`, `DurableMutationOwner` and
+`CuratedToolExecutionOutcome`. The owner files remain `credentials.py`,
+`resolution.py`, `http_client.py` and `execution.py`; no parallel contract layer.
+
+The frozen Pydantic values preserve existing resource ownership. Origin-bound
+header/query instances use `InstanceOf`, avoiding recursive conversion of their
+immutable credential containers. They are excluded from snapshots/JSON Schema.
+Resolved auth excludes credentials and serializes the safe origin as a string.
+The durable owner requires a `CommandStepContext` instance, preserves it, and
+excludes it while retaining the committed UUIDs. These snapshots are not a way
+to recreate runnable authorization or live task contexts.
+
+The execution outcome is different: its content is deliberately serializable
+JSON. It validates JSON values, excludes content from repr, copies caller-owned
+data and preserves the existing read-only metadata mapping. A field serializer
+converts that mapping to ordinary JSON rather than leaking a `mappingproxy`.
+No new auth policy, inline refresh, retry authority or network work inside a DB
+transaction was introduced.
+
+Executed checks:
+
+- 174 function assertions with real grant/connection schemas, synthetic
+  encrypted credentials, the actual decrypt/resolver/credential builder and
+  guarded request builder. OAuth, Basic, header/query API keys and no-auth paths
+  work. Organization/vendor/auth-kind/instance/scope/expiry/credential mismatches
+  retain `auth_required`; service lookups retain scoped arguments.
+- Identity, frozen-state, unknown/wrong-type refusal and snapshot checks cover
+  credentials, origins and live step owners. Outcome tests cover safe error
+  projections, JSON round-trips, read-only metadata, caller-data isolation and
+  refusal of non-JSON/non-finite values.
+- The 1,733 shared-catalog and Linear tool/guarded-HTTP assertions also pass with
+  the new resolver/owner values. They continue to verify exact request bytes,
+  fingerprints, attempt IDs and no parser-triggered second mutation.
+
+Injected service reads replaced the DB; network and durable persistence remained
+substituted. No live credentials, vendor calls, operator data or deployments
+changed. Full changed-build product QA remains open.
+
+Checkpoint: 1,907 function assertions passed across this path and the shared
+curated/Linear regressions. The expanded local type hook, full Python lint,
+documentation validation, diff checks and complete app import pass. Full-project
+Pyrefly remains at 52 errors (3 suppressed); this conversion adds no diagnostics.
+
+### F5 curated Google Sheets native contracts
+
+2026-09-10: continued through the six existing Sheets tools, from registered
+inputs through metadata/header reads, scalar cell mapping, guarded HTTP requests
+and mutation receipts. Native schemas belong under
+`pipelines/integrations_v2/vendors/googlesheets/`, not SOR or platform modules.
+
+Reproduced before editing:
+
+- A malformed row object became an empty successful read.
+- An empty add-sheet reply became success with a null sheet ID.
+- Spreadsheet creation followed by a rejected header write still returned
+  `headers_written: true`.
+
+RCA: dictionary shape checks silently discarded malformed values; the second
+mutation response was not inspected. Native request/response Pydantic models
+now validate the consumed data. Named tool/error/option enums remain vendor
+owned. HTTP/envelope failures and malformed operation replies are coded tool
+errors. No parser retries, new durable authority or DB transaction changes were
+introduced. Mutations also check the receipt's spreadsheet identity.
+
+Compatibility: the four non-cell input schemas are unchanged. Append/update
+cell inputs intentionally narrow from arbitrary Python/JSON objects to Google's
+supported scalars, including finite numbers and null skips. Valid request field
+order, method, URL/query, JSON bytes, result keys, header lookup and row limits
+are retained. Empty ranges may omit values; object sheets may omit dimensions;
+sheet ID zero is accepted. Missing write counters remain unknown. Missing sheet
+names no longer become the invented target `Sheet1`.
+
+Executed checks:
+
+- 339 native contract assertions, including 54 before/after valid cases,
+  malformed responses, scalar type preservation, empty/no-op inputs, frozen
+  models, JSON round-trips and unchanged non-cell input schemas.
+- 1,555 assertions through the actual guarded HTTP client, origin-bound auth,
+  request builder and outbound sender callback. The same 54 cases preserve
+  exact request bytes, fingerprints and attempt identities. Reads produce no
+  mutation attempt; the two creation writes use distinct sequence identities.
+- Missing mutation authority refuses before send. A timeout, rejected or
+  malformed second write fails without a third send. A malformed HTTP-success
+  receipt can follow successful transport acceptance; it is not automatically
+  permission to repeat the external effect.
+
+Total: 1,894 function assertions. Network and durable persistence were
+substituted; no live Sheets call or operator-data change occurred. The expanded
+curated-tools type hook reports zero errors; full Python lint passes.
+Full-project Pyrefly is 50 errors (3 suppressed), down from 52. Changed-build
+browser/provider QA remains the final acceptance gate below, not covered by
+these local probes.
+
+The 1,907 earlier shared-catalog, credential-resolution and curated Linear
+assertions also pass after the Sheets conversion: 3,801 combined assertions.
+Complete app import, documentation validation and diff checks pass. No services
+were rebuilt or restarted in this slice; no changed-build browser claim is made.
+
+### F5 SOR discovery and selected-stream enum propagation
+
+2026-09-10: followed discovery into field catalogs and downstream point/list
+reads for Freshdesk, Intercom, Zendesk, Jira, GitHub and Notion. Eighteen checker
+diagnostics came from retaining `str` after selected-stream validation, returning
+literal strings from platform field-type mappings, or indexing native numeric
+code dictionaries without converting to their owning enums.
+
+The existing paths often worked through string/integer enum equality; these were
+contract gaps, not evidence that live discovery was failing. The implementation
+now preserves native stream enums after the existing selection/refusal checks.
+Freshdesk keeps dynamic custom keys open and converts only fixed-catalog lookups.
+Jira, Intercom and Freshdesk custom-field translations return `SorFieldDataType`.
+Freshdesk status/priority/source readers convert recognized codes to native enums
+and retain unknown read values; write conversions still refuse unknown codes.
+No scopes, endpoints, retries, transactions, mappings or DB schemas changed.
+
+Executed checks:
+
+- 2,038 function assertions across 60 discovery selections, using actual adapter
+  constructors, resolved context types and the origin-pinned HTTP client with
+  a controlled transport. Every native stream, reversed selections and Freshdesk
+  company/custom-object selection retain identical schema JSON and requests.
+  Empty/unknown/unselected refusals retain their error and recovery codes.
+- Custom-field type translations, numeric code/name inputs, unknown values,
+  invalid booleans/types and Jira's special Sprint field retain their wire
+  results; the successful internal values now have their owning enum types.
+- 282 assertions across 51 public bootstrap/change-read/point-read cases for
+  the affected support adapters retain request URLs, methods, credentials'
+  origin binding, empty-page results/cursors and not-found identities. A fixed
+  probe clock made cursor comparison deterministic; production clocks did not
+  change.
+
+Total: 2,320 local assertions. No live vendor or DB calls, operator changes or
+deployments were performed. The SOR vendor pre-commit/pre-push hook now includes
+these six adapters and triggers for support vendor edits; it reports zero errors.
+Configured full Python lint, complete app import, documentation validation and
+diff checks pass. Full-project Pyrefly is 32 errors (3
+suppressed), down from 50. Full native payload typing across the platform and
+the changed-build product QA gate remain open.
+
+### SOR action events and detached recovery identities
+
+Trace: successful command or connection lifecycle write → SOR-owned typed
+payload → generic durable envelope → committed delivery → detached recovery
+identity → Absurd spawn/bind. Revocation separately fences sources and captures
+work in the caller's transaction, then cancels after commit.
+
+Completed:
+
+- Replaced SOR action/connection payload dictionaries with explicit frozen,
+  strict Pydantic values. Event names and projection dispositions use their
+  owning enums; OAuth, refresh, API-key onboarding, command projection and
+  revocation callers now pass the typed values.
+- Converted delivery batches, revocation plans and stop results from dataclasses
+  to Pydantic. Recovery scans construct named organization/work identities from
+  SQLAlchemy rows before releasing the read transaction.
+- Preserved wire event names, deterministic IDs, payload keys, unknown-action
+  skipping, batch failure isolation, existing durable idempotency authority and
+  cancellation ordering. No new event persistence or scheduling lane.
+- Expanded the local SOR recovery type hook to include these producers,
+  consumers and durable event binding.
+
+Verification: **899 assertions** across two ephemeral probes. Real ORM
+constructors, SQLAlchemy result rows and public function paths were used with
+controlled transaction/services/runtime I/O. **480 captured event envelopes**
+match the prior implementation across action tools, projection dispositions,
+target selection, connection events, profiles, optional source/connector IDs and
+timezones. Checks cover strict/frozen snapshots, excluded extra data, missing
+finish times, sequence bounds, detached ownership, scoped SQL, source fencing,
+post-commit cancellation, existing task binding, terminal-state refusal,
+partial failures, parent cancellation and runtime closure.
+
+The expanded hook and configured Ruff pass. Full-project Pyrefly decreases
+from **32 to 26 errors**; three suppressions remain. This is not live DB locking,
+worker-crash/restart, provider or browser proof. No operator data, provider
+configuration, schema, deployment or Git history changed in this slice.
+
+### SOR onboarding, generation and selective-read contracts
+
+Trace: source selection and schema revision → atomic mapping/stream publication
+→ generation plan → DAG advancement → page context/counters → canonical grid
+query. This slice completes the four remaining SOR type errors without casts or
+new suppressions.
+
+- Onboarding explicitly checks the schema ID before repository lookup.
+- DAG advancement keeps the validated stream association alongside run keys.
+  Dependency release, failure propagation and lock order remain unchanged.
+- Five onboarding/sync dataclasses become frozen, strict Pydantic contracts.
+  Live ORM fields use instance validation and are excluded from repr/JSON/schema;
+  identity is preserved. Counter values reject booleans, strings, fractional
+  values and negatives instead of permitting malformed internal state.
+- SOR generation failure reasons use a domain enum, not vendor error types;
+  existing attempt and batch bounds have named constants.
+- Canonical grid fields and all four profile factories require mapped ORM
+  attributes. SQL expressions are derived at the filter-contract boundary;
+  custom-field computed expressions remain separate.
+- Removed the unnecessary override of Pydantic's internal extra-field storage.
+  Mapped commands retain their existing strict JSON before-validator, nonempty
+  requirement, field access and wire payloads. Runtime-discovered keys remain
+  dynamic by design.
+
+Verification: **16,394 assertions** in three temporary probes. These include
+**867 before/after DAG comparisons**, real ORM instance identity/snapshot
+checks, counters, nested mapped JSON, missing-schema refusal, expansion and
+publication-result construction, plus **372 generated PostgreSQL query
+comparisons across 28 entity specs**. Query comparisons cover combined search,
+filter, group, sort, source scoping and selected-column loading. Query parameters,
+SQL and empty-page/grid outputs remain unchanged.
+
+Expanded the local SOR catalog type hook to include the changed domain/read
+contracts and their profile factories. The hook and configured Ruff pass.
+SOR-wide Pyrefly reports **0 errors, 1 existing suppression**; full-project
+Pyrefly decreases **26 → 22 errors, 3 existing suppressions**. This does not mean
+every remaining SOR dataclass or vendor payload is migrated. The complete
+platform typing and changed-build product QA gates remain open.
+
+Controlled repository/runtime I/O was used; no live transaction locking,
+vendor synchronization, worker crash/restart or browser behavior is claimed.
+No operator data, migrations, credentials or deployment changed in this slice.
+
+### SOR read values and custom-dataset expression contracts
+
+Trace: canonical profile factory or runtime custom dataset → read spec → filter,
+ordering and selective loading → ORM result rows → grid/page response and cursor.
+
+Eight read/custom-dataset dataclasses now use frozen, strict Pydantic contracts.
+SQL expressions, read callbacks, ORM model classes and row instances remain
+runtime dependencies, excluded from repr/JSON/schema. Decoded cursor values use
+an explicit union of supported native scalar types; the existing wire codec and
+query fingerprint remain authoritative.
+
+The custom-dataset trace exposed a limitation in the previous slice's
+ORM-attribute-only annotation: the existing coalesced record label is a computed
+SQL expression. The current runtime path still worked; blindly enforcing that
+annotation through Pydantic would have broken it. Read fields therefore accept
+either mapped attributes or computed expressions. Canonical entity validation
+requires mapped attributes for selective loading; custom datasets preserve the
+computed SQL identity. No cast or fallback bypasses this distinction.
+
+Verification:
+
+- **4,848 assertions** covering resource identity, strict/frozen values,
+  excluded dependencies, reference/field validation, cursor encoding and
+  restored native types, plus **39 populated-page SQL/response comparisons**.
+  These include 28 canonical entities, the custom-dataset record label, every
+  custom field type and combined custom-dataset filter/sort/search.
+- Existing **4,120 assertions / 372 query configurations** continue to pass.
+- The custom probe originally omitted the required source profile; corrected
+  its ORM fixture, not the production validation.
+- Local SOR catalog hook now covers custom dataset services/factories alongside
+  canonical reads. Configured Ruff and SOR-wide type checks pass, with the
+  existing SOR suppression unchanged.
+
+These are controlled-I/O function/SQL checks, not actual DB query execution,
+browser rendering, vendor synchronization, or changed-build product QA.
+No operator data, schemas, credentials, services or Git history changed.
+Remaining platform types, vendor contracts and final product QA stay open.
+
+### Analytics query, aggregate and public response contracts
+
+Trace: authenticated route and enum/date parsing → analytics service → bound
+PostgreSQL query → validated detached aggregate → typed public count points.
+
+- Analytics owns entity/time-unit enums and frozen, strict Pydantic query and
+  result contracts. The time unit is a SQL bind parameter, not interpolation.
+- Repository results are named validated values, not positional SQLAlchemy
+  rows returned under a bare `list` annotation. The repository owns the read
+  transaction; the redundant surrounding route transaction was removed.
+- Public `count`, `date` and `agentId` wire names, inclusive date bounds,
+  default daily buckets, joins/counting rules and authorization are preserved.
+  OpenAPI and regenerated console types now describe the response shapes.
+- Added a focused local analytics type-check hook; no hosted CI was added.
+
+Verification: **479 assertions / 48 query executions** using real SQLAlchemy
+row types and the actual FastAPI router with controlled auth/transaction I/O.
+Coverage includes all entities/time units, populated/empty results, before/after
+SQL and output parity, invalid values, cross-org refusal, strict/frozen models,
+OpenAPI, and transaction closure on failure/cancellation. SQL comparisons do
+not claim execution against PostgreSQL or the operator DB. Console types were
+generated from a temporary loopback-only current-code app with dummy config and
+startup jobs disabled, not from the older development image.
+
+Analytics Pyrefly has **0 errors**; full-project errors decrease **22 → 19**,
+with three existing suppressions unchanged. Remaining platform/provider typing
+and changed-build end-to-end QA remain open. No operator data, migrations,
+provider configuration or Git history changed in this slice.
+
+### Deployment-value and HTTP exception-handler contracts
+
+Trace: process environment → config fallback → app composition → registered
+provider failure → framework dispatch → existing safe HTTP response.
+
+The environment helper now declares its fallback-dependent return type through
+overloads; absent/empty environment values still return the supplied fallback,
+including object identity. No deployment defaults, credential resolution or
+connection URLs changed. Provider HTTP handlers accept `Exception`, then narrow
+to the registered family before reading domain fields. Unexpected exception
+families are re-raised. Existing handled response bodies/statuses are unchanged.
+
+Inspected installed Starlette **1.3.1** handler signatures and class-MRO dispatch,
+alongside its [exception-handling reference](https://starlette.dev/exceptions/).
+The 422 constant uses the nondeprecated name for the same numeric status.
+Corrected the cipher-handler docstring: its log contains the exception type,
+not key material, ciphertext or the underlying exception message.
+
+Verification: **247 assertions / 21 actual ASGI responses** cover the helper's
+fallback cases, every capability, handled error subclasses, public status/body
+parity, unrelated exception identity, secret-safe logs and the actual app's
+registered handlers. External providers, DB access and app lifespan services
+were not exercised. Added a focused local bootstrap type-check hook. Full-project
+Pyrefly decreases **19 → 14 errors**, with three suppressions unchanged.
+
+### Voice receiver, recording and numeric contracts
+
+Trace: connected TTS WebSocket → receiver task → byte queue; recording capture
+refusal → existing failure-filing path; authenticated recording download → audio
+stream; optional SciPy audio utility → native numeric kernels → PCM frames.
+
+- Murf/Smallest receivers take the connection captured at task creation rather
+  than reading an optional mutable field on startup. Queue/task generics now
+  describe bytes and `None`. Native request/response JSON coverage is still a
+  separate pending vendor-contract task.
+- `RecordingCaptureFailure` names the existing unsupported-encoding and
+  inconsistent-owner reasons. Filing receives the same string values. This is
+  platform policy, not a vendor enum.
+- Removed the WAV-only response subclass. The route supplies the content type
+  to ordinary `StreamingResponse` and explicitly declares the unchanged WAV
+  OpenAPI response. Starlette 1.3.1's inherited attribute is inferred as `None`;
+  adding `str | None` to the subclass did not resolve mutable-override variance.
+  No type suppression or patched dependency was introduced.
+- The SciPy utility uses PCM16 array contracts, named bounds/buffer size, and a
+  checked protocol for its two public lazy exports. Existing filtering,
+  buffering, rounding and channel algorithms remain unchanged. Inspected
+  SciPy 1.16.3 and the 1.16 references for
+  [FFT resampling](https://docs.scipy.org/doc/scipy-1.16.0/reference/generated/scipy.signal.resample.html)
+  and [polyphase resampling](https://docs.scipy.org/doc/scipy-1.16.0/reference/generated/scipy.signal.resample_poly.html).
+  This utility has no production constructor call site in the current checkout;
+  these checks do not substitute for the active SoXR playback pipeline.
+
+Verification: **417 assertions / 120 frame cases** compare PCM bytes, metadata
+and flush behavior against the prior implementation using installed SciPy and
+real audio frames. Recording checks cover normal capture, encoding refusal,
+owner mismatch, single filing, cleanup and the unchanged OpenAPI/header shape;
+DB/storage filing was controlled, not live. One temporary fixture used the wrong
+method name; corrected it to the inspected `set_user_audio_format` API without
+changing production code to fit the probe.
+
+**46 assertions / six real loopback WebSocket connections** verify Murf PCM/WAV,
+Smallest binary/base64 audio, malformed JSON, provider-error termination,
+cancellation and connection closure. Dummy credentials were used; no hosted
+vendor endpoint was contacted. Expanded the local voice type gate. All five
+changed paths type-check without errors or new suppressions. Changed-build
+browser/provider QA and remaining platform contracts stay open.
+
+### Shared enum, cache and tool declaration contracts
+
+Verified locally on 2026-09-10. Full-project Pyrefly now reports **0 errors,
+2 existing suppressions**; this is a static milestone, not completion of the
+all-vendor contract work or live product acceptance.
+
+- `CaseInSensitiveEnum` resolves member names through `__members__`; matching,
+  alias handling and existing unknown-value behavior are unchanged.
+- The async Redis cache preserves callable parameters and declares JSON-valued
+  results. Its existing `v` envelope is validated on read; malformed entries
+  remain misses. Key encoding, TTL, Redis-error fallback and cancellation remain
+  unchanged. Removed the unused test-only `cache_key_fn` function attribute;
+  no first-party consumer or production decorator call site was found.
+- `ToolFunctionMetadata` replaces scattered private schema/feature/visibility
+  attributes. All first-party producers and registry consumers use the typed
+  accessor; native functions remain native functions. Input-schema classes
+  retain identity but are excluded from snapshots and JSON schema generation.
+- Removed the duplicate Claude result `type` annotation while preserving its
+  existing effective `str` contract and field order. This unused model is not
+  evidence of native Anthropic response validation.
+
+Executed checks: all 80 registered tool schema/docstring fingerprints and
+identity metadata match the pre-change snapshot; metadata rejects invalid
+values, stays frozen, and preserves feature/visibility gating. Before/after
+cache probes cover 26 value cases, cache corruption, ignored context parameters,
+TTL, unavailable Redis, function failure and cancellation. Eleven enum inputs
+match before/after. An initial probe incorrectly repeated the enum's existing
+`str` base; correcting the probe resolved its MRO error without changing code.
+Redis I/O was controlled; no live vendor or database persistence is claimed.
+
+Architecture remains common declaration contracts → owning registry/pipeline
+consumers. No runtime execution policy, provider authority, database schema,
+operator configuration or worker topology changed. Remaining vendor payload
+contracts and changed-build browser/provider QA remain open below.
+
 ### Changed-build product QA acceptance gate
+
+#### 2026-09-10 rebuilt-backend browser checkpoint
+
+Rebuilt image `8c5c17de9edf` and recreated only the development API, Absurd
+worker, Taskiq worker and scheduler. PostgreSQL/Redis containers and volumes
+were left intact; existing and checkout migration heads were both `eylo0012`.
+Console/widget use the existing Eylo Development org and configured providers.
+No provider reconfiguration, migration change, Git commit or push occurred.
+
+Executed through the actual widget and verified in console conversation details:
+
+- Groq continuation: conversation `01a086a8-7d86-77e0-95c0-a11ba8655406`,
+  marker `QA_TYPED_20260910_GROQ`, returned `397`; eight persisted messages
+  displayed with completed user/agent exchanges.
+- Mixed agent: conversation `01a08910-4ce5-70a1-87bb-e09de648cb7c`, marker
+  `QA_TYPED_20260910_MIXED`, made fresh `memory_recall`, `kb_query` and
+  `compound_render_widget` calls. The KB input requested `top_k=2`; one matching
+  result returned with citation `K1` and Bedrock ranking state `applied`.
+  The generated summary card appeared in the widget. All 27 persisted messages
+  loaded after the configured background continuation completed. That background
+  observer reports memory writes, so the overall run is not a no-write proof.
+- New SOR conversation `01a08a9f-bfbc-7ae0-b5bd-6f5ca21ecd2c`, marker
+  `QA_TYPED_20260910_SOR`, executed `issue_search`, `issue_get` and
+  `issue_list_projects`. Ten persisted messages completed; issue, assignee and
+  team names were present in tool results and the widget answer. This reads the
+  synchronized projection; it does not prove fresh upstream vendor sync.
+- Console pagination and direct transcript navigation worked; widget agent
+  selection, new conversation, back navigation and loading older conversations
+  worked. A visual console check confirmed readable, wrapped transcript content
+  at the active browser width. No exhaustive responsive or accessibility claim.
+
+The old widget dev-server process exited during this session. The offline UI
+and failed history retries coincided with port 5174 no longer listening, which
+also removed its WebSocket proxy. Restarting Vite restored HTTP 200 and a fresh
+widget tab connected successfully. Cause of the dev-process exit was not
+established; this is not proof of a backend reconnect defect or a successful
+automatic reconnect test. The stale browser error tab also required a fresh tab.
+
+Checks: Python lint/type checks, expanded local shared-contract type hook,
+documentation verifier, web lint/type/build and widget SDK/Preact builds pass.
+The web build retains the existing large-chunk warnings. The inspected bounded
+API/worker log window had no error/validation traceback matches. Remaining
+all-vendor contracts, native voice, uploads, external mutations, cancellation
+and crash/restart-recovery acceptance are still open; these three conversations
+do not certify the entire platform.
 
 2026-09-10 user requirement: after implementation, run the real widget and
 operator console against the existing Eylo Development organization. Reuse its
@@ -7876,6 +9379,15 @@ warning. Login succeeded in the existing Eylo Development organization; neither
 frontend needed another server process. The API and workers were already up;
 the API container has no checkout mount, so this smoke check does not cover the
 unrebuilt local edits. No provider configuration or deployment was changed.
+
+Latest readiness refresh after analytics/bootstrap checks: the console process
+was no longer listening, so it was restarted on `127.0.0.1:5173` with strict-port
+selection. The existing widget process on 5174 remained available. Signed in
+using the private test credentials; the existing organization and conversation
+detail loaded, including all 15 messages and tool exchanges. Navigating back
+loaded the 20-row first page of 28 conversations. The widget retained its
+existing Groq conversation. This checks current console readiness against the
+older backend, not the pending rebuilt-backend acceptance gate.
 
 Deployed-build browser evidence:
 

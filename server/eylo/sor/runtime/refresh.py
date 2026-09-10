@@ -33,7 +33,10 @@ from eylo.pipelines.external_connections.credentials import (
     encrypt_connection_credentials,
 )
 from eylo.sockets.http.transport import SafeHttpTransport
-from eylo.sor.runtime.action_events import file_sor_connection_event
+from eylo.sor.runtime.action_events import (
+    SorConnectionEventType,
+    file_sor_connection_event,
+)
 from eylo.sor.runtime.catalog import get_sor_registry
 from eylo.sor.runtime.oauth import normalize_sor_instance_origin
 from eylo.sor.runtime.oauth_endpoints import (
@@ -598,7 +601,7 @@ async def _record_failure(
                         f"reauth:{reauthorization.revision}:"
                         f"{reauthorization.refresh_attempts}"
                     ),
-                    event_type="sor.connection.reauth_required",
+                    event_type=SorConnectionEventType.REAUTH_REQUIRED,
                     occurred_at=reauthorization.updated_at,
                     profile=source.profile,
                     vendor_key=snapshot.vendor_key,
@@ -699,7 +702,7 @@ async def _record_unrefreshable_connection(
                     f"reauth:{reauthorization.revision}:"
                     f"{reauthorization.refresh_attempts}"
                 ),
-                event_type="sor.connection.reauth_required",
+                event_type=SorConnectionEventType.REAUTH_REQUIRED,
                 occurred_at=reauthorization.updated_at,
                 profile=source.profile,
                 vendor_key=vendor_key,

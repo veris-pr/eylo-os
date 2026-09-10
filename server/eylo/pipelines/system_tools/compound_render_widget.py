@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pydantic import JsonValue, ValidationError
 
 from eylo.common.contracts.conversation import WIDGET_TOOL_PREFIX
+from eylo.common.contracts.tool_metadata import ToolFunctionMetadata, set_tool_metadata
 from eylo.common.database import current_transaction, start_transaction
 from eylo.modules.conversations.schemas.conversations import ConversationContext
 from eylo.modules.conversations.schemas.message_content import (
@@ -136,4 +137,7 @@ async def compound_render_widget(
 
 # The registry inspects this documented function-metadata extension. Keep the
 # real function (not a callable wrapper) and validate its schema at registration.
-setattr(compound_render_widget, "__eylo_schema_model__", CompoundRenderWidgetInput)
+set_tool_metadata(
+    compound_render_widget,
+    ToolFunctionMetadata(input_schema=CompoundRenderWidgetInput),
+)

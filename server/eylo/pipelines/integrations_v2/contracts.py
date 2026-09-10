@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import re
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Protocol, Self, runtime_checkable
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, InstanceOf, model_validator
+from pydantic.json_schema import SkipJsonSchema
 
 from eylo.modules.integrations_v2.domain.enums import (
     CredentialLocation,
@@ -58,18 +58,34 @@ class VendorToolError(Exception):
         super().__init__(message)
 
 
-@dataclass(frozen=True, slots=True)
-class VendorResponse:
-    """One bounded vendor reply already parsed and size-checked."""
+class _FrozenContract(BaseModel):
+    """Validated platform values; runtime dependencies keep their own identity."""
+
+    model_config = ConfigDict(
+        frozen=True,
+        strict=True,
+        extra="forbid",
+        validate_default=True,
+        hide_input_in_errors=True,
+    )
+
+
+class VendorResponse(_FrozenContract):
+    """Bounded, parsed but untrusted data; native adapters validate its shape.
+
+    The payload is not a durable snapshot. Preserve it without copying and omit
+    it from representations and generic serialization.
+    """
 
     status_code: int
-    data: Any = field(repr=False)
+    data: object = Field(repr=False, exclude=True)
 
     @property
     def ok(self) -> bool:
         return 200 <= self.status_code < 300
 
 
+@runtime_checkable
 class VendorHttpClient(Protocol):
     """Origin-bound vendor transport handed to one curated tool invocation.
 
@@ -110,8 +126,7 @@ class VendorHttpClient(Protocol):
         ...
 
 
-@dataclass(frozen=True, slots=True)
-class VendorAccount:
+class VendorAccount(_FrozenContract):
     """Safe identity of the connection this invocation is acting through.
 
     A curated tool can say *which* account it acted as without being able to
@@ -121,11 +136,10 @@ class VendorAccount:
     connection_id: str
 
 
-@dataclass(frozen=True, slots=True)
-class VendorToolContext:
-    """Everything one curated tool invocation is permitted to reach."""
+class VendorToolContext(_FrozenContract):
+    """One invocation's authority; live HTTP resources never enter snapshots."""
 
-    http: VendorHttpClient
+    http: SkipJsonSchema[InstanceOf[VendorHttpClient]] = Field(repr=False, exclude=True)
     account: VendorAccount
     effect: ToolEffect
 
@@ -155,8 +169,7 @@ class VendorToolContext:
         return await self.http.mutate(path, method=method, query=query, json=json)
 
 
-@dataclass(frozen=True, slots=True)
-class ApiKeyPlacement:
+class ApiKeyPlacement(_FrozenContract):
     """Where one vendor expects its API key, and how it prefixes the value.
 
     This is vendor knowledge, not organization configuration, so it is declared
@@ -169,13 +182,14 @@ class ApiKeyPlacement:
     name: str
     value_prefix: str = ""
 
-    def __post_init__(self) -> None:
+    @model_validator(mode="after")
+    def validate_placement(self) -> Self:
         if not self.name.strip() or self.name != self.name.strip():
             raise ValueError("API key placement name is invalid.")
+        return self
 
 
-@dataclass(frozen=True, slots=True)
-class InstanceUrlRequirement:
+class InstanceUrlRequirement(_FrozenContract):
     """A vendor whose origin belongs to the customer, not the vendor.
 
     Atlassian is the archetype: every organization reaches Jira and Confluence
@@ -192,15 +206,16 @@ class InstanceUrlRequirement:
     description: str
     path_suffix: str = ""
 
-    def __post_init__(self) -> None:
+    @model_validator(mode="after")
+    def validate_instance_requirement(self) -> Self:
         if not self.label.strip():
             raise ValueError("Instance URL requirement needs a label.")
         if self.path_suffix and not self.path_suffix.startswith("/"):
             raise ValueError("Instance URL path suffix must start with '/'.")
+        return self
 
 
-@dataclass(frozen=True, slots=True)
-class VendorOAuthConfig:
+class VendorOAuthConfig(_FrozenContract):
     """Everything about a vendor's OAuth flow that the vendor itself decides."""
 
     authorization_url: str
@@ -210,11 +225,13 @@ class VendorOAuthConfig:
     pkce: bool = False
     authorization_params: tuple[tuple[str, str], ...] = ()
 
-    def __post_init__(self) -> None:
+    @model_validator(mode="after")
+    def validate_oauth_endpoints(self) -> Self:
         if not self.authorization_url.startswith("https://"):
             raise ValueError("OAuth authorization URL must be HTTPS.")
         if not self.token_url.startswith("https://"):
             raise ValueError("OAuth token URL must be HTTPS.")
+        return self
 
     @property
     def requires_tenant(self) -> bool:
@@ -222,8 +239,7 @@ class VendorOAuthConfig:
         return "{tenant}" in self.authorization_url or "{tenant}" in self.token_url
 
 
-@dataclass(frozen=True, slots=True)
-class CuratedVendorSpec:
+class CuratedVendorSpec(_FrozenContract):
     """One vendor's registry identity and connection surface.
 
     Exactly one of `base_url` and `instance_url` is set. Either way, curated
@@ -250,7 +266,8 @@ class CuratedVendorSpec:
     refused — see `RESERVED_HEADER_NAMES`.
     """
 
-    def __post_init__(self) -> None:
+    @model_validator(mode="after")
+    def validate_vendor(self) -> Self:
         if not _VENDOR_ID.fullmatch(self.vendor):
             raise ValueError("Curated vendor id is invalid.")
         for name, value in self.static_headers:
@@ -282,6 +299,7 @@ class CuratedVendorSpec:
             raise ValueError(
                 "Curated vendor supporting OAuth2 must declare its OAuth config."
             )
+        return self
 
     @property
     def requires_instance_url(self) -> bool:
@@ -300,8 +318,7 @@ class CuratedVendorSpec:
 CuratedToolCallable = Callable[[Any, VendorToolContext], Awaitable[Any]]
 
 
-@dataclass(frozen=True, slots=True)
-class CuratedToolSpec:
+class CuratedToolSpec(_FrozenContract):
     """One curated tool's published contract and its implementation.
 
     `input_model` is the single source of the agent-visible input schema. It is
@@ -314,11 +331,12 @@ class CuratedToolSpec:
     display_name: str
     description: str
     effect: ToolEffect
-    input_model: type[BaseModel]
-    handler: CuratedToolCallable = field(repr=False)
+    input_model: SkipJsonSchema[type[BaseModel]] = Field(repr=False, exclude=True)
+    handler: SkipJsonSchema[CuratedToolCallable] = Field(repr=False, exclude=True)
     scopes: tuple[str, ...] = ()
 
-    def __post_init__(self) -> None:
+    @model_validator(mode="after")
+    def validate_tool(self) -> Self:
         if not _VENDOR_ID.fullmatch(self.vendor):
             raise ValueError("Curated tool vendor id is invalid.")
         if not _TOOL_NAME.fullmatch(self.name):
@@ -332,8 +350,7 @@ class CuratedToolSpec:
             raise ValueError(
                 "Curated tool description must explain the tool to a model."
             )
-        if not issubclass(self.input_model, BaseModel):
-            raise ValueError("Curated tool input model must be a Pydantic model.")
+        return self
 
     @property
     def wire_id(self) -> str:

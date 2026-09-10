@@ -10,9 +10,7 @@ intermediate JSON.
 
 from __future__ import annotations
 
-from typing import Any
-
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, JsonValue
 
 from eylo.modules.integrations_v2.domain.enums import ToolEffect
 
@@ -20,6 +18,35 @@ from ...contracts import VendorToolContext, VendorToolError
 from ...registry import curated_tool
 from . import client
 from .definition import vendor
+from .schemas import (
+    DEFAULT_ISSUE_LIMIT,
+    IDENTITY_LOOKUP_LIMIT,
+    MAX_ISSUES,
+    LinearCreateInput,
+    LinearCreateResult,
+    LinearCreateVariables,
+    LinearIssue,
+    LinearIssueFilter,
+    LinearIssueListView,
+    LinearIssueResult,
+    LinearIssueVariables,
+    LinearIssueView,
+    LinearIssuesResult,
+    LinearIssuesVariables,
+    LinearLabelInput,
+    LinearPriority,
+    LinearStringComparator,
+    LinearTeamFilter,
+    LinearTeamVariables,
+    LinearTeamsResult,
+    LinearToolErrorCode,
+    LinearToolName,
+    LinearUpdateResult,
+    LinearUpdateVariables,
+    LinearUserFilter,
+    LinearUserVariables,
+    LinearUsersResult,
+)
 from .scopes import ISSUES_CREATE, READ, WRITE
 
 _ISSUE_FIELDS = """
@@ -49,9 +76,9 @@ class ListIssuesInput(BaseModel):
         description="Restrict to issues assigned to this person's email address.",
     )
     limit: int = Field(
-        default=25,
+        default=DEFAULT_ISSUE_LIMIT,
         ge=1,
-        le=100,
+        le=MAX_ISSUES,
         description="Maximum number of issues to return.",
     )
 
@@ -72,8 +99,8 @@ class CreateIssueInput(BaseModel):
     )
     priority: int | None = Field(
         default=None,
-        ge=0,
-        le=4,
+        ge=LinearPriority.NONE.value,
+        le=LinearPriority.LOW.value,
         description="0 none, 1 urgent, 2 high, 3 medium, 4 low.",
     )
 
@@ -91,7 +118,7 @@ class RemoveIssueLabelInput(BaseModel):
 
 @curated_tool(
     vendor=vendor.vendor,
-    name="list_issues",
+    name=LinearToolName.LIST_ISSUES,
     display_name="List Linear Issues",
     description=(
         "List non-archived Linear issues, optionally narrowed to one team by "
@@ -106,12 +133,23 @@ class RemoveIssueLabelInput(BaseModel):
 async def list_issues(
     payload: ListIssuesInput,
     ctx: VendorToolContext,
-) -> dict[str, Any]:
-    filters: dict[str, Any] = {}
-    if payload.team_name:
-        filters["team"] = {"name": {"eqIgnoreCase": payload.team_name}}
-    if payload.assignee_email:
-        filters["assignee"] = {"email": {"eqIgnoreCase": payload.assignee_email}}
+) -> dict[str, JsonValue]:
+    filters = LinearIssueFilter(
+        team=(
+            LinearTeamFilter(
+                name=LinearStringComparator(eqIgnoreCase=payload.team_name)
+            )
+            if payload.team_name
+            else None
+        ),
+        assignee=(
+            LinearUserFilter(
+                email=LinearStringComparator(eqIgnoreCase=payload.assignee_email)
+            )
+            if payload.assignee_email
+            else None
+        ),
+    )
 
     document = f"""
       query Issues($first: Int, $filter: IssueFilter) {{
@@ -123,15 +161,19 @@ async def list_issues(
     data = await client.query(
         ctx,
         document,
-        {"first": payload.limit, "filter": filters or None},
+        LinearIssuesVariables(
+            first=payload.limit,
+            filter=filters if payload.team_name or payload.assignee_email else None,
+        ),
+        response_model=LinearIssuesResult,
     )
-    issues = [_issue_view(node) for node in client.nodes(data, "issues")]
-    return {"issues": issues, "count": len(issues)}
+    issues = [_issue_view(node) for node in data.issues.nodes]
+    return LinearIssueListView(issues=issues, count=len(issues)).model_dump(mode="json")
 
 
 @curated_tool(
     vendor=vendor.vendor,
-    name="create_issue",
+    name=LinearToolName.CREATE_ISSUE,
     display_name="Create Linear Issue",
     description=(
         "Create a Linear issue from a team name and, optionally, an assignee "
@@ -146,7 +188,7 @@ async def list_issues(
 async def create_issue(
     payload: CreateIssueInput,
     ctx: VendorToolContext,
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     team_id = await _resolve_team_id(ctx, payload.team_name)
     assignee_id = (
         await _resolve_user_id(ctx, payload.assignee_email)
@@ -162,24 +204,32 @@ async def create_issue(
         }}
       }}
     """
-    issue_input: dict[str, Any] = {"title": payload.title, "teamId": team_id}
-    if payload.description is not None:
-        issue_input["description"] = payload.description
-    if assignee_id is not None:
-        issue_input["assigneeId"] = assignee_id
-    if payload.priority is not None:
-        issue_input["priority"] = payload.priority
-
-    data = await client.mutate(ctx, document, {"input": issue_input})
-    result = data.get("issueCreate")
-    if not isinstance(result, dict) or not result.get("success"):
-        raise VendorToolError("vendor_rejected", "Linear did not create the issue.")
-    return _issue_view(result.get("issue"))
+    issue_input = LinearCreateInput(
+        title=payload.title,
+        teamId=team_id,
+        description=payload.description,
+        assigneeId=assignee_id,
+        priority=LinearPriority(payload.priority)
+        if payload.priority is not None
+        else None,
+    )
+    data = await client.mutate(
+        ctx,
+        document,
+        LinearCreateVariables(input=issue_input),
+        response_model=LinearCreateResult,
+    )
+    result = data.issue_create
+    if not result.success:
+        raise VendorToolError(
+            LinearToolErrorCode.REJECTED, "Linear did not create the issue."
+        )
+    return _issue_view(result.issue).model_dump(mode="json")
 
 
 @curated_tool(
     vendor=vendor.vendor,
-    name="remove_issue_label",
+    name=LinearToolName.REMOVE_ISSUE_LABEL,
     display_name="Remove Label From Linear Issue",
     description=(
         "Remove one label from a Linear issue by label name. Reads the issue's "
@@ -194,27 +244,30 @@ async def create_issue(
 async def remove_issue_label(
     payload: RemoveIssueLabelInput,
     ctx: VendorToolContext,
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     document = f"""
       query Issue($id: String!) {{
         issue(id: $id) {{{_ISSUE_FIELDS}}}
       }}
     """
-    data = await client.query(ctx, document, {"id": payload.issue_id})
-    issue = data.get("issue")
-    if not isinstance(issue, dict):
-        raise VendorToolError("issue_not_found", "Linear issue was not found.")
+    data = await client.query(
+        ctx,
+        document,
+        LinearIssueVariables(id=payload.issue_id),
+        response_model=LinearIssueResult,
+    )
+    issue = data.issue
+    if issue is None:
+        raise VendorToolError(
+            LinearToolErrorCode.ISSUE_NOT_FOUND, "Linear issue was not found."
+        )
 
-    labels = client.nodes(issue, "labels")
+    labels = issue.labels.nodes
     wanted = payload.label_name.strip().casefold()
-    remaining = [
-        label
-        for label in labels
-        if str(label.get("name", "")).strip().casefold() != wanted
-    ]
+    remaining = [label for label in labels if label.name.strip().casefold() != wanted]
     if len(remaining) == len(labels):
         raise VendorToolError(
-            "label_not_present",
+            LinearToolErrorCode.LABEL_NOT_PRESENT,
             f"Issue does not carry the label '{payload.label_name}'.",
         )
 
@@ -229,77 +282,91 @@ async def remove_issue_label(
     updated = await client.mutate(
         ctx,
         update,
-        {
-            "id": str(issue.get("id")),
-            "input": {"labelIds": [str(label.get("id")) for label in remaining]},
-        },
+        LinearUpdateVariables(
+            id=issue.id,
+            input=LinearLabelInput(labelIds=[label.id for label in remaining]),
+        ),
+        response_model=LinearUpdateResult,
     )
-    result = updated.get("issueUpdate")
-    if not isinstance(result, dict) or not result.get("success"):
-        raise VendorToolError("vendor_rejected", "Linear did not update the issue.")
-    return _issue_view(result.get("issue"))
+    result = updated.issue_update
+    if not result.success:
+        raise VendorToolError(
+            LinearToolErrorCode.REJECTED, "Linear did not update the issue."
+        )
+    return _issue_view(result.issue).model_dump(mode="json")
 
 
 async def _resolve_team_id(ctx: VendorToolContext, team_name: str) -> str:
-    document = """
-      query Teams($name: String!) {
-        teams(filter: { name: { eqIgnoreCase: $name } }, first: 2) {
-          nodes { id name key }
-        }
-      }
+    document = f"""
+      query Teams($name: String!) {{
+        teams(filter: {{ name: {{ eqIgnoreCase: $name }} }}, first: {IDENTITY_LOOKUP_LIMIT}) {{
+          nodes {{ id name key }}
+        }}
+      }}
     """
-    data = await client.query(ctx, document, {"name": team_name})
-    teams = client.nodes(data, "teams")
+    data = await client.query(
+        ctx,
+        document,
+        LinearTeamVariables(name=team_name),
+        response_model=LinearTeamsResult,
+    )
+    teams = data.teams.nodes
     if not teams:
-        raise VendorToolError("team_not_found", f"No Linear team named '{team_name}'.")
+        raise VendorToolError(
+            LinearToolErrorCode.TEAM_NOT_FOUND, f"No Linear team named '{team_name}'."
+        )
     if len(teams) > 1:
         raise VendorToolError(
-            "team_ambiguous",
+            LinearToolErrorCode.TEAM_AMBIGUOUS,
             f"More than one Linear team matches '{team_name}'.",
         )
-    return str(teams[0]["id"])
+    return teams[0].id
 
 
 async def _resolve_user_id(ctx: VendorToolContext, email: str) -> str:
-    document = """
-      query Users($email: String!) {
-        users(filter: { email: { eqIgnoreCase: $email } }, first: 2) {
-          nodes { id name email }
-        }
-      }
+    document = f"""
+      query Users($email: String!) {{
+        users(filter: {{ email: {{ eqIgnoreCase: $email }} }}, first: {IDENTITY_LOOKUP_LIMIT}) {{
+          nodes {{ id name email }}
+        }}
+      }}
     """
-    data = await client.query(ctx, document, {"email": email})
-    users = client.nodes(data, "users")
+    data = await client.query(
+        ctx,
+        document,
+        LinearUserVariables(email=email),
+        response_model=LinearUsersResult,
+    )
+    users = data.users.nodes
     if not users:
-        raise VendorToolError("user_not_found", f"No Linear user with email '{email}'.")
-    return str(users[0]["id"])
-
-
-def _issue_view(issue: Any) -> dict[str, Any]:
-    """Project one Linear issue into the flat shape agents actually use."""
-    if not isinstance(issue, dict):
         raise VendorToolError(
-            "vendor_response_invalid",
+            LinearToolErrorCode.USER_NOT_FOUND, f"No Linear user with email '{email}'."
+        )
+    return users[0].id
+
+
+def _issue_view(issue: LinearIssue | None) -> LinearIssueView:
+    """Project one Linear issue into the flat shape agents actually use."""
+    if issue is None:
+        raise VendorToolError(
+            LinearToolErrorCode.RESPONSE_INVALID,
             "Linear returned no issue for the operation.",
         )
-    state = issue.get("state") if isinstance(issue.get("state"), dict) else {}
-    assignee = issue.get("assignee") if isinstance(issue.get("assignee"), dict) else {}
-    team = issue.get("team") if isinstance(issue.get("team"), dict) else {}
-    return {
-        "id": issue.get("id"),
-        "identifier": issue.get("identifier"),
-        "title": issue.get("title"),
-        "description": issue.get("description"),
-        "url": issue.get("url"),
-        "priority": issue.get("priorityLabel"),
-        "state": state.get("name"),
-        "assignee_name": assignee.get("name"),
-        "assignee_email": assignee.get("email"),
-        "team_name": team.get("name"),
-        "labels": [label.get("name") for label in client.nodes(issue, "labels")],
-        "created_at": issue.get("createdAt"),
-        "updated_at": issue.get("updatedAt"),
-    }
+    return LinearIssueView(
+        id=issue.id,
+        identifier=issue.identifier,
+        title=issue.title,
+        description=issue.description,
+        url=issue.url,
+        priority=issue.priority_label,
+        state=issue.state.name,
+        assignee_name=issue.assignee.name if issue.assignee is not None else None,
+        assignee_email=issue.assignee.email if issue.assignee is not None else None,
+        team_name=issue.team.name,
+        labels=[label.name for label in issue.labels.nodes],
+        created_at=issue.created_at,
+        updated_at=issue.updated_at,
+    )
 
 
 __all__ = ["create_issue", "list_issues", "remove_issue_label"]

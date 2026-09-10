@@ -18,6 +18,13 @@ class UserSessionState(StrEnum):
     FAILED = "failed"
 
 
+class UserSessionStartOutcome(StrEnum):
+    """A start creates a session or reconnects an existing nonterminal session."""
+
+    CREATED = "created"
+    RECONNECTED = "reconnected"
+
+
 TERMINAL_USER_SESSION_STATES = frozenset(
     {UserSessionState.ENDED, UserSessionState.FAILED}
 )
@@ -37,4 +44,3 @@ class UserSessionTerminal(UserSessionError):
 
 class UserSessionTransitionInvalid(UserSessionError):
     """The requested lifecycle transition is not valid from the current state."""
-

@@ -18,6 +18,8 @@ from http import HTTPStatus
 from typing import Any
 from urllib.parse import urlsplit
 
+from pydantic import BaseModel, ConfigDict
+
 from eylo.modules.connections.domain import ConnectionAuthKind
 from eylo.sor.crm.contracts import (
     CrmActivity,
@@ -271,8 +273,11 @@ HUBSPOT_MANIFEST = SorAdapterCapabilityManifest(
         HubSpotStream.DEALS: (DEALS_READ,),
         HubSpotStream.NOTES: (NOTES_READ,),
     },
-    tool_required_scopes=_WRITE_SCOPES,
-    tool_streams=_TOOL_STREAMS,
+    tool_required_scopes={tool.value: scopes for tool, scopes in _WRITE_SCOPES.items()},
+    tool_streams={
+        tool.value: frozenset(stream.value for stream in streams)
+        for tool, streams in _TOOL_STREAMS.items()
+    },
     mutation_result_streams={
         tool_name: stream_key
         for tool_name, (stream_key, _creates) in _TOOL_STREAM.items()
@@ -286,6 +291,26 @@ HUBSPOT_MANIFEST = SorAdapterCapabilityManifest(
     change_mode=SorChangeMode.APP_WEBHOOK,
     supports_custom_fields=True,
 )
+
+
+class _HubSpotWebhookSignal(BaseModel):
+    """A normalized vendor hint with a required timestamp for deduplication."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    event_type: str
+    vendor_object_key: HubSpotStream
+    external_id: str
+    occurred_at: datetime
+
+    def to_platform_signal(self) -> SorWebhookSignal:
+        return SorWebhookSignal(
+            delivery_id=None,
+            event_type=self.event_type,
+            vendor_object_key=self.vendor_object_key.value,
+            external_id=self.external_id,
+            occurred_at=self.occurred_at,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -335,8 +360,10 @@ class HubSpotCrmAdapter:
 
     async def discover_schema(self) -> SorDiscoveredSchema:
         objects: list[SorDiscoveredObject] = []
-        for stream_key in self._context.selected_objects:
-            _require_stream(stream_key, selected=self._context.selected_objects)
+        for object_key in self._context.selected_objects:
+            stream_key = _require_stream(
+                object_key, selected=self._context.selected_objects
+            )
             response = await self._client.request(
                 f"/crm/properties/{HUBSPOT_API_VERSION}/{stream_key}"
             )
@@ -392,15 +419,17 @@ class HubSpotCrmAdapter:
         vendor_object_key: str,
         external_id: str,
     ) -> SorExternalRecord:
-        _require_stream(vendor_object_key, selected=self._context.selected_objects)
+        stream_key = _require_stream(
+            vendor_object_key, selected=self._context.selected_objects
+        )
         record_id = _required_id(external_id, field="HubSpot record ID")
-        fields = self._selected_fields(vendor_object_key)
-        property_fields = _property_fields(vendor_object_key, fields)
+        fields = self._selected_fields(stream_key)
+        property_fields = _property_fields(stream_key, fields)
         query: dict[str, object] = {"archived": False}
         if property_fields:
             query["properties"] = ",".join(property_fields)
         response = await self._client.request(
-            f"/crm/objects/{HUBSPOT_API_VERSION}/{vendor_object_key}/{record_id}",
+            f"/crm/objects/{HUBSPOT_API_VERSION}/{stream_key}/{record_id}",
             query=query,
         )
         if response.status_code == HTTPStatus.NOT_FOUND:
@@ -410,12 +439,12 @@ class HubSpotCrmAdapter:
             )
         data = _object(_expect(response, operation="read HubSpot record"))
         associations = await self._association_values(
-            stream_key=vendor_object_key,
+            stream_key=stream_key,
             selected_fields=fields,
             record_ids=(record_id,),
         )
         return _external_record(
-            vendor_object_key,
+            stream_key,
             data,
             selected_fields=fields,
             association_values=associations[record_id],
@@ -472,8 +501,9 @@ class HubSpotCrmAdapter:
 
     async def execute_command(self, command: SorCommandRequest) -> SorCommandResult:
         try:
-            stream_key, operation = _TOOL_STREAM[command.tool_name]
-        except KeyError as error:
+            tool_name = CrmToolName(command.tool_name)
+            stream_key, operation = _TOOL_STREAM[tool_name]
+        except (ValueError, KeyError) as error:
             raise SorVendorOperationError(
                 SorVendorErrorCode.VENDOR_TOOL_UNSUPPORTED,
                 "This HubSpot adapter does not execute the requested CRM action.",
@@ -498,7 +528,7 @@ class HubSpotCrmAdapter:
                 "A CRM update action requires an existing record.",
                 recovery=SorRecoveryPolicy.TERMINAL,
             )
-        if command.tool_name == CrmToolName.MOVE_DEAL:
+        if tool_name is CrmToolName.MOVE_DEAL:
             if not isinstance(command.payload, CrmMoveDealCommandPayload):
                 raise SorVendorOperationError(
                     SorVendorErrorCode.VENDOR_COMMAND_INVALID,
@@ -661,7 +691,9 @@ class HubSpotCrmAdapter:
         cursor: str | None,
         limit: int,
     ) -> SorRecordPage:
-        _require_stream(stream_key, selected=self._context.selected_objects)
+        stream_key = _require_stream(
+            stream_key, selected=self._context.selected_objects
+        )
         if limit <= 0:
             raise SorVendorOperationError(
                 SorVendorErrorCode.VENDOR_PAGE_INVALID,
@@ -713,7 +745,7 @@ class HubSpotCrmAdapter:
             has_more=next_cursor is not None,
         )
 
-    def _selected_fields(self, stream_key: str) -> tuple[str, ...]:
+    def _selected_fields(self, stream_key: HubSpotStream) -> tuple[str, ...]:
         fields = tuple(
             sorted(
                 {
@@ -734,7 +766,7 @@ class HubSpotCrmAdapter:
     async def _association_values(
         self,
         *,
-        stream_key: str,
+        stream_key: HubSpotStream,
         selected_fields: tuple[str, ...],
         record_ids: tuple[str, ...],
     ) -> dict[str, dict[str, tuple[str, ...]]]:
@@ -759,8 +791,8 @@ class HubSpotCrmAdapter:
     async def _read_associations(
         self,
         *,
-        from_stream: str,
-        to_stream: str,
+        from_stream: HubSpotStream,
+        to_stream: HubSpotStream,
         record_ids: tuple[str, ...],
     ) -> dict[str, tuple[str, ...]]:
         collected = {record_id: [] for record_id in record_ids}
@@ -792,7 +824,7 @@ class HubSpotCrmAdapter:
                 data.get("results"), field="HubSpot association results"
             )
             seen: set[str] = set()
-            next_pending: dict[str, str] = {}
+            next_pending: dict[str, str | None] = {}
             for row in rows:
                 source = _object(row.get("from"))
                 source_id = _required_id(
@@ -844,7 +876,7 @@ class HubSpotCrmAdapter:
 
     def _write_properties(
         self,
-        stream_key: str,
+        stream_key: HubSpotStream,
         payload: Mapping[str, object],
     ) -> dict[str, object]:
         writable = {
@@ -934,7 +966,7 @@ def parse_hubspot_app_webhook(*, body: bytes) -> HubSpotAppWebhookDelivery:
             "HubSpot webhook body must contain one bounded event batch."
         )
     portal_ids: set[str] = set()
-    signals: dict[tuple[str, str], SorWebhookSignal] = {}
+    signals: dict[tuple[HubSpotStream, str], _HubSpotWebhookSignal] = {}
     for raw in payload:
         if not isinstance(raw, Mapping) or not all(isinstance(key, str) for key in raw):
             raise SorWebhookPayloadError("HubSpot webhook event is invalid.")
@@ -950,8 +982,7 @@ def parse_hubspot_app_webhook(*, body: bytes) -> HubSpotAppWebhookDelivery:
             raw.get("objectId", raw.get("fromObjectId")),
             field="objectId",
         )
-        signal = SorWebhookSignal(
-            delivery_id=None,
+        signal = _HubSpotWebhookSignal(
             event_type=event_type,
             vendor_object_key=stream_key,
             external_id=external_id,
@@ -967,7 +998,7 @@ def parse_hubspot_app_webhook(*, body: bytes) -> HubSpotAppWebhookDelivery:
         )
     return HubSpotAppWebhookDelivery(
         organization_external_id=next(iter(portal_ids)),
-        signals=tuple(signals.values()),
+        signals=tuple(signal.to_platform_signal() for signal in signals.values()),
     )
 
 
@@ -1040,14 +1071,14 @@ def _webhook_datetime(value: object) -> datetime:
         ) from error
 
 
-def _require_stream(stream_key: str, *, selected: tuple[str, ...]) -> str:
+def _require_stream(stream_key: str, *, selected: tuple[str, ...]) -> HubSpotStream:
     if stream_key not in _STREAM_ENTITY or stream_key not in selected:
         raise SorVendorOperationError(
             SorVendorErrorCode.VENDOR_STREAM_UNAVAILABLE,
             "The HubSpot stream is not selected for this source.",
             recovery=SorRecoveryPolicy.TERMINAL,
         )
-    return stream_key
+    return HubSpotStream(stream_key)
 
 
 def _expect(response: SorJsonResponse, *, operation: str) -> object:
@@ -1141,7 +1172,7 @@ def _discovered_field(row: dict[str, Any]) -> SorDiscoveredField:
 
 
 def _association_discovered_fields(
-    stream_key: str,
+    stream_key: HubSpotStream,
 ) -> tuple[SorDiscoveredField, ...]:
     associations = _ASSOCIATION_FIELDS.get(stream_key, {})
     return tuple(
@@ -1167,7 +1198,7 @@ def _association_discovered_fields(
 
 
 def _property_fields(
-    stream_key: str,
+    stream_key: HubSpotStream,
     selected_fields: tuple[str, ...],
 ) -> tuple[str, ...]:
     associations = _ASSOCIATION_FIELDS.get(stream_key, {})
@@ -1252,7 +1283,7 @@ def _activity_text(value: object) -> str | None:
 
 
 def _external_record(
-    stream_key: str,
+    stream_key: HubSpotStream,
     row: Mapping[str, object],
     *,
     selected_fields: tuple[str, ...],
@@ -1328,8 +1359,8 @@ def _no_association_ids(
     value: object,
     *,
     pending_ids: frozenset[str],
-    from_stream: str,
-    to_stream: str,
+    from_stream: HubSpotStream,
+    to_stream: HubSpotStream,
 ) -> set[str]:
     """Accept only HubSpot's explicit, identity-matched empty-association result."""
     if value is None:

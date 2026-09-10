@@ -18,6 +18,7 @@ from eylo.modules.agents.domain import (
     ResolvedSwarmTopology,
 )
 from eylo.modules.agents.schemas.indb import AgentInDb
+from eylo.modules.contacts.schemas.indb import ContactInDb
 from eylo.modules.conversations.exceptions import ConversationNotFound
 from eylo.modules.conversations.models.conversations import ConversationsModel
 from eylo.modules.conversations.repositories.conversations import (
@@ -103,8 +104,8 @@ class ConversationBaseService(EyloBaseService[ConversationInDb, ConversationsMod
         organization_id: UUID,
         pk: UUID,
         for_update: bool = False,
-    ) -> Optional[ConversationInDb]:
-        """Get Conversation By Organization and ID."""
+    ) -> ConversationInDb:
+        """Return an owned conversation or raise ConversationNotFound."""
         entity = await self.repository.get_by_organization_and_id(
             organization_id=organization_id,
             pk=pk,
@@ -166,7 +167,7 @@ class ConversationBaseService(EyloBaseService[ConversationInDb, ConversationsMod
 
     async def _get_or_create_contact(
         self, organization_id: UUID, participant: ConversationParticipant
-    ):
+    ) -> ContactInDb:
         """Get or Create Contact."""
         if not participant.kind == ParticipantKind.CONTACT:
             raise ValueError("Participant must be of kind CONTACT")
@@ -207,6 +208,9 @@ class ConversationBaseService(EyloBaseService[ConversationInDb, ConversationsMod
         # validate the agent participant
         _agent = to_ if to_.kind == ParticipantKind.AGENT else from_
         _contact = from_ if from_.kind == ParticipantKind.CONTACT else to_
+        agent_id = _agent.id
+        if agent_id is None:
+            raise ValueError("Agent participants require an explicit agent id.")
         if request.swarm_id is None and resolved_swarm is not None:
             raise InvalidSwarmDefinitionError(
                 "Resolved swarm does not match the conversation request."
@@ -220,7 +224,7 @@ class ConversationBaseService(EyloBaseService[ConversationInDb, ConversationsMod
                 raise InvalidSwarmDefinitionError(
                     "Resolved swarm does not match the conversation request."
                 )
-            entry_member = resolved_swarm.member_by_agent_id(_agent.id)
+            entry_member = resolved_swarm.member_by_agent_id(agent_id)
             if entry_member is None:
                 raise InvalidSwarmDefinitionError(
                     "The selected entry agent is not in this swarm topology."
@@ -237,10 +241,13 @@ class ConversationBaseService(EyloBaseService[ConversationInDb, ConversationsMod
         )
         valid_agent: AgentInDb = resolved_agent.agent
         valid_contact = await self._get_or_create_contact(organization_id, _contact)
-        create_kwargs: dict = dict(
+        sanitized_ctx = sanitize_context(request.context)
+        create_request = ConversationCreate(
             organization_id=organization_id,
+            channel=request.channel,
             title=f"{valid_contact.name or ''} Started a new conversation with {valid_agent.name or ''}",
             external_id=request.external_id,
+            meta={"context": sanitized_ctx} if sanitized_ctx else None,
             swarm_id=(
                 resolved_swarm.ref.definition_id if resolved_swarm is not None else None
             ),
@@ -248,12 +255,7 @@ class ConversationBaseService(EyloBaseService[ConversationInDb, ConversationsMod
                 resolved_swarm.ref.revision if resolved_swarm is not None else None
             ),
         )
-        if request.channel:
-            create_kwargs["channel"] = request.channel
-        sanitized_ctx = sanitize_context(request.context)
-        if sanitized_ctx:
-            create_kwargs["meta"] = {"context": sanitized_ctx}
-        conversation = await self.create_(ConversationCreate(**create_kwargs))
+        conversation = await self.create_(create_request)
         participant_agent = await self.participant_service.create_(
             ParticipantCreateSchema(
                 conversation_id=conversation.id,

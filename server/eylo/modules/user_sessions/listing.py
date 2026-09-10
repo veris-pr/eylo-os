@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Sequence
 from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
-from sqlalchemy import String, asc, cast, desc, func, or_, select
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import ColumnElement, String, asc, cast, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.selectable import ScalarSelect
 
+from eylo.common.models import EyloBaseModel
 from eylo.events.durable.models import EventOutboxModel
 from eylo.modules.agent_runs.models import AgentRunModel
 from eylo.modules.contacts.models import ContactsModel
@@ -53,9 +56,14 @@ class UserSessionSortDirection(StrEnum):
     DESC = "desc"
 
 
-@dataclass(frozen=True, slots=True)
-class UserSessionListQuery:
-    search: str | None = None
+class UserSessionListQuery(BaseModel):
+    """Validated read options; private search text is excluded from snapshots."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    search: str | None = Field(default=None, exclude=True, repr=False)
     contact_id: UUID | None = None
     states: tuple[UserSessionState, ...] = ()
     entry_channels: tuple[UserSessionEntryChannel, ...] = ()
@@ -131,7 +139,7 @@ class UserSessionQueryService:
                 .offset((page - 1) * limit)
                 .limit(limit)
             )
-        ).all()
+        ).tuples().all()
         total = await self.session.scalar(
             select(func.count(UserSessionModel.id))
             .join(
@@ -178,7 +186,7 @@ class UserSessionQueryService:
                 ContactsModel.deleted.is_(False),
             )
         )
-        row = result.one_or_none()
+        row = result.tuples().one_or_none()
         if row is None:
             raise UserSessionNotFound
         user_session, contact = row
@@ -249,7 +257,9 @@ class UserSessionQueryService:
         organization_id: UUID,
         user_session_id: UUID,
     ) -> UserSessionCountsRead:
-        def count(model, predicate):
+        def count(
+            model: type[EyloBaseModel], predicate: ColumnElement[bool]
+        ) -> ScalarSelect[int]:
             return (
                 select(func.count(model.id))
                 .where(predicate)
@@ -303,21 +313,22 @@ class UserSessionQueryService:
                     ).label("timeline_events"),
                 )
             )
-        ).one()
+        ).tuples().one()
+        conversations, messages, agent_runs, voice_sessions, telephony_calls, events = row
         return UserSessionCountsRead(
-            conversations=int(row.conversations or 0),
-            messages=int(row.messages or 0),
-            agent_runs=int(row.agent_runs or 0),
-            voice_sessions=int(row.voice_sessions or 0),
-            telephony_calls=int(row.telephony_calls or 0),
-            timeline_events=int(row.timeline_events or 0),
+            conversations=int(conversations or 0),
+            messages=int(messages or 0),
+            agent_runs=int(agent_runs or 0),
+            voice_sessions=int(voice_sessions or 0),
+            telephony_calls=int(telephony_calls or 0),
+            timeline_events=int(events or 0),
         )
 
     @staticmethod
     def _list_predicates(
         organization_id: UUID,
         query: UserSessionListQuery,
-    ) -> list:
+    ) -> Sequence[ColumnElement[bool]]:
         predicates = [
             UserSessionModel.organization_id == organization_id,
             UserSessionModel.deleted.is_(False),

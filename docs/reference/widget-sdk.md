@@ -75,6 +75,21 @@ Production Preact flow:
 The exchange belongs outside `Eylo.initialize()`. The SDK never accepts an
 invitation token and never derives identity from untrusted page input.
 
+Retry an exchange with the same request ID. A consumed invitation can return
+only its existing, still-valid session/conversation; a different request ID is
+refused. Server authority stays pinned to the invitation's published Agent
+revision and contact-owned conversation. The server uses frozen validated
+authority values; bearer URLs/tokens and live ORM rows are excluded from
+incidental internal snapshots and representations. The public exchange response
+still includes the session token explicitly for SDK initialization.
+
+Identify-time contact resolution also uses frozen validated values. It selects
+one contact by priority (explicit contact ID, external ID, email, phone), reports
+conflicting identifier kinds as warnings, and does not merge contacts. Internal
+result snapshots omit contact data and session tokens; the session response
+explicitly projects the token and warnings needed by the caller. Normalization
+remains in the contact service, not in these internal result models.
+
 `POST /api/public/widget-development/session` is a local-only convenience. It
 exists only when the server has a paired development organization and contact
 configured. It is not a production identity fallback.

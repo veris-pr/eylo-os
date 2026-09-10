@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic.json_schema import SkipJsonSchema
 
 from eylo.common.http_egress import HttpEgressPolicyError, HttpOrigin
 from eylo.modules.connections.domain import ConnectionAuthKind
@@ -39,19 +41,23 @@ _PROFILE_ADAPTER_TYPES = {
 }
 
 
-@dataclass(frozen=True, slots=True)
-class SorVendorRegistration:
+class SorVendorRegistration(BaseModel):
     """Catalog entry whose support status is derived from factory presence."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
     candidate: SorVendorCandidate
     status: SorImplementationStatus
     manifest: SorAdapterCapabilityManifest | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class _ExecutableAdapter:
+class _ExecutableAdapter(BaseModel):
+    """Keep the factory identity live and out of serialized catalog values."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
     manifest: SorAdapterCapabilityManifest
-    factory: SorAdapterFactory
+    factory: SkipJsonSchema[SorAdapterFactory] = Field(exclude=True, repr=False)
 
 
 class SorRegistry:
@@ -91,7 +97,7 @@ class SorRegistry:
                 f"{manifest.vendor_key}."
             )
         self._validate_manifest(candidate, manifest)
-        self._adapters[key] = _ExecutableAdapter(manifest, factory)
+        self._adapters[key] = _ExecutableAdapter(manifest=manifest, factory=factory)
 
     def list_profiles(self) -> tuple[SorProfileSpec, ...]:
         """Return profiles in stable product order."""

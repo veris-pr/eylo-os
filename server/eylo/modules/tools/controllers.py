@@ -21,7 +21,7 @@ from eylo.modules.tools.schemas.api import (
     ToolRevisionResponseSchema,
     ToolUpdateRequestSchema,
 )
-from eylo.modules.tools.schemas.indb import ToolCreateSchema, ToolInDb, ToolUpdateSchema
+from eylo.modules.tools.schemas.indb import ToolInDb
 from eylo.modules.tools.services.indb import ToolService
 
 
@@ -70,14 +70,7 @@ class ToolController:
         self, organization_id: UUID, request: ToolCreateRequestSchema
     ) -> ToolResponseSchema:
         async with start_transaction():
-            tool = await self.service.create_(
-                ToolCreateSchema.model_validate(
-                    {
-                        **request.model_dump(exclude={"organization_id"}),
-                        "organization_id": organization_id,
-                    }
-                )
-            )
+            tool = await self.service.create_(request.to_domain(organization_id))
             return ToolResponseSchema.model_validate(tool)
 
     async def get_tool(
@@ -126,7 +119,7 @@ class ToolController:
                 updated = await self.service.update_(
                     organization_id=organization_id,
                     tool_id=tool_id,
-                    data=ToolUpdateSchema.model_validate(request),
+                    data=request.to_domain(),
                 )
                 return ToolResponseSchema.model_validate(updated)
         except DefinitionNotFoundError as error:

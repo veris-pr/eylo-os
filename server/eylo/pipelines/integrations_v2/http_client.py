@@ -15,10 +15,12 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlencode
 from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field, InstanceOf
+from pydantic.json_schema import SkipJsonSchema
 
 from eylo.common.http_egress import (
     DEFAULT_RESPONSE_BODY_BYTES,
@@ -64,14 +66,19 @@ class VendorTransport:
     async def send(self, request: HttpEgressRequest) -> HttpEgressResponse: ...
 
 
-@dataclass(frozen=True, slots=True)
-class DurableMutationOwner:
-    """The committed product intent one tool call's mutations belong to."""
+class DurableMutationOwner(BaseModel):
+    """Committed product IDs; the live step context never enters snapshots."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     organization_id: UUID
     tool_use_message_id: UUID
     tool_id: UUID
-    durable_context: CommandStepContext
+    durable_context: SkipJsonSchema[InstanceOf[CommandStepContext]] = Field(
+        repr=False, exclude=True
+    )
 
 
 class GuardedVendorClient:

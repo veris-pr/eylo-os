@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import secrets
-from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -39,12 +39,13 @@ class WidgetInvitationConfigurationError(WidgetInvitationError):
     """Deployment configuration cannot produce a safe guest URL."""
 
 
-@dataclass(frozen=True, slots=True)
-class WidgetSessionAuthority:
+class WidgetSessionAuthority(BaseModel):
     """Immutable Agent and conversation boundary granted to one widget session."""
 
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
     agent_id: UUID
-    agent_revision: int
+    agent_revision: int = Field(gt=0)
     conversation_id: UUID
 
 

@@ -53,12 +53,6 @@ class RecordingListResponse(BaseModel):
     recordings: list[VoiceRecordingResponse]
 
 
-class AudioStreamingResponse(StreamingResponse):
-    """Document and return proxied WAV audio consistently."""
-
-    media_type = "audio/wav"
-
-
 @router.get("", response_model=RecordingListResponse)
 async def list_recordings(
     organization_id: UUID,
@@ -150,7 +144,8 @@ def _recording_download_url(
 @router.get(
     "/{recording_id}/{track}",
     name="download_recording_track",
-    response_class=AudioStreamingResponse,
+    response_class=StreamingResponse,
+    responses={200: {"content": {"audio/wav": {"schema": {"type": "string"}}}}},
 )
 async def download_recording_track(
     organization_id: UUID,
@@ -158,7 +153,7 @@ async def download_recording_track(
     recording_id: UUID,
     track: Literal["user", "agent"],
     current_user: CurrentUserSchema = Depends(get_current_user),
-) -> AudioStreamingResponse:
+) -> StreamingResponse:
     """Stream one organization-owned recording track through bearer auth."""
     if organization_id != current_user.organization_id:
         raise HTTPException(status_code=404)
@@ -197,7 +192,7 @@ async def download_recording_track(
             detail="Recording storage is temporarily unavailable.",
         ) from None
 
-    return AudioStreamingResponse(
+    return StreamingResponse(
         opened.content,
         media_type=opened.content_type,
         headers={

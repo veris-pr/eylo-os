@@ -247,8 +247,13 @@ GITHUB_MANIFEST = SorAdapterCapabilityManifest(
     ),
     required_scopes={stream_key: (REPOSITORY_SCOPE,) for stream_key in _STREAM_ENTITY},
     tool_required_scopes={tool_name: (REPOSITORY_SCOPE,) for tool_name in _WRITE_TOOLS},
-    tool_streams=_TOOL_STREAMS,
-    mutation_result_streams=_MUTATION_RESULT_STREAMS,
+    tool_streams={
+        tool.value: frozenset(stream.value for stream in streams)
+        for tool, streams in _TOOL_STREAMS.items()
+    },
+    mutation_result_streams={
+        tool.value: stream.value for tool, stream in _MUTATION_RESULT_STREAMS.items()
+    },
     oauth=SorOAuthSpec(
         authorization_url="https://github.com/login/oauth/authorize",
         token_url="https://github.com/login/oauth/access_token",
@@ -2220,14 +2225,14 @@ def _credential(credentials: Mapping[str, object], key: str) -> str:
     return value.strip()
 
 
-def _require_stream(stream_key: str, *, selected: Sequence[str]) -> str:
+def _require_stream(stream_key: str, *, selected: Sequence[str]) -> GitHubStream:
     if stream_key not in _STREAM_ENTITY or stream_key not in selected:
         raise SorVendorOperationError(
             SorVendorErrorCode.VENDOR_STREAM_UNSUPPORTED,
             "The requested GitHub stream is unavailable for this source.",
             recovery=SorRecoveryPolicy.TERMINAL,
         )
-    return stream_key
+    return GitHubStream(stream_key)
 
 
 def _required_target(command: SorCommandRequest) -> str:

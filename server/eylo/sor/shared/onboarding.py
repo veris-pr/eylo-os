@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Sequence
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict, Field, InstanceOf
+from pydantic.json_schema import SkipJsonSchema
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.sor.runtime.catalog import get_sor_registry
@@ -41,24 +42,40 @@ from eylo.sor.shared.services import (
 from eylo.sor.shared.sync_services import SorStreamService, SorSyncRunService
 
 
-@dataclass(frozen=True, slots=True)
-class SorActivationResult:
-    """Rows persisted by one complete source activation transaction."""
+class SorActivationResult(BaseModel):
+    """Transaction-owned rows retain identity and never enter snapshots."""
 
-    source: SorSourceModel
-    mapping: SorMappingRevisionModel
-    streams: tuple[SorSourceStreamModel, ...]
-    generation: SorSyncGenerationModel
-    runs: tuple[SorSyncRunModel, ...]
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+    source: SkipJsonSchema[InstanceOf[SorSourceModel]] = Field(exclude=True, repr=False)
+    mapping: SkipJsonSchema[InstanceOf[SorMappingRevisionModel]] = Field(
+        exclude=True, repr=False
+    )
+    streams: SkipJsonSchema[tuple[InstanceOf[SorSourceStreamModel], ...]] = Field(
+        exclude=True, repr=False
+    )
+    generation: SkipJsonSchema[InstanceOf[SorSyncGenerationModel]] = Field(
+        exclude=True, repr=False
+    )
+    runs: SkipJsonSchema[tuple[InstanceOf[SorSyncRunModel], ...]] = Field(
+        exclude=True, repr=False
+    )
 
 
-@dataclass(frozen=True, slots=True)
-class SorMappingPublicationResult:
-    """Published mapping plus the durable bootstrap work it authorized."""
+class SorMappingPublicationResult(BaseModel):
+    """Live publication rows, not a durable or public serialization contract."""
 
-    mapping: SorMappingRevisionModel
-    generation: SorSyncGenerationModel | None
-    runs: tuple[SorSyncRunModel, ...]
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+    mapping: SkipJsonSchema[InstanceOf[SorMappingRevisionModel]] = Field(
+        exclude=True, repr=False
+    )
+    generation: SkipJsonSchema[InstanceOf[SorSyncGenerationModel] | None] = Field(
+        exclude=True, repr=False
+    )
+    runs: SkipJsonSchema[tuple[InstanceOf[SorSyncRunModel], ...]] = Field(
+        exclude=True, repr=False
+    )
 
 
 class SorOnboardingService:
@@ -183,10 +200,13 @@ class SorOnboardingService:
                 "Source expansion fields and streams must describe every newly "
                 "enabled object exactly once."
             )
+        schema_revision_id = source.active_schema_revision_id
+        if schema_revision_id is None:
+            raise SorConflictError("Discover a source schema before selecting objects.")
         schema = await self.repository.get_schema_revision(
             organization_id=organization_id,
             source_id=source.id,
-            schema_revision_id=source.active_schema_revision_id,
+            schema_revision_id=schema_revision_id,
         )
         if schema is None:
             raise SorConflictError("Active source schema no longer exists.")

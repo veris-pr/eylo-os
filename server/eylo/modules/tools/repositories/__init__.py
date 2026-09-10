@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from eylo.common.repositories import BaseORMRepository, map_schema_to_model
+from eylo.common.repositories import BaseORMRepository
 from eylo.modules.tools.models import ToolModel
 from eylo.modules.tools.schemas.indb import ToolCreateSchema
 
@@ -16,8 +16,11 @@ class ToolRepository(BaseORMRepository[ToolModel]):
         return ToolModel
 
     async def create_(self, data: ToolCreateSchema) -> ToolModel:
-        """Create for the "tools" domain."""
-        tool = map_schema_to_model(ToolModel, data)
+        """Persist canonical JSON Schema keywords, never Python field aliases."""
+        tool = ToolModel(
+            **data.model_dump(exclude={"llm_config"}),
+            llm_config=data.llm_config.model_dump(by_alias=True, exclude_none=True),
+        )
         return await self.save_(tool)
 
     async def list_by_mcp_server(

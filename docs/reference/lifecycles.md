@@ -15,6 +15,12 @@ any current revision --delete--> disabled + soft-deleted
 Readiness also requires credentials to remain available and the revision to be
 current.
 
+Deletion is reference-checked before the config is soft-deleted. Agent bindings
+include published revisions; embedding references also include Knowledge/Memory
+data, pending work, and source/target reindex configurations. Lookups are scoped
+to the owning organization and exclude soft-deleted references. An embedding
+deletion without its reference-check authority is refused.
+
 ## Agent definition
 
 An Agent starts as a draft. Publication creates an immutable usable revision.
@@ -140,6 +146,14 @@ a terminal receipt; neither decision is inferred from dictionary keys. Internal
 receipts carry typed IDs and durable state, then serialize to the unchanged v1
 task-result fields. Dispatch contexts exclude live adapters and contact/message
 content from model snapshots.
+
+Recipient variables keep operator-defined names and JSON values, including
+nested objects/lists. Upload, storage and readback validate the same campaign
+contract: keys must be strings and numbers must be finite. Python-only objects
+are not silently stringified for storage. The upload service validates the full
+batch before resolving contacts, and the insert boundary checks mutable values
+again. Simple email placeholders retain their existing text substitution;
+published message templates still validate their declared variable types.
 
 ## Durable event delivery
 

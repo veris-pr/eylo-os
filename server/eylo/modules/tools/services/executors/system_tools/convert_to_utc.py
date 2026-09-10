@@ -8,7 +8,7 @@ import pytz
 async def convert_to_utc(
     datetime_str: str,
     timezone_name: str = "UTC",
-    datetime_format: str = None,
+    datetime_format: str | None = None,
     *args,
     **kwargs,
 ) -> str:

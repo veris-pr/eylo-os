@@ -9,10 +9,16 @@ import socket
 import tarfile
 import time
 import uuid
-from collections.abc import Mapping
-from datetime import timedelta
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from datetime import datetime, timedelta
 
 import arrow
+from docker import DockerClient
+from docker.models.containers import Container
+from docker.models.images import Image
+from docker.types.daemon import CancellableStream
+from pydantic import ConfigDict, TypeAdapter, ValidationError
 
 from eylo.sockets.sandbox.base import SandboxVendorAdapter
 from eylo.sockets.sandbox.schemas import (
@@ -25,8 +31,16 @@ from eylo.sockets.sandbox.schemas import (
     SandboxUnavailable,
     workspace_path,
 )
+from eylo.sockets.sandbox.vendors.docker_contracts import (
+    DOCKER_PROVIDER,
+    DockerContainerInspection,
+    DockerContainerPolicy,
+    DockerExecutionCreated,
+    DockerExecutionInspection,
+    DockerServerVersion,
+)
 
-PROVIDER = "docker"
+PROVIDER = DOCKER_PROVIDER
 WORKSPACE = "/workspace"
 
 # The unprivileged user commands run as. Fixed rather than taken from the image
@@ -42,14 +56,64 @@ TMPFS_MB = 64
 # Largest file this will move in or out. Reading a file into memory is how a
 # sandbox takes down the worker driving it rather than itself.
 MAX_FILE_BYTES = 32 * 1024 * 1024
+MAX_ERROR_BYTES = 64 * 1024
+ExecOutput = tuple[int | None, bytes, bytes]
+DockerChannel = socket.SocketIO | socket.socket
+_OUTPUT_FRAME = TypeAdapter(
+    tuple[bytes | None, bytes | None], config=ConfigDict(strict=True)
+)
 
 
-def _remove_container(client, vendor_id: str) -> None:
+def _container(value: object) -> Container:
+    """Keep native resource ownership; never treat SDK logs as a container."""
+    if not isinstance(value, Container):
+        raise SandboxError("Docker did not return a container.", vendor=PROVIDER)
+    return value
+
+
+def _resource_id(value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise SandboxError("Docker did not return a resource ID.", vendor=PROVIDER)
+    return value
+
+
+@contextmanager
+def _exec_output(
+    client: DockerClient, execution_id: str
+) -> Iterator[Iterator[tuple[bytes | None, bytes | None]]]:
+    """Own the SDK stream and validate demultiplexed frames before buffering."""
+    stream = client.api.exec_start(execution_id, stream=True, demux=True)
+    if not isinstance(stream, CancellableStream):
+        raise SandboxError("Docker did not return an output stream.", vendor=PROVIDER)
+
+    def frames() -> Iterator[tuple[bytes | None, bytes | None]]:
+        for frame in stream:
+            try:
+                yield _OUTPUT_FRAME.validate_python(frame)
+            except ValidationError as error:
+                raise SandboxError(
+                    "Docker returned an invalid output frame.", vendor=PROVIDER
+                ) from error
+
+    try:
+        yield frames()
+    finally:
+        stream.close()
+
+
+def _exec_channel(client: DockerClient, execution_id: str) -> DockerChannel:
+    channel = client.api.exec_start(execution_id, socket=True)
+    if not isinstance(channel, (socket.SocketIO, socket.socket)):
+        raise SandboxError("Docker did not return a Unix channel.", vendor=PROVIDER)
+    return channel
+
+
+def _remove_container(client: DockerClient, vendor_id: str) -> None:
     """Treat only Docker's explicit not-found response as successful cleanup."""
     from docker.errors import NotFound
 
     try:
-        container = client.containers.get(vendor_id)
+        container = _container(client.containers.get(vendor_id))
         container.remove(force=True)
     except NotFound:
         return
@@ -67,7 +131,7 @@ class DockerSandboxAdapter(SandboxVendorAdapter):
     def __init__(
         self,
         endpoint: str,
-        client=None,
+        client: DockerClient | None = None,
         *,
         labels: Mapping[str, str] | None = None,
     ) -> None:
@@ -80,7 +144,7 @@ class DockerSandboxAdapter(SandboxVendorAdapter):
         self._client = client
         self._labels = dict(labels or {})
 
-    def _docker(self):
+    def _docker(self) -> DockerClient:
         if self._client is None:
             import docker
             from docker.errors import DockerException
@@ -124,8 +188,8 @@ class DockerSandboxAdapter(SandboxVendorAdapter):
         session_id = manifest.id
         client = self._docker()
 
-        def start():
-            return client.containers.run(
+        def start() -> Container:
+            created = client.containers.run(
                 manifest.image,
                 # Idle forever; work arrives through `exec`. A container whose
                 # entrypoint is the work would be a function call, not a
@@ -158,6 +222,7 @@ class DockerSandboxAdapter(SandboxVendorAdapter):
                 environment=dict(manifest.env),
                 auto_remove=False,
             )
+            return _container(created)
 
         start_task = asyncio.create_task(asyncio.to_thread(start))
         try:
@@ -178,7 +243,7 @@ class DockerSandboxAdapter(SandboxVendorAdapter):
         now = arrow.utcnow()
         session = SandboxSession(
             id=session_id,
-            vendor_id=container.id,
+            vendor_id=_resource_id(container.id),
             state=SandboxState.RUNNING,
             image=manifest.image,
             created_at=now.datetime,
@@ -208,7 +273,7 @@ class DockerSandboxAdapter(SandboxVendorAdapter):
         client = self._docker()
 
         def export() -> bytes:
-            container = client.containers.get(session.vendor_id)
+            container = _container(client.containers.get(session.vendor_id))
             execution = client.api.exec_create(
                 container.id,
                 ["tar", "-cf", "-", "-C", session.workspace, "."],
@@ -217,36 +282,30 @@ class DockerSandboxAdapter(SandboxVendorAdapter):
                 user=RUN_AS,
                 workdir=session.workspace,
             )
-            execution_id = execution["Id"]
-            stream = client.api.exec_start(
-                execution_id,
-                stream=True,
-                demux=True,
-            )
+            execution_id = DockerExecutionCreated.parse(execution).execution_id
             content = bytearray()
             errors = bytearray()
-            for out_chunk, err_chunk in stream:
-                content.extend(out_chunk or b"")
-                errors.extend(err_chunk or b"")
-                if len(content) > max_bytes:
-                    if hasattr(stream, "close"):
-                        stream.close()
-                    container.kill()
-                    raise SandboxError(
-                        "Workspace archive exceeded its byte ceiling; no partial "
-                        "checkpoint was returned.",
-                        vendor=PROVIDER,
-                    )
-                if len(errors) > 64 * 1024:
-                    if hasattr(stream, "close"):
-                        stream.close()
-                    container.kill()
-                    raise SandboxError(
-                        "Workspace export error output exceeded its safety limit.",
-                        vendor=PROVIDER,
-                    )
-            inspected = client.api.exec_inspect(execution_id)
-            if inspected.get("ExitCode") != 0:
+            with _exec_output(client, execution_id) as stream:
+                for out_chunk, err_chunk in stream:
+                    content.extend(out_chunk or b"")
+                    errors.extend(err_chunk or b"")
+                    if len(content) > max_bytes:
+                        container.kill()
+                        raise SandboxError(
+                            "Workspace archive exceeded its byte ceiling; no partial "
+                            "checkpoint was returned.",
+                            vendor=PROVIDER,
+                        )
+                    if len(errors) > MAX_ERROR_BYTES:
+                        container.kill()
+                        raise SandboxError(
+                            "Workspace export error output exceeded its safety limit.",
+                            vendor=PROVIDER,
+                        )
+            inspected = DockerExecutionInspection.parse(
+                client.api.exec_inspect(execution_id)
+            )
+            if inspected.exit_code != 0:
                 raise SandboxError(
                     "Could not export the sandbox workspace.",
                     vendor=PROVIDER,
@@ -276,7 +335,7 @@ class DockerSandboxAdapter(SandboxVendorAdapter):
         client = self._docker()
 
         def restore() -> None:
-            container = client.containers.get(session.vendor_id)
+            container = _container(client.containers.get(session.vendor_id))
             execution = client.api.exec_create(
                 container.id,
                 [
@@ -293,12 +352,12 @@ class DockerSandboxAdapter(SandboxVendorAdapter):
                 user=RUN_AS,
                 workdir=session.workspace,
             )
-            execution_id = execution["Id"]
-            channel = client.api.exec_start(execution_id, socket=True)
-            _send_stdin(channel, archive)
-            _consume_exec_output(channel)
+            execution_id = DockerExecutionCreated.parse(execution).execution_id
+            with _exec_channel(client, execution_id) as channel:
+                _send_stdin(channel, archive)
+                _consume_exec_output(channel)
             inspected = _wait_for_exec(client, execution_id)
-            if inspected.get("ExitCode") != 0:
+            if inspected.exit_code != 0:
                 raise SandboxError(
                     "Docker refused the complete workspace checkpoint.",
                     vendor=PROVIDER,
@@ -325,9 +384,9 @@ class DockerSandboxAdapter(SandboxVendorAdapter):
         """Container ids carrying our label, whatever the platform remembers."""
         client = self._docker()
 
-        def listing():
+        def listing() -> list[str]:
             return [
-                container.id
+                _resource_id(_container(container).id)
                 for container in client.containers.list(
                     all=True,
                     filters={
@@ -361,31 +420,29 @@ class DockerSandboxAdapter(SandboxVendorAdapter):
         client = self._docker()
         started = arrow.utcnow()
 
-        container = client.containers.get(session.vendor_id)
+        container = _container(client.containers.get(session.vendor_id))
         effective_timeout = min(timeout_seconds, session.command_timeout_seconds)
 
-        def run():
+        def run() -> ExecOutput:
             execution = client.api.exec_create(
                 container.id,
                 ["/bin/sh", "-c", command],
                 user=RUN_AS,
                 workdir=session.workspace,
             )
-            execution_id = execution["Id"]
-            output = client.api.exec_start(
-                execution_id,
-                stream=True,
-                demux=True,
-            )
+            execution_id = DockerExecutionCreated.parse(execution).execution_id
             stdout = bytearray()
             stderr = bytearray()
-            for out_chunk, err_chunk in output:
-                stdout.extend(out_chunk or b"")
-                stderr.extend(err_chunk or b"")
-                if len(stdout) + len(stderr) > session.max_output_bytes:
-                    raise _OutputLimitExceeded
-            inspected = client.api.exec_inspect(execution_id)
-            return inspected.get("ExitCode"), bytes(stdout), bytes(stderr)
+            with _exec_output(client, execution_id) as output:
+                for out_chunk, err_chunk in output:
+                    stdout.extend(out_chunk or b"")
+                    stderr.extend(err_chunk or b"")
+                    if len(stdout) + len(stderr) > session.max_output_bytes:
+                        raise _OutputLimitExceeded
+            inspected = DockerExecutionInspection.parse(
+                client.api.exec_inspect(execution_id)
+            )
+            return inspected.exit_code, bytes(stdout), bytes(stderr)
 
         task = asyncio.create_task(asyncio.to_thread(run))
         try:
@@ -465,9 +522,11 @@ class DockerSandboxAdapter(SandboxVendorAdapter):
                 selected = client.images.get(image)
             except Exception:
                 selected = client.images.pull(image)
+            if not isinstance(selected, Image):
+                raise SandboxError("Docker did not return one image.", vendor=PROVIDER)
             selected.reload()
-            version = str(client.version().get("Version") or "").strip()
-            image_id = str(selected.id or "").strip()
+            version = DockerServerVersion.parse(client.version()).version.strip()
+            image_id = _resource_id(selected.id).strip()
             if not version or not image_id:
                 raise SandboxError(
                     "Docker did not return image or server-version evidence.",
@@ -491,15 +550,15 @@ class DockerSandboxAdapter(SandboxVendorAdapter):
         restored_session = None
         try:
             session = await self.create(manifest)
-            container = self._docker().containers.get(session.vendor_id)
+            container = _container(self._docker().containers.get(session.vendor_id))
             await asyncio.to_thread(container.reload)
-            host_config = container.attrs.get("HostConfig", {})
-            tmpfs = host_config.get("Tmpfs") or {}
+            host_config = DockerContainerPolicy.parse(container.attrs).host_config
+            tmpfs = host_config.tmpfs or {}
             if (
-                host_config.get("NetworkMode") != "none"
-                or host_config.get("ReadonlyRootfs") is not True
-                or host_config.get("Privileged") is not False
-                or "ALL" not in (host_config.get("CapDrop") or [])
+                host_config.network_mode != "none"
+                or host_config.read_only_root is not True
+                or host_config.privileged is not False
+                or "ALL" not in (host_config.cap_drop or [])
                 or WORKSPACE not in tmpfs
             ):
                 raise SandboxError(
@@ -567,9 +626,13 @@ class DockerSandboxAdapter(SandboxVendorAdapter):
                 f"sleep {manifest.command_timeout_seconds + 5}",
                 timeout_seconds=manifest.command_timeout_seconds,
             )
-            timeout_container = self._docker().containers.get(timeout_session.vendor_id)
+            timeout_container = _container(
+                self._docker().containers.get(timeout_session.vendor_id)
+            )
             await asyncio.to_thread(timeout_container.reload)
-            timeout_status = timeout_container.attrs.get("State", {}).get("Status")
+            timeout_status = DockerContainerInspection.parse(
+                timeout_container.attrs
+            ).state.status
             if (
                 not timed_out.timed_out
                 or timed_out.stdout
@@ -605,8 +668,8 @@ class DockerSandboxAdapter(SandboxVendorAdapter):
         target = workspace_path(session.workspace, path)
         client = self._docker()
 
-        def fetch():
-            container = client.containers.get(session.vendor_id)
+        def fetch() -> bytes:
+            container = _container(client.containers.get(session.vendor_id))
             execution = client.api.exec_create(
                 container.id,
                 ["/bin/sh", "-c", 'cat "$1"', "eylo-read", target],
@@ -615,26 +678,22 @@ class DockerSandboxAdapter(SandboxVendorAdapter):
                 user=RUN_AS,
                 workdir=session.workspace,
             )
-            execution_id = execution["Id"]
-            output = client.api.exec_start(
-                execution_id,
-                stream=True,
-                demux=True,
-            )
+            execution_id = DockerExecutionCreated.parse(execution).execution_id
             content = bytearray()
             errors = bytearray()
-            for out_chunk, err_chunk in output:
-                content.extend(out_chunk or b"")
-                errors.extend(err_chunk or b"")
-                if len(content) + len(errors) > MAX_FILE_BYTES:
-                    if hasattr(output, "close"):
-                        output.close()
-                    raise SandboxError(
-                        f"{path} exceeds the {MAX_FILE_BYTES} byte limit.",
-                        vendor=PROVIDER,
-                    )
-            inspected = client.api.exec_inspect(execution_id)
-            if inspected.get("ExitCode") != 0:
+            with _exec_output(client, execution_id) as output:
+                for out_chunk, err_chunk in output:
+                    content.extend(out_chunk or b"")
+                    errors.extend(err_chunk or b"")
+                    if len(content) + len(errors) > MAX_FILE_BYTES:
+                        raise SandboxError(
+                            f"{path} exceeds the {MAX_FILE_BYTES} byte limit.",
+                            vendor=PROVIDER,
+                        )
+            inspected = DockerExecutionInspection.parse(
+                client.api.exec_inspect(execution_id)
+            )
+            if inspected.exit_code != 0:
                 raise SandboxError(
                     "Could not read the sandbox file.",
                     vendor=PROVIDER,
@@ -661,8 +720,8 @@ class DockerSandboxAdapter(SandboxVendorAdapter):
         client = self._docker()
         directory, _ = posixpath.split(target)
 
-        def put():
-            container = client.containers.get(session.vendor_id)
+        def put() -> None:
+            container = _container(client.containers.get(session.vendor_id))
             execution = client.api.exec_create(
                 container.id,
                 [
@@ -679,12 +738,12 @@ class DockerSandboxAdapter(SandboxVendorAdapter):
                 user=RUN_AS,
                 workdir=session.workspace,
             )
-            execution_id = execution["Id"]
-            channel = client.api.exec_start(execution_id, socket=True)
-            _send_stdin(channel, content)
-            _consume_exec_output(channel)
+            execution_id = DockerExecutionCreated.parse(execution).execution_id
+            with _exec_channel(client, execution_id) as channel:
+                _send_stdin(channel, content)
+                _consume_exec_output(channel)
             inspected = _wait_for_exec(client, execution_id)
-            if inspected.get("ExitCode") != 0:
+            if inspected.exit_code != 0:
                 raise SandboxError(
                     "Could not write the sandbox file.",
                     vendor=PROVIDER,
@@ -745,7 +804,9 @@ class _OutputLimitExceeded(Exception):
     pass
 
 
-async def _confirm_worker_stopped(task, container, client) -> None:
+async def _confirm_worker_stopped(
+    task: asyncio.Task[ExecOutput], container: Container, client: DockerClient
+) -> None:
     """Do not return while a timed-out Docker exec can still mutate the workspace."""
     try:
         await asyncio.wait_for(asyncio.shield(task), timeout=10)
@@ -775,29 +836,26 @@ async def _confirm_worker_stopped(task, container, client) -> None:
         return
 
 
-def _send_stdin(channel, content: bytes) -> None:
+def _send_stdin(channel: DockerChannel, content: bytes) -> None:
     raw_socket = getattr(channel, "_sock", channel)
-    if hasattr(raw_socket, "sendall"):
-        raw_socket.sendall(content)
-    else:
-        channel.write(content)
-        if hasattr(channel, "flush"):
-            channel.flush()
+    if not isinstance(raw_socket, socket.socket):
+        raise SandboxError("Docker stdin socket is unavailable.", vendor=PROVIDER)
+    raw_socket.sendall(content)
     raw_socket.shutdown(socket.SHUT_WR)
 
 
-def _consume_exec_output(channel) -> str:
+def _consume_exec_output(channel: DockerChannel) -> str:
     from docker.utils.socket import STDERR, frames_iter
 
-    if not hasattr(channel, "fileno"):
-        while channel.recv(4096):
-            pass
-        return ""
     errors = bytearray()
     for stream, data in frames_iter(channel, tty=False):
+        if not isinstance(data, bytes):
+            raise SandboxError(
+                "Docker returned a non-binary output frame.", vendor=PROVIDER
+            )
         if stream == STDERR:
             errors.extend(data)
-            if len(errors) > 64 * 1024:
+            if len(errors) > MAX_ERROR_BYTES:
                 raise SandboxError(
                     "Sandbox file-write error output exceeded its safety limit.",
                     vendor=PROVIDER,
@@ -805,11 +863,15 @@ def _consume_exec_output(channel) -> str:
     return errors.decode("utf-8", errors="replace")
 
 
-def _wait_for_exec(client, execution_id: str) -> dict:
+def _wait_for_exec(
+    client: DockerClient, execution_id: str
+) -> DockerExecutionInspection:
     deadline = time.monotonic() + 10
     while True:
-        inspected = client.api.exec_inspect(execution_id)
-        if not inspected.get("Running", False):
+        inspected = DockerExecutionInspection.parse(
+            client.api.exec_inspect(execution_id)
+        )
+        if not inspected.running:
             return inspected
         if time.monotonic() >= deadline:
             raise SandboxError(
@@ -819,6 +881,6 @@ def _wait_for_exec(client, execution_id: str) -> dict:
         time.sleep(0.01)
 
 
-def expiry_horizon(seconds: int):
+def expiry_horizon(seconds: int) -> datetime:
     """When a session created now would expire. Used by the reaper."""
     return arrow.utcnow().shift(seconds=seconds).datetime - timedelta(0)

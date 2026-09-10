@@ -3,17 +3,38 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from enum import StrEnum
 from types import MappingProxyType
+from typing import Literal, Self
 from uuid import UUID
 
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    TypeAdapter,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
+
+from eylo.common.contracts.sandbox import SandboxManifest
 from eylo.modules.provider_configs.domain import (
     EffectiveProviderConfig,
     InvalidProviderConfig,
 )
 from eylo.modules.sandbox_configs.catalog import SandboxProviders
 
-__all__ = ["InvalidSandboxConfig", "SandboxProviderConfig", "ResolvedSandbox"]
+__all__ = [
+    "InvalidSandboxConfig",
+    "ResolvedSandbox",
+    "SandboxExecutionSettings",
+    "SandboxNetworkMode",
+    "SandboxProviderConfig",
+    "SandboxVerificationMetadata",
+    "SandboxWorkspaceStorage",
+]
 
 _CONFIG_FIELDS = (
     "endpoint",
@@ -34,97 +55,199 @@ _ALLOWED_CONFIG_FIELDS = {
 _REQUIRED_CONFIG_FIELDS = {
     SandboxProviders.DOCKER: _CONFIG_FIELDS,
 }
+_VERIFICATION_JSON = TypeAdapter(
+    dict[str, JsonValue], config=ConfigDict(strict=True, allow_inf_nan=False)
+)
 
 
 class InvalidSandboxConfig(InvalidProviderConfig):
     """A sandbox provider config violates policy."""
 
 
-@dataclass(frozen=True)
-class SandboxProviderConfig:
+class SandboxExecutionSettings(BaseModel):
+    """Validated immutable Docker settings; all limits remain explicit."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", revalidate_instances="always"
+    )
+
+    endpoint: str
+    image: str
+    memory_mb: int
+    cpu_cores: float
+    disk_mb: int
+    pids: int
+    ttl_seconds: int
+    command_timeout_seconds: int
+    max_output_bytes: int
+    max_sessions: int
+    network: Literal[False]
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_settings(cls, value: object) -> object:
+        if isinstance(value, cls):
+            value = value.model_dump()
+        return _validate_config(SandboxProviders.DOCKER, value)
+
+    def to_storage(self) -> dict[str, JsonValue]:
+        return self.model_dump(mode="json")
+
+    def manifest(
+        self,
+        *,
+        session_id: UUID,
+        image: str,
+        files: Mapping[str, str] | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> SandboxManifest:
+        """Translate trusted policy to execution without caller limit overrides."""
+        return SandboxManifest(
+            id=session_id,
+            image=image,
+            files=dict(files or {}),
+            env=dict(env or {}),
+            network=False,
+            memory_mb=self.memory_mb,
+            cpu_cores=self.cpu_cores,
+            disk_mb=self.disk_mb,
+            pids=self.pids,
+            ttl_seconds=self.ttl_seconds,
+            command_timeout_seconds=self.command_timeout_seconds,
+            max_output_bytes=self.max_output_bytes,
+        )
+
+
+class SandboxProviderConfig(BaseModel):
     """Explicit Docker location, image, and hard execution ceilings."""
 
-    provider: SandboxProviders | str
-    config: Mapping[str, object]
-    secrets: Mapping[str, str] = field(repr=False)
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
-    def __post_init__(self) -> None:
-        provider = _provider(self.provider)
-        object.__setattr__(self, "provider", provider)
-        object.__setattr__(
-            self,
-            "config",
-            MappingProxyType(_validate_config(provider, self.config)),
-        )
-        object.__setattr__(
-            self,
-            "secrets",
-            MappingProxyType(_validate_secrets(provider, self.secrets)),
-        )
+    provider: SandboxProviders
+    config: SandboxExecutionSettings
+    secrets: Mapping[str, str] = Field(repr=False, exclude=True)
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def validate_provider(cls, value: object) -> SandboxProviders:
+        return _provider(value)
+
+    @field_validator("secrets", mode="before")
+    @classmethod
+    def validate_secrets(cls, value: object) -> Mapping[str, str]:
+        return MappingProxyType(_validate_secrets(SandboxProviders.DOCKER, value))
+
+    @field_validator("secrets")
+    @classmethod
+    def freeze_secrets(cls, value: Mapping[str, str]) -> Mapping[str, str]:
+        return MappingProxyType(dict(value))
 
     @classmethod
-    def validate(
+    def from_config(
         cls,
         *,
         provider: SandboxProviders | str,
         config: Mapping[str, object] | None = None,
         secrets: Mapping[str, str] | None = None,
     ) -> SandboxProviderConfig:
-        return cls(
-            provider=provider,
-            config={} if config is None else config,
-            secrets={} if secrets is None else secrets,
-        )
+        try:
+            return cls.model_validate(
+                {
+                    "provider": provider,
+                    "config": {} if config is None else config,
+                    "secrets": {} if secrets is None else secrets,
+                }
+            )
+        except ValidationError as error:
+            raise InvalidSandboxConfig(
+                "Invalid sandbox configuration shape."
+            ) from error
 
 
-@dataclass(frozen=True)
-class ResolvedSandbox:
+class SandboxNetworkMode(StrEnum):
+    """Network modes for which the current Docker verifier proves isolation."""
+
+    NONE = "none"
+
+
+class SandboxWorkspaceStorage(StrEnum):
+    """Workspace backends whose capacity is verified by the Docker adapter."""
+
+    TMPFS = "tmpfs"
+
+
+class SandboxVerificationMetadata(BaseModel):
+    """Verifier-issued image/runtime identity; preserve additional JSON evidence."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="allow", revalidate_instances="always"
+    )
+
+    endpoint: str
+    configured_image: str
+    verified_image_id: str
+    docker_server_version: str
+    network_mode: SandboxNetworkMode
+    workspace_storage: SandboxWorkspaceStorage
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_evidence(cls, value: object) -> object:
+        if isinstance(value, cls):
+            value = value.model_dump(mode="json")
+        return _VERIFICATION_JSON.validate_python(value)
+
+    @field_validator("network_mode", mode="before")
+    @classmethod
+    def decode_network_mode(cls, value: object) -> SandboxNetworkMode:
+        if not isinstance(value, str):
+            raise ValueError("Network mode must be text.")
+        return SandboxNetworkMode(value)
+
+    @field_validator("workspace_storage", mode="before")
+    @classmethod
+    def decode_workspace_storage(cls, value: object) -> SandboxWorkspaceStorage:
+        if not isinstance(value, str):
+            raise ValueError("Workspace storage must be text.")
+        return SandboxWorkspaceStorage(value)
+
+    @field_validator("verified_image_id", "docker_server_version")
+    @classmethod
+    def require_identity(cls, value: str) -> str:
+        _text(value, "verification identity", max_length=512)
+        return value
+
+
+class ResolvedSandbox(BaseModel):
     """One ready sandbox config revision selected for executable work."""
 
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
     provider_config_id: UUID
-    provider_config_revision: int
+    provider_config_revision: int = Field(gt=0)
     organization_id: UUID
     provider: SandboxProviders
-    config: Mapping[str, object]
-    verification_metadata: Mapping[str, object]
+    config: SandboxExecutionSettings
+    verification_metadata: SandboxVerificationMetadata
     configured: bool
     verified: bool
     ready: bool
     granted: bool
 
-    def __post_init__(self) -> None:
+    @model_validator(mode="after")
+    def require_verified_authority(self) -> Self:
         if (
-            not isinstance(self.provider_config_id, UUID)
-            or not isinstance(self.organization_id, UUID)
-        ):
-            raise InvalidSandboxConfig("Resolved sandbox identifiers must be UUIDs.")
-        if (
-            isinstance(self.provider_config_revision, bool)
-            or not isinstance(self.provider_config_revision, int)
-            or self.provider_config_revision < 1
+            self.verification_metadata.endpoint != self.config.endpoint
+            or self.verification_metadata.configured_image != self.config.image
         ):
             raise InvalidSandboxConfig(
-                "Resolved sandbox revision must be a positive integer."
+                "Verified sandbox authority does not match its endpoint, image, or policy."
             )
-        if not all(
-            isinstance(value, bool)
-            for value in (self.configured, self.verified, self.ready, self.granted)
-        ):
-            raise InvalidSandboxConfig("Resolved sandbox flags must be booleans.")
-        metadata = _validate_verification_metadata(
-            self.verification_metadata,
-            endpoint=str(self.config["endpoint"]),
-            image=str(self.config["image"]),
-        )
-        object.__setattr__(
-            self,
-            "verification_metadata",
-            MappingProxyType(metadata),
-        )
+        return self
 
     @classmethod
     def from_effective(cls, effective: EffectiveProviderConfig) -> ResolvedSandbox:
-        validated = SandboxProviderConfig.validate(
+        validated = SandboxProviderConfig.from_config(
             provider=effective.provider,
             config=effective.settings,
             secrets=effective.secrets,
@@ -135,7 +258,9 @@ class ResolvedSandbox:
             organization_id=effective.organization_id,
             provider=validated.provider,
             config=validated.config,
-            verification_metadata=effective.verification_metadata,
+            verification_metadata=SandboxVerificationMetadata.model_validate(
+                dict(effective.verification_metadata)
+            ),
             configured=effective.configured,
             verified=effective.verified,
             ready=effective.ready,
@@ -144,47 +269,39 @@ class ResolvedSandbox:
 
     @property
     def endpoint(self) -> str:
-        return str(self.config["endpoint"])
+        return self.config.endpoint
 
     @property
     def verified_image_id(self) -> str:
-        return str(self.verification_metadata["verified_image_id"])
+        return self.verification_metadata.verified_image_id
 
     @property
     def max_sessions(self) -> int:
-        return int(self.config["max_sessions"])
+        return self.config.max_sessions
 
-    def manifest(self, *, session_id: UUID, **overrides):
+    def manifest(
+        self,
+        *,
+        session_id: UUID,
+        files: Mapping[str, str] | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> SandboxManifest:
         """Build a manifest whose ceilings cannot be widened by a caller."""
-        from eylo.common.contracts.sandbox import SandboxManifest
-
-        fields = dict(overrides)
-        fields.update(
-            {
-                "id": session_id,
-                "image": self.verified_image_id,
-                "network": False,
-                "memory_mb": int(self.config["memory_mb"]),
-                "cpu_cores": float(self.config["cpu_cores"]),
-                "disk_mb": int(self.config["disk_mb"]),
-                "pids": int(self.config["pids"]),
-                "ttl_seconds": int(self.config["ttl_seconds"]),
-                "command_timeout_seconds": int(
-                    self.config["command_timeout_seconds"]
-                ),
-                "max_output_bytes": int(self.config["max_output_bytes"]),
-            }
+        return self.config.manifest(
+            session_id=session_id,
+            image=self.verified_image_id,
+            files=files,
+            env=env,
         )
-        return SandboxManifest(**fields)
 
 
-def _provider(value: SandboxProviders | str) -> SandboxProviders:
+def _provider(value: object) -> SandboxProviders:
     try:
-        return (
-            value
-            if isinstance(value, SandboxProviders)
-            else SandboxProviders(value.strip().lower())
-        )
+        if isinstance(value, SandboxProviders):
+            return value
+        if isinstance(value, str):
+            return SandboxProviders(value.strip().lower())
+        raise ValueError("Provider must be text.")
     except (AttributeError, ValueError):
         raise InvalidSandboxConfig(
             f"Unknown sandbox provider: {value}. Available: "
@@ -194,10 +311,12 @@ def _provider(value: SandboxProviders | str) -> SandboxProviders:
 
 def _validate_config(
     provider: SandboxProviders,
-    config: Mapping[str, object],
+    config: object,
 ) -> dict[str, object]:
     if not isinstance(config, Mapping):
         raise InvalidSandboxConfig("Config must be a mapping.")
+    if any(not isinstance(key, str) for key in config):
+        raise InvalidSandboxConfig("Config fields must have text names.")
     unknown = set(config) - _ALLOWED_CONFIG_FIELDS[provider]
     if unknown:
         raise InvalidSandboxConfig(
@@ -261,15 +380,21 @@ def _text(value: object, field_name: str, *, max_length: int) -> str:
     if not isinstance(value, str):
         raise InvalidSandboxConfig(f"{field_name} must be text.")
     normalized = value.strip()
-    if not normalized or len(normalized) > max_length or any(
-        ord(character) < 32 for character in normalized
+    if (
+        not normalized
+        or len(normalized) > max_length
+        or any(ord(character) < 32 for character in normalized)
     ):
         raise InvalidSandboxConfig(f"{field_name} is invalid.")
     return normalized
 
 
 def _integer(value: object, field_name: str, low: int, high: int) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not low <= value <= high
+    ):
         raise InvalidSandboxConfig(
             f"{field_name} must be an integer between {low} and {high}; got {value!r}."
         )
@@ -296,7 +421,7 @@ def _number(
 
 def _validate_secrets(
     provider: SandboxProviders,
-    secrets: Mapping[str, str],
+    secrets: object,
 ) -> dict[str, str]:
     if not isinstance(secrets, Mapping):
         raise InvalidSandboxConfig("Secrets must be a mapping.")
@@ -306,29 +431,3 @@ def _validate_secrets(
             "credentials are unsupported."
         )
     return {}
-
-
-def _validate_verification_metadata(
-    metadata: Mapping[str, object],
-    *,
-    endpoint: str,
-    image: str,
-) -> dict[str, object]:
-    if not isinstance(metadata, Mapping):
-        raise InvalidSandboxConfig(
-            "Sandbox verification metadata must be a mapping."
-        )
-    values = dict(metadata)
-    required = {
-        "endpoint": endpoint,
-        "configured_image": image,
-        "network_mode": "none",
-        "workspace_storage": "tmpfs",
-    }
-    if any(values.get(key) != value for key, value in required.items()):
-        raise InvalidSandboxConfig(
-            "Verified sandbox authority does not match its endpoint, image, or policy."
-        )
-    for key in ("verified_image_id", "docker_server_version"):
-        _text(values.get(key), key, max_length=512)
-    return values
