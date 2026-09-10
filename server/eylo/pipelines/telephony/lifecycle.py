@@ -35,6 +35,7 @@ from eylo.modules.voice_transcripts.constants import (
 )
 from eylo.modules.voice_transcripts.lifecycle import record_voice_session_ended
 from eylo.pipelines.session_timeline import try_file_runtime_fact
+from eylo.pipelines.telephony.metrics import CallAudioMetrics
 from eylo.pipelines.telephony.sessions import (
     S_CALLS,
     CallFinalizationState,
@@ -361,14 +362,13 @@ async def _finalize_call_session_once(
     )
 
     terminal_error: Exception | None = None
-    call_audio_metrics: dict = {}
+    call_audio_metrics = CallAudioMetrics()
     if sess.organization_id:
         try:
             call_audio_metrics = collect_call_audio_metrics(sess)
         except Exception:
-            call_audio_metrics = {}
             logger.error("Could not collect call audio metrics.")
-        call_audio_metrics["termination_reason"] = ended_reason.value
+        call_audio_metrics.termination_reason = ended_reason
         ended_event = CallEndedEvent(
             message=f"Call ended: {ended_reason.value}",
             ended_reason=ended_reason.value,
@@ -408,7 +408,7 @@ async def _finalize_call_session_once(
         logger.info(
             "Telephony voice runtime ended for call_sid=%s metrics=%s",
             sess.call_sid,
-            call_audio_metrics,
+            call_audio_metrics.to_payload(),
         )
         await asyncio.sleep(0)
 
@@ -446,7 +446,7 @@ async def _finalize_call_session_once(
                 duration_ms=int(duration_seconds * 1000)
                 if duration_seconds is not None
                 else None,
-                metrics=call_audio_metrics or None,
+                metrics=call_audio_metrics.to_payload() or None,
             )
         except Exception:
             logger.error(

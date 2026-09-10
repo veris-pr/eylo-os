@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Mapping
+from collections.abc import Mapping
+from typing import TYPE_CHECKING
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, JsonValue, ValidationError
 
 from eylo.common.outbound import (
     OutboundAttemptConflict,
@@ -16,6 +16,13 @@ from eylo.common.outbound import (
 from eylo.modules.provider_configs.errors import NotConfiguredError
 from eylo.pipelines.outbound.durable_execution import CommandStepContext
 
+from .contracts import (
+    EmailAcceptedContent,
+    EmailDeliveryMetadata,
+    EmailErrorContent,
+    EmailToolError,
+    EmailToolExecutionOutcome,
+)
 from .delivery import EmailDeliveryUnsupported, send_organization_email
 
 if TYPE_CHECKING:
@@ -23,27 +30,21 @@ if TYPE_CHECKING:
     from eylo.sockets.email.sendgrid import SendGridHttpTransport
 
 SEND_EMAIL_TOOL_NAME = "send_email"
+_EMAIL_SUBJECT_MAX_LENGTH = 998
 
 
 class _SendEmailInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
 
     to_email: EmailStr
-    subject: str = Field(min_length=1, max_length=998)
+    subject: str = Field(min_length=1, max_length=_EMAIL_SUBJECT_MAX_LENGTH)
     text_body: str = Field(min_length=1)
     html_body: str | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class EmailToolExecutionOutcome:
-    content: dict[str, Any]
-    is_error: bool
-    metadata: Mapping[str, Any] = field(default_factory=dict)
-
-
 async def execute_agent_email_tool(
     *,
-    tool_input: Mapping[str, Any],
+    tool_input: Mapping[str, JsonValue],
     conversation_context: PlatformExecutionContext,
     tool_use_message_id: UUID,
     durable_context: CommandStepContext,
@@ -53,31 +54,23 @@ async def execute_agent_email_tool(
     try:
         requested = _SendEmailInput.model_validate(dict(tool_input))
     except ValidationError:
-        return _error("email_input_invalid")
+        return _error(EmailToolError.INPUT_INVALID)
 
     agent = conversation_context.primary_agent
-    raw_config_id = getattr(agent, "email_provider_config_id", None)
-    raw_config_revision = getattr(agent, "email_provider_config_revision", None)
-    try:
-        provider_config_id = UUID(str(raw_config_id))
-    except (TypeError, ValueError):
-        return _error("email_config_unavailable")
-    if (
-        isinstance(raw_config_revision, bool)
-        or not isinstance(raw_config_revision, int)
-        or raw_config_revision <= 0
-    ):
-        return _error("email_config_unavailable")
+    if agent is None:
+        return _error(EmailToolError.CONFIG_UNAVAILABLE)
+    provider_config_id = agent.email_provider_config_id
+    provider_config_revision = agent.email_provider_config_revision
+    if provider_config_id is None or provider_config_revision is None:
+        return _error(EmailToolError.CONFIG_UNAVAILABLE)
 
     try:
         result = await send_organization_email(
-            organization_id=UUID(
-                str(conversation_context.conversation.organization_id)
-            ),
+            organization_id=conversation_context.conversation.organization_id,
             owner_kind=OutboundOwnerKind.TOOL_CALL,
             owner_id=tool_use_message_id,
             provider_config_id=provider_config_id,
-            provider_config_revision=raw_config_revision,
+            provider_config_revision=provider_config_revision,
             to_email=str(requested.to_email),
             subject=requested.subject,
             text_body=requested.text_body,
@@ -86,45 +79,39 @@ async def execute_agent_email_tool(
             sendgrid_transport=sendgrid_transport,
         )
     except NotConfiguredError:
-        return _error("email_config_unavailable")
+        return _error(EmailToolError.CONFIG_UNAVAILABLE)
     except EmailDeliveryUnsupported:
-        return _error("email_delivery_unsupported")
+        return _error(EmailToolError.DELIVERY_UNSUPPORTED)
     except OutboundAttemptConflict:
-        return _error("email_delivery_conflict")
+        return _error(EmailToolError.DELIVERY_CONFLICT)
 
-    metadata = {
-        "email_delivery": True,
-        "email_delivery_status": result.status,
-        "outbound_attempt_id": str(result.attempt_id),
-        "provider_config_id": str(provider_config_id),
-        "provider_config_revision": raw_config_revision,
-    }
+    metadata = EmailDeliveryMetadata(
+        email_delivery_status=result.status,
+        outbound_attempt_id=result.attempt_id,
+        provider_config_id=provider_config_id,
+        provider_config_revision=provider_config_revision,
+    )
     if result.state is OutboundAttemptState.SUCCEEDED:
         return EmailToolExecutionOutcome(
-            content={
-                "status": "accepted",
-                "message_id": result.tracking_id,
-            },
-            is_error=False,
-            metadata=metadata,
+            result=EmailAcceptedContent(message_id=result.tracking_id),
+            delivery=metadata,
         )
     code = (
-        "email_delivery_unknown"
+        EmailToolError.DELIVERY_UNKNOWN
         if result.state is OutboundAttemptState.UNKNOWN
-        else "email_delivery_rejected"
+        else EmailToolError.DELIVERY_REJECTED
     )
     return _error(code, metadata=metadata)
 
 
 def _error(
-    code: str,
+    code: EmailToolError,
     *,
-    metadata: Mapping[str, Any] | None = None,
+    metadata: EmailDeliveryMetadata | None = None,
 ) -> EmailToolExecutionOutcome:
     return EmailToolExecutionOutcome(
-        content={"kind": "email_error", "error": code},
-        is_error=True,
-        metadata={} if metadata is None else metadata,
+        result=EmailErrorContent(error=code),
+        delivery=metadata,
     )
 
 

@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.database import start_transaction
 from eylo.common.outbound import OutboundAttemptState, require_failure_code
+from eylo.common.schemas import EyloBaseSchema
 from eylo.events.durable.binding import spawn_event_deliveries
 from eylo.events.durable.domain import DurableEventEnvelope
 from eylo.events.durable.service import DurableEventService
@@ -24,8 +25,10 @@ from eylo.modules.telephony.constants import (
     CallTransferOutcome,
     CallTransferStatus,
 )
+from eylo.modules.telephony.provider_config_domain import TelephonyProvider
 from eylo.modules.telephony.repositories import TelephonyCallRepository
 from eylo.modules.telephony.schemas import (
+    CallDirection,
     CallStatus,
     TelephonyCallInDb,
     TelephonyCallStatusUpdateResult,
@@ -73,12 +76,33 @@ class CallMediaNotSendable(CallLifecycleConflict):
     """The outbound call cannot publish another realtime media session."""
 
 
-@dataclass(frozen=True, slots=True)
-class CallLifecycleStatusResult:
+class CallLifecycleStatusResult(BaseModel):
     """Canonical status result plus any terminal durable fact identity."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     update: TelephonyCallStatusUpdateResult
     terminal_event_id: UUID | None
+
+
+class _OutboundCallIntent(EyloBaseSchema):
+    """Exact immutable fields compared when a prepared call is retried."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", from_attributes=True)
+
+    provider: TelephonyProvider
+    provider_config_id: UUID
+    provider_config_revision: int
+    direction: CallDirection = CallDirection.OUTBOUND
+    from_number: str | None
+    to_number: str | None
+    phone_number_id: UUID | None
+    agent_id: UUID | None
+    agent_revision: int | None
+    conversation_id: UUID | None
+    campaign_id: UUID | None
+    campaign_contact_id: UUID | None
+    campaign_attempt_id: UUID | None
 
 
 async def prepare_outbound_call(
@@ -106,33 +130,47 @@ async def prepare_outbound_call(
         )
         repository = TelephonyCallRepository(session)
         existing = await repository.get_by_id_for_update(call_id, organization_id)
-        expected = {
-            "provider": provider,
-            "provider_config_id": provider_config_id,
-            "provider_config_revision": provider_config_revision,
-            "direction": "outbound",
-            "from_number": from_number,
-            "to_number": to_number,
-            "phone_number_id": phone_number_id,
-            "agent_id": agent_id,
-            "agent_revision": agent_revision,
-            "conversation_id": conversation_id,
-            "campaign_id": campaign_id,
-            "campaign_contact_id": campaign_contact_id,
-            "campaign_attempt_id": campaign_attempt_id,
-        }
+        expected = _OutboundCallIntent(
+            provider=provider,
+            provider_config_id=provider_config_id,
+            provider_config_revision=provider_config_revision,
+            from_number=from_number,
+            to_number=to_number,
+            phone_number_id=phone_number_id,
+            agent_id=agent_id,
+            agent_revision=agent_revision,
+            conversation_id=conversation_id,
+            campaign_id=campaign_id,
+            campaign_contact_id=campaign_contact_id,
+            campaign_attempt_id=campaign_attempt_id,
+        )
         if existing is not None:
-            for field, value in expected.items():
-                if getattr(existing, field) != value:
-                    raise CallLifecycleConflict(
-                        f"Call intent conflicts on canonical {field}."
-                    )
+            try:
+                actual = _OutboundCallIntent.model_validate(existing)
+            except ValidationError:
+                raise CallLifecycleConflict("Stored call intent is invalid.") from None
+            if actual != expected:
+                raise CallLifecycleConflict(
+                    "Call intent conflicts with canonical fields."
+                )
             return TelephonyCallService(session).orm_to_schema(existing)
         return await TelephonyCallService(session).create_call(
             call_id=call_id,
             organization_id=organization_id,
             call_sid=None,
-            **expected,
+            provider=expected.provider.value,
+            provider_config_id=expected.provider_config_id,
+            provider_config_revision=expected.provider_config_revision,
+            direction=expected.direction.value,
+            from_number=expected.from_number,
+            to_number=expected.to_number,
+            phone_number_id=expected.phone_number_id,
+            agent_id=expected.agent_id,
+            agent_revision=expected.agent_revision,
+            conversation_id=expected.conversation_id,
+            campaign_id=expected.campaign_id,
+            campaign_contact_id=expected.campaign_contact_id,
+            campaign_attempt_id=expected.campaign_attempt_id,
         )
 
 
@@ -370,7 +408,10 @@ async def _record_opener_delivery(
     organization_id: UUID,
     outcome: CallOpenerDeliveryOutcome,
 ) -> TelephonyCallInDb:
-    if outcome not in {CallOpenerDeliveryStatus.ACCEPTED, CallOpenerDeliveryStatus.FAILED}:
+    if outcome not in {
+        CallOpenerDeliveryStatus.ACCEPTED,
+        CallOpenerDeliveryStatus.FAILED,
+    }:
         raise ValueError("Invalid call opener delivery outcome.")
     repository = TelephonyCallRepository(db)
     call = await repository.get_by_id_for_update(call_id, organization_id)

@@ -10,6 +10,7 @@ from eylo.modules.email_configs.schemas import (
     EmailConfigUpdate,
 )
 from eylo.modules.email_configs.service import EmailConfigService
+from eylo.modules.provider_configs.domain import ProviderConfig
 from eylo.modules.provider_configs.masking import mask_secrets
 
 __all__ = ["EmailConfigController"]
@@ -75,7 +76,7 @@ class EmailConfigController:
         )
 
     @staticmethod
-    def _to_response(config) -> EmailConfigResponse:
+    def _to_response(config: ProviderConfig) -> EmailConfigResponse:
         return EmailConfigResponse(
             id=config.id,
             provider=config.provider,

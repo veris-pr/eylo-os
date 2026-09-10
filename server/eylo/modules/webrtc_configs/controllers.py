@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from eylo.modules.provider_configs.domain import ProviderConfig
 from eylo.modules.provider_configs.masking import mask_secrets
 from eylo.modules.webrtc_configs.schemas import (
     WebRTCConfigCreate,
@@ -75,7 +76,7 @@ class WebRTCConfigController:
         )
 
     @staticmethod
-    def _to_response(config) -> WebRTCConfigResponse:
+    def _to_response(config: ProviderConfig) -> WebRTCConfigResponse:
         return WebRTCConfigResponse(
             id=config.id,
             provider=config.provider,

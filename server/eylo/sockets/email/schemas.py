@@ -5,13 +5,14 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     EmailStr,
     Field,
+    JsonValue,
     SecretStr,
     field_validator,
     model_validator,
@@ -125,7 +126,7 @@ class EmailMessage(BaseModel):
 
 
 class EmailResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     message_id: str
     status: EmailStatus
@@ -134,7 +135,7 @@ class EmailResponse(BaseModel):
     to: list[EmailStr]
     subject: str
     error_message: str | None = None
-    metadata: dict[str, Any] | None = None
+    metadata: dict[str, JsonValue] | None = None
 
 
 class _EmailRuntimeConfig(BaseModel):
@@ -163,7 +164,7 @@ EmailConfig = Annotated[SendGridConfig | SMTPConfig, Field(discriminator="vendor
 
 
 class EmailWebhookEvent(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     event_type: EmailStatus
     message_id: str
@@ -171,4 +172,4 @@ class EmailWebhookEvent(BaseModel):
     timestamp: datetime
     vendor: Literal["sendgrid", "smtp"]
     reason: str | None = None
-    metadata: dict[str, Any] | None = None
+    metadata: dict[str, JsonValue] | None = None

@@ -115,6 +115,30 @@ on the field declarations so static tooling can understand constructor inputs.
 
 ## Browser audio boundary
 
+WebRTC material uses frozen Pydantic settings and credential models, not a
+dataclass whose declared provider type changes after construction. Metered and
+Turnix settings select separate validators. The resolved model checks capability,
+organization and config identity against the shared provider snapshot. Read-only
+stored mappings are copied at validation; omitted transport settings remain
+omitted rather than becoming new persisted defaults.
+
+API keys are excluded from normal model serialization and exported explicitly
+only for encrypted persistence or socket invocation. Native ICE objects remain
+private to the pipeline. A separate browser projection intentionally includes
+short-lived TURN credentials, never the provider API key. Credential fetching
+and verification run outside DB transactions; verification still commits against
+the checked config revision. Metered's existing TLS-verification exception is
+unchanged by this typing work.
+
+Socket-owned request models keep Metered's query credential separate from
+Turnix's optional body fields. Provider responses become validated immutable ICE
+values before conversion to aiortc: a nonempty server list, supported STUN/TURN
+schemes, correctly typed credentials and at least one TURN entry are required.
+Unconsumed response metadata is ignored. Normal wire/config dumps exclude secrets;
+only the deliberate HTTP and peer projections export them.
+The wire formats follow the [Metered credential API](https://www.metered.ca/docs/turn-rest-api/get-credential/)
+and [Turnix ICE credentials reference](https://turnix.io/docs/api-ice-credentials).
+
 The signaling manager owns a Pydantic negotiation aggregate keyed by organization
 and session. The key is immutable; live peer, queue-task, lock and session
 references retain identity and are excluded from serialization. Accepted SDP
@@ -122,6 +146,22 @@ answers are immutable values, serialized afresh when an identical offer is
 replayed. Replaying does not allocate another peer or resolve credentials again.
 Only an offer enters peer acquisition; candidate policy runs before the sanitized
 SDP becomes a `WebRTCOffer`.
+
+Prepare, offer and candidate inputs are validated before accessing negotiation
+state. Protocol versions must be integers, not booleans or coercible strings;
+candidate metadata is checked even on replay. Direct and one-level nested
+candidate envelopes remain accepted, and a null candidate still ends gathering.
+Owned error enums cross the candidate-policy and signaling boundaries without
+reflecting raw input or provider errors. Typed prepare, answer, candidate and
+hangup results become JSON only at the WebSocket boundary. Existing command
+names, request correlation, nullable expiry fields and idempotent hangup flags
+remain compatible with the widget.
+
+Candidate parsing yields immutable values with typed ICE component, transport,
+kind and TCP mode. Supported extension pairs are validated before native peer
+construction; unknown extension names are ignored. Network admission remains a
+separate deployment policy, not a side effect of constructing the value model.
+An unrecognized TCP mode is refused even when supplied on a UDP candidate.
 
 Native aiortc state enums stay separate from Eylo event names and termination
 reasons. The pinned aiortc 1.15.0 implementation gathers local ICE candidates
@@ -162,16 +202,67 @@ Agent independently chose them.
 
 ## Call termination
 
+Outbound telephony preparation compares an immutable call-intent projection
+under the existing transaction lock before creating a row. Replaying the same
+intent reuses that row; changed or invalid canonical identity is a conflict.
+Persisted call schemas require the organization owner, matching the DB constraint.
+Lifecycle results are immutable Pydantic values; this does not move carrier I/O
+into the preparation transaction.
+
+Carrier configuration also uses immutable provider-specific material. The module
+owns settings and credential validation; the pipeline maps typed fields into the
+socket's separate contract. Explicit exports supply encrypted persistence and
+callback verification without making plaintext credentials part of normal dumps.
+Resolved material must match its effective snapshot's org and telephony capability.
+Read-only verification runs outside DB transactions and records a typed account
+fingerprint against the checked revision, not the raw account reference.
+
+Callback mappings retain the canonical status enum until the lifecycle command.
+Only terminal observations supply terminal timestamps, duration and ended reason.
+Persisted transition results decide whether to emit a ringing/ended event;
+duplicate or stale observations cannot emit another terminal transition. Vendor
+signature validation remains ahead of this processing in the public route.
+
 The platform can close an active voice session from silence/max-duration policy,
 an end-call phrase, user hangup, transport failure, or the `end_call` system
 tool. Telephony-specific carrier cleanup is one adapter effect; browser and
 realtime sessions also close through the shared voice-session authority.
+
+The telephony silence monitor retains its validated TTS, live-buffer and session
+handles for its lifetime. Call teardown cancels and awaits policy tasks before
+discarding the buffer. Reminder failures release the activity gate; cancellation
+propagates to the task owner rather than becoming a retryable reminder failure.
+
+Call finalization collects typed STT manager/factory, TTS and carrier-counter
+snapshots. It adds the terminal-reason enum, then serializes at the logging and
+voice-session persistence boundaries. Unavailable provider branches remain absent;
+null measurements inside an available snapshot remain null. A metrics failure
+does not prevent completion or misrepresent unavailable measurements as zeros.
 
 ## Recording and post-call work
 
 Recording captures the live flow first. Upload, redaction, canonical transcript
 processing, and configured policy controls happen asynchronously after the
 call. Secondary failure is visible but does not retroactively fail the call.
+
+Recording upload tasks carry only organization and recording IDs. The worker
+loads a detached staged-input model or a completed receipt under a short DB
+transaction; raw tracks are excluded from serialization. Storage resolution,
+stable-key track uploads and success projection remain separate phases. Track
+names use recording-owned `user`/`agent` values, not transcript speaker roles.
+
+Track uploads use the shared outbound receipt contract. The frozen Pydantic
+receipt validates lifecycle/count consistency both after DB projection and when
+replaying an Absurd checkpoint. Checkpoints retain the seven identity/outcome
+fields, including explicit nulls; malformed types and unexpected fields are
+rejected. A cached receipt must match the attempt ID before reuse. Unknown sends
+remain fenced rather than being repeated automatically.
+
+Absurd cancellation bypasses ordinary upload-error classification, including on
+the last permitted attempt. The cancellation handler fences pending sends,
+projects confirmed accepted tracks, or retains staged bytes when an effect is
+uncertain. It discards staged bytes only when cancellation confirms no external
+effect. Process-level task cancellation still propagates for runtime recovery.
 
 Storage adapters receive platform-built keys below an operator root/bucket:
 organization → owning conversation/call/session → artifact. Callers never

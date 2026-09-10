@@ -11,6 +11,7 @@ from aiortc import RTCIceServer
 from eylo.sockets.stun_turn.config import TurnixConfig
 from eylo.sockets.stun_turn.exceptions import StunTurnCredentialsFailed
 from eylo.sockets.stun_turn.parsing import parse_ice_servers
+from eylo.sockets.stun_turn.wire import TurnixCredentialRequest
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,7 @@ class TurnixStunTurn:
         }
         if self.config.client_ip:
             headers["X-TURN-CLIENT-IP"] = self.config.client_ip
-        body = _credential_request(self.config)
+        body = TurnixCredentialRequest.from_config(self.config)
 
         for attempt in range(total_attempts):
             try:
@@ -40,7 +41,7 @@ class TurnixStunTurn:
                     response = await client.post(
                         _CREDENTIAL_ENDPOINT,
                         headers=headers,
-                        json=body,
+                        json=body.model_dump(mode="json", exclude_none=True),
                     )
                     response.raise_for_status()
                     return parse_ice_servers(response.json())
@@ -54,22 +55,6 @@ class TurnixStunTurn:
                     await asyncio.sleep(self.config.retry_delay * (attempt + 1))
 
         raise StunTurnCredentialsFailed("TURN credential fetch failed.") from None
-
-
-def _credential_request(config: TurnixConfig) -> dict[str, str | int]:
-    fields = (
-        "initiator_client",
-        "receiver_client",
-        "room",
-        "ttl",
-        "preferred_region",
-        "fixed_region",
-    )
-    return {
-        field_name: value
-        for field_name in fields
-        if (value := getattr(config, field_name)) is not None
-    }
 
 
 def _log_failure(

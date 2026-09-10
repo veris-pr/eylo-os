@@ -11,6 +11,7 @@ from aiortc import RTCIceServer
 from eylo.sockets.stun_turn.config import MeteredConfig
 from eylo.sockets.stun_turn.exceptions import StunTurnCredentialsFailed
 from eylo.sockets.stun_turn.parsing import parse_ice_servers
+from eylo.sockets.stun_turn.wire import MeteredCredentialQuery
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ class MeteredStunTurn:
         url = f"https://{self.config.app_name}.metered.live/api/v1/turn/credentials"
         timeout = httpx.Timeout(self.config.timeout)
         total_attempts = self.config.max_retries + 1
+        query = MeteredCredentialQuery(api_key=self.config.api_key)
 
         for attempt in range(total_attempts):
             try:
@@ -36,7 +38,7 @@ class MeteredStunTurn:
                 ) as client:
                     response = await client.get(
                         url,
-                        params={"apiKey": self.config.api_key},
+                        params=query.http_parameters(),
                     )
                     response.raise_for_status()
                     return parse_ice_servers(response.json())

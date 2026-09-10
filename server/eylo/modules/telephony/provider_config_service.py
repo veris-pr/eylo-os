@@ -52,7 +52,7 @@ class TelephonyConfigService:
         config: Mapping[str, object],
         secrets: Mapping[str, str],
     ) -> ProviderConfig:
-        validated = TelephonyProviderConfig.validate(
+        validated = TelephonyProviderConfig.from_payload(
             provider=provider,
             config=config,
             secrets=secrets,
@@ -62,8 +62,8 @@ class TelephonyConfigService:
             capability=Capability.TELEPHONY,
             provider=validated.provider.value,
             name=name,
-            config=validated.config,
-            secrets=validated.secrets,
+            config=validated.settings_values(),
+            secrets=validated.secret_values(),
         )
 
     async def list(self, *, organization_id: UUID) -> list[ProviderConfig]:
@@ -112,7 +112,7 @@ class TelephonyConfigService:
             if secret_patch is None
             else apply_secret_patch(existing.secrets, secret_patch)
         )
-        validated = TelephonyProviderConfig.validate(
+        validated = TelephonyProviderConfig.from_payload(
             provider=existing.provider,
             config=next_config,
             secrets=next_secrets,
@@ -124,7 +124,7 @@ class TelephonyConfigService:
                 organization_id=organization_id,
                 config_id=config_id,
                 name=name,
-                config=validated.config if config is not None else None,
+                config=validated.settings_values() if config is not None else None,
                 secret_patch=secret_patch,
             )
         if enabled is not None:
@@ -249,7 +249,7 @@ class TelephonyConfigResolver:
 
 
 def _validate_stored(config: ProviderConfig) -> None:
-    TelephonyProviderConfig.validate(
+    TelephonyProviderConfig.from_payload(
         provider=config.provider,
         config=config.config,
         secrets=config.secrets,

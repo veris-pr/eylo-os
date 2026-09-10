@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import Any, Protocol
+from enum import StrEnum
+from http import HTTPStatus
+from typing import Protocol
 from uuid import UUID
 
 import httpx
+from pydantic import JsonValue, ValidationError
 
 from eylo.common.http_egress import (
     HttpDestinationPolicy,
@@ -20,6 +24,7 @@ from eylo.common.http_egress import (
     OriginBoundHeaders,
 )
 from eylo.common.outbound import (
+    OUTBOUND_PROVIDER_REFERENCE_MAX_LENGTH,
     OutboundSendAuthorization,
     OutboundSendOutcome,
     OutboundSendRetryable,
@@ -29,6 +34,7 @@ from eylo.common.outbound import (
     OutboundTransportKind,
 )
 from eylo.sockets.email.base import (
+    EmailCapabilitySupport,
     EmailDeliveryCapabilities,
     EmailVendorAdapter,
     PlannedEmailDelivery,
@@ -42,18 +48,45 @@ from eylo.sockets.email.schemas import (
     EmailWebhookEvent,
     SendGridConfig,
 )
+from eylo.sockets.email.sendgrid_wire import (
+    SENDGRID_MAIL_SEND_SCOPE,
+    SendGridAddress,
+    SendGridAttachment,
+    SendGridContent,
+    SendGridContentType,
+    SendGridCustomArguments,
+    SendGridEventKind,
+    SendGridMailRequest,
+    SendGridPersonalization,
+    SendGridScopesResponse,
+    SendGridWebhookPayload,
+)
 from eylo.sockets.http import SafeHttpTransport
 
 logger = logging.getLogger(__name__)
 
 _API_BASE = "https://api.sendgrid.com/v3"
 _MAIL_SEND_URL = f"{_API_BASE}/mail/send"
+_SEND_OPERATION = "email.send.sendgrid"
+_RESPONSE_BODY_LIMIT_BYTES = 65_536
 _SENDGRID_ORIGIN = HttpOrigin.parse("https://api.sendgrid.com")
 _DELIVERY_CAPABILITIES = EmailDeliveryCapabilities(
-    idempotent_send=False,
-    reconciliation=False,
+    idempotent_send=EmailCapabilitySupport.UNSUPPORTED,
+    reconciliation=EmailCapabilitySupport.UNSUPPORTED,
 )
 _DNS_FAILURES = frozenset({"dns_resolution_empty", "dns_resolution_failed"})
+
+
+class SendGridFailureCode(StrEnum):
+    """Safe adapter-owned failure values stored by the outbound ledger."""
+
+    DNS_UNAVAILABLE = "sendgrid_dns_unavailable"
+    TRANSPORT_UNCONFIRMED = "sendgrid_transport_unconfirmed"
+    RESPONSE_UNCONFIRMED = "sendgrid_response_unconfirmed"
+    EGRESS_REJECTED = "sendgrid_egress_rejected"
+    TIMEOUT_UNCONFIRMED = "sendgrid_timeout_unconfirmed"
+    RATE_LIMITED = "sendgrid_rate_limited"
+    REQUEST_REJECTED = "sendgrid_request_rejected"
 
 
 class SendGridHttpTransport(Protocol):
@@ -77,7 +110,9 @@ class SendGridAdapter(EmailVendorAdapter):
         attempt_id: UUID,
     ) -> PlannedEmailDelivery:
         body = json.dumps(
-            _sendgrid_payload(message, attempt_id=attempt_id),
+            _sendgrid_payload(message, attempt_id=attempt_id).model_dump(
+                mode="json", by_alias=True, exclude_none=True
+            ),
             ensure_ascii=False,
             separators=(",", ":"),
             allow_nan=False,
@@ -102,12 +137,12 @@ class SendGridAdapter(EmailVendorAdapter):
                 },
             ),
             body=body,
-            response_body_limit=65_536,
+            response_body_limit=_RESPONSE_BODY_LIMIT_BYTES,
             total_timeout_seconds=self.config.timeout,
         )
         return PlannedEmailDelivery(
             attempt_id=attempt_id,
-            provider_operation="email.send.sendgrid",
+            provider_operation=_SEND_OPERATION,
             transport_kind=OutboundTransportKind.HTTP,
             destination_origin=str(_SENDGRID_ORIGIN),
             capabilities=_DELIVERY_CAPABILITIES,
@@ -128,35 +163,48 @@ class SendGridAdapter(EmailVendorAdapter):
             response = await self._transport.send(request)
         except HttpEgressPolicyError as error:
             if error.code in _DNS_FAILURES:
-                return OutboundSendRetryable("sendgrid_dns_unavailable")
+                return OutboundSendRetryable(
+                    failure_code=SendGridFailureCode.DNS_UNAVAILABLE
+                )
             if error.code == "transport_failed":
-                return OutboundSendUnknown("sendgrid_transport_unconfirmed")
+                return OutboundSendUnknown(
+                    failure_code=SendGridFailureCode.TRANSPORT_UNCONFIRMED
+                )
             if error.code in {
                 "response_body_too_large",
                 "response_headers_too_large",
             }:
-                return OutboundSendUnknown("sendgrid_response_unconfirmed")
-            return OutboundSendTerminal("sendgrid_egress_rejected")
+                return OutboundSendUnknown(
+                    failure_code=SendGridFailureCode.RESPONSE_UNCONFIRMED
+                )
+            return OutboundSendTerminal(
+                failure_code=SendGridFailureCode.EGRESS_REJECTED
+            )
         except TimeoutError:
-            return OutboundSendUnknown("sendgrid_timeout_unconfirmed")
+            return OutboundSendUnknown(
+                failure_code=SendGridFailureCode.TIMEOUT_UNCONFIRMED
+            )
 
-        if response.status_code == 202:
+        if response.status_code == HTTPStatus.ACCEPTED:
             return OutboundSendSucceeded(
                 provider_reference=_message_id(response),
                 status_code=response.status_code,
             )
-        if response.status_code == 429:
+        if response.status_code == HTTPStatus.TOO_MANY_REQUESTS:
             return OutboundSendRetryable(
-                "sendgrid_rate_limited",
+                failure_code=SendGridFailureCode.RATE_LIMITED,
                 status_code=response.status_code,
             )
-        if response.status_code == 408 or response.status_code >= 500:
+        if (
+            response.status_code == HTTPStatus.REQUEST_TIMEOUT
+            or response.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR
+        ):
             return OutboundSendUnknown(
-                "sendgrid_response_unconfirmed",
+                failure_code=SendGridFailureCode.RESPONSE_UNCONFIRMED,
                 status_code=response.status_code,
             )
         return OutboundSendTerminal(
-            "sendgrid_request_rejected",
+            failure_code=SendGridFailureCode.REQUEST_REJECTED,
             status_code=response.status_code,
         )
 
@@ -165,9 +213,8 @@ class SendGridAdapter(EmailVendorAdapter):
             async with self._client() as client:
                 response = await client.get(f"{_API_BASE}/scopes")
                 response.raise_for_status()
-                payload = response.json()
-            scopes = payload.get("scopes") if isinstance(payload, dict) else None
-            if not isinstance(scopes, list) or "mail.send" not in scopes:
+                payload = SendGridScopesResponse.model_validate_json(response.content)
+            if SENDGRID_MAIL_SEND_SCOPE not in payload.scopes:
                 raise EmailVendorError("SendGrid key does not grant mail.send.")
         except Exception as error:
             _log_failure("verify", error)
@@ -175,36 +222,48 @@ class SendGridAdapter(EmailVendorAdapter):
 
     def transform_to_platform_response(
         self,
-        vendor_response: Any,
+        vendor_response: object,
         original_message: EmailMessage,
     ) -> EmailResponse:
-        status_code = getattr(vendor_response, "status_code", None)
-        headers = getattr(vendor_response, "headers", {})
+        if not isinstance(vendor_response, (httpx.Response, HttpEgressResponse)):
+            raise EmailVendorError("SendGrid response must be an HTTP response.")
+        status_code = vendor_response.status_code
+        message_id = (
+            _message_id(vendor_response)
+            if isinstance(vendor_response, HttpEgressResponse)
+            else vendor_response.headers.get("X-Message-Id")
+        )
         return EmailResponse(
-            message_id=headers.get("X-Message-Id", ""),
-            status=(EmailStatus.SENT if status_code == 202 else EmailStatus.FAILED),
+            message_id=message_id or "",
+            status=(
+                EmailStatus.SENT
+                if status_code == HTTPStatus.ACCEPTED
+                else EmailStatus.FAILED
+            ),
             vendor="sendgrid",
             to=original_message.to,
             subject=original_message.subject,
             metadata={"status_code": status_code},
         )
 
-    async def process_webhook(self, payload: dict[str, Any]) -> EmailWebhookEvent:
+    async def process_webhook(
+        self, payload: Mapping[str, JsonValue]
+    ) -> EmailWebhookEvent:
         try:
-            event_type = _event_status(str(payload.get("event", "")))
+            event = SendGridWebhookPayload.model_validate(dict(payload))
             return EmailWebhookEvent(
-                event_type=event_type,
-                message_id=str(payload.get("sg_message_id", "")),
-                email=payload.get("email", ""),
+                event_type=_event_status(event.event),
+                message_id=event.sg_message_id,
+                email=event.email,
                 timestamp=datetime.fromtimestamp(
-                    float(payload.get("timestamp", 0)),
+                    event.timestamp,
                     tz=timezone.utc,
                 ),
                 vendor="sendgrid",
-                reason=payload.get("reason"),
-                metadata=payload,
+                reason=event.reason,
+                metadata=event.model_dump(mode="json", exclude_unset=True),
             )
-        except Exception:
+        except (ValidationError, ValueError, OverflowError, OSError):
             raise EmailVendorError("SendGrid webhook payload is invalid.") from None
 
     def _client(self) -> httpx.AsyncClient:
@@ -222,50 +281,49 @@ def _sendgrid_payload(
     message: EmailMessage,
     *,
     attempt_id: UUID,
-) -> dict[str, object]:
-    personalization: dict[str, object] = {
-        "to": [{"email": str(address)} for address in message.to],
-        "custom_args": {"eylo_attempt_id": attempt_id.hex},
-    }
-    if message.cc:
-        personalization["cc"] = [{"email": str(address)} for address in message.cc]
-    if message.bcc:
-        personalization["bcc"] = [{"email": str(address)} for address in message.bcc]
+) -> SendGridMailRequest:
     headers = dict(message.headers or {})
     priority_header = _priority_header(message.priority)
     if priority_header is not None:
         headers["X-Priority"] = priority_header
-    if headers:
-        personalization["headers"] = headers
-
-    content = []
+    personalization = SendGridPersonalization(
+        to=tuple(SendGridAddress(email=address) for address in message.to),
+        custom_args=SendGridCustomArguments(eylo_attempt_id=attempt_id.hex),
+        cc=tuple(SendGridAddress(email=address) for address in message.cc)
+        if message.cc
+        else None,
+        bcc=tuple(SendGridAddress(email=address) for address in message.bcc)
+        if message.bcc
+        else None,
+        headers=headers or None,
+    )
+    content: list[SendGridContent] = []
     if message.text_content:
-        content.append({"type": "text/plain", "value": message.text_content})
+        content.append(
+            SendGridContent(type=SendGridContentType.TEXT, value=message.text_content)
+        )
     if message.html_content:
-        content.append({"type": "text/html", "value": message.html_content})
+        content.append(
+            SendGridContent(type=SendGridContentType.HTML, value=message.html_content)
+        )
 
-    payload: dict[str, object] = {
-        "personalizations": [personalization],
-        "from": {
-            "email": str(message.from_email),
-            "name": message.from_name,
-        },
-        "subject": message.subject,
-        "content": content,
-    }
-    if message.reply_to:
-        payload["reply_to"] = {"email": str(message.reply_to)}
-    if message.attachments:
-        payload["attachments"] = [
-            {
-                "content": attachment.content,
-                "filename": attachment.filename,
-                "type": attachment.content_type,
-                "disposition": "attachment",
-            }
+    return SendGridMailRequest(
+        personalizations=(personalization,),
+        sender=SendGridAddress(email=message.from_email, name=message.from_name),
+        subject=message.subject,
+        content=tuple(content),
+        reply_to=SendGridAddress(email=message.reply_to) if message.reply_to else None,
+        attachments=tuple(
+            SendGridAttachment(
+                content=attachment.content,
+                filename=attachment.filename,
+                type=attachment.content_type,
+            )
             for attachment in message.attachments
-        ]
-    return payload
+        )
+        if message.attachments
+        else None,
+    )
 
 
 def _priority_header(priority: EmailPriority) -> str | None:
@@ -276,15 +334,15 @@ def _priority_header(priority: EmailPriority) -> str | None:
     }[priority]
 
 
-def _event_status(event: str) -> EmailStatus:
+def _event_status(event: SendGridEventKind) -> EmailStatus:
     return {
-        "delivered": EmailStatus.DELIVERED,
-        "bounce": EmailStatus.BOUNCED,
-        "dropped": EmailStatus.REJECTED,
-        "deferred": EmailStatus.PENDING,
-        "processed": EmailStatus.SENT,
-        "open": EmailStatus.OPENED,
-        "click": EmailStatus.CLICKED,
+        SendGridEventKind.DELIVERED: EmailStatus.DELIVERED,
+        SendGridEventKind.BOUNCE: EmailStatus.BOUNCED,
+        SendGridEventKind.DROPPED: EmailStatus.REJECTED,
+        SendGridEventKind.DEFERRED: EmailStatus.PENDING,
+        SendGridEventKind.PROCESSED: EmailStatus.SENT,
+        SendGridEventKind.OPEN: EmailStatus.OPENED,
+        SendGridEventKind.CLICK: EmailStatus.CLICKED,
     }.get(event, EmailStatus.PENDING)
 
 
@@ -293,7 +351,7 @@ def _message_id(response: HttpEgressResponse) -> str | None:
     if len(values) != 1:
         return None
     value = values[0].strip()
-    return value if 0 < len(value) <= 320 else None
+    return value if 0 < len(value) <= OUTBOUND_PROVIDER_REFERENCE_MAX_LENGTH else None
 
 
 def _log_failure(operation: str, error: Exception) -> None:

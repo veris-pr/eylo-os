@@ -33,7 +33,9 @@ def _build_controller() -> EmailConfigController:
     return EmailConfigController(build_email_config_service())
 
 
-@router.post("", response_model=EmailConfigResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "", response_model=EmailConfigResponse, status_code=status.HTTP_201_CREATED
+)
 async def create_email_config(
     request: EmailConfigCreate,
     current_user: Annotated[CurrentUserSchema, Depends(get_current_user)],
@@ -66,7 +68,9 @@ async def update_email_config(
     current_user: Annotated[CurrentUserSchema, Depends(get_current_user)],
 ) -> EmailConfigResponse:
     async with start_transaction():
-        return await _build_controller().update(current_user.organization_id, config_id, request)
+        return await _build_controller().update(
+            current_user.organization_id, config_id, request
+        )
 
 
 @router.post(
@@ -78,9 +82,7 @@ async def verify_email_config(
     current_user: Annotated[CurrentUserSchema, Depends(get_current_user)],
 ) -> EmailConfigVerificationResponse:
     try:
-        result = await EmailConfigVerificationUseCase(
-            EmailRuntimeVerifier()
-        ).verify(
+        result = await EmailConfigVerificationUseCase(EmailRuntimeVerifier()).verify(
             organization_id=current_user.organization_id,
             config_id=config_id,
         )
@@ -90,7 +92,7 @@ async def verify_email_config(
             detail="Email provider verification failed.",
         ) from None
     return EmailConfigVerificationResponse(
-        provider=result.provider,
+        provider=result.provider.value,
         revision=result.revision,
         verified_at=result.verified_at,
     )

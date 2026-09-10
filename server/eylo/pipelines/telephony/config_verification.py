@@ -7,11 +7,16 @@ import hashlib
 from uuid import UUID
 
 from eylo.common.database import start_transaction
-from eylo.modules.telephony.provider_config_domain import TelephonyProviderConfig
+from eylo.modules.telephony.provider_config_domain import (
+    TelephonyProvider,
+    TelephonyProviderConfig,
+)
 from eylo.modules.telephony.provider_config_verification import (
+    ACCOUNT_FINGERPRINT_LENGTH,
     TelephonyProviderVerification,
     TelephonyProviderVerifier,
     TelephonyVerificationError,
+    TelephonyVerificationMetadata,
     TelephonyVerificationResult,
 )
 from eylo.modules.telephony.wiring import build_telephony_config_service
@@ -41,13 +46,12 @@ class TelephonyRuntimeVerifier:
             raise TelephonyVerificationError(
                 "Telephony provider verification failed."
             ) from error
-        fingerprint = hashlib.sha256(result.account_reference.encode()).hexdigest()[:16]
+        fingerprint = hashlib.sha256(result.account_reference.encode()).hexdigest()[
+            :ACCOUNT_FINGERPRINT_LENGTH
+        ]
         return TelephonyProviderVerification(
-            provider=result.provider.value,
-            metadata={
-                "account_fingerprint": fingerprint,
-                "operation": "read_only_account_lookup",
-            },
+            provider=TelephonyProvider(result.provider.value),
+            metadata=TelephonyVerificationMetadata(account_fingerprint=fingerprint),
         )
 
 
@@ -68,7 +72,7 @@ class TelephonyConfigVerificationUseCase:
                 organization_id=organization_id,
                 config_id=config_id,
             )
-            provider_config = TelephonyProviderConfig.validate(
+            provider_config = TelephonyProviderConfig.from_payload(
                 provider=stored.provider,
                 config=stored.config,
                 secrets=stored.secrets,
@@ -82,9 +86,12 @@ class TelephonyConfigVerificationUseCase:
                 organization_id=organization_id,
                 config_id=config_id,
                 expected_revision=expected_revision,
-                verification_metadata=result.metadata,
+                verification_metadata=result.metadata.model_dump(mode="json"),
             )
-        assert verified.verified_at is not None
+        if verified.verified_at is None:
+            raise TelephonyVerificationError(
+                "Verified configuration is missing its timestamp."
+            )
         return TelephonyVerificationResult(
             provider=result.provider,
             revision=verified.revision,

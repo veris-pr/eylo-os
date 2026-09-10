@@ -29,13 +29,17 @@ class EmailRuntimeVerifier:
     ) -> EmailProviderVerification:
         try:
             runtime_config = build_email_runtime_config(config)
-            async with asyncio.timeout(_VERIFICATION_TIMEOUT_SECONDS):
-                await EmailFactory(runtime_config).get_adapter().verify_credentials()
+            factory = EmailFactory(runtime_config)
+            try:
+                async with asyncio.timeout(_VERIFICATION_TIMEOUT_SECONDS):
+                    await factory.get_adapter().verify_credentials()
+            finally:
+                await factory.close()
         except Exception:
             raise EmailVerificationError(
                 "Email provider verification failed."
             ) from None
-        return EmailProviderVerification(provider=config.provider.value)
+        return EmailProviderVerification(provider=config.provider)
 
 
 class EmailConfigVerificationUseCase:
@@ -55,7 +59,7 @@ class EmailConfigVerificationUseCase:
                 organization_id=organization_id,
                 config_id=config_id,
             )
-            provider_config = EmailProviderConfig.validate(
+            provider_config = EmailProviderConfig.from_payload(
                 provider=stored.provider,
                 config=stored.config,
                 secrets=stored.secrets,
@@ -63,6 +67,8 @@ class EmailConfigVerificationUseCase:
             expected_revision = stored.revision
 
         result = await self._verifier.verify(provider_config)
+        if result.provider is not provider_config.provider:
+            raise EmailVerificationError("Email verification provider does not match.")
 
         async with start_transaction():
             verified = await build_email_config_service().mark_verified(

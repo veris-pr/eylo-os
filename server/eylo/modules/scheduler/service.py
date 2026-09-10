@@ -22,7 +22,11 @@ from eylo.common.contracts.scheduler import (
     ScheduleSpec,
 )
 from eylo.common.database import async_session_factory
-from eylo.common.revisions import DefinitionLifecycle, PublishedRevisionState
+from eylo.common.revisions import (
+    DefinitionLifecycle,
+    PublishedRevisionState,
+    RevisionAvailability,
+)
 from eylo.modules.agent_runs.models import AgentRunModel
 from eylo.modules.scheduler.actions import registered_actions
 from eylo.modules.scheduler.discovery import register_scheduled_actions
@@ -217,7 +221,7 @@ async def revoke_schedule_revision(
             if schedule is None or row is None:
                 raise ScheduleNotFound("Schedule revision not found.")
             revoked = PublishedRevisionState(
-                availability=row.availability,
+                availability=RevisionAvailability(row.availability),
                 published_at=row.published_at,
                 revoked_at=row.revoked_at,
                 revoked_by=row.revoked_by,

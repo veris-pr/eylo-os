@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
-from typing import Any
+from collections.abc import Awaitable, Callable, Mapping
+from enum import Enum
 from uuid import UUID
 
-from pydantic import BaseModel, EmailStr, ValidationError
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, JsonValue, ValidationError
+from pydantic.json_schema import SkipJsonSchema
 
 from eylo.common.outbound import (
+    OUTBOUND_DESTINATION_ORIGIN_MAX_LENGTH,
+    OUTBOUND_OPERATION_MAX_LENGTH,
     OutboundSendAuthorization,
     OutboundSendOutcome,
     OutboundTransportKind,
@@ -23,24 +25,37 @@ EmailDeliverySender = Callable[
 ]
 
 
-@dataclass(frozen=True, slots=True)
-class EmailDeliveryCapabilities:
+class EmailCapabilitySupport(Enum):
+    SUPPORTED = "supported"
+    UNSUPPORTED = "unsupported"
+
+
+class _EmailPlanValue(BaseModel):
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", revalidate_instances="always"
+    )
+
+
+class EmailDeliveryCapabilities(_EmailPlanValue):
     """Provider guarantees relevant to safe retry and reconciliation."""
 
-    idempotent_send: bool
-    reconciliation: bool
+    idempotent_send: EmailCapabilitySupport
+    reconciliation: EmailCapabilitySupport
 
 
-@dataclass(frozen=True, slots=True)
-class PlannedEmailDelivery:
+class PlannedEmailDelivery(_EmailPlanValue):
     """One fully validated provider operation, ready for the durable boundary."""
 
     attempt_id: UUID
-    provider_operation: str
+    provider_operation: str = Field(
+        min_length=1, max_length=OUTBOUND_OPERATION_MAX_LENGTH
+    )
     transport_kind: OutboundTransportKind
-    destination_origin: str
+    destination_origin: str = Field(
+        min_length=1, max_length=OUTBOUND_DESTINATION_ORIGIN_MAX_LENGTH
+    )
     capabilities: EmailDeliveryCapabilities
-    sender: EmailDeliverySender = field(repr=False, compare=False)
+    sender: SkipJsonSchema[EmailDeliverySender] = Field(repr=False, exclude=True)
 
     async def send(
         self,
@@ -68,12 +83,15 @@ class EmailVendorAdapter(ABC):
     @abstractmethod
     def transform_to_platform_response(
         self,
-        vendor_response: Any,
+        vendor_response: object,
         original_message: EmailMessage,
     ) -> EmailResponse: ...
 
     @abstractmethod
-    async def process_webhook(self, payload: dict[str, Any]) -> EmailWebhookEvent: ...
+    async def process_webhook(
+        self, payload: Mapping[str, JsonValue]
+    ) -> EmailWebhookEvent:
+        """Parse one pre-authenticated event; this does not expose an HTTP endpoint."""
 
     async def verify_email(self, email: str) -> str | None:
         class EmailValidator(BaseModel):
@@ -89,6 +107,7 @@ class EmailVendorAdapter(ABC):
 
 
 __all__ = [
+    "EmailCapabilitySupport",
     "EmailDeliveryCapabilities",
     "EmailDeliverySender",
     "EmailVendorAdapter",

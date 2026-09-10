@@ -6,7 +6,6 @@ import asyncio
 import hashlib
 import logging
 import time
-from typing import Any
 from uuid import UUID, uuid4
 
 from aiortc import RTCIceCandidate
@@ -23,7 +22,13 @@ from eylo.pipelines.webrtc.config import (
     browser_ice_servers,
     resolve_ice_configuration,
 )
+from eylo.pipelines.webrtc.errors import (
+    IceCandidateCode,
+    WebRTCSignalingCode,
+    WebRTCSignalingError,
+)
 from eylo.pipelines.webrtc.ice_policy import (
+    MAX_REMOTE_CANDIDATES,
     IceCandidateError,
     IceDeploymentMode,
     filter_offer_candidates,
@@ -34,9 +39,15 @@ from eylo.pipelines.webrtc.playback import (
     start_tts_streamer,
     stop_tts_streamer,
 )
+from eylo.pipelines.webrtc.requests import WebRTCCandidateRequest, WebRTCOfferRequest
 from eylo.pipelines.webrtc.schemas import (
     WebRTCAnswer,
+    WebRTCCandidateAccepted,
+    WebRTCCleanupReason,
+    WebRTCCleanupStep,
+    WebRTCHangupNotice,
     WebRTCNegotiationState,
+    WebRTCPrepared,
     WebRTCSession,
     WebRTCSessionKey,
 )
@@ -46,19 +57,10 @@ logger = logging.getLogger(__name__)
 
 WEBRTC_PROTOCOL_VERSION = WEBRTC_SIGNALING_VERSION
 NEGOTIATION_DEADLINE_SECONDS = 30
-MAX_REMOTE_CANDIDATES = 128
-
-
-class WebRTCSignalingError(RuntimeError):
-    """Safe, typed signaling failure returned at the interface boundary."""
-
-    def __init__(self, code: str) -> None:
-        super().__init__(code)
-        self.code = code
 
 
 class WebRTCSignalingManager:
-    """Own one negotiation aggregate per organization and auth session."""
+    """Own one negotiation aggregate per organization and interface session."""
 
     def __init__(self) -> None:
         self._sessions: dict[WebRTCSessionKey, WebRTCSession] = {}
@@ -72,7 +74,7 @@ class WebRTCSignalingManager:
             await self.cleanup_session(
                 key.organization_id,
                 key.session_id,
-                reason="shutdown",
+                reason=WebRTCCleanupReason.SHUTDOWN,
             )
         logger.info("WebRTC signaling manager stopped")
 
@@ -88,14 +90,14 @@ class WebRTCSignalingManager:
         self,
         organization_id: UUID,
         session_id: str,
-    ) -> dict[str, Any]:
+    ) -> WebRTCPrepared:
         """Resolve org ICE config before the browser constructs its peer."""
         from eylo.pipelines.websocket.singleton import S_ws_manager
 
         key = WebRTCSessionKey(organization_id=organization_id, session_id=session_id)
         session_state = S_ws_manager.get_session_state(organization_id, session_id)
         if session_state is None:
-            raise WebRTCSignalingError("session_not_found")
+            raise WebRTCSignalingError(WebRTCSignalingCode.SESSION_NOT_FOUND)
 
         async with self._registry_lock:
             session = self._sessions.get(key)
@@ -127,22 +129,19 @@ class WebRTCSignalingManager:
                 WebRTCNegotiationState.TERMINATING,
                 WebRTCNegotiationState.TERMINATED,
             }:
-                raise WebRTCSignalingError("negotiation_terminated")
+                raise WebRTCSignalingError(WebRTCSignalingCode.NEGOTIATION_TERMINATED)
 
             if failure is None:
-                return {
-                    "protocol_version": WEBRTC_PROTOCOL_VERSION,
-                    "command": "prepare",
-                    "outcome": "accepted",
-                    "negotiation_id": session.negotiation_id,
-                    "negotiation_expires_at": session.negotiation_expires_at,
-                    "credential_expires_at": session.credential_expires_at,
-                    "iceServers": browser_ice_servers(session.ice_servers),
-                }
+                return WebRTCPrepared(
+                    negotiation_id=session.negotiation_id,
+                    negotiation_expires_at=session.negotiation_expires_at,
+                    credential_expires_at=session.credential_expires_at,
+                    ice_servers=tuple(browser_ice_servers(session.ice_servers)),
+                )
 
         await self._terminal_cleanup(key, BrowserVoiceTerminationReason.PREPARE_FAILED)
         if failure is None:
-            raise WebRTCSignalingError("prepare_failed")
+            raise WebRTCSignalingError(WebRTCSignalingCode.PREPARE_FAILED)
         raise failure
 
     async def handle_offer(
@@ -154,20 +153,14 @@ class WebRTCSignalingManager:
         """Acquire one offer, publish only after its answer is delivered."""
         from eylo.pipelines.websocket.singleton import S_ws_manager
 
-        data = payload.data or {}
-        negotiation_id = _required_string(data, "negotiation_id")
-        sdp = _required_string(data, "sdp")
-        _require_protocol_version(data)
-        if (
-            data.get("type", SessionDescriptionType.OFFER)
-            != SessionDescriptionType.OFFER
-        ):
-            raise WebRTCSignalingError("invalid_offer_type")
+        data = WebRTCOfferRequest.from_payload(payload.data or {})
+        negotiation_id = data.negotiation_id
+        sdp = data.sdp
 
         key = WebRTCSessionKey(organization_id=organization_id, session_id=session_id)
         session = self._sessions.get(key)
         if session is None:
-            raise WebRTCSignalingError("prepare_required")
+            raise WebRTCSignalingError(WebRTCSignalingCode.PREPARE_REQUIRED)
         offer_digest = hashlib.sha256(sdp.encode()).hexdigest()
 
         failure: Exception | None = None
@@ -175,17 +168,17 @@ class WebRTCSignalingManager:
         async with session.lock:
             try:
                 if negotiation_id != session.negotiation_id:
-                    raise WebRTCSignalingError("negotiation_mismatch")
+                    raise WebRTCSignalingError(WebRTCSignalingCode.NEGOTIATION_MISMATCH)
                 if session.state is WebRTCNegotiationState.ACTIVE:
                     if (
                         session.offer_digest != offer_digest
                         or session.answer_payload is None
                     ):
-                        raise WebRTCSignalingError("offer_conflict")
+                        raise WebRTCSignalingError(WebRTCSignalingCode.OFFER_CONFLICT)
                     delivered = await S_ws_manager.send_response(
                         _signal_envelope(
                             WsEventAction.WEBRTC_ANSWER,
-                            session.answer_payload.model_dump(mode="json"),
+                            session.answer_payload,
                             request_id=payload.request_id,
                         ),
                         organization_id,
@@ -193,10 +186,14 @@ class WebRTCSignalingManager:
                     )
                     if not delivered:
                         cleanup_on_failure = True
-                        raise WebRTCSignalingError("answer_delivery_failed")
+                        raise WebRTCSignalingError(
+                            WebRTCSignalingCode.ANSWER_DELIVERY_FAILED
+                        )
                     return
                 if session.state is not WebRTCNegotiationState.PREPARED:
-                    raise WebRTCSignalingError("negotiation_unavailable")
+                    raise WebRTCSignalingError(
+                        WebRTCSignalingCode.NEGOTIATION_UNAVAILABLE
+                    )
 
                 session.transition(WebRTCNegotiationState.ACQUIRING)
                 cleanup_on_failure = True
@@ -217,7 +214,7 @@ class WebRTCSignalingManager:
                     len(session.candidate_digests | embedded_digests)
                     > MAX_REMOTE_CANDIDATES
                 ):
-                    raise WebRTCSignalingError("candidate_limit_reached")
+                    raise WebRTCSignalingError(IceCandidateCode.CANDIDATE_LIMIT_REACHED)
                 session.candidate_digests.update(embedded_digests)
                 peer_client = AgentPeerClient(
                     session.session_state,
@@ -240,7 +237,7 @@ class WebRTCSignalingManager:
                     local_description is None
                     or local_description.type != SessionDescriptionType.ANSWER
                 ):
-                    raise WebRTCSignalingError("answer_unavailable")
+                    raise WebRTCSignalingError(WebRTCSignalingCode.ANSWER_UNAVAILABLE)
                 answer_payload = WebRTCAnswer(
                     negotiation_id=session.negotiation_id,
                     sdp=local_description.sdp,
@@ -248,14 +245,16 @@ class WebRTCSignalingManager:
                 delivered = await S_ws_manager.send_response(
                     _signal_envelope(
                         WsEventAction.WEBRTC_ANSWER,
-                        answer_payload.model_dump(mode="json"),
+                        answer_payload,
                         request_id=payload.request_id,
                     ),
                     organization_id,
                     session_id,
                 )
                 if not delivered:
-                    raise WebRTCSignalingError("answer_delivery_failed")
+                    raise WebRTCSignalingError(
+                        WebRTCSignalingCode.ANSWER_DELIVERY_FAILED
+                    )
 
                 session.answer_payload = answer_payload
                 session.offer_digest = offer_digest
@@ -285,41 +284,32 @@ class WebRTCSignalingManager:
         organization_id: UUID,
         session_id: str,
         payload: WsRequestEvent,
-    ) -> dict[str, Any]:
+    ) -> WebRTCCandidateAccepted:
         """Admit, deduplicate, cap, and apply one remote ICE candidate."""
-        data = payload.data or {}
-        _require_protocol_version(data)
-        negotiation_id = _required_string(data, "negotiation_id")
+        data = WebRTCCandidateRequest.from_payload(payload.data or {})
+        negotiation_id = data.negotiation_id
         key = WebRTCSessionKey(organization_id=organization_id, session_id=session_id)
         session = self._sessions.get(key)
         if session is None:
-            raise WebRTCSignalingError("prepare_required")
+            raise WebRTCSignalingError(WebRTCSignalingCode.PREPARE_REQUIRED)
 
-        candidate_data = data.get("candidate")
-        if isinstance(candidate_data, dict) and isinstance(
-            candidate_data.get("candidate"), dict
-        ):
-            candidate_data = candidate_data["candidate"]
+        candidate_data = data.candidate
 
         async with session.lock:
             if negotiation_id != session.negotiation_id:
-                raise WebRTCSignalingError("negotiation_mismatch")
+                raise WebRTCSignalingError(WebRTCSignalingCode.NEGOTIATION_MISMATCH)
             if session.state not in {
                 WebRTCNegotiationState.PREPARED,
                 WebRTCNegotiationState.ACQUIRING,
                 WebRTCNegotiationState.ACTIVE,
             }:
-                raise WebRTCSignalingError("negotiation_unavailable")
+                raise WebRTCSignalingError(WebRTCSignalingCode.NEGOTIATION_UNAVAILABLE)
 
             if candidate_data is None:
                 candidate: RTCIceCandidate | None = None
                 digest = "end-of-candidates"
             else:
-                if not isinstance(candidate_data, dict):
-                    raise WebRTCSignalingError("malformed_candidate")
-                candidate_line = candidate_data.get("candidate")
-                if not isinstance(candidate_line, str):
-                    raise WebRTCSignalingError("malformed_candidate")
+                candidate_line = candidate_data.candidate
                 digest = hashlib.sha256(candidate_line.encode()).hexdigest()
                 if digest in session.candidate_digests:
                     return _candidate_outcome(session, duplicate=True)
@@ -330,35 +320,27 @@ class WebRTCSignalingManager:
                     )
                 except IceCandidateError as error:
                     raise WebRTCSignalingError(error.code) from None
-                sdp_mid = candidate_data.get("sdpMid")
-                sdp_mline_index = candidate_data.get("sdpMLineIndex")
-                if sdp_mid is not None and not isinstance(sdp_mid, str):
-                    raise WebRTCSignalingError("malformed_candidate")
-                if sdp_mline_index is not None and (
-                    not isinstance(sdp_mline_index, int)
-                    or isinstance(sdp_mline_index, bool)
-                    or sdp_mline_index < 0
-                ):
-                    raise WebRTCSignalingError("malformed_candidate")
                 candidate = RTCIceCandidate(
                     foundation=parsed.foundation,
-                    component=parsed.component,
-                    protocol=parsed.protocol,
+                    component=parsed.component.value,
+                    protocol=parsed.protocol.value,
                     priority=parsed.priority,
                     ip=parsed.address,
                     port=parsed.port,
-                    type=parsed.candidate_type,
+                    type=parsed.candidate_type.value,
                     relatedAddress=parsed.related_address,
                     relatedPort=parsed.related_port,
-                    sdpMid=sdp_mid,
-                    sdpMLineIndex=sdp_mline_index,
-                    tcpType=parsed.tcp_type,
+                    sdpMid=candidate_data.sdp_mid,
+                    sdpMLineIndex=candidate_data.sdp_mline_index,
+                    tcpType=parsed.tcp_type.value
+                    if parsed.tcp_type is not None
+                    else None,
                 )
 
             if digest in session.candidate_digests:
                 return _candidate_outcome(session, duplicate=True)
             if len(session.candidate_digests) >= MAX_REMOTE_CANDIDATES:
-                raise WebRTCSignalingError("candidate_limit_reached")
+                raise WebRTCSignalingError(IceCandidateCode.CANDIDATE_LIMIT_REACHED)
             session.candidate_digests.add(digest)
 
             if session.peer_client is None:
@@ -367,7 +349,9 @@ class WebRTCSignalingManager:
                 try:
                     await session.peer_client.pc.addIceCandidate(candidate)
                 except Exception:
-                    raise WebRTCSignalingError("candidate_apply_failed") from None
+                    raise WebRTCSignalingError(
+                        WebRTCSignalingCode.CANDIDATE_APPLY_FAILED
+                    ) from None
             return _candidate_outcome(session, duplicate=False)
 
     async def cleanup_session(
@@ -375,7 +359,8 @@ class WebRTCSignalingManager:
         organization_id: UUID,
         session_id: str,
         *,
-        reason: str = "hangup",
+        reason: BrowserVoiceTerminationReason
+        | WebRTCCleanupReason = WebRTCCleanupReason.HANGUP,
         notify_client: bool = False,
     ) -> bool:
         """Run terminal cleanup once; every teardown step is failure-contained."""
@@ -403,19 +388,18 @@ class WebRTCSignalingManager:
                         await S_ws_manager.send_response(
                             _signal_envelope(
                                 WsEventAction.WEBRTC_HANGUP,
-                                {
-                                    "protocol_version": WEBRTC_PROTOCOL_VERSION,
-                                    "command": "hangup",
-                                    "outcome": "accepted",
-                                    "negotiation_id": session.negotiation_id,
-                                    "reason": reason,
-                                },
+                                WebRTCHangupNotice(
+                                    negotiation_id=session.negotiation_id,
+                                    reason=reason,
+                                ),
                             ),
                             organization_id,
                             session_id,
                         )
                     except Exception as error:
-                        _log_cleanup_failure(organization_id, "notify", error)
+                        _log_cleanup_failure(
+                            organization_id, WebRTCCleanupStep.NOTIFY, error
+                        )
 
                 try:
                     await stop_tts_streamer(
@@ -423,7 +407,9 @@ class WebRTCSignalingManager:
                         session_id=session_id,
                     )
                 except Exception as error:
-                    _log_cleanup_failure(organization_id, "tts_streamer", error)
+                    _log_cleanup_failure(
+                        organization_id, WebRTCCleanupStep.TTS_STREAMER, error
+                    )
                 finally:
                     session.tts_streamer_task = None
 
@@ -431,7 +417,9 @@ class WebRTCSignalingManager:
                     try:
                         await session.peer_client.cleanup()
                     except Exception as error:
-                        _log_cleanup_failure(organization_id, "peer", error)
+                        _log_cleanup_failure(
+                            organization_id, WebRTCCleanupStep.PEER, error
+                        )
                     finally:
                         session.peer_client = None
 
@@ -445,7 +433,7 @@ class WebRTCSignalingManager:
         logger.info(
             "WebRTC session cleaned organization_id=%s reason=%s",
             organization_id,
-            reason,
+            reason.value,
         )
         return True
 
@@ -459,14 +447,16 @@ class WebRTCSignalingManager:
         cleaned = await self.cleanup_session(
             key.organization_id,
             key.session_id,
-            reason=reason.value,
+            reason=reason,
             notify_client=True,
         )
         if cleaned and terminal_callback is not None:
             try:
                 await terminal_callback(reason)
             except Exception as error:
-                _log_cleanup_failure(key.organization_id, "voice_runtime", error)
+                _log_cleanup_failure(
+                    key.organization_id, WebRTCCleanupStep.VOICE_RUNTIME, error
+                )
 
     async def _expire_negotiation(
         self,
@@ -498,39 +488,28 @@ def _deployment_mode() -> IceDeploymentMode:
     )
 
 
-def _required_string(data: dict[str, Any], field: str) -> str:
-    value = data.get(field)
-    if not isinstance(value, str) or not value:
-        raise WebRTCSignalingError(f"missing_{field}")
-    return value
-
-
-def _require_protocol_version(data: dict[str, Any]) -> None:
-    if data.get("protocol_version") != WEBRTC_PROTOCOL_VERSION:
-        raise WebRTCSignalingError("unsupported_protocol_version")
-
-
 def _signal_envelope(
     kind: WsEventAction,
-    data: dict[str, Any],
+    data: WebRTCAnswer | WebRTCHangupNotice,
     *,
     request_id: str | None = None,
-) -> dict[str, Any]:
-    return {"kind": kind, "request_id": request_id, "data": data}
+) -> dict[str, object]:
+    return {
+        "kind": kind,
+        "request_id": request_id,
+        "data": data.model_dump(mode="json", by_alias=True),
+    }
 
 
 def _candidate_outcome(
     session: WebRTCSession,
     *,
     duplicate: bool,
-) -> dict[str, Any]:
-    return {
-        "protocol_version": WEBRTC_PROTOCOL_VERSION,
-        "command": "candidate",
-        "outcome": "accepted",
-        "negotiation_id": session.negotiation_id,
-        "duplicate": duplicate,
-    }
+) -> WebRTCCandidateAccepted:
+    return WebRTCCandidateAccepted(
+        negotiation_id=session.negotiation_id,
+        duplicate=duplicate,
+    )
 
 
 def _cancel_deadline(session: WebRTCSession) -> None:
@@ -542,7 +521,7 @@ def _cancel_deadline(session: WebRTCSession) -> None:
 
 def _log_cleanup_failure(
     organization_id: UUID,
-    step: str,
+    step: WebRTCCleanupStep,
     error: Exception,
 ) -> None:
     logger.warning(

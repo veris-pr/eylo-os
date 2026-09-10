@@ -1,164 +1,301 @@
-"""Provider-specific validation and resolved runtime values for email configs."""
+"""Typed email settings, private credentials and resolved provider authority."""
 
 from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, field
 from ipaddress import ip_address
+from typing import Annotated, Literal, Self
 from uuid import UUID
 
-from pydantic import EmailStr, TypeAdapter, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    JsonValue,
+    ModelWrapValidatorHandler,
+    TypeAdapter,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
-from eylo.modules.email_configs.catalog import EmailProviders
+from eylo.common.identifiers import normalize_uuid_like
+from eylo.modules.email_configs.catalog import EmailProviders, SMTPSecurity
+from eylo.modules.provider_configs.constants import Capability
 from eylo.modules.provider_configs.domain import (
     EffectiveProviderConfig,
     InvalidProviderConfig,
 )
 
-__all__ = ["InvalidEmailConfig", "ResolvedEmail", "EmailProviderConfig"]
+__all__ = [
+    "EmailProviderConfig",
+    "EmailSettings",
+    "InvalidEmailConfig",
+    "ResolvedEmail",
+    "SendGridMaterial",
+    "SMTPMaterial",
+    "SMTPSettings",
+]
 
 _EMAIL_ADAPTER = TypeAdapter(EmailStr)
 _HOST_PATTERN = re.compile(
     r"^(?=.{1,253}\.?$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*"
     r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.?$"
 )
-_COMMON_CONFIG_FIELDS = frozenset(
-    {"default_from_email", "default_from_name", "timeout"}
-)
-_CONFIG_FIELDS = {
-    EmailProviders.SENDGRID: _COMMON_CONFIG_FIELDS,
-    EmailProviders.SMTP: _COMMON_CONFIG_FIELDS
-    | {"smtp_host", "smtp_port", "smtp_username", "smtp_security"},
-}
-_REQUIRED_CONFIG_FIELDS = _CONFIG_FIELDS
-_SECRET_FIELDS = {
-    EmailProviders.SENDGRID: frozenset({"api_key"}),
-    EmailProviders.SMTP: frozenset({"smtp_password"}),
-}
+_MAX_FROM_NAME_LENGTH = 255
+_MAX_USERNAME_LENGTH = 320
+_MAX_HOST_LENGTH = 253
+_MAX_PORT = 65_535
+_MAX_TIMEOUT_SECONDS = 60
+_LOCAL_HOST_NAMES = frozenset({"localhost", "localhost.localdomain"})
 
 
 class InvalidEmailConfig(InvalidProviderConfig):
     """Raised when an email provider config violates policy."""
 
 
-@dataclass(frozen=True)
-class EmailProviderConfig:
-    """Validated email config with plaintext secrets held in memory only."""
+class _EmailValue(BaseModel):
+    model_config = ConfigDict(
+        frozen=True,
+        strict=True,
+        extra="forbid",
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+        allow_inf_nan=False,
+    )
 
-    provider: str
-    config: Mapping[str, object]
-    secrets: Mapping[str, str] = field(repr=False)
-
-    def __post_init__(self) -> None:
-        provider_value = str(self.provider).lower().strip()
+    @model_validator(mode="wrap")
+    @classmethod
+    def safe_validation(
+        cls, value: object, handler: ModelWrapValidatorHandler[Self]
+    ) -> Self:
         try:
-            provider = EmailProviders(provider_value)
+            return handler(value)
+        except ValidationError:
+            raise InvalidEmailConfig(
+                "Email configuration contains invalid fields or types."
+            ) from None
+
+
+class EmailSettings(_EmailValue):
+    """Sender identity and bounded timeout shared by current email providers."""
+
+    default_from_email: EmailStr
+    default_from_name: str
+    timeout: float = Field(gt=0, le=_MAX_TIMEOUT_SECONDS)
+
+    @field_validator("default_from_email", mode="before")
+    @classmethod
+    def validate_sender(cls, value: object) -> EmailStr:
+        if not isinstance(value, str):
+            raise InvalidEmailConfig("default_from_email must be a valid email.")
+        try:
+            return _EMAIL_ADAPTER.validate_python(value)
+        except ValidationError:
+            raise InvalidEmailConfig(
+                "default_from_email must be a valid email."
+            ) from None
+
+    @field_validator("default_from_name", mode="before")
+    @classmethod
+    def normalize_sender_name(cls, value: object) -> str:
+        return _validate_string(
+            value, "default_from_name", maximum=_MAX_FROM_NAME_LENGTH
+        )
+
+    @field_validator("timeout", mode="before")
+    @classmethod
+    def validate_timeout_type(cls, value: object) -> float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise InvalidEmailConfig("timeout must be a number.")
+        return float(value)
+
+
+class SMTPSettings(EmailSettings):
+    """Public endpoint selection; DNS/IP checks at connect time remain mandatory."""
+
+    smtp_host: str
+    smtp_port: int = Field(ge=1, le=_MAX_PORT)
+    smtp_username: str
+    smtp_security: SMTPSecurity
+
+    @field_validator("smtp_host", mode="before")
+    @classmethod
+    def normalize_host(cls, value: object) -> str:
+        return _validate_smtp_host(value)
+
+    @field_validator("smtp_username", mode="before")
+    @classmethod
+    def normalize_username(cls, value: object) -> str:
+        return _validate_string(value, "smtp_username", maximum=_MAX_USERNAME_LENGTH)
+
+    @field_validator("smtp_security", mode="before")
+    @classmethod
+    def validate_security(cls, value: object) -> SMTPSecurity:
+        if not isinstance(value, str):
+            raise InvalidEmailConfig("smtp_security must be implicit_tls or starttls.")
+        try:
+            return SMTPSecurity(value)
         except ValueError:
             raise InvalidEmailConfig(
-                f"Unknown email provider: {self.provider}"
+                "smtp_security must be implicit_tls or starttls."
             ) from None
-        object.__setattr__(self, "provider", provider)
-        object.__setattr__(self, "config", _validate_config(self.config, provider))
-        object.__setattr__(self, "secrets", _validate_secrets(self.secrets, provider))
+
+
+class _Credentials(_EmailValue):
+    @field_validator("*", mode="before")
+    @classmethod
+    def validate_credential(cls, value: object) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise InvalidEmailConfig("Email credentials must be non-empty strings.")
+        return value
+
+
+class SendGridCredentials(_Credentials):
+    api_key: str = Field(repr=False, exclude=True)
+
+    def secret_values(self) -> dict[str, str]:
+        return {"api_key": self.api_key}
+
+
+class SMTPCredentials(_Credentials):
+    smtp_password: str = Field(repr=False, exclude=True)
+
+    def secret_values(self) -> dict[str, str]:
+        return {"smtp_password": self.smtp_password}
+
+
+class SendGridMaterial(_EmailValue):
+    provider: Literal[EmailProviders.SENDGRID] = EmailProviders.SENDGRID
+    settings: EmailSettings
+    credentials: SendGridCredentials = Field(repr=False, exclude=True)
+
+
+class SMTPMaterial(_EmailValue):
+    provider: Literal[EmailProviders.SMTP] = EmailProviders.SMTP
+    settings: SMTPSettings
+    credentials: SMTPCredentials = Field(repr=False, exclude=True)
+
+
+EmailMaterial = Annotated[
+    SendGridMaterial | SMTPMaterial, Field(discriminator="provider")
+]
+
+
+class EmailProviderConfig(_EmailValue):
+    """Typed in-process material; export mappings only at persistence boundaries."""
+
+    material: EmailMaterial
+
+    @model_validator(mode="after")
+    def validate_material(self) -> Self:
+        if isinstance(self.material, SendGridMaterial):
+            valid = (
+                type(self.material.settings) is EmailSettings
+                and type(self.material.credentials) is SendGridCredentials
+            )
+        else:
+            valid = (
+                type(self.material.settings) is SMTPSettings
+                and type(self.material.credentials) is SMTPCredentials
+            )
+        if not valid:
+            raise InvalidEmailConfig("Email material does not match the provider.")
+        return self
+
+    @property
+    def provider(self) -> EmailProviders:
+        return self.material.provider
 
     @classmethod
-    def validate(
+    def from_payload(
         cls,
         *,
-        provider: str,
+        provider: EmailProviders | str,
         config: Mapping[str, object] | None = None,
         secrets: Mapping[str, str] | None = None,
-    ) -> EmailProviderConfig:
-        return cls(
-            provider=provider,
-            config={} if config is None else config,
-            secrets={} if secrets is None else secrets,
+    ) -> Self:
+        if not isinstance(provider, str):
+            raise InvalidEmailConfig("Unsupported email provider.")
+        try:
+            selected_provider = EmailProviders(provider.strip().lower())
+        except ValueError:
+            raise InvalidEmailConfig("Unsupported email provider.") from None
+        if config is not None and not isinstance(config, Mapping):
+            raise InvalidEmailConfig("Config must be a mapping.")
+        if secrets is not None and not isinstance(secrets, Mapping):
+            raise InvalidEmailConfig("Secrets must be a mapping.")
+        return cls.model_validate(
+            {
+                "material": {
+                    "provider": selected_provider,
+                    "settings": {} if config is None else dict(config),
+                    "credentials": {} if secrets is None else dict(secrets),
+                }
+            }
         )
 
-    def secret(self, name: str) -> str:
-        return self.secrets[name]
+    def settings_values(self) -> dict[str, JsonValue]:
+        return self.material.settings.model_dump(mode="json")
+
+    def secret_values(self) -> dict[str, str]:
+        """Export plaintext only for encrypted persistence or adapter invocation."""
+        return self.material.credentials.secret_values()
 
 
-def _validate_config(
-    config: Mapping[str, object],
-    provider: EmailProviders,
-) -> Mapping[str, object]:
-    if not isinstance(config, Mapping):
-        raise InvalidEmailConfig("Config must be a mapping.")
-    unknown = set(config) - _CONFIG_FIELDS[provider]
-    if unknown:
-        raise InvalidEmailConfig(
-            f"Unknown config fields for {provider.value}: {sorted(unknown)}"
-        )
-    missing = [
-        field_name
-        for field_name in _REQUIRED_CONFIG_FIELDS[provider]
-        if config.get(field_name) is None
-    ]
-    if missing:
-        raise InvalidEmailConfig(
-            f"Provider {provider.value} requires config fields: {missing}"
-        )
+class ResolvedEmail(EmailProviderConfig):
+    """Email material pinned to one organization's exact provider revision."""
 
-    normalized = dict(config)
-    normalized["default_from_email"] = _validate_email(
-        config["default_from_email"],
-        "default_from_email",
-    )
-    normalized["default_from_name"] = _validate_string(
-        config["default_from_name"],
-        "default_from_name",
-        maximum=255,
-    )
-    normalized["timeout"] = _validate_timeout(config["timeout"])
+    provider_config_id: UUID
+    provider_config_revision: int = Field(gt=0)
+    organization_id: UUID
+    configured: bool = True
+    verified: bool = False
+    ready: bool = False
+    granted: bool = False
 
-    if provider is EmailProviders.SMTP:
-        normalized["smtp_host"] = _validate_smtp_host(config["smtp_host"])
-        normalized["smtp_port"] = _validate_smtp_port(config["smtp_port"])
-        normalized["smtp_username"] = _validate_string(
-            config["smtp_username"],
-            "smtp_username",
-            maximum=320,
-        )
-        security = config["smtp_security"]
-        if security not in {"implicit_tls", "starttls"}:
+    @field_validator("provider_config_id", "organization_id", mode="before")
+    @classmethod
+    def normalize_identifier(cls, value: object) -> object:
+        return normalize_uuid_like(value)
+
+    @classmethod
+    def from_provider_config(
+        cls,
+        *,
+        provider_config_id: UUID,
+        organization_id: UUID,
+        provider_config: EffectiveProviderConfig,
+    ) -> ResolvedEmail:
+        effective = EffectiveProviderConfig.model_validate(provider_config)
+        if (
+            effective.capability is not Capability.EMAIL
+            or effective.organization_id != organization_id
+            or effective.provider_config_id != provider_config_id
+        ):
             raise InvalidEmailConfig(
-                "smtp_security must be implicit_tls or starttls."
+                "Resolved email configuration authority does not match."
             )
-    return normalized
-
-
-def _validate_secrets(
-    secrets: Mapping[str, str],
-    provider: EmailProviders,
-) -> Mapping[str, str]:
-    if not isinstance(secrets, Mapping):
-        raise InvalidEmailConfig("Secrets must be a mapping.")
-    expected = _SECRET_FIELDS[provider]
-    unknown = set(secrets) - expected
-    if unknown:
-        raise InvalidEmailConfig(
-            f"Unknown secret fields for {provider.value}: {sorted(unknown)}"
+        validated = EmailProviderConfig.from_payload(
+            provider=effective.provider,
+            config=effective.settings,
+            secrets=effective.secrets,
         )
-    missing = [
-        field_name
-        for field_name in expected
-        if not isinstance(secrets.get(field_name), str)
-        or not secrets[field_name].strip()
-    ]
-    if missing:
-        raise InvalidEmailConfig(
-            f"Provider {provider.value} requires non-empty secrets: {missing}"
+        return cls(
+            material=validated.material,
+            provider_config_id=provider_config_id,
+            provider_config_revision=effective.revision,
+            organization_id=organization_id,
+            configured=effective.configured,
+            verified=effective.verified,
+            ready=effective.ready,
+            granted=effective.granted,
         )
-    return dict(secrets)
 
-
-def _validate_email(value: object, field_name: str) -> str:
-    try:
-        return str(_EMAIL_ADAPTER.validate_python(value))
-    except ValidationError:
-        raise InvalidEmailConfig(f"{field_name} must be a valid email.") from None
+    def as_provider_config(self) -> EmailProviderConfig:
+        return EmailProviderConfig(material=self.material)
 
 
 def _validate_string(value: object, field_name: str, *, maximum: int) -> str:
@@ -169,26 +306,13 @@ def _validate_string(value: object, field_name: str, *, maximum: int) -> str:
     return value.strip()
 
 
-def _validate_timeout(value: object) -> float:
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or value <= 0
-        or value > 60
-    ):
-        raise InvalidEmailConfig("timeout must be a number greater than 0 and <= 60.")
-    return float(value)
-
-
-def _validate_smtp_port(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 65535:
-        raise InvalidEmailConfig("smtp_port must be an integer between 1 and 65535.")
-    return value
-
-
 def _validate_smtp_host(value: object) -> str:
-    host = _validate_string(value, "smtp_host", maximum=253).lower().rstrip(".")
-    if host in {"localhost", "localhost.localdomain"}:
+    host = (
+        _validate_string(value, "smtp_host", maximum=_MAX_HOST_LENGTH)
+        .lower()
+        .rstrip(".")
+    )
+    if host in _LOCAL_HOST_NAMES:
         raise InvalidEmailConfig("smtp_host must be a public host.")
     try:
         address = ip_address(host)
@@ -199,48 +323,3 @@ def _validate_smtp_host(value: object) -> str:
         if not address.is_global:
             raise InvalidEmailConfig("smtp_host must be a public host.")
     return host
-
-
-@dataclass(frozen=True)
-class ResolvedEmail:
-    """Immutable resolved email runtime value with plaintext credentials."""
-
-    provider_config_id: UUID
-    provider_config_revision: int
-    organization_id: UUID
-    provider: EmailProviders
-    config: Mapping[str, object]
-    secrets: Mapping[str, str] = field(repr=False, compare=False)
-    configured: bool = True
-    verified: bool = False
-    ready: bool = False
-    granted: bool = False
-
-    @classmethod
-    def from_provider_config(
-        cls,
-        *,
-        provider_config_id: UUID,
-        organization_id: UUID,
-        provider_config: EffectiveProviderConfig,
-    ) -> ResolvedEmail:
-        validated = EmailProviderConfig.validate(
-            provider=provider_config.provider,
-            config=provider_config.settings,
-            secrets=provider_config.secrets,
-        )
-        return cls(
-            provider_config_id=provider_config_id,
-            provider_config_revision=provider_config.revision,
-            organization_id=organization_id,
-            provider=validated.provider,
-            config=validated.config,
-            secrets=validated.secrets,
-            configured=provider_config.configured,
-            verified=provider_config.verified,
-            ready=provider_config.ready,
-            granted=provider_config.granted,
-        )
-
-    def secret(self, name: str) -> str:
-        return self.secrets[name]

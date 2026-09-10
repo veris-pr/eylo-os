@@ -17,6 +17,7 @@ from eylo.common.revisions import (
     DefinitionLifecycle,
     DefinitionRef,
     PublishedRevisionState,
+    RevisionAvailability,
 )
 from eylo.modules.templates.domain import (
     RENDERER_VERSION,
@@ -377,7 +378,7 @@ def _apply_header_state(
 def _revision_state(row: TemplateRevisionModel) -> PublishedRevisionState:
     return PublishedRevisionState(
         published_at=row.published_at,
-        availability=row.availability,
+        availability=RevisionAvailability(row.availability),
         revoked_at=row.revoked_at,
         revoked_by=row.revoked_by,
         revocation_reason=row.revocation_reason,

@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import tempfile
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import TypeVar
 from uuid import UUID
 
 from absurd_sdk import AsyncTaskContext
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 from sqlalchemy import select
 
 from eylo.common.contracts.storage import StorageLocator
@@ -35,10 +37,11 @@ from eylo.pipelines.outbound.durable_execution import (
 from eylo.pipelines.outbound.models import OutboundAttemptModel
 from eylo.pipelines.outbound.service import OutboundAttemptService
 from eylo.pipelines.storage.runtime import StorageRuntime
+from eylo.pipelines.voice.recording_contracts import RecordingTrack
 from eylo.pipelines.voice.recording_storage import upload_recording_path
 from eylo.sockets.storage.base import StorageOperationError, StorageRecovery
 
-_TRACKS = frozenset({"user", "agent"})
+_StepResult = TypeVar("_StepResult")
 _OBJECT_CONFLICT = "storage_object_conflict"
 _OBJECT_MISSING = "storage_object_missing"
 _DIGEST_UNAVAILABLE = "storage_digest_unavailable"
@@ -46,26 +49,24 @@ _INSPECTION_UNAVAILABLE = "storage_inspection_unavailable"
 _RECONCILIATION_UNSUPPORTED = "storage_reconciliation_unsupported"
 
 
-@dataclass(frozen=True, slots=True)
-class RecordingTrackUploadResult:
+class RecordingTrackUploadResult(BaseModel):
     """Canonical outbound receipt plus its deterministic object locator."""
 
-    track: str
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    track: RecordingTrack = Field(strict=True)
     locator: StorageLocator
     receipt: OutboundExecutionReceipt
 
-    def __post_init__(self) -> None:
-        if self.track not in _TRACKS:
-            raise ValueError("Recording upload track is invalid.")
 
-
-@dataclass(frozen=True, slots=True)
-class RecordingUploadCancellation:
+class RecordingUploadCancellation(BaseModel):
     """What cancellation can honestly claim about already-started PUTs."""
 
-    attempt_count: int
-    may_have_external_effect: bool
-    all_required_succeeded: bool
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    attempt_count: StrictInt = Field(ge=0)
+    may_have_external_effect: StrictBool
+    all_required_succeeded: StrictBool
 
 
 class RecordingAbsurdStepContext(CommandStepContext):
@@ -74,7 +75,13 @@ class RecordingAbsurdStepContext(CommandStepContext):
     def __init__(self, context: AsyncTaskContext) -> None:
         self._context = context
 
-    async def step(self, *, key: str, version: int, operation):
+    async def step(
+        self,
+        *,
+        key: str,
+        version: int,
+        operation: Callable[[], Awaitable[_StepResult]],
+    ) -> _StepResult:
         return await self._context.step(
             f"{key}:v{version}",
             lambda: run_with_durable_heartbeat(self._context, operation),
@@ -85,14 +92,14 @@ async def execute_recording_track_upload(
     *,
     organization_id: UUID,
     recording_id: UUID,
-    track: str,
+    track: RecordingTrack,
     content: bytes,
     key: str,
     storage: StorageRuntime,
     context: CommandStepContext,
 ) -> RecordingTrackUploadResult:
     """Execute or recover one stable-key PUT without blind replay."""
-    if track not in _TRACKS:
+    if not isinstance(track, RecordingTrack):
         raise ValueError("Recording upload track is invalid.")
     digest = hashlib.sha256(content).hexdigest()
     spec = _upload_spec(
@@ -204,7 +211,7 @@ def _upload_spec(
     *,
     organization_id: UUID,
     recording_id: UUID,
-    track: str,
+    track: RecordingTrack,
     key: str,
     size: int,
     content_sha256: str,

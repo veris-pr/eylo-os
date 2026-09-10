@@ -4,15 +4,27 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, field
 from enum import Enum
 from ipaddress import ip_address
 from types import MappingProxyType
+from typing import Annotated, Literal, Self
 from urllib.parse import urlparse
 from uuid import UUID
 
 from cryptography.hazmat.primitives import serialization
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ModelWrapValidatorHandler,
+    ValidationError,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
+from eylo.common.contracts.provider_config import Capability
+from eylo.common.identifiers import normalize_uuid_like
 from eylo.modules.provider_configs.domain import (
     EffectiveProviderConfig,
     InvalidProviderConfig,
@@ -92,82 +104,232 @@ class InvalidTelephonyConfig(InvalidProviderConfig):
     """Raised when a telephony provider config violates its contract."""
 
 
-_CONFIG_FIELDS = {
-    TelephonyProvider.TWILIO: frozenset({"webhook_base_url"}),
-    TelephonyProvider.PLIVO: frozenset({"webhook_base_url"}),
-    TelephonyProvider.VONAGE: frozenset({"webhook_base_url", "application_id"}),
-    TelephonyProvider.EXOTEL: frozenset(
-        {"webhook_base_url", "application_id", "api_host"}
-    ),
-}
-_SECRET_FIELDS = {
-    TelephonyProvider.TWILIO: frozenset({"account_sid", "auth_token"}),
-    TelephonyProvider.PLIVO: frozenset({"auth_id", "auth_token"}),
-    TelephonyProvider.VONAGE: frozenset(
-        {"api_key", "api_secret", "private_key", "signature_secret"}
-    ),
-    TelephonyProvider.EXOTEL: frozenset({"api_key", "api_token", "account_sid"}),
-}
 _HOST_PATTERN = re.compile(
     r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
     r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])$"
 )
 
 
-@dataclass(frozen=True)
-class TelephonyProviderConfig:
-    """Validated provider settings with plaintext secrets held in memory only."""
+MAX_APPLICATION_ID_LENGTH = 255
+MAX_CREDENTIAL_LENGTH = 16_384
+MAX_WEBHOOK_URL_LENGTH = 2_048
+MAX_API_HOST_LENGTH = 253
+EXOTEL_API_HOST = "api.exotel.com"
+EXOTEL_HOST_SUFFIX = ".exotel.com"
 
-    provider: TelephonyProvider
-    config: Mapping[str, object]
-    secrets: Mapping[str, str] = field(repr=False)
 
-    def __post_init__(self) -> None:
-        provider = _provider(self.provider)
-        object.__setattr__(self, "provider", provider)
-        object.__setattr__(
-            self,
-            "config",
-            MappingProxyType(_validate_config(self.config, provider)),
+class _TelephonyValue(BaseModel):
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _safe_validation(
+        cls, value: object, handler: ModelWrapValidatorHandler[Self]
+    ) -> Self:
+        try:
+            return handler(value)
+        except ValidationError:
+            raise InvalidTelephonyConfig(
+                "Telephony configuration contains invalid fields or types."
+            ) from None
+
+
+class WebhookSettings(_TelephonyValue):
+    webhook_base_url: str
+
+    @field_validator("webhook_base_url", mode="before")
+    @classmethod
+    def _webhook(cls, value: object) -> str:
+        return _validate_https_url(value, "webhook_base_url")
+
+
+class ApplicationSettings(WebhookSettings):
+    application_id: str
+
+    @field_validator("application_id", mode="before")
+    @classmethod
+    def _application(cls, value: object) -> str:
+        return _validate_string(
+            value, "application_id", maximum=MAX_APPLICATION_ID_LENGTH
         )
-        object.__setattr__(
-            self,
-            "secrets",
-            MappingProxyType(_validate_secrets(self.secrets, provider)),
+
+
+class ExotelAccountSettings(ApplicationSettings):
+    api_host: str
+
+    @field_validator("api_host", mode="before")
+    @classmethod
+    def _host(cls, value: object) -> str:
+        return _validate_exotel_host(value)
+
+
+class _Credentials(_TelephonyValue):
+    @field_validator("*", mode="before")
+    @classmethod
+    def _credential(cls, value: object, info: ValidationInfo) -> str:
+        return _validate_string(
+            value, info.field_name or "credential", maximum=MAX_CREDENTIAL_LENGTH
         )
+
+
+class TwilioCredentials(_Credentials):
+    account_sid: str = Field(repr=False, exclude=True)
+    auth_token: str = Field(repr=False, exclude=True)
+
+    def secret_values(self) -> dict[str, str]:
+        return {"account_sid": self.account_sid, "auth_token": self.auth_token}
+
+
+class PlivoCredentials(_Credentials):
+    auth_id: str = Field(repr=False, exclude=True)
+    auth_token: str = Field(repr=False, exclude=True)
+
+    def secret_values(self) -> dict[str, str]:
+        return {"auth_id": self.auth_id, "auth_token": self.auth_token}
+
+
+class VonageCredentials(_Credentials):
+    api_key: str = Field(repr=False, exclude=True)
+    api_secret: str = Field(repr=False, exclude=True)
+    private_key: str = Field(repr=False, exclude=True)
+    signature_secret: str = Field(repr=False, exclude=True)
+
+    @field_validator("private_key")
+    @classmethod
+    def _private_key(cls, value: str) -> str:
+        _validate_private_key(value)
+        return value
+
+    def secret_values(self) -> dict[str, str]:
+        return {
+            "api_key": self.api_key,
+            "api_secret": self.api_secret,
+            "private_key": self.private_key,
+            "signature_secret": self.signature_secret,
+        }
+
+
+class ExotelCredentials(_Credentials):
+    api_key: str = Field(repr=False, exclude=True)
+    api_token: str = Field(repr=False, exclude=True)
+    account_sid: str = Field(repr=False, exclude=True)
+
+    def secret_values(self) -> dict[str, str]:
+        return {
+            "api_key": self.api_key,
+            "api_token": self.api_token,
+            "account_sid": self.account_sid,
+        }
+
+
+class TwilioMaterial(_TelephonyValue):
+    provider: Literal[TelephonyProvider.TWILIO] = TelephonyProvider.TWILIO
+    settings: WebhookSettings
+    credentials: TwilioCredentials = Field(repr=False, exclude=True)
+
+
+class PlivoMaterial(_TelephonyValue):
+    provider: Literal[TelephonyProvider.PLIVO] = TelephonyProvider.PLIVO
+    settings: WebhookSettings
+    credentials: PlivoCredentials = Field(repr=False, exclude=True)
+
+
+class VonageMaterial(_TelephonyValue):
+    provider: Literal[TelephonyProvider.VONAGE] = TelephonyProvider.VONAGE
+    settings: ApplicationSettings
+    credentials: VonageCredentials = Field(repr=False, exclude=True)
+
+
+class ExotelMaterial(_TelephonyValue):
+    provider: Literal[TelephonyProvider.EXOTEL] = TelephonyProvider.EXOTEL
+    settings: ExotelAccountSettings
+    credentials: ExotelCredentials = Field(repr=False, exclude=True)
+
+
+type TelephonyMaterial = Annotated[
+    TwilioMaterial | PlivoMaterial | VonageMaterial | ExotelMaterial,
+    Field(discriminator="provider"),
+]
+
+_MATERIAL_TYPES = {
+    TelephonyProvider.TWILIO: (WebhookSettings, TwilioCredentials),
+    TelephonyProvider.PLIVO: (WebhookSettings, PlivoCredentials),
+    TelephonyProvider.VONAGE: (ApplicationSettings, VonageCredentials),
+    TelephonyProvider.EXOTEL: (ExotelAccountSettings, ExotelCredentials),
+}
+
+
+class TelephonyProviderConfig(_TelephonyValue):
+    """Validated carrier material; mapping exports are explicit persistence boundaries."""
+
+    material: TelephonyMaterial
+
+    @model_validator(mode="after")
+    def _matching_material(self) -> Self:
+        """Reject foreign subclasses as well as malformed dictionary inputs."""
+        expected_settings, expected_credentials = _MATERIAL_TYPES[
+            self.material.provider
+        ]
+        if (
+            type(self.material.settings) is not expected_settings
+            or type(self.material.credentials) is not expected_credentials
+        ):
+            raise InvalidTelephonyConfig(
+                "Telephony material does not match the provider."
+            )
+        return self
+
+    @property
+    def provider(self) -> TelephonyProvider:
+        return self.material.provider
 
     @classmethod
-    def validate(
+    def from_payload(
         cls,
         *,
         provider: TelephonyProvider | str,
         config: Mapping[str, object] | None = None,
         secrets: Mapping[str, str] | None = None,
-    ) -> TelephonyProviderConfig:
-        return cls(
-            provider=_provider(provider),
-            config={} if config is None else config,
-            secrets={} if secrets is None else secrets,
+    ) -> Self:
+        if config is not None and not isinstance(config, Mapping):
+            raise InvalidTelephonyConfig("Config must be a mapping.")
+        if secrets is not None and not isinstance(secrets, Mapping):
+            raise InvalidTelephonyConfig("Secrets must be a mapping.")
+        return cls.model_validate(
+            {
+                "material": {
+                    "provider": _provider(provider),
+                    "settings": {} if config is None else dict(config),
+                    "credentials": {} if secrets is None else dict(secrets),
+                },
+            }
         )
 
-    def secret(self, name: str) -> str:
-        return self.secrets[name]
+    def settings_values(self) -> dict[str, object]:
+        return self.material.settings.model_dump(mode="json")
+
+    def secret_values(self) -> dict[str, str]:
+        """Export plaintext only for encrypted persistence or a resolved adapter invocation."""
+        return self.material.credentials.secret_values()
 
 
-@dataclass(frozen=True)
-class ResolvedTelephony:
+class ResolvedTelephony(TelephonyProviderConfig):
     """Immutable, explicit carrier-account authority for runtime work."""
 
     provider_config_id: UUID
-    provider_config_revision: int
+    provider_config_revision: int = Field(gt=0)
     organization_id: UUID
-    provider: TelephonyProvider
-    config: Mapping[str, object]
-    secrets: Mapping[str, str] = field(repr=False, compare=False)
     configured: bool = True
     verified: bool = False
     ready: bool = False
     granted: bool = False
+
+    @field_validator("provider_config_id", "organization_id", mode="before")
+    @classmethod
+    def _identifier(cls, value: object) -> object:
+        return normalize_uuid_like(value)
 
     @classmethod
     def from_provider_config(
@@ -176,101 +338,41 @@ class ResolvedTelephony:
         organization_id: UUID,
         provider_config: EffectiveProviderConfig,
     ) -> ResolvedTelephony:
-        validated = TelephonyProviderConfig.validate(
-            provider=provider_config.provider,
-            config=provider_config.settings,
-            secrets=provider_config.secrets,
+        effective = EffectiveProviderConfig.model_validate(provider_config)
+        if (
+            effective.capability is not Capability.TELEPHONY
+            or effective.organization_id != organization_id
+        ):
+            raise InvalidTelephonyConfig(
+                "Resolved telephony configuration authority does not match."
+            )
+        validated = TelephonyProviderConfig.from_payload(
+            provider=effective.provider,
+            config=effective.settings,
+            secrets=effective.secrets,
         )
         return cls(
-            provider_config_id=provider_config.provider_config_id,
-            provider_config_revision=provider_config.revision,
+            material=validated.material,
+            provider_config_id=effective.provider_config_id,
+            provider_config_revision=effective.revision,
             organization_id=organization_id,
-            provider=validated.provider,
-            config=validated.config,
-            secrets=validated.secrets,
-            configured=provider_config.configured,
-            verified=provider_config.verified,
-            ready=provider_config.ready,
-            granted=provider_config.granted,
+            configured=effective.configured,
+            verified=effective.verified,
+            ready=effective.ready,
+            granted=effective.granted,
         )
 
     def as_provider_config(self) -> TelephonyProviderConfig:
-        return TelephonyProviderConfig.validate(
-            provider=self.provider,
-            config=self.config,
-            secrets=self.secrets,
-        )
+        return TelephonyProviderConfig(material=self.material)
 
 
 def _provider(value: TelephonyProvider | str) -> TelephonyProvider:
-    if isinstance(value, TelephonyProvider):
-        return value
+    if not isinstance(value, str):
+        raise InvalidTelephonyConfig("Telephony provider must be a string identifier.")
     try:
-        return TelephonyProvider(str(value).strip().lower())
+        return TelephonyProvider(value.strip().lower())
     except ValueError:
-        raise InvalidTelephonyConfig(
-            f"Unsupported telephony provider: {value}"
-        ) from None
-
-
-def _validate_config(
-    config: Mapping[str, object],
-    provider: TelephonyProvider,
-) -> dict[str, object]:
-    if not isinstance(config, Mapping):
-        raise InvalidTelephonyConfig("Config must be a mapping.")
-    expected = _CONFIG_FIELDS[provider]
-    _require_exact_fields(config, expected, provider, "config")
-
-    normalized = dict(config)
-    normalized["webhook_base_url"] = _validate_https_url(
-        config["webhook_base_url"],
-        "webhook_base_url",
-    )
-    if provider in {TelephonyProvider.VONAGE, TelephonyProvider.EXOTEL}:
-        normalized["application_id"] = _validate_string(
-            config["application_id"],
-            "application_id",
-            maximum=255,
-        )
-    if provider is TelephonyProvider.EXOTEL:
-        normalized["api_host"] = _validate_exotel_host(config["api_host"])
-    return normalized
-
-
-def _validate_secrets(
-    secrets: Mapping[str, str],
-    provider: TelephonyProvider,
-) -> dict[str, str]:
-    if not isinstance(secrets, Mapping):
-        raise InvalidTelephonyConfig("Secrets must be a mapping.")
-    expected = _SECRET_FIELDS[provider]
-    _require_exact_fields(secrets, expected, provider, "secrets")
-    normalized = {
-        name: _validate_string(value, name, maximum=16_384)
-        for name, value in secrets.items()
-    }
-    if provider is TelephonyProvider.VONAGE:
-        _validate_private_key(normalized["private_key"])
-    return normalized
-
-
-def _require_exact_fields(
-    values: Mapping[str, object],
-    expected: frozenset[str],
-    provider: TelephonyProvider,
-    kind: str,
-) -> None:
-    unknown = sorted(set(values) - expected)
-    missing = sorted(expected - set(values))
-    if unknown:
-        raise InvalidTelephonyConfig(
-            f"Unknown {kind} fields for {provider.value}: {unknown}"
-        )
-    if missing:
-        raise InvalidTelephonyConfig(
-            f"Provider {provider.value} requires {kind} fields: {missing}"
-        )
+        raise InvalidTelephonyConfig("Unsupported telephony provider.") from None
 
 
 def _validate_string(value: object, field_name: str, *, maximum: int) -> str:
@@ -282,7 +384,9 @@ def _validate_string(value: object, field_name: str, *, maximum: int) -> str:
 
 
 def _validate_https_url(value: object, field_name: str) -> str:
-    text = _validate_string(value, field_name, maximum=2_048).rstrip("/")
+    text = _validate_string(value, field_name, maximum=MAX_WEBHOOK_URL_LENGTH).rstrip(
+        "/"
+    )
     parsed = urlparse(text)
     if (
         parsed.scheme != "https"
@@ -300,9 +404,13 @@ def _validate_https_url(value: object, field_name: str) -> str:
 
 
 def _validate_exotel_host(value: object) -> str:
-    host = _validate_string(value, "api_host", maximum=253).lower().rstrip(".")
+    host = (
+        _validate_string(value, "api_host", maximum=MAX_API_HOST_LENGTH)
+        .lower()
+        .rstrip(".")
+    )
     _require_public_host(host, "api_host")
-    if host != "api.exotel.com" and not host.endswith(".exotel.com"):
+    if host != EXOTEL_API_HOST and not host.endswith(EXOTEL_HOST_SUFFIX):
         raise InvalidTelephonyConfig("api_host must be an Exotel API host.")
     return host
 

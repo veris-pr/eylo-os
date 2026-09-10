@@ -19,6 +19,7 @@ from eylo.common.revisions import (
     DefinitionHeaderState,
     DefinitionLifecycle,
     PublishedRevisionState,
+    RevisionAvailability,
 )
 from eylo.modules.mcp_servers.config import (
     ResolvedMCPServerConfig,
@@ -440,7 +441,7 @@ class MCPServerService:
             raise MCPServerNotFoundError("MCP server revision not found.")
         PublishedRevisionState(
             published_at=row.published_at,
-            availability=row.availability,
+            availability=RevisionAvailability(row.availability),
             revoked_at=row.revoked_at,
             revoked_by=row.revoked_by,
             revocation_reason=row.revocation_reason,
@@ -768,7 +769,7 @@ def _same_definition(row: ToolModel, definition: MCPToolDefinition) -> bool:
 
 def _header_state(server: MCPServerModel) -> DefinitionHeaderState:
     return DefinitionHeaderState(
-        lifecycle=server.lifecycle,
+        lifecycle=DefinitionLifecycle(server.lifecycle),
         published_revision=server.published_revision,
         draft_version=server.draft_version,
         draft_dirty=server.draft_dirty,
@@ -778,7 +779,7 @@ def _header_state(server: MCPServerModel) -> DefinitionHeaderState:
 def _revision_state(row: MCPServerRevisionModel) -> PublishedRevisionState:
     return PublishedRevisionState(
         published_at=row.published_at,
-        availability=row.availability,
+        availability=RevisionAvailability(row.availability),
         revoked_at=row.revoked_at,
         revoked_by=row.revoked_by,
         revocation_reason=row.revocation_reason,

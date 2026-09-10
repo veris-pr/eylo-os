@@ -7,12 +7,13 @@ import base64
 import logging
 import socket
 import ssl
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from email.message import EmailMessage as MIMEMessage
 from email.utils import formataddr
+from enum import Enum, StrEnum
 from ipaddress import ip_address
-from typing import Any
+from typing import Literal
 from uuid import UUID
 
 import aiosmtplib
@@ -25,9 +26,12 @@ from aiosmtplib.errors import (
     SMTPResponseException,
     SMTPTimeoutError,
 )
+from pydantic import JsonValue
 
 from eylo.common.http_egress import MAX_REQUEST_BODY_BYTES
 from eylo.common.outbound import (
+    OUTBOUND_STATUS_CODE_MAX,
+    OUTBOUND_STATUS_CODE_MIN,
     OutboundSendAuthorization,
     OutboundSendOutcome,
     OutboundSendRetryable,
@@ -37,6 +41,7 @@ from eylo.common.outbound import (
     OutboundTransportKind,
 )
 from eylo.sockets.email.base import (
+    EmailCapabilitySupport,
     EmailDeliveryCapabilities,
     EmailVendorAdapter,
     PlannedEmailDelivery,
@@ -56,18 +61,48 @@ from eylo.sockets.email.schemas import (
 
 logger = logging.getLogger(__name__)
 _DELIVERY_CAPABILITIES = EmailDeliveryCapabilities(
-    idempotent_send=False,
-    reconciliation=False,
+    idempotent_send=EmailCapabilitySupport.UNSUPPORTED,
+    reconciliation=EmailCapabilitySupport.UNSUPPORTED,
 )
+_SMTP_TEMPORARY_RESPONSE_MIN = 400
+_SMTP_TEMPORARY_RESPONSE_MAX = 499
+_SMTP_SEND_OPERATION = "email.send.smtp"
+
+
+class SMTPFailureCode(StrEnum):
+    """Adapter-owned safe categories; never expose native reply text."""
+
+    TEMPORARY_REJECTION = "smtp_temporary_rejection"
+    PERMANENT_REJECTION = "smtp_permanent_rejection"
+    PARTIAL_ACCEPTANCE = "smtp_partial_acceptance"
+    OPERATION_UNSUPPORTED = "smtp_operation_unsupported"
+    DELIVERY_UNCONFIRMED = "smtp_delivery_unconfirmed"
+    AUTHENTICATION_REJECTED = "smtp_authentication_rejected"
+    CONFIGURATION_REJECTED = "smtp_configuration_rejected"
+    CONNECTION_UNAVAILABLE = "smtp_connection_unavailable"
+    PREFLIGHT_FAILED = "smtp_preflight_failed"
+    DNS_UNAVAILABLE = "smtp_dns_unavailable"
+    DESTINATION_REJECTED = "smtp_destination_rejected"
+
+
+class SMTPDeliveryPhase(Enum):
+    PREFLIGHT = "preflight"
+    SENDING = "sending"
 
 
 class _SMTPPrewireError(Exception):
     """Safe category for a failure known to precede MAIL/RCPT/DATA."""
 
-    def __init__(self, code: str, *, retryable: bool) -> None:
+    def __init__(
+        self,
+        code: Literal[
+            SMTPFailureCode.DNS_UNAVAILABLE,
+            SMTPFailureCode.DESTINATION_REJECTED,
+            SMTPFailureCode.CONNECTION_UNAVAILABLE,
+        ],
+    ) -> None:
         self.code = code
-        self.retryable = retryable
-        super().__init__(code)
+        super().__init__(code.value)
 
 
 class SMTPAdapter(EmailVendorAdapter):
@@ -91,7 +126,7 @@ class SMTPAdapter(EmailVendorAdapter):
         ]
         return PlannedEmailDelivery(
             attempt_id=attempt_id,
-            provider_operation="email.send.smtp",
+            provider_operation=_SMTP_SEND_OPERATION,
             transport_kind=OutboundTransportKind.PROVIDER_SDK,
             destination_origin=(
                 f"smtp+{self.config.smtp_security}://"
@@ -116,11 +151,11 @@ class SMTPAdapter(EmailVendorAdapter):
     ) -> OutboundSendOutcome:
         del authorization
         outcome: OutboundSendOutcome | None = None
-        delivery_started = False
+        phase = SMTPDeliveryPhase.PREFLIGHT
         try:
             async with asyncio.timeout(self.config.timeout):
                 async with _authenticated_client(self.config) as client:
-                    delivery_started = True
+                    phase = SMTPDeliveryPhase.SENDING
                     outcome = await _send_connected(
                         client,
                         mime_message,
@@ -131,8 +166,10 @@ class SMTPAdapter(EmailVendorAdapter):
             if outcome is not None:
                 return outcome
             _log_failure("send", error)
-            if delivery_started:
-                return OutboundSendUnknown("smtp_delivery_unconfirmed")
+            if phase is SMTPDeliveryPhase.SENDING:
+                return OutboundSendUnknown(
+                    failure_code=SMTPFailureCode.DELIVERY_UNCONFIRMED
+                )
             return _prewire_outcome(error)
         assert outcome is not None
         return outcome
@@ -148,18 +185,22 @@ class SMTPAdapter(EmailVendorAdapter):
 
     def transform_to_platform_response(
         self,
-        vendor_response: Any,
+        vendor_response: object,
         original_message: EmailMessage,
     ) -> EmailResponse:
+        if not isinstance(vendor_response, str):
+            raise EmailVendorError("SMTP response must be a message reference.")
         return EmailResponse(
-            message_id=str(vendor_response),
+            message_id=vendor_response,
             status=EmailStatus.SENT,
             vendor="smtp",
             to=original_message.to,
             subject=original_message.subject,
         )
 
-    async def process_webhook(self, payload: dict[str, Any]) -> EmailWebhookEvent:
+    async def process_webhook(
+        self, payload: Mapping[str, JsonValue]
+    ) -> EmailWebhookEvent:
         raise EmailVendorError("SMTP adapter does not support webhooks.")
 
 
@@ -216,52 +257,69 @@ async def _send_connected(
     envelope_sender: str,
 ) -> OutboundSendOutcome:
     try:
-        await client.send_message(
+        refused, _ = await client.send_message(
             mime_message,
             sender=envelope_sender,
             recipients=recipients,
         )
+        if refused:
+            # The SDK returns normally when at least one recipient accepted DATA.
+            # Replaying the whole envelope would duplicate the accepted recipients.
+            return OutboundSendUnknown(failure_code=SMTPFailureCode.PARTIAL_ACCEPTANCE)
     except SMTPRecipientsRefused as error:
         codes = [recipient.code for recipient in error.recipients]
-        if codes and all(400 <= code <= 499 for code in codes):
-            return OutboundSendRetryable("smtp_temporary_rejection")
-        return OutboundSendTerminal("smtp_permanent_rejection")
+        if codes and all(_is_temporary_response(code) for code in codes):
+            return OutboundSendRetryable(
+                failure_code=SMTPFailureCode.TEMPORARY_REJECTION
+            )
+        return OutboundSendTerminal(failure_code=SMTPFailureCode.PERMANENT_REJECTION)
     except SMTPResponseException as error:
         return _smtp_response_outcome(error.code)
     except SMTPNotSupported:
-        return OutboundSendTerminal("smtp_operation_unsupported")
+        return OutboundSendTerminal(failure_code=SMTPFailureCode.OPERATION_UNSUPPORTED)
     except Exception:
-        return OutboundSendUnknown("smtp_delivery_unconfirmed")
+        return OutboundSendUnknown(failure_code=SMTPFailureCode.DELIVERY_UNCONFIRMED)
     return OutboundSendSucceeded(provider_reference=str(mime_message["Message-ID"]))
 
 
 def _prewire_outcome(error: Exception) -> OutboundSendOutcome:
     if isinstance(error, _SMTPPrewireError):
-        outcome = OutboundSendRetryable if error.retryable else OutboundSendTerminal
-        return outcome(error.code)
+        if error.code is SMTPFailureCode.DESTINATION_REJECTED:
+            return OutboundSendTerminal(failure_code=error.code)
+        return OutboundSendRetryable(failure_code=error.code)
     if isinstance(error, SMTPAuthenticationError):
-        return OutboundSendTerminal("smtp_authentication_rejected")
+        return OutboundSendTerminal(
+            failure_code=SMTPFailureCode.AUTHENTICATION_REJECTED
+        )
     if isinstance(error, SMTPConnectResponseError):
         return _smtp_response_outcome(error.code)
     if isinstance(error, (SMTPNotSupported, ssl.SSLError, ValueError)):
-        return OutboundSendTerminal("smtp_configuration_rejected")
+        return OutboundSendTerminal(failure_code=SMTPFailureCode.CONFIGURATION_REJECTED)
     if isinstance(
         error,
         (SMTPConnectError, SMTPTimeoutError, TimeoutError, ConnectionError, OSError),
     ):
-        return OutboundSendRetryable("smtp_connection_unavailable")
-    return OutboundSendRetryable("smtp_preflight_failed")
+        return OutboundSendRetryable(
+            failure_code=SMTPFailureCode.CONNECTION_UNAVAILABLE
+        )
+    return OutboundSendRetryable(failure_code=SMTPFailureCode.PREFLIGHT_FAILED)
+
+
+def _is_temporary_response(code: int) -> bool:
+    return _SMTP_TEMPORARY_RESPONSE_MIN <= code <= _SMTP_TEMPORARY_RESPONSE_MAX
 
 
 def _smtp_response_outcome(code: int) -> OutboundSendOutcome:
-    if 400 <= code <= 499:
+    if _is_temporary_response(code):
         return OutboundSendRetryable(
-            "smtp_temporary_rejection",
+            failure_code=SMTPFailureCode.TEMPORARY_REJECTION,
             status_code=code,
         )
     return OutboundSendTerminal(
-        "smtp_permanent_rejection",
-        status_code=code if 100 <= code <= 599 else None,
+        failure_code=SMTPFailureCode.PERMANENT_REJECTION,
+        status_code=code
+        if OUTBOUND_STATUS_CODE_MIN <= code <= OUTBOUND_STATUS_CODE_MAX
+        else None,
     )
 
 
@@ -276,15 +334,16 @@ async def _authenticated_client(config: SMTPConfig) -> AsyncIterator[aiosmtplib.
         config.smtp_port,
     )
     implicit_tls = config.smtp_security == "implicit_tls"
-    client = aiosmtplib.SMTP(
-        hostname=config.smtp_host,
-        sock=connected_socket,
-        timeout=config.timeout,
-        use_tls=implicit_tls,
-        start_tls=not implicit_tls,
-        validate_certs=True,
-    )
+    client: aiosmtplib.SMTP | None = None
     try:
+        client = aiosmtplib.SMTP(
+            hostname=config.smtp_host,
+            sock=connected_socket,
+            timeout=config.timeout,
+            use_tls=implicit_tls,
+            start_tls=not implicit_tls,
+            validate_certs=True,
+        )
         async with client:
             await client.login(
                 config.smtp_username,
@@ -292,7 +351,11 @@ async def _authenticated_client(config: SMTPConfig) -> AsyncIterator[aiosmtplib.
             )
             yield client
     finally:
-        connected_socket.close()
+        try:
+            if client is not None:
+                client.close()
+        finally:
+            connected_socket.close()
 
 
 async def _connect_public_socket(host: str, port: int) -> socket.socket:
@@ -304,30 +367,24 @@ async def _connect_public_socket(host: str, port: int) -> socket.socket:
             type=socket.SOCK_STREAM,
         )
     except OSError:
-        raise _SMTPPrewireError(
-            "smtp_dns_unavailable",
-            retryable=True,
-        ) from None
+        raise _SMTPPrewireError(SMTPFailureCode.DNS_UNAVAILABLE) from None
     resolved = {ip_address(address[4][0]) for address in addresses}
     if not resolved or any(not address.is_global for address in resolved):
-        raise _SMTPPrewireError(
-            "smtp_destination_rejected",
-            retryable=False,
-        )
+        raise _SMTPPrewireError(SMTPFailureCode.DESTINATION_REJECTED)
 
     for family, socket_type, protocol, _, socket_address in addresses:
         connected_socket = socket.socket(family, socket_type, protocol)
-        connected_socket.setblocking(False)
         try:
+            connected_socket.setblocking(False)
             await loop.sock_connect(connected_socket, socket_address)
         except OSError:
             connected_socket.close()
             continue
+        except BaseException:
+            connected_socket.close()
+            raise
         return connected_socket
-    raise _SMTPPrewireError(
-        "smtp_connection_unavailable",
-        retryable=True,
-    )
+    raise _SMTPPrewireError(SMTPFailureCode.CONNECTION_UNAVAILABLE)
 
 
 def _priority_header(priority: EmailPriority) -> str | None:

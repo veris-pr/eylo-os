@@ -6,10 +6,10 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
-from eylo.common.schemas import EyloBaseOrganizationModelSchema
+from eylo.common.schemas import EyloOrganizationModelSchema
 
 
-class CampaignModelSchema(EyloBaseOrganizationModelSchema):
+class CampaignModelSchema(EyloOrganizationModelSchema):
     name: str
     description: Optional[str] = None
     status: str = "draft"
@@ -65,7 +65,7 @@ class CampaignUpdateSchema(BaseModel):
     concurrency_limit: Optional[int] = None
 
 
-class CampaignContactModelSchema(EyloBaseOrganizationModelSchema):
+class CampaignContactModelSchema(EyloOrganizationModelSchema):
     campaign_id: UUID
     campaign_revision: Optional[int] = None
     contact_id: Optional[UUID] = None

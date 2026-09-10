@@ -239,6 +239,3 @@ def _from_context(key: str, ctx: ConversationContext):
         conversation = getattr(ctx, "conversation", None)
         return str(conversation.id) if conversation else None
     return None
-
-
-_from_context.__eylo_hidden__ = True  # type: ignore[attr-defined]

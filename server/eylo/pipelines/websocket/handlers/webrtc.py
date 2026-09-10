@@ -1,6 +1,7 @@
 """Authenticated WebRTC signaling commands."""
 
-from typing import Any, Optional
+from typing import Optional
+from uuid import UUID
 
 from fastapi import status
 
@@ -8,8 +9,16 @@ from eylo.common.contracts.voice import BrowserVoiceTerminationReason
 from eylo.modules.provider_configs.errors import NotConfiguredError
 from eylo.modules.session_context.schemas import SessionContext
 from eylo.pipelines.voice.browser import terminate_browser_voice
+from eylo.pipelines.webrtc.errors import WebRTCFailureCode, WebRTCSignalingCode
+from eylo.pipelines.webrtc.requests import WebRTCPrepareRequest
+from eylo.pipelines.webrtc.schemas import (
+    WebRTCHangupAccepted,
+    WebRTCNotConfigured,
+    WebRTCRejected,
+    WebRTCResponse,
+    WebRTCSignalCommand,
+)
 from eylo.pipelines.webrtc.signaling_manager import (
-    WEBRTC_PROTOCOL_VERSION,
     WebRTCSignalingError,
 )
 from eylo.pipelines.webrtc.singleton import S_webrtc_signaling
@@ -26,12 +35,14 @@ async def handle_webrtc_prepare(
     event: WsRequestEvent, ctx: SessionContext
 ) -> Optional[WsResponse]:
     """Prepare exact org ICE config before the browser creates a peer."""
-    if (event.data or {}).get("protocol_version") != WEBRTC_PROTOCOL_VERSION:
+    try:
+        WebRTCPrepareRequest.from_payload(event.data or {})
+    except WebRTCSignalingError as error:
         return _rejected(
             event,
             ctx,
             WsEventAction.WEBRTC_PREPARE,
-            "unsupported_protocol_version",
+            error.code,
         )
     try:
         data = await S_webrtc_signaling.prepare_session(
@@ -44,26 +55,22 @@ async def handle_webrtc_prepare(
             event,
             ctx,
             WsEventAction.WEBRTC_PREPARE,
-            {
-                "protocol_version": WEBRTC_PROTOCOL_VERSION,
-                "command": "prepare",
-                "outcome": "rejected",
-                "code": "not_configured",
-                "capability": error.capability.value,
-                "missing": list(error.missing),
-                "configure_via": error.configure_via,
-            },
+            WebRTCNotConfigured(
+                capability=error.capability,
+                missing=tuple(error.missing),
+                configure_via=error.configure_via,
+            ),
             response_status=status.HTTP_409_CONFLICT,
         )
     except WebRTCSignalingError as error:
         return _rejected(event, ctx, WsEventAction.WEBRTC_PREPARE, error.code)
     except Exception as error:
-        _log_failure(ctx.organization_id, "prepare", error)
+        _log_failure(ctx.organization_id, WebRTCSignalCommand.PREPARE, error)
         return _rejected(
             event,
             ctx,
             WsEventAction.WEBRTC_PREPARE,
-            "prepare_failed",
+            WebRTCSignalingCode.PREPARE_FAILED,
         )
 
 
@@ -81,12 +88,12 @@ async def handle_webrtc_offer(
     except WebRTCSignalingError as error:
         return _rejected(event, ctx, WsEventAction.WEBRTC_ANSWER, error.code)
     except Exception as error:
-        _log_failure(ctx.organization_id, "offer", error)
+        _log_failure(ctx.organization_id, WebRTCSignalCommand.OFFER, error)
         return _rejected(
             event,
             ctx,
             WsEventAction.WEBRTC_ANSWER,
-            "offer_failed",
+            WebRTCSignalingCode.OFFER_FAILED,
         )
 
 
@@ -109,12 +116,12 @@ async def handle_webrtc_ice_candidate(
             error.code,
         )
     except Exception as error:
-        _log_failure(ctx.organization_id, "candidate", error)
+        _log_failure(ctx.organization_id, WebRTCSignalCommand.CANDIDATE, error)
         return _rejected(
             event,
             ctx,
             WsEventAction.WEBRTC_ICE_CANDIDATE,
-            "candidate_failed",
+            WebRTCSignalingCode.CANDIDATE_FAILED,
         )
 
 
@@ -131,12 +138,7 @@ async def handle_webrtc_hangup(
         event,
         ctx,
         WsEventAction.WEBRTC_HANGUP,
-        {
-            "protocol_version": WEBRTC_PROTOCOL_VERSION,
-            "command": "hangup",
-            "outcome": "accepted",
-            "already_terminated": not terminated,
-        },
+        WebRTCHangupAccepted(already_terminated=not terminated),
     )
 
 
@@ -144,19 +146,14 @@ def _rejected(
     event: WsRequestEvent,
     ctx: SessionContext,
     kind: WsEventAction,
-    code: str,
+    code: WebRTCFailureCode,
 ) -> WsResponse:
-    command = kind.value.partition(":")[2]
+    command = _COMMANDS[kind]
     return _response(
         event,
         ctx,
         kind,
-        {
-            "protocol_version": WEBRTC_PROTOCOL_VERSION,
-            "command": command,
-            "outcome": "rejected",
-            "code": code,
-        },
+        WebRTCRejected(command=command, code=code),
         response_status=status.HTTP_409_CONFLICT,
     )
 
@@ -165,7 +162,7 @@ def _response(
     event: WsRequestEvent,
     ctx: SessionContext,
     kind: WsEventAction,
-    data: dict[str, Any],
+    data: WebRTCResponse,
     *,
     response_status: int = status.HTTP_200_OK,
 ) -> WsResponse:
@@ -175,11 +172,21 @@ def _response(
         organization_id=ctx.organization_id,
         session_id=ctx.session_id,
         request_id=event.request_id,
-        data=data,
+        data=data.model_dump(mode="json", by_alias=True),
     )
 
 
-def _log_failure(organization_id: Any, command: str, error: Exception) -> None:
+_COMMANDS = {
+    WsEventAction.WEBRTC_PREPARE: WebRTCSignalCommand.PREPARE,
+    WsEventAction.WEBRTC_ANSWER: WebRTCSignalCommand.ANSWER,
+    WsEventAction.WEBRTC_ICE_CANDIDATE: WebRTCSignalCommand.ICE_CANDIDATE,
+    WsEventAction.WEBRTC_HANGUP: WebRTCSignalCommand.HANGUP,
+}
+
+
+def _log_failure(
+    organization_id: UUID, command: WebRTCSignalCommand, error: Exception
+) -> None:
     logger.warning(
         "WebRTC command failed organization_id=%s command=%s category=%s",
         organization_id,

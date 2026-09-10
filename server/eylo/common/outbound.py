@@ -5,19 +5,24 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass
 from enum import StrEnum
-from typing import ClassVar, TypeAlias
+from typing import ClassVar, Self, TypeAlias
 from uuid import NAMESPACE_URL, UUID, uuid5
+
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+
+from eylo.common.identifiers import normalize_uuid_like
 
 OUTBOUND_OPERATION_MAX_LENGTH = 192
 OUTBOUND_FAILURE_CODE_MAX_LENGTH = 128
 OUTBOUND_PROVIDER_REFERENCE_MAX_LENGTH = 320
 OUTBOUND_DESTINATION_ORIGIN_MAX_LENGTH = 512
 OUTBOUND_REQUEST_FINGERPRINT_LENGTH = 64
+OUTBOUND_STATUS_CODE_MIN = 100
+OUTBOUND_STATUS_CODE_MAX = 599
 
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9_.-]*$")
-_FINGERPRINT = re.compile(r"^[0-9a-f]{64}$")
+_FINGERPRINT = re.compile(rf"^[0-9a-f]{{{OUTBOUND_REQUEST_FINGERPRINT_LENGTH}}}$")
 _ATTEMPT_NAMESPACE = uuid5(NAMESPACE_URL, "https://eylo.ai/outbound-attempt/v1")
 
 
@@ -88,64 +93,75 @@ class OutboundAttemptCancelled(OutboundAttemptNotSendable):
     """Cancellation fenced this effect before another send."""
 
 
-@dataclass(frozen=True, slots=True)
-class OutboundSendAuthorization:
+class _FrozenOutboundModel(BaseModel):
+    """Strict immutable values shared by effect owners and transport adapters."""
+
+    model_config = ConfigDict(
+        frozen=True,
+        strict=True,
+        extra="forbid",
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+    )
+
+
+class OutboundSendAuthorization(_FrozenOutboundModel):
     """The only stable attempt fields a socket needs to authorize one send."""
 
     attempt_id: UUID
     provider_idempotency_key: str
 
-    def __post_init__(self) -> None:
+    @model_validator(mode="after")
+    def validate_idempotency_key(self) -> Self:
         if self.provider_idempotency_key != f"eylo_{self.attempt_id.hex}":
             raise ValueError("Outbound provider idempotency key is not canonical.")
+        return self
 
 
-@dataclass(frozen=True, slots=True)
-class OutboundSendSucceeded:
+class _OutboundSendResult(_FrozenOutboundModel):
+    """Bounded provider evidence, not raw responses or exception content."""
+
+    provider_reference: str | None = None
+    status_code: int | None = None
+
+    @model_validator(mode="after")
+    def validate_provider_evidence(self) -> Self:
+        _validate_outcome_values(
+            provider_reference=self.provider_reference,
+            status_code=self.status_code,
+        )
+        return self
+
+
+class OutboundSendSucceeded(_OutboundSendResult):
     """The provider accepted the requested effect."""
 
     state: ClassVar[OutboundAttemptState] = OutboundAttemptState.SUCCEEDED
-    provider_reference: str | None = None
-    status_code: int | None = None
-
-    def __post_init__(self) -> None:
-        _validate_outcome_values(
-            provider_reference=self.provider_reference,
-            status_code=self.status_code,
-        )
 
 
-@dataclass(frozen=True, slots=True)
-class _OutboundSendFailure:
+class _OutboundSendFailure(_OutboundSendResult):
+    """A normalized failure category owned by the calling adapter or product."""
+
     failure_code: str
-    provider_reference: str | None = None
-    status_code: int | None = None
 
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self, "failure_code", require_failure_code(self.failure_code)
-        )
-        _validate_outcome_values(
-            provider_reference=self.provider_reference,
-            status_code=self.status_code,
-        )
+    @field_validator("failure_code")
+    @classmethod
+    def validate_failure_code(cls, value: str) -> str:
+        return require_failure_code(value)
 
 
-@dataclass(frozen=True, slots=True)
 class OutboundSendRetryable(_OutboundSendFailure):
     """The provider confirmed this exact send may be attempted again."""
 
     state: ClassVar[OutboundAttemptState] = OutboundAttemptState.RETRYABLE
 
 
-@dataclass(frozen=True, slots=True)
 class OutboundSendTerminal(_OutboundSendFailure):
     """The provider rejected the effect without safe retry."""
 
     state: ClassVar[OutboundAttemptState] = OutboundAttemptState.TERMINAL
 
 
-@dataclass(frozen=True, slots=True)
 class OutboundSendUnknown(_OutboundSendFailure):
     """The effect may have happened and requires provider reconciliation."""
 
@@ -160,8 +176,7 @@ OutboundSendOutcome: TypeAlias = (
 )
 
 
-@dataclass(frozen=True, slots=True)
-class OutboundAttemptIdentity:
+class OutboundAttemptIdentity(_FrozenOutboundModel):
     """Deterministic identity under one organization-owned product record."""
 
     organization_id: UUID
@@ -169,15 +184,18 @@ class OutboundAttemptIdentity:
     owner_id: UUID
     operation_key: str
 
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "operation_key",
-            _require_identifier(
-                self.operation_key,
-                field="operation_key",
-                max_length=OUTBOUND_OPERATION_MAX_LENGTH,
-            ),
+    @field_validator("organization_id", "owner_id", mode="before")
+    @classmethod
+    def normalize_uuid_library(cls, value: object) -> object:
+        return normalize_uuid_like(value)
+
+    @field_validator("operation_key")
+    @classmethod
+    def validate_operation_key(cls, value: str) -> str:
+        return _require_identifier(
+            value,
+            field="operation_key",
+            max_length=OUTBOUND_OPERATION_MAX_LENGTH,
         )
 
     @property
@@ -198,8 +216,7 @@ class OutboundAttemptIdentity:
         return f"eylo_{self.attempt_id.hex}"
 
 
-@dataclass(frozen=True, slots=True)
-class OutboundAttemptSpec:
+class OutboundAttemptSpec(_FrozenOutboundModel):
     """Immutable safe audit fields agreed before the first network send."""
 
     identity: OutboundAttemptIdentity
@@ -208,26 +225,33 @@ class OutboundAttemptSpec:
     destination_origin: str
     request_fingerprint: str
 
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "provider_operation",
-            _require_identifier(
-                self.provider_operation,
-                field="provider_operation",
-                max_length=OUTBOUND_OPERATION_MAX_LENGTH,
-            ),
+    @field_validator("provider_operation")
+    @classmethod
+    def validate_provider_operation(cls, value: str) -> str:
+        return _require_identifier(
+            value,
+            field="provider_operation",
+            max_length=OUTBOUND_OPERATION_MAX_LENGTH,
         )
-        origin = self.destination_origin.strip()
+
+    @field_validator("destination_origin")
+    @classmethod
+    def normalize_destination_origin(cls, value: str) -> str:
+        origin = value.strip()
         if not origin or len(origin) > OUTBOUND_DESTINATION_ORIGIN_MAX_LENGTH:
             raise ValueError(
                 "destination_origin must be a non-empty bounded normalized origin."
             )
-        object.__setattr__(self, "destination_origin", origin)
-        if not _FINGERPRINT.fullmatch(self.request_fingerprint):
+        return origin
+
+    @field_validator("request_fingerprint")
+    @classmethod
+    def validate_request_fingerprint(cls, value: str) -> str:
+        if not _FINGERPRINT.fullmatch(value):
             raise ValueError(
                 "request_fingerprint must be a lowercase SHA-256 hex value."
             )
+        return value
 
 
 def fingerprint_outbound_input(value: object) -> str:
@@ -269,7 +293,10 @@ def _validate_outcome_values(
             or len(normalized) > OUTBOUND_PROVIDER_REFERENCE_MAX_LENGTH
         ):
             raise ValueError("provider_reference must be normalized and bounded.")
-    if status_code is not None and not 100 <= status_code <= 599:
+    if (
+        status_code is not None
+        and not OUTBOUND_STATUS_CODE_MIN <= status_code <= OUTBOUND_STATUS_CODE_MAX
+    ):
         raise ValueError("status_code must be an HTTP status between 100 and 599.")
 
 
@@ -294,6 +321,8 @@ __all__ = [
     "OUTBOUND_OPERATION_MAX_LENGTH",
     "OUTBOUND_PROVIDER_REFERENCE_MAX_LENGTH",
     "OUTBOUND_REQUEST_FINGERPRINT_LENGTH",
+    "OUTBOUND_STATUS_CODE_MIN",
+    "OUTBOUND_STATUS_CODE_MAX",
     "OutboundAttemptCancelled",
     "OutboundAttemptConflict",
     "OutboundAttemptError",

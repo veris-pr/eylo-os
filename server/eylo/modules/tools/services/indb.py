@@ -12,7 +12,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.database import get_transaction
 from eylo.common.repositories import map_schema_to_model
-from eylo.common.revisions import DefinitionHeaderState, PublishedRevisionState
+from eylo.common.revisions import (
+    DefinitionHeaderState,
+    DefinitionLifecycle,
+    PublishedRevisionState,
+    RevisionAvailability,
+)
 from eylo.common.services import EyloBaseService
 from eylo.modules.mcp_servers.models import MCPServerModel, MCPServerRevisionModel
 from eylo.modules.tools.domain import (
@@ -367,7 +372,7 @@ class ToolService(EyloBaseService[ToolInDb, ToolModel]):
         if server is None:
             raise DefinitionNotFoundError("MCP server not found.")
         revision = DefinitionHeaderState(
-            lifecycle=server.lifecycle,
+            lifecycle=DefinitionLifecycle(server.lifecycle),
             published_revision=server.published_revision,
             draft_version=server.draft_version,
             draft_dirty=server.draft_dirty,
@@ -384,7 +389,7 @@ class ToolService(EyloBaseService[ToolInDb, ToolModel]):
             raise DefinitionNotFoundError("MCP server revision not found.")
         PublishedRevisionState(
             published_at=revision_row.published_at,
-            availability=revision_row.availability,
+            availability=RevisionAvailability(revision_row.availability),
             revoked_at=revision_row.revoked_at,
             revoked_by=revision_row.revoked_by,
             revocation_reason=revision_row.revocation_reason,
@@ -434,7 +439,7 @@ def _enum_value(value: object) -> str:
 
 def _header_state(row: ToolModel) -> DefinitionHeaderState:
     return DefinitionHeaderState(
-        lifecycle=row.lifecycle,
+        lifecycle=DefinitionLifecycle(row.lifecycle),
         published_revision=row.published_revision,
         draft_version=row.draft_version,
         draft_dirty=row.draft_dirty,
@@ -451,7 +456,7 @@ def _apply_header_state(row: ToolModel, state: DefinitionHeaderState) -> None:
 def _revision_state(row: ToolRevisionModel) -> PublishedRevisionState:
     return PublishedRevisionState(
         published_at=row.published_at,
-        availability=row.availability,
+        availability=RevisionAvailability(row.availability),
         revoked_at=row.revoked_at,
         revoked_by=row.revoked_by,
         revocation_reason=row.revocation_reason,

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeVar
 from uuid import UUID
 
@@ -12,16 +11,15 @@ from eylo.common.http_egress import HttpEgressPolicyError
 from eylo.common.outbound import (
     OutboundAttemptIdentity,
     OutboundAttemptSpec,
-    OutboundAttemptState,
     OutboundOwnerKind,
     fingerprint_outbound_input,
 )
 from eylo.modules.email_configs.domain import EmailProviderConfig
 from eylo.modules.email_configs.wiring import build_email_config_resolver
 from eylo.pipelines.email.config import build_email_runtime_config
+from eylo.pipelines.email.contracts import EmailDeliveryResult
 from eylo.pipelines.outbound.durable_execution import (
     CommandStepContext,
-    OutboundExecutionReceipt,
     execute_outbound_attempt,
 )
 from eylo.sockets.email.exceptions import EmailConfigurationError
@@ -36,44 +34,6 @@ T = TypeVar("T")
 
 class EmailDeliveryUnsupported(ValueError):
     """The requested email cannot enter the provider boundary in V1."""
-
-
-@dataclass(frozen=True, slots=True)
-class EmailDeliveryResult:
-    """Safe product projection of accepted, failed, or ambiguous delivery."""
-
-    attempt_id: UUID
-    state: OutboundAttemptState
-    vendor: str
-    provider_reference: str | None
-    failure_code: str | None
-
-    @property
-    def status(self) -> str:
-        if self.state is OutboundAttemptState.SUCCEEDED:
-            return "accepted"
-        if self.state is OutboundAttemptState.UNKNOWN:
-            return "unknown"
-        return "failed"
-
-    @property
-    def tracking_id(self) -> str:
-        return self.provider_reference or str(self.attempt_id)
-
-    @classmethod
-    def from_receipt(
-        cls,
-        receipt: OutboundExecutionReceipt,
-        *,
-        vendor: str,
-    ) -> EmailDeliveryResult:
-        return cls(
-            attempt_id=receipt.attempt_id,
-            state=receipt.state,
-            vendor=vendor,
-            provider_reference=receipt.provider_reference,
-            failure_code=receipt.failure_code,
-        )
 
 
 class _InlineDurableContext:
@@ -203,11 +163,7 @@ async def _resolve_provider_config(
                 provider_config_id=provider_config_id,
                 revision=provider_config_revision,
             )
-    return EmailProviderConfig.validate(
-        provider=resolved.provider.value,
-        config=resolved.config,
-        secrets=resolved.secrets,
-    )
+    return resolved.as_provider_config()
 
 
 __all__ = [

@@ -1,236 +1,242 @@
-"""Provider-specific validation and resolved runtime values for WebRTC configs."""
+"""Platform validation and immutable resolved WebRTC configuration material."""
 
 from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, field
 from ipaddress import ip_address
+from typing import Annotated, Self
 from uuid import UUID
 
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Discriminator,
+    Field,
+    ModelWrapValidatorHandler,
+    Tag,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
+
+from eylo.modules.provider_configs.constants import Capability
 from eylo.modules.provider_configs.domain import (
     EffectiveProviderConfig,
     InvalidProviderConfig,
 )
 from eylo.modules.webrtc_configs.catalog import WebRTCProviders
 
-__all__ = ["InvalidWebRTCConfig", "ResolvedWebRTC", "WebRTCProviderConfig"]
-
-_SECRET_FIELD_NAME = "api_key"
-_METERED_DOMAIN_SUFFIX = ".metered.live"
-_METERED_APP_NAME_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9_-]{0,61}[a-z0-9])?$")
-
-_COMMON_CONFIG_FIELDS = frozenset({"timeout", "max_retries", "retry_delay"})
-_CONFIG_FIELDS = {
-    WebRTCProviders.METERED: _COMMON_CONFIG_FIELDS | {"app_name"},
-    WebRTCProviders.TURNIX: _COMMON_CONFIG_FIELDS
-    | {
-        "initiator_client",
-        "receiver_client",
-        "room",
-        "ttl",
-        "preferred_region",
-        "fixed_region",
-        "client_ip",
-    },
-}
-_REQUIRED_CONFIG_FIELDS = {
-    WebRTCProviders.METERED: frozenset({"app_name"}),
-    WebRTCProviders.TURNIX: frozenset(),
-}
+API_KEY_FIELD = "api_key"
+METERED_DOMAIN_SUFFIX = ".metered.live"
+METERED_APP_NAME_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9_-]{0,61}[a-z0-9])?$")
+MAX_TIMEOUT_SECONDS = 30
+MAX_RETRIES = 5
+MAX_RETRY_DELAY_SECONDS = 10
+MAX_TTL_SECONDS = 86_400
+MAX_CLIENT_CONTEXT_LENGTH = 255
+MAX_REGION_LENGTH = 64
 
 
 class InvalidWebRTCConfig(InvalidProviderConfig):
-    """Raised when a WebRTC provider config violates policy."""
+    """Invalid platform material; messages never contain credential values."""
 
 
-@dataclass(frozen=True)
-class WebRTCProviderConfig:
-    """Validated WebRTC provider config with plaintext secrets in memory only."""
+class _WebRTCValue(BaseModel):
+    model_config = ConfigDict(
+        frozen=True,
+        strict=True,
+        extra="forbid",
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+        allow_inf_nan=False,
+        validate_default=True,
+    )
 
-    provider: str
-    config: Mapping[str, object]
-    secrets: Mapping[str, str] = field(repr=False)
-
-    def __post_init__(self) -> None:
-        provider_value = str(self.provider).lower().strip()
+    @model_validator(mode="wrap")
+    @classmethod
+    def _safe_validation(
+        cls, value: object, handler: ModelWrapValidatorHandler[Self]
+    ) -> Self:
         try:
-            provider = WebRTCProviders(provider_value)
-        except ValueError:
+            return handler(value)
+        except ValidationError as error:
+            fields = {
+                location
+                for item in error.errors(include_input=False, include_context=False)
+                if item["loc"]
+                and isinstance(location := item["loc"][0], str)
+                and location in cls.model_fields
+            }
+            label = ", ".join(sorted(fields)) or "configuration fields"
+            raise InvalidWebRTCConfig(f"Invalid WebRTC {label}.") from None
+
+
+class WebRTCRequestSettings(_WebRTCValue):
+    """Optional operator overrides; omitted values retain socket transport defaults."""
+
+    timeout: float | None = Field(default=None, gt=0, le=MAX_TIMEOUT_SECONDS)
+    max_retries: int | None = Field(default=None, ge=0, le=MAX_RETRIES)
+    retry_delay: float | None = Field(default=None, ge=0, le=MAX_RETRY_DELAY_SECONDS)
+
+
+class MeteredWebRTCSettings(WebRTCRequestSettings):
+    app_name: str
+
+    @field_validator("app_name", mode="before")
+    @classmethod
+    def _app_name(cls, value: object) -> str:
+        if isinstance(value, str):
+            app_name = value.strip().lower()
+            if app_name.endswith(METERED_DOMAIN_SUFFIX):
+                app_name = app_name[: -len(METERED_DOMAIN_SUFFIX)]
+            if METERED_APP_NAME_PATTERN.fullmatch(app_name):
+                return app_name
+        raise InvalidWebRTCConfig(
+            "Metered domain must be the value shown in the Metered dashboard "
+            "(for example, your_app.metered.live) or its app name."
+        )
+
+
+class TurnixWebRTCSettings(WebRTCRequestSettings):
+    initiator_client: str | None = Field(
+        default=None, max_length=MAX_CLIENT_CONTEXT_LENGTH
+    )
+    receiver_client: str | None = Field(
+        default=None, max_length=MAX_CLIENT_CONTEXT_LENGTH
+    )
+    room: str | None = Field(default=None, max_length=MAX_CLIENT_CONTEXT_LENGTH)
+    ttl: int | None = Field(default=None, gt=0, le=MAX_TTL_SECONDS)
+    preferred_region: str | None = Field(default=None, max_length=MAX_REGION_LENGTH)
+    fixed_region: str | None = Field(default=None, max_length=MAX_REGION_LENGTH)
+    client_ip: str | None = None
+
+    @field_validator(
+        "initiator_client",
+        "receiver_client",
+        "room",
+        "preferred_region",
+        "fixed_region",
+    )
+    @classmethod
+    def _context(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
             raise InvalidWebRTCConfig(
-                f"Unknown WebRTC provider: {self.provider}"
-            ) from None
-        object.__setattr__(self, "provider", provider)
-        object.__setattr__(self, "config", _validate_config(self.config, provider))
-        object.__setattr__(self, "secrets", _validate_secrets(self.secrets, provider))
+                "Turnix context fields must be non-empty strings."
+            )
+        return value
+
+    @field_validator("client_ip")
+    @classmethod
+    def _client_ip(cls, value: str | None) -> str | None:
+        if value is not None:
+            try:
+                ip_address(value)
+            except ValueError:
+                raise InvalidWebRTCConfig(
+                    "client_ip must be a valid IPv4 or IPv6 address."
+                ) from None
+        return value
+
+
+class WebRTCCredentials(_WebRTCValue):
+    api_key: str = Field(repr=False, exclude=True)
+
+    @field_validator("api_key")
+    @classmethod
+    def _key(cls, value: str) -> str:
+        if not value.strip():
+            raise InvalidWebRTCConfig("WebRTC requires a non-empty api_key secret.")
+        return value
+
+    def secret_values(self) -> dict[str, str]:
+        """Explicit plaintext export for encrypted persistence or adapter invocation."""
+        return {API_KEY_FIELD: self.api_key}
+
+
+def _settings_kind(value: object) -> WebRTCProviders | None:
+    """Select one settings validator before converting its errors to domain errors."""
+    if isinstance(value, MeteredWebRTCSettings):
+        return WebRTCProviders.METERED
+    if isinstance(value, TurnixWebRTCSettings):
+        return WebRTCProviders.TURNIX
+    if isinstance(value, Mapping):
+        return (
+            WebRTCProviders.METERED if "app_name" in value else WebRTCProviders.TURNIX
+        )
+    return None
+
+
+type WebRTCSettings = Annotated[
+    Annotated[MeteredWebRTCSettings, Tag(WebRTCProviders.METERED)]
+    | Annotated[TurnixWebRTCSettings, Tag(WebRTCProviders.TURNIX)],
+    Discriminator(_settings_kind),
+]
+
+
+class WebRTCProviderConfig(_WebRTCValue):
+    """Validated platform material; vendor SDK types never cross into the module."""
+
+    provider: WebRTCProviders
+    config: WebRTCSettings
+    credentials: WebRTCCredentials = Field(repr=False, exclude=True)
+
+    @model_validator(mode="after")
+    def _matching_settings(self) -> Self:
+        matches = (
+            self.provider is WebRTCProviders.METERED
+            and isinstance(self.config, MeteredWebRTCSettings)
+        ) or (
+            self.provider is WebRTCProviders.TURNIX
+            and isinstance(self.config, TurnixWebRTCSettings)
+        )
+        if not matches:
+            raise InvalidWebRTCConfig("WebRTC provider and settings do not match.")
+        return self
 
     @classmethod
-    def validate(
+    def from_payload(
         cls,
         *,
         provider: str,
         config: Mapping[str, object] | None = None,
         secrets: Mapping[str, str] | None = None,
     ) -> WebRTCProviderConfig:
-        return cls(
-            provider=provider,
-            config={} if config is None else config,
-            secrets={} if secrets is None else secrets,
+        if not isinstance(provider, str):
+            raise InvalidWebRTCConfig("Unknown WebRTC provider.")
+        try:
+            selected = WebRTCProviders(provider.strip().lower())
+        except ValueError:
+            raise InvalidWebRTCConfig("Unknown WebRTC provider.") from None
+        values = {} if config is None else dict(config)
+        settings = (
+            MeteredWebRTCSettings.model_validate(values)
+            if selected is WebRTCProviders.METERED
+            else TurnixWebRTCSettings.model_validate(values)
         )
+        return WebRTCProviderConfig(
+            provider=selected,
+            config=settings,
+            credentials=WebRTCCredentials.model_validate(
+                {} if secrets is None else dict(secrets)
+            ),
+        )
+
+    def settings_values(self) -> dict[str, object]:
+        """Preserve omission when persisting; transport defaults are not new settings."""
+        return self.config.model_dump(mode="json", exclude_unset=True)
 
     @property
     def secret(self) -> str:
-        return self.secrets[_SECRET_FIELD_NAME]
+        return self.credentials.api_key
 
 
-def _validate_config(
-    config: Mapping[str, object],
-    provider: WebRTCProviders,
-) -> Mapping[str, object]:
-    if not isinstance(config, Mapping):
-        raise InvalidWebRTCConfig("Config must be a mapping.")
-    unknown = set(config) - _CONFIG_FIELDS[provider]
-    if unknown:
-        raise InvalidWebRTCConfig(
-            f"Unknown config fields for {provider.value}: {sorted(unknown)}"
-        )
-    missing = [
-        field_name
-        for field_name in _REQUIRED_CONFIG_FIELDS[provider]
-        if not _is_configured_value(config.get(field_name))
-    ]
-    if missing:
-        raise InvalidWebRTCConfig(
-            f"Provider {provider.value} requires config fields: {missing}"
-        )
-    validated = dict(config)
-    if provider is WebRTCProviders.METERED:
-        validated["app_name"] = _normalize_metered_app_name(config["app_name"])
-    _validate_number(config, "timeout", minimum=0, maximum=30, inclusive_minimum=False)
-    _validate_integer(config, "max_retries", minimum=0, maximum=5)
-    _validate_number(config, "retry_delay", minimum=0, maximum=10)
-    if provider is WebRTCProviders.TURNIX:
-        _validate_integer(config, "ttl", minimum=1, maximum=86_400)
-        for field_name in (
-            "initiator_client",
-            "receiver_client",
-            "room",
-            "preferred_region",
-            "fixed_region",
-        ):
-            _validate_optional_string(config, field_name)
-        client_ip = config.get("client_ip")
-        if client_ip is not None:
-            if not isinstance(client_ip, str):
-                raise InvalidWebRTCConfig("client_ip must be a string.")
-            try:
-                ip_address(client_ip)
-            except ValueError:
-                raise InvalidWebRTCConfig(
-                    "client_ip must be a valid IPv4 or IPv6 address."
-                ) from None
-    return validated
-
-
-def _normalize_metered_app_name(value: object) -> str:
-    if isinstance(value, str):
-        app_name = value.strip().lower()
-        if app_name.endswith(_METERED_DOMAIN_SUFFIX):
-            app_name = app_name[: -len(_METERED_DOMAIN_SUFFIX)]
-        if _METERED_APP_NAME_PATTERN.fullmatch(app_name):
-            return app_name
-
-    raise InvalidWebRTCConfig(
-        "Metered domain must be the value shown in the Metered dashboard "
-        "(for example, your_app.metered.live) or its app name."
-    )
-
-
-def _validate_secrets(
-    secrets: Mapping[str, str],
-    provider: WebRTCProviders,
-) -> Mapping[str, str]:
-    if not isinstance(secrets, Mapping):
-        raise InvalidWebRTCConfig("Secrets must be a mapping.")
-    unknown = set(secrets) - {_SECRET_FIELD_NAME}
-    if unknown:
-        raise InvalidWebRTCConfig(
-            f"Unknown secret fields for {provider.value}: {sorted(unknown)}"
-        )
-    api_key = secrets.get(_SECRET_FIELD_NAME)
-    if not isinstance(api_key, str) or not api_key.strip():
-        raise InvalidWebRTCConfig(
-            f"Provider {provider.value} requires a non-empty api_key secret."
-        )
-    return dict(secrets)
-
-
-def _is_configured_value(value: object) -> bool:
-    return isinstance(value, str) and bool(value.strip())
-
-
-def _validate_number(
-    config: Mapping[str, object],
-    field_name: str,
-    *,
-    minimum: float,
-    maximum: float,
-    inclusive_minimum: bool = True,
-) -> None:
-    value = config.get(field_name)
-    if value is None:
-        return
-    is_number = not isinstance(value, bool) and isinstance(value, (int, float))
-    lower_bound_valid = is_number and (
-        value >= minimum if inclusive_minimum else value > minimum
-    )
-    if not lower_bound_valid or value > maximum:
-        comparator = ">=" if inclusive_minimum else ">"
-        raise InvalidWebRTCConfig(
-            f"{field_name} must be a number {comparator} {minimum} and <= {maximum}."
-        )
-
-
-def _validate_integer(
-    config: Mapping[str, object],
-    field_name: str,
-    *,
-    minimum: int,
-    maximum: int,
-) -> None:
-    value = config.get(field_name)
-    if value is None:
-        return
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, int)
-        or value < minimum
-        or value > maximum
-    ):
-        raise InvalidWebRTCConfig(
-            f"{field_name} must be an integer between {minimum} and {maximum}."
-        )
-
-
-def _validate_optional_string(
-    config: Mapping[str, object],
-    field_name: str,
-) -> None:
-    value = config.get(field_name)
-    if value is not None and not _is_configured_value(value):
-        raise InvalidWebRTCConfig(f"{field_name} must be a non-empty string.")
-
-
-@dataclass(frozen=True)
-class ResolvedWebRTC:
-    """Immutable resolved WebRTC runtime value with plaintext credentials."""
+class ResolvedWebRTC(WebRTCProviderConfig):
+    """Pinned org authority plus validated material; credentials do not serialize."""
 
     provider_config_id: UUID
-    provider_config_revision: int
+    provider_config_revision: int = Field(gt=0)
     organization_id: UUID
-    provider: WebRTCProviders
-    config: Mapping[str, object]
-    secrets: Mapping[str, str] = field(repr=False, compare=False)
     configured: bool = True
     verified: bool = False
     ready: bool = False
@@ -244,24 +250,29 @@ class ResolvedWebRTC:
         organization_id: UUID,
         provider_config: EffectiveProviderConfig,
     ) -> ResolvedWebRTC:
-        validated = WebRTCProviderConfig.validate(
-            provider=provider_config.provider,
-            config=provider_config.settings,
-            secrets=provider_config.secrets,
+        effective = EffectiveProviderConfig.model_validate(provider_config)
+        if (
+            effective.capability is not Capability.WEBRTC
+            or effective.organization_id != organization_id
+            or effective.provider_config_id != provider_config_id
+        ):
+            raise InvalidWebRTCConfig(
+                "Resolved WebRTC configuration authority does not match."
+            )
+        validated = WebRTCProviderConfig.from_payload(
+            provider=effective.provider,
+            config=effective.settings,
+            secrets=effective.secrets,
         )
         return cls(
             provider_config_id=provider_config_id,
-            provider_config_revision=provider_config.revision,
+            provider_config_revision=effective.revision,
             organization_id=organization_id,
             provider=validated.provider,
             config=validated.config,
-            secrets=validated.secrets,
-            configured=provider_config.configured,
-            verified=provider_config.verified,
-            ready=provider_config.ready,
-            granted=provider_config.granted,
+            credentials=validated.credentials,
+            configured=effective.configured,
+            verified=effective.verified,
+            ready=effective.ready,
+            granted=effective.granted,
         )
-
-    @property
-    def secret(self) -> str:
-        return self.secrets[_SECRET_FIELD_NAME]

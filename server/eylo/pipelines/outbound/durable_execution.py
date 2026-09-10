@@ -4,16 +4,25 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
-from typing import Any, Protocol, TypeVar, runtime_checkable
+from typing import Protocol, Self, TypeVar, runtime_checkable
 from uuid import UUID
 
 from absurd_sdk import CancelledTask
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    field_validator,
+    model_validator,
+)
 
 from eylo.common.database import start_transaction
 from eylo.common.outbound import (
     OUTBOUND_FINAL_STATES,
     OUTBOUND_PROVIDER_REFERENCE_MAX_LENGTH,
+    OUTBOUND_STATUS_CODE_MAX,
+    OUTBOUND_STATUS_CODE_MIN,
     OutboundAttemptCancelled,
     OutboundAttemptSpec,
     OutboundAttemptState,
@@ -42,6 +51,7 @@ _SEND_OUTCOME_TYPES = (
 _UNKNOWN_AFTER_INTERRUPTION = "send_interrupted_unconfirmed"
 _UNKNOWN_AFTER_EXCEPTION = "send_exception_unconfirmed"
 _UNKNOWN_AFTER_REPLAY = "prior_send_unconfirmed"
+_RECEIPT_MAX_SEND_COUNT = 100
 
 
 @runtime_checkable
@@ -70,35 +80,58 @@ class DurableStepContext(CommandStepContext, Protocol):
     ) -> object: ...
 
 
-@dataclass(frozen=True, slots=True)
-class OutboundExecutionReceipt:
+class OutboundExecutionReceipt(BaseModel):
     """Bounded durable projection safe to checkpoint and show to product code."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     attempt_id: UUID
     state: OutboundAttemptState
-    send_count: int
+    send_count: int = Field(ge=0, le=_RECEIPT_MAX_SEND_COUNT)
     cancel_requested: bool
     provider_reference: str | None
-    status_code: int | None
+    status_code: int | None = Field(
+        ge=OUTBOUND_STATUS_CODE_MIN, le=OUTBOUND_STATUS_CODE_MAX
+    )
     failure_code: str | None
 
-    def __post_init__(self) -> None:
-        if not 0 <= self.send_count <= 100:
-            raise ValueError("Outbound receipt send count is invalid.")
-        if self.provider_reference is not None:
-            normalized = self.provider_reference.strip()
+    @field_validator("attempt_id", mode="before")
+    @classmethod
+    def decode_attempt_id(cls, value: object) -> object:
+        return UUID(value) if isinstance(value, str) else value
+
+    @field_validator("state", mode="before")
+    @classmethod
+    def decode_state(cls, value: object) -> object:
+        return OutboundAttemptState(value) if isinstance(value, str) else value
+
+    @field_validator("provider_reference")
+    @classmethod
+    def validate_provider_reference(cls, value: str | None) -> str | None:
+        if value is not None:
+            normalized = value.strip()
             if (
                 not normalized
-                or normalized != self.provider_reference
+                or normalized != value
                 or len(normalized) > OUTBOUND_PROVIDER_REFERENCE_MAX_LENGTH
             ):
                 raise ValueError("Outbound receipt provider reference is invalid.")
-        if self.status_code is not None and not 100 <= self.status_code <= 599:
-            raise ValueError("Outbound receipt status is invalid.")
-        if self.failure_code is not None:
-            require_failure_code(self.failure_code)
+        return value
+
+    @field_validator("failure_code")
+    @classmethod
+    def validate_failure_code(cls, value: str | None) -> str | None:
+        if value is not None:
+            require_failure_code(value)
+        return value
+
+    @model_validator(mode="after")
+    def validate_lifecycle(self) -> Self:
         if not self._has_valid_lifecycle():
             raise ValueError("Outbound receipt lifecycle is invalid.")
+        return self
 
     def _has_valid_lifecycle(self) -> bool:
         if self.state is OutboundAttemptState.PREPARED:
@@ -127,52 +160,14 @@ class OutboundExecutionReceipt:
             failure_code=row.failure_code,
         )
 
-    def as_checkpoint(self) -> dict[str, Any]:
-        return {
-            "attempt_id": str(self.attempt_id),
-            "state": self.state.value,
-            "send_count": self.send_count,
-            "cancel_requested": self.cancel_requested,
-            "provider_reference": self.provider_reference,
-            "status_code": self.status_code,
-            "failure_code": self.failure_code,
-        }
+    def as_checkpoint(self) -> dict[str, JsonValue]:
+        return self.model_dump(mode="json")
 
     @classmethod
     def from_checkpoint(cls, value: object) -> OutboundExecutionReceipt:
         if not isinstance(value, dict):
             raise ValueError("Outbound checkpoint must be an object.")
-        try:
-            attempt_id = UUID(str(value["attempt_id"]))
-            state = OutboundAttemptState(str(value["state"]))
-            send_count = value["send_count"]
-            cancel_requested = value["cancel_requested"]
-            provider_reference = value["provider_reference"]
-            status_code = value["status_code"]
-            failure_code = value["failure_code"]
-        except (KeyError, TypeError, ValueError) as error:
-            raise ValueError("Outbound checkpoint is invalid.") from error
-        if isinstance(send_count, bool) or not isinstance(send_count, int):
-            raise ValueError("Outbound checkpoint send count is invalid.")
-        if send_count < 0 or not isinstance(cancel_requested, bool):
-            raise ValueError("Outbound checkpoint lifecycle is invalid.")
-        if provider_reference is not None and not isinstance(provider_reference, str):
-            raise ValueError("Outbound checkpoint provider reference is invalid.")
-        if status_code is not None and (
-            isinstance(status_code, bool) or not isinstance(status_code, int)
-        ):
-            raise ValueError("Outbound checkpoint status is invalid.")
-        if failure_code is not None and not isinstance(failure_code, str):
-            raise ValueError("Outbound checkpoint failure code is invalid.")
-        return cls(
-            attempt_id=attempt_id,
-            state=state,
-            send_count=send_count,
-            cancel_requested=cancel_requested,
-            provider_reference=provider_reference,
-            status_code=status_code,
-            failure_code=failure_code,
-        )
+        return cls.model_validate(value)
 
 
 class OutboundRetryRequested(Exception):
@@ -247,7 +242,7 @@ async def _prepare(spec: OutboundAttemptSpec) -> None:
 async def _execute_uncheckpointed(
     spec: OutboundAttemptSpec,
     sender: OutboundSender,
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     receipt, authorization = await _authorize_or_recover(spec)
     if authorization is None:
         return receipt.as_checkpoint()
@@ -326,7 +321,11 @@ async def _record_send_outcome(
             state=outcome.state,
             provider_reference=outcome.provider_reference,
             status_code=outcome.status_code,
-            failure_code=getattr(outcome, "failure_code", None),
+            failure_code=(
+                None
+                if isinstance(outcome, OutboundSendSucceeded)
+                else outcome.failure_code
+            ),
         )
         return OutboundExecutionReceipt.from_model(row)
 

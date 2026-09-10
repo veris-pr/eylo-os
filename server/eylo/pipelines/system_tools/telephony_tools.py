@@ -50,15 +50,9 @@ def _resolve_active_call(ctx: ConversationContext) -> Optional[CallSession]:
     return matches[0] if matches else None
 
 
-_resolve_active_call.__eylo_hidden__ = True
-
-
 def _resolve_provider(session: CallSession) -> str:
     """Return the provider already pinned on the active call session."""
     return session.provider.value
-
-
-_resolve_provider.__eylo_hidden__ = True
 
 
 def _require_session_authority(session: CallSession) -> tuple[UUID, UUID, int]:
@@ -72,9 +66,6 @@ def _require_session_authority(session: CallSession) -> tuple[UUID, UUID, int]:
         session.provider_config_id,
         session.provider_config_revision,
     )
-
-
-_require_session_authority.__eylo_hidden__ = True
 
 
 def _build_call_event_kwargs(session: CallSession, provider: str) -> dict:
@@ -100,9 +91,6 @@ def _build_call_event_kwargs(session: CallSession, provider: str) -> dict:
     }
 
 
-_build_call_event_kwargs.__eylo_hidden__ = True
-
-
 def _transfer_failure_projection(error: Exception) -> tuple[CallTransferOutcome, str]:
     """Map a safe control error onto the durable transfer state machine."""
     detail = getattr(error, "detail", None)
@@ -110,9 +98,6 @@ def _transfer_failure_projection(error: Exception) -> tuple[CallTransferOutcome,
     if code == "UNKNOWN":
         return CallTransferStatus.UNKNOWN, "call_transfer_unconfirmed"
     return CallTransferStatus.FAILED, "call_transfer_rejected"
-
-
-_transfer_failure_projection.__eylo_hidden__ = True
 
 
 # ---------------------------------------------------------------------------
@@ -424,7 +409,7 @@ async def schedule_call(
         if not primary_agent:
             return '{"status": "error", "message": "No primary agent found in conversation context."}'
 
-        agent_id = primary_agent.entity_id
+        agent_id = UUID(primary_agent.entity_id)
         agent_revision = primary_agent.agent_revision
         org_id = ctx.conversation.organization_id
         if agent_revision is None:

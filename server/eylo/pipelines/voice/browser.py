@@ -892,7 +892,7 @@ async def _run_browser_voice_termination(
         await S_webrtc_signaling.cleanup_session(
             ctx.organization_id,
             ctx.session_id,
-            reason=reason.value,
+            reason=reason,
             notify_client=notify_client,
         )
     except Exception as error:

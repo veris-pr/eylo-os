@@ -225,7 +225,7 @@ class VoiceService:
             ),
         )
         status_callback_url = (
-            f"{resolved.config['webhook_base_url']}/telephony/webhooks/"
+            f"{resolved.material.settings.webhook_base_url}/telephony/webhooks/"
             f"{resolved.provider.value}/status?{urlencode({'call_id': str(call_id)})}"
         )
 

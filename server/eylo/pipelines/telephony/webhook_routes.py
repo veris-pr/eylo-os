@@ -80,15 +80,15 @@ async def status_callback(
 
     provider_config = resolved.as_provider_config()
     public_url = (
-        f"{provider_config.config['webhook_base_url']}"
+        f"{provider_config.material.settings.webhook_base_url}"
         f"/telephony/webhooks/{provider}/status"
     )
     if request.url.query:
         public_url = f"{public_url}?{request.url.query}"
     if not verify_status_callback(
         provider=provider,
-        config=provider_config.config,
-        secrets=provider_config.secrets,
+        config=provider_config.settings_values(),
+        secrets=provider_config.secret_values(),
         method=request.method,
         public_url=public_url,
         headers=request.headers,

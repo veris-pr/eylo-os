@@ -7,12 +7,15 @@ validation; there is deliberately no generic definition registry.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import Enum
+from typing import Self
 from uuid import UUID
 
 import uuid_utils
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+
+from eylo.common.identifiers import normalize_uuid_like
 
 MAX_REVOCATION_REASON_LENGTH = 2_000
 
@@ -70,24 +73,36 @@ class RevisionAvailability(str, Enum):
     REVOKED = "revoked"
 
 
-@dataclass(frozen=True, slots=True)
-class DefinitionRef:
+class _RevisionValue(BaseModel):
+    """Strict immutable revision values; transitions must revalidate construction."""
+
+    model_config = ConfigDict(
+        frozen=True,
+        strict=True,
+        extra="forbid",
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+    )
+
+
+class DefinitionRef(_RevisionValue):
     """Exact immutable reference stored by filed work and other definitions."""
 
     definition_id: UUID
     revision: int
 
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "definition_id",
-            _uuid(self.definition_id, field_name="definition_id"),
-        )
-        object.__setattr__(self, "revision", _positive_revision(self.revision))
+    @field_validator("definition_id", mode="before")
+    @classmethod
+    def normalize_definition_id(cls, value: object) -> object:
+        return normalize_uuid_like(value)
+
+    @field_validator("revision")
+    @classmethod
+    def validate_revision(cls, value: int) -> int:
+        return _positive_revision(value)
 
 
-@dataclass(frozen=True, slots=True)
-class DefinitionHeaderState:
+class DefinitionHeaderState(_RevisionValue):
     """Domain-independent state of a stable header and mutable draft."""
 
     lifecycle: DefinitionLifecycle = DefinitionLifecycle.DRAFT
@@ -95,21 +110,13 @@ class DefinitionHeaderState:
     draft_version: int = 1
     draft_dirty: bool = True
 
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "lifecycle", DefinitionLifecycle(self.lifecycle))
-        object.__setattr__(
-            self,
-            "draft_version",
-            _positive_revision(self.draft_version, field_name="draft_version"),
-        )
+    @model_validator(mode="after")
+    def validate_lifecycle(self) -> Self:
+        _positive_revision(self.draft_version, field_name="draft_version")
         if self.published_revision is not None:
-            object.__setattr__(
-                self,
-                "published_revision",
-                _positive_revision(
-                    self.published_revision,
-                    field_name="published_revision",
-                ),
+            _positive_revision(
+                self.published_revision,
+                field_name="published_revision",
             )
         if self.lifecycle is DefinitionLifecycle.DRAFT and (
             self.published_revision is not None or not self.draft_dirty
@@ -123,13 +130,15 @@ class DefinitionHeaderState:
             raise InvalidDefinitionRevisionError(
                 "A non-draft header must retain a published revision."
             )
+        return self
 
     def edit(self, *, expected_draft_version: int) -> DefinitionHeaderState:
         self._require_draft_version(expected_draft_version)
         if self.lifecycle is DefinitionLifecycle.ARCHIVED:
             raise DefinitionWithdrawnError("Archived definitions cannot be edited.")
-        return replace(
-            self,
+        return DefinitionHeaderState(
+            lifecycle=self.lifecycle,
+            published_revision=self.published_revision,
             draft_version=self.draft_version + 1,
             draft_dirty=True,
         )
@@ -154,10 +163,10 @@ class DefinitionHeaderState:
             )
         if self.lifecycle is DefinitionLifecycle.ARCHIVED:
             raise DefinitionWithdrawnError("Archived definitions cannot be published.")
-        return replace(
-            self,
+        return DefinitionHeaderState(
             lifecycle=DefinitionLifecycle.PUBLISHED,
             published_revision=revision,
+            draft_version=self.draft_version,
             draft_dirty=False,
         )
 
@@ -168,14 +177,24 @@ class DefinitionHeaderState:
             )
         if self.lifecycle is DefinitionLifecycle.ARCHIVED:
             raise DefinitionWithdrawnError("Archived definitions cannot be withdrawn.")
-        return replace(self, lifecycle=DefinitionLifecycle.WITHDRAWN)
+        return DefinitionHeaderState(
+            lifecycle=DefinitionLifecycle.WITHDRAWN,
+            published_revision=self.published_revision,
+            draft_version=self.draft_version,
+            draft_dirty=self.draft_dirty,
+        )
 
     def archive(self) -> DefinitionHeaderState:
         if self.published_revision is None:
             raise DefinitionNotPublishedError(
                 "A draft-only definition cannot be archived."
             )
-        return replace(self, lifecycle=DefinitionLifecycle.ARCHIVED)
+        return DefinitionHeaderState(
+            lifecycle=DefinitionLifecycle.ARCHIVED,
+            published_revision=self.published_revision,
+            draft_version=self.draft_version,
+            draft_dirty=self.draft_dirty,
+        )
 
     def revision_for_new_work(self) -> int:
         if self.lifecycle is DefinitionLifecycle.DRAFT:
@@ -196,9 +215,8 @@ class DefinitionHeaderState:
             raise RevisionConflictError(expected=expected, actual=self.draft_version)
 
 
-@dataclass(frozen=True, slots=True)
-class PublishedRevisionState:
-    """Lifecycle metadata allowed beside an immutable revision payload."""
+class PublishedRevisionState(_RevisionValue):
+    """Validated availability metadata; revocation creates a new immutable value."""
 
     published_at: datetime
     availability: RevisionAvailability = RevisionAvailability.PUBLISHED
@@ -207,12 +225,13 @@ class PublishedRevisionState:
     revocation_reason: str | None = None
     cancellation_requested_at: datetime | None = None
 
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "availability",
-            RevisionAvailability(self.availability),
-        )
+    @field_validator("revoked_by", mode="before")
+    @classmethod
+    def normalize_actor_id(cls, value: object) -> object:
+        return normalize_uuid_like(value)
+
+    @model_validator(mode="after")
+    def validate_lifecycle(self) -> Self:
         _aware_datetime(self.published_at, field_name="published_at")
         lifecycle_values = (
             self.revoked_at,
@@ -225,22 +244,18 @@ class PublishedRevisionState:
                 raise InvalidDefinitionRevisionError(
                     "A published revision cannot carry revocation metadata."
                 )
-            return
+            return self
         if any(value is None for value in lifecycle_values):
             raise InvalidDefinitionRevisionError(
                 "A revoked revision requires actor, time, reason, and cancellation request."
             )
-        object.__setattr__(
-            self,
-            "revoked_by",
-            _uuid(self.revoked_by, field_name="revoked_by"),
-        )
         _aware_datetime(self.revoked_at, field_name="revoked_at")
         _aware_datetime(
             self.cancellation_requested_at,
             field_name="cancellation_requested_at",
         )
         _revocation_reason(self.revocation_reason)
+        return self
 
     def require_available(self) -> None:
         if self.availability is RevisionAvailability.REVOKED:
@@ -259,8 +274,8 @@ class PublishedRevisionState:
         actor_id = _uuid(actor_id, field_name="actor_id")
         reason = _revocation_reason(reason)
         at = _aware_datetime(at, field_name="revoked_at")
-        return replace(
-            self,
+        return PublishedRevisionState(
+            published_at=self.published_at,
             availability=RevisionAvailability.REVOKED,
             revoked_at=at,
             revoked_by=actor_id,

@@ -35,7 +35,7 @@ class WebRTCRuntimeVerifier:
             raise WebRTCVerificationError(
                 "WebRTC provider verification failed."
             ) from None
-        return WebRTCProviderVerification(provider=config.provider.value)
+        return WebRTCProviderVerification(provider=config.provider)
 
 
 class WebRTCConfigVerificationUseCase:
@@ -55,7 +55,7 @@ class WebRTCConfigVerificationUseCase:
                 organization_id=organization_id,
                 config_id=config_id,
             )
-            provider_config = WebRTCProviderConfig.validate(
+            provider_config = WebRTCProviderConfig.from_payload(
                 provider=stored.provider,
                 config=stored.config,
                 secrets=stored.secrets,

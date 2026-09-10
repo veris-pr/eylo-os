@@ -6937,6 +6937,595 @@ envelopes still contain older dictionary/string contracts; their hardening is
 not implied by the typed answer or zero-error peer files. No deployment or
 operator configuration change in this slice.
 
+### WebRTC material, verification and browser ICE contracts
+
+2026-09-09: replaced WebRTC config/resolution and verification dataclasses with
+frozen Pydantic values. Provider type remains an enum from validation through
+verification; settings and credentials have separate owned models. Pipeline
+composition explicitly exports secrets to sockets and projects native ICE
+objects into browser-only models. No module imports a socket or SDK type.
+
+Runtime probes caught and repaired two implementation errors before deployment:
+
+- An undiscriminated settings union tried Metered first for Turnix. Domain-error
+  conversion aborted union branch fallback. Explicit tags now select the matching
+  validator; the provider/settings agreement check still rejects mismatches.
+- Shared provider snapshots hold mapping proxies. Strict model validation rejected
+  those despite accepting plain-dict fixtures. Explicit mapping copies now cover
+  the real pinned-config input and credential shapes.
+
+Executed: 42 config/serialization assertions and 34 authority/transaction
+assertions. Both vendors compose to their actual socket configs; omitted settings,
+normalization, finite bounds, malformed inputs, private serialization, browser
+TURN output, org/config/capability mismatch refusal, detached verification and
+stale-revision propagation passed. Transaction and service I/O were substituted;
+these are not encrypted DB round-trip or live TURN-provider proofs.
+The existing local aiortc negotiation probe also passed all 50 assertions after
+the final edits, including concurrent prepare, cached replay and cleanup.
+
+Focused milestone review, in order: domain models remain module-owned; pipeline
+composition is the only bridge to socket configs; mapping-proxy inputs and browser
+serialization are exercised end to end within the local contract; the plan's
+native wire-model work remains explicitly open; named value objects replace
+post-construction type mutation without adding persistence or transport machinery.
+Existing nullable transport overrides retain their previous validation boundary;
+this slice does not silently reinterpret explicit null as an omitted default.
+
+The WebRTC config module, pipeline and STUN/TURN socket paths are type-clean and
+included in the existing local voice hook. Full-project Pyrefly is **313 errors**
+with four existing suppressions, down seven. Native vendor request/response
+dictionary contracts and remaining signaling envelopes remain pending; a clean
+type check does not claim those dictionaries have been replaced.
+
+Live UI QA used the existing deployed build and existing Eylo Development org:
+signed into the console, sent `QA_CONFIG_FLOW_20260909` through the widget, then
+inspected the conversation detail. `kb_query(top_k=1)` returned Cedar Lantern
+with citation K1 and Bedrock reranking; `memory_recall` returned amber observatory.
+All eight new persisted messages, including both tool calls/results and the
+background observer completion, were completed (36 total messages). The expired
+admin login returned to the original conversation after signing in. No provider
+configuration was changed. This browser result does not validate the undeployed
+WebRTC changes or live microphone/provider cleanup.
+
+Widget navigation returned to the 15-conversation list and reopened the configured
+Groq conversation. `QA_GROQ_NAV_20260909` correctly recalled the earlier 17 × 23
+calculation and 391 result without tools. Console search (`q=Groq`) returned four
+conversations; opening the latest showed all four messages completed, including
+the new request/response. Both UI tabs remain open for the operator.
+
+Next at this checkpoint: finish native STUN/TURN wire contracts and signaling envelopes; rerun
+local peer/negotiation checks, then deploy a coherent milestone and repeat
+provider/voice QA. No schema migration or Git operation is part of this slice.
+
+### STUN/TURN native credential wire contracts
+
+2026-09-09: continued the WebRTC data flow through the fixed Metered and Turnix
+HTTP endpoints. Installed Pydantic 2.11.10, HTTPX 0.28.1 and aiortc 1.15.0 were
+used for validation. No dependency changed.
+
+- `MeteredCredentialQuery` owns explicit API-key query export.
+- `TurnixCredentialRequest` replaces the reflective field-name/getattr dictionary
+  with six explicit fields selected from the validated native config. Client IP
+  and bearer auth remain headers, not body fields.
+- `IceCredentials` and `IceServer` validate consumed response data before native
+  construction. Both prior list/envelope shapes remain accepted, including
+  mapping proxies; supported URL schemes are a socket-owned enum. Unknown vendor
+  metadata remains ignored. Native peer values and browser output remain unchanged.
+- Config and response credentials are excluded from ordinary dumps. Retry count,
+  delay, endpoint pinning and Metered's existing TLS exception are unchanged.
+
+Sources: [Metered GET credential](https://www.metered.ca/docs/turn-rest-api/get-credential/)
+and [Turnix POST ICE credentials](https://turnix.io/docs/api-ice-credentials).
+Turnix's parameter table and Dart/Java examples use `preferred_region`; some
+other examples misspell it `preffered_region`. The implementation retains the
+documented parameter-table spelling rather than adopting the inconsistent typo.
+
+Executed function QA: **66 assertions** through actual config models, factory,
+adapters, HTTPX request construction, parser and native ICE outputs. HTTPX
+MockTransport substituted vendor I/O. Checked root/envelope/mapping inputs,
+unsupported/malformed consumed fields, empty/STUN-only refusal, optional null
+credentials, metadata tolerance, secret-excluding dumps, exact query/body/header
+placement, transient 503 recovery, malformed-response retry exhaustion and
+cancellation during an in-flight request. All created clients closed; cancellation
+made one request and did not retry. These are not live vendor or TLS proofs.
+
+Native wire models now complete this part of F7; signaling envelopes and broader
+platform contracts remain open. This slice adds runtime contracts to files that
+were already statically clean, so it is not a claim of further type-error reduction.
+Final checks passed: the existing 42 config and 34 authority/transaction assertions,
+backend Ruff, the expanded local voice type hook, formatting and documentation
+validation. Full-project Pyrefly remains at 313 errors with four suppressions.
+No DB, migration, provider config, deployment or Git operation changed.
+
+### WebRTC signaling request, response and failure contracts
+
+2026-09-09: extended the same flow through authenticated WebSocket handlers.
+`requests.py` validates prepare, offer and candidate input before negotiation
+lookup. `schemas.py` owns immutable response values; `errors.py` owns signaling
+and ICE-policy failure enums. Cleanup reasons and steps are named enums. Handler
+serialization preserves the existing widget protocol, including its distinct
+accepted `candidate` and rejected `ice_candidate` command names.
+
+Deliberate tightening: booleans, floats and strings no longer masquerade as
+integer protocol versions. Consumed candidate metadata is validated even for a
+replayed candidate. When several input fields are invalid, validation reports
+the first contract field rather than the previous hand-written check order.
+Direct/nested/null candidate shapes and unknown-field tolerance remain supported.
+
+Executed handler/input/output QA: **66 assertions** using real Pydantic models,
+session context and WebSocket envelopes, with manager I/O substituted. Covered
+malformed inputs, exact browser ICE serialization, omitted auth/null expiry,
+request correlation, not-configured responses, safe generic failures, candidate
+and offer rejection codes, and idempotent hangup output. Two initial probe fixture
+errors (list instead of immutable ICE URL tuple, non-API configuration path) were
+corrected against the actual contracts; they were not product failures.
+
+The local voice typing hook now explicitly includes the new request/error files,
+ICE policy and WebRTC handlers. At this checkpoint candidate parsing still used
+a dataclass and native protocol literals; the following slice closes that gap.
+Whole-platform typing remains in progress. No DB, migration, provider config or
+Git history changes are required.
+
+Final checks: 50 actual local aiortc negotiation assertions passed, alongside
+the 66 signaling assertions, expanded voice type hook, backend Ruff and docs
+validation. External services were substituted for the loopback negotiation;
+this is not live provider or browser audio QA. Changes remain undeployed pending
+the next coherent runtime/browser QA milestone.
+
+### ICE candidate values and admission boundary
+
+2026-09-09: replaced `RemoteIceCandidate` with a frozen Pydantic model. ICE
+component, transport, candidate kind and TCP mode are owned enums. Supported
+extension pairs become a typed model at parsing; unknown extensions remain
+ignored. Candidate syntax, numeric bounds and the shared admission cap now have
+named constants. The manager explicitly exports primitive enum values to aiortc.
+
+Network policy is unchanged: public addresses are permitted, local ranges and
+mDNS require local mode, and unspecified/multicast/metadata targets are refused
+in both modes. No DNS resolution or DB/provider I/O was added. Known TCP modes
+remain valid on UDP candidates, but unknown `tcptype` values are now rejected
+there too instead of passing an unchecked value into the peer library.
+
+Executed **242 function assertions** covering all enum combinations, normalized
+input, numeric bounds, optional/duplicate/unknown extensions, invalid input,
+both deployment modes, immutable values, JSON representation and SDP filtering
+at the candidate cap. **50 real local aiortc negotiation assertions** also
+passed; external services were substituted. This does not prove live browser
+audio, TURN-provider operation or whole-platform typing completion.
+
+### Telephony prepared intent and persisted owner
+
+2026-09-09: continued from browser transport into the telephony lifecycle.
+`prepare_outbound_call` now compares immutable typed intent projections, then
+passes explicit typed arguments to call creation instead of unpacking a mixed
+dictionary. The module-owned provider/direction enums validate the projection;
+UUID normalization reuses `EyloBaseSchema`. Invalid stored intent becomes a
+`CallLifecycleConflict`; mismatched fields retain the conflict outcome with a
+single generic message rather than reflective field-name diagnostics.
+
+`CallLifecycleStatusResult` is a frozen Pydantic value. `TelephonyCallInDb` now
+uses the existing required-organization schema, matching its non-null DB column.
+No migration or transaction/locking behavior changed. Transfer metadata, status
+history and other telephony provider contracts remain separate unfinished work.
+
+Executed **84 function assertions** through the real lifecycle, creation service,
+ORM model and Pydantic result, substituting DB transaction/repository I/O. Checked
+explicit persisted fields, replay without another save, every intent-field
+conflict, invalid stored provider, absent/null owner refusal, immutable result
+and retained nested result identity. These are not carrier, database concurrency
+or live callback proofs. Added lifecycle to the existing telephony type hook.
+
+Both affected type hooks and backend Ruff pass. Full-project Pyrefly is now
+**291 errors (four suppressions)**, down from 313; required call ownership also
+resolves downstream optional-owner diagnostics. The overall hardening goal is
+still incomplete.
+
+### Telephony carrier material and verification contracts
+
+2026-09-10: replaced the telephony config/resolved dataclasses with immutable
+Pydantic material. A provider-discriminated union pairs each carrier's settings
+and credentials. Mapping input is accepted only at `from_payload`; persistence
+uses explicit `settings_values()` and `secret_values()` exports. Runtime socket
+construction passes typed attributes, preserving the module/socket enum boundary.
+The status callback still uses its existing signature adapter's mapping contract,
+fed by these explicit exports. Webhook signing policy was not changed.
+
+Resolved material now checks the effective snapshot's organization and telephony
+capability, retaining the exact config identity/revision. Credentials are excluded
+from normal model dumps and repr. Existing HTTPS, Exotel-host, PEM and required
+field checks remain; malformed shapes produce safe domain errors rather than
+Pydantic diagnostics containing input. Carrier verification results, fingerprint
+metadata and the socket probe result are typed immutable values too. Account
+references are excluded from ordinary probe-result serialization.
+
+Runtime QA caught an initial import failure: inheriting the shared wildcard
+before-validator conflicts with a field-discriminated union. Carrier values now
+use a plain Pydantic base; only resolved UUID fields apply shared normalization.
+This was an implementation regression caught before deployment, not a live
+carrier failure. The Plivo probe fixture was also corrected to its installed
+SDK's syntactic account-ID format before asserting successful client creation.
+
+Executed **244 function assertions** for all four carrier models, native factory
+construction/cleanup, normalized persistence exports, secret exclusion, invalid
+fields, foreign model subclasses and authority mismatches. Another **21 boundary
+assertions** exercised config creation and revision-safe verification using the
+real service/use-case/result models with persistence and network probes replaced.
+No external carrier calls or operator config changes were made. Expanded the
+telephony hook to include config service, verification contracts and status routes.
+Native request/response bodies, signature-adapter dictionaries and remaining
+telephony status/transfer contracts still need subsequent flow-based hardening.
+
+### Telephony canonical callback status and scheduled agent identity
+
+2026-09-10: preserved `CallStatus` and module-owned `TelephonyProvider` from
+callback mapping through controller dispatch. Removed the mixed `Any` keyword
+dictionary at the lifecycle call; canonical status, terminal reason, duration
+and timestamp now cross that boundary as explicit arguments. Retry limits have
+names without changing their values. Native callback dictionaries/status maps
+remain an unfinished vendor boundary; this slice does not claim they are typed.
+
+Executed **133 function assertions** through actual callback controller, call
+lifecycle, status service and ORM/schema projections, with transactions,
+repositories, durable filing and event delivery substituted. All four existing
+provider callback mappings reached the expected canonical completion. Repeated
+terminal callbacks and stale ringing updates did not file another terminal fact
+or emit another terminal event; terminal reason, duration, provider mismatch and
+post-transaction emission were checked. Exotel's direct controller function was
+covered, not its public route: authenticated Exotel callbacks remain unsupported.
+
+The scheduled-call tool now validates its participant's string agent identifier
+as a UUID before calling the scheduler. Removed six write-only private-helper
+`__eylo_hidden__` assignments (five telephony helpers and one scheduler helper);
+the explicit registration manifest, not those attributes, owns tool visibility.
+**20 function assertions** checked scheduler input, invalid-ID refusal, actual
+registration and exclusion of all six helpers. Tool docstrings and public slugs
+were not changed. Added callback/controller and telephony tools to the existing
+telephony typing hook. No operator schedules, calls or provider state changed.
+
+Full-project Pyrefly is **283 errors (three suppressions)**, down from 291.
+The telephony type hook, runtime-import hook, backend Ruff and documentation
+validation pass. Live callback delivery, DB concurrency and browser QA remain
+unverified for these undeployed changes.
+
+### Telephony silence lifetime and completion metrics
+
+2026-09-10: reproduced three Pyrefly errors in the silence monitor's reminder
+closure. Startup validated nullable call fields, but the closure reread them.
+Teardown already cancels and awaits policy tasks before discarding the live
+buffer; this was not a reproduced production disconnect failure. The monitor now
+retains the narrowed TTS, buffer, conversation and registered WS state references
+for its lifetime. Missing setup still returns, a missing registered session still
+raises, ordinary reminder failure releases the activity gate, and cancellation
+still propagates.
+
+The same completion flow now retains objects instead of assembling an untyped
+metrics dictionary. STT factory and runtime expose detached snapshots; the
+runtime model owns its factory-counter projection. `CarrierAudioMetrics` and
+`CallAudioMetrics` belong to the telephony pipeline, not the transcript module or
+vendor sockets. The pipeline adds the terminal-reason enum and serializes only
+for logs and canonical persistence. Existing stored keys, absent branches and
+nested null measurements remain unchanged. `VoiceSessionCompletionResult` is a
+frozen Pydantic model; its `changed` field remains an intrinsic strict boolean.
+The completion command explicitly accepts a JSON-valued metrics dictionary at
+the persistence boundary, without importing socket or pipeline models.
+
+Executed **90 function assertions**: 34 through the silence-monitor callbacks,
+real policy-speech capture/TTS queue and cancellation/drain path; 56 for metric
+snapshots, storage-shape parity, detached counters, validation and actual call
+finalizer → voice completion → ORM assignment. DB sessions, durable event filing
+and nudges were substituted. Both normal metrics and metrics-collection failure
+completed the ORM transition; injected nudge failure remained nonfatal. No live
+vendor request, operator data or database schema changed.
+
+Full-project Pyrefly reports **280 errors (three suppressions)**, down from 283.
+Added telephony voice/metrics and voice completion to the telephony contract hook.
+Live provider, real DB concurrency and changed-build browser checks remain open;
+these function checks do not establish those outcomes.
+
+### Recording upload work and cancellation contracts
+
+2026-09-10: replaced the worker's conditionally initialized scalar locals with
+`RecordingUploadStaged | RecordingUploadFinished`. DB loading now returns a
+detached snapshot or receipt; success projection also returns a receipt rather
+than an ORM row outside its transaction. Raw audio fields are excluded from
+snapshot serialization. Queue inputs remain organization/recording IDs only,
+validated without stringifying arbitrary objects. Receipt wire keys and state
+values are unchanged; `deleted` remains a missing-row outcome, not a DB state.
+
+Recording-owned track/effect/retention enums replace free-form track strings and
+the staged-retention selector. Transcript track roles remain separately owned.
+Upload/cancellation results now use frozen Pydantic models and the Absurd step
+adapter preserves its operation's generic result type. Provider resolution, PUT,
+canonical projection and post-commit delivery nudging retain separate phases.
+The shared outbound receipt and authorization/outcome models were addressed in
+the following slices. Generic durable-service return types and open-ended
+recording metadata remain broader hardening work; this slice does not claim
+those boundaries are finished.
+
+QA exposed a control-flow defect: `CancelledTask` is an `Exception`; generic
+upload failure handling caught it. On the last allowed attempt, failure handling
+returned a normal failed receipt, bypassing cancellation fencing. A function
+regression reproduced this before the fix. Load/resolution/upload cancellation
+now propagates directly to the existing cancellation owner. Ordinary retry and
+terminal-error behavior remains unchanged. This is a supported runtime cause,
+not an inference from the original unbound-local diagnostics.
+
+Executed **338 function assertions** through real worker methods, durable-work
+services, ORM objects, storage runtime/factory and filesystem PUT/inspection/
+streaming. DB sessions, outbound ledger execution and event delivery were
+controlled. Checked synthetic track bytes/digests, successful/cached receipts,
+stable per-track operation names, missing config/audio/key, unbound/deleted work,
+uncertain uploads, last-attempt cancellation, accepted/unsent/uncertain fencing,
+fencing failure and process-task cancellation. Snapshot privacy, invalid IDs,
+enum identity, frozen results and generic step results were also checked.
+
+Live S3, real DB locking, process crashes and changed-build browser QA remain
+unrun. No operator recording, provider configuration, migration or deployed image
+was changed. Added the recording contracts and worker to the existing local
+voice type gate.
+
+Full-project Pyrefly reports **269 errors (three suppressions)**, down from 280.
+
+### Shared outbound receipt and checkpoint contract
+
+2026-09-10: `OutboundExecutionReceipt` now uses frozen, strict Pydantic validation
+instead of a dataclass and separate manual checkpoint parser. DB projection,
+direct construction and checkpoint replay share the lifecycle rules. Typed JSON
+serialization preserves all seven keys and explicit nulls. UUID/state strings
+are decoded explicitly; arbitrary stringifiable objects, numeric coercion and
+unknown checkpoint fields are refused. Existing checkpoints produced by Eylo
+remain compatible; no migration or checkpoint-version change is needed.
+
+The outbound outcome union is narrowed explicitly instead of probing for
+`failure_code` with `getattr`. Shared owner/state vocabulary remains in
+`common/outbound.py`; this pipeline-owned receipt does not cross into sockets or
+modules. Sender execution remains outside the ledger's short DB transactions.
+
+Executed **608 function assertions** covering lifecycle combinations, strict
+types, bounds, frozen instances, required fields, JSON parity, UUID library
+conversion, wrong-attempt replay, all send outcomes, retry without checkpoint,
+replay without resend, preflight failure and cancellation. Checks use actual
+outbound services and ORM models with controlled DB sessions and senders; they
+do not prove real locking or remote effects. Re-ran **338 recording-worker
+assertions**, including actual temporary filesystem uploads and readback.
+
+The receipt and its recording/email/MCP/number-management consumers pass targeted
+Pyrefly. Added the shared bridge to the existing local voice type gate. Broader
+typing work and changed-build browser/provider QA remain open.
+
+### Shared outbound inputs and provider outcomes
+
+2026-09-10: converted outbound identity, attempt specification, authorization and
+the four provider outcome variants from dataclasses to frozen, strict Pydantic
+contracts. Normalized operation/failure identifiers, stable UUID seeds,
+idempotency keys, destination normalization and fingerprint values are retained.
+The owner boundary accepts actual stdlib/uuid-utils UUID objects; arbitrary
+objects and plain strings cannot masquerade as typed owner identities. Nested
+identity instances are revalidated. Provider/owner enums remain common-owned;
+native failure categories remain adapter-owned.
+
+SMTP and SendGrid positional outcome constructors, including SMTP's dynamically
+selected failure class, now use explicit `failure_code` keywords. No native
+request, retry classification, credential placement or connection policy changed.
+Shared status limits are named constants used by both outcomes and receipts.
+
+Executed **357 new function assertions** for identity/hash/fingerprint parity,
+normalization, strict types, immutable/nested contracts, and real SMTP/SendGrid
+planning/outcome code using controlled transports. The SendGrid path also ran
+through the actual outbound service and ORM projection with controlled DB
+sessions. Re-ran **608 outbound receipt** and **338 recording-worker assertions**.
+These checks do not establish live email delivery or real DB concurrency.
+
+All **20 constructor/consumer files** pass targeted Pyrefly. The new local
+`python-typed-outbound-contracts` hook covers them explicitly; receipt checking
+moved out of the voice-only gate into this shared gate. Full-project Pyrefly
+remains **269 errors (three suppressions)**. Broader checks still report existing
+deletion-query/campaign-owner issues and two email config annotation errors.
+Email's config dataclass declares `provider: str` but replaces it with an enum
+at runtime; this is an annotation/contract mismatch, not evidence that native
+verification failed. The following slice addresses email config validation →
+provider resolution → socket construction → verification/delivery.
+
+No operator config, schema, deployed image or remote provider state changed.
+Changed-build widget/admin QA remains pending the unlocked Mac and rebuild.
+
+### Email configuration, resolution and verification material
+
+2026-09-10: replaced `EmailProviderConfig`/`ResolvedEmail` dataclasses and mutable
+settings/credential mappings with frozen Pydantic material variants. Module-owned
+SendGrid/SMTP settings and credentials remain separate from socket schemas.
+`SMTPSecurity` replaces free-form in-process security mode; public values are
+unchanged. `from_payload` validates the existing persistence/API shape and exports
+typed JSON settings or explicit plaintext secrets only at those boundaries.
+
+The pipeline constructs socket settings explicitly from typed fields. Resolution
+passes material directly rather than round-tripping through dictionaries, and
+checks organization/capability/config identity plus positive revision. Credentials
+retain their exact bytes, including intentional whitespace; repr/normal model
+serialization excludes them. Missing/unknown fields, invalid types and non-finite
+timeouts fail early. The existing SMTP public-host and secret-replacement rules
+remain in their owning domain/service.
+
+Verification receipts now carry an email-provider enum and a positive revision /
+aware timestamp. The verifier closes its factory on success, failure and task
+cancellation; the use case rejects a mismatched provider receipt before marking
+the config verified. DB read → external verification → expected-revision update
+remains split into short transactions. This strengthens the contract; it is not
+a claim that existing stateless adapters leaked live connections.
+
+Executed **251 function assertions** covering normalization and socket parity,
+private output, immutable exports, encryption/decryption round trip, malformed
+settings/secrets, both SMTP security modes, resolved identity, public response
+masking, service updates, pinned revisions, stale verification, mismatched
+receipts and cleanup. Ran config creation → shared provider service → resolution
+→ actual SendGrid planning → actual outbound service/ORM receipt → delivery
+result with controlled repositories, DB sessions and HTTP transport. Wrong-org
+resolution did not send. No real provider request or operator data was changed.
+
+The complete email module/pipeline/socket paths pass targeted Pyrefly; the local
+`python-typed-email-contracts` hook now covers them. Full-project Pyrefly reports
+**265 errors (three suppressions)**, down from 269. Socket-native webhook/response
+payloads, email tool/delivery result dataclasses and campaign caller ownership
+remain subsequent data-flow work; a passing type gate does not close those gaps.
+Changed-build browser QA remains pending. No migration or deployment occurred.
+
+### Email delivery and agent-tool outcomes
+
+2026-09-10: replaced delivery/tool result dataclasses with frozen Pydantic
+contracts in `pipelines/email/contracts.py`. Named enums own delivery status and
+tool errors. Success/error content and receipt metadata are validated together;
+the error flag and existing JSON views are derived at the framework boundary.
+The tool reads typed agent bindings directly, retaining the committed TOOL_USE
+owner ID, exact config revision, cancellation and retry propagation.
+
+Campaign and campaign-contact persisted DTOs now require `organization_id`, as
+their ORM columns already do. This is a schema-contract correction, not a DB
+migration. The expanded email type gate covers the conversation tool dispatcher
+and campaign email/voice consumers.
+
+Executed **171 function assertions** for delivery projections, immutable values,
+invalid/contradictory outcomes, JSON parity through framework `ToolResult`,
+required campaign ownership, conversation/background context dispatch, missing
+bindings, malformed input, exception classification and cancellation propagation.
+The sender was controlled: no email was sent. Re-ran the existing **251 email
+config/delivery assertions**, including actual service/resolver/SendGrid planning
+and outbound receipt code with controlled repositories and transport.
+
+Full-project Pyrefly now reports **256 errors (three suppressions)**, down from
+265. Native email webhook/response payloads and broader campaign config typing
+remain pending; passing this slice does not complete platform-wide hardening.
+No operator data, migration or deployment changed. Changed-build browser QA
+remains required below.
+
+### SendGrid native request, response and event contracts
+
+2026-09-10: traced email socket callbacks before extending typing. No email
+webhook route, campaign consumer or call site currently uses `process_webhook` or
+`transform_to_platform_response`. Kept these adapter contracts, but did not build
+or claim a webhook delivery-status pipeline.
+
+`sockets/email/sendgrid_wire.py` now owns the executable v3 mail request subset:
+addresses, envelopes, content, attachments and Eylo's custom attempt argument.
+The adapter constructs objects, then serializes the native keys once. Scope
+verification validates a native response model before checking the required
+scope. Unrelated response fields and unneeded scope names do not need platform
+enums. Known event names use a vendor enum; consumed webhook fields are typed,
+extension fields are validated JSON, and malformed/unknown events fail rather
+than being stringified or given an epoch-zero timestamp. The original batch
+authentication/ingress feature remains absent, not implicitly enabled.
+
+Removed `Any` from email adapter response and callback interfaces. Concrete
+response translators narrow actual HTTP responses or SMTP reference strings;
+arbitrary objects no longer become string message IDs. Neutral response/event
+metadata is finite JSON. This is an adapter contract correction, with no DB/API
+schema change or new public endpoint.
+
+Verified against current official SendGrid v3 references (linked in provider
+architecture) and local Pydantic 2.11.10 / HTTPX 0.28.1. **142 function assertions**
+cover full/minimal native payloads, a native JSON round trip, omission of absent fields, priorities,
+attachments, scope validation, 11 event kinds, metadata, malformed inputs and
+real verification-client construction using a controlled HTTPX transport.
+Re-ran **251 email config/delivery** and **357 outbound** assertions: all passed.
+No email or webhook was sent to a vendor; no operator configuration was changed.
+
+The native `from` field uses Pydantic's documented
+[annotated alias pattern](https://docs.pydantic.dev/2.11/concepts/fields/#field-aliases),
+so Python construction uses `sender` while validation/serialization accepts the
+native name without casts or type-checker suppression. Full-project Pyrefly is
+unchanged at **256 errors (three suppressions)**; replacing previously permissive
+`Any` boundaries adds runtime coverage that the error count alone cannot measure.
+
+Next email slice: delivery-plan/capability dataclasses and SMTP native result/error
+categories. Broader platform typing and changed-build browser QA remain open.
+
+### Email delivery plans and SMTP result/cleanup contracts
+
+2026-09-10: replaced the remaining email delivery-plan/capability dataclasses with
+strict frozen Pydantic values. `EmailCapabilitySupport` replaces capability
+booleans; current SMTP and SendGrid both declare unsupported idempotency and
+reconciliation. The sender is runtime-only, excluded from JSON/schema/repr.
+Attempt identity and bounded operation/origin fields are checked before use.
+`SMTPFailureCode` replaces free-form failure categories, and a named delivery
+phase distinguishes preflight from sending. Native SDK result types stay in the
+adapter; no duplicate framework-owned SMTP response type was introduced.
+
+Tracing the actual aiosmtplib 5.1.1 API (manifest, lock and installed source agree)
+exposed three defects, reproduced before edits:
+
+- A normal `send_message` return could contain rejected recipients, but the result
+  was discarded and reported as success. It now becomes `UNKNOWN` with
+  `smtp_partial_acceptance`; the durable ledger prevents replay of the whole
+  envelope. No per-recipient retry or partial-success product mode was added.
+- Cancellation during `sock_connect` skipped socket close. Cleanup now covers
+  cancellation and other exceptions, propagating them after close.
+- SMTP client construction occurred before the cleanup region. Construction now
+  happens inside it; final cleanup also closes the client transport if QUIT or
+  async context teardown fails.
+
+The old function probe returned `None` from its SMTP fake and used invented
+prewire error strings. That did not model the SDK's real result shape. Updated
+the fixture to the actual `(refused_recipients, response_text)` tuple and current
+error enums without weakening the existing expected lifecycle outcomes.
+
+Executed **191 function assertions** covering plan validation/serialization,
+exact attempt authorization, both TLS modes, lifecycle cleanup, DNS/address
+rejection, connect retry/cancellation, SMTP response classification and the real
+SDK's `send_message` path with a controlled `sendmail` result. A separate
+**273-assertion receipt/SMTP probe** ran the native result through actual outbound
+service/ORM/receipt code, using controlled DB sessions: a partial send persisted
+UNKNOWN, then checkpoint replay and DB-only replay both avoided a second send.
+Re-ran **251 email configuration/delivery** and **357 outbound** assertions.
+
+This verifies local contracts, not a live SMTP delivery, TLS handshake or real
+PostgreSQL concurrency run. No operator data, deployment or schema changed.
+Full-project Pyrefly remains **256 errors (three suppressions)**. Next: finish
+campaign configuration and dispatch contracts into their remaining type errors.
+Browser QA remains open.
+
+SendGrid follow-up: adapter-owned failure codes now use `SendGridFailureCode`;
+HTTP classifications use `HTTPStatus`, and the response-body limit, operation
+name and shared provider-reference bound are named constants. Persisted failure
+values and delivery classifications are unchanged. The common egress error
+vocabulary remains common-owned rather than being duplicated as a vendor enum.
+The 357-assertion outbound contract probe and repository Python lint pass again.
+
+### Changed-build product QA acceptance gate
+
+2026-09-10 user requirement: after implementation, run the real widget and
+operator console against the existing Eylo Development organization. Reuse its
+configured providers and agents; read credentials only from the private local
+credentials file. Do not create a replacement organization or expose secrets.
+
+Ordered acceptance checklist:
+
+- [ ] Finish the current implementation scope and required local checks.
+- [ ] Rebuild/recreate the development backend and workers; verify that the
+  deployed files match the changed checkout before claiming coverage.
+- [x] Confirm console `/login` on port 5173, widget on port 5174 and API `/health`
+  on port 8000 respond. All returned HTTP 200 on 2026-09-10; existing servers
+  did not need another start. API, PostgreSQL and Redis reported healthy.
+- [ ] Log in through the browser and confirm the existing organization.
+- [ ] Converse with configured agents through the widget: ordinary conversation,
+  knowledge retrieval/citations, memory and configured read-only integration/SOR
+  tools. Exercise conversation navigation, reopening and message pagination.
+- [ ] Inspect the same conversations in the console: visible messages, terminal
+  message states, tool arguments/results and correspondence with widget output.
+- [ ] Exercise affected voice setup/teardown paths where media access permits;
+  distinguish automated checks from human audio-quality validation.
+- [ ] Record exact exercised agents/conversations, failures and unrun cases.
+
+Current blocker: browser automation reported that the Mac is locked and automatic
+unlock failed. Manual unlock is required for UI navigation. The deployed API
+still contains the older telephony config implementation and lacks the new
+`pipelines/webrtc/requests.py`; HTTP health checks are not changed-build QA.
+Voice and telephony typed-contract hooks passed again. No deployment, provider
+configuration, database or conversation was changed during this readiness check.
+
+Latest recheck: console `/login` and widget `/` both returned HTTP 200; neither
+needed a duplicate server process. Browser automation again reported the locked
+Mac. Login, agent conversations and console tool-call inspection remain unrun
+for this source build; an HTTP response is not evidence of those interactions.
+
 ### F5 next slice: Smallest protocol evidence gap
 
 2026-09-09: source tracing found the Smallest adapter hardwired to Lightning v2,

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
 from uuid import UUID
 
 import arrow
@@ -30,6 +29,7 @@ from eylo.modules.voice_configs.domain import ResolvedSTT, ResolvedTTS
 from eylo.modules.voice_transcripts.constants import VoiceRuntimeMode
 from eylo.modules.voice_transcripts.schemas.indb import VoiceSessionCreate
 from eylo.modules.voice_transcripts.services.indb import VoiceTranscriptService
+from eylo.pipelines.telephony.metrics import CallAudioMetrics, CarrierAudioMetrics
 from eylo.pipelines.telephony.sessions import CallSession, CallTerminationState
 from eylo.pipelines.voice.interaction_config import apply_voice_interaction_config
 from eylo.pipelines.voice.lifecycle_policy import (
@@ -110,19 +110,18 @@ def apply_voice_bundle_to_session(
     sess.voice_config = voice_bundle.voice_config
 
 
-def collect_call_audio_metrics(sess: CallSession) -> dict[str, Any]:
-    metrics: dict[str, Any] = {}
-    if sess.stt:
-        metrics["stt"] = sess.stt.metrics
-    if sess.tts:
-        metrics["tts"] = sess.tts.metrics_snapshot().model_dump()
-    metrics["transport"] = {
-        "carrier_audio_chunks": sess.carrier_audio_chunks,
-        "carrier_audio_bytes": sess.carrier_audio_bytes,
-        "comfort_audio_chunks": sess.comfort_audio_chunks,
-        "comfort_audio_bytes": sess.comfort_audio_bytes,
-    }
-    return metrics
+def collect_call_audio_metrics(sess: CallSession) -> CallAudioMetrics:
+    """Capture detached provider and carrier counters before call teardown."""
+    return CallAudioMetrics(
+        stt=sess.stt.metrics_snapshot() if sess.stt is not None else None,
+        tts=sess.tts.metrics_snapshot() if sess.tts is not None else None,
+        transport=CarrierAudioMetrics(
+            carrier_audio_chunks=sess.carrier_audio_chunks,
+            carrier_audio_bytes=sess.carrier_audio_bytes,
+            comfort_audio_chunks=sess.comfort_audio_chunks,
+            comfort_audio_bytes=sess.comfort_audio_bytes,
+        ),
+    )
 
 
 async def terminate_telephony_voice(
@@ -338,6 +337,7 @@ async def _monitor_telephony_silence(
     silence_config: SilenceConfig,
     final_message: str | None,
 ) -> None:
+    """Retain initialized handles until the owning call cancels this monitor."""
     if (
         sess.tts is None
         or sess.live_voice_buffer is None
@@ -346,22 +346,26 @@ async def _monitor_telephony_silence(
         or not sess.auth_session_token
     ):
         return
+    tts = sess.tts
+    live_buffer = sess.live_voice_buffer
+    conversation_id = sess.conversation_id
     session_state = S_ws_manager.get_session_state(
         sess.organization_id,
         sess.auth_session_token,
     )
     if session_state is None:
         raise RuntimeError("Registered telephony WS session is unavailable.")
+    active_session = session_state
 
     async def play_reminder(message: str) -> None:
         try:
             await play_policy_speech(
-                tts_manager=sess.tts,
-                live_buffer=sess.live_voice_buffer,
-                conversation_id=sess.conversation_id,
+                tts_manager=tts,
+                live_buffer=live_buffer,
+                conversation_id=conversation_id,
                 text=message,
                 source=VoiceRequestSource.SILENCE,
-                session_state=session_state,
+                session_state=active_session,
             )
         except Exception as error:
             logger.error(
@@ -370,7 +374,7 @@ async def _monitor_telephony_silence(
                 sess.call_sid,
                 type(error).__name__,
             )
-            session_state.voice_activity_gate.mark_agent_activity_finished()
+            active_session.voice_activity_gate.mark_agent_activity_finished()
 
     async def end_for_silence(elapsed: float) -> None:
         logger.info(
@@ -389,10 +393,10 @@ async def _monitor_telephony_silence(
     try:
         await monitor_silence(
             config=silence_config,
-            speech_activity_event=session_state.speech_activity_event,
-            activity=session_state.voice_activity_gate,
-            is_agent_thinking=lambda: session_state.is_agent_thinking,
-            is_tts_active=sess.tts.is_playback_active,
+            speech_activity_event=active_session.speech_activity_event,
+            activity=active_session.voice_activity_gate,
+            is_agent_thinking=lambda: active_session.is_agent_thinking,
+            is_tts_active=tts.is_playback_active,
             on_reminder=play_reminder,
             on_timeout=end_for_silence,
         )

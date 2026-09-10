@@ -22,6 +22,7 @@ from eylo.common.schemas import (
     EyloBaseRequestSchema,
     EyloBaseResponseSchema,
     EyloBaseSchema,
+    EyloOrganizationModelSchema,
     PaginatedResponseSchema,
 )
 from eylo.modules.telephony.constants import (
@@ -156,7 +157,7 @@ class PhoneNumberUpdateSchema(EyloBaseRequestSchema):
 # --- Telephony Call schemas ---
 
 
-class TelephonyCallInDb(EyloBaseOrganizationModelSchema):
+class TelephonyCallInDb(EyloOrganizationModelSchema):
     """Schema for telephony call data as it is in the database."""
 
     call_sid: Optional[str] = None
@@ -184,7 +185,9 @@ class TelephonyCallInDb(EyloBaseOrganizationModelSchema):
     duration_seconds: Optional[int] = None
     provider_status: Optional[str] = None
     media_claimed_at: Optional[datetime] = None
-    opener_delivery_status: CallOpenerDeliveryStatus = CallOpenerDeliveryStatus.NOT_REQUESTED
+    opener_delivery_status: CallOpenerDeliveryStatus = (
+        CallOpenerDeliveryStatus.NOT_REQUESTED
+    )
     opener_delivered_at: Optional[datetime] = None
     status_history: list[dict] = Field(default_factory=list)
     recording_id: Optional[UUID] = None

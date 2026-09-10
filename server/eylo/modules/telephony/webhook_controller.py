@@ -18,6 +18,7 @@ from eylo.events.schema.py_events.call import (
     CallRingingEvent,
 )
 from eylo.modules.telephony.lifecycle import record_call_status
+from eylo.modules.telephony.provider_config_domain import TelephonyProvider
 from eylo.modules.telephony.schemas import CallStatus
 from eylo.modules.telephony.services import TelephonyCallService
 from eylo.pipelines.telephony.sessions import S_CALLS
@@ -25,8 +26,9 @@ from eylo.pipelines.telephony.sessions import S_CALLS
 logger = logging.getLogger(__name__)
 
 
-def _status_value(status: str | CallStatus) -> str:
-    return status.value if isinstance(status, CallStatus) else str(status)
+CALL_LOOKUP_ATTEMPTS = 3
+CALL_LOOKUP_RETRY_SECONDS = 0.3
+PROVIDER_CALLBACK_SOURCE = "provider_callback"
 
 
 # Twilio CallStatus -> our CallStatus mapping
@@ -94,7 +96,7 @@ class WebhookController:
     async def _handle_provider_status(
         self,
         payload: Dict[str, Any],
-        provider: str,
+        provider: TelephonyProvider,
         call_sid_field: str,
         status_field: str,
         status_map: Dict[str, CallStatus],
@@ -127,10 +129,10 @@ class WebhookController:
     async def _update_call_status(
         self,
         call_sid: str,
-        status: str,
-        provider: str,
+        status: CallStatus,
+        provider: TelephonyProvider,
         provider_status: Optional[str] = None,
-        ended_reason: Optional[str] = None,
+        ended_reason: CallEndedReason | None = None,
         duration_seconds: Optional[int] = None,
     ) -> None:
         """Update call record from webhook status.
@@ -141,7 +143,7 @@ class WebhookController:
         """
         call = None
         # Retry loop: webhook can arrive before persist_call_started inserts the row
-        for attempt in range(3):
+        for attempt in range(CALL_LOOKUP_ATTEMPTS):
             async with start_transaction():
                 svc = TelephonyCallService()
                 call = await svc.get_by_call_sid(call_sid)
@@ -155,9 +157,9 @@ class WebhookController:
                 return
             logger.debug(
                 f"[{provider}] Call {call_sid} active but not in DB yet, "
-                f"retry {attempt + 1}/3"
+                f"retry {attempt + 1}/{CALL_LOOKUP_ATTEMPTS}"
             )
-            await asyncio.sleep(0.3 * (attempt + 1))
+            await asyncio.sleep(CALL_LOOKUP_RETRY_SECONDS * (attempt + 1))
 
         if not call:
             logger.warning(
@@ -168,28 +170,23 @@ class WebhookController:
             raise ValueError("Call provider does not match callback provider.")
 
         is_terminal = status in TERMINAL_CALL_STATUSES
-        update_kwargs: Dict[str, Any] = {
-            "call_sid": call_sid,
-            "status": status,
-            "provider_status": provider_status,
-        }
+        terminal_reason: CallEndedReason | None = None
         if is_terminal:
-            update_kwargs["ended_at"] = arrow.utcnow().datetime
-            if duration_seconds is not None:
-                update_kwargs["duration_seconds"] = duration_seconds
-            if ended_reason:
-                update_kwargs["ended_reason"] = ended_reason
-            elif status in STATUS_TO_ENDED_REASON:
-                update_kwargs["ended_reason"] = STATUS_TO_ENDED_REASON[status]
+            terminal_reason = ended_reason or STATUS_TO_ENDED_REASON.get(status)
 
         lifecycle_result = await record_call_status(
             organization_id=call.organization_id,
-            source="provider_callback",
-            **update_kwargs,
+            call_sid=call_sid,
+            status=status.value,
+            provider_status=provider_status,
+            ended_reason=terminal_reason.value if terminal_reason is not None else None,
+            ended_at=arrow.utcnow().datetime if is_terminal else None,
+            duration_seconds=duration_seconds if is_terminal else None,
+            source=PROVIDER_CALLBACK_SOURCE,
         )
         update_result = lifecycle_result.update
         updated_call = update_result.call
-        if updated_call and _status_value(updated_call.status) != _status_value(status):
+        if updated_call and updated_call.status != status.value:
             logger.info(
                 "[%s] Ignored stale call status event for %s: incoming=%s persisted=%s",
                 provider,
@@ -285,7 +282,7 @@ class WebhookController:
         """
         await self._handle_provider_status(
             payload=form,
-            provider="twilio",
+            provider=TelephonyProvider.TWILIO,
             call_sid_field="CallSid",
             status_field="CallStatus",
             status_map=TWILIO_STATUS_MAP,
@@ -299,7 +296,7 @@ class WebhookController:
         """
         await self._handle_provider_status(
             payload=form,
-            provider="plivo",
+            provider=TelephonyProvider.PLIVO,
             call_sid_field="CallUUID",
             status_field="CallStatus",
             status_map=PLIVO_STATUS_MAP,
@@ -313,7 +310,7 @@ class WebhookController:
         """
         await self._handle_provider_status(
             payload=body,
-            provider="vonage",
+            provider=TelephonyProvider.VONAGE,
             call_sid_field="uuid",
             status_field="status",
             status_map=VONAGE_STATUS_MAP,
@@ -327,7 +324,7 @@ class WebhookController:
         """
         await self._handle_provider_status(
             payload=form,
-            provider="exotel",
+            provider=TelephonyProvider.EXOTEL,
             call_sid_field="CallSid",
             status_field="Status",
             status_map=EXOTEL_STATUS_MAP,

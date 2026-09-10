@@ -8,6 +8,7 @@ or sends a message.
 """
 
 from eylo.sockets.email.base import (
+    EmailCapabilitySupport,
     EmailDeliveryCapabilities,
     EmailVendorAdapter,
     PlannedEmailDelivery,
@@ -37,6 +38,7 @@ from eylo.sockets.email.schemas import (
 __all__ = [
     # Core interfaces
     "EmailVendorAdapter",
+    "EmailCapabilitySupport",
     "EmailDeliveryCapabilities",
     "PlannedEmailDelivery",
     "EmailFactory",

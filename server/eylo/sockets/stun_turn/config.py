@@ -6,9 +6,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class _StunTurnConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        str_strip_whitespace=True,
+        hide_input_in_errors=True,
+    )
 
-    api_key: str = Field(min_length=1, repr=False)
+    api_key: str = Field(min_length=1, repr=False, exclude=True)
     timeout: float = Field(default=5.0, gt=0, le=30)
     max_retries: int = Field(default=2, ge=0, le=5)
     retry_delay: float = Field(default=0.2, ge=0, le=10)

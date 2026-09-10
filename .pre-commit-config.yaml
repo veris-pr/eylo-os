@@ -176,6 +176,51 @@ repos:
         pass_filenames: false
         stages: [pre-commit, pre-push]
 
+      - id: python-typed-email-contracts
+        name: Python email configuration, resolution and delivery contracts
+        entry: >-
+          bash -c 'cd server && .venv/bin/pyrefly check
+          eylo/modules/email_configs/
+          eylo/pipelines/email/
+          eylo/sockets/email/
+          eylo/pipelines/conversation/tool_executor.py
+          eylo/products/campaigns/channels/email.py
+          eylo/products/campaigns/channels/voice.py
+          eylo/products/campaigns/schemas/indb.py'
+        language: system
+        files: ^server/(pyproject\.toml|eylo/(modules/(email_configs/|provider_configs/)|pipelines/(email/|outbound/|conversation/tool_executor\.py)|products/campaigns/(channels/|schemas/indb\.py)|sockets/email/|common/outbound\.py))
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+
+      - id: python-typed-outbound-contracts
+        name: Python outbound effect contracts and provider consumers
+        entry: >-
+          bash -c 'cd server && .venv/bin/pyrefly check
+          eylo/common/outbound.py
+          eylo/pipelines/outbound/durable_execution.py
+          eylo/pipelines/outbound/service.py
+          eylo/pipelines/email/delivery.py
+          eylo/pipelines/telephony/call_control.py
+          eylo/pipelines/telephony/number_management.py
+          eylo/pipelines/integrations_v2/http_client.py
+          eylo/pipelines/mcp/execution.py
+          eylo/pipelines/voice/recording_outbound.py
+          eylo/sockets/email/base.py
+          eylo/sockets/email/smtp.py
+          eylo/sockets/email/sendgrid.py
+          eylo/sockets/telephony/base.py
+          eylo/sockets/telephony/number_purchase.py
+          eylo/sockets/telephony/number_clients.py
+          eylo/sockets/telephony/twilio/rest_client.py
+          eylo/sockets/telephony/twilio/service.py
+          eylo/sockets/telephony/plivo/service.py
+          eylo/sockets/telephony/vonage/service.py
+          eylo/sockets/telephony/exotel/service.py'
+        language: system
+        files: ^server/(pyproject\.toml|eylo/(common/outbound\.py|pipelines/(outbound/|email/|telephony/|integrations_v2/http_client\.py|mcp/execution\.py|voice/recording_outbound\.py)|sockets/(email/|telephony/)))
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+
       - id: python-typed-voice-contracts
         name: Python voice contracts and lifecycle policy types
         entry: >-
@@ -195,6 +240,8 @@ repos:
           eylo/pipelines/voice/provider_runtime.py
           eylo/pipelines/voice/recording_storage.py
           eylo/pipelines/voice/recording_outbound.py
+          eylo/pipelines/voice/recording_contracts.py
+          eylo/pipelines/voice/recording_durable_execution.py
           eylo/runtime/tasks.py
           eylo/sockets/stt/
           eylo/sockets/voice/vendors/assemblyai/
@@ -222,9 +269,17 @@ repos:
           eylo/pipelines/webrtc/media.py
           eylo/pipelines/webrtc/agent_peer.py
           eylo/pipelines/webrtc/schemas.py
+          eylo/pipelines/webrtc/requests.py
+          eylo/pipelines/webrtc/errors.py
+          eylo/pipelines/webrtc/ice_policy.py
           eylo/pipelines/webrtc/signaling_manager.py
+          eylo/pipelines/webrtc/config.py
+          eylo/pipelines/webrtc/config_verification.py
+          eylo/modules/webrtc_configs/
+          eylo/sockets/stun_turn/
           eylo/pipelines/websocket/session_state.py
           eylo/pipelines/websocket/handlers/audio.py
+          eylo/pipelines/websocket/handlers/webrtc.py
           eylo/pipelines/websocket/schemas.py
           eylo/pipelines/voice/filler.py
           eylo/common/contracts/session_state.py
@@ -284,7 +339,7 @@ repos:
           eylo/pipelines/telephony/sessions.py
           eylo/pipelines/voice/lifecycle_policy.py'
         language: system
-        files: ^server/(pyproject\.toml|eylo/(common/contracts/|audio/|runtime/tasks\.py|modules/(voice|voice_configs|voice_transcripts|conversations)/|pipelines/(voice|webrtc|websocket|telephony)/|sockets/(realtime|stt|tts|voice/vendors/(assemblyai|cartesia|deepgram|gladia|google|revai|speechmatics))/))
+        files: ^server/(pyproject\.toml|eylo/(common/contracts/|audio/|runtime/tasks\.py|modules/(voice|voice_configs|voice_transcripts|conversations|webrtc_configs)/|pipelines/(voice|webrtc|websocket|telephony)/|sockets/(realtime|stt|tts|stun_turn|voice/vendors/(assemblyai|cartesia|deepgram|gladia|google|revai|speechmatics))/))
         pass_filenames: false
         stages: [pre-commit, pre-push]
 
@@ -293,11 +348,18 @@ repos:
         entry: >-
           bash -c 'cd server && .venv/bin/pyrefly check
           eylo/modules/telephony/constants.py
+          eylo/modules/telephony/lifecycle.py
+          eylo/modules/telephony/webhook_controller.py
+          eylo/pipelines/system_tools/telephony_tools.py
           eylo/modules/telephony/models.py
           eylo/modules/telephony/schemas.py
           eylo/modules/telephony/services.py
           eylo/modules/telephony/voice_controller.py
+          eylo/modules/voice_transcripts/lifecycle.py
           eylo/modules/telephony/provider_config_domain.py
+          eylo/modules/telephony/provider_config_service.py
+          eylo/modules/telephony/provider_config_verification.py
+          eylo/pipelines/telephony/webhook_routes.py
           eylo/pipelines/telephony/scheduled_actions.py
           eylo/pipelines/telephony/tool_execution.py
           eylo/pipelines/telephony/config.py
@@ -307,6 +369,8 @@ repos:
           eylo/pipelines/telephony/media_stream.py
           eylo/pipelines/telephony/sessions.py
           eylo/pipelines/telephony/lifecycle.py
+          eylo/pipelines/telephony/voice.py
+          eylo/pipelines/telephony/metrics.py
           eylo/sockets/telephony/config.py
           eylo/sockets/telephony/dtmf.py
           eylo/sockets/telephony/base.py

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
+from pydantic import BaseModel, ConfigDict, Field
+
+from eylo.modules.webrtc_configs.catalog import WebRTCProviders
 from eylo.modules.webrtc_configs.domain import WebRTCProviderConfig
 
 
@@ -13,15 +15,14 @@ class WebRTCVerificationError(Exception):
     """Raised when a provider cannot complete bounded live verification."""
 
 
-@dataclass(frozen=True)
-class WebRTCProviderVerification:
-    provider: str
+class WebRTCProviderVerification(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    provider: WebRTCProviders
 
 
-@dataclass(frozen=True)
-class WebRTCVerificationResult:
-    provider: str
-    revision: int
+class WebRTCVerificationResult(WebRTCProviderVerification):
+    revision: int = Field(gt=0)
     verified_at: datetime
 
 

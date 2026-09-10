@@ -126,7 +126,11 @@ class STTFactory:
     @property
     def metrics(self) -> dict[str, JsonValue]:
         """Get current lightweight metrics."""
-        return self._metrics.as_dict()
+        return self.metrics_snapshot().as_dict()
+
+    def metrics_snapshot(self) -> STTMetricsSnapshot:
+        """Detach counters from the active adapter before passing them to callers."""
+        return self._metrics.model_copy()
 
     @property
     def capabilities(self) -> STTCapabilities:

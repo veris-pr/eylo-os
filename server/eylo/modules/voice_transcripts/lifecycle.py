@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from datetime import datetime
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+from pydantic import BaseModel, ConfigDict, JsonValue, StrictBool
 from sqlalchemy import select
 
 from eylo.common.database import start_transaction
@@ -36,13 +36,14 @@ class VoiceSessionLifecycleConflict(Exception):
     """A terminal observation conflicts with canonical session authority."""
 
 
-@dataclass(frozen=True, slots=True)
-class VoiceSessionCompletionResult:
+class VoiceSessionCompletionResult(BaseModel):
     """Stable canonical session and completion fact identities."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     voice_session_id: UUID
     event_id: UUID
-    changed: bool
+    changed: StrictBool
 
 
 async def record_voice_session_ended(
@@ -54,7 +55,7 @@ async def record_voice_session_ended(
     ended_reason: str,
     status: VoiceSessionStatus,
     duration_ms: int | None = None,
-    metrics: dict | None = None,
+    metrics: dict[str, JsonValue] | None = None,
 ) -> VoiceSessionCompletionResult:
     """Commit terminal session truth and its durable reconciliation fact."""
     if status is VoiceSessionStatus.ACTIVE:
@@ -102,7 +103,9 @@ async def record_voice_session_ended(
             )
             voice_session.metrics = metrics
             changed = True
-        elif voice_session.status != status or voice_session.ended_reason != ended_reason:
+        elif (
+            voice_session.status != status or voice_session.ended_reason != ended_reason
+        ):
             logger.error(
                 "Ignored conflicting voice session completion session=%s "
                 "stored_status=%s observed_status=%s stored_reason=%s observed_reason=%s",

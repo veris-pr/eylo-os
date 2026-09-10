@@ -39,7 +39,7 @@ class WebRTCConfigService:
         config: Mapping[str, object] | None = None,
         secrets: Mapping[str, str] | None = None,
     ) -> ProviderConfig:
-        validated = WebRTCProviderConfig.validate(
+        validated = WebRTCProviderConfig.from_payload(
             provider=provider,
             config=config,
             secrets=secrets,
@@ -49,8 +49,8 @@ class WebRTCConfigService:
             capability=Capability.WEBRTC,
             provider=validated.provider.value,
             name=name,
-            config=validated.config,
-            secrets=validated.secrets,
+            config=validated.settings_values(),
+            secrets=validated.credentials.secret_values(),
         )
 
     async def list(self, *, organization_id: UUID) -> list[ProviderConfig]:
@@ -61,7 +61,7 @@ class WebRTCConfigService:
         for config in configs:
             if not config.credentials_available:
                 continue
-            WebRTCProviderConfig.validate(
+            WebRTCProviderConfig.from_payload(
                 provider=config.provider,
                 config=config.config,
                 secrets=config.secrets,
@@ -75,7 +75,7 @@ class WebRTCConfigService:
         )
         if config.capability is not Capability.WEBRTC:
             raise ProviderConfigNotFound("Provider configuration was not found.")
-        WebRTCProviderConfig.validate(
+        WebRTCProviderConfig.from_payload(
             provider=config.provider,
             config=config.config,
             secrets=config.secrets,
@@ -102,7 +102,7 @@ class WebRTCConfigService:
             if secret_patch is None
             else apply_secret_patch(existing.secrets, secret_patch)
         )
-        WebRTCProviderConfig.validate(
+        WebRTCProviderConfig.from_payload(
             provider=existing.provider,
             config=merged_config,
             secrets=merged_secrets,

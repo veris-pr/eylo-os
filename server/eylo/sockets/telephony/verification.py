@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import base64
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
 
 import httpx
+from pydantic import BaseModel, ConfigDict, Field
 
 from eylo.sockets.telephony.base import BaseTelephonyService, TelephonyConfig
 from eylo.sockets.telephony.config import (
@@ -25,10 +25,10 @@ class TelephonyCredentialProbeError(Exception):
     """Raised when carrier construction or read-only authentication fails."""
 
 
-@dataclass(frozen=True)
-class TelephonyCredentialProbeResult:
+class TelephonyCredentialProbeResult(BaseModel):
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
     provider: TelephonyProvider
-    account_reference: str
+    account_reference: str = Field(min_length=1, repr=False, exclude=True)
 
 
 class TelephonyCredentialProbe:

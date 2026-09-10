@@ -44,7 +44,7 @@ class EmailConfigService:
         config: Mapping[str, object] | None = None,
         secrets: Mapping[str, str] | None = None,
     ) -> ProviderConfig:
-        validated = EmailProviderConfig.validate(
+        validated = EmailProviderConfig.from_payload(
             provider=provider,
             config=config,
             secrets=secrets,
@@ -54,8 +54,8 @@ class EmailConfigService:
             capability=Capability.EMAIL,
             provider=validated.provider.value,
             name=name,
-            config=validated.config,
-            secrets=validated.secrets,
+            config=validated.settings_values(),
+            secrets=validated.secret_values(),
         )
 
     async def list(self, *, organization_id: UUID) -> list[ProviderConfig]:
@@ -66,7 +66,7 @@ class EmailConfigService:
         for config in configs:
             if not config.credentials_available:
                 continue
-            EmailProviderConfig.validate(
+            EmailProviderConfig.from_payload(
                 provider=config.provider,
                 config=config.config,
                 secrets=config.secrets,
@@ -80,7 +80,7 @@ class EmailConfigService:
         )
         if config.capability is not Capability.EMAIL:
             raise ProviderConfigNotFound("Provider configuration was not found.")
-        EmailProviderConfig.validate(
+        EmailProviderConfig.from_payload(
             provider=config.provider,
             config=config.config,
             secrets=config.secrets,
@@ -112,7 +112,7 @@ class EmailConfigService:
             next_config=merged_config,
             secret_patch=secret_patch,
         )
-        validated = EmailProviderConfig.validate(
+        validated = EmailProviderConfig.from_payload(
             provider=existing.provider,
             config=merged_config,
             secrets=merged_secrets,
@@ -123,7 +123,7 @@ class EmailConfigService:
                 organization_id=organization_id,
                 config_id=config_id,
                 name=name,
-                config=validated.config if config is not None else None,
+                config=validated.settings_values() if config is not None else None,
                 secret_patch=secret_patch,
             )
         if enabled is not None:

@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
-from typing import Any
 
 from aiortc import RTCIceServer
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, Field, InstanceOf, ValidationError
+from pydantic.json_schema import SkipJsonSchema
 
 from eylo.common.database import start_transaction
 from eylo.modules.provider_configs.constants import Capability
@@ -23,16 +22,29 @@ from eylo.sockets.stun_turn.config import MeteredConfig, StunTurnConfig, TurnixC
 from eylo.sockets.stun_turn.factory import StunTurnFactory
 
 
-@dataclass(frozen=True)
-class ResolvedIceConfiguration:
+class ResolvedIceConfiguration(BaseModel):
     """Exact provider result plus any provider-declared credential expiry."""
 
-    ice_servers: tuple[RTCIceServer, ...]
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    ice_servers: SkipJsonSchema[tuple[InstanceOf[RTCIceServer], ...]] = Field(
+        repr=False, exclude=True
+    )
     credential_expires_at: float | None
 
 
+class BrowserIceServer(BaseModel):
+    """Browser-only credential projection; never contains a provider API key."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+    urls: str | tuple[str, ...]
+    username: str | None = None
+    credential: str | None = Field(default=None, repr=False)
+
+
 def build_stun_turn_config(config: WebRTCProviderConfig) -> StunTurnConfig:
-    values = {**config.config, "api_key": config.secret}
+    config = WebRTCProviderConfig.model_validate(config)
+    values = {**config.settings_values(), "api_key": config.secret}
     try:
         if config.provider is WebRTCProviders.METERED:
             return MeteredConfig.model_validate(values)
@@ -64,10 +76,10 @@ async def resolve_ice_configuration(
             provider_config_id=config_id,
             revision=config_revision,
         )
-    provider_config = WebRTCProviderConfig.validate(
-        provider=resolved.provider.value,
+    provider_config = WebRTCProviderConfig(
+        provider=resolved.provider,
         config=resolved.config,
-        secrets=resolved.secrets,
+        credentials=resolved.credentials,
     )
     adapter_config = build_stun_turn_config(provider_config)
     credential_expires_at = (
@@ -81,13 +93,15 @@ async def resolve_ice_configuration(
     )
 
 
-def browser_ice_servers(ice_servers: tuple[RTCIceServer, ...]) -> list[dict[str, Any]]:
+def browser_ice_servers(
+    ice_servers: tuple[RTCIceServer, ...],
+) -> list[BrowserIceServer]:
     """Serialize resolved ICE values for browser construction without logging them."""
     return [
-        {
-            "urls": server.urls,
-            **({"username": server.username} if server.username else {}),
-            **({"credential": server.credential} if server.credential else {}),
-        }
+        BrowserIceServer(
+            urls=server.urls if isinstance(server.urls, str) else tuple(server.urls),
+            username=server.username or None,
+            credential=server.credential or None,
+        )
         for server in ice_servers
     ]

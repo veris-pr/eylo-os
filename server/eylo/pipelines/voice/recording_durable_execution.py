@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from absurd_sdk import AsyncTaskContext, CancelledTask
+from pydantic import JsonValue, ValidationError
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.absurd_work import (
     AbsurdBoundWorkService,
@@ -35,7 +36,20 @@ from eylo.modules.provider_configs.errors import NotConfiguredError
 from eylo.modules.user_sessions.events import file_user_session_fact
 from eylo.modules.voice.recording.model import VoiceRecordingModel
 from eylo.modules.voice_transcripts.models import VoiceSessionModel
-from eylo.pipelines.storage.runtime import resolve_storage_runtime_pinned
+from eylo.pipelines.storage.runtime import (
+    StorageRuntime,
+    resolve_storage_runtime_pinned,
+)
+from eylo.pipelines.voice.recording_contracts import (
+    RecordingAudioRetention,
+    RecordingTrack,
+    RecordingUploadEffect,
+    RecordingUploadFinished,
+    RecordingUploadParams,
+    RecordingUploadReceipt,
+    RecordingUploadStaged,
+    RecordingWorkAvailability,
+)
 from eylo.pipelines.voice.recording_outbound import (
     RecordingAbsurdStepContext,
     cancel_recording_upload_attempts,
@@ -45,6 +59,7 @@ from eylo.pipelines.voice.recording_outbound import (
 logger = logging.getLogger(__name__)
 
 VOICE_RECORDING_UPLOAD_WORKFLOW = "eylo.voice.recording.upload.v1"
+_UPLOAD_ERROR_MAX_LENGTH = 2000
 
 
 class RecordingUploadContractError(Exception):
@@ -110,22 +125,23 @@ class VoiceRecordingUploadWorkflow:
 
     async def execute(
         self,
-        params: dict[str, Any],
+        params: dict[str, JsonValue],
         task_context: AsyncTaskContext,
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         organization_id, recording_id = _parse_params(params)
         try:
-            return await self._execute(
+            receipt = await self._execute(
                 organization_id=organization_id,
                 recording_id=recording_id,
                 task_context=task_context,
             )
+            return receipt.to_payload()
         except DurableWorkNotFound:
-            return {
-                "organization_id": str(organization_id),
-                "recording_id": str(recording_id),
-                "state": "deleted",
-            }
+            return RecordingUploadReceipt(
+                organization_id=organization_id,
+                recording_id=recording_id,
+                state=RecordingWorkAvailability.DELETED,
+            ).to_payload()
         except CancelledTask as cancelled:
             try:
                 required_track_count = await _required_track_count(
@@ -188,7 +204,7 @@ class VoiceRecordingUploadWorkflow:
                     _preserve_staged_audio(
                         row,
                         state=DurableState.CANCELLED,
-                        effect_state="accepted_or_unknown",
+                        effect_state=RecordingUploadEffect.ACCEPTED_OR_UNKNOWN,
                     )
                 else:
                     _discard_staged_audio(row, state=DurableState.CANCELLED)
@@ -200,37 +216,13 @@ class VoiceRecordingUploadWorkflow:
         organization_id: UUID,
         recording_id: UUID,
         task_context: AsyncTaskContext,
-    ) -> dict[str, Any]:
-        terminal_receipt: dict[str, Any] | None = None
-        recording_event_id: UUID | None = None
+    ) -> RecordingUploadReceipt:
         try:
-            async with start_transaction() as session:
-                row = await AbsurdBoundWorkService(
-                    VoiceRecordingModel,
-                    session,
-                ).begin_attempt(
-                    work_id=recording_id,
-                    organization_id=organization_id,
-                )
-                if row.state in {
-                    DurableState.SUCCEEDED,
-                    DurableState.FAILED,
-                    DurableState.CANCELLED,
-                }:
-                    if row.state is DurableState.SUCCEEDED:
-                        recording_event_id = await _file_recording_available_fact(
-                            session,
-                            row,
-                        )
-                    terminal_receipt = _receipt(row)
-                else:
-                    provider_config_id = row.storage_provider_config_id
-                    provider_config_revision = row.storage_provider_config_revision
-                    user_wav = row.staged_user_wav
-                    agent_wav = row.staged_agent_wav
-                    user_key = row.target_user_storage_key
-                    agent_key = row.target_agent_storage_key
-        except DurableWorkBindingPending:
+            attempt = await _load_upload_attempt(
+                organization_id=organization_id,
+                recording_id=recording_id,
+            )
+        except (DurableWorkBindingPending, CancelledTask):
             raise
         except Exception as error:  # noqa: BLE001 - load failure is product state
             return await _handle_failure(
@@ -240,15 +232,18 @@ class VoiceRecordingUploadWorkflow:
                 permanent=_is_permanent(error),
             )
 
-        if terminal_receipt is not None:
-            if recording_event_id is not None:
+        if isinstance(attempt, RecordingUploadFinished):
+            if attempt.event_id is not None:
                 await _nudge_recording_available_fact(
                     organization_id=organization_id,
-                    event_id=recording_event_id,
+                    event_id=attempt.event_id,
                 )
-            return terminal_receipt
+            return attempt.receipt
 
-        if provider_config_id is None or provider_config_revision is None:
+        if (
+            attempt.provider_config_id is None
+            or attempt.provider_config_revision is None
+        ):
             return await _handle_failure(
                 organization_id=organization_id,
                 recording_id=recording_id,
@@ -257,7 +252,7 @@ class VoiceRecordingUploadWorkflow:
                 ),
                 permanent=True,
             )
-        if user_wav is None and agent_wav is None:
+        if attempt.user_wav is None and attempt.agent_wav is None:
             return await _handle_failure(
                 organization_id=organization_id,
                 recording_id=recording_id,
@@ -271,10 +266,12 @@ class VoiceRecordingUploadWorkflow:
             async with start_transaction(ro=True) as session:
                 storage = await resolve_storage_runtime_pinned(
                     organization_id,
-                    provider_config_id=provider_config_id,
-                    revision=provider_config_revision,
+                    provider_config_id=attempt.provider_config_id,
+                    revision=attempt.provider_config_revision,
                     db=session,
                 )
+        except CancelledTask:
+            raise
         except Exception as error:  # noqa: BLE001 - resolution is product state
             return await _handle_failure(
                 organization_id=organization_id,
@@ -289,22 +286,24 @@ class VoiceRecordingUploadWorkflow:
                 recording_id=recording_id,
                 storage=storage,
                 task_context=task_context,
-                user_wav=user_wav,
-                agent_wav=agent_wav,
-                user_key=user_key,
-                agent_key=agent_key,
+                user_wav=attempt.user_wav,
+                agent_wav=attempt.agent_wav,
+                user_key=attempt.user_key,
+                agent_key=attempt.agent_key,
             )
             authority = _shared_authority(user_locator, agent_locator)
+        except CancelledTask:
+            raise
         except Exception as error:  # noqa: BLE001 - provider failure is product state
             return await _handle_failure(
                 organization_id=organization_id,
                 recording_id=recording_id,
                 error=error,
                 permanent=_is_permanent(error),
-                preserve_staged=True,
+                retention=RecordingAudioRetention.PRESERVE,
             )
 
-        row, recording_event_id = await _project_recording_success(
+        receipt, recording_event_id = await _project_recording_success(
             organization_id=organization_id,
             recording_id=recording_id,
             user_locator=user_locator,
@@ -316,14 +315,48 @@ class VoiceRecordingUploadWorkflow:
             organization_id=organization_id,
             event_id=recording_event_id,
         )
-        return _receipt(row)
+        return receipt
+
+
+async def _load_upload_attempt(
+    *, organization_id: UUID, recording_id: UUID
+) -> RecordingUploadStaged | RecordingUploadFinished:
+    """Begin the DB attempt; detach its terminal receipt or local upload inputs."""
+    async with start_transaction() as session:
+        row = await AbsurdBoundWorkService(VoiceRecordingModel, session).begin_attempt(
+            work_id=recording_id,
+            organization_id=organization_id,
+        )
+        if row.state in {
+            DurableState.SUCCEEDED,
+            DurableState.FAILED,
+            DurableState.CANCELLED,
+        }:
+            event_id = (
+                await _file_recording_available_fact(session, row)
+                if row.state is DurableState.SUCCEEDED
+                else None
+            )
+            return RecordingUploadFinished(receipt=_receipt(row), event_id=event_id)
+        return RecordingUploadStaged(
+            provider_config_id=(
+                as_stdlib_uuid(row.storage_provider_config_id)
+                if row.storage_provider_config_id is not None
+                else None
+            ),
+            provider_config_revision=row.storage_provider_config_revision,
+            user_wav=row.staged_user_wav,
+            agent_wav=row.staged_agent_wav,
+            user_key=row.target_user_storage_key,
+            agent_key=row.target_agent_storage_key,
+        )
 
 
 async def _upload_tracks(
     *,
     organization_id: UUID,
     recording_id: UUID,
-    storage,
+    storage: StorageRuntime,
     task_context: AsyncTaskContext,
     user_wav: bytes | None,
     agent_wav: bytes | None,
@@ -339,11 +372,13 @@ async def _upload_tracks(
     user_locator = None
     agent_locator = None
     for track, content, key in (
-        ("user", user_wav, user_key),
-        ("agent", agent_wav, agent_key),
+        (RecordingTrack.USER, user_wav, user_key),
+        (RecordingTrack.AGENT, agent_wav, agent_key),
     ):
         if content is None:
             continue
+        if key is None:
+            raise RecordingUploadContractError("Recording has no stable target key.")
         result = await execute_recording_track_upload(
             organization_id=organization_id,
             recording_id=recording_id,
@@ -361,7 +396,7 @@ async def _upload_tracks(
             raise RecordingUploadRejected(
                 f"{track} recording upload ended as {result.receipt.state.value}."
             )
-        if track == "user":
+        if track is RecordingTrack.USER:
             user_locator = result.locator
         else:
             agent_locator = result.locator
@@ -375,7 +410,7 @@ async def _project_recording_success(
     user_locator: StorageLocator | None,
     agent_locator: StorageLocator | None,
     authority: StorageAuthority,
-) -> tuple[VoiceRecordingModel, UUID]:
+) -> tuple[RecordingUploadReceipt, UUID]:
     async with start_transaction() as session:
         service = AbsurdBoundWorkService(VoiceRecordingModel, session)
         current = await service.get(
@@ -384,7 +419,9 @@ async def _project_recording_success(
             for_update=True,
         )
         if current.state is DurableState.SUCCEEDED:
-            return current, await _file_recording_available_fact(session, current)
+            return _receipt(current), await _file_recording_available_fact(
+                session, current
+            )
         meta = {**(current.meta or {}), "upload_state": DurableState.SUCCEEDED.value}
         meta.pop("upload_error", None)
         meta.pop("upload_effect_state", None)
@@ -403,7 +440,7 @@ async def _project_recording_success(
                 "meta": meta,
             },
         )
-        return row, await _file_recording_available_fact(session, row)
+        return _receipt(row), await _file_recording_available_fact(session, row)
 
 
 async def _project_succeeded_targets(
@@ -469,8 +506,8 @@ async def _handle_failure(
     recording_id: UUID,
     error: Exception,
     permanent: bool,
-    preserve_staged: bool = False,
-) -> dict[str, Any]:
+    retention: RecordingAudioRetention = RecordingAudioRetention.DISCARD,
+) -> RecordingUploadReceipt:
     summary = _safe_failure_summary(error)
     async with start_transaction() as session:
         service = AbsurdBoundWorkService(VoiceRecordingModel, session)
@@ -486,18 +523,18 @@ async def _handle_failure(
             for_update=True,
         )
         if state is DurableState.FAILED:
-            if preserve_staged:
+            if retention is RecordingAudioRetention.PRESERVE:
                 _preserve_staged_audio(
                     row,
                     state=state,
                     error=summary,
                     effect_state=(
-                        "unknown"
+                        RecordingUploadEffect.UNKNOWN
                         if isinstance(error, RecordingUploadUnconfirmed)
                         else (
-                            "terminal"
+                            RecordingUploadEffect.TERMINAL
                             if isinstance(error, RecordingUploadRejected)
-                            else "incomplete"
+                            else RecordingUploadEffect.INCOMPLETE
                         )
                     ),
                 )
@@ -514,7 +551,7 @@ async def _handle_failure(
             if voice_session is not None:
                 voice_session.meta = {
                     **(voice_session.meta or {}),
-                    "recording_upload_error": summary[:2000],
+                    "recording_upload_error": summary[:_UPLOAD_ERROR_MAX_LENGTH],
                 }
                 if voice_session.user_session_id is not None:
                     await file_user_session_fact(
@@ -537,11 +574,11 @@ async def _handle_failure(
         recording_id,
         type(error).__name__,
     )
-    return {
-        "organization_id": str(organization_id),
-        "recording_id": str(recording_id),
-        "state": state.value,
-    }
+    return RecordingUploadReceipt(
+        organization_id=organization_id,
+        recording_id=recording_id,
+        state=state,
+    )
 
 
 def _discard_staged_audio(
@@ -554,7 +591,7 @@ def _discard_staged_audio(
     row.staged_agent_wav = None
     meta = {**(row.meta or {}), "upload_state": state.value}
     if error is not None:
-        meta["upload_error"] = error[:2000]
+        meta["upload_error"] = error[:_UPLOAD_ERROR_MAX_LENGTH]
     row.meta = meta
 
 
@@ -562,16 +599,16 @@ def _preserve_staged_audio(
     row: VoiceRecordingModel,
     *,
     state: DurableState,
-    effect_state: str,
+    effect_state: RecordingUploadEffect,
     error: str | None = None,
 ) -> None:
     meta = {
         **(row.meta or {}),
         "upload_state": state.value,
-        "upload_effect_state": effect_state,
+        "upload_effect_state": effect_state.value,
     }
     if error is not None:
-        meta["upload_error"] = error[:2000]
+        meta["upload_error"] = error[:_UPLOAD_ERROR_MAX_LENGTH]
     row.meta = meta
 
 
@@ -599,15 +636,19 @@ def _safe_failure_summary(error: Exception) -> str:
     return "Recording upload failed."
 
 
-def _parse_params(params: dict[str, Any]) -> tuple[UUID, UUID]:
-    if set(params) != {"organization_id", "recording_id"}:
+def _parse_params(params: object) -> tuple[UUID, UUID]:
+    if (
+        not isinstance(params, dict)
+        or params.keys() != RecordingUploadParams.model_fields.keys()
+    ):
         raise ValueError("Recording upload task params must contain IDs only.")
     try:
-        return UUID(str(params["organization_id"])), UUID(str(params["recording_id"]))
-    except (TypeError, ValueError) as error:
+        parsed = RecordingUploadParams.model_validate(params)
+        return parsed.organization_id, parsed.recording_id
+    except ValidationError:
         raise ValueError(
             "Recording upload task params contain an invalid UUID."
-        ) from error
+        ) from None
 
 
 def _shared_authority(
@@ -625,7 +666,9 @@ def _shared_authority(
     return authority
 
 
-async def _file_recording_available_fact(session, row: VoiceRecordingModel) -> UUID:
+async def _file_recording_available_fact(
+    session: AsyncSession, row: VoiceRecordingModel
+) -> UUID:
     if row.state is not DurableState.SUCCEEDED or row.finished_at is None:
         raise RecordingUploadContractError(
             "Recording availability requires a successful canonical upload."
@@ -699,12 +742,12 @@ async def _nudge_recording_available_fact(
         )
 
 
-def _receipt(row: VoiceRecordingModel) -> dict[str, Any]:
-    return {
-        "organization_id": str(row.organization_id),
-        "recording_id": str(row.id),
-        "state": row.state.value,
-    }
+def _receipt(row: VoiceRecordingModel) -> RecordingUploadReceipt:
+    return RecordingUploadReceipt(
+        organization_id=as_stdlib_uuid(row.organization_id),
+        recording_id=as_stdlib_uuid(row.id),
+        state=row.state,
+    )
 
 
 __all__ = [

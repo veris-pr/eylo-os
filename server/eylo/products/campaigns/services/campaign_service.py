@@ -10,7 +10,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.absurd_work import AbsurdBoundWorkService, DurableState
-from eylo.common.revisions import PublishedRevisionState, RevisionConflictError
+from eylo.common.revisions import (
+    PublishedRevisionState,
+    RevisionAvailability,
+    RevisionConflictError,
+)
 from eylo.common.services import EyloBaseService
 from eylo.modules.agents.services.revisions import AgentRevisionService
 from eylo.modules.contacts.domain import ContactActorKind, ContactDeletionPending
@@ -346,7 +350,7 @@ class CampaignService(EyloBaseService[CampaignInDb, CampaignModel]):
         if revision is None:
             raise CampaignNotFoundError("Campaign definition revision not found.")
         PublishedRevisionState(
-            availability=revision.availability,
+            availability=RevisionAvailability(revision.availability),
             published_at=revision.published_at,
             revoked_at=revision.revoked_at,
             revoked_by=revision.revoked_by,
@@ -507,7 +511,7 @@ class CampaignService(EyloBaseService[CampaignInDb, CampaignModel]):
         if campaign is None or row is None:
             raise CampaignNotFoundError("Campaign revision not found.")
         revoked = PublishedRevisionState(
-            availability=row.availability,
+            availability=RevisionAvailability(row.availability),
             published_at=row.published_at,
             revoked_at=row.revoked_at,
             revoked_by=row.revoked_by,
@@ -795,7 +799,7 @@ class CampaignService(EyloBaseService[CampaignInDb, CampaignModel]):
         if row is None:
             raise CampaignNotFoundError("Campaign definition revision not found.")
         PublishedRevisionState(
-            availability=row.availability,
+            availability=RevisionAvailability(row.availability),
             published_at=row.published_at,
             revoked_at=row.revoked_at,
             revoked_by=row.revoked_by,

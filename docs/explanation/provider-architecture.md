@@ -1335,6 +1335,72 @@ tool metadata, and scheduler output serialize IDs and states at their boundaries
 The existing JSON keys and values are preserved. `OutboundRetryRequested` still
 propagates from the outbound ledger; an unknown result does not authorize a resend.
 
+The shared external-effect contract lives in `common/outbound.py`: frozen
+Pydantic models for owner identity, attempt specification, send authorization and
+provider outcomes. Identity keeps the existing deterministic UUID/idempotency
+key. Invalid owner/transport values, coercible status values and malformed
+fingerprints fail validation before use. Adapters retain ownership of their
+failure categories; the common contract validates their bounded format rather
+than importing vendor enums. Outcomes stay typed in process; the outbound
+pipeline owns the durable receipt and checkpoint representation.
+
+Email config resolution follows the same ownership split. The email module owns
+immutable SendGrid/SMTP settings and private credentials; `SMTPSecurity` names
+the operator's transport selection. The pipeline explicitly translates those
+fields into socket configs rather than spreading a settings dictionary. Secret
+exports are explicit for encrypted persistence; normal model serialization and
+representations exclude credentials. Resolved material checks organization,
+capability, config ID and revision before adapter construction. Verification runs
+outside DB transactions, closes its adapter and marks only the expected revision
+verified. The public config keys and SMTP/SendGrid wire values are unchanged.
+
+The email pipeline projects the validated outbound receipt into a frozen
+`EmailDeliveryResult`. Agent-facing success/error variants and receipt metadata
+must agree: an unknown send cannot appear as accepted, and preflight refusals
+carry no delivery receipt. The tool's error flag and JSON output are derived
+from that typed outcome rather than independently populated dictionaries.
+`accepted` means provider acceptance, not confirmed recipient delivery. Campaign
+and conversation consumers retain the same JSON values and tracking identities;
+persisted campaign DTOs require their organization owner, matching the DB model.
+
+SendGrid's adapter constructs native request objects for envelopes, addresses,
+content, attachments and custom arguments; JSON serialization happens once when
+planning the HTTP request. The consumed scope response is validated before
+checking `mail.send`. These contracts follow the v3
+[Mail Send reference](https://www.twilio.com/docs/sendgrid/api-reference/mail-send/mail-send)
+and [scope response reference](https://www.twilio.com/docs/sendgrid/api-reference/api-key-permissions/retrieve-a-list-of-scopes-for-which-this-user-has-access).
+Provider-neutral metadata accepts JSON values, not arbitrary Python objects.
+
+The existing SendGrid event parser also validates native fields against the
+[Event Webhook reference](https://www.twilio.com/docs/sendgrid/for-developers/tracking-events/event).
+It parses **one event**, not the vendor's HTTP batch envelope. It does not verify
+signatures, expose a route, register a webhook or update campaign delivery state.
+No platform consumer currently calls it. A future ingress must authenticate the
+original request before parsing/dispatch. Unknown event names, missing required
+fields and invalid timestamp types are refused; optional vendor/custom fields
+are retained as validated JSON. Do not infer webhook product support from the
+presence of this parser.
+
+Email delivery plans are frozen Pydantic values. Capability support is explicit
+through `EmailCapabilitySupport`, not truthy flags; neither current adapter
+claims provider-side idempotency or reconciliation. The live sender callable is
+excluded from plan serialization. Organization resolution and the durable ledger
+still own send authority; the plan additionally checks the exact attempt ID.
+
+SMTP uses the installed SDK's typed result rather than assuming a normal return
+means every recipient accepted. The SDK can return normally with a refused-recipient
+map ([SDK reference](https://aiosmtplib.readthedocs.io/en/stable/reference.html#aiosmtplib.SMTP.sendmail)).
+Partial acceptance maps to `UNKNOWN` with `smtp_partial_acceptance`: the overall
+send is incomplete, but replaying the whole envelope could duplicate delivery to
+accepted recipients. This does not implement recipient-level retry. Native reply
+text and addresses are not copied into the failure category. `SMTPFailureCode`
+owns adapter failures; platform lifecycle states remain vendor-neutral.
+
+The SMTP adapter owns each socket from allocation until transfer or close.
+Cancelled/failed connects close the candidate socket. Client construction,
+authentication, send and teardown failures close both client transport and socket;
+cancellation propagates rather than becoming success or authorizing a retry.
+
 `CallInitiationMarker` names Eylo's interim values in `provider_status`, including
 `initiation-unknown`. That column remains open text because carrier callbacks also
 write native statuses. These markers are not a new call state machine or schema

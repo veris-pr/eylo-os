@@ -38,6 +38,12 @@ _RESPONSE_TASK_NAME = "stt_rt_response"
 logger = logging.getLogger(__name__)
 
 
+class STTRuntimeMetrics(STTMetricsSnapshot):
+    """Recognition manager counters plus the independently owned factory counters."""
+
+    factory: STTMetricsSnapshot
+
+
 class STTRealtime:
     """Own recognition queues, final-text debounce, and STT child-task cleanup."""
 
@@ -119,9 +125,22 @@ class STTRealtime:
     @property
     def metrics(self) -> dict[str, JsonValue]:
         """Get current lightweight manager metrics."""
-        snapshot = self._metrics.as_dict()
-        snapshot["factory"] = self._stt_factory.metrics
-        return snapshot
+        return self.metrics_snapshot().model_dump(mode="json")
+
+    def metrics_snapshot(self) -> STTRuntimeMetrics:
+        """Return detached manager/factory counters without retaining runtime handles."""
+        counters = self._metrics
+        return STTRuntimeMetrics(
+            request_count=counters.request_count,
+            event_count=counters.event_count,
+            audio_bytes_sent=counters.audio_bytes_sent,
+            error_count=counters.error_count,
+            reconnect_count=counters.reconnect_count,
+            connected_at=counters.connected_at,
+            last_event_at=counters.last_event_at,
+            last_event_type=counters.last_event_type,
+            factory=self._stt_factory.metrics_snapshot(),
+        )
 
     @property
     def _response_task(self) -> asyncio.Task[None] | None:
