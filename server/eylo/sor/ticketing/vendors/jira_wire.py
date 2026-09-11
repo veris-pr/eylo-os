@@ -1,4 +1,4 @@
-"""Consumed Jira Cloud v3 wire values, separate from canonical ticketing data."""
+"""Consumed Jira Cloud v3 and Agile wire values, separate from canonical data."""
 
 from enum import StrEnum
 from typing import Annotated, Literal
@@ -10,6 +10,7 @@ from pydantic import (
     Field,
     RootModel,
     ValidationError,
+    model_validator,
 )
 
 from eylo.sor.shared.contracts import (
@@ -17,11 +18,16 @@ from eylo.sor.shared.contracts import (
     SorVendorErrorCode,
     SorVendorOperationError,
 )
-from eylo.sor.shared.json_values import SorJsonValue
+from eylo.sor.shared.json_values import (
+    SorJsonValue,
+    require_json_object,
+    require_json_value,
+)
 
 JIRA_IDENTIFIER_MAX_LENGTH = 512
 JIRA_READ_PAGE_SIZE = 100
 JIRA_COMMENT_PAGE_SIZE = 200
+JIRA_CUSTOM_FIELD_PREFIX = "customfield_"
 
 
 def _identifier(value: object) -> object:
@@ -201,6 +207,256 @@ class JiraCommentQuery(JiraRequest):
     startAt: int = Field(ge=0)
     maxResults: int = Field(ge=1, le=JIRA_COMMENT_PAGE_SIZE)
     orderBy: Literal[JiraOrderBy.CREATED]
+
+
+class JiraEntityReference(JiraResponse):
+    id: JiraIdentifier | None = None
+    name: str | None = None
+
+
+class JiraIssueStatus(JiraEntityReference):
+    statusCategory: JiraStatusCategory | None = None
+
+
+class JiraCustomFields(JiraResponse):
+    """Validate dynamic Jira keys without requiring unrequested fixed fields."""
+
+    model_config = ConfigDict(
+        strict=True, frozen=True, extra="allow", hide_input_in_errors=True
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_native_json(cls, value: object) -> object:
+        return value if isinstance(value, cls) else require_json_object(value)
+
+    def custom_field(self, key: str) -> SorJsonValue:
+        """Only discovered custom fields cross this open native-key boundary."""
+        if not key.startswith(JIRA_CUSTOM_FIELD_PREFIX):
+            raise ValueError("Expected a Jira custom-field key.")
+        return require_json_value((self.model_extra or {}).get(key))
+
+
+class JiraIssueFields(JiraCustomFields):
+    """Fixed native fields plus validated, discovered custom-field values."""
+
+    summary: str
+    updated: str
+    created: str | None = None
+    resolutiondate: str | None = None
+    description: SorJsonValue = Field(default=None, repr=False)
+    issuetype: JiraEntityReference | None = None
+    status: JiraIssueStatus | None = None
+    priority: JiraEntityReference | None = None
+    project: JiraEntityReference | None = None
+    parent: JiraEntityReference | None = None
+    assignee: JiraAccountReference | None = None
+    reporter: JiraAccountReference | None = None
+    timeoriginalestimate: int | None = None
+    labels: list[str] | None = None
+    duedate: str | None = None
+
+
+class JiraIssue(JiraResponse):
+    id: JiraIdentifier
+    key: str
+    fields: JiraIssueFields
+
+
+class JiraSprintFields(JiraCustomFields):
+    updated: str
+
+
+class JiraSprintIssue(JiraResponse):
+    fields: JiraSprintFields
+
+
+class JiraSprintState(StrEnum):
+    ACTIVE = "active"
+    FUTURE = "future"
+    CLOSED = "closed"
+
+
+class JiraLegacySprintField(StrEnum):
+    ID = "id"
+    NAME = "name"
+    STATE = "state"
+    GOAL = "goal"
+    START_DATE = "startDate"
+    END_DATE = "endDate"
+    COMPLETE_DATE = "completeDate"
+    BOARD_ID = "rapidViewId"
+
+
+class JiraSprintReference(JiraResponse):
+    """Embedded references may contain only identity; unknown states stay open."""
+
+    id: JiraIdentifier
+    state: str | None = None
+
+
+class JiraSprint(JiraSprintReference):
+    """Incomplete issue snapshots trigger an authoritative Agile Sprint lookup."""
+
+    name: str | None = None
+    goal: str | None = None
+    startDate: str | None = None
+    endDate: str | None = None
+    completeDate: str | None = None
+    originBoardId: JiraIdentifier | None = None
+    boardId: JiraIdentifier | None = None
+
+
+class JiraIssueQuery(JiraRequest):
+    fields: list[str]
+
+
+class JiraLinkType(JiraResponse):
+    id: JiraIdentifier | None = None
+    name: str | None = None
+    inward: str | None = None
+    outward: str | None = None
+
+
+class JiraLinkTypes(JiraResponse):
+    issueLinkTypes: list[JiraLinkType]
+
+
+class JiraIssueLink(JiraResponse):
+    id: JiraIdentifier
+    type: JiraLinkType
+    inwardIssue: JiraEntityReference | None = None
+    outwardIssue: JiraEntityReference | None = None
+
+
+class JiraIssueLinkFields(JiraResponse):
+    issuelinks: list[JiraIssueLink]
+
+
+class JiraLinkedIssue(JiraResponse):
+    id: JiraIdentifier | None = None
+    fields: JiraIssueLinkFields
+
+
+class JiraIdInput(JiraRequest):
+    id: JiraIdentifier
+
+
+class JiraLinkCreate(JiraRequest):
+    inwardIssue: JiraIdInput
+    outwardIssue: JiraIdInput
+    type: JiraIdInput
+
+
+class JiraAdfNodeKind(StrEnum):
+    DOCUMENT = "doc"
+    PARAGRAPH = "paragraph"
+    TEXT = "text"
+
+
+class JiraAdfText(JiraRequest):
+    type: Literal[JiraAdfNodeKind.TEXT] = JiraAdfNodeKind.TEXT
+    text: str = Field(repr=False)
+
+
+class JiraAdfParagraph(JiraRequest):
+    type: Literal[JiraAdfNodeKind.PARAGRAPH] = JiraAdfNodeKind.PARAGRAPH
+    content: list[JiraAdfText] = Field(repr=False)
+
+
+class JiraAdfDocument(JiraRequest):
+    """Only Eylo's generated plain-text ADF, not arbitrary vendor document nodes."""
+
+    type: Literal[JiraAdfNodeKind.DOCUMENT] = JiraAdfNodeKind.DOCUMENT
+    version: Literal[1] = 1
+    content: list[JiraAdfParagraph] = Field(repr=False)
+
+
+class JiraNameInput(JiraRequest):
+    name: str
+
+
+class JiraWriteFields(JiraCustomFields):
+    """Omitted fields stay omitted; explicit null clears an existing value."""
+
+    summary: str | None = None
+    description: JiraAdfDocument | None = Field(default=None, repr=False)
+    issuetype: JiraNameInput | None = None
+    priority: JiraNameInput | None = None
+    project: JiraIdInput | None = None
+    parent: JiraIdInput | None = None
+    timeoriginalestimate: int | None = Field(default=None, ge=0)
+    labels: list[str] | None = None
+    duedate: str | None = None
+
+
+class JiraIssueWrite(JiraRequest):
+    fields: JiraWriteFields
+
+
+class JiraCreatedIssue(JiraResponse):
+    id: JiraIdentifier
+    key: str | None = None
+
+
+class JiraTransition(JiraResponse):
+    id: str | None = None
+    to: JiraEntityReference | None = None
+
+
+class JiraTransitions(JiraResponse):
+    transitions: list[JiraTransition]
+
+
+class JiraTransitionRequest(JiraRequest):
+    transition: JiraIdInput
+
+
+class JiraAssignment(JiraRequest):
+    accountId: str | None
+
+
+class JiraCommentWrite(JiraRequest):
+    body: JiraAdfDocument | None = Field(repr=False)
+
+
+class JiraCreatedComment(JiraResponse):
+    id: JiraIdentifier
+    updated: str | None = None
+    created: str | None = None
+
+
+class JiraLabelAction(StrEnum):
+    ADD = "add"
+    REMOVE = "remove"
+
+
+class JiraLabelAdd(JiraRequest):
+    add: str
+
+
+class JiraLabelRemove(JiraRequest):
+    remove: str
+
+
+class JiraLabelUpdates(JiraRequest):
+    labels: list[JiraLabelAdd | JiraLabelRemove]
+
+
+class JiraLabelRequest(JiraRequest):
+    update: JiraLabelUpdates
+
+
+def parse_request[T: BaseModel](value: object, model: type[T]) -> T:
+    """Refuse invalid mapped native fields before making the vendor request."""
+    try:
+        return model.model_validate(value)
+    except ValidationError as error:
+        raise SorVendorOperationError(
+            SorVendorErrorCode.VENDOR_COMMAND_INVALID,
+            "The Jira request contains invalid field values.",
+            recovery=SorRecoveryPolicy.TERMINAL,
+        ) from error
 
 
 def parse_response[T: BaseModel](value: object, model: type[T]) -> T:

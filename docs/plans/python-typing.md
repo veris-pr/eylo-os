@@ -22,7 +22,74 @@ are superseded by the newest deployment record.
 | Durable execution | Native schedule, direct recall, input wait/resume, waiting-run cancellation and controlled worker restart while waiting passed; persisted tool-result readback verified | In-flight cancellation, forced worker crash, concurrent execution and broader tool-bearing replay |
 | Direct-objective memory | Fixed conversation-only context assumption; native recall returns four agent-owned facts and releases capacity | Direct-objective writes need run-based provenance; current mutation contract requires a real conversation/message |
 | Sandbox | Typed workspace/checkpoint/tool paths validated with substituted dependencies | Native configured sandbox execution/cleanup |
-| Final handoff | Checkout advanced independently to `4561302f`; earlier Freshdesk read/write and Zendesk mutation work is included. Latest Zendesk and Jira directory/comment changes are verified, deployed and uncommitted. No migration or provider reset was performed by this run | Complete remaining contracts, native QA and the full acceptance matrix |
+| Final handoff | Checkout advanced independently to `a69f2880`; earlier Freshdesk/Zendesk and Jira directory/comment work is included. Jira issue/link/Sprint and remaining mutation contracts are locally verified, uncommitted and not deployed. No migration or provider reset was performed by this run | Complete remaining contracts, native QA and the full acceptance matrix |
+
+### Jira Sprint and mutation contracts — 2026-09-11, local
+
+Sprint scans now use native search request/response models with the selected
+custom field and update watermark. Current JSON and legacy serialized Sprint
+values become native objects; authoritative Agile reads complete missing or
+conflicting snapshots. Numeric sorting, child offsets, continuation tokens,
+reconciliation overlap and the bounded empty-page scan remain unchanged. Native
+state constants do not reject unknown future state strings. The current-issue
+reference consumes only identity/state, not fields that were never requested.
+
+Create/update, transition, assignment, comment and label requests now have native
+models, as do consumed create/transition responses. Plain-text ADF is represented
+by typed generated nodes, not a claim to cover arbitrary ADF. Explicit nulls
+remain in update requests; omitted fields stay omitted. Dynamic source mappings
+remain validated JSON at the adapter translation boundary. Label selection now
+uses a vendor enum instead of an action boolean. No scopes or permissions changed.
+
+- 1,419 combined function assertions passed against immutable `a69f2880` using
+  actual adapters and recorded HTTP. New coverage includes Sprint legacy/current
+  values, conflicting snapshots, fallback/exact identity, multi-page child/native
+  continuation, malformed inputs, all mutation tool requests, mapped custom JSON,
+  clear-versus-omit semantics, unreachable transitions, HTTP failure and cancellation.
+- The first mutation fixture incorrectly nested mapped fields under `fields`.
+  Both adapters refused it before HTTP. The fixture now uses the actual root-level
+  command model; no product guard was weakened.
+- Full backend lint and typing pass (zero errors, two existing redundant-cast
+  warnings). This batch is local: no live vendor writes, DB changes or deployment.
+- Jira remains open for saved cursor contracts, field-mapping vocabulary cleanup
+  and native acceptance after reauthorization. Other platform acceptance gates
+  remain unchanged. This checkpoint is progress, not platform-wide completion.
+
+### Jira issue and relationship contracts — 2026-09-11, local
+
+The checkout advanced independently to `a69f2880` with the previous batch included.
+Issue search/exact reads now parse fixed fields as native models; discovered
+`customfield_` values remain validated JSON and retain their existing source
+projection. Optional assignee/reporter/project/parent references stay explicit.
+Known malformed native field types are rejected before projection. Numeric native
+reference IDs normalize through the existing identifier helper rather than being
+silently omitted by the old string-only nested helper.
+
+Issue-link lists, exact reads and post-create identity lookup share typed native
+links with an explicit parent issue argument. No injected context keys are added
+to vendor rows. Link-type selection and link-create requests are typed too; the
+existing direction, duplicate collapse and uncertain-write rules remain intact.
+The obsolete generic record dispatcher and unused nested-string reader were
+removed. The shared issue watermark helper consumes timestamp values; its Sprint
+caller validates a narrow update-time projection without requiring issue fields
+that were not requested.
+
+- 950 combined adapter function assertions passed against immutable `a69f2880`
+  with recorded HTTP. Includes earlier discovery/directory/comment checks, issue
+  custom JSON and nulls, exact/list parity, multi-row watermark/overlap behavior,
+  missing continuation tokens, malformed fields, both link directions, duplicate
+  collapse, successful and unresolved mutation read-back, and `BLOCKED_BY` request
+  direction. Requests, payloads and cursors are compared, not just model snapshots.
+- A new watermark assertion initially omitted the established reconciliation
+  overlap. Baseline and changed code agreed; the assertion was corrected, not the
+  product's overlap behavior. No new product regression was inferred from it.
+- Full backend typing passes with zero errors and the two existing redundant-cast
+  warnings; lint and affected formatting pass. This batch is not deployed and has
+  no native Jira or DB effects. The latest deployed image remains below.
+- At this checkpoint remaining Jira work was Sprint reads/expansion, non-link
+  mutation request/results and saved cursor codecs; the newer checkpoint above
+  advances the first two. Remaining platform contracts and acceptance gates are
+  unchanged; this does not close Jira or the platform-wide goal.
 
 ### Latest deployment and real-agent checkpoint — 2026-09-11
 
@@ -50,7 +117,7 @@ below, not their recorded native-acceptance limits.
 - Browser-control inventory timed out before returning tabs. Visual widget and
   console QA remains unverified; the API/worker check above does not replace it.
 
-Next: finish Jira issue/relation/Sprint reads, writes and saved cursors, then
+Next at that deployed checkpoint: finish Jira issue/relation/Sprint reads, writes and saved cursors, then
 GitHub, Intercom and Notion operation contracts. Final provider/integration
 inventory, direct-objective memory-write provenance and full acceptance remain
 open. Do not count this deployed checkpoint as platform-wide completion.
@@ -145,7 +212,7 @@ gaps; a webhook model does not close its vendor's record operations:
 
 | Registration | Remaining native record-operation work |
 | --- | --- |
-| Jira Ticketing | Discovery, directories and comments locally verified above; issue/relation/Sprint reads, mutations and saved cursor codecs remain |
+| Jira Ticketing | Discovery/directories/comments deployed; remaining reads and mutation requests/results locally verified above. Saved cursor contracts, field-mapping vocabulary and native acceptance remain |
 | GitHub Ticketing | REST record/mutation and GraphQL repository projections in `ticketing/vendors/github.py`; webhook management/ingress already typed |
 | Zendesk Support | Native reads/writes, saved cursors and metric identity fix locally verified above; deployment and live reconciliation acceptance remain |
 | Intercom Support | Discovery/search, conversation-part/attachment expansion and mutation wire objects in `support/vendors/intercom.py` |

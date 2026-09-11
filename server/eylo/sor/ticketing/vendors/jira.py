@@ -120,6 +120,7 @@ JIRA_EMBEDDED_COMMENT_LIMIT = 20
 JIRA_COMMENT_ISSUE_BATCH_SIZE = 10
 JIRA_RELATION_ISSUE_BATCH_SIZE = 20
 JIRA_SPRINT_ISSUE_BATCH_SIZE = 100
+JIRA_SPRINT_SCAN_LIMIT = 25
 JIRA_SPRINT_FIELD_TYPE = "com.pyxis.greenhopper.jira:gh-sprint"
 
 READ_WORK_SCOPE = "read:jira-work"
@@ -691,7 +692,9 @@ class JiraTicketingAdapter:
         if stream_key == JiraStream.ISSUES:
             response = await self._jira_request(
                 f"/issue/{_path_segment(record_id)}",
-                query={"fields": list(self._issue_fields())},
+                query=native.JiraIssueQuery(
+                    fields=list(self._issue_fields())
+                ).model_dump(mode="json"),
             )
         elif stream_key == JiraStream.PROJECTS:
             response = await self._jira_request(f"/project/{_path_segment(record_id)}")
@@ -736,8 +739,11 @@ class JiraTicketingAdapter:
             return self._external_comment(
                 native.parse_response(value, native.JiraComment), issue_id=issue_id
             )
-        row = _object(value, field="Jira record")
-        return self._external_record(stream_key, row)
+        if stream_key == JiraStream.ISSUES:
+            return self._external_issue(native.parse_response(value, native.JiraIssue))
+        return self._external_relation(
+            native.parse_response(value, native.JiraIssueLink)
+        )
 
     async def fetch_deleted(
         self,
@@ -984,7 +990,9 @@ class JiraTicketingAdapter:
         return await self._change_label(
             target_id,
             command,
-            add=command.tool_name == TicketingToolName.ADD_LABEL,
+            action=native.JiraLabelAction.ADD
+            if command.tool_name == TicketingToolName.ADD_LABEL
+            else native.JiraLabelAction.REMOVE,
         )
 
     def normalize_issue(
@@ -1328,35 +1336,35 @@ class JiraTicketingAdapter:
                 has_more=False,
             )
         project_id, project_is_last = project
-        payload: dict[str, object] = {
-            "fields": list(self._issue_fields()),
-            "fieldsByKeys": True,
-            "jql": _issue_sync_jql(project_id, floor=checkpoint.floor),
-            "maxResults": limit,
-        }
-        if checkpoint.next_token is not None:
-            payload["nextPageToken"] = checkpoint.next_token
+        payload = native.JiraSearchRequest(
+            fields=list(self._issue_fields()),
+            fieldsByKeys=True,
+            jql=_issue_sync_jql(project_id, floor=checkpoint.floor),
+            maxResults=limit,
+            nextPageToken=checkpoint.next_token,
+        )
         response = await self._jira_request(
             "/search/jql",
             method="POST",
-            payload=payload,
+            payload=payload.model_dump(mode="json", exclude_none=True),
             retry_transport_failures=True,
         )
-        data = _object(
-            _expect(response, operation="search Jira issues"), field="Jira issue search"
+        data = native.parse_response(
+            _expect(response, operation="search Jira issues"),
+            native.JiraSearchPage[native.JiraIssue],
         )
-        rows = _object_list(data.get(JiraStream.ISSUES), field="Jira issues")
+        rows = data.issues
         if len(rows) > limit:
             raise _invalid_response(
                 "Jira returned more issues than the requested page limit."
             )
-        is_last = _required_boolean(
-            data.get("isLast"), field="Jira issue search isLast"
-        )
-        next_token = _optional_string(data.get("nextPageToken"))
+        is_last = data.isLast
+        next_token = _optional_string(data.nextPageToken)
         if not is_last and next_token is None:
             raise _invalid_response("Jira omitted the next issue page token.")
-        high = _maximum_issue_updated_at(rows, current=checkpoint.high)
+        high = _maximum_issue_updated_at(
+            [row.fields.updated for row in rows], current=checkpoint.high
+        )
         scan_complete = is_last and project_is_last
         if scan_complete:
             next_cursor = _encode_issue_cursor(
@@ -1382,9 +1390,7 @@ class JiraTicketingAdapter:
                 )
             )
         return SorRecordPage(
-            records=tuple(
-                self._external_record(JiraStream.ISSUES, row) for row in rows
-            ),
+            records=tuple(self._external_issue(row) for row in rows),
             next_cursor=next_cursor,
             has_more=not scan_complete,
         )
@@ -1400,45 +1406,36 @@ class JiraTicketingAdapter:
         if project is None:
             return SorRecordPage(records=(), next_cursor=None, has_more=False)
         project_id, project_is_last = project
-        payload: dict[str, object] = {
-            "fields": ["issuelinks"],
-            "fieldsByKeys": True,
-            "jql": _issue_scan_jql(project_id),
-            "maxResults": min(limit, JIRA_RELATION_ISSUE_BATCH_SIZE),
-        }
-        if checkpoint.next_issue_token is not None:
-            payload["nextPageToken"] = checkpoint.next_issue_token
+        payload = native.JiraSearchRequest(
+            fields=["issuelinks"],
+            fieldsByKeys=True,
+            jql=_issue_scan_jql(project_id),
+            maxResults=min(limit, JIRA_RELATION_ISSUE_BATCH_SIZE),
+            nextPageToken=checkpoint.next_issue_token,
+        )
         response = await self._jira_request(
             "/search/jql",
             method="POST",
-            payload=payload,
+            payload=payload.model_dump(mode="json", exclude_none=True),
             retry_transport_failures=True,
         )
-        data = _object(
+        data = native.parse_response(
             _expect(response, operation="scan Jira issue links"),
-            field="Jira issue-link scan",
+            native.JiraSearchPage[native.JiraLinkedIssue],
         )
-        issues = _object_list(data.get(JiraStream.ISSUES), field="Jira issue-link scan")
+        issues = data.issues
         if len(issues) > limit:
             raise _invalid_response("Jira returned too many issues for a link scan.")
-        is_last = _required_boolean(
-            data.get("isLast"),
-            field="Jira issue-link scan isLast",
-        )
-        following = _optional_string(data.get("nextPageToken"))
+        is_last = data.isLast
+        following = _optional_string(data.nextPageToken)
         if not is_last and following is None:
             raise _invalid_response("Jira omitted the next issue-link page token.")
 
         records: list[SorExternalRecord] = []
         for issue in issues:
-            issue_id = _required_id(issue.get("id"), field="Jira issue ID")
-            fields = _object(issue.get("fields"), field="Jira issue fields")
-            for link in _object_list(
-                fields.get("issuelinks"),
-                field="Jira issue links",
-            ):
-                link["_current_issue_external_id"] = issue_id
-                records.append(self._external_record(JiraStream.ISSUE_RELATIONS, link))
+            issue_id = _required_id(issue.id, field="Jira issue ID")
+            for link in issue.fields.issuelinks:
+                records.append(self._external_relation(link, current_issue_id=issue_id))
         records = _deduplicate_child_records(
             records,
             stream_key=JiraStream.ISSUE_RELATIONS,
@@ -1707,7 +1704,7 @@ class JiraTicketingAdapter:
     async def _read_sprints(self, *, cursor: str | None, limit: int) -> SorRecordPage:
         checkpoint = _decode_sprint_cursor(cursor)
         scans = 0
-        while scans < 25:
+        while scans < JIRA_SPRINT_SCAN_LIMIT:
             project = await self._project_at(checkpoint.project_offset)
             if project is None:
                 completed = _completed_sprint_cursor(
@@ -1722,38 +1719,34 @@ class JiraTicketingAdapter:
                 )
             project_id, project_is_last = project
             sprint_field = self._sprint_field_key()
-            payload: dict[str, object] = {
-                "fields": [sprint_field, "updated"],
-                "fieldsByKeys": True,
-                "jql": _sprint_issue_jql(project_id, floor=checkpoint.floor),
-                "maxResults": JIRA_SPRINT_ISSUE_BATCH_SIZE,
-            }
-            if checkpoint.next_issue_token is not None:
-                payload["nextPageToken"] = checkpoint.next_issue_token
+            payload = native.JiraSearchRequest(
+                fields=[sprint_field, "updated"],
+                fieldsByKeys=True,
+                jql=_sprint_issue_jql(project_id, floor=checkpoint.floor),
+                maxResults=JIRA_SPRINT_ISSUE_BATCH_SIZE,
+                nextPageToken=checkpoint.next_issue_token,
+            )
             response = await self._jira_request(
                 "/search/jql",
                 method="POST",
-                payload=payload,
+                payload=payload.model_dump(mode="json", exclude_none=True),
                 retry_transport_failures=True,
             )
-            data = _object(
+            data = native.parse_response(
                 _expect(response, operation="scan Jira Sprint fields"),
-                field="Jira Sprint-field scan",
+                native.JiraSearchPage[native.JiraSprintIssue],
             )
-            issues = _object_list(
-                data.get(JiraStream.ISSUES),
-                field="Jira Sprint-field scan",
-            )
+            issues = data.issues
             if len(issues) > JIRA_SPRINT_ISSUE_BATCH_SIZE:
                 raise _invalid_response("Jira returned too many Sprint-bearing issues.")
-            issue_page_is_last = _required_boolean(
-                data.get("isLast"),
-                field="Jira Sprint-field scan isLast",
-            )
-            following = _optional_string(data.get("nextPageToken"))
+            issue_page_is_last = data.isLast
+            following = _optional_string(data.nextPageToken)
             if not issue_page_is_last and following is None:
                 raise _invalid_response("Jira omitted the next Sprint scan page token.")
-            high = _maximum_issue_updated_at(issues, current=checkpoint.high)
+            high = _maximum_issue_updated_at(
+                [issue.fields.updated for issue in issues],
+                current=checkpoint.high,
+            )
             records = await self._sprint_records(
                 issues=issues,
                 sprint_field=sprint_field,
@@ -1822,22 +1815,21 @@ class JiraTicketingAdapter:
     async def _sprint_records(
         self,
         *,
-        issues: Sequence[Mapping[str, object]],
+        issues: Sequence[native.JiraSprintIssue],
         sprint_field: str,
     ) -> list[SorExternalRecord]:
         """Canonicalize unique Sprint values without trusting mutable field names."""
-        candidates: dict[str, list[Mapping[str, object]]] = {}
+        candidates: dict[str, list[native.JiraSprint]] = {}
         for issue in issues:
-            fields = _object(issue.get("fields"), field="Jira issue fields")
-            for row in _jira_sprint_rows(fields.get(sprint_field)):
-                sprint_id = _required_id(row.get("id"), field="Jira sprint ID")
+            for row in _jira_sprint_rows(issue.fields.custom_field(sprint_field)):
+                sprint_id = _required_id(row.id, field="Jira sprint ID")
                 candidates.setdefault(sprint_id, []).append(row)
 
         records: list[SorExternalRecord] = []
         for sprint_id in sorted(candidates, key=_numeric_string_key):
             projected: list[SorExternalRecord] = []
             for row in candidates[sprint_id]:
-                if _optional_string(row.get("name")) is not None:
+                if _optional_string(row.name) is not None:
                     projected.append(self._external_sprint(row))
             if not projected or any(row != projected[0] for row in projected[1:]):
                 records.append(await self._fetch_sprint(sprint_id))
@@ -1856,9 +1848,9 @@ class JiraTicketingAdapter:
                 vendor_object_key=JiraStream.SPRINTS,
                 external_id=sprint_id,
             )
-        row = _object(
+        row = native.parse_response(
             _expect(response, operation="read Jira Sprint"),
-            field="Jira sprint",
+            native.JiraSprint,
         )
         record = self._external_sprint(row)
         if record.external_id != sprint_id:
@@ -1885,7 +1877,7 @@ class JiraTicketingAdapter:
             field.vendor_field_key
             for field in self._context.fields
             if field.vendor_object_key == JiraStream.ISSUES
-            and field.vendor_field_key.startswith("customfield_")
+            and field.vendor_field_key.startswith(native.JIRA_CUSTOM_FIELD_PREFIX)
         }
         return tuple(sorted(_ISSUE_API_FIELDS | custom))
 
@@ -1952,53 +1944,53 @@ class JiraTicketingAdapter:
             },
         )
 
-    def _external_record(
-        self, stream_key: str, row: Mapping[str, object]
-    ) -> SorExternalRecord:
-        if stream_key == JiraStream.ISSUES:
-            return self._external_issue(row)
-        if stream_key == JiraStream.SPRINTS:
-            return self._external_sprint(row)
-        if stream_key == JiraStream.ISSUE_RELATIONS:
-            return self._external_relation(row)
-        raise _invalid_response("Jira returned an unsupported record stream.")
-
-    def _external_issue(self, row: Mapping[str, object]) -> SorExternalRecord:
-        record_id = _required_id(row.get("id"), field="Jira issue ID")
-        key = _required_string(row.get("key"), field="Jira issue key")
-        fields = _object(row.get("fields"), field="Jira issue fields")
-        status = _optional_object(fields.get("status"))
-        category = _optional_object(status.get("statusCategory"))
-        native_category = _optional_string(category.get("key")) or _optional_string(
-            category.get("name")
+    def _external_issue(self, row: native.JiraIssue) -> SorExternalRecord:
+        record_id = _required_id(row.id, field="Jira issue ID")
+        key = _required_string(row.key, field="Jira issue key")
+        fields = row.fields
+        category = fields.status.statusCategory if fields.status else None
+        native_category = (
+            _optional_string(category.key) or _optional_string(category.name)
+            if category
+            else None
         )
-        description = fields.get("description")
-        updated = _required_datetime(
-            fields.get("updated"), field="Jira issue update time"
-        )
-        resolution_at = _optional_datetime(fields.get("resolutiondate"))
+        description = fields.description
+        updated = _required_datetime(fields.updated, field="Jira issue update time")
+        resolution_at = _optional_datetime(fields.resolutiondate)
         payload: dict[str, object] = {
             "key": key,
-            "title": _required_string(
-                fields.get("summary"), field="Jira issue summary"
-            ),
+            "title": _required_string(fields.summary, field="Jira issue summary"),
             "normalized_description": _adf_text(description),
             "source_description": _json_value(description),
-            "issue_type": _nested_string(fields.get("issuetype"), "name"),
-            "native_status": _nested_string(fields.get("status"), "name"),
+            "issue_type": _optional_string(fields.issuetype.name)
+            if fields.issuetype
+            else None,
+            "native_status": _optional_string(fields.status.name)
+            if fields.status
+            else None,
             "normalized_status": _normalized_jira_status(native_category),
-            "priority": _nested_string(fields.get("priority"), "name"),
-            "project_external_id": _nested_id(fields.get("project")),
+            "priority": _optional_string(fields.priority.name)
+            if fields.priority
+            else None,
+            "project_external_id": _optional_id(fields.project.id)
+            if fields.project
+            else None,
             "team_external_id": None,
-            "assignee_external_id": _nested_id(fields.get("assignee"), key="accountId"),
-            "reporter_external_id": _nested_id(fields.get("reporter"), key="accountId"),
-            "estimate": fields.get("timeoriginalestimate"),
+            "assignee_external_id": _optional_id(fields.assignee.accountId)
+            if fields.assignee
+            else None,
+            "reporter_external_id": _optional_id(fields.reporter.accountId)
+            if fields.reporter
+            else None,
+            "estimate": fields.timeoriginalestimate,
             "label_external_ids": _string_list(
-                fields.get(JiraStream.LABELS), field="Jira issue labels"
+                fields.labels, field="Jira issue labels"
             ),
-            "parent_external_id": _nested_id(fields.get("parent")),
+            "parent_external_id": _optional_id(fields.parent.id)
+            if fields.parent
+            else None,
             "cycle_external_id": None,
-            "due_date": fields.get("duedate"),
+            "due_date": fields.duedate,
             "started_at": None,
             "completed_at": (
                 resolution_at
@@ -2009,8 +2001,8 @@ class JiraTicketingAdapter:
             "cancelled_at": None,
         }
         for field_key in self._issue_fields():
-            if field_key.startswith("customfield_"):
-                value = fields.get(field_key)
+            if field_key.startswith(native.JIRA_CUSTOM_FIELD_PREFIX):
+                value = fields.custom_field(field_key)
                 if self._issue_agent_keys.get(field_key) == "cycle_external_id":
                     value = _jira_current_sprint_id(value)
                 payload[field_key] = value
@@ -2018,29 +2010,29 @@ class JiraTicketingAdapter:
             vendor_object_key=JiraStream.ISSUES,
             external_id=record_id,
             payload=payload,
-            source_created_at=_optional_datetime(fields.get("created")),
+            source_created_at=_optional_datetime(fields.created),
             source_updated_at=updated,
             source_revision=updated.isoformat(),
             source_url=f"{self._site_origin}/browse/{key}",
         )
 
-    def _external_sprint(self, row: Mapping[str, object]) -> SorExternalRecord:
-        record_id = _required_id(row.get("id"), field="Jira sprint ID")
-        state = _optional_string(row.get("state"))
-        board_id = _optional_id(row.get("originBoardId")) or _optional_id(
-            row.get("boardId")
-        )
+    def _external_sprint(self, row: native.JiraSprint) -> SorExternalRecord:
+        record_id = _required_id(row.id, field="Jira sprint ID")
+        state = _optional_string(row.state)
+        board_id = _optional_id(row.originBoardId) or _optional_id(row.boardId)
         return SorExternalRecord(
             vendor_object_key=JiraStream.SPRINTS,
             external_id=record_id,
             payload={
-                "name": _required_string(row.get("name"), field="Jira sprint name"),
+                "name": _required_string(row.name, field="Jira sprint name"),
                 "number": None,
-                "description": _optional_string(row.get("goal")),
-                "starts_at": row.get("startDate"),
-                "ends_at": row.get("endDate"),
-                "completed_at": row.get("completeDate"),
-                "active": state.casefold() == "active" if state else None,
+                "description": _optional_string(row.goal),
+                "starts_at": row.startDate,
+                "ends_at": row.endDate,
+                "completed_at": row.completeDate,
+                "active": state.casefold() == native.JiraSprintState.ACTIVE
+                if state
+                else None,
             },
             source_url=(
                 f"{self._site_origin}/secure/RapidView.jspa?rapidView={board_id}"
@@ -2080,8 +2072,10 @@ class JiraTicketingAdapter:
             source_revision=updated_at.isoformat(),
         )
 
-    def _external_relation(self, row: Mapping[str, object]) -> SorExternalRecord:
-        relation = _jira_issue_link_snapshot(row)
+    def _external_relation(
+        self, row: native.JiraIssueLink, *, current_issue_id: str | None = None
+    ) -> SorExternalRecord:
+        relation = _jira_issue_link_snapshot(row, current_issue_id=current_issue_id)
         return SorExternalRecord(
             vendor_object_key=JiraStream.ISSUE_RELATIONS,
             external_id=relation.relation_id,
@@ -2116,20 +2110,22 @@ class JiraTicketingAdapter:
             response = await self._jira_request(
                 "/issue",
                 method="POST",
-                payload={"fields": fields},
+                payload=native.JiraIssueWrite(fields=fields).model_dump(
+                    mode="json", exclude_unset=True
+                ),
                 idempotency_key=command.idempotency_key,
             )
-            data = _object(
+            data = native.parse_response(
                 _expect_mutation(response, operation="create Jira issue"),
-                field="Jira issue create result",
+                native.JiraCreatedIssue,
             )
         except SorVendorOperationError as error:
             _raise_unknown_create(
                 error, "Jira may have created the issue; reconcile before retrying."
             )
             raise
-        issue_id = _required_id(data.get("id"), field="Jira issue ID")
-        key = _optional_string(data.get("key"))
+        issue_id = _required_id(data.id, field="Jira issue ID")
+        key = _optional_string(data.key)
         return self._command_result(issue_id, key=key, response=response)
 
     async def _update_issue(
@@ -2144,7 +2140,9 @@ class JiraTicketingAdapter:
         response = await self._jira_request(
             f"/issue/{_path_segment(target_id)}",
             method="PUT",
-            payload={"fields": fields},
+            payload=native.JiraIssueWrite(fields=fields).model_dump(
+                mode="json", exclude_unset=True
+            ),
             idempotency_key=command.idempotency_key,
         )
         _expect_mutation(response, operation="update Jira issue")
@@ -2164,16 +2162,15 @@ class JiraTicketingAdapter:
         available = await self._jira_request(
             f"/issue/{_path_segment(target_id)}/transitions",
         )
-        data = _object(
+        data = native.parse_response(
             _expect(available, operation="list Jira transitions"),
-            field="Jira transitions",
+            native.JiraTransitions,
         )
-        transitions = _object_list(data.get("transitions"), field="Jira transitions")
         transition_id = next(
             (
-                _optional_string(row.get("id"))
-                for row in transitions
-                if _nested_id(row.get("to")) == status_id
+                _optional_string(row.id)
+                for row in data.transitions
+                if row.to is not None and _optional_id(row.to.id) == status_id
             ),
             None,
         )
@@ -2184,7 +2181,9 @@ class JiraTicketingAdapter:
         response = await self._jira_request(
             f"/issue/{_path_segment(target_id)}/transitions",
             method="POST",
-            payload={"transition": {"id": transition_id}},
+            payload=native.JiraTransitionRequest(
+                transition=native.JiraIdInput(id=transition_id)
+            ).model_dump(mode="json"),
             idempotency_key=command.idempotency_key,
         )
         _expect_mutation(response, operation="transition Jira issue")
@@ -2205,7 +2204,7 @@ class JiraTicketingAdapter:
         response = await self._jira_request(
             f"/issue/{_path_segment(target_id)}/assignee",
             method="PUT",
-            payload={"accountId": assignee},
+            payload=native.JiraAssignment(accountId=assignee).model_dump(mode="json"),
             idempotency_key=command.idempotency_key,
         )
         _expect_mutation(response, operation="assign Jira issue")
@@ -2223,12 +2222,14 @@ class JiraTicketingAdapter:
             response = await self._jira_request(
                 f"/issue/{_path_segment(target_id)}/comment",
                 method="POST",
-                payload={"body": _adf_document_or_none(text)},
+                payload=native.JiraCommentWrite(
+                    body=_adf_document_or_none(text)
+                ).model_dump(mode="json"),
                 idempotency_key=command.idempotency_key,
             )
-            data = _object(
+            data = native.parse_response(
                 _expect_mutation(response, operation="comment on Jira issue"),
-                field="Jira comment result",
+                native.JiraCreatedComment,
             )
         except SorVendorOperationError as error:
             _raise_unknown_create(
@@ -2236,9 +2237,9 @@ class JiraTicketingAdapter:
                 "Jira may have created the comment; reconcile before retrying.",
             )
             raise
-        comment_id = _required_id(data.get("id"), field="Jira comment ID")
-        updated_at = _optional_datetime(data.get("updated")) or _required_datetime(
-            data.get("created"),
+        comment_id = _required_id(data.id, field="Jira comment ID")
+        updated_at = _optional_datetime(data.updated) or _required_datetime(
+            data.created,
             field="Jira comment creation time",
         )
         return SorCommandResult(
@@ -2278,18 +2279,18 @@ class JiraTicketingAdapter:
             if requested_kind is TicketingRelationKind.BLOCKED_BY
             else (target_id, related_id)
         )
-        payload = {
-            "inwardIssue": {"id": inward_id},
-            "outwardIssue": {"id": outward_id},
-            "type": {
-                "id": _required_id(link_type.get("id"), field="Jira link type ID")
-            },
-        }
+        payload = native.JiraLinkCreate(
+            inwardIssue=native.JiraIdInput(id=inward_id),
+            outwardIssue=native.JiraIdInput(id=outward_id),
+            type=native.JiraIdInput(
+                id=_required_id(link_type.id, field="Jira link type ID")
+            ),
+        )
         try:
             response = await self._jira_request(
                 "/issueLink",
                 method="POST",
-                payload=payload,
+                payload=payload.model_dump(mode="json"),
                 idempotency_key=command.idempotency_key,
             )
             _expect_mutation(response, operation="link Jira issues")
@@ -2334,13 +2335,13 @@ class JiraTicketingAdapter:
     async def _resolve_link_type(
         self,
         relation_kind: TicketingRelationKind,
-    ) -> dict[str, object]:
+    ) -> native.JiraLinkType:
         response = await self._jira_request("/issueLinkType")
-        data = _object(
+        data = native.parse_response(
             _expect(response, operation="list Jira issue-link types"),
-            field="Jira issue-link types",
+            native.JiraLinkTypes,
         )
-        rows = _object_list(data.get("issueLinkTypes"), field="Jira issue-link types")
+        rows = data.issueLinkTypes
         matches = [row for row in rows if _jira_link_type_matches(row, relation_kind)]
         if not matches:
             raise _invalid_command(
@@ -2349,10 +2350,8 @@ class JiraTicketingAdapter:
         return min(
             matches,
             key=lambda row: (
-                _required_string(
-                    row.get("name"), field="Jira link type name"
-                ).casefold(),
-                _required_id(row.get("id"), field="Jira link type ID"),
+                _required_string(row.name, field="Jira link type name").casefold(),
+                _required_id(row.id, field="Jira link type ID"),
             ),
         )
 
@@ -2366,17 +2365,16 @@ class JiraTicketingAdapter:
     ) -> str | None:
         response = await self._jira_request(
             f"/issue/{_path_segment(issue_id)}",
-            query={"fields": ["issuelinks", "updated"]},
+            query=native.JiraIssueQuery(fields=["issuelinks", "updated"]).model_dump(
+                mode="json"
+            ),
         )
-        issue = _object(
+        issue = native.parse_response(
             _expect(response, operation="resolve created Jira issue link"),
-            field="Jira issue",
+            native.JiraLinkedIssue,
         )
-        fields = _object(issue.get("fields"), field="Jira issue fields")
-        rows = _object_list(fields.get("issuelinks"), field="Jira issue links")
-        for row in rows:
-            row["_current_issue_external_id"] = issue_id
-            relation = _jira_issue_link_snapshot(row)
+        for row in issue.fields.issuelinks:
+            relation = _jira_issue_link_snapshot(row, current_issue_id=issue_id)
             if (
                 relation.canonical_kind is canonical_kind
                 and relation.from_issue_external_id == from_issue_id
@@ -2390,17 +2388,22 @@ class JiraTicketingAdapter:
         target_id: str,
         command: SorCommandRequest,
         *,
-        add: bool,
+        action: native.JiraLabelAction,
     ) -> SorCommandResult:
         if not isinstance(command.payload, TicketingLabelCommandPayload):
             raise _invalid_command("Jira label payload is invalid.")
         label = command.payload.label_external_id
+        operation = (
+            native.JiraLabelAdd(add=label)
+            if action is native.JiraLabelAction.ADD
+            else native.JiraLabelRemove(remove=label)
+        )
         response = await self._jira_request(
             f"/issue/{_path_segment(target_id)}",
             method="PUT",
-            payload={
-                "update": {JiraStream.LABELS: [{"add" if add else "remove": label}]}
-            },
+            payload=native.JiraLabelRequest(
+                update=native.JiraLabelUpdates(labels=[operation])
+            ).model_dump(mode="json"),
             idempotency_key=command.idempotency_key,
         )
         _expect_mutation(response, operation="change Jira issue label")
@@ -2411,7 +2414,7 @@ class JiraTicketingAdapter:
         payload: Mapping[str, object],
         *,
         operation: SorMutationOperation,
-    ) -> dict[str, object]:
+    ) -> native.JiraWriteFields:
         if not payload:
             raise _invalid_command("A Jira issue mutation requires at least one field.")
         writable = {
@@ -2468,7 +2471,12 @@ class JiraTicketingAdapter:
         for key, value in payload.items():
             if key in mappings:
                 target, transform = mappings[key]
-                result[target] = transform(value)
+                transformed = transform(value)
+                result[target] = (
+                    transformed.model_dump(mode="json")
+                    if isinstance(transformed, native.JiraAdfDocument)
+                    else transformed
+                )
                 continue
             vendor_key = writable[key]
             result[vendor_key] = value
@@ -2478,7 +2486,7 @@ class JiraTicketingAdapter:
                     raise _invalid_command(
                         "Creating a Jira issue requires title, project_external_id, and issue_type."
                     )
-        return result
+        return native.parse_request(result, native.JiraWriteFields)
 
     def _command_result(
         self,
@@ -2540,13 +2548,14 @@ def _jira_current_sprint_id(value: object) -> str | None:
     if value is None or value == []:
         return None
     values = value if isinstance(value, (list, tuple)) else (value,)
-    candidates: list[tuple[str, str | None]] = []
+    candidates: list[native.JiraSprintReference] = []
     for item in values:
         sprint_id: str | None
         state: str | None
         if isinstance(item, Mapping):
-            sprint_id = _optional_id(item.get("id"))
-            state = _optional_string(item.get("state"))
+            reference = native.parse_response(item, native.JiraSprintReference)
+            sprint_id = _optional_id(reference.id)
+            state = _optional_string(reference.state)
         elif isinstance(item, str):
             stripped = item.strip()
             sprint_id = stripped if stripped.isdigit() else None
@@ -2562,53 +2571,77 @@ def _jira_current_sprint_id(value: object) -> str | None:
             raise _invalid_response("Jira returned a malformed Sprint custom field.")
         if sprint_id is None:
             raise _invalid_response("Jira returned a Sprint without an ID.")
-        candidates.append((sprint_id, state.casefold() if state is not None else None))
+        candidates.append(
+            native.JiraSprintReference(
+                id=_required_id(sprint_id, field="Jira sprint ID"),
+                state=state.casefold() if state is not None else None,
+            )
+        )
 
-    for preferred_state in ("active", "future"):
-        for sprint_id, state in reversed(candidates):
-            if state == preferred_state:
-                return sprint_id
-    return candidates[-1][0]
+    for preferred_state in (
+        native.JiraSprintState.ACTIVE,
+        native.JiraSprintState.FUTURE,
+    ):
+        for reference in reversed(candidates):
+            if reference.state == preferred_state:
+                return _required_id(reference.id, field="Jira sprint ID")
+    return _required_id(candidates[-1].id, field="Jira sprint ID")
 
 
-def _jira_sprint_rows(value: object) -> tuple[Mapping[str, object], ...]:
+def _jira_sprint_rows(value: object) -> tuple[native.JiraSprint, ...]:
     """Normalize Jira's current and legacy Sprint-field representations."""
     if value is None or value == []:
         return ()
     values = value if isinstance(value, (list, tuple)) else (value,)
-    rows: list[Mapping[str, object]] = []
+    rows: list[native.JiraSprint] = []
     for item in values:
         if isinstance(item, Mapping):
-            _required_id(item.get("id"), field="Jira sprint ID")
-            rows.append(dict(item))
+            rows.append(native.parse_response(item, native.JiraSprint))
             continue
         if isinstance(item, int) and not isinstance(item, bool):
-            rows.append({"id": str(item)})
+            rows.append(
+                native.JiraSprint(id=_required_id(str(item), field="Jira sprint ID"))
+            )
             continue
         if not isinstance(item, str):
             raise _invalid_response("Jira returned a malformed Sprint custom field.")
         stripped = item.strip()
         if stripped.isdigit():
-            rows.append({"id": stripped})
+            rows.append(
+                native.JiraSprint(id=_required_id(stripped, field="Jira sprint ID"))
+            )
             continue
-        sprint_id = _legacy_sprint_field(stripped, "id")
+        sprint_id = _legacy_sprint_field(stripped, native.JiraLegacySprintField.ID)
         if sprint_id is None or not sprint_id.isdigit():
             raise _invalid_response("Jira returned a Sprint without an ID.")
-        legacy = {
-            "id": sprint_id,
-            "name": _legacy_sprint_field(stripped, "name"),
-            "state": _legacy_sprint_field(stripped, "state"),
-            "goal": _legacy_sprint_field(stripped, "goal"),
-            "startDate": _legacy_sprint_field(stripped, "startDate"),
-            "endDate": _legacy_sprint_field(stripped, "endDate"),
-            "completeDate": _legacy_sprint_field(stripped, "completeDate"),
-            "boardId": _legacy_sprint_field(stripped, "rapidViewId"),
-        }
-        rows.append({key: field for key, field in legacy.items() if field is not None})
+        rows.append(
+            native.JiraSprint(
+                id=_required_id(sprint_id, field="Jira sprint ID"),
+                name=_legacy_sprint_field(stripped, native.JiraLegacySprintField.NAME),
+                state=_legacy_sprint_field(
+                    stripped, native.JiraLegacySprintField.STATE
+                ),
+                goal=_legacy_sprint_field(stripped, native.JiraLegacySprintField.GOAL),
+                startDate=_legacy_sprint_field(
+                    stripped, native.JiraLegacySprintField.START_DATE
+                ),
+                endDate=_legacy_sprint_field(
+                    stripped, native.JiraLegacySprintField.END_DATE
+                ),
+                completeDate=_legacy_sprint_field(
+                    stripped, native.JiraLegacySprintField.COMPLETE_DATE
+                ),
+                boardId=_optional_id(
+                    _legacy_sprint_field(
+                        stripped, native.JiraLegacySprintField.BOARD_ID
+                    )
+                ),
+            )
+        )
     return tuple(rows)
 
 
-def _legacy_sprint_field(value: str, key: str) -> str | None:
+def _legacy_sprint_field(value: str, key: native.JiraLegacySprintField) -> str | None:
     match = re.search(
         rf"(?:^|[,\[]){re.escape(key)}=(.*?)(?=,[A-Za-z][A-Za-z0-9]*=|\]$)",
         value,
@@ -3193,16 +3226,13 @@ def _completed_sprint_cursor(
 
 
 def _maximum_issue_updated_at(
-    rows: Sequence[Mapping[str, object]],
+    timestamps: Sequence[str],
     *,
     current: datetime | None,
 ) -> datetime | None:
     result = current
-    for row in rows:
-        fields = _object(row.get("fields"), field="Jira issue fields")
-        updated = _required_datetime(
-            fields.get("updated"), field="Jira issue update time"
-        )
+    for timestamp in timestamps:
+        updated = _required_datetime(timestamp, field="Jira issue update time")
         if result is None or updated > result:
             result = updated
     return result
@@ -3275,45 +3305,45 @@ def _split_comment_external_id(value: str) -> tuple[str, str]:
 
 
 def _jira_issue_link_snapshot(
-    row: Mapping[str, object],
+    row: native.JiraIssueLink,
+    *,
+    current_issue_id: str | None = None,
 ) -> _JiraIssueLinkSnapshot:
-    current_id = _optional_id(row.get("_current_issue_external_id"))
-    inward = _optional_object(row.get("inwardIssue"))
-    outward = _optional_object(row.get("outwardIssue"))
-    inward_id = _optional_id(inward.get("id"))
-    outward_id = _optional_id(outward.get("id"))
+    current_id = _optional_id(current_issue_id)
+    inward_id = _optional_id(row.inwardIssue.id) if row.inwardIssue else None
+    outward_id = _optional_id(row.outwardIssue.id) if row.outwardIssue else None
     if inward_id is None and current_id is not None and outward_id is not None:
         inward_id = current_id
     if outward_id is None and current_id is not None and inward_id is not None:
         outward_id = current_id
     if inward_id is None or outward_id is None:
         raise _invalid_response("Jira issue-link endpoints are incomplete.")
-    relation_type = _object(row.get("type"), field="Jira issue-link type")
+    relation_type = row.type
     canonical_kind = _jira_relation_kind_from_type(relation_type)
     from_id, to_id = outward_id, inward_id
     if canonical_kind is TicketingRelationKind.RELATED and from_id > to_id:
         from_id, to_id = to_id, from_id
     return _JiraIssueLinkSnapshot(
-        relation_id=_required_id(row.get("id"), field="Jira issue-link ID"),
+        relation_id=_required_id(row.id, field="Jira issue-link ID"),
         from_issue_external_id=from_id,
         to_issue_external_id=to_id,
         canonical_kind=canonical_kind,
         native_kind=_required_string(
-            relation_type.get("name"),
+            relation_type.name,
             field="Jira issue-link type name",
         ),
     )
 
 
 def _jira_relation_kind_from_type(
-    link_type: Mapping[str, object],
+    link_type: native.JiraLinkType,
 ) -> TicketingRelationKind:
     vocabulary = " ".join(
         value.casefold()
         for value in (
-            _optional_string(link_type.get("name")),
-            _optional_string(link_type.get("inward")),
-            _optional_string(link_type.get("outward")),
+            _optional_string(link_type.name),
+            _optional_string(link_type.inward),
+            _optional_string(link_type.outward),
         )
         if value
     )
@@ -3325,7 +3355,7 @@ def _jira_relation_kind_from_type(
 
 
 def _jira_link_type_matches(
-    link_type: Mapping[str, object],
+    link_type: native.JiraLinkType,
     relation_kind: TicketingRelationKind,
 ) -> bool:
     normalized = _jira_relation_kind_from_type(link_type)
@@ -3338,9 +3368,9 @@ def _jira_link_type_matches(
     vocabulary = " ".join(
         value.casefold()
         for value in (
-            _optional_string(link_type.get("name")),
-            _optional_string(link_type.get("inward")),
-            _optional_string(link_type.get("outward")),
+            _optional_string(link_type.name),
+            _optional_string(link_type.inward),
+            _optional_string(link_type.outward),
         )
         if value
     )
@@ -3390,15 +3420,13 @@ def _command_string_list(value: object) -> list[str]:
     return result
 
 
-def _adf_document_or_none(value: object) -> object | None:
+def _adf_document_or_none(value: object) -> native.JiraAdfDocument | None:
     if value is None:
         return None
     text = _required_command_string(value, field="Jira description")
-    return {
-        "content": [{"content": [{"text": text, "type": "text"}], "type": "paragraph"}],
-        "type": "doc",
-        "version": 1,
-    }
+    return native.JiraAdfDocument(
+        content=[native.JiraAdfParagraph(content=[native.JiraAdfText(text=text)])]
+    )
 
 
 def _adf_text(value: object) -> str | None:
@@ -3449,18 +3477,6 @@ def _normalized_jira_status(value: str | None) -> TicketingWorkState | None:
         "done": TicketingWorkState.COMPLETED,
         "complete": TicketingWorkState.COMPLETED,
     }.get(normalized, TicketingWorkState.UNKNOWN)
-
-
-def _nested_id(value: object, *, key: str = "id") -> str | None:
-    if value is None:
-        return None
-    return _optional_string(_object(value, field="Jira reference").get(key))
-
-
-def _nested_string(value: object, key: str) -> str | None:
-    if value is None:
-        return None
-    return _optional_string(_object(value, field="Jira value").get(key))
 
 
 def _request_id(response: SorJsonResponse) -> str | None:

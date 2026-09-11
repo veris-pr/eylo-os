@@ -315,6 +315,31 @@ projection without modifying the vendor response. Pagination fences reject
 changed offsets, shrinking totals and empty partial pages rather than silently
 skipping comments. These local checks do not establish live Jira acceptance.
 
+Issue search and exact reads share a native issue model. Fixed reference fields
+are typed; discovered custom fields remain validated JSON, including Sprint
+fields mapped to cycle identity. Issue update watermarks retain their existing
+reconciliation overlap. Native [issue links](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-links/)
+carry typed inward/outward endpoints. Sync supplies the containing issue explicitly
+when the embedded link omits that endpoint. The same direction rules apply during
+post-create lookup: Jira's successful create response alone does not supply the
+new link identity. An unresolved identity remains an uncertain outcome requiring
+reconciliation, not permission to repeat the write. Native contract checks are
+not a substitute for live sync and mutation acceptance.
+
+Sprint scans validate the selected custom field separately from a full issue
+response. Embedded JSON and legacy Sprint values become native objects; missing
+or conflicting snapshots use an authoritative
+[Agile Sprint read](https://developer.atlassian.com/cloud/jira/software/rest/api-group-sprint/#api-rest-agile-1-0-sprint-sprintid-get).
+Dates retain their source representation until canonical normalization. Paging
+tracks both the native issue page and the offset within its expanded Sprint list.
+
+Jira [mutation requests](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issues/)
+use native models for fields, transitions, assignment, comments and label actions.
+Omitted update fields remain absent; explicit nulls retain their clearing meaning.
+Custom mapped fields stay validated JSON at the adapter boundary. Generated
+plain-text ADF has a narrow typed contract; it does not constrain arbitrary ADF
+received from Jira. Transition selection still checks reachability before writing.
+
 An organization configures a source in this order:
 
 1. Create a new OAuth configuration and authorize it, or enter an API-key
