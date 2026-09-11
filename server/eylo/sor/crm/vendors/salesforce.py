@@ -9,9 +9,10 @@ from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from email.utils import format_datetime
 from enum import StrEnum
-from http import HTTPStatus
-from typing import Any
+from http import HTTPMethod, HTTPStatus
 from urllib.parse import urlsplit
+
+from pydantic import ValidationError
 
 from eylo.modules.connections.domain import ConnectionAuthKind
 from eylo.sor.crm.contracts import (
@@ -57,6 +58,27 @@ from eylo.sor.shared.contracts import (
     SorVendorStreamSpec,
     SorWebhookSignal,
     SorWebhookSubscription,
+)
+
+from .salesforce_wire import (
+    MAX_PAGE_SIZE,
+    RECORD_ID_PATTERN,
+    SCHEMA_IDENTIFIER_PATTERN,
+    SalesforceCatalog,
+    SalesforceCheckpoint,
+    SalesforceCreateResult,
+    SalesforceCursorVersion,
+    SalesforceDescribe,
+    SalesforceField,
+    SalesforceFieldType,
+    SalesforceFieldsRequest,
+    SalesforceObjectInfo,
+    SalesforceQueryRequest,
+    SalesforceQueryResult,
+    SalesforceRecord,
+    SalesforceSystemField,
+    SalesforceWrite,
+    parse_response,
 )
 
 SALESFORCE_API_VERSION = "67.0"
@@ -131,9 +153,9 @@ _TOOL_STREAMS = {
         for tool_name, (stream_key, _creates) in _TOOL_STREAM.items()
     },
 }
-_SYSTEM_FIELDS = ("Id", "CreatedDate", "LastModifiedDate", "SystemModstamp")
-_IDENTIFIER = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,255}$")
-_RECORD_ID = re.compile(r"^[A-Za-z0-9]{15,18}$")
+_SYSTEM_FIELDS = tuple(field.value for field in SalesforceSystemField)
+_IDENTIFIER = re.compile(SCHEMA_IDENTIFIER_PATTERN)
+_RECORD_ID = re.compile(RECORD_ID_PATTERN)
 _CUSTOM_OBJECT_LIMIT = 50
 
 
@@ -233,13 +255,11 @@ class SalesforceCrmAdapter:
 
     async def verify_connection(self) -> SorConnectionVerification:
         response = await self._client.request(f"{SALESFORCE_API_PREFIX}/sobjects/")
-        data = _object(_expect(response, operation="verify Salesforce data access"))
-        rows = _object_list(data.get("sobjects"), field="Salesforce sObjects")
-        available = {
-            _optional_string(row.get("name"))
-            for row in rows
-            if row.get("queryable") is True
-        }
+        data = parse_response(
+            SalesforceCatalog,
+            _expect(response, operation="verify Salesforce data access"),
+        )
+        available = {row.name for row in data.sobjects if row.queryable is True}
         missing = sorted(set(self._context.selected_objects) - available)
         if missing:
             raise SorVendorOperationError(
@@ -257,11 +277,11 @@ class SalesforceCrmAdapter:
         catalog_response = await self._client.request(
             f"{SALESFORCE_API_PREFIX}/sobjects/"
         )
-        catalog = _object(
-            _expect(catalog_response, operation="list Salesforce objects")
+        catalog = parse_response(
+            SalesforceCatalog,
+            _expect(catalog_response, operation="list Salesforce objects"),
         )
-        rows = _object_list(catalog.get("sobjects"), field="Salesforce sObjects")
-        custom_objects = _custom_object_keys(rows)
+        custom_objects = _custom_object_keys(catalog.sobjects)
         object_keys = tuple(
             dict.fromkeys(
                 (
@@ -320,14 +340,18 @@ class SalesforceCrmAdapter:
         selected_fields = self._selected_fields(stream_key)
         response = await self._client.request(
             f"{SALESFORCE_API_PREFIX}/sobjects/{stream_key}/{record_id}",
-            query={"fields": ",".join(_query_fields(selected_fields))},
+            query=SalesforceFieldsRequest(
+                fields=",".join(_query_fields(selected_fields))
+            ).model_dump(mode="json"),
         )
         if response.status_code in {HTTPStatus.NOT_FOUND, HTTPStatus.GONE}:
             raise SorExternalRecordNotFound(
                 vendor_object_key=stream_key,
                 external_id=record_id,
             )
-        row = _object(_expect(response, operation="read Salesforce record"))
+        row = parse_response(
+            SalesforceRecord, _expect(response, operation="read Salesforce record")
+        )
         return self._external_record(stream_key, row, selected_fields=selected_fields)
 
     async def fetch_deleted(
@@ -426,17 +450,17 @@ class SalesforceCrmAdapter:
             )
         values = self._write_fields(stream_key, field_values)
         path = f"{SALESFORCE_API_PREFIX}/sobjects/{stream_key}"
-        method = "POST"
+        method = HTTPMethod.POST
         record_id: str | None = None
         if operation is SorMutationOperation.UPDATE:
             record_id = _required_record_id(command.target_external_id)
             path = f"{path}/{record_id}"
-            method = "PATCH"
+            method = HTTPMethod.PATCH
         try:
             response = await self._client.request(
                 path,
                 method=method,
-                payload=values,
+                payload=SalesforceWrite.model_validate(values).model_dump(mode="json"),
                 idempotency_key=command.idempotency_key,
                 if_unmodified_since=(
                     None
@@ -458,8 +482,8 @@ class SalesforceCrmAdapter:
                 ) from error
             raise
         if operation is SorMutationOperation.CREATE:
-            body = _object(response.data)
-            record_id = _required_record_id(body.get("id"))
+            body = parse_response(SalesforceCreateResult, response.data)
+            record_id = body.id
         assert record_id is not None
         request_ids = response.header_values("x-request-id")
         return SorCommandResult(
@@ -572,16 +596,13 @@ class SalesforceCrmAdapter:
         response = await self._client.request(
             f"{SALESFORCE_API_PREFIX}/sobjects/{object_key}/describe/"
         )
-        payload = _object(_expect(response, operation="describe Salesforce object"))
+        payload = parse_response(
+            SalesforceDescribe,
+            _expect(response, operation="describe Salesforce object"),
+        )
         fields = tuple(
             sorted(
-                (
-                    _discovered_field(row)
-                    for row in _object_list(
-                        payload.get("fields"),
-                        field="Salesforce fields",
-                    )
-                ),
+                (_discovered_field(row) for row in payload.fields),
                 key=lambda field: (field.group or "", field.label, field.key),
             )
         )
@@ -593,11 +614,7 @@ class SalesforceCrmAdapter:
             )
         return SorDiscoveredObject(
             key=object_key,
-            label=(
-                _optional_string(payload.get("labelPlural"))
-                or _optional_string(payload.get("label"))
-                or object_key
-            ),
+            label=(payload.labelPlural or payload.label or object_key),
             fields=fields,
             custom=custom,
         )
@@ -619,7 +636,7 @@ class SalesforceCrmAdapter:
                 "Salesforce page limit must be positive.",
                 recovery=SorRecoveryPolicy.TERMINAL,
             )
-        page_limit = min(limit, 200)
+        page_limit = min(limit, MAX_PAGE_SIZE)
         selected_fields = self._selected_fields(stream_key)
         checkpoint = _decode_cursor(cursor)
         soql = _build_query(
@@ -630,10 +647,13 @@ class SalesforceCrmAdapter:
         )
         response = await self._client.request(
             f"{SALESFORCE_API_PREFIX}/query/",
-            query={"q": soql},
+            query=SalesforceQueryRequest(q=soql).model_dump(mode="json"),
         )
-        data = _object(_expect(response, operation="query Salesforce records"))
-        rows = _object_list(data.get("records"), field="Salesforce records")
+        data = parse_response(
+            SalesforceQueryResult,
+            _expect(response, operation="query Salesforce records"),
+        )
+        rows = data.records
         if len(rows) > page_limit:
             raise SorVendorOperationError(
                 SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
@@ -643,7 +663,13 @@ class SalesforceCrmAdapter:
         next_cursor = cursor
         if rows:
             next_cursor = _encode_cursor(rows[-1])
-        has_more = len(rows) == page_limit
+        if not rows and not data.done:
+            raise SorVendorOperationError(
+                SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
+                "Salesforce returned an unfinished query without checkpoint progress.",
+                recovery=SorRecoveryPolicy.TERMINAL,
+            )
+        has_more = not data.done or len(rows) == page_limit
         return SorRecordPage(
             records=tuple(
                 self._external_record(
@@ -711,12 +737,12 @@ class SalesforceCrmAdapter:
     def _external_record(
         self,
         stream_key: str,
-        row: Mapping[str, object],
+        row: SalesforceRecord,
         *,
         selected_fields: tuple[str, ...],
     ) -> SorExternalRecord:
-        record_id = _required_record_id(row.get("Id"))
-        updated_at = _optional_datetime(row.get("LastModifiedDate"))
+        record_id = row.Id
+        updated_at = _optional_datetime(row.LastModifiedDate)
         return SorExternalRecord(
             vendor_object_key=stream_key,
             external_id=record_id,
@@ -724,11 +750,11 @@ class SalesforceCrmAdapter:
                 key: _from_salesforce_value(
                     stream_key=stream_key,
                     vendor_field_key=key,
-                    value=row.get(key),
+                    value=row.field_value(key),
                 )
                 for key in selected_fields
             },
-            source_created_at=_optional_datetime(row.get("CreatedDate")),
+            source_created_at=_optional_datetime(row.CreatedDate),
             source_updated_at=updated_at,
             source_revision=(
                 format_datetime(updated_at, usegmt=True) if updated_at else None
@@ -802,15 +828,15 @@ def _require_stream(stream_key: str, *, selected: tuple[str, ...]) -> str:
     return object_key
 
 
-def _custom_object_keys(rows: list[dict[str, Any]]) -> tuple[str, ...]:
+def _custom_object_keys(rows: list[SalesforceObjectInfo]) -> tuple[str, ...]:
     keys = tuple(
         sorted(
             _identifier(name)
             for row in rows
-            if row.get("custom") is True
-            and row.get("queryable") is True
-            and row.get("deprecatedAndHidden") is not True
-            if (name := _optional_string(row.get("name"))) is not None
+            if row.custom is True
+            and row.queryable is True
+            and row.deprecatedAndHidden is not True
+            if (name := row.name) is not None
         )
     )
     if len(keys) > _CUSTOM_OBJECT_LIMIT:
@@ -862,7 +888,11 @@ def _expect_mutation(
     *,
     operation: SorMutationOperation,
 ) -> None:
-    expected = {201} if operation is SorMutationOperation.CREATE else {200, 204}
+    expected = (
+        {HTTPStatus.CREATED}
+        if operation is SorMutationOperation.CREATE
+        else {HTTPStatus.OK, HTTPStatus.NO_CONTENT}
+    )
     if response.status_code in expected:
         return
     if response.status_code in {HTTPStatus.CONFLICT, HTTPStatus.PRECONDITION_FAILED}:
@@ -874,53 +904,58 @@ def _expect_mutation(
     _expect(response, operation="apply the CRM action")
 
 
-def _discovered_field(row: Mapping[str, object]) -> SorDiscoveredField:
-    key = _identifier(_required_string(row.get("name"), field="Salesforce field"))
-    values = row.get("picklistValues")
-    choices = ()
-    if isinstance(values, list):
-        choices = tuple(
-            value
-            for item in values
-            if isinstance(item, Mapping) and item.get("active") is True
-            if (value := _optional_string(item.get("value"))) is not None
-        )
+def _discovered_field(row: SalesforceField) -> SorDiscoveredField:
+    key = row.name
+    choices = tuple(
+        item.value
+        for item in row.picklistValues or ()
+        if item.active is True and item.value is not None
+    )
     return SorDiscoveredField(
         key=key,
-        label=_optional_string(row.get("label")) or key,
-        data_type=_field_type(row.get("type")),
-        nullable=row.get("nillable") is True,
-        writable=row.get("createable") is True or row.get("updateable") is True,
+        label=row.label or key,
+        data_type=_field_type(row.type),
+        nullable=row.nillable is True,
+        writable=row.createable is True or row.updateable is True,
         choices=choices,
-        description=_optional_string(row.get("inlineHelpText")),
-        group=_optional_string(row.get("compoundFieldName")),
+        description=row.inlineHelpText,
+        group=row.compoundFieldName,
     )
 
 
 def _field_type(value: object) -> SorFieldDataType:
-    field_type = (_optional_string(value) or "").casefold()
-    if field_type == "boolean":
+    try:
+        field_type = SalesforceFieldType((_optional_string(value) or "").casefold())
+    except ValueError:
+        return SorFieldDataType.BOUNDED_JSON
+    if field_type is SalesforceFieldType.BOOLEAN:
         return SorFieldDataType.BOOLEAN
-    if field_type == "date":
+    if field_type is SalesforceFieldType.DATE:
         return SorFieldDataType.DATE
-    if field_type == "datetime":
+    if field_type is SalesforceFieldType.DATETIME:
         return SorFieldDataType.TIMESTAMP
-    if field_type in {"currency", "double", "int", "long", "percent"}:
+    if field_type in {
+        SalesforceFieldType.CURRENCY,
+        SalesforceFieldType.DOUBLE,
+        SalesforceFieldType.INTEGER,
+        SalesforceFieldType.LONG,
+        SalesforceFieldType.PERCENT,
+    }:
         return SorFieldDataType.DECIMAL
-    if field_type == "multipicklist":
+    if field_type is SalesforceFieldType.MULTIPICKLIST:
         return SorFieldDataType.STRING_ARRAY
-    if field_type in {"combobox", "picklist"}:
+    if field_type in {SalesforceFieldType.COMBOBOX, SalesforceFieldType.PICKLIST}:
         return SorFieldDataType.ENUM
     if field_type in {
-        "email",
-        "encryptedstring",
-        "id",
-        "phone",
-        "reference",
-        "string",
-        "textarea",
-        "time",
-        "url",
+        SalesforceFieldType.EMAIL,
+        SalesforceFieldType.ENCRYPTED_STRING,
+        SalesforceFieldType.ID,
+        SalesforceFieldType.PHONE,
+        SalesforceFieldType.REFERENCE,
+        SalesforceFieldType.STRING,
+        SalesforceFieldType.TEXTAREA,
+        SalesforceFieldType.TIME,
+        SalesforceFieldType.URL,
     }:
         return SorFieldDataType.TEXT
     return SorFieldDataType.BOUNDED_JSON
@@ -934,54 +969,42 @@ def _build_query(
     *,
     stream_key: str,
     fields: tuple[str, ...],
-    checkpoint: tuple[datetime, str] | None,
+    checkpoint: SalesforceCheckpoint | None,
     limit: int,
 ) -> str:
     selected = ", ".join(_identifier(field) for field in fields)
     query = f"SELECT {selected} FROM {_identifier(stream_key)}"
     if checkpoint is not None:
-        stamp, record_id = checkpoint
-        literal = _soql_datetime(stamp)
+        literal = _soql_datetime(checkpoint.stamp)
         query = (
             f"{query} WHERE (SystemModstamp > {literal} OR "
-            f"(SystemModstamp = {literal} AND Id > '{record_id}'))"
+            f"(SystemModstamp = {literal} AND Id > '{checkpoint.id}'))"
         )
     return f"{query} ORDER BY SystemModstamp ASC, Id ASC LIMIT {limit}"
 
 
-def _encode_cursor(row: Mapping[str, object]) -> str:
+def _encode_cursor(row: SalesforceRecord) -> str:
     stamp = _required_datetime(
-        row.get("SystemModstamp"),
+        row.SystemModstamp,
         field="Salesforce SystemModstamp",
     )
-    record_id = _required_record_id(row.get("Id"))
+    checkpoint = SalesforceCheckpoint(
+        id=row.Id, stamp=stamp, v=SalesforceCursorVersion.KEYSET_V1
+    )
     return json.dumps(
-        {"id": record_id, "stamp": stamp.isoformat(), "v": 1},
+        {"id": checkpoint.id, "stamp": checkpoint.stamp.isoformat(), "v": checkpoint.v},
         separators=(",", ":"),
         sort_keys=True,
     )
 
 
-def _decode_cursor(value: str | None) -> tuple[datetime, str] | None:
+def _decode_cursor(value: str | None) -> SalesforceCheckpoint | None:
     if value is None:
         return None
     try:
-        payload = json.loads(value)
-    except (json.JSONDecodeError, TypeError, ValueError) as error:
-        raise _invalid_cursor() from error
-    if not isinstance(payload, dict) or set(payload) != {"id", "stamp", "v"}:
-        raise _invalid_cursor()
-    if payload.get("v") != 1:
-        raise _invalid_cursor()
-    try:
-        stamp = _required_datetime(
-            payload.get("stamp"),
-            field="Salesforce cursor timestamp",
-        )
-        record_id = _required_record_id(payload.get("id"))
-    except SorVendorOperationError as error:
-        raise _invalid_cursor() from error
-    return stamp, record_id
+        return SalesforceCheckpoint.model_validate_json(value)
+    except ValidationError:
+        raise _invalid_cursor() from None
 
 
 def _invalid_cursor() -> SorVendorOperationError:
@@ -1016,26 +1039,6 @@ def _required_record_id(value: object) -> str:
             recovery=SorRecoveryPolicy.TERMINAL,
         )
     return normalized
-
-
-def _object(value: object) -> dict[str, Any]:
-    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
-        raise SorVendorOperationError(
-            SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
-            "Salesforce returned an invalid object.",
-            recovery=SorRecoveryPolicy.TERMINAL,
-        )
-    return value
-
-
-def _object_list(value: object, *, field: str) -> list[dict[str, Any]]:
-    if not isinstance(value, list) or len(value) > 20_000:
-        raise SorVendorOperationError(
-            SorVendorErrorCode.VENDOR_RESPONSE_INVALID,
-            f"{field} have an invalid shape.",
-            recovery=SorRecoveryPolicy.TERMINAL,
-        )
-    return [_object(item) for item in value]
 
 
 def _required_string(value: object, *, field: str) -> str:

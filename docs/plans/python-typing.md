@@ -10,6 +10,7 @@ are superseded by the newest deployment record.
 | Gate | Current evidence | Remaining acceptance |
 | --- | --- | --- |
 | Static backend contracts | Lint passes; Pyrefly has zero errors and two existing redundant-cast warnings | Static success does not prove native input shapes |
+| SOR vendor wire coverage | HubSpot, Salesforce and Confluence wire contracts deployed; Confluence native list/exact reads passed for all seven selected streams; Salesforce passed 164 function assertions | Salesforce is not configured in QA; Confluence full-sync completion and remaining registered vendor boundaries still need operation-level coverage |
 | CLI typing | CLI-owned Pydantic contracts, independent environment synchronized; explicit CLI typing passes; 102 function checks, 332 live-catalog action parity checks and authenticated collection reads passed | Not proof that every API action or vendor execution succeeds |
 | Stored provider compatibility | 25 saved configs inspected; 13 ready voice receipts restored; native Speechmatics connection/cleanup passed | Native conversations across configured providers |
 | Published voice bindings | Public CLI aggregate resolves both existing realtime and decomposed QA agents at revision 1 | Both have no storage binding; recording upload is not covered |
@@ -17,13 +18,14 @@ are superseded by the newest deployment record.
 | Widget and console | Both development servers return HTTP 200; earlier widget inventory/conversation list loaded | Latest browser inventory call also timed out; fresh browser conversation not submitted |
 | Durable execution | Saved contexts/results, isolated replay, and one native scheduled tool-bearing result validated | Background/objective execution, cancellation, crash/restart and waiting/resume |
 | Sandbox | Typed workspace/checkpoint/tool paths validated with substituted dependencies | Native configured sandbox execution/cleanup |
-| Final handoff | Changes remain uncommitted; no migrations or provider data reset | Complete remaining contracts, milestone review, final QA matrix |
+| Final handoff | Current HEAD `9f6e64b0` includes earlier implementation; sync/webhook receipts and HubSpot/Salesforce/Confluence wire contracts remain uncommitted; no migrations or provider data reset | Complete remaining contracts, milestone review, final QA matrix |
 
 The current deployed checkpoint includes the scheduler correction, telephony,
 HTTP, PCM audio, collection/internal values, timeline/erasure, SOR tool-receipt
 and event/periodic contracts, plus the shared SOR catalog/mapping/projection and
-SOR HTTP response batch, on image
-`sha256:2c1e02a644c28e94b5bf41557946f7b2786465f6fc4b3520ff7be7cbafab58fc`.
+SOR HTTP response batch, remaining SOR values, typed work lifecycle,
+sync/webhook receipts and HubSpot/Salesforce/Confluence wire contracts, on image
+`sha256:54c56c7da7a6f08ca8131d83a74024a3d276f8a29c04079300bd54b204493f6c`.
 API, durable worker, ordinary worker and scheduler were recreated on that image;
 all four are running and API health passed. The 383 transport and 189 call-tool
 checks passed inside the new image before recreation. Console lint/type/build and widget SDK plus
@@ -35,6 +37,53 @@ DB and Redis container identities were rechecked after deployment and remain
 `615b91925226` and `c07c38389f13`. The native QA schedule remains revision 1,
 with no duplicate or manually rearmed occurrence. Its failed claim was recovered
 by the normal stranded-schedule scan at 23:05 UTC on 2026-09-10.
+
+### Confluence wire checkpoint — 2026-09-11, deployed; native reads passed
+
+Replaced raw vendor row dictionaries across site verification, seven stream
+readers, exact reads, bulk authors, properties, attachments and create/update/append
+requests with vendor-owned Pydantic contracts. Dynamic property values remain
+finite JSON. Current-version, author ordering, nested cursors, document rendering,
+source URL constraints and mutation reconciliation policy remain unchanged.
+
+- 188 function assertions passed: actual HTTP request builder, all seven streams,
+  normal and nested pagination, bulk author identity/order checks, property value
+  variants, page-parent filtering, binary content, all three mutation tools,
+  authorization/error outcomes, strict invalid shapes and frozen model restoration.
+  Mutation transport was substituted; no live document writes were performed.
+- An isolated process in the running development API loaded the changed modules.
+  Native verification and list/exact reads passed for all seven configured
+  Confluence streams. The captured native responses were replayed through the
+  deployed baseline; outbound requests and canonical outputs matched. No projection
+  writes or external mutations occurred. This is native adapter evidence, not
+  deployment or full-sync acceptance.
+- Verification caught and corrected a model-alias restoration issue before native
+  QA: response `_links` must survive dump/restore under the internal field name.
+  Create-request field order also now matches the existing serialized request.
+  Backend typing and lint passed; two pre-existing redundant-cast warnings remain.
+
+Contracts were checked against current Confluence Cloud REST v2 references for
+[pages](https://developer.atlassian.com/cloud/confluence/rest/v2/api-group-page/),
+[users](https://developer.atlassian.com/cloud/confluence/rest/v2/api-group-user/),
+[spaces](https://developer.atlassian.com/cloud/confluence/rest/v2/api-group-space/),
+[properties](https://developer.atlassian.com/cloud/confluence/rest/v2/api-group-content-properties/)
+and [attachments](https://developer.atlassian.com/cloud/confluence/rest/v2/api-group-attachment/).
+No scopes, vendor API version, migrations or source settings changed.
+
+Deployment completed at 05:36 UTC. Confluence's 188 checks and Salesforce's
+164 checks passed in isolated containers using the newly built image before all
+four app services were recreated. API is healthy; all workers use the same image.
+Configured environment values and exact DB/Redis container identities were
+unchanged. A bounded post-restart log sample contained no error markers.
+
+Public operations API found an existing generation
+`01a08ef1-b41d-7671-a238-2eb30e1333d5`, started at 05:30 UTC on the older image.
+It was observed rather than duplicated. Five streams had already succeeded;
+unfinished run `01a08ef1-b41e-7b11-b685-d4c59b5a72b9` resumed after restart on
+attempt 2 and advanced from 306 to 329 unchanged records. No records were rejected;
+relationship health reported zero pending. Full generation completion remains
+unverified, and pre-restart completed streams are not claimed as new-image sync
+proof. Native attachment bytes and document mutation remain unexercised.
 
 ### Contract checkpoint deployment — 2026-09-11 01:53 UTC
 
@@ -187,7 +236,7 @@ for all five sources. No production fix was needed for that assertion failure.
 Fresh widget interaction, native mutations and crash/wait-resume acceptance are
 still open. Changes are uncommitted.
 
-### Remaining SOR values checkpoint — 2026-09-11, verified, not deployed
+### Remaining SOR values checkpoint — 2026-09-11, deployed with typed lifecycle
 
 Converted 29 remaining vendor cursor/snapshot/delivery and runtime/service/media
 dataclasses to strict Pydantic values. Cursor wire codecs and their refusal codes
@@ -215,8 +264,8 @@ Evidence:
 
 Verification image:
 `sha256:22152e114b00f9479fecb70d11872e8e89f7008babe455a8afc6145c98980d67`.
-The running services remain on the deployed checkpoint above; the local image
-tag alone does not establish deployment. No migration or provider data reset.
+This was first verified in isolation, then included in the typed-lifecycle rollout
+below. No migration or provider data reset.
 
 At this checkpoint the one remaining SOR dataclass was `runtime/work.py::SorWorkContract`. Its
 `type[Any]`, arbitrary result-field assignment and differing command/sync/webhook
@@ -226,7 +275,7 @@ verify binding, completion, retry, cancellation and recovery, then one rollout.
 Vendor wire coverage and final product acceptance remain open independently of
 the dataclass count.
 
-### Typed SOR lifecycle checkpoint — 2026-09-11
+### Typed SOR lifecycle checkpoint — 2026-09-11, deployed and native sync verified
 
 `SorWorkContract` is now a frozen, strict Pydantic value with model-specific state
 validation. The generic service preserves exact sync/command/webhook ORM return
@@ -249,8 +298,157 @@ Two probe-stage issues were resolved before rollout: the installed Pydantic
 version rejects a named union bound inside `type[T]`, while the equivalent
 explicit union works; a cloned DB fixture initially reused its organization-unique
 `external_id`. The latter required a fixture correction, not a production change.
-Application-service rollout is in progress; DB/Redis and service environment
-values were checked before recreation and are unchanged.
+All four application services now run the verified image; API health and
+authenticated source reads passed. DB/Redis container identities and service
+environment values are unchanged. This execution made no commits or migrations.
+During final verification, HEAD independently advanced to `9f6e64b0`, containing
+the source changes; only this later plan update remained dirty.
+
+Native HubSpot reconciliation `01a08ea7-f9cd-70e1-aacb-4766fe19c3c6`
+succeeded at 04:09:31 UTC: 4/4 streams, six unchanged records, zero rejected and
+zero pending relationships. Existing Confluence generation
+`01a08e9d-7985-7ea3-b85d-8cadec2bde4e` was observed without duplication;
+its one scheduled run completed on attempt 2 at 04:09:35 UTC after the worker
+restart, with 2,932 unchanged records, zero rejected and zero pending relationships.
+This is native restart/retry evidence for that run, not a controlled crash test,
+full Confluence source scan, command mutation, or new webhook delivery test.
+Bounded five-minute samples of all four application services contained zero
+error lines, tracebacks, validation errors or schema errors.
+
+### Typed sync/webhook receipts — 2026-09-11, deployed
+
+Sync and webhook handlers now keep typed request, receipt and resume objects
+internally; only the durable handler boundary emits the existing JSON shape.
+Stream/cursor fields no longer travel through a mutable receipt dictionary.
+Stored webhook signal fields use a dedicated model before canonical conversion;
+malformed JSON-shaped signals remain reportable in terminal receipts. UUID task
+inputs accept native UUIDs or UUID strings, not arbitrary objects/numbers coerced
+through `str`. Producers already emit strings; task identity and stored shape are
+unchanged. Shared adapters retain the same page/record validation and byte limits.
+
+Confirmed bug: webhook failure classification discarded `SorVendorOperationError`
+and retried even `TERMINAL` errors as `WEBHOOK_PROVIDER_FAILED`. It now retains
+the vendor code and `SorRecoveryPolicy`, matching the sync boundary. Unknown
+exceptions still retry generically; this does not add a new source-state policy.
+
+Local verification: 152 assertions compare receipt JSON with commit `9f6e64b0`,
+check typed requests/signals/recovery and serialization; 31 workflow assertions
+cover checkpoint selection, page consumption, completion and webhook failure
+effects. DB/vendor I/O is substituted. Full typing has zero errors and two
+existing warnings; lint/docs checks pass. Both probes also passed in the new
+image. Read-only parity checks compared 100 stored sync runs and 89 webhook
+receipts with the prior builders, without writing to the DB. All four application
+services now run image `e0da3bfae9f6`; API health passed. A fresh webhook delivery
+and controlled recovery test on this image remain pending.
+The flow probe initially used a nonexistent change-strategy member and an
+uppercase error value; corrected against the actual enums, not production code.
+
+### HubSpot SOR wire coverage — 2026-09-11, deployed and native sync verified
+
+Registry inspection identifies eleven executable SOR profile/vendor adapters,
+not thirteen: the thirteen catalog entries also include planned candidates.
+The coverage unit is a registered operation from request construction through
+native response parsing and canonical output. A catalog entry, typed handler or
+absence of `Any` does not close this gate.
+
+HubSpot's account verification, property discovery, record list/exact reads,
+association batches and mutation responses previously passed raw dictionaries
+between functions. `hubspot_wire.py` now owns the consumed vendor fields, request
+envelopes, nested pagination/association models and known property/error enums.
+The adapter translates objects into canonical CRM values; custom property names
+and values remain finite JSON selected by the published mapping. Unknown property
+  types retain the existing bounded-JSON fallback. Unknown response fields remain
+tolerated; malformed known boolean/list/object fields are rejected. Optional text
+retains the prior string/integer normalization. No transaction, retry, selected
+scope, idempotency or request-count policy was changed.
+
+Evidence:
+
+- 117 function assertions passed against the prior adapter: verification,
+  discovery, four-stream read/fetch, page and association pagination, explicit
+  empty associations, incomplete/mismatched batch refusal, six create/update
+  request/receipt paths, immutable values and malformed responses. Vendor I/O
+  was substituted; mutations were not sent to HubSpot.
+- An isolated process in the existing API container loaded the changed modules
+  and used the saved QA source for native account verification, discovery of
+  913 fields across four objects, one-record list reads and exact reads for
+  contacts, companies and notes. Deals returned an empty list. No projection
+  writes or external mutations occurred. This is not deployment of these files,
+  full synchronization, exact deal-read or live mutation evidence.
+- Full backend typing returned zero errors and the two existing redundant-cast
+  warnings; backend/CLI lint and whitespace checks passed.
+- Probe construction mistakes (`SorSourcePayload.get` and a nested mapped-command
+  constructor) were corrected against their actual contracts. These were probe
+  errors, not production failures. The new enum lookup needed explicit handling
+  of optional/unknown vendor values; no casts or type suppression were added.
+
+Deployment: the same 117 assertions passed in image `1b8000ede908` before all
+four application services were recreated. Their configured environment values
+matched the previous containers. API health passed; PostgreSQL and Redis retained
+their exact identities. No migration or dependency files changed. The expired CLI
+token was renewed through normal login using the original private QA credentials.
+
+Native public-API reconciliation `01a08ed0-056d-77d0-ae9c-c1b518281ffd`
+completed at `2026-09-11T04:53:16.688177Z`: four of four streams succeeded on
+their first attempt, six records unchanged, zero rejected records and zero pending
+relationships (two resolved). This validates the saved source, vendor reads,
+typed adapter, durable worker, persisted outcomes and operator API on the new
+image. Live mutation, new webhook delivery and exact reads of nonempty deals
+remain unverified. No external CRM records were created or modified.
+
+Source evidence: the adapter remains pinned to `2026-03`. HubSpot's indexed
+[properties reference](https://developers.hubspot.com/docs/api-reference/latest/crm/properties/get-properties),
+[association reference](https://developers.hubspot.com/docs/api-reference/latest/crm/associations/associate-records/batch/get-associations)
+and [contact guide](https://developers.hubspot.com/docs/api-reference/latest/crm/objects/contacts/guide)
+describe the consumed envelopes. The currently opened `latest` association page
+now renders `2026-09`; no API version upgrade was inferred from it. Native reads
+above verify the configured adapter's actual `2026-03` paths.
+
+Remaining vendor-boundary audit: HubSpot app-webhook parsing and auth management;
+Jira, GitHub, Zendesk, Intercom, Freshdesk, Confluence and Notion
+operation helpers; remaining Linear ticketing/document mutation helpers. These
+are candidate gaps identified from the executable registry and helper signatures,
+not eleven fully reviewed or fully live-tested adapters. Continue with complete
+operation flows; dynamic mapped properties are not blanket conversion targets.
+
+### Salesforce SOR wire coverage — 2026-09-11, verified locally; not deployed
+
+`salesforce_wire.py` now owns catalog/describe responses, query rows and completion,
+create receipts, query/field requests and writable JSON. Stable metadata is typed;
+custom sObject fields remain finite JSON behind the published mapping. Internal
+checkpoints use a named frozen model and version enum while retaining the exact
+existing `id`/`stamp`/`v` JSON format and UTC query literals. Boolean/float cursor
+versions and malformed known wire fields now fail validation rather than relying
+on Python equality or truthiness. No CDC, deletion polling or new vendor capability
+was added. No transaction boundaries, selected-object rules, conditional-update
+headers or mutation retry policy changed.
+
+Confirmed pagination defect: a Salesforce query may return fewer rows than the
+requested limit with `done=false`. The old adapter derived completion from row
+count alone. A substituted-transport probe reproduces a one-row unfinished page
+being reported as complete; the new adapter reports more work, uses the last
+record's existing keyset checkpoint and consumes the next record. An empty
+unfinished page is rejected as no progress. A full page still continues even when
+`done=true`, because the SOQL query itself has a limit and the next keyset query
+may match further records.
+
+Verification: 164 function assertions exercise the real HTTP request builder
+with a substituted transport. Covered: verification, standard/custom discovery,
+five streams, mapped nested JSON, exact reads, keyset replay, all eight declared
+mutation tools, request bodies/headers, malformed identities/cursors, custom-data
+diagnostic exclusion and HTTP recovery-code parity. The pre-change adapter is the
+compatibility baseline for unchanged paths. Full backend typing has zero errors
+and two existing warnings; backend/CLI lint and whitespace checks pass. Initial
+Pydantic frozen-field overrides failed static checks and were replaced by explicit
+custom-field ownership without suppressions. There is no Salesforce source among
+the QA organization's five sources, confirmed through the public source API;
+native Salesforce behavior remains unverified. These files are not yet deployed.
+
+Sources: Salesforce's [Describe Global](https://developer.salesforce.com/docs/platform/api-rest/guide/resources-describeglobal.html),
+[sObject Describe](https://developer.salesforce.com/docs/platform/api-rest/guide/resources-sobject-describe.html)
+and [Query contract](https://developer.salesforce.com/docs/platform/api-rest/guide/resources-query.html).
+The adapter remains pinned to REST `67.0`; current documentation examples showing
+later versions are not an instruction or evidence to upgrade that pin.
 
 ### SOR HTTP response checkpoint — 2026-09-11
 
@@ -274,10 +472,10 @@ the services were subsequently rebuilt with this HTTP change in the shared SOR
 checkpoint above. The isolated probe does
 not prove source-wide synchronization, vendor mutations or worker recovery.
 
-The updated source inventory contains one SOR dataclass: the durable-work
-contract identified above. The shared and remaining-value checkpoints cover the
-other 41 values counted at the start of these batches. Worker sync/webhook/work receipts and some vendor parsing
-helpers also retain untyped dictionaries. This inventory is not a completeness
+The shared, remaining-value and typed-lifecycle checkpoints cover all 42 SOR
+dataclasses counted at the start of these batches. Worker sync/webhook receipts
+are now typed as recorded above; some vendor parsing helpers still retain
+untyped dictionaries. This inventory is not a completeness
 claim for request/response coverage or platform-wide literal removal.
 
 ### CLI config-to-response checkpoint — 2026-09-11

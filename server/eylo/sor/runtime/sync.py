@@ -6,7 +6,6 @@ import json
 import logging
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
 from uuid import UUID
 
 from absurd_sdk import AsyncTaskContext, CancelledTask
@@ -21,7 +20,13 @@ from eylo.sor.runtime.adapters import (
 )
 from eylo.sor.runtime.projection import project_source_record
 from eylo.sor.runtime.registry import SorRegistry
-from eylo.sor.runtime.serialization import SorStoredPage, encode_external_record
+from eylo.sor.runtime.serialization import (
+    SorStoredPage,
+    SorSyncAttempt,
+    SorSyncTaskParams,
+    SorSyncWorkReceipt,
+    encode_external_record,
+)
 from eylo.sor.runtime.work import (
     SorBoundWorkService,
     SorWorkBindingPending,
@@ -396,16 +401,18 @@ class SorSyncWorkflow:
 
     async def execute(
         self,
-        params: dict[str, Any],
+        params: dict[str, JsonValue],
         task_context: AsyncTaskContext,
-    ) -> dict[str, Any]:
-        organization_id, run_id = _parse_params(params)
+    ) -> dict[str, JsonValue]:
+        request = _parse_params(params)
+        organization_id, run_id = request.organization_id, request.run_id
         try:
-            return await self._execute(
+            receipt = await self._execute(
                 organization_id=organization_id,
                 run_id=run_id,
                 task_context=task_context,
             )
+            return receipt.model_dump(mode="json")
         except CancelledTask:
             async with start_transaction() as session:
                 work = SorBoundWorkService(SOR_SYNC_WORK, session)
@@ -431,7 +438,7 @@ class SorSyncWorkflow:
         organization_id: UUID,
         run_id: UUID,
         task_context: AsyncTaskContext,
-    ) -> dict[str, Any]:
+    ) -> SorSyncWorkReceipt:
         try:
             attempt = await _begin_attempt(
                 organization_id=organization_id,
@@ -445,15 +452,15 @@ class SorSyncWorkflow:
                 run_id=run_id,
                 error=error,
             )
-        if attempt["terminal"]:
+        if isinstance(attempt, SorSyncWorkReceipt):
             return attempt
 
-        source_id = UUID(attempt["source_id"])
-        stream_id = UUID(attempt["stream_id"])
-        kind = SorSyncRunKind(attempt["kind"])
-        strategy = SorChangeStrategy(attempt["strategy"])
-        cursor_version = int(attempt["cursor_version"])
-        expected_checkpoint = attempt["checkpoint"]
+        source_id = attempt.receipt.source_id
+        stream_id = attempt.stream_id
+        kind = attempt.receipt.kind
+        strategy = attempt.strategy
+        cursor_version = attempt.cursor_version
+        expected_checkpoint = attempt.checkpoint
         try:
             cursor = decrypt_cursor(
                 expected_checkpoint,
@@ -468,14 +475,8 @@ class SorSyncWorkflow:
                 error=error,
             )
 
-        total = SorSyncCounts(
-            added=int(attempt["records_added"]),
-            updated=int(attempt["records_updated"]),
-            tombstoned=int(attempt["records_tombstoned"]),
-            unchanged=int(attempt["records_unchanged"]),
-            rejected=int(attempt["records_rejected"]),
-        )
-        scan_complete = bool(attempt["scan_complete"])
+        total = attempt.receipt.counts
+        scan_complete = attempt.scan_complete
         if not scan_complete:
             try:
                 async with acquire_source_adapter(
@@ -485,16 +486,15 @@ class SorSyncWorkflow:
                     invocation_budget_seconds=120.0,
                 ) as adapter:
                     while not scan_complete:
-                        page_data = await run_with_durable_heartbeat(
+                        page = await run_with_durable_heartbeat(
                             task_context,
                             lambda: _fetch_page(
                                 adapter=adapter,
                                 kind=kind,
-                                stream_key=attempt["stream_key"],
+                                stream_key=attempt.stream_key,
                                 cursor=cursor,
                             ),
                         )
-                        page = _decode_page(page_data)
                         _validate_cursor_progress(page=page, current=cursor)
                         next_cursor = (
                             page.next_cursor if page.next_cursor is not None else cursor
@@ -567,7 +567,9 @@ class SorSyncWorkflow:
         return receipt
 
 
-async def _begin_attempt(*, organization_id: UUID, run_id: UUID) -> dict[str, Any]:
+async def _begin_attempt(
+    *, organization_id: UUID, run_id: UUID
+) -> SorSyncWorkReceipt | SorSyncAttempt:
     async with start_transaction() as session:
         row = await SorBoundWorkService(SOR_SYNC_WORK, session).begin_attempt(
             work_id=run_id,
@@ -606,17 +608,15 @@ async def _begin_attempt(*, organization_id: UUID, run_id: UUID) -> dict[str, An
             if current.kind in {SorSyncRunKind.BOOTSTRAP, SorSyncRunKind.RECONCILIATION}
             else stream.checkpoint
         )
-        receipt.update(
-            {
-                "stream_id": str(stream.id),
-                "stream_key": stream.vendor_object_key,
-                "strategy": stream.strategy.value,
-                "cursor_version": stream.cursor_version,
-                "checkpoint": checkpoint,
-                "scan_complete": current.scan_complete,
-            }
+        return SorSyncAttempt(
+            receipt=receipt,
+            stream_id=stream.id,
+            stream_key=stream.vendor_object_key,
+            strategy=stream.strategy,
+            cursor_version=stream.cursor_version,
+            checkpoint=checkpoint,
+            scan_complete=current.scan_complete,
         )
-        return receipt
 
 
 async def _fetch_page(
@@ -625,7 +625,7 @@ async def _fetch_page(
     kind: SorSyncRunKind,
     stream_key: str,
     cursor: str | None,
-) -> dict[str, Any]:
+) -> SorRecordPage:
     if kind in {SorSyncRunKind.BOOTSTRAP, SorSyncRunKind.RECONCILIATION}:
         page = await adapter.bootstrap_stream(
             stream_key=stream_key,
@@ -638,7 +638,7 @@ async def _fetch_page(
             cursor=cursor,
             limit=SOR_SYNC_PAGE_LIMIT,
         )
-    return _encode_page(page)
+    return _decode_page(_encode_page(page))
 
 
 async def _commit_page(
@@ -710,7 +710,7 @@ async def _handle_failure(
     organization_id: UUID,
     run_id: UUID,
     error: Exception,
-) -> dict[str, Any]:
+) -> SorSyncWorkReceipt:
     failure = _classify_failure(error)
     async with start_transaction() as session:
         work = SorBoundWorkService(SOR_SYNC_WORK, session)
@@ -827,13 +827,13 @@ def _classify_failure(error: Exception) -> _SyncFailure:
     )
 
 
-def _encode_page(page: SorRecordPage) -> dict[str, Any]:
+def _encode_page(page: SorRecordPage) -> dict[str, JsonValue]:
     if not isinstance(page, SorRecordPage):
         raise SorProjectionError("SOR adapter returned an invalid record page.")
     if len(page.records) > SOR_SYNC_PAGE_LIMIT:
         raise SorProjectionError("SOR adapter returned more records than requested.")
     records = [_encode_record(record) for record in page.records]
-    encoded = {
+    encoded: dict[str, JsonValue] = {
         "records": records,
         "next_cursor": page.next_cursor,
         "has_more": page.has_more,
@@ -932,45 +932,31 @@ async def _spawn_ready_runs(
             )
 
 
-def _parse_params(params: dict[str, Any]) -> tuple[UUID, UUID]:
-    if set(params) != {"organization_id", "run_id"}:
+def _parse_params(params: object) -> SorSyncTaskParams:
+    if not isinstance(params, dict) or set(params) != {"organization_id", "run_id"}:
         raise ValueError("SOR sync task params must contain IDs only.")
     try:
-        return UUID(str(params["organization_id"])), UUID(str(params["run_id"]))
-    except (TypeError, ValueError) as error:
+        return SorSyncTaskParams.model_validate(params)
+    except ValidationError as error:
         raise ValueError("SOR sync task params contain an invalid UUID.") from error
 
 
-def _count_values(counts: SorSyncCounts) -> dict[str, int]:
-    return {
-        "records_added": counts.added,
-        "records_updated": counts.updated,
-        "records_tombstoned": counts.tombstoned,
-        "records_unchanged": counts.unchanged,
-        "records_rejected": counts.rejected,
-    }
-
-
-def _receipt(row: SorSyncRunModel, *, terminal: bool | None = None) -> dict[str, Any]:
-    return {
-        "organization_id": str(row.organization_id),
-        "run_id": str(row.id),
-        "source_id": str(row.source_id),
-        "kind": row.kind.value,
-        "state": row.state.value,
-        "terminal": row.state in SOR_SYNC_WORK.terminal
-        if terminal is None
-        else terminal,
-        **_count_values(
-            SorSyncCounts(
-                added=row.records_added,
-                updated=row.records_updated,
-                tombstoned=row.records_tombstoned,
-                unchanged=row.records_unchanged,
-                rejected=row.records_rejected,
-            )
-        ),
-    }
+def _receipt(
+    row: SorSyncRunModel, *, terminal: bool | None = None
+) -> SorSyncWorkReceipt:
+    return SorSyncWorkReceipt(
+        organization_id=row.organization_id,
+        run_id=row.id,
+        source_id=row.source_id,
+        kind=row.kind,
+        state=row.state,
+        terminal=row.state in SOR_SYNC_WORK.terminal if terminal is None else terminal,
+        records_added=row.records_added,
+        records_updated=row.records_updated,
+        records_tombstoned=row.records_tombstoned,
+        records_unchanged=row.records_unchanged,
+        records_rejected=row.records_rejected,
+    )
 
 
 __all__ = [

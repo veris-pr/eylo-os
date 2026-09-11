@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from enum import StrEnum
 from html.parser import HTMLParser
-from http import HTTPStatus
+from http import HTTPMethod, HTTPStatus
 from urllib.parse import parse_qs, urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -40,6 +40,29 @@ from eylo.sor.knowledge.contracts import (
     KnowledgeVersion,
     KnowledgeVersionPayload,
     knowledge_source_body,
+)
+from eylo.sor.knowledge.vendors.confluence_wire import (
+    MAX_PAGE_SIZE,
+    ConfluenceAttachment,
+    ConfluenceBodyFormat,
+    ConfluenceCollection,
+    ConfluenceCreatePage,
+    ConfluenceLinks,
+    ConfluencePage,
+    ConfluencePageIdentity,
+    ConfluenceParentType,
+    ConfluenceProperty,
+    ConfluenceReadQuery,
+    ConfluenceRequest,
+    ConfluenceSites,
+    ConfluenceSpace,
+    ConfluenceStatus,
+    ConfluenceUpdatePage,
+    ConfluenceUser,
+    ConfluenceUsersQuery,
+    ConfluenceWriteBody,
+    ConfluenceWriteVersion,
+    parse_response,
 )
 from eylo.sor.runtime.http import SorHttpTransport, SorJsonHttpClient, SorJsonResponse
 from eylo.sor.shared.atlassian import (
@@ -78,6 +101,7 @@ from eylo.sor.shared.contracts import (
     SorWebhookSignal,
     SorWebhookSubscription,
 )
+from eylo.sor.shared.json_values import SorJsonValue
 
 CONFLUENCE_API_ORIGIN = ATLASSIAN_API_ORIGIN
 CONFLUENCE_API_VERSION = "confluence-cloud-rest-v2"
@@ -428,10 +452,10 @@ class ConfluenceKnowledgeAdapter:
 
     async def verify_connection(self) -> SorConnectionVerification:
         cloud_id, site_name = await self._resolve_site()
-        response = await self._request("/spaces", query={"limit": 1})
-        _object(
+        response = await self._request("/spaces", query=ConfluenceReadQuery(limit=1))
+        parse_response(
+            ConfluenceCollection[ConfluenceSpace],
             _expect(response, operation="verify Confluence site"),
-            field=ConfluenceStream.SPACES,
         )
         return SorConnectionVerification(
             account_external_id=cloud_id,
@@ -504,7 +528,7 @@ class ConfluenceKnowledgeAdapter:
         if stream_key == ConfluenceStream.SPACES:
             response = await self._request(f"/spaces/{record_id}")
             return self._external_space(
-                _required_response(response, stream_key, record_id)
+                _required_response(response, stream_key, record_id, ConfluenceSpace)
             )
         if stream_key in {ConfluenceStream.PAGES, ConfluenceStream.PAGE_BODIES}:
             page_id = (
@@ -514,9 +538,9 @@ class ConfluenceKnowledgeAdapter:
             )
             response = await self._request(
                 f"/pages/{page_id}",
-                query={"body-format": "storage"},
+                query=ConfluenceReadQuery(body_format=ConfluenceBodyFormat.STORAGE),
             )
-            page = _required_response(response, stream_key, record_id)
+            page = _required_response(response, stream_key, record_id, ConfluencePage)
             return (
                 self._external_page(page)
                 if stream_key == ConfluenceStream.PAGES
@@ -526,9 +550,9 @@ class ConfluenceKnowledgeAdapter:
             page_id, version = _split_composite(record_id, label="version")
             response = await self._request(
                 f"/pages/{page_id}",
-                query={"body-format": "storage"},
+                query=ConfluenceReadQuery(body_format=ConfluenceBodyFormat.STORAGE),
             )
-            page = _required_response(response, stream_key, record_id)
+            page = _required_response(response, stream_key, record_id, ConfluencePage)
             current = self._external_current_version(page)
             if current.external_id != f"{page_id}:{version}":
                 raise SorExternalRecordNotFound(
@@ -541,11 +565,13 @@ class ConfluenceKnowledgeAdapter:
             response = await self._request(f"/pages/{page_id}/properties/{property_id}")
             return self._external_property(
                 page_id,
-                _required_response(response, stream_key, record_id),
+                _required_response(response, stream_key, record_id, ConfluenceProperty),
             )
         response = await self._request(f"/attachments/{record_id}")
-        attachment = _required_response(response, stream_key, record_id)
-        page_id = _required_id(attachment.get("pageId"), field="attachment page ID")
+        attachment = _required_response(
+            response, stream_key, record_id, ConfluenceAttachment
+        )
+        page_id = _required_id(attachment.pageId, field="attachment page ID")
         return self._external_attachment(page_id, attachment)
 
     async def read_attachment_content(
@@ -773,15 +799,15 @@ class ConfluenceKnowledgeAdapter:
         if self._cloud_id is not None:
             return self._cloud_id, self._site_name
         response = await self._client.request("/oauth/token/accessible-resources")
-        rows = _object_list(
+        rows = parse_response(
+            ConfluenceSites,
             _expect(response, operation="list accessible Confluence sites"),
-            field="Atlassian accessible resources",
-        )
+        ).root
         matches = [
             row
             for row in rows
-            if _normalized_origin(row.get("url")) == self._site_origin
-            and any("confluence" in scope for scope in _string_list(row.get("scopes")))
+            if _normalized_origin(row.url) == self._site_origin
+            and any("confluence" in scope for scope in row.scopes)
         ]
         if len(matches) != 1:
             raise SorVendorOperationError(
@@ -790,25 +816,29 @@ class ConfluenceKnowledgeAdapter:
                 recovery=SorRecoveryPolicy.REAUTH_REQUIRED,
             )
         site = matches[0]
-        self._cloud_id = _required_id(site.get("id"), field="Confluence cloud ID")
-        self._site_name = _optional_string(site.get("name"))
+        self._cloud_id = _required_id(site.id, field="Confluence cloud ID")
+        self._site_name = site.name
         return self._cloud_id, self._site_name
 
     async def _request(
         self,
         path: str,
         *,
-        method: str = "GET",
-        query: Mapping[str, object] | None = None,
-        payload: object | None = None,
+        method: HTTPMethod = HTTPMethod.GET,
+        query: ConfluenceReadQuery | None = None,
+        payload: ConfluenceRequest | None = None,
         idempotency_key: str | None = None,
     ) -> SorJsonResponse:
         cloud_id, _name = await self._resolve_site()
         return await self._client.request(
             f"/ex/confluence/{_identifier(cloud_id)}/wiki/api/v2{path}",
             method=method,
-            query=query,
-            payload=payload,
+            query=query.model_dump(mode="json", by_alias=True, exclude_none=True)
+            if query is not None
+            else None,
+            payload=payload.model_dump(mode="json", by_alias=True, exclude_none=True)
+            if payload is not None
+            else None,
             idempotency_key=idempotency_key,
         )
 
@@ -827,7 +857,7 @@ class ConfluenceKnowledgeAdapter:
                 SorVendorErrorCode.VENDOR_PAGE_INVALID,
                 "Confluence page limit must be positive.",
             )
-        page_limit = min(limit, 100)
+        page_limit = min(limit, MAX_PAGE_SIZE)
         if stream_key == ConfluenceStream.AUTHORS:
             return await self._read_author_page(cursor=cursor, limit=page_limit)
         if stream_key == ConfluenceStream.SPACES:
@@ -835,9 +865,12 @@ class ConfluenceKnowledgeAdapter:
                 "/spaces",
                 query=_cursor_query(cursor, limit=page_limit),
             )
-            data = _object(_expect(response, operation="list Confluence spaces"))
-            rows = _object_list(data.get("results"), field="Confluence spaces")
-            next_cursor = _next_cursor(response, data)
+            data = parse_response(
+                ConfluenceCollection[ConfluenceSpace],
+                _expect(response, operation="list Confluence spaces"),
+            )
+            rows = data.results
+            next_cursor = _next_cursor(response, data.links)
             return SorRecordPage(
                 records=tuple(self._external_space(row) for row in rows),
                 next_cursor=next_cursor,
@@ -850,14 +883,16 @@ class ConfluenceKnowledgeAdapter:
         }:
             response = await self._request(
                 "/pages",
-                query={
-                    **_cursor_query(cursor, limit=page_limit),
-                    "body-format": "storage",
-                },
+                query=_cursor_query(
+                    cursor, limit=page_limit, body_format=ConfluenceBodyFormat.STORAGE
+                ),
             )
-            data = _object(_expect(response, operation="list Confluence pages"))
-            rows = _object_list(data.get("results"), field="Confluence pages")
-            next_cursor = _next_cursor(response, data)
+            data = parse_response(
+                ConfluenceCollection[ConfluencePage],
+                _expect(response, operation="list Confluence pages"),
+            )
+            rows = data.results
+            next_cursor = _next_cursor(response, data.links)
             convert = {
                 ConfluenceStream.PAGES: self._external_page,
                 ConfluenceStream.PAGE_BODIES: self._external_body,
@@ -896,13 +931,16 @@ class ConfluenceKnowledgeAdapter:
                 )
             vendor_cursor = checkpoint.page_cursor
 
-        page_limit = min(100, max(1, limit // 2))
+        page_limit = min(MAX_PAGE_SIZE, max(1, limit // 2))
         response = await self._request(
             "/pages",
             query=_cursor_query(vendor_cursor, limit=page_limit),
         )
-        data = _object(_expect(response, operation="scan Confluence page authors"))
-        pages = _object_list(data.get("results"), field="Confluence pages")
+        data = parse_response(
+            ConfluenceCollection[ConfluencePageIdentity],
+            _expect(response, operation="scan Confluence page authors"),
+        )
+        pages = data.results
         account_ids = tuple(
             dict.fromkeys(
                 account_id
@@ -914,7 +952,7 @@ class ConfluenceKnowledgeAdapter:
             raise _invalid_response(
                 "Confluence returned more current page authors than requested."
             )
-        next_cursor = _next_cursor(response, data)
+        next_cursor = _next_cursor(response, data.links)
         return SorRecordPage(
             records=tuple(
                 self._external_author(row)
@@ -949,12 +987,13 @@ class ConfluenceKnowledgeAdapter:
             assert checkpoint.current_page_id is not None
             response = await self._request(
                 f"/pages/{checkpoint.current_page_id}",
-                query={"body-format": "storage"},
+                query=ConfluenceReadQuery(body_format=ConfluenceBodyFormat.STORAGE),
             )
             page = _required_response(
                 response,
                 ConfluenceStream.PAGES,
                 checkpoint.current_page_id,
+                ConfluencePageIdentity,
             )
             account_ids = _current_page_author_ids(page)
             offset = _author_offset(checkpoint.child_cursor)
@@ -1009,23 +1048,23 @@ class ConfluenceKnowledgeAdapter:
     async def _lookup_users(
         self,
         account_ids: tuple[str, ...],
-    ) -> list[dict[str, object]]:
+    ) -> list[ConfluenceUser]:
         if not account_ids:
             return []
         response = await self._request(
             "/users-bulk",
-            method="POST",
-            payload={"accountIds": list(account_ids)},
+            method=HTTPMethod.POST,
+            payload=ConfluenceUsersQuery(accountIds=list(account_ids)),
         )
-        data = _object(_expect(response, operation="look up Confluence authors"))
-        rows = _object_list(data.get("results"), field="Confluence authors")
+        data = parse_response(
+            ConfluenceCollection[ConfluenceUser],
+            _expect(response, operation="look up Confluence authors"),
+        )
+        rows = data.results
         requested = set(account_ids)
-        indexed: dict[str, dict[str, object]] = {}
+        indexed: dict[str, ConfluenceUser] = {}
         for row in rows:
-            account_id = _required_id(
-                row.get("accountId"),
-                field="Confluence author account ID",
-            )
+            account_id = row.accountId
             if account_id not in requested or account_id in indexed:
                 raise _invalid_response(
                     "Confluence returned invalid bulk author identities."
@@ -1058,15 +1097,11 @@ class ConfluenceKnowledgeAdapter:
                     child_cursor=None,
                 )
             assert checkpoint.current_page_id is not None
-            rows, child_cursor = await self._read_children(
+            records, child_cursor = await self._read_children(
                 stream_key=stream_key,
                 page_id=checkpoint.current_page_id,
                 cursor=checkpoint.child_cursor,
                 limit=limit,
-            )
-            records = tuple(
-                self._external_nested(stream_key, checkpoint.current_page_id, row)
-                for row in rows
             )
             if child_cursor is not None:
                 if not records:
@@ -1118,17 +1153,22 @@ class ConfluenceKnowledgeAdapter:
     ) -> tuple[str | None, str | None, bool]:
         response = await self._request(
             "/pages",
-            query={**_cursor_query(cursor, limit=1), "body-format": "storage"},
+            query=_cursor_query(
+                cursor, limit=1, body_format=ConfluenceBodyFormat.STORAGE
+            ),
         )
-        data = _object(_expect(response, operation="scan Confluence pages"))
-        rows = _object_list(data.get("results"), field="Confluence pages")
-        next_cursor = _next_cursor(response, data)
+        data = parse_response(
+            ConfluenceCollection[ConfluencePageIdentity],
+            _expect(response, operation="scan Confluence pages"),
+        )
+        rows = data.results
+        next_cursor = _next_cursor(response, data.links)
         if len(rows) > 1 or (not rows and next_cursor is not None):
             raise _invalid_response("Confluence returned an invalid page scan.")
         if not rows:
             return None, None, True
         return (
-            _required_id(rows[0].get("id"), field="Confluence page ID"),
+            rows[0].id,
             next_cursor,
             next_cursor is None,
         )
@@ -1140,69 +1180,64 @@ class ConfluenceKnowledgeAdapter:
         page_id: str,
         cursor: str | None,
         limit: int,
-    ) -> tuple[list[dict[str, object]], str | None]:
-        endpoint = {
-            ConfluenceStream.PROPERTIES: f"/pages/{page_id}/properties",
-            ConfluenceStream.ATTACHMENTS: f"/pages/{page_id}/attachments",
-        }[stream_key]
-        query = _cursor_query(cursor, limit=limit)
-        if stream_key == ConfluenceStream.ATTACHMENTS:
-            query["status"] = "current"
-        response = await self._request(
-            endpoint,
-            query=query,
-        )
-        data = _object(_expect(response, operation=f"list Confluence {stream_key}"))
-        rows = _object_list(data.get("results"), field=f"Confluence {stream_key}")
-        return rows, _next_cursor(response, data)
-
-    def _external_nested(
-        self,
-        stream_key: ConfluenceStream,
-        page_id: str,
-        row: Mapping[str, object],
-    ) -> SorExternalRecord:
+    ) -> tuple[tuple[SorExternalRecord, ...], str | None]:
         if stream_key == ConfluenceStream.PROPERTIES:
-            return self._external_property(page_id, row)
-        return self._external_attachment(page_id, row)
-
-    def _external_author(self, row: Mapping[str, object]) -> SorExternalRecord:
-        account_id = _required_id(
-            row.get("accountId"),
-            field="Confluence author account ID",
+            response = await self._request(
+                f"/pages/{page_id}/properties",
+                query=_cursor_query(cursor, limit=limit),
+            )
+            data = parse_response(
+                ConfluenceCollection[ConfluenceProperty],
+                _expect(response, operation="list Confluence properties"),
+            )
+            return (
+                tuple(self._external_property(page_id, row) for row in data.results),
+                _next_cursor(response, data.links),
+            )
+        response = await self._request(
+            f"/pages/{page_id}/attachments",
+            query=_cursor_query(cursor, limit=limit, status=ConfluenceStatus.CURRENT),
         )
-        profile_picture = _optional_object(row.get("profilePicture"))
-        name = _optional_string(row.get("displayName")) or _required_string(
-            row.get("publicName"),
-            field="Confluence author name",
+        attachments = parse_response(
+            ConfluenceCollection[ConfluenceAttachment],
+            _expect(response, operation="list Confluence attachments"),
+        )
+        return (
+            tuple(
+                self._external_attachment(page_id, row) for row in attachments.results
+            ),
+            _next_cursor(response, attachments.links),
+        )
+
+    def _external_author(self, row: ConfluenceUser) -> SorExternalRecord:
+        account_id = row.accountId
+        name = row.displayName or _required_string(
+            row.publicName, field="Confluence author name"
         )
         return SorExternalRecord(
             vendor_object_key=ConfluenceStream.AUTHORS,
             external_id=account_id,
             payload={
                 "name": name,
-                "primary_email": _optional_string(row.get("email")),
-                "kind": _optional_string(row.get("accountType")),
-                "avatar_url": self._source_url(profile_picture.get("path")),
+                "primary_email": row.email,
+                "kind": row.accountType,
+                "avatar_url": self._source_url(row.profilePicture.path),
             },
         )
 
-    def _external_space(self, row: Mapping[str, object]) -> SorExternalRecord:
-        space_id = _required_id(row.get("id"), field="Confluence space ID")
-        links = _optional_object(row.get("_links"))
+    def _external_space(self, row: ConfluenceSpace) -> SorExternalRecord:
+        space_id = row.id
         return SorExternalRecord(
             vendor_object_key=ConfluenceStream.SPACES,
             external_id=space_id,
             payload={
-                "name": _required_string(
-                    row.get("name"), field="Confluence space name"
-                ),
-                "kind": _optional_string(row.get("type")) or "space",
+                "name": row.name,
+                "kind": row.type or "space",
             },
-            source_url=self._source_url(links.get("webui")),
+            source_url=self._source_url(row.links.webui),
         )
 
-    def _external_page(self, row: Mapping[str, object]) -> SorExternalRecord:
+    def _external_page(self, row: ConfluencePage) -> SorExternalRecord:
         page = self._page_snapshot(row)
         return SorExternalRecord(
             vendor_object_key=ConfluenceStream.PAGES,
@@ -1230,7 +1265,7 @@ class ConfluenceKnowledgeAdapter:
             source_url=page.source_url,
         )
 
-    def _external_body(self, row: Mapping[str, object]) -> SorExternalRecord:
+    def _external_body(self, row: ConfluencePage) -> SorExternalRecord:
         page = self._page_snapshot(row)
         return SorExternalRecord(
             vendor_object_key=ConfluenceStream.PAGE_BODIES,
@@ -1254,53 +1289,51 @@ class ConfluenceKnowledgeAdapter:
 
     def _page_snapshot(
         self,
-        row: Mapping[str, object],
+        row: ConfluencePage,
     ) -> _ConfluencePageSnapshot:
         body = _storage_body(row)
         normalized_text = _storage_text(body)
         source_body = _canonical_source_body(body)
-        version = _optional_object(row.get("version"))
-        version_number = _optional_integer(version.get("number"), field="page version")
-        links = _optional_object(row.get("_links"))
+        version = row.version
+        version_number = version.number
         return _ConfluencePageSnapshot(
-            page_id=_required_id(row.get("id"), field="Confluence page ID"),
-            title=_required_string(row.get("title"), field="Confluence page title"),
-            space_external_id=_optional_id(row.get("spaceId")),
+            page_id=row.id,
+            title=row.title,
+            space_external_id=row.spaceId,
             parent_external_id=_page_parent_external_id(row),
             normalized_text=normalized_text,
             source_body=source_body,
             content_hash=_content_hash(normalized_text, source_body),
             version=str(version_number) if version_number is not None else None,
-            lifecycle_state=_optional_string(row.get("status")),
-            author_external_id=_optional_id(row.get("authorId")),
+            lifecycle_state=row.status,
+            author_external_id=row.authorId,
             unsupported_blocks=_unsupported_macros(body),
-            source_created_at=_optional_datetime(row.get("createdAt")),
-            source_updated_at=_optional_datetime(version.get("createdAt")),
-            source_url=self._source_url(links.get("webui")),
+            source_created_at=row.createdAt,
+            source_updated_at=version.createdAt,
+            source_url=self._source_url(row.links.webui),
         )
 
     def _external_current_version(
         self,
-        row: Mapping[str, object],
+        row: ConfluencePageIdentity,
     ) -> SorExternalRecord:
-        page_id = _required_id(row.get("id"), field="Confluence page ID")
-        version = _object(row.get("version"), field="Confluence current version")
+        page_id = row.id
+        version = row.version
         number = _required_integer(
-            version.get("number"),
+            version.number,
             field="Confluence version number",
         )
-        created_at = _required_datetime(
-            version.get("createdAt"), field="Confluence version creation"
-        )
-        links = _optional_object(row.get("_links"))
+        created_at = version.createdAt
+        if created_at is None:
+            raise _invalid_response("Confluence version creation is invalid.")
         return SorExternalRecord(
             vendor_object_key=ConfluenceStream.VERSIONS,
             external_id=f"{page_id}:{number}",
             payload={
                 "document_external_id": page_id,
                 "number": str(number),
-                "author_external_id": _optional_id(version.get("authorId")),
-                "message": _optional_string(version.get("message")),
+                "author_external_id": version.authorId,
+                "message": version.message,
                 "source_format": None,
                 "normalized_text": None,
                 "source_body": None,
@@ -1308,19 +1341,19 @@ class ConfluenceKnowledgeAdapter:
             },
             source_created_at=created_at,
             source_revision=str(number),
-            source_url=self._source_url(links.get("webui")),
+            source_url=self._source_url(row.links.webui),
         )
 
     def _external_property(
         self,
         page_id: str,
-        row: Mapping[str, object],
+        row: ConfluenceProperty,
     ) -> SorExternalRecord:
-        property_id = _required_id(row.get("id"), field="Confluence property ID")
-        key = _required_string(row.get("key"), field="Confluence property key")
-        version = _optional_object(row.get("version"))
-        updated_at = _optional_datetime(version.get("createdAt"))
-        value = _json_scalar(row.get("value"))
+        property_id = row.id
+        key = row.key
+        version = row.version
+        updated_at = version.createdAt
+        value = row.value
         return SorExternalRecord(
             vendor_object_key=ConfluenceStream.PROPERTIES,
             external_id=f"{page_id}:{property_id}",
@@ -1337,7 +1370,7 @@ class ConfluenceKnowledgeAdapter:
                 str(version_number)
                 if (
                     version_number := _optional_integer(
-                        version.get("number"), field="property version"
+                        version.number, field="property version"
                     )
                 )
                 is not None
@@ -1348,32 +1381,25 @@ class ConfluenceKnowledgeAdapter:
     def _external_attachment(
         self,
         page_id: str,
-        row: Mapping[str, object],
+        row: ConfluenceAttachment,
     ) -> SorExternalRecord:
-        attachment_id = _required_id(row.get("id"), field="Confluence attachment ID")
-        links = _optional_object(row.get("_links"))
-        version = _optional_object(row.get("version"))
+        attachment_id = row.id
+        version = row.version
         version_number = _optional_integer(
-            version.get("number"),
+            version.number,
             field="attachment version",
         )
-        created_at = _optional_datetime(row.get("createdAt"))
-        updated_at = _optional_datetime(version.get("createdAt"))
+        created_at = row.createdAt
+        updated_at = version.createdAt
         return SorExternalRecord(
             vendor_object_key=ConfluenceStream.ATTACHMENTS,
             external_id=attachment_id,
             payload={
                 "document_external_id": page_id,
-                "name": _required_string(
-                    row.get("title"), field="Confluence attachment name"
-                ),
-                "media_type": _optional_string(row.get("mediaType")),
-                "size_bytes": _optional_integer(
-                    row.get("fileSize"), field="attachment size"
-                ),
-                "source_url": self._source_url(
-                    row.get("downloadLink") or links.get("download")
-                ),
+                "name": row.title,
+                "media_type": row.mediaType,
+                "size_bytes": row.fileSize,
+                "source_url": self._source_url(row.downloadLink or row.links.download),
                 "source_url_expires_at": None,
             },
             source_created_at=created_at,
@@ -1381,9 +1407,7 @@ class ConfluenceKnowledgeAdapter:
             source_revision=(
                 str(version_number) if version_number is not None else None
             ),
-            source_url=self._source_url(
-                row.get("downloadLink") or links.get("download")
-            ),
+            source_url=self._source_url(row.downloadLink or row.links.download),
         )
 
     async def _create_page(self, command: SorCommandRequest) -> SorCommandResult:
@@ -1395,23 +1419,28 @@ class ConfluenceKnowledgeAdapter:
             raise _invalid_command(
                 "Creating a Confluence page requires space_external_id."
             )
-        request: dict[str, object] = {
-            "spaceId": _identifier(command.payload.space_external_id),
-            "status": "current",
-            "title": command.payload.title,
-            "body": _plain_text_body(command.payload.normalized_text).to_wire(),
-        }
-        if command.payload.parent_external_id is not None:
-            request["parentId"] = _identifier(command.payload.parent_external_id)
+        request = ConfluenceCreatePage(
+            spaceId=_identifier(command.payload.space_external_id),
+            title=command.payload.title,
+            parentId=(
+                _identifier(command.payload.parent_external_id)
+                if command.payload.parent_external_id is not None
+                else None
+            ),
+            body=ConfluenceWriteBody(
+                value=_plain_text_storage(command.payload.normalized_text or "")
+            ),
+        )
         try:
             response = await self._request(
                 "/pages",
-                method="POST",
+                method=HTTPMethod.POST,
                 payload=request,
                 idempotency_key=command.idempotency_key,
             )
-            page = _object(
-                _expect_mutation(response, operation="create Confluence page")
+            page = parse_response(
+                ConfluencePageIdentity,
+                _expect_mutation(response, operation="create Confluence page"),
             )
         except SorVendorOperationError as error:
             if error.code in {
@@ -1436,11 +1465,13 @@ class ConfluenceKnowledgeAdapter:
     ) -> SorCommandResult:
         current_response = await self._request(
             f"/pages/{page_id}",
-            query={"body-format": "storage"},
+            query=ConfluenceReadQuery(body_format=ConfluenceBodyFormat.STORAGE),
         )
-        current = _required_response(current_response, ConfluenceStream.PAGES, page_id)
+        current = _required_response(
+            current_response, ConfluenceStream.PAGES, page_id, ConfluencePage
+        )
         version = _required_integer(
-            _object(current.get("version"), field="page version").get("number"),
+            current.version.number,
             field="Confluence page version",
         )
         if (
@@ -1464,10 +1495,7 @@ class ConfluenceKnowledgeAdapter:
             requested_title = command.payload.title
             payload = command.payload
         current_body = _storage_body(current)
-        current_title = _required_string(
-            current.get("title"),
-            field="Confluence page title",
-        )
+        current_title = current.title
         if isinstance(payload, KnowledgeTextCommandPayload):
             storage_body = _bounded_storage_body(
                 current_body + _plain_text_storage(payload.normalized_text),
@@ -1479,39 +1507,36 @@ class ConfluenceKnowledgeAdapter:
             storage_body = _plain_text_storage(payload.normalized_text)
         response = await self._request(
             f"/pages/{page_id}",
-            method="PUT",
-            payload={
-                "id": page_id,
-                "status": "current",
-                "title": requested_title or current_title,
-                "body": knowledge_source_body(
-                    KnowledgeBodyRepresentation.CONFLUENCE_STORAGE,
-                    storage_body,
-                ).to_wire(),
-                "version": {"number": version + 1},
-            },
+            method=HTTPMethod.PUT,
+            payload=ConfluenceUpdatePage(
+                id=page_id,
+                title=requested_title or current_title,
+                body=ConfluenceWriteBody(value=storage_body),
+                version=ConfluenceWriteVersion(number=version + 1),
+            ),
             idempotency_key=command.idempotency_key,
         )
-        page = _object(_expect_mutation(response, operation="update Confluence page"))
+        page = parse_response(
+            ConfluencePageIdentity,
+            _expect_mutation(response, operation="update Confluence page"),
+        )
         return self._command_result(page, response=response)
 
     def _command_result(
         self,
-        page: Mapping[str, object],
+        page: ConfluencePageIdentity,
         *,
         response: SorJsonResponse,
     ) -> SorCommandResult:
-        page_id = _required_id(page.get("id"), field="Confluence page ID")
-        version = _optional_object(page.get("version"))
-        number = _optional_integer(version.get("number"), field="page version")
-        links = _optional_object(page.get("_links"))
+        page_id = page.id
+        number = page.version.number
         request_ids = response.header_values("x-request-id")
         return SorCommandResult(
             vendor_object_key=ConfluenceStream.PAGES,
             external_id=page_id,
             external_request_id=request_ids[0] if request_ids else None,
             source_revision=str(number) if number is not None else None,
-            source_url=self._source_url(links.get("webui")),
+            source_url=self._source_url(page.links.webui),
             response={"status": "accepted"},
         )
 
@@ -1580,13 +1605,8 @@ def _unsupported_macros(value: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(name.strip() for name in names if name.strip()))
 
 
-def _storage_body(row: Mapping[str, object]) -> str:
-    body = _object(row.get("body"), field="Confluence page body")
-    storage = _object(body.get("storage"), field="Confluence storage body")
-    value = storage.get("value")
-    if not isinstance(value, str):
-        raise _invalid_response("Confluence storage content is invalid.")
-    return _bounded_storage_body(value, response=True)
+def _storage_body(row: ConfluencePage) -> str:
+    return _bounded_storage_body(row.body.storage.value, response=True)
 
 
 def _content_hash(normalized_text: str, source_body: object) -> str:
@@ -1622,14 +1642,6 @@ def _canonical_source_body(value: str) -> KnowledgeSourceBody:
     return body
 
 
-def _plain_text_body(value: object) -> KnowledgeSourceBody:
-    text = value if isinstance(value, str) else ""
-    return knowledge_source_body(
-        KnowledgeBodyRepresentation.CONFLUENCE_STORAGE,
-        _plain_text_storage(text),
-    )
-
-
 def _plain_text_storage(value: str) -> str:
     if len(value) > MAX_CANONICAL_TEXT_CHARS:
         raise _invalid_command("Confluence document content is too large.")
@@ -1650,18 +1662,22 @@ def _bounded_storage_body(value: str, *, response: bool) -> str:
     return value
 
 
-def _cursor_query(cursor: str | None, *, limit: int) -> dict[str, object]:
-    query: dict[str, object] = {"limit": limit}
-    if cursor is not None:
-        if not cursor or len(cursor) > 4_096:
-            raise _invalid_cursor("collection")
-        query["cursor"] = cursor
-    return query
+def _cursor_query(
+    cursor: str | None,
+    *,
+    limit: int,
+    body_format: ConfluenceBodyFormat | None = None,
+    status: ConfluenceStatus | None = None,
+) -> ConfluenceReadQuery:
+    if cursor is not None and (not cursor or len(cursor) > 4_096):
+        raise _invalid_cursor("collection")
+    return ConfluenceReadQuery(
+        limit=limit, cursor=cursor, body_format=body_format, status=status
+    )
 
 
-def _next_cursor(response: SorJsonResponse, data: Mapping[str, object]) -> str | None:
-    links = _optional_object(data.get("_links"))
-    candidate = _optional_string(links.get("next"))
+def _next_cursor(response: SorJsonResponse, links: ConfluenceLinks) -> str | None:
+    candidate = links.next
     if candidate is None:
         for link in response.header_values("link"):
             match = re.search(r"<([^>]+)>\s*;\s*rel=[\"']?next[\"']?", link)
@@ -1755,28 +1771,29 @@ def _author_offset(value: str | None) -> int:
     return int(value)
 
 
-def _current_page_author_ids(page: Mapping[str, object]) -> tuple[str, ...]:
-    version = _optional_object(page.get("version"))
+def _current_page_author_ids(page: ConfluencePageIdentity) -> tuple[str, ...]:
+    version = page.version
     return tuple(
         dict.fromkeys(
             author_id
-            for value in (page.get("authorId"), version.get("authorId"))
+            for value in (page.authorId, version.authorId)
             if (author_id := _optional_id(value)) is not None
         )
     )
 
 
-def _required_response(
+def _required_response[T: BaseModel](
     response: SorJsonResponse,
     stream_key: str,
     external_id: str,
-) -> dict[str, object]:
+    model: type[T],
+) -> T:
     if response.status_code in {HTTPStatus.NOT_FOUND, HTTPStatus.GONE}:
         raise SorExternalRecordNotFound(
             vendor_object_key=stream_key,
             external_id=external_id,
         )
-    return _object(_expect(response, operation="read Confluence record"))
+    return parse_response(model, _expect(response, operation="read Confluence record"))
 
 
 def _expect(response: SorJsonResponse, *, operation: str) -> object:
@@ -1872,29 +1889,7 @@ def _object(value: object, *, field: str = "Confluence response") -> dict[str, o
     return value
 
 
-def _optional_object(value: object) -> dict[str, object]:
-    return _object(value) if isinstance(value, dict) else {}
-
-
-def _object_list(value: object, *, field: str) -> list[dict[str, object]]:
-    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
-        raise _invalid_response(f"{field} is invalid.")
-    return [_object(item, field=field) for item in value]
-
-
-def _json_value(value: object) -> dict | list | str | None:
-    if value is None or isinstance(value, (dict, list, str)):
-        return value
-    raise _invalid_response("Confluence returned invalid source JSON.")
-
-
-def _json_scalar(value: object) -> dict | list | str | int | float | bool | None:
-    if value is None or isinstance(value, (dict, list, str, int, float, bool)):
-        return value
-    raise _invalid_response("Confluence returned an invalid property value.")
-
-
-def _json_type(value: object) -> str:
+def _json_type(value: SorJsonValue) -> str:
     if value is None:
         return "null"
     if isinstance(value, bool):
@@ -1947,11 +1942,11 @@ def _optional_id(value: object) -> str | None:
     return _required_id(value, field="source ID")
 
 
-def _page_parent_external_id(row: Mapping[str, object]) -> str | None:
+def _page_parent_external_id(row: ConfluencePage) -> str | None:
     """Project only page parents into the canonical document hierarchy."""
-    if _optional_string(row.get("parentType")) != "page":
+    if row.parentType != ConfluenceParentType.PAGE:
         return None
-    return _optional_id(row.get("parentId"))
+    return row.parentId
 
 
 def _identifier(value: str) -> str:
@@ -1975,35 +1970,6 @@ def _optional_integer(value: object, *, field: str) -> int | None:
     if value is None:
         return None
     return _required_integer(value, field=field)
-
-
-def _required_boolean(value: object, *, field: str) -> bool:
-    if not isinstance(value, bool):
-        raise _invalid_response(f"Confluence {field} is invalid.")
-    return value
-
-
-def _required_datetime(value: object, *, field: str) -> datetime:
-    parsed = _optional_datetime(value)
-    if parsed is None:
-        raise _invalid_response(f"Confluence {field} is invalid.")
-    return parsed
-
-
-def _optional_datetime(value: object) -> datetime | None:
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo is not None else None
-
-
-def _string_list(value: object) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return [item for item in value if isinstance(item, str) and item]
 
 
 def _string_tuple(value: object, *, field: str) -> tuple[str, ...]:

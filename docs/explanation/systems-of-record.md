@@ -49,6 +49,23 @@ remain responsible for the public response. Media values similarly omit raw byte
 and document content from diagnostics while retaining direct runtime access.
 
 Source payloads, external records and record pages are frozen Pydantic contracts.
+HubSpot also validates its account, property, record and association responses as
+vendor-owned models before producing these shared contracts. Known fields are
+typed; unknown vendor additions are ignored. Custom properties remain finite JSON
+because the source's field mapping, not a static platform schema, owns their names.
+Pagination and association identities are explicit fields rather than dictionary
+conventions carried through synchronization.
+Salesforce separates typed record metadata from custom sObject fields in the same
+way. Its keyset checkpoint is an internal value with a stable durable encoding.
+Query completion considers both the requested limit and Salesforce's `done`
+response field: a short unfinished batch must continue, while an empty unfinished
+batch fails instead of repeating a checkpoint indefinitely.
+Confluence validates site, collection, page, author, property, attachment and
+mutation envelopes before canonical conversion. Typed request models own wire
+aliases and body construction; current-version and page-parent policy remain in
+the adapter. Content properties retain finite JSON values. Storage markup still
+passes through the existing loss-aware renderer and size limits, rather than a
+second document representation introduced by the wire contracts.
 Runtime-discovered fields remain a dynamic mapping; native vendor schemas stay
 inside their adapters. Raw payloads are excluded from generic runtime snapshots
 and representations. Persistence uses an explicit encoder, not `model_dump()` on
@@ -323,6 +340,15 @@ Successful sync work accepts `SorSyncCounts`, command work accepts
 are assigned explicitly; callers cannot supply arbitrary ORM attribute names.
 Command result JSON is finite and excluded from diagnostic snapshots. Task spawn
 and engine cancellation remain outside the short product-row transactions.
+
+Sync and webhook workers parse ID-only task parameters into typed requests. Sync
+resume state carries a typed receipt plus stream/cursor context; encrypted cursors
+are excluded from snapshots. Internal receipts remain objects until the Absurd
+handler return boundary, where their existing JSON shape is serialized. Webhook
+receipts retain raw JSON signals so a malformed signal can still be reported in a
+failed receipt; only executable signals are decoded into canonical signal objects.
+Typed vendor errors retain their code and recovery policy during webhook failure
+handling rather than being flattened into a generic retryable exception.
 
 HTTP contract refusals (invalid requests, query values, redirects or response
 media) retain typed terminal vendor errors. They must not become generic Python

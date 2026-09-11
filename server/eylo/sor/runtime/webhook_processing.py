@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any
+from enum import StrEnum
 from uuid import UUID
 
 from absurd_sdk import AsyncTaskContext, CancelledTask
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 
 from eylo.common.database import start_transaction
 from eylo.durable_runtime import PlatformDurableRuntime, run_with_durable_heartbeat
@@ -19,6 +19,9 @@ from eylo.sor.runtime.adapters import (
 from eylo.sor.runtime.projection import project_source_record
 from eylo.sor.runtime.registry import SorRegistry
 from eylo.sor.runtime.serialization import (
+    SorStoredWebhookSignal,
+    SorWebhookTaskParams,
+    SorWebhookWorkReceipt,
     decode_external_record,
     encode_external_record,
 )
@@ -29,6 +32,8 @@ from eylo.sor.runtime.webhook_definition import (
     SOR_WEBHOOK_WORKFLOW,
 )
 from eylo.sor.runtime.work import (
+    SOR_WORK_ERROR_CODE_LIMIT,
+    SOR_WORK_ERROR_SUMMARY_LIMIT,
     SorBoundWorkService,
     spawn_sor_bound_work,
     spawn_unbound_sor_work,
@@ -37,8 +42,11 @@ from eylo.sor.shared.contracts import (
     SorChangeStrategy,
     SorExternalRecord,
     SorExternalRecordNotFound,
+    SorLifecycleAdapter,
+    SorRecoveryPolicy,
     SorSourceState,
     SorSyncRunKind,
+    SorVendorOperationError,
     SorWebhookReceiptState,
     SorWebhookSignal,
 )
@@ -55,6 +63,27 @@ from eylo.sor.shared.services import (
 from eylo.sor.shared.sync_services import SorSyncRunService
 
 logger = logging.getLogger(__name__)
+
+
+class _WebhookErrorCode(StrEnum):
+    """Webhook runtime failures; vendor codes retain their separate ownership."""
+
+    CONNECTION_REVOKED = "CONNECTION_REVOKED"
+    WEBHOOK_TASK_CANCELLED = "WEBHOOK_TASK_CANCELLED"
+    WEBHOOK_CONTRACT_INVALID = "WEBHOOK_CONTRACT_INVALID"
+    WEBHOOK_PROVIDER_FAILED = "WEBHOOK_PROVIDER_FAILED"
+
+
+class _WebhookFailure(BaseModel):
+    """Preserve recovery intent instead of flattening failures into a boolean."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    code: str
+    summary: str = Field(repr=False)
+    recovery: SorRecoveryPolicy
 
 
 def register_sor_webhook_workflow(runtime: PlatformDurableRuntime) -> None:
@@ -110,7 +139,7 @@ async def cancel_sor_webhook_receipt(
     *,
     organization_id: UUID,
     receipt_id: UUID,
-    error_code: str = "CONNECTION_REVOKED",
+    error_code: str = _WebhookErrorCode.CONNECTION_REVOKED,
     error_summary: str = "SOR webhook processing stopped after revocation.",
 ) -> bool:
     """Terminalize one source refetch before cancelling its exact durable task."""
@@ -123,8 +152,8 @@ async def cancel_sor_webhook_receipt(
         if row.state in SOR_WEBHOOK_WORK.terminal:
             return False
         row.state = SorWebhookReceiptState.FAILED
-        row.safe_error_code = error_code[:128]
-        row.safe_error_summary = error_summary[:8192]
+        row.safe_error_code = error_code[:SOR_WORK_ERROR_CODE_LIMIT]
+        row.safe_error_summary = error_summary[:SOR_WORK_ERROR_SUMMARY_LIMIT]
         row.finished_at = datetime.now(timezone.utc)
         task_id = row.absurd_task_id
         await session.flush()
@@ -145,16 +174,18 @@ class SorWebhookWorkflow:
 
     async def execute(
         self,
-        params: dict[str, Any],
+        params: dict[str, JsonValue],
         task_context: AsyncTaskContext,
-    ) -> dict[str, Any]:
-        organization_id, receipt_id = _parse_params(params)
+    ) -> dict[str, JsonValue]:
+        request = _parse_params(params)
+        organization_id, receipt_id = request.organization_id, request.receipt_id
         try:
-            return await self._execute(
+            receipt = await self._execute(
                 organization_id=organization_id,
                 receipt_id=receipt_id,
                 task_context=task_context,
             )
+            return receipt.model_dump(mode="json")
         except CancelledTask:
             async with start_transaction() as session:
                 work = SorBoundWorkService(SOR_WEBHOOK_WORK, session)
@@ -167,7 +198,7 @@ class SorWebhookWorkflow:
                     await work.fail(
                         work_id=receipt_id,
                         organization_id=organization_id,
-                        error_code="WEBHOOK_TASK_CANCELLED",
+                        error_code=_WebhookErrorCode.WEBHOOK_TASK_CANCELLED,
                         error_summary="SOR webhook processing was cancelled.",
                         permanent=False,
                     )
@@ -179,16 +210,16 @@ class SorWebhookWorkflow:
         organization_id: UUID,
         receipt_id: UUID,
         task_context: AsyncTaskContext,
-    ) -> dict[str, Any]:
+    ) -> SorWebhookWorkReceipt:
         try:
             receipt = await _begin_receipt(
                 organization_id=organization_id,
                 receipt_id=receipt_id,
             )
-            if receipt["terminal"]:
+            if receipt.terminal:
                 return receipt
-            source_id = UUID(receipt["source_id"])
-            signals = _decode_signals(receipt["signals"])
+            source_id = receipt.source_id
+            signals = _decode_signals(receipt.signals)
             broad_sync_needed = False
             for index, signal in enumerate(signals):
                 if signal.vendor_object_key is None or signal.external_id is None:
@@ -328,7 +359,7 @@ async def _begin_receipt(
     *,
     organization_id: UUID,
     receipt_id: UUID,
-) -> dict[str, Any]:
+) -> SorWebhookWorkReceipt:
     async with start_transaction() as session:
         row = await SorBoundWorkService(SOR_WEBHOOK_WORK, session).begin_attempt(
             work_id=receipt_id,
@@ -391,10 +422,10 @@ async def _complete_receipt(
 
 async def _fetch_record(
     *,
-    adapter,
+    adapter: SorLifecycleAdapter,
     vendor_object_key: str,
     external_id: str,
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     record = await adapter.fetch_record(
         vendor_object_key=vendor_object_key,
         external_id=external_id,
@@ -437,8 +468,8 @@ async def _handle_failure(
     organization_id: UUID,
     receipt_id: UUID,
     error: Exception,
-) -> dict[str, Any]:
-    code, summary, permanent = _classify_failure(error)
+) -> SorWebhookWorkReceipt:
+    failure = _classify_failure(error)
     async with start_transaction() as session:
         work = SorBoundWorkService(SOR_WEBHOOK_WORK, session)
         row = await work.get(
@@ -451,27 +482,49 @@ async def _handle_failure(
         state = await work.fail(
             work_id=receipt_id,
             organization_id=organization_id,
-            error_code=code,
-            error_summary=summary,
-            permanent=permanent,
+            error_code=failure.code,
+            error_summary=failure.summary,
+            permanent=not failure.recovery.retryable,
         )
     if state is SorWebhookReceiptState.PENDING:
         raise error
-    logger.warning("SOR webhook processing failed id=%s code=%s", receipt_id, code)
+    logger.warning(
+        "SOR webhook processing failed id=%s code=%s", receipt_id, failure.code
+    )
     return _receipt(row)
 
 
-def _classify_failure(error: Exception) -> tuple[str, str, bool]:
+def _classify_failure(error: Exception) -> _WebhookFailure:
     if isinstance(error, ValidationError):
         error = SorProjectionError("SOR adapter returned an invalid typed contract.")
     if isinstance(error, SorAdapterUnavailableError):
-        return error.error_code, str(error), error.requires_reauthorization
+        return _WebhookFailure(
+            code=error.error_code,
+            summary=str(error),
+            recovery=SorRecoveryPolicy.REAUTH_REQUIRED
+            if error.requires_reauthorization
+            else SorRecoveryPolicy.RETRY,
+        )
+    if isinstance(error, SorVendorOperationError):
+        return _WebhookFailure(
+            code=error.code.value,
+            summary=str(error),
+            recovery=error.recovery,
+        )
     if isinstance(
         error,
         (SorConfigurationError, SorConflictError, SorNotFoundError, SorProjectionError),
     ):
-        return "WEBHOOK_CONTRACT_INVALID", str(error), True
-    return "WEBHOOK_PROVIDER_FAILED", "SOR webhook refetch failed.", False
+        return _WebhookFailure(
+            code=_WebhookErrorCode.WEBHOOK_CONTRACT_INVALID,
+            summary=str(error),
+            recovery=SorRecoveryPolicy.TERMINAL,
+        )
+    return _WebhookFailure(
+        code=_WebhookErrorCode.WEBHOOK_PROVIDER_FAILED,
+        summary="SOR webhook refetch failed.",
+        recovery=SorRecoveryPolicy.RETRY,
+    )
 
 
 def _decode_signals(value: object) -> tuple[SorWebhookSignal, ...]:
@@ -479,66 +532,37 @@ def _decode_signals(value: object) -> tuple[SorWebhookSignal, ...]:
         raise SorConfigurationError("SOR webhook receipt has no normalized signals.")
     signals: list[SorWebhookSignal] = []
     for raw in value:
-        if not isinstance(raw, dict) or set(raw) != {
-            "delivery_id",
-            "event_type",
-            "vendor_object_key",
-            "external_id",
-            "occurred_at",
-        }:
-            raise SorConfigurationError("SOR webhook signal is malformed.")
-        occurred_at = raw["occurred_at"]
-        if occurred_at is not None:
-            if not isinstance(occurred_at, str):
-                raise SorConfigurationError("SOR webhook timestamp is malformed.")
-            try:
-                occurred_at = datetime.fromisoformat(occurred_at)
-            except ValueError as error:
-                raise SorConfigurationError(
-                    "SOR webhook timestamp is malformed."
-                ) from error
-        signals.append(
-            SorWebhookSignal(
-                delivery_id=_optional_string(raw["delivery_id"]),
-                event_type=_required_string(raw["event_type"]),
-                vendor_object_key=_optional_string(raw["vendor_object_key"]),
-                external_id=_optional_string(raw["external_id"]),
-                occurred_at=occurred_at,
-            )
-        )
+        try:
+            stored = SorStoredWebhookSignal.model_validate(raw)
+        except ValidationError as error:
+            raise SorConfigurationError("SOR webhook signal is malformed.") from error
+        try:
+            signals.append(stored.to_signal())
+        except ValueError as error:
+            raise SorConfigurationError(
+                "SOR webhook timestamp is malformed."
+            ) from error
     return tuple(signals)
 
 
-def _required_string(value: object) -> str:
-    if not isinstance(value, str) or not value:
-        raise SorConfigurationError("SOR webhook string value is malformed.")
-    return value
-
-
-def _optional_string(value: object) -> str | None:
-    if value is None:
-        return None
-    return _required_string(value)
-
-
-def _parse_params(params: dict[str, Any]) -> tuple[UUID, UUID]:
-    if set(params) != {"organization_id", "receipt_id"}:
+def _parse_params(params: object) -> SorWebhookTaskParams:
+    if not isinstance(params, dict) or set(params) != {"organization_id", "receipt_id"}:
         raise ValueError("SOR webhook task params must contain IDs only.")
     try:
-        return UUID(str(params["organization_id"])), UUID(str(params["receipt_id"]))
-    except (TypeError, ValueError) as error:
+        return SorWebhookTaskParams.model_validate(params)
+    except ValidationError as error:
         raise ValueError("SOR webhook task params contain an invalid UUID.") from error
 
 
-def _receipt(row: SorWebhookReceiptModel) -> dict[str, Any]:
-    return {
-        "organization_id": str(row.organization_id),
-        "receipt_id": str(row.id),
-        "source_id": str(row.source_id),
-        "state": row.state.value,
-        "signals": row.signals,
-        "terminal": row.state in SOR_WEBHOOK_WORK.terminal,
-    }
+def _receipt(row: SorWebhookReceiptModel) -> SorWebhookWorkReceipt:
+    return SorWebhookWorkReceipt(
+        organization_id=row.organization_id,
+        receipt_id=row.id,
+        source_id=row.source_id,
+        state=row.state,
+        signals=row.signals,
+        terminal=row.state in SOR_WEBHOOK_WORK.terminal,
+    )
 
 
 __all__ = [

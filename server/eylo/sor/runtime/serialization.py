@@ -1,13 +1,15 @@
-"""Serialize adapter-owned values at SOR durable execution boundaries."""
+"""Typed SOR work receipts and explicit durable vendor serialization."""
 
 from __future__ import annotations
 
 from datetime import datetime
 from typing import Annotated
+from uuid import UUID
 
 from pydantic import (
     AfterValidator,
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     JsonValue,
@@ -16,13 +18,139 @@ from pydantic import (
 )
 
 from eylo.sor.shared.contracts import (
+    SorChangeStrategy,
     SorCommandResult,
     SorExternalRecord,
     SorRecordPage,
     SorSourcePayload,
+    SorSyncRunKind,
+    SorWebhookReceiptState,
+    SorWebhookSignal,
+    SorWorkState,
 )
 from eylo.sor.shared.json_values import SorJsonValue, SorJsonValueError, to_json_value
 from eylo.sor.shared.services import SorProjectionError
+from eylo.sor.shared.sync_services import SorSyncCounts
+
+
+def _task_id(value: object) -> UUID:
+    """Accept UUID objects internally and UUID strings from durable JSON only."""
+    if isinstance(value, UUID):
+        return value
+    if isinstance(value, str):
+        return UUID(value)
+    raise ValueError("SOR task IDs must be UUID strings or UUID objects.")
+
+
+TaskId = Annotated[UUID, BeforeValidator(_task_id)]
+
+
+class SorSyncTaskParams(BaseModel):
+    """The only authority allowed in a persisted sync-task request."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    organization_id: TaskId
+    run_id: TaskId
+
+
+class SorWebhookTaskParams(BaseModel):
+    """The only authority allowed in a persisted webhook-task request."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    organization_id: TaskId
+    receipt_id: TaskId
+
+
+class SorSyncWorkReceipt(BaseModel):
+    """Exact durable result shape; counters retain their existing flat wire names."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    organization_id: UUID
+    run_id: UUID
+    source_id: UUID
+    kind: SorSyncRunKind
+    state: SorWorkState
+    terminal: bool
+    records_added: int = Field(ge=0)
+    records_updated: int = Field(ge=0)
+    records_tombstoned: int = Field(ge=0)
+    records_unchanged: int = Field(ge=0)
+    records_rejected: int = Field(ge=0)
+
+    @property
+    def counts(self) -> SorSyncCounts:
+        return SorSyncCounts(
+            added=self.records_added,
+            updated=self.records_updated,
+            tombstoned=self.records_tombstoned,
+            unchanged=self.records_unchanged,
+            rejected=self.records_rejected,
+        )
+
+
+class SorSyncAttempt(BaseModel):
+    """Detached resume state, never persisted as the public completion receipt."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    receipt: SorSyncWorkReceipt
+    stream_id: UUID
+    stream_key: str
+    strategy: SorChangeStrategy
+    cursor_version: int = Field(gt=0)
+    checkpoint: str | None = Field(repr=False, exclude=True)
+    scan_complete: bool
+
+
+class SorWebhookWorkReceipt(BaseModel):
+    """Retain raw JSON signals even when malformed input caused a terminal result."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    organization_id: UUID
+    receipt_id: UUID
+    source_id: UUID
+    state: SorWebhookReceiptState
+    signals: list[SorJsonValue] = Field(repr=False)
+    terminal: bool
+
+
+class SorStoredWebhookSignal(BaseModel):
+    """Exact stored signal fields; execution consumes the canonical signal object."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    delivery_id: str | None = Field(min_length=1)
+    event_type: str = Field(min_length=1)
+    vendor_object_key: str | None = Field(min_length=1)
+    external_id: str | None = Field(min_length=1)
+    occurred_at: str | None
+
+    def to_signal(self) -> SorWebhookSignal:
+        return SorWebhookSignal(
+            delivery_id=self.delivery_id,
+            event_type=self.event_type,
+            vendor_object_key=self.vendor_object_key,
+            external_id=self.external_id,
+            occurred_at=datetime.fromisoformat(self.occurred_at)
+            if self.occurred_at is not None
+            else None,
+        )
 
 
 def _aware_timestamp(value: str) -> str:
