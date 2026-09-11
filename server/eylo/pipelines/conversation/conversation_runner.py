@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Callable, Generic
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import arrow
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 
 from eylo.common.context_compaction import (
     latest_context_compaction,
@@ -58,11 +58,18 @@ from eylo.framework.agents.model import (
     ModelReasoningBlock,
     ModelResponse,
     ModelSettings,
+    ModelStopReason,
     ModelTextBlock,
     ModelToolCallBlock,
     ModelUsage,
 )
-from eylo.framework.agents.result import RunResult, RunStatus, RunTerminalMetadata
+from eylo.framework.agents.result import (
+    RunFailureCode,
+    RunFailureMetadata,
+    RunResult,
+    RunStatus,
+    RunTerminalMetadata,
+)
 from eylo.framework.agents.runner import FrameworkRunner
 from eylo.framework.agents.tool import ToolCall, ToolExecutor, ToolResult, ToolSpec
 from eylo.modules.agent_runs.budgets import (
@@ -2023,7 +2030,11 @@ def _model_response_from_llm_response(response: LLMResponse) -> ModelResponse:
         model=response.model,
         blocks=tuple(_model_block_from_llm_block(block) for block in response.content),
         usage=_usage_from_llm_response(response),
-        stop_reason=response.stop_reason,
+        stop_reason=(
+            ModelStopReason(response.stop_reason.value)
+            if response.stop_reason is not None
+            else None
+        ),
         metadata=response.metadata.to_json(),
     )
 
@@ -2071,6 +2082,11 @@ def _terminal_text_for_result(result: RunResult) -> str:
         return ErrorMessages.REQUEST_TIMEOUT
     if result.status is RunStatus.MAX_TURNS_EXCEEDED:
         return ErrorMessages.MAX_ITERATIONS
+    if (
+        isinstance(result.metadata, RunFailureMetadata)
+        and result.metadata.failure_code is RunFailureCode.MODEL_OUTPUT_LIMIT
+    ):
+        return ErrorMessages.MODEL_OUTPUT_LIMIT
     return ErrorMessages.GENERIC_ERROR
 
 
@@ -2083,7 +2099,7 @@ def _agent_run_terminal_fields(
 ) -> tuple[
     AgentRunLifecycle,
     AgentRunOutcome,
-    dict[str, object] | None,
+    dict[str, JsonValue] | None,
     str | None,
     str | None,
 ]:
@@ -2181,7 +2197,7 @@ def _conversation_run_result(
     conversation_id: UUID,
     origin_message_id: UUID,
     final_message_id: UUID,
-) -> dict[str, object]:
+) -> dict[str, JsonValue]:
     """Store bounded product references, never a provider response payload."""
     return ConversationRunSummary(
         conversation_id=conversation_id,

@@ -898,6 +898,10 @@ def deploy_widget(
     import shutil
     from pathlib import Path
 
+    if not bucket:
+        console.print("[bold red]AWS_S3_BUCKET environment variable is required[/]")
+        return False
+
     # Build widget if not skipped
     if not skip_build:
         console.print("[bold blue]Building widget...[/]")

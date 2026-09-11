@@ -6,19 +6,22 @@ import asyncio
 import ipaddress
 import socket
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
-from dataclasses import dataclass
 from typing import Protocol
 from urllib.parse import urlencode, urljoin, urlsplit, urlunsplit
 
 import httpx
+from pydantic import BaseModel, ConfigDict, StrictStr
 
 from eylo.common.http_egress import (
     MAX_RESPONSE_HEADERS,
     MAX_RESPONSE_HEADER_BYTES,
+    HttpEgressErrorCode,
     HttpEgressPolicyError,
     HttpEgressRequest,
     HttpEgressResponse,
+    HttpMethod,
     HttpOrigin,
+    HttpTargetPhase,
 )
 
 _REDIRECT_STATUS = frozenset({301, 302, 303, 307, 308})
@@ -39,12 +42,13 @@ class DnsResolver(Protocol):
     async def resolve(self, host: str, port: int) -> Sequence[str]: ...
 
 
-@dataclass(frozen=True, slots=True)
-class ResolvedHttpTarget:
+class ResolvedHttpTarget(BaseModel):
     """A validated address plus the configured TLS/HTTP authority."""
 
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
+
     origin: HttpOrigin
-    address: str
+    address: StrictStr
 
 
 class AsyncioDnsResolver:
@@ -60,7 +64,7 @@ class AsyncioDnsResolver:
             )
         except OSError as error:
             raise HttpEgressPolicyError(
-                "dns_resolution_failed",
+                HttpEgressErrorCode.DNS_RESOLUTION_FAILED,
                 "HTTP destination DNS resolution failed.",
             ) from error
         return tuple(entry[4][0] for entry in info)
@@ -145,7 +149,11 @@ class SafeHttpTransport:
         while True:
             origin = request.policy.require_target(
                 current_url,
-                redirect=redirect_count > 0,
+                phase=(
+                    HttpTargetPhase.REDIRECT
+                    if redirect_count > 0
+                    else HttpTargetPhase.INITIAL
+                ),
             )
             target = await self._resolve(origin)
             hop_headers = dict(headers)
@@ -175,7 +183,7 @@ class SafeHttpTransport:
                 )
             except httpx.HTTPError:
                 raise HttpEgressPolicyError(
-                    "transport_failed",
+                    HttpEgressErrorCode.TRANSPORT_FAILED,
                     "HTTP transport failed.",
                 ) from None
             location = _redirect_location(response)
@@ -189,13 +197,13 @@ class SafeHttpTransport:
                 )
             if redirect_count >= request.policy.max_redirects:
                 raise HttpEgressPolicyError(
-                    "redirect_limit_exceeded",
+                    HttpEgressErrorCode.REDIRECT_LIMIT_EXCEEDED,
                     "HTTP redirect count exceeded the configured operation limit.",
                 )
 
             current_url = urljoin(current_url, location)
             redirect_count += 1
-            request.policy.require_target(current_url, redirect=True)
+            request.policy.require_target(current_url, phase=HttpTargetPhase.REDIRECT)
             method, body, headers = _redirect_request(
                 method, body, headers, response.status_code
             )
@@ -214,7 +222,7 @@ class SafeHttpTransport:
         self,
         *,
         target: ResolvedHttpTarget,
-        method: str,
+        method: HttpMethod,
         url: str,
         headers: dict[str, str],
         body: bytes,
@@ -248,7 +256,7 @@ class SafeHttpTransport:
 def _validated_addresses(values: Sequence[str]) -> tuple[str, ...]:
     if not values:
         raise HttpEgressPolicyError(
-            "dns_resolution_empty",
+            HttpEgressErrorCode.DNS_RESOLUTION_EMPTY,
             "HTTP destination DNS resolution returned no addresses.",
         )
     parsed: set[ipaddress.IPv4Address | ipaddress.IPv6Address] = set()
@@ -257,12 +265,12 @@ def _validated_addresses(values: Sequence[str]) -> tuple[str, ...]:
             address = ipaddress.ip_address(value)
         except ValueError as error:
             raise HttpEgressPolicyError(
-                "dns_answer_invalid",
+                HttpEgressErrorCode.DNS_ANSWER_INVALID,
                 "HTTP destination DNS returned an invalid address.",
             ) from error
         if not _is_public(address):
             raise HttpEgressPolicyError(
-                "destination_not_public",
+                HttpEgressErrorCode.DESTINATION_NOT_PUBLIC,
                 "HTTP destination resolved to a non-public address.",
             )
         parsed.add(address)
@@ -292,7 +300,7 @@ def _bounded_response_headers(headers: httpx.Headers) -> tuple[tuple[str, str], 
     )
     if len(entries) > MAX_RESPONSE_HEADERS or total > MAX_RESPONSE_HEADER_BYTES:
         raise HttpEgressPolicyError(
-            "response_headers_too_large",
+            HttpEgressErrorCode.RESPONSE_HEADERS_TOO_LARGE,
             "HTTP response headers exceed the egress limit.",
         )
     return entries
@@ -305,7 +313,7 @@ async def _bounded_body(response: httpx.Response, limit: int) -> bytes:
         size += len(chunk)
         if size > limit:
             raise HttpEgressPolicyError(
-                "response_body_too_large",
+                HttpEgressErrorCode.RESPONSE_BODY_TOO_LARGE,
                 "HTTP response body exceeds the configured operation limit.",
             )
         chunks.append(chunk)
@@ -318,22 +326,22 @@ def _redirect_location(response: HttpEgressResponse) -> str | None:
     values = response.header_values("location")
     if len(values) != 1 or not values[0].strip():
         raise HttpEgressPolicyError(
-            "redirect_location_invalid",
+            HttpEgressErrorCode.REDIRECT_LOCATION_INVALID,
             "HTTP redirect requires one valid Location header.",
         )
     return values[0].strip()
 
 
 def _redirect_request(
-    method: str,
+    method: HttpMethod,
     body: bytes,
     headers: dict[str, str],
     status_code: int,
-) -> tuple[str, bytes, dict[str, str]]:
-    if status_code == 303 and method != "HEAD":
-        return "GET", b"", _without_content_headers(headers)
-    if status_code in {301, 302} and method == "POST":
-        return "GET", b"", _without_content_headers(headers)
+) -> tuple[HttpMethod, bytes, dict[str, str]]:
+    if status_code == 303 and method is not HttpMethod.HEAD:
+        return HttpMethod.GET, b"", _without_content_headers(headers)
+    if status_code in {301, 302} and method is HttpMethod.POST:
+        return HttpMethod.GET, b"", _without_content_headers(headers)
     return method, body, headers
 
 

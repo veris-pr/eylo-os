@@ -5,13 +5,22 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
 import uuid_utils
 from absurd_sdk import AsyncTaskContext, CancelledTask
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    InstanceOf,
+    JsonValue,
+    ValidationError,
+)
+from pydantic.json_schema import SkipJsonSchema
 from sqlalchemy import and_, or_, select
 from sqlalchemy.dialects.postgresql import insert
 
@@ -36,9 +45,14 @@ from eylo.sor.runtime.catalog import get_sor_registry
 from eylo.sor.runtime.command_payloads import validate_command_payload
 from eylo.sor.runtime.projection import project_source_record
 from eylo.sor.runtime.registry import SorRegistry
-from eylo.sor.runtime.serialization import json_safe_payload
+from eylo.sor.runtime.serialization import (
+    SorStoredCommandResult,
+    decode_external_record,
+    encode_external_record,
+)
 from eylo.sor.runtime.work import (
     SorBoundWorkService,
+    SorCommandCompletion,
     SorWorkBindingPending,
     SorWorkContract,
     spawn_sor_bound_work,
@@ -54,12 +68,14 @@ from eylo.sor.shared.contracts import (
     SorExternalRecord,
     SorFieldMappingDirection,
     SorFieldMappingState,
+    SorLifecycleAdapter,
     SorProfile,
     SorRecoveryPolicy,
     SorSourceAccess,
     SorSourcePayload,
     SorSourceState,
     SorToolEffect,
+    SorToolSpec,
     SorVendorOperationError,
 )
 from eylo.sor.shared.models import (
@@ -90,7 +106,7 @@ SOR_COMMAND_MAX_PAYLOAD_BYTES = 524_288
 SOR_COMMAND_MAX_SAFE_RESULT_BYTES = 65_536
 SOR_COMMAND_SOURCE_STATES = frozenset({SorSourceState.ACTIVE, SorSourceState.DEGRADED})
 
-SOR_COMMAND_WORK = SorWorkContract(
+SOR_COMMAND_WORK = SorWorkContract[SorCommandModel](
     model=SorCommandModel,
     pending=SorCommandState.PENDING,
     running=SorCommandState.RUNNING,
@@ -105,29 +121,83 @@ SOR_COMMAND_WORK = SorWorkContract(
             SorCommandState.CANCELLED,
         }
     ),
-    error_code_field="safe_error_category",
 )
+
+
+class SorCommandFailure(StrEnum):
+    """Stable runtime-owned refusal categories; vendor failures stay separate."""
+
+    AGENT_REVISION_SOURCE_UNAVAILABLE = "AGENT_REVISION_SOURCE_UNAVAILABLE"
+    AGENT_REVISION_TOOL_UNAVAILABLE = "AGENT_REVISION_TOOL_UNAVAILABLE"
+    AGENT_REVISION_UNAVAILABLE = "AGENT_REVISION_UNAVAILABLE"
+    AGENT_RUN_NOT_RUNNING = "AGENT_RUN_NOT_RUNNING"
+    SOURCE_CONNECTION_UNAVAILABLE = "SOURCE_CONNECTION_UNAVAILABLE"
+    SOURCE_GRANT_REVOKED = "SOURCE_GRANT_REVOKED"
+    SOURCE_GRANT_UNAVAILABLE = "SOURCE_GRANT_UNAVAILABLE"
+    SOURCE_NOT_ACTIVE = "SOURCE_NOT_ACTIVE"
+    SOURCE_TOOL_SCOPE_MISSING = "SOURCE_TOOL_SCOPE_MISSING"
+    SOURCE_TOOL_UNAVAILABLE = "SOURCE_TOOL_UNAVAILABLE"
+    SOURCE_REVISION_CONFLICT = "SOURCE_REVISION_CONFLICT"
+    COMMAND_PAYLOAD_INVALID = "COMMAND_PAYLOAD_INVALID"
+    COMMAND_CONTRACT_INVALID = "COMMAND_CONTRACT_INVALID"
+    COMMAND_PROVIDER_FAILED = "COMMAND_PROVIDER_FAILED"
 
 
 class SorCommandAuthorizationError(Exception):
     """Live Agent, run, revision, or grant authority no longer permits a write."""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: SorCommandFailure, message: str) -> None:
         super().__init__(message)
         self.code = code
 
 
-@dataclass(frozen=True, slots=True)
-class SorFiledCommand:
+class SorFiledCommand(BaseModel):
     """Stable command identity returned to the invoking Agent tool."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     command_id: UUID
     state: SorCommandState
     created: bool
 
 
-@dataclass(frozen=True, slots=True)
-class _CommandClaim:
+class SorCommandReceipt(BaseModel):
+    """Exact command identity and finite JSON result shared by worker and tool resume."""
+
+    model_config = ConfigDict(
+        frozen=True,
+        strict=True,
+        extra="forbid",
+        allow_inf_nan=False,
+        hide_input_in_errors=True,
+    )
+
+    organization_id: UUID
+    command_id: UUID
+    source_id: UUID
+    agent_run_id: UUID
+    tool_call_id: str
+    profile_tool: str
+    state: SorCommandState
+    mutation_applied: bool
+    safe_result: dict[str, JsonValue] | None = Field(repr=False)
+    safe_error_category: str | None
+    safe_error_summary: str | None = Field(repr=False)
+
+    @property
+    def terminal(self) -> bool:
+        return self.state in SOR_COMMAND_WORK.terminal
+
+
+class _CommandClaim(BaseModel):
+    """Resolved command data; encrypted persistence owns raw payload readback."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
     organization_id: UUID
     command_id: UUID
     source_id: UUID
@@ -135,11 +205,13 @@ class _CommandClaim:
     vendor_key: str
     profile_tool: str
     idempotency_key: str
-    payload: SorCommandPayload
+    payload: SkipJsonSchema[InstanceOf[SorCommandPayload]] = Field(
+        repr=False, exclude=True
+    )
     target_vendor_object_key: str | None
     target_external_id: str | None
     expected_source_revision: str | None
-    target_selected_payload: SorSourcePayload | None
+    target_selected_payload: SorSourcePayload | None = Field(repr=False, exclude=True)
     result_vendor_object_key: str
     supports_conditional_writes: bool
     mutation_applied: bool
@@ -423,7 +495,7 @@ class SorCommandWorkflow:
                 organization_id=organization_id,
                 command_id=command_id,
             )
-            if _receipt_is_terminal(receipt):
+            if receipt.terminal:
                 await task_context.emit_event(
                     sor_command_terminal_event(command_id),
                     _terminal_event_payload(
@@ -432,7 +504,7 @@ class SorCommandWorkflow:
                     ),
                 )
             raise
-        if _receipt_is_terminal(receipt):
+        if receipt.terminal:
             await task_context.emit_event(
                 sor_command_terminal_event(command_id),
                 _terminal_event_payload(
@@ -440,7 +512,7 @@ class SorCommandWorkflow:
                     command_id=command_id,
                 ),
             )
-        return receipt
+        return receipt.model_dump(mode="json")
 
     async def _execute(
         self,
@@ -448,7 +520,7 @@ class SorCommandWorkflow:
         organization_id: UUID,
         command_id: UUID,
         task_context: AsyncTaskContext,
-    ) -> dict[str, Any]:
+    ) -> SorCommandReceipt:
         try:
             claim = await _begin_command(
                 organization_id=organization_id,
@@ -526,7 +598,7 @@ class SorCommandWorkflow:
                         lambda: _fetch_result_record(adapter=adapter, result=result),
                     ),
                 )
-                record = _decode_external_record(encoded_record)
+                record = decode_external_record(encoded_record)
                 if (
                     record.vendor_object_key != result.vendor_object_key
                     or record.external_id != result.external_id
@@ -672,7 +744,7 @@ async def _create_command(
     )
     if grant is None:
         raise SorCommandAuthorizationError(
-            "SOURCE_GRANT_UNAVAILABLE",
+            SorCommandFailure.SOURCE_GRANT_UNAVAILABLE,
             "Agent has no live read-write grant for this source.",
         )
     await _require_agent_authority(
@@ -796,7 +868,7 @@ async def _require_agent_authority(
     )
     if revision is None:
         raise SorCommandAuthorizationError(
-            "AGENT_REVISION_UNAVAILABLE",
+            SorCommandFailure.AGENT_REVISION_UNAVAILABLE,
             "The pinned Agent revision cannot execute source commands.",
         )
     revision_tool = await session.scalar(
@@ -811,7 +883,7 @@ async def _require_agent_authority(
     )
     if revision_tool is None:
         raise SorCommandAuthorizationError(
-            "AGENT_REVISION_TOOL_UNAVAILABLE",
+            SorCommandFailure.AGENT_REVISION_TOOL_UNAVAILABLE,
             "The pinned Agent revision has no matching source tool.",
         )
     revision_grant = await session.scalar(
@@ -828,7 +900,7 @@ async def _require_agent_authority(
     )
     if revision_grant is None:
         raise SorCommandAuthorizationError(
-            "AGENT_REVISION_SOURCE_UNAVAILABLE",
+            SorCommandFailure.AGENT_REVISION_SOURCE_UNAVAILABLE,
             "The pinned Agent revision has no matching source grant.",
         )
     lifecycle_predicate = AgentRunModel.lifecycle == AgentRunLifecycle.RUNNING
@@ -854,7 +926,7 @@ async def _require_agent_authority(
     )
     if run is None:
         raise SorCommandAuthorizationError(
-            "AGENT_RUN_NOT_RUNNING",
+            SorCommandFailure.AGENT_RUN_NOT_RUNNING,
             "The Agent run no longer permits a new source mutation.",
         )
 
@@ -912,7 +984,7 @@ async def _load_claim(
         )
         if row.profile_tool not in manifest.writable_tools:
             raise SorCommandAuthorizationError(
-                "SOURCE_TOOL_UNAVAILABLE",
+                SorCommandFailure.SOURCE_TOOL_UNAVAILABLE,
                 "The source adapter no longer executes this mutation tool.",
             )
         result_vendor_object_key = await _require_command_result_stream(
@@ -932,7 +1004,7 @@ async def _load_claim(
         if require_live_authority:
             if source.state not in {SorSourceState.ACTIVE, SorSourceState.DEGRADED}:
                 raise SorCommandAuthorizationError(
-                    "SOURCE_NOT_ACTIVE",
+                    SorCommandFailure.SOURCE_NOT_ACTIVE,
                     "The source no longer permits Agent commands.",
                 )
             grant = await repository.get_source_grant(
@@ -947,7 +1019,7 @@ async def _load_claim(
                 or grant.access is not SorSourceAccess.READ_WRITE
             ):
                 raise SorCommandAuthorizationError(
-                    "SOURCE_GRANT_REVOKED",
+                    SorCommandFailure.SOURCE_GRANT_REVOKED,
                     "The Agent source grant was revoked or changed.",
                 )
             await _require_agent_authority(
@@ -1034,7 +1106,7 @@ async def _load_claim(
 async def _require_target_version(
     *,
     claim: _CommandClaim,
-    adapter,
+    adapter: SorLifecycleAdapter,
     task_context: AsyncTaskContext,
 ) -> None:
     if claim.expected_source_revision is None:
@@ -1063,7 +1135,9 @@ async def _require_target_version(
         )
 
 
-async def _execute_vendor_command(*, adapter, claim: _CommandClaim) -> dict[str, Any]:
+async def _execute_vendor_command(
+    *, adapter: SorLifecycleAdapter, claim: _CommandClaim
+) -> dict[str, JsonValue]:
     expected_revision = claim.expected_source_revision
     if (
         not claim.supports_conditional_writes
@@ -1112,14 +1186,14 @@ async def _checkpoint_mutation(
 
 async def _fetch_result_record(
     *,
-    adapter,
+    adapter: SorLifecycleAdapter,
     result: SorCommandResult,
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     record = await adapter.fetch_record(
         vendor_object_key=result.vendor_object_key,
         external_id=result.external_id,
     )
-    return _encode_external_record(record)
+    return encode_external_record(record)
 
 
 async def _project_and_complete(
@@ -1130,8 +1204,8 @@ async def _project_and_complete(
     record: SorExternalRecord,
     result: SorCommandResult,
     result_vendor_object_key: str,
-    adapter,
-) -> dict[str, Any]:
+    adapter: SorLifecycleAdapter,
+) -> SorCommandReceipt:
     async with start_transaction() as session:
         repository = SorRepository(session)
         work = SorBoundWorkService(SOR_COMMAND_WORK, session)
@@ -1163,7 +1237,7 @@ async def _project_and_complete(
         )
         if source is None or source.external_connection_id != connection.id:
             raise SorCommandAuthorizationError(
-                "SOURCE_CONNECTION_UNAVAILABLE",
+                SorCommandFailure.SOURCE_CONNECTION_UNAVAILABLE,
                 "The source connection changed during command projection.",
             )
         stream = await repository.get_stream_by_object(
@@ -1178,7 +1252,7 @@ async def _project_and_complete(
             )
         if source.state not in {SorSourceState.ACTIVE, SorSourceState.DEGRADED}:
             raise SorCommandAuthorizationError(
-                "SOURCE_NOT_ACTIVE",
+                SorCommandFailure.SOURCE_NOT_ACTIVE,
                 "The source no longer permits Agent commands.",
             )
         grant = await repository.get_source_grant(
@@ -1193,7 +1267,7 @@ async def _project_and_complete(
             or grant.access is not SorSourceAccess.READ_WRITE
         ):
             raise SorCommandAuthorizationError(
-                "SOURCE_GRANT_REVOKED",
+                SorCommandFailure.SOURCE_GRANT_REVOKED,
                 "The Agent source grant was revoked or changed.",
             )
         await _require_agent_authority(
@@ -1231,10 +1305,10 @@ async def _project_and_complete(
         row = await work.succeed(
             work_id=command_id,
             organization_id=organization_id,
-            values={
-                "safe_result": safe_result,
-                "source_revision_after": record.source_revision,
-            },
+            values=SorCommandCompletion(
+                safe_result=safe_result,
+                source_revision_after=record.source_revision,
+            ),
         )
         action_event_id = await file_sor_action_event(
             session,
@@ -1259,7 +1333,7 @@ async def _record_cancellation(
     *,
     organization_id: UUID,
     command_id: UUID,
-) -> dict[str, Any]:
+) -> SorCommandReceipt:
     async with start_transaction() as session:
         work = SorBoundWorkService(SOR_COMMAND_WORK, session)
         row = await work.get(
@@ -1294,7 +1368,7 @@ async def _handle_failure(
     organization_id: UUID,
     command_id: UUID,
     error: Exception,
-) -> dict[str, Any]:
+) -> SorCommandReceipt:
     async with start_transaction() as session:
         work = SorBoundWorkService(SOR_COMMAND_WORK, session)
         row = await work.get(
@@ -1313,7 +1387,7 @@ async def _handle_failure(
                 work_id=command_id,
                 organization_id=organization_id,
                 state=SorCommandState.CONFLICT,
-                error_code="SOURCE_REVISION_CONFLICT",
+                error_code=SorCommandFailure.SOURCE_REVISION_CONFLICT,
                 error_summary=str(error),
             )
             return _receipt(row)
@@ -1333,6 +1407,8 @@ async def _handle_failure(
 
 
 def _classify_failure(error: Exception) -> tuple[str, str, bool]:
+    if isinstance(error, ValidationError):
+        error = SorProjectionError("SOR adapter returned an invalid typed contract.")
     if isinstance(error, SorCommandAuthorizationError):
         return error.code, str(error), True
     if isinstance(error, SorAdapterUnavailableError):
@@ -1349,13 +1425,19 @@ def _classify_failure(error: Exception) -> tuple[str, str, bool]:
             },
         )
     if isinstance(error, SorSecretEnvelopeError):
-        return "COMMAND_PAYLOAD_INVALID", str(error), True
+        return SorCommandFailure.COMMAND_PAYLOAD_INVALID, str(error), True
     if isinstance(error, (SorConfigurationError, SorConflictError, SorProjectionError)):
-        return "COMMAND_CONTRACT_INVALID", str(error), True
-    return "COMMAND_PROVIDER_FAILED", "SOR provider command failed.", False
+        return SorCommandFailure.COMMAND_CONTRACT_INVALID, str(error), True
+    return (
+        SorCommandFailure.COMMAND_PROVIDER_FAILED,
+        "SOR provider command failed.",
+        False,
+    )
 
 
-def _mutation_tool(*, registry: SorRegistry, profile: SorProfile, name: str):
+def _mutation_tool(
+    *, registry: SorRegistry, profile: SorProfile, name: str
+) -> SorToolSpec:
     spec = registry.get_profile(profile)
     tool = next((candidate for candidate in spec.tools if candidate.name == name), None)
     if tool is None:
@@ -1383,7 +1465,7 @@ async def _require_tool_scopes(
     granted = set(active_connection.granted_scopes or ())
     if not required.issubset(granted):
         raise SorCommandAuthorizationError(
-            "SOURCE_TOOL_SCOPE_MISSING",
+            SorCommandFailure.SOURCE_TOOL_SCOPE_MISSING,
             "The source connection requires reauthorization for this action.",
         )
 
@@ -1408,7 +1490,7 @@ async def _require_live_connection(
         or connection.status is not ExternalConnectionStatus.ACTIVE
     ):
         raise SorCommandAuthorizationError(
-            "SOURCE_CONNECTION_UNAVAILABLE",
+            SorCommandFailure.SOURCE_CONNECTION_UNAVAILABLE,
             "The source connection was revoked or requires reauthorization.",
         )
     return connection
@@ -1494,7 +1576,7 @@ def _external_record_version(
     return f"hash:{hashlib.sha256(payload).hexdigest()}"
 
 
-def _encode_command_result(result: SorCommandResult) -> dict[str, Any]:
+def _encode_command_result(result: SorCommandResult) -> dict[str, JsonValue]:
     if not isinstance(result, SorCommandResult):
         raise SorProjectionError("SOR adapter returned an invalid command result.")
     encoded = _stored_result(result)
@@ -1503,88 +1585,18 @@ def _encode_command_result(result: SorCommandResult) -> dict[str, Any]:
 
 
 def _decode_command_result(value: object) -> SorCommandResult:
-    if not isinstance(value, dict) or set(value) != {
-        "vendor_object_key",
-        "external_id",
-        "external_request_id",
-        "source_revision",
-        "source_url",
-        "response",
-    }:
-        raise SorProjectionError("Durable SOR command result is malformed.")
-    for required in ("vendor_object_key", "external_id"):
-        if not isinstance(value[required], str) or not value[required]:
-            raise SorProjectionError("Durable SOR command identity is malformed.")
-    for optional in ("external_request_id", "source_revision", "source_url"):
-        if value[optional] is not None and not isinstance(value[optional], str):
-            raise SorProjectionError("Durable SOR command metadata is malformed.")
-    if not isinstance(value["response"], dict):
-        raise SorProjectionError("Durable SOR command response is malformed.")
-    return SorCommandResult(
-        vendor_object_key=value["vendor_object_key"],
-        external_id=value["external_id"],
-        external_request_id=value["external_request_id"],
-        source_revision=value["source_revision"],
-        source_url=value["source_url"],
-        response=value["response"],
-    )
+    try:
+        return SorStoredCommandResult.model_validate(value).to_result()
+    except ValidationError as error:
+        raise SorProjectionError("Durable SOR command result is malformed.") from error
 
 
-def _stored_result(result: SorCommandResult) -> dict[str, Any]:
-    return {
-        "vendor_object_key": result.vendor_object_key,
-        "external_id": result.external_id,
-        "external_request_id": result.external_request_id,
-        "source_revision": result.source_revision,
-        "source_url": result.source_url,
-        "response": dict(result.response),
-    }
+def _stored_result(result: SorCommandResult) -> dict[str, JsonValue]:
+    return SorStoredCommandResult.from_result(result).model_dump(mode="json")
 
 
 def _decode_stored_result(value: object) -> SorCommandResult:
     return _decode_command_result(value)
-
-
-def _encode_external_record(record: SorExternalRecord) -> dict[str, Any]:
-    if not isinstance(record, SorExternalRecord):
-        raise SorProjectionError("SOR adapter returned an invalid source record.")
-    return {
-        "vendor_object_key": record.vendor_object_key,
-        "external_id": record.external_id,
-        "payload": json_safe_payload(record.payload),
-        "source_created_at": _datetime_value(record.source_created_at),
-        "source_updated_at": _datetime_value(record.source_updated_at),
-        "source_revision": record.source_revision,
-        "source_url": record.source_url,
-    }
-
-
-def _decode_external_record(value: object) -> SorExternalRecord:
-    if not isinstance(value, dict) or set(value) != {
-        "vendor_object_key",
-        "external_id",
-        "payload",
-        "source_created_at",
-        "source_updated_at",
-        "source_revision",
-        "source_url",
-    }:
-        raise SorProjectionError("Durable SOR source record is malformed.")
-    if not isinstance(value["vendor_object_key"], str) or not isinstance(
-        value["external_id"], str
-    ):
-        raise SorProjectionError("Durable SOR source identity is malformed.")
-    if not isinstance(value["payload"], dict):
-        raise SorProjectionError("Durable SOR source payload is malformed.")
-    return SorExternalRecord(
-        vendor_object_key=value["vendor_object_key"],
-        external_id=value["external_id"],
-        payload=SorSourcePayload.from_mapping(value["payload"]),
-        source_created_at=_parse_datetime(value["source_created_at"]),
-        source_updated_at=_parse_datetime(value["source_updated_at"]),
-        source_revision=_optional_string(value["source_revision"]),
-        source_url=_optional_string(value["source_url"]),
-    )
 
 
 def _require_same_command(row: SorCommandModel, *, request_hash: str) -> None:
@@ -1598,7 +1610,7 @@ async def _read_receipt(
     *,
     organization_id: UUID,
     command_id: UUID,
-) -> dict[str, Any]:
+) -> SorCommandReceipt:
     async with start_transaction(ro=True) as session:
         row = await SorBoundWorkService(SOR_COMMAND_WORK, session).get(
             work_id=command_id,
@@ -1611,7 +1623,7 @@ async def read_sor_command_receipt(
     *,
     organization_id: UUID,
     command_id: UUID,
-) -> dict[str, Any]:
+) -> SorCommandReceipt:
     """Load one organization-owned command receipt for durable tool resume."""
     return await _read_receipt(
         organization_id=organization_id,
@@ -1619,28 +1631,20 @@ async def read_sor_command_receipt(
     )
 
 
-def _receipt(row: SorCommandModel) -> dict[str, Any]:
-    return {
-        "organization_id": str(row.organization_id),
-        "command_id": str(row.id),
-        "source_id": str(row.source_id),
-        "agent_run_id": str(row.agent_run_id),
-        "tool_call_id": row.tool_call_id,
-        "profile_tool": row.profile_tool,
-        "state": row.state.value,
-        "mutation_applied": row.mutation_applied_at is not None,
-        "safe_result": row.safe_result,
-        "safe_error_category": row.safe_error_category,
-        "safe_error_summary": row.safe_error_summary,
-    }
-
-
-def _receipt_is_terminal(receipt: dict[str, Any]) -> bool:
-    try:
-        state = SorCommandState(str(receipt["state"]))
-    except (KeyError, TypeError, ValueError):
-        return False
-    return state in SOR_COMMAND_WORK.terminal
+def _receipt(row: SorCommandModel) -> SorCommandReceipt:
+    return SorCommandReceipt(
+        organization_id=row.organization_id,
+        command_id=row.id,
+        source_id=row.source_id,
+        agent_run_id=row.agent_run_id,
+        tool_call_id=row.tool_call_id,
+        profile_tool=row.profile_tool,
+        state=row.state,
+        mutation_applied=row.mutation_applied_at is not None,
+        safe_result=row.safe_result,
+        safe_error_category=row.safe_error_category,
+        safe_error_summary=row.safe_error_summary,
+    )
 
 
 def _terminal_event_payload(
@@ -1681,41 +1685,12 @@ def _parse_params(params: dict[str, Any]) -> tuple[UUID, UUID]:
         raise ValueError("SOR command task params contain an invalid UUID.") from error
 
 
-def _datetime_value(value: datetime | None) -> str | None:
-    if value is None:
-        return None
-    if value.tzinfo is None or value.utcoffset() is None:
-        raise SorProjectionError("SOR source timestamps must include a timezone.")
-    return value.isoformat()
-
-
-def _parse_datetime(value: object) -> datetime | None:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise SorProjectionError("Durable SOR timestamp is malformed.")
-    try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError as error:
-        raise SorProjectionError("Durable SOR timestamp is malformed.") from error
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        raise SorProjectionError("Durable SOR timestamp lacks a timezone.")
-    return parsed
-
-
-def _optional_string(value: object) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise SorProjectionError("Durable SOR optional string is malformed.")
-    return value
-
-
 __all__ = [
     "SOR_COMMAND_MAX_PAYLOAD_BYTES",
     "SOR_COMMAND_WAIT_OWNER_KIND",
     "SOR_COMMAND_WORKFLOW",
     "SorCommandWorkflow",
+    "SorCommandReceipt",
     "SorFiledCommand",
     "cancel_active_sor_commands",
     "cancel_sor_command",

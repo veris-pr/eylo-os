@@ -14,6 +14,7 @@ from fastapi import WebSocket
 from eylo.sockets.telephony.base import (
     BaseTelephonyService,
     CallMetadata,
+    CarrierMediaFailureCode,
     CarrierMediaResult,
     CarrierMediaStatus,
     InboundMediaMessage,
@@ -220,7 +221,7 @@ class TelephonyRealtime:
             return CarrierMediaResult(
                 status=CarrierMediaStatus.FAILED,
                 bytes_count=len(audio_data),
-                failure_code="carrier_audio_write_failed",
+                failure_code=CarrierMediaFailureCode.AUDIO_WRITE_FAILED,
             )
 
     async def handle_interruption(self, stream_sid: str) -> CarrierMediaResult:
@@ -237,7 +238,7 @@ class TelephonyRealtime:
             logger.warning("Carrier interruption write failed.")
             return CarrierMediaResult(
                 status=CarrierMediaStatus.FAILED,
-                failure_code="carrier_interruption_write_failed",
+                failure_code=CarrierMediaFailureCode.INTERRUPTION_WRITE_FAILED,
             )
 
     async def disconnect(self) -> None:

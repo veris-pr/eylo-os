@@ -41,7 +41,7 @@ vendor = registry.register_vendor(
         api_key_placement=ApiKeyPlacement(
             location=CredentialLocation.HEADER,
             name="Authorization",
-            value_prefix="Bearer",
+            value_prefix="Bearer ",
         ),
     )
 )

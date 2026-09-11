@@ -1,8 +1,9 @@
 """Application contract for querying organization-owned Agents."""
 
-from dataclasses import dataclass
 from enum import Enum
 from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from eylo.modules.agents.models import AgentKind, AgentStatus
 
@@ -20,8 +21,17 @@ class AgentSortDirection(str, Enum):
     DESC = "desc"
 
 
-@dataclass(frozen=True, slots=True)
-class AgentListQuery:
+class AgentListQuery(BaseModel):
+    """Validated filters; organization authority and pagination stay with the caller."""
+
+    model_config = ConfigDict(
+        frozen=True,
+        strict=True,
+        extra="forbid",
+        validate_default=True,
+        hide_input_in_errors=True,
+    )
+
     agent_ids: tuple[UUID, ...] = ()
     search: str | None = None
     statuses: tuple[AgentStatus, ...] = ()
@@ -29,9 +39,8 @@ class AgentListQuery:
     sort_by: AgentSortField = AgentSortField.UPDATED_AT
     sort_direction: AgentSortDirection = AgentSortDirection.DESC
 
-    def __post_init__(self) -> None:
-        if self.search is None:
-            return
-
-        normalized_search = self.search.strip()
-        object.__setattr__(self, "search", normalized_search or None)
+    @field_validator("search")
+    @classmethod
+    def normalize_search(cls, value: str | None) -> str | None:
+        """Keep the existing blank-as-absent agent search contract."""
+        return value.strip() or None if value is not None else None

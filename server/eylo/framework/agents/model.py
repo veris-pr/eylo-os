@@ -51,6 +51,19 @@ class ModelSettings(FrozenFrameworkModel):
     reasoning: dict[str, JsonValue] | None = None
 
 
+class ModelStopReason(str, Enum):
+    """Framework stop vocabulary, translated by each embedding application."""
+
+    END_TURN = "end_turn"
+    MAX_TOKENS = "max_tokens"
+    STOP_SEQUENCE = "stop_sequence"
+    TOOL_USE = "tool_use"
+    PAUSE_TURN = "pause_turn"
+    REFUSAL = "refusal"
+    CONTENT_FILTER = "content_filter"
+    OTHER = "other"
+
+
 class ModelBlockKind(str, Enum):
     """Normalized model output block kind."""
 
@@ -127,7 +140,7 @@ class ModelResponse(FrozenFrameworkModel):
     model: str
     blocks: tuple[ModelOutputBlock, ...] = ()
     usage: ModelUsage = Field(default_factory=ModelUsage)
-    stop_reason: str | None = None
+    stop_reason: ModelStopReason | None = None
     metadata: SerializeAsAny[FrameworkMetadata] = Field(
         default_factory=FrameworkMetadata
     )

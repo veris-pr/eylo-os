@@ -90,11 +90,7 @@ def build_vendor_wire_auth(
                 "Vendor does not declare where its API key belongs.",
             )
         api_key = _required(values, API_KEY_KEY)
-        value = (
-            f"{api_key_placement.value_prefix} {api_key}"
-            if api_key_placement.value_prefix
-            else api_key
-        )
+        value = f"{api_key_placement.value_prefix}{api_key}"
         if api_key_placement.location is CredentialLocation.HEADER:
             return _headers(origin, {api_key_placement.name: value})
         return _query(origin, {api_key_placement.name: value})

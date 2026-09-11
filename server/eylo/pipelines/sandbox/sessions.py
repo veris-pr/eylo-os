@@ -7,10 +7,10 @@ import hashlib
 import json
 import logging
 import uuid
-from dataclasses import dataclass
 from uuid import UUID
 
 import arrow
+from pydantic import JsonValue
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,10 +27,15 @@ from eylo.modules.sandbox.models import (
     SandboxSessionModel,
     SandboxWorkspaceCheckpointModel,
 )
+from eylo.modules.sandbox_configs.catalog import SandboxProviders
 from eylo.modules.sandbox_configs.domain import ResolvedSandbox
 from eylo.pipelines.sandbox.resolver import (
     resolve_pinned_sandbox_adapter,
     resolve_sandbox_adapter,
+)
+from eylo.pipelines.sandbox.workspace_contracts import (
+    SandboxWorkspacePolicy,
+    WorkspaceExport,
 )
 from eylo.sockets.sandbox.base import SandboxVendorAdapter
 
@@ -44,27 +49,10 @@ class SandboxQuotaExceeded(SandboxError):
     """A hard organization or agent session ceiling was reached."""
 
 
-@dataclass(frozen=True, slots=True)
-class WorkspaceExport:
-    """Complete secret-free checkpoint material exported from one session."""
-
-    session_id: UUID
-    agent_run_id: UUID
-    provider: str
-    image: str
-    sandbox_provider_config_id: UUID
-    sandbox_provider_config_revision: int
-    grant_id: UUID | None
-    grant_revision: int | None
-    effective_policy: dict
-    workspace_digest: str
-    archive: bytes
-
-
 def _to_session(row: SandboxSessionModel) -> SandboxSession:
     if row.vendor_id is None:
         raise SandboxError(f"Sandbox session {row.id} is not running.")
-    policy = row.effective_policy
+    policy = SandboxWorkspacePolicy.from_storage(row.effective_policy)
     return SandboxSession(
         id=row.id,
         vendor_id=row.vendor_id,
@@ -73,8 +61,8 @@ def _to_session(row: SandboxSessionModel) -> SandboxSession:
         created_at=row.created_at,
         expires_at=row.expires_at,
         workspace=row.workspace,
-        command_timeout_seconds=int(policy["command_timeout_seconds"]),
-        max_output_bytes=int(policy["max_output_bytes"]),
+        command_timeout_seconds=policy.config.command_timeout_seconds,
+        max_output_bytes=policy.config.max_output_bytes,
     )
 
 
@@ -252,7 +240,7 @@ async def acquire(
             existing.effective_policy = _effective_policy(
                 resolved,
                 grant_max_sessions=grant_row.max_sessions,
-            )
+            ).to_storage()
             await db.commit()
             return adapter, _to_session(existing)
 
@@ -330,7 +318,7 @@ async def acquire(
             sandbox_provider_config_revision=resolved.provider_config_revision,
             grant_id=grant_row.id if grant_row is not None else None,
             grant_revision=grant_row.revision if grant_row is not None else None,
-            effective_policy=effective_policy,
+            effective_policy=effective_policy.to_storage(),
             state=SandboxState.STARTING,
             workspace="/workspace",
             expires_at=now.shift(seconds=resolved.config.ttl_seconds).datetime,
@@ -440,19 +428,20 @@ async def export_and_destroy_workspace(session: SandboxSession) -> WorkspaceExpo
         provider_config_id=row.sandbox_provider_config_id,
         provider_config_revision=row.sandbox_provider_config_revision,
     )
-    disk_bytes = int(row.effective_policy["disk_mb"]) * 1024 * 1024
     try:
+        policy = SandboxWorkspacePolicy.from_storage(row.effective_policy)
+        disk_bytes = policy.config.disk_mb * 1024 * 1024
         archive = await adapter.export_workspace(session, max_bytes=disk_bytes * 2)
         return WorkspaceExport(
             session_id=row.id,
             agent_run_id=row.agent_run_id,
-            provider=row.provider,
+            provider=SandboxProviders(row.provider),
             image=row.image,
             sandbox_provider_config_id=row.sandbox_provider_config_id,
             sandbox_provider_config_revision=row.sandbox_provider_config_revision,
             grant_id=row.grant_id,
             grant_revision=row.grant_revision,
-            effective_policy=dict(row.effective_policy),
+            effective_policy=policy,
             workspace_digest=hashlib.sha256(archive).hexdigest(),
             archive=archive,
         )
@@ -460,7 +449,9 @@ async def export_and_destroy_workspace(session: SandboxSession) -> WorkspaceExpo
         await _destroy_and_mark(adapter, session)
 
 
-async def _destroy_and_mark(adapter, session: SandboxSession) -> None:
+async def _destroy_and_mark(
+    adapter: SandboxVendorAdapter, session: SandboxSession
+) -> None:
     """Finish provider cleanup even when the caller is being cancelled."""
 
     async def clean() -> None:
@@ -481,7 +472,7 @@ async def store_workspace_checkpoint_in_transaction(
     organization_id: UUID,
     source_step_key: str,
     exported: WorkspaceExport,
-    tool_result: dict | None = None,
+    tool_result: dict[str, JsonValue] | None = None,
 ) -> SandboxWorkspaceCheckpointModel:
     """Append one immutable checkpoint in the sandbox-step output transaction."""
     if exported.agent_run_id is None:
@@ -524,13 +515,13 @@ async def store_workspace_checkpoint_in_transaction(
         agent_run_id=exported.agent_run_id,
         revision=revision,
         source_step_key=source_step_key,
-        provider=exported.provider,
+        provider=exported.provider.value,
         image=exported.image,
         sandbox_provider_config_id=exported.sandbox_provider_config_id,
         sandbox_provider_config_revision=exported.sandbox_provider_config_revision,
         grant_id=exported.grant_id,
         grant_revision=exported.grant_revision,
-        effective_policy=exported.effective_policy,
+        effective_policy=exported.effective_policy.to_storage(),
         workspace_digest=exported.workspace_digest,
         byte_size=len(exported.archive),
         workspace_archive=exported.archive,
@@ -559,7 +550,7 @@ async def workspace_checkpoint_for_step(
         )
 
 
-def _validate_tool_result(tool_result: dict | None) -> None:
+def _validate_tool_result(tool_result: dict[str, JsonValue] | None) -> None:
     if tool_result is None:
         return
     if not isinstance(tool_result, dict):
@@ -834,10 +825,10 @@ def _lock_key(namespace: str, identifier: UUID) -> int:
 
 
 async def _assert_capacity(
-    db,
-    organization_id,
-    agent_id,
-    effective_policy: dict,
+    db: AsyncSession,
+    organization_id: UUID,
+    agent_id: UUID | None,
+    effective_policy: SandboxWorkspacePolicy,
 ) -> None:
     organization_count = await db.scalar(
         select(func.count(SandboxSessionModel.id)).where(
@@ -846,17 +837,19 @@ async def _assert_capacity(
             SandboxSessionModel.deleted.is_(False),
         )
     )
-    organization_limit = int(effective_policy["max_sessions"])
+    organization_limit = effective_policy.config.max_sessions
     if int(organization_count or 0) >= organization_limit:
         raise SandboxQuotaExceeded(
             "The organization's sandbox session ceiling has been reached."
         )
     if agent_id is None:
         return
-    configured_agent_limit = effective_policy.get("grant_max_sessions")
+    configured_agent_limit = effective_policy.grant_max_sessions
     agent_limit = min(
         organization_limit,
-        int(configured_agent_limit or organization_limit),
+        configured_agent_limit
+        if configured_agent_limit is not None
+        else organization_limit,
     )
     agent_count = await db.scalar(
         select(func.count(SandboxSessionModel.id)).where(
@@ -872,33 +865,26 @@ async def _assert_capacity(
         )
 
 
-def _config_policy(resolved: ResolvedSandbox) -> dict[str, object]:
-    return {
-        **resolved.config.to_storage(),
-        "verified_image_id": resolved.verified_image_id,
-        "network": False,
-    }
-
-
 def _effective_policy(
     resolved: ResolvedSandbox,
     *,
-    grant_max_sessions: object = None,
-) -> dict[str, object]:
-    return {
-        **_config_policy(resolved),
-        "grant_max_sessions": grant_max_sessions,
-    }
+    grant_max_sessions: int | None = None,
+) -> SandboxWorkspacePolicy:
+    return SandboxWorkspacePolicy(
+        config=resolved.config,
+        verified_image_id=resolved.verified_image_id,
+        grant_max_sessions=grant_max_sessions,
+    )
 
 
 def _assert_checkpoint_matches_resolved(
     checkpoint: SandboxWorkspaceCheckpointModel, resolved: ResolvedSandbox
 ) -> None:
-    checkpoint_config_policy = dict(checkpoint.effective_policy)
-    checkpoint_config_policy.pop("grant_max_sessions", None)
+    policy = SandboxWorkspacePolicy.from_storage(checkpoint.effective_policy)
     if (
         resolved.verified_image_id != checkpoint.image
-        or checkpoint_config_policy != _config_policy(resolved)
+        or policy.verified_image_id != resolved.verified_image_id
+        or policy.config != resolved.config
     ):
         raise SandboxError(
             "Pinned sandbox checkpoint authority no longer matches its config."
@@ -962,7 +948,7 @@ async def _resolve_pinned_adapter(
     *,
     provider_config_id: UUID,
     provider_config_revision: int,
-):
+) -> tuple[SandboxVendorAdapter, ResolvedSandbox]:
     """Resolve immutable sandbox authority within an owned DB session."""
     async with async_session_factory() as db:
         return await resolve_pinned_sandbox_adapter(

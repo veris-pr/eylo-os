@@ -6,7 +6,6 @@ import hashlib
 import hmac
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Literal, overload
@@ -46,6 +45,7 @@ from eylo.sor.shared.contracts import (
     SorWebhookSubscription,
     SorWebhookVerificationError,
 )
+from eylo.sor.shared.json_values import SorJsonValue, require_json_value
 from eylo.sor.shared.linear import linear_graphql_data
 from eylo.sor.ticketing.contracts import (
     TicketingAssignCommandPayload,
@@ -240,9 +240,12 @@ _WEBHOOK_STREAMS = {
 }
 
 
-@dataclass(frozen=True, slots=True)
-class LinearAppWebhookDelivery:
+class LinearAppWebhookDelivery(BaseModel):
     """One verified Linear workspace event before source selection filtering."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     organization_external_id: str
     signal: SorWebhookSignal
@@ -287,7 +290,7 @@ LINEAR_MANIFEST = SorAdapterCapabilityManifest(
                 set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values()) - {stream_key}
             ),
             relationship_targets=SorRelationshipTargets(
-                _RELATIONSHIP_TARGETS.get(stream_key, {})
+                by_role=_RELATIONSHIP_TARGETS.get(stream_key, {}),
             ),
         )
         for stream_key, entity in _STREAM_ENTITY.items()
@@ -366,12 +369,20 @@ _SCHEMA_FIELDS = {
         _field("normalized_status", "Normalized status", SorFieldDataType.ENUM),
         _field("priority_label", "Priority", SorFieldDataType.TEXT, writable=True),
         _field("project_id", "Project ID", SorFieldDataType.REFERENCE, writable=True),
-        _field("team_id", "Team ID", SorFieldDataType.REFERENCE, nullable=False, writable=True),
+        _field(
+            "team_id",
+            "Team ID",
+            SorFieldDataType.REFERENCE,
+            nullable=False,
+            writable=True,
+        ),
         _field("assignee_id", "Assignee ID", SorFieldDataType.REFERENCE, writable=True),
         _field("creator_id", "Creator ID", SorFieldDataType.REFERENCE),
         _field("estimate", "Estimate", SorFieldDataType.DECIMAL, writable=True),
         _field("label_ids", "Label IDs", SorFieldDataType.STRING_ARRAY, writable=True),
-        _field("parent_id", "Parent issue ID", SorFieldDataType.REFERENCE, writable=True),
+        _field(
+            "parent_id", "Parent issue ID", SorFieldDataType.REFERENCE, writable=True
+        ),
         _field("cycle_id", "Cycle ID", SorFieldDataType.REFERENCE, writable=True),
         _field("due_date", "Due date", SorFieldDataType.DATE, writable=True),
         _field("started_at", "Started at", SorFieldDataType.TIMESTAMP),
@@ -413,7 +424,9 @@ _SCHEMA_FIELDS = {
     LinearTicketingStream.CYCLES: (
         _field("name", "Name", SorFieldDataType.TEXT),
         _field("number", "Number", SorFieldDataType.INTEGER, nullable=False),
-        _field("project_external_id", "Team ID", SorFieldDataType.REFERENCE, nullable=False),
+        _field(
+            "project_external_id", "Team ID", SorFieldDataType.REFERENCE, nullable=False
+        ),
         _field("description", "Description", SorFieldDataType.TEXT),
         _field("starts_at", "Starts at", SorFieldDataType.TIMESTAMP, nullable=False),
         _field("ends_at", "Ends at", SorFieldDataType.TIMESTAMP, nullable=False),
@@ -795,7 +808,13 @@ class LinearTicketingAdapter:
         stream_key = signal.vendor_object_key
         external_id = signal.external_id
         if stream_key not in self._context.selected_objects:
-            signal = replace(signal, vendor_object_key=None, external_id=None)
+            signal = SorWebhookSignal(
+                delivery_id=signal.delivery_id,
+                event_type=signal.event_type,
+                vendor_object_key=None,
+                external_id=None,
+                occurred_at=signal.occurred_at,
+            )
         elif external_id is None:
             raise SorWebhookPayloadError("Linear webhook record identity is missing.")
         return (signal,)
@@ -996,9 +1015,7 @@ class LinearTicketingAdapter:
                 payload.issue_external_id,
                 field="Linear comment issue ID",
             ),
-            author_external_id=_optional_string(
-                payload.author_external_id
-            ),
+            author_external_id=_optional_string(payload.author_external_id),
             normalized_text=_required_string(
                 payload.normalized_text,
                 field="Linear comment body",
@@ -1156,7 +1173,9 @@ class LinearTicketingAdapter:
                 "query": document,
                 "variables": variables.model_dump(
                     mode="json", by_alias=True, exclude_unset=True
-                ) if variables is not None else {},
+                )
+                if variables is not None
+                else {},
             },
             idempotency_key=idempotency_key,
         )
@@ -1616,7 +1635,9 @@ def _mutation_record(
         )
     if isinstance(result, LinearIssueMutation):
         if result.issue is None:
-            raise _invalid_response("Linear returned no issue for a successful mutation.")
+            raise _invalid_response(
+                "Linear returned no issue for a successful mutation."
+            )
         return result.issue
     if isinstance(result, LinearCommentMutation):
         return result.comment
@@ -1911,9 +1932,7 @@ def _connection_nodes(value: object, *, field: str) -> list[dict[str, object]]:
     return _object_list(_object(value, field=field).get("nodes"), field=field)
 
 
-def _require_stream(
-    value: str, *, selected: tuple[str, ...]
-) -> LinearTicketingStream:
+def _require_stream(value: str, *, selected: tuple[str, ...]) -> LinearTicketingStream:
     if value not in _STREAM_ENTITY or value not in selected:
         raise SorVendorOperationError(
             SorVendorErrorCode.VENDOR_STREAM_UNSUPPORTED,
@@ -1983,7 +2002,9 @@ def _normalized_linear_relation(value: str) -> TicketingRelationKind:
     try:
         native = LinearRelationType(value.strip().casefold())
     except ValueError:
-        raise _invalid_response("Linear returned an unsupported issue relation type.") from None
+        raise _invalid_response(
+            "Linear returned an unsupported issue relation type."
+        ) from None
     relation = {
         LinearRelationType.BLOCKS: TicketingRelationKind.BLOCKS,
         LinearRelationType.DUPLICATE: TicketingRelationKind.DUPLICATE,
@@ -2203,10 +2224,13 @@ def _string_tuple(value: object) -> tuple[str, ...]:
     return result
 
 
-def _json_value(value: object) -> object | None:
-    if value is None or isinstance(value, (str, int, float, bool, list, dict)):
-        return value
-    raise _invalid_response("Linear source content is not JSON-compatible.")
+def _json_value(value: object) -> SorJsonValue:
+    try:
+        return require_json_value(value)
+    except ValueError as error:
+        raise _invalid_response(
+            "Linear source content is not JSON-compatible."
+        ) from error
 
 
 def _invalid_response(message: str) -> SorVendorOperationError:
@@ -2223,7 +2247,9 @@ def _parse_native[ModelT: LinearNativeModel](
     try:
         return model.model_validate(value)
     except ValidationError:
-        raise _invalid_response("Linear returned an invalid ticketing response.") from None
+        raise _invalid_response(
+            "Linear returned an invalid ticketing response."
+        ) from None
 
 
 def _parse_request[ModelT: LinearRequestModel](

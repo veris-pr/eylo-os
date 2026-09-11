@@ -6,10 +6,11 @@ used in the main LLM pipeline (see base.py sort_request_groups).
 """
 
 import logging
-from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional
 from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from eylo.common.context_compaction import context_messages
 from eylo.modules.agents.schemas.indb import AgentInDb
@@ -34,21 +35,19 @@ from .token_counter import get_token_counter
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Message grouping
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class MessageGroup:
+class MessageGroup(BaseModel):
     """A chronological group of messages sharing the same request_id.
 
     SYSTEM messages (request_id=None) form standalone groups.
     Regular request groups contain [user, assistant, tool_use, tool_result, ...].
     """
 
-    request_id: Optional[UUID]
-    messages: List[MessageInDb] = field(default_factory=list)
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    request_id: UUID | None
+    messages: tuple[MessageInDb, ...] = Field(min_length=1, repr=False, exclude=True)
 
     @property
     def is_summary(self) -> bool:
@@ -83,20 +82,19 @@ def group_messages_by_request(messages: List[MessageInDb]) -> List[MessageGroup]
 
     sorted_msgs = sorted(messages, key=lambda m: (m.created_at, str(m.id)))
 
-    grouped: dict[Optional[UUID], MessageGroup] = {}
+    grouped: dict[UUID, list[MessageInDb]] = {}
     standalone: List[MessageGroup] = []
 
     for msg in sorted_msgs:
         if msg.request_id is None:
-            standalone.append(MessageGroup(request_id=None, messages=[msg]))
+            standalone.append(MessageGroup(request_id=None, messages=(msg,)))
         else:
-            if msg.request_id not in grouped:
-                grouped[msg.request_id] = MessageGroup(
-                    request_id=msg.request_id, messages=[]
-                )
-            grouped[msg.request_id].messages.append(msg)
+            grouped.setdefault(msg.request_id, []).append(msg)
 
-    all_groups = list(grouped.values()) + standalone
+    all_groups = [
+        MessageGroup(request_id=request_id, messages=tuple(group_messages))
+        for request_id, group_messages in grouped.items()
+    ] + standalone
     all_groups.sort(
         key=lambda group: min(
             (message.created_at, str(message.id)) for message in group.messages

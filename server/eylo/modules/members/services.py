@@ -4,7 +4,7 @@ from typing import Optional
 from uuid import UUID
 
 from pydantic import EmailStr
-from sqlalchemy import or_
+from sqlalchemy import ColumnElement, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.services import EyloBaseService
@@ -162,7 +162,7 @@ class MemberService(EyloBaseService[MemberInDb, MemberModel]):
         self,
         organization_id: UUID,
         query: MemberListQuery,
-    ) -> list:
+    ) -> list[ColumnElement[bool]]:
         """Build the one filter set shared by collection rows and totals."""
         model = self.repository.model
         filters = [

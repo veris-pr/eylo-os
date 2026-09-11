@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from eylo.common.config import Environment, settings
 from eylo.common.database import start_transaction
@@ -17,11 +18,16 @@ class WidgetDevelopmentSessionUnavailable(Exception):
     """The trusted local widget identity is absent or no longer valid."""
 
 
-@dataclass(frozen=True, slots=True)
-class WidgetDevelopmentSession:
+class WidgetDevelopmentSession(BaseModel):
+    """Local bootstrap result; only the explicit HTTP response exposes its token."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
     organization_id: UUID
     contact_id: UUID
-    session_token: str
+    session_token: str = Field(repr=False, exclude=True, min_length=1)
     session_expires_at: datetime
 
 

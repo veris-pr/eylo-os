@@ -8,6 +8,7 @@ from typing import Any
 from uuid import UUID
 
 from absurd_sdk import AsyncTaskContext, CancelledTask
+from pydantic import ValidationError
 
 from eylo.common.database import start_transaction
 from eylo.durable_runtime import PlatformDurableRuntime, run_with_durable_heartbeat
@@ -17,7 +18,10 @@ from eylo.sor.runtime.adapters import (
 )
 from eylo.sor.runtime.projection import project_source_record
 from eylo.sor.runtime.registry import SorRegistry
-from eylo.sor.runtime.serialization import json_safe_payload
+from eylo.sor.runtime.serialization import (
+    decode_external_record,
+    encode_external_record,
+)
 from eylo.sor.runtime.sync import spawn_sor_sync_run
 from eylo.sor.runtime.webhook_definition import (
     SOR_WEBHOOK_SOURCE_STATES,
@@ -33,7 +37,6 @@ from eylo.sor.shared.contracts import (
     SorChangeStrategy,
     SorExternalRecord,
     SorExternalRecordNotFound,
-    SorSourcePayload,
     SorSourceState,
     SorSyncRunKind,
     SorWebhookReceiptState,
@@ -285,7 +288,7 @@ class SorWebhookWorkflow:
                     error=error,
                 )
                 return True
-            record = _decode_external_record(encoded)
+            record = decode_external_record(encoded)
             async with start_transaction() as session:
                 repository = SorRepository(session)
                 source = await repository.get_source(
@@ -396,7 +399,7 @@ async def _fetch_record(
         vendor_object_key=vendor_object_key,
         external_id=external_id,
     )
-    return _encode_external_record(record)
+    return encode_external_record(record)
 
 
 async def _tombstone_signal(
@@ -459,6 +462,8 @@ async def _handle_failure(
 
 
 def _classify_failure(error: Exception) -> tuple[str, str, bool]:
+    if isinstance(error, ValidationError):
+        error = SorProjectionError("SOR adapter returned an invalid typed contract.")
     if isinstance(error, SorAdapterUnavailableError):
         return error.error_code, str(error), error.requires_reauthorization
     if isinstance(
@@ -502,68 +507,6 @@ def _decode_signals(value: object) -> tuple[SorWebhookSignal, ...]:
             )
         )
     return tuple(signals)
-
-
-def _encode_external_record(record: SorExternalRecord) -> dict[str, Any]:
-    if not isinstance(record, SorExternalRecord):
-        raise SorProjectionError("SOR adapter returned an invalid source record.")
-    return {
-        "vendor_object_key": record.vendor_object_key,
-        "external_id": record.external_id,
-        "payload": json_safe_payload(record.payload),
-        "source_created_at": _datetime_value(record.source_created_at),
-        "source_updated_at": _datetime_value(record.source_updated_at),
-        "source_revision": record.source_revision,
-        "source_url": record.source_url,
-    }
-
-
-def _decode_external_record(raw: object) -> SorExternalRecord:
-    if not isinstance(raw, dict) or set(raw) != {
-        "vendor_object_key",
-        "external_id",
-        "payload",
-        "source_created_at",
-        "source_updated_at",
-        "source_revision",
-        "source_url",
-    }:
-        raise SorProjectionError("Durable SOR source record is malformed.")
-    if not isinstance(raw["payload"], dict):
-        raise SorProjectionError("Durable SOR source payload is malformed.")
-    return SorExternalRecord(
-        vendor_object_key=_required_string(raw["vendor_object_key"]),
-        external_id=_required_string(raw["external_id"]),
-        payload=SorSourcePayload.from_mapping(raw["payload"]),
-        source_created_at=_parse_datetime(raw["source_created_at"]),
-        source_updated_at=_parse_datetime(raw["source_updated_at"]),
-        source_revision=_optional_string(raw["source_revision"]),
-        source_url=_optional_string(raw["source_url"]),
-    )
-
-
-def _datetime_value(value: datetime | None) -> str | None:
-    if value is None:
-        return None
-    if value.tzinfo is None or value.utcoffset() is None:
-        raise SorProjectionError("SOR source timestamps must include a timezone.")
-    return value.isoformat()
-
-
-def _parse_datetime(value: object) -> datetime | None:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise SorProjectionError("Durable SOR source timestamp is malformed.")
-    try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError as error:
-        raise SorProjectionError(
-            "Durable SOR source timestamp is malformed."
-        ) from error
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        raise SorProjectionError("Durable SOR source timestamp lacks a timezone.")
-    return parsed
 
 
 def _required_string(value: object) -> str:

@@ -35,16 +35,20 @@ from eylo.common.outbound import (
 from eylo.sockets.telephony.base import (
     BaseTelephonyService,
     CallMetadata,
+    CarrierMediaEvent,
     InboundMediaMessage,
     OutboundMediaMessage,
     TelephonyConfig,
     TelephonyControlAccepted,
+    TelephonyControlFailureCode,
+    TelephonyControlOperation,
     TelephonyControlResult,
     TelephonyControlUnknown,
     TelephonyControlUnsupported,
     TelephonyMessageParser,
     TelephonyOperationCapabilities,
     TelephonyOperationProfile,
+    TelephonyOperationSupport,
     TelephonyProvider,
     classify_control_failure,
     classify_provider_failure,
@@ -135,7 +139,7 @@ class PlivoMessageParser(TelephonyMessageParser):
             return None
 
         return InboundMediaMessage(
-            event="media",
+            event=CarrierMediaEvent.MEDIA,
             payload=payload,
             timestamp=media_data.get("timestamp", ""),
             track=media_data.get("track", "inbound"),
@@ -548,9 +552,13 @@ class PlivoService(BaseTelephonyService):
             return TelephonyControlAccepted()
         except TimeoutError:
             logger.warning("Plivo call end outcome is unconfirmed")
-            return TelephonyControlUnknown(failure_code="call_end_unconfirmed")
+            return TelephonyControlUnknown(
+                failure_code=TelephonyControlFailureCode.END_UNCONFIRMED
+            )
         except Exception as error:  # noqa: BLE001 - SDK failure taxonomy
-            return classify_control_failure(error, operation="call_end")
+            return classify_control_failure(
+                error, operation=TelephonyControlOperation.END
+            )
 
     async def transfer_call(
         self,
@@ -559,7 +567,9 @@ class PlivoService(BaseTelephonyService):
     ) -> TelephonyControlResult:
         """Return explicit unsupported until Eylo hosts a signed answer URL."""
         del call_sid, to_number
-        return TelephonyControlUnsupported(failure_code="call_transfer_unsupported")
+        return TelephonyControlUnsupported(
+            failure_code=TelephonyControlFailureCode.TRANSFER_UNSUPPORTED
+        )
 
     async def send_dtmf(
         self,
@@ -596,9 +606,13 @@ class PlivoService(BaseTelephonyService):
             return TelephonyControlAccepted()
         except TimeoutError:
             logger.warning("Plivo DTMF outcome is unconfirmed")
-            return TelephonyControlUnknown(failure_code="call_dtmf_unconfirmed")
+            return TelephonyControlUnknown(
+                failure_code=TelephonyControlFailureCode.DTMF_UNCONFIRMED
+            )
         except Exception as error:  # noqa: BLE001 - SDK failure taxonomy
-            return classify_control_failure(error, operation="call_dtmf")
+            return classify_control_failure(
+                error, operation=TelephonyControlOperation.DTMF
+            )
 
     def outbound_call_profile(self) -> TelephonyOperationProfile:
         return TelephonyOperationProfile(
@@ -606,7 +620,7 @@ class PlivoService(BaseTelephonyService):
             transport_kind=OutboundTransportKind.PROVIDER_SDK,
             destination_origin="https://api.plivo.com",
             capabilities=TelephonyOperationCapabilities(
-                provider_idempotency=False,
-                reconciliation=False,
+                provider_idempotency=TelephonyOperationSupport.UNSUPPORTED,
+                reconciliation=TelephonyOperationSupport.UNSUPPORTED,
             ),
         )

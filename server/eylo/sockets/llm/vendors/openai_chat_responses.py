@@ -12,6 +12,7 @@ from eylo.sockets.llm.schemas import (
     LLMDeltaKind,
     LLMResponse,
     LLMResponseMetadata,
+    LLMStopReason,
     LLMTextBlock,
     LLMTextContent,
     LLMTextDelta,
@@ -65,10 +66,10 @@ class OpenAIChatResponseMetadata(BaseModel):
 
 
 _STOP_REASONS = {
-    OpenAIChatFinishReason.STOP: "end_turn",
-    OpenAIChatFinishReason.LENGTH: "max_tokens",
-    OpenAIChatFinishReason.TOOL_CALLS: "tool_use",
-    OpenAIChatFinishReason.CONTENT_FILTER: "content_filter",
+    OpenAIChatFinishReason.STOP: LLMStopReason.END_TURN,
+    OpenAIChatFinishReason.LENGTH: LLMStopReason.MAX_TOKENS,
+    OpenAIChatFinishReason.TOOL_CALLS: LLMStopReason.TOOL_USE,
+    OpenAIChatFinishReason.CONTENT_FILTER: LLMStopReason.CONTENT_FILTER,
 }
 
 

@@ -16,9 +16,11 @@ from pydantic import JsonValue, ValidationError
 
 from eylo.common.http_egress import (
     HttpDestinationPolicy,
+    HttpEgressErrorCode,
     HttpEgressPolicyError,
     HttpEgressRequest,
     HttpEgressResponse,
+    HttpMethod,
     HttpOrigin,
     HttpRoutePolicy,
     OriginBoundHeaders,
@@ -74,7 +76,12 @@ _DELIVERY_CAPABILITIES = EmailDeliveryCapabilities(
     idempotent_send=EmailCapabilitySupport.UNSUPPORTED,
     reconciliation=EmailCapabilitySupport.UNSUPPORTED,
 )
-_DNS_FAILURES = frozenset({"dns_resolution_empty", "dns_resolution_failed"})
+_DNS_FAILURES = frozenset(
+    {
+        HttpEgressErrorCode.DNS_RESOLUTION_EMPTY,
+        HttpEgressErrorCode.DNS_RESOLUTION_FAILED,
+    }
+)
 
 
 class SendGridFailureCode(StrEnum):
@@ -118,7 +125,7 @@ class SendGridAdapter(EmailVendorAdapter):
             allow_nan=False,
         ).encode("utf-8")
         request = HttpEgressRequest(
-            method="POST",
+            method=HttpMethod.POST,
             url=_MAIL_SEND_URL,
             policy=HttpDestinationPolicy(
                 primary=HttpRoutePolicy(
@@ -166,13 +173,13 @@ class SendGridAdapter(EmailVendorAdapter):
                 return OutboundSendRetryable(
                     failure_code=SendGridFailureCode.DNS_UNAVAILABLE
                 )
-            if error.code == "transport_failed":
+            if error.code == HttpEgressErrorCode.TRANSPORT_FAILED:
                 return OutboundSendUnknown(
                     failure_code=SendGridFailureCode.TRANSPORT_UNCONFIRMED
                 )
             if error.code in {
-                "response_body_too_large",
-                "response_headers_too_large",
+                HttpEgressErrorCode.RESPONSE_BODY_TOO_LARGE,
+                HttpEgressErrorCode.RESPONSE_HEADERS_TOO_LARGE,
             }:
                 return OutboundSendUnknown(
                     failure_code=SendGridFailureCode.RESPONSE_UNCONFIRMED

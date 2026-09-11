@@ -14,11 +14,11 @@ import json
 import logging
 import math
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 from functools import lru_cache
 from typing import List
 
 import tiktoken
+from pydantic import BaseModel, ConfigDict, Field
 
 from eylo.common.contracts.llm_catalog import LLMModels, LLMProviders
 from eylo.modules.conversations.schemas.conversations import ConversationContext
@@ -50,13 +50,14 @@ def _count_local_tokens(text: str) -> int:
     return max(encoded_tokens, math.ceil(len(text) / 3))
 
 
-@dataclass(frozen=True, slots=True)
-class ContextTokenCount:
+class ContextTokenCount(BaseModel):
     """Component estimates with one derived total; never sum the total twice."""
 
-    system_tokens: int
-    message_tokens: int
-    tool_tokens: int
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+    system_tokens: int = Field(ge=0)
+    message_tokens: int = Field(ge=0)
+    tool_tokens: int = Field(ge=0)
 
     @property
     def total_tokens(self) -> int:

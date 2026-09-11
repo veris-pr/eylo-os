@@ -43,6 +43,13 @@ SpeechOption = Annotated[SpeechOptionState, BeforeValidator(_option_state)]
 SpeechText = Annotated[StrictStr, Field(min_length=1, pattern=r"\S")]
 
 
+class SpeechDiarizationMode(str, Enum):
+    """Named single-stream speaker attribution; channel modes need another transport."""
+
+    NONE = "none"
+    SPEAKER = "speaker"
+
+
 class _SpeechValue(BaseModel):
     """Revalidate copied inputs; never coerce numbers/booleans into text."""
 
@@ -87,7 +94,9 @@ class STTInferenceConfig(_SpeechValue):
     enable_partials: SpeechOption | None = None
     enable_entities: SpeechOption | None = None
     max_delay: StrictFloat | None = Field(default=None, ge=0)
-    diarization: SpeechText | None = None
+    # Onboarding already stores a toggle; retain its boolean JSON through
+    # SpeechOption while also accepting the existing named-mode API input.
+    diarization: SpeechOption | SpeechDiarizationMode | None = None
     custom_vocabulary: tuple[SpeechText, ...] | None = None
 
 

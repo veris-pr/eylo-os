@@ -5,17 +5,18 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
-from dataclasses import dataclass, field
-from typing import Any, TypeVar, cast
+from typing import Any, Self, TypeVar, cast
 from uuid import UUID
 
 from absurd_sdk import (
-    AbsurdHooks,
     AsyncAbsurd,
     AsyncTaskContext,
     CancellationPolicy,
     RetryStrategy,
+    TaskContext,
 )
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic.json_schema import SkipJsonSchema
 from sqlalchemy.engine import make_url
 
 from eylo.common.config import settings
@@ -30,10 +31,6 @@ DURABLE_RETRY_STRATEGY: RetryStrategy = {
 }
 # Explicit JSON nulls disable both automatic limits. Product state owns waits
 # and cancellation policy; the engine must not invent a wall-clock deadline.
-DURABLE_CANCELLATION_POLICY = cast(
-    CancellationPolicy,
-    {"max_duration": None, "max_delay": None},
-)
 DURABLE_CLAIM_TIMEOUT_SECONDS = 120
 DURABLE_HEARTBEAT_INTERVAL_SECONDS = 30
 DURABLE_WORKER_CONCURRENCY = 4
@@ -54,18 +51,51 @@ class DurableRuntimeConfigurationError(Exception):
     """Required PostgreSQL/Absurd wiring is absent or internally inconsistent."""
 
 
-@dataclass(frozen=True, slots=True)
-class AbsurdRuntimeConfig:
+class DurableCancellationPolicy(BaseModel):
+    """Explicit nullable engine limits; product waits have no automatic deadline."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+    max_duration: int | None = Field(default=None, ge=1)
+    max_delay: int | None = Field(default=None, ge=1)
+
+    @property
+    def has_automatic_timeout(self) -> bool:
+        return self.max_duration is not None or self.max_delay is not None
+
+    def to_sdk(self) -> CancellationPolicy:
+        """Preserve explicit nulls through Absurd 0.5.0's narrower annotation."""
+        # The SDK normalizer and SQL accept null, but CancellationPolicy omits it.
+        # Keep this version-specific exception at the validated SDK boundary.
+        return cast(
+            CancellationPolicy,
+            {"max_duration": self.max_duration, "max_delay": self.max_delay},
+        )
+
+
+DURABLE_CANCELLATION_POLICY = DurableCancellationPolicy()
+
+
+class AbsurdRuntimeConfig(BaseModel):
     """Every engine and worker option; concurrency means independent pollers."""
 
-    database_url: str = field(repr=False)
+    model_config = ConfigDict(
+        frozen=True,
+        strict=True,
+        extra="forbid",
+        hide_input_in_errors=True,
+        allow_inf_nan=False,
+    )
+
+    database_url: str = Field(repr=False, exclude=True)
     queue_name: str = DURABLE_QUEUE
     max_attempts: int = DURABLE_MAX_ATTEMPTS
     claim_timeout_seconds: int = DURABLE_CLAIM_TIMEOUT_SECONDS
     worker_concurrency: int = DURABLE_WORKER_CONCURRENCY
     poll_interval_seconds: float = DURABLE_POLL_INTERVAL_SECONDS
 
-    def __post_init__(self) -> None:
+    @model_validator(mode="after")
+    def _validate_runtime(self) -> Self:
         try:
             url = make_url(self.database_url)
         except Exception as error:
@@ -90,6 +120,7 @@ class AbsurdRuntimeConfig:
             raise DurableRuntimeConfigurationError(
                 "Durable worker options must be positive."
             )
+        return self
 
     @classmethod
     def from_platform_settings(cls) -> AbsurdRuntimeConfig:
@@ -106,10 +137,10 @@ class AbsurdRuntimeConfig:
         return cls(database_url=absurd_url)
 
     def retry_strategy(self) -> RetryStrategy:
-        return dict(DURABLE_RETRY_STRATEGY)  # type: ignore[return-value]
+        return DURABLE_RETRY_STRATEGY.copy()
 
-    def cancellation_policy(self) -> CancellationPolicy:
-        return dict(DURABLE_CANCELLATION_POLICY)  # type: ignore[return-value]
+    def cancellation_policy(self) -> DurableCancellationPolicy:
+        return DURABLE_CANCELLATION_POLICY
 
 
 class PlatformDurableRuntime:
@@ -127,18 +158,19 @@ class PlatformDurableRuntime:
             self.config.database_url,
             queue_name=self.config.queue_name,
             default_max_attempts=self.config.max_attempts,
-            hooks=cast(
-                AbsurdHooks,
-                {"wrap_task_execution": self._execute_with_claim_heartbeat},
-            ),
+            hooks={"wrap_task_execution": self._execute_with_claim_heartbeat},
         )
 
     async def _execute_with_claim_heartbeat(
         self,
-        context: AsyncTaskContext,
+        context: TaskContext | AsyncTaskContext,
         execute: Callable[[], Awaitable[Any]],
     ) -> Any:
         """Renew the claim for the full handler, including code between steps."""
+        if not isinstance(context, AsyncTaskContext):
+            raise DurableRuntimeConfigurationError(
+                "Durable execution requires an asynchronous task context."
+            )
         interval_seconds = max(
             1,
             min(
@@ -163,7 +195,7 @@ class PlatformDurableRuntime:
         name: str,
         handler: DurableTaskHandler,
         max_attempts: int | None = None,
-        cancellation: CancellationPolicy | None = None,
+        cancellation: DurableCancellationPolicy | None = None,
     ) -> None:
         """Register one named workflow once on this shared runtime."""
         name = name.strip()
@@ -175,7 +207,7 @@ class PlatformDurableRuntime:
             raise DurableRuntimeConfigurationError(
                 f"Durable workflow {name} is already registered."
             )
-        attempts = max_attempts or self.config.max_attempts
+        attempts = self.config.max_attempts if max_attempts is None else max_attempts
         if attempts < 1:
             raise DurableRuntimeConfigurationError(
                 "Durable workflow attempts must be positive."
@@ -184,10 +216,7 @@ class PlatformDurableRuntime:
             name=name,
             handler=handler,
             max_attempts=attempts,
-            cancellation=cast(
-                CancellationPolicy,
-                dict(cancellation or self.config.cancellation_policy()),
-            ),
+            cancellation=cancellation or self.config.cancellation_policy(),
         )
         self._register_on(self._app, registration)
         self._registrations[name] = registration
@@ -202,10 +231,7 @@ class PlatformDurableRuntime:
             registration.name,
             queue=self.config.queue_name,
             default_max_attempts=registration.max_attempts,
-            default_cancellation=cast(
-                CancellationPolicy,
-                dict(registration.cancellation),
-            ),
+            default_cancellation=registration.cancellation.to_sdk(),
         )
         decorator(registration.handler)
 
@@ -225,14 +251,19 @@ class PlatformDurableRuntime:
             raise DurableRuntimeConfigurationError(
                 "Durable workflow name and idempotency key must be explicit."
             )
+        attempts = self.config.max_attempts if max_attempts is None else max_attempts
+        if attempts < 1:
+            raise DurableRuntimeConfigurationError(
+                "Durable workflow attempts must be positive."
+            )
         spawn = await self._app.spawn(
             name,
             params,
-            max_attempts=max_attempts or self.config.max_attempts,
+            max_attempts=attempts,
             retry_strategy=self.config.retry_strategy(),
             headers={},
             queue=self.config.queue_name,
-            cancellation=self.config.cancellation_policy(),
+            cancellation=self.config.cancellation_policy().to_sdk(),
             idempotency_key=idempotency_key,
         )
         try:
@@ -313,14 +344,17 @@ class PlatformDurableRuntime:
         await self._app.close()
 
 
-@dataclass(frozen=True, slots=True)
-class DurableTaskRegistration:
+class DurableTaskRegistration(BaseModel):
     """Replayable public-SDK task registration for each worker lane."""
 
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
     name: str
-    handler: DurableTaskHandler
-    max_attempts: int
-    cancellation: CancellationPolicy
+    handler: SkipJsonSchema[DurableTaskHandler] = Field(repr=False, exclude=True)
+    max_attempts: int = Field(ge=1)
+    cancellation: DurableCancellationPolicy
 
 
 async def run_with_durable_heartbeat(
@@ -387,6 +421,7 @@ __all__ = [
     "DURABLE_MAX_ATTEMPTS",
     "DURABLE_QUEUE",
     "DURABLE_RETRY_STRATEGY",
+    "DurableCancellationPolicy",
     "DurableRuntimeConfigurationError",
     "DurableTaskHandler",
     "PlatformDurableRuntime",

@@ -524,21 +524,35 @@ entries cannot bypass validation as an unknown entry.
 - Resolve/ignore confirm the returned issue ID and status. A null body, wrong
   ID or unchanged status is a failure. Results no longer assert future reopening,
   notification or retention behavior that the acknowledgement cannot prove.
-- Existing ID-only tools retain the currently served legacy issue routes;
-  project issue listing is deprecated by Sentry. The
-  [current route source](https://github.com/getsentry/sentry/blob/master/src/sentry/api/urls.py)
-  still serves these paths. Migrating to organization-scoped inputs is a separate
-  compatibility change; this implementation does not guess an organization.
-  Native issue/event shapes follow the
+- All four tools use explicit organization-scoped routes. `list_issues` sends a
+  required project slug to the
+  [organization issues endpoint](https://docs.sentry.io/api/events/list-an-organizations-issues/),
+  replacing the deprecated project issue-list route. Missing/mismatched response
+  project identities are refused; the all-projects sentinel is not accepted.
+  `groupStatsPeriod=14d` selects chart statistics, not a 14-day issue-age filter.
+  Detail, resolve and ignore now require `organization` alongside `issue_id`;
+  old ID-only inputs fail validation before credential resolution or any send.
+  Results carry the organization for follow-up calls. Tool names and bindings
+  remain unchanged; no organization is guessed and no DB migration is needed.
+  Native issue/event shapes and organization-scoped routes follow the
   [issue](https://docs.sentry.io/api/events/retrieve-an-issue/) and
   [event](https://docs.sentry.io/api/events/retrieve-an-issue-event/) references;
-  the [update handler](https://github.com/getsentry/sentry/blob/master/src/sentry/issues/endpoints/group_details.py)
-  returns the updated issue.
+  [update route](https://docs.sentry.io/api/events/update-an-issue/) changes only
+  the requested status. API-key authorization uses exactly one Bearer separator.
 
 PagerDuty status/urgency and Sentry state inputs retain case/whitespace
 normalization. Limits and offsets require integers rather than booleans.
 These changes do not add grants, vendor writes or alternate receipt ownership.
 Response-validation failure does not authorize a repeated mutation.
+
+API-key prefixes are exact vendor-owned wire fragments. `ApiKeyPlacement` uses
+`Bearer `, `Token token=`, or an empty prefix; the credential builder appends the
+key without inserting a separator. This preserves
+[PagerDuty's documented header](https://github.com/PagerDuty/api-schema/blob/main/reference/REST/openapiv3.json)
+and produces one space for Bearer declarations. Multiple Bearer spaces are allowed
+by [RFC 6750](https://www.rfc-editor.org/rfc/rfc6750#section-2.1); normalization is
+not evidence that a vendor previously rejected the token. Origin-bound placement,
+secret exclusion from snapshots, and malformed credential refusal remain enforced.
 
 ### Existing typed choices
 
@@ -699,8 +713,18 @@ with an organization's configured GitHub installation.
 
 The six curated GitLab tools use vendor-owned REST v4 models, separate from SOR
 types. Consumed nested records, lists, resource IDs and predicates are validated;
-raw vendor diagnostics are not echoed. The instance URL still supplies the
-origin and `/api/v4` prefix; no self-managed GitLab release is inferred or pinned.
+raw vendor diagnostics are not echoed. The instance URL supplies the origin and
+`/api` root. REST operations use `/v4`; a fixed `/graphql` read resolves named
+projects. No self-managed GitLab release is inferred or pinned.
+
+Use a positive numeric ID or literal `group/subgroup/project` path, not a full
+URL or pre-encoded value. Names resolve once per invocation via
+`project(fullPath: ...)`, then REST operations use the validated numeric ID.
+Numeric inputs skip this lookup. Missing/inaccessible projects produce
+`project_unavailable`, not a successful empty list. Tokens need `read_api` for
+reads or `api` for writes. PRIVATE-TOKEN placement is unchanged.
+[GraphQL identity/access](https://docs.gitlab.com/api/graphql/),
+[token headers](https://docs.gitlab.com/user/profile/personal_access_tokens/).
 
 - Issue creation resolves up to 20 supplied usernames through exact username
   lookup before writing. Repeated names resolve once, case-insensitively. Missing,
@@ -713,8 +737,9 @@ origin and `/api/v4` prefix; no self-managed GitLab release is inferred or pinne
   activity from the first 20 notes ordered oldest-first; it does not fetch the
   complete conversation. Descriptions/comment bodies retain the 6,000-character
   clipping bound. Dates and explicit nulls are preserved.
-- Detail replies must match the requested IID and, for numeric project inputs,
-  project ID. A created comment uses its returned issue identity after checking
+- Detail replies must match the requested IID and resolved project ID, including
+  named inputs. Lists and creation replies also check the project ID.
+  A created comment uses its returned issue identity after checking
   it, rather than treating the requested IID as confirmation of success.
   Missing change lists fail; they do not become zero-change summaries.
 - Merge-request detail retains the existing v4 `/changes` endpoint, deprecated
@@ -731,8 +756,10 @@ Authorities: [issues](https://docs.gitlab.com/api/issues/),
 [users](https://docs.gitlab.com/api/users/), [notes](https://docs.gitlab.com/api/notes/),
 [merge requests](https://docs.gitlab.com/api/merge_requests/), and
 [v4 deprecations](https://docs.gitlab.com/api/rest/deprecations/).
-Local probes and public examples are not live GitLab acceptance. The named-project
-transport limitation below remains open.
+All six executor paths passed with substituted HTTP/auth/receipt storage. Four
+read tools also passed against a public GitLab project through real guarded HTTPS,
+including named-project lookup. Authenticated installation and native mutation
+acceptance remain open; public reads do not establish token permissions.
 
 ### Jira request and response contracts
 
@@ -966,15 +993,6 @@ Authorities: [migration guide](https://pipedrive.readme.io/docs/pipedrive-api-v2
 [v1 OpenAPI](https://developers.pipedrive.com/docs/api/v1/openapi.yaml),
 [deals](https://developers.pipedrive.com/docs/api/v1/Deals) and
 [notes](https://developers.pipedrive.com/docs/api/v1/Notes).
-
-## Known transport limitation
-
-GitLab project paths such as `group/project` currently fail with
-`vendor_request_invalid`: the adapter encodes the slash as GitLab requires, but
-the shared HTTP guard refuses encoded path separators. Numeric project IDs pass
-that request validation. This affects the existing named-project path across
-GitLab tools, not just the new query enums. Until the transport contract is
-corrected, use the numeric project ID; do not remove the shared path guard.
 
 ## Security boundary
 

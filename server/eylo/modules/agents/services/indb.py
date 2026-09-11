@@ -3,7 +3,7 @@
 from typing import List, Optional
 from uuid import UUID
 
-from sqlalchemy import or_
+from sqlalchemy import ColumnElement, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.revisions import DefinitionHeaderState, DefinitionLifecycle
@@ -467,7 +467,7 @@ class AgentService(EyloBaseService[AgentInDb, AgentsModel]):
         self,
         organization_id: UUID,
         filters: AgentListQuery | None,
-    ) -> list:
+    ) -> list[ColumnElement[bool]]:
         model = self.repository.model
         query_filters = [
             model.organization_id == organization_id,

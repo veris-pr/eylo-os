@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 
 from eylo.common.config import settings
@@ -28,6 +29,8 @@ from eylo.modules.conversations.schemas.messages import (
     MessageInDb,
     MessageKind,
 )
+from eylo.modules.conversations.schemas.run_context import ConversationRunContext
+from eylo.modules.parallel_agents.schemas import ParallelTaskManifest
 from eylo.pipelines.agent_run_heartbeat import run_with_agent_heartbeat
 from eylo.pipelines.parallel_agents import ParallelTaskAgentRunExecutor
 
@@ -182,8 +185,20 @@ async def _load_origin_message(claim: AgentRunExecutionClaim) -> MessageInDb:
             )
         message = MessageInDb.model_validate(origin)
 
-    expected_conversation_id = claim.context_manifest.get("conversation_id")
-    if expected_conversation_id != str(message.conversation_id):
+    try:
+        encoded_context = json.dumps(claim.context_manifest, allow_nan=False)
+        if (
+            message.kind == MessageKind.SYSTEM
+            and message.content_kind == MessageContentKind.TASK
+        ):
+            run_context = ParallelTaskManifest.model_validate_json(encoded_context)
+        else:
+            run_context = ConversationRunContext.model_validate_json(encoded_context)
+    except ValueError as error:
+        raise ConversationAgentRunInvalid(
+            "Conversation context is invalid."
+        ) from error
+    if run_context.conversation_id != message.conversation_id:
         raise ConversationAgentRunInvalid(
             "The AgentRun context no longer matches its origin conversation."
         )

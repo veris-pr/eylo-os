@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
 from functools import lru_cache
-from typing import Any, Callable
+from typing import Never
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
+from pydantic.json_schema import SkipJsonSchema
 
 from eylo.common.contracts.tool_metadata import ToolFunctionMetadata, set_tool_metadata
 from eylo.sor.knowledge.contracts import KnowledgeToolName
@@ -126,13 +127,18 @@ class SorMutationToolInput(BaseModel):
     )
 
 
-@dataclass(frozen=True, slots=True)
-class SorToolDeclaration:
+class SorToolDeclaration(BaseModel):
     """One unique model-visible tool and the schema used to materialize it."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     profile: SorProfile
     spec: SorToolSpec
-    function: Callable[..., Any]
+    function: SkipJsonSchema[Callable[..., Awaitable[Never]]] = Field(
+        repr=False, exclude=True
+    )
 
 
 @lru_cache(maxsize=1)
@@ -162,8 +168,8 @@ def resolve_sor_tool(tool_name: str) -> tuple[SorProfile, SorToolSpec] | None:
 def _declaration_function(
     profile: SorProfile,
     spec: SorToolSpec,
-) -> Callable[..., Any]:
-    async def execute_through_sor_pipeline(**_kwargs: Any) -> dict[str, object]:
+) -> Callable[..., Awaitable[Never]]:
+    async def execute_through_sor_pipeline(**_kwargs: object) -> Never:
         raise RuntimeError("SOR tools require platform SOR dispatch.")
 
     execute_through_sor_pipeline.__name__ = spec.name

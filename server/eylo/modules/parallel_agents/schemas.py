@@ -73,12 +73,20 @@ class TaskDispatchStatus(str, Enum):
     ERROR = "error"
 
 
+class ParallelTaskManifestKind(str, Enum):
+    """Persisted discriminator separating worker tasks from user turns."""
+
+    TASK = "parallel_task"
+
+
 class ParallelTaskManifest(BaseModel):
     """Pinned task context serialized into the generic AgentRun manifest."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
-    kind: Literal["parallel_task"] = "parallel_task"
+    kind: Literal[ParallelTaskManifestKind.TASK] = ParallelTaskManifestKind.TASK
     conversation_id: UUID
     task_type: ParallelTaskKind
     source_agent_id: UUID

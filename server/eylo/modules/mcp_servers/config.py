@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Literal
 from urllib.parse import urlsplit
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    InstanceOf,
+    JsonValue,
+    ValidationError,
+)
+from pydantic.json_schema import SkipJsonSchema
 
 from eylo.common.http_egress import (
     HttpEgressPolicyError,
@@ -49,18 +56,27 @@ class MCPServerStorageConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    def to_storage(self) -> dict[str, Any]:
+    def to_storage(self) -> dict[str, JsonValue]:
         return {MCP_SERVER_CONFIG_KEY: self.model_dump(mode="json")}
 
 
-@dataclass(frozen=True, slots=True)
-class ResolvedMCPServerConfig:
-    """Execution-only MCP endpoint and exact-origin secret headers."""
+class ResolvedMCPServerConfig(BaseModel):
+    """Execution config; preserve validated egress identities, exclude secrets.
+
+    Generic snapshots are not a credential transport. Only the encrypted storage
+    config can be persisted and resolved again for a tenant/server/revision.
+    """
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     url: str
-    origin: HttpOrigin
-    origin_headers: OriginBoundHeaders = field(repr=False)
-    protocol_version: str = MCP_PROTOCOL_VERSION
+    origin: SkipJsonSchema[InstanceOf[HttpOrigin]] = Field(exclude=True)
+    origin_headers: SkipJsonSchema[InstanceOf[OriginBoundHeaders]] = Field(
+        repr=False, exclude=True
+    )
+    protocol_version: Literal["2025-06-18"] = MCP_PROTOCOL_VERSION
 
 
 def create_mcp_server_config(

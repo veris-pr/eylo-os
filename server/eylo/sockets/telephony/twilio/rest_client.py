@@ -15,6 +15,8 @@ from eylo.common.outbound import (
 )
 from eylo.sockets.telephony.base import (
     TelephonyControlAccepted,
+    TelephonyControlFailureCode,
+    TelephonyControlOperation,
     TelephonyControlResult,
     TelephonyControlUnknown,
     TelephonyOperationProfile,
@@ -140,13 +142,15 @@ class TwilioRestClient:
                 if resp.status_code >= 300:
                     return classify_control_failure(
                         HTTPException(status_code=resp.status_code),
-                        operation="call_end",
+                        operation=TelephonyControlOperation.END,
                     )
 
                 return TelephonyControlAccepted(status_code=resp.status_code)
             except httpx.RequestError:
                 logger.warning("Twilio call end outcome is unconfirmed")
-                return TelephonyControlUnknown(failure_code="call_end_unconfirmed")
+                return TelephonyControlUnknown(
+                    failure_code=TelephonyControlFailureCode.END_UNCONFIRMED
+                )
 
     async def transfer_call(
         self,
@@ -183,13 +187,15 @@ class TwilioRestClient:
                 if resp.status_code >= 300:
                     return classify_control_failure(
                         HTTPException(status_code=resp.status_code),
-                        operation="call_transfer",
+                        operation=TelephonyControlOperation.TRANSFER,
                     )
 
                 return TelephonyControlAccepted(status_code=resp.status_code)
             except httpx.RequestError:
                 logger.warning("Twilio call transfer outcome is unconfirmed")
-                return TelephonyControlUnknown(failure_code="call_transfer_unconfirmed")
+                return TelephonyControlUnknown(
+                    failure_code=TelephonyControlFailureCode.TRANSFER_UNCONFIRMED
+                )
 
     async def send_dtmf(
         self,
@@ -228,13 +234,15 @@ class TwilioRestClient:
                 if resp.status_code >= 300:
                     return classify_control_failure(
                         HTTPException(status_code=resp.status_code),
-                        operation="call_dtmf",
+                        operation=TelephonyControlOperation.DTMF,
                     )
 
                 return TelephonyControlAccepted(status_code=resp.status_code)
             except httpx.RequestError:
                 logger.warning("Twilio DTMF outcome is unconfirmed")
-                return TelephonyControlUnknown(failure_code="call_dtmf_unconfirmed")
+                return TelephonyControlUnknown(
+                    failure_code=TelephonyControlFailureCode.DTMF_UNCONFIRMED
+                )
 
     async def search_available_numbers(
         self,

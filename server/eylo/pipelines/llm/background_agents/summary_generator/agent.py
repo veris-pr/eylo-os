@@ -12,10 +12,10 @@ Trigger logic (see utils.context_management_trigger):
 """
 
 import logging
-from dataclasses import dataclass
 from uuid import UUID
 
 import arrow
+from pydantic import BaseModel, ConfigDict, Field
 
 from eylo.common.context_compaction import (
     ContextSummaryMetadata,
@@ -59,11 +59,16 @@ from .utils import (
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True, slots=True)
-class _CompactionSelection:
-    messages: tuple[MessageInDb, ...]
-    through: MessageInDb
-    previous_summary: MessageInDb | None
+class _CompactionSelection(BaseModel):
+    """Selected live messages and cursor; never serialize their private contents."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    messages: tuple[MessageInDb, ...] = Field(min_length=1, repr=False, exclude=True)
+    through: MessageInDb = Field(repr=False, exclude=True)
+    previous_summary: MessageInDb | None = Field(repr=False, exclude=True)
 
 
 @traced_agent("summary_generator")

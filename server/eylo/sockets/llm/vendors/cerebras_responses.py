@@ -18,6 +18,7 @@ from eylo.sockets.llm.schemas import (
     LLMDeltaKind,
     LLMResponse,
     LLMResponseMetadata,
+    LLMStopReason,
     LLMTextBlock,
     LLMTextContent,
     LLMTextDelta,
@@ -70,10 +71,10 @@ class CerebrasResponseMetadata(BaseModel):
 
 
 _STOP_REASONS = {
-    CerebrasFinishReason.STOP: "end_turn",
-    CerebrasFinishReason.LENGTH: "max_tokens",
-    CerebrasFinishReason.TOOL_CALLS: "tool_use",
-    CerebrasFinishReason.CONTENT_FILTER: "content_filter",
+    CerebrasFinishReason.STOP: LLMStopReason.END_TURN,
+    CerebrasFinishReason.LENGTH: LLMStopReason.MAX_TOKENS,
+    CerebrasFinishReason.TOOL_CALLS: LLMStopReason.TOOL_USE,
+    CerebrasFinishReason.CONTENT_FILTER: LLMStopReason.CONTENT_FILTER,
 }
 
 

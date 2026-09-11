@@ -9,11 +9,12 @@ import hmac
 import json
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from http import HTTPStatus
 from urllib.parse import quote, unquote, urlparse
+
+from pydantic import BaseModel, ConfigDict
 
 from eylo.modules.connections.domain import ConnectionAuthKind
 from eylo.sor.runtime.http import SorHttpTransport, SorJsonHttpClient, SorJsonResponse
@@ -50,6 +51,7 @@ from eylo.sor.shared.contracts import (
     SorWebhookSubscription,
     SorWebhookVerificationError,
 )
+from eylo.sor.shared.json_values import SorJsonValue, require_json_value
 from eylo.sor.ticketing.contracts import (
     TicketingAssignCommandPayload,
     TicketingComment,
@@ -128,12 +130,8 @@ _RELATIONSHIP_TARGETS = {
         SorRelationshipRole.PARENT: GitHubStream.ISSUES,
         SorRelationshipRole.CYCLE: GitHubStream.MILESTONES,
     },
-    GitHubStream.LABELS: {
-        SorRelationshipRole.PROJECT: GitHubStream.REPOSITORIES
-    },
-    GitHubStream.MILESTONES: {
-        SorRelationshipRole.PROJECT: GitHubStream.REPOSITORIES
-    },
+    GitHubStream.LABELS: {SorRelationshipRole.PROJECT: GitHubStream.REPOSITORIES},
+    GitHubStream.MILESTONES: {SorRelationshipRole.PROJECT: GitHubStream.REPOSITORIES},
     GitHubStream.COMMENTS: {
         SorRelationshipRole.ISSUE: GitHubStream.ISSUES,
         SorRelationshipRole.AUTHOR: GitHubStream.USERS,
@@ -221,7 +219,7 @@ GITHUB_MANIFEST = SorAdapterCapabilityManifest(
                 set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values()) - {stream_key}
             ),
             relationship_targets=SorRelationshipTargets(
-                _RELATIONSHIP_TARGETS.get(stream_key, {})
+                by_role=_RELATIONSHIP_TARGETS.get(stream_key, {}),
             ),
         )
         for stream_key, entity in _STREAM_ENTITY.items()
@@ -295,20 +293,41 @@ _SCHEMA_FIELDS = {
     GitHubStream.ISSUES: (
         _field("key", "Key", SorFieldDataType.TEXT, nullable=False),
         _field("title", "Title", SorFieldDataType.TEXT, nullable=False, writable=True),
-        _field("normalized_description", "Description", SorFieldDataType.TEXT, writable=True),
-        _field("source_description", "Source description", SorFieldDataType.BOUNDED_JSON),
+        _field(
+            "normalized_description",
+            "Description",
+            SorFieldDataType.TEXT,
+            writable=True,
+        ),
+        _field(
+            "source_description", "Source description", SorFieldDataType.BOUNDED_JSON
+        ),
         _field("issue_type", "Type", SorFieldDataType.TEXT),
         _field("native_status", "Source status", SorFieldDataType.TEXT),
         _field("normalized_status", "Normalized status", SorFieldDataType.ENUM),
         _field("priority", "Priority", SorFieldDataType.TEXT),
-        _field("project_external_id", "Repository", SorFieldDataType.REFERENCE, nullable=False),
+        _field(
+            "project_external_id",
+            "Repository",
+            SorFieldDataType.REFERENCE,
+            nullable=False,
+        ),
         _field("team_external_id", "Owner", SorFieldDataType.REFERENCE),
-        _field("assignee_external_id", "Assignee", SorFieldDataType.REFERENCE, writable=True),
+        _field(
+            "assignee_external_id",
+            "Assignee",
+            SorFieldDataType.REFERENCE,
+            writable=True,
+        ),
         _field("reporter_external_id", "Reporter", SorFieldDataType.REFERENCE),
         _field("estimate", "Estimate", SorFieldDataType.DECIMAL),
-        _field("label_external_ids", "Labels", SorFieldDataType.STRING_ARRAY, writable=True),
+        _field(
+            "label_external_ids", "Labels", SorFieldDataType.STRING_ARRAY, writable=True
+        ),
         _field("parent_external_id", "Parent issue", SorFieldDataType.REFERENCE),
-        _field("cycle_external_id", "Milestone", SorFieldDataType.REFERENCE, writable=True),
+        _field(
+            "cycle_external_id", "Milestone", SorFieldDataType.REFERENCE, writable=True
+        ),
         _field("due_date", "Due date", SorFieldDataType.DATE),
         _field("started_at", "Started at", SorFieldDataType.TIMESTAMP),
         _field("completed_at", "Completed at", SorFieldDataType.TIMESTAMP),
@@ -332,14 +351,24 @@ _SCHEMA_FIELDS = {
         _field("name", "Name", SorFieldDataType.TEXT, nullable=False),
         _field("description", "Description", SorFieldDataType.TEXT),
         _field("color", "Color", SorFieldDataType.TEXT),
-        _field("project_external_id", "Repository", SorFieldDataType.REFERENCE, nullable=False),
+        _field(
+            "project_external_id",
+            "Repository",
+            SorFieldDataType.REFERENCE,
+            nullable=False,
+        ),
         _field("parent_external_id", "Parent label", SorFieldDataType.REFERENCE),
         _field("is_group", "Group", SorFieldDataType.BOOLEAN, nullable=False),
     ),
     GitHubStream.MILESTONES: (
         _field("name", "Name", SorFieldDataType.TEXT, nullable=False),
         _field("number", "Number", SorFieldDataType.INTEGER, nullable=False),
-        _field("project_external_id", "Repository", SorFieldDataType.REFERENCE, nullable=False),
+        _field(
+            "project_external_id",
+            "Repository",
+            SorFieldDataType.REFERENCE,
+            nullable=False,
+        ),
         _field("description", "Description", SorFieldDataType.TEXT),
         _field("starts_at", "Starts at", SorFieldDataType.TIMESTAMP),
         _field("ends_at", "Due at", SorFieldDataType.TIMESTAMP),
@@ -347,7 +376,9 @@ _SCHEMA_FIELDS = {
         _field("active", "Active", SorFieldDataType.BOOLEAN),
     ),
     GitHubStream.COMMENTS: (
-        _field("issue_external_id", "Issue", SorFieldDataType.REFERENCE, nullable=False),
+        _field(
+            "issue_external_id", "Issue", SorFieldDataType.REFERENCE, nullable=False
+        ),
         _field("author_external_id", "Author", SorFieldDataType.REFERENCE),
         _field("normalized_text", "Comment", SorFieldDataType.TEXT, nullable=False),
         _field("source_body", "Source body", SorFieldDataType.BOUNDED_JSON),
@@ -381,8 +412,13 @@ _WORKFLOW_ROWS = (
 )
 
 
-@dataclass(frozen=True, slots=True)
-class _GitHubCursor:
+class _GitHubCursor(BaseModel):
+    """GitHub repository/page position owned by the vendor cursor codec."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
     floor: datetime | None
     repo_index: int
     page: int
@@ -2402,10 +2438,13 @@ def _string_tuple(value: object) -> tuple[str, ...]:
     )
 
 
-def _json_value(value: object) -> object | None:
-    if value is None or isinstance(value, (str, int, float, bool, list, dict)):
-        return value
-    raise _invalid_response("GitHub source value is not JSON compatible.")
+def _json_value(value: object) -> SorJsonValue:
+    try:
+        return require_json_value(value)
+    except ValueError as error:
+        raise _invalid_response(
+            "GitHub source value is not JSON compatible."
+        ) from error
 
 
 def _safe_github_url(value: object) -> str | None:

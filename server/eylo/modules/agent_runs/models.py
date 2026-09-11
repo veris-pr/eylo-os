@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
+from pydantic import JsonValue
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -204,7 +205,7 @@ class AgentRunModel(EyloOrganizationModel):
         UUID(as_uuid=True), nullable=True, index=True
     )
     session_context_digest: Mapped[str] = mapped_column(String(64), nullable=False)
-    context_manifest: Mapped[dict] = mapped_column(
+    context_manifest: Mapped[dict[str, JsonValue]] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
     idempotency_key: Mapped[str] = mapped_column(String(320), nullable=False)
@@ -222,7 +223,7 @@ class AgentRunModel(EyloOrganizationModel):
         _enum(AgentRunOutcome, "agent_run_outcome_enum"), nullable=True
     )
     goal: Mapped[str] = mapped_column(Text, nullable=False)
-    result: Mapped[dict | None] = mapped_column(
+    result: Mapped[dict[str, JsonValue] | None] = mapped_column(
         JSONB(none_as_null=True), nullable=True
     )
     outcome_reason: Mapped[str | None] = mapped_column(String(4000), nullable=True)

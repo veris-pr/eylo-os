@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select, text, update
 
 from eylo.common.repositories import BaseORMRepository
+from eylo.modules.voice_transcripts.constants import (
+    VoiceSegmentRole,
+    VoiceSpeechOutcome,
+)
 from eylo.modules.voice_transcripts.models import VoiceSegmentModel, VoiceSessionModel
 from eylo.modules.voice_transcripts.schemas.indb import (
     VoiceSegmentCreate,
@@ -16,15 +20,18 @@ from eylo.modules.voice_transcripts.schemas.indb import (
 )
 
 
-@dataclass(frozen=True, slots=True)
-class VoiceSegmentRollup:
-    segment_count: int
-    partial_segment_count: int
-    user_talk_time_ms: int | None
-    assistant_talk_time_ms: int | None
-    interruption_count: int
-    dtmf_count: int
-    transfer_count: int
+class VoiceSegmentRollup(BaseModel):
+    """Nonnegative aggregates; unknown talk duration stays absent rather than zero."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+    segment_count: int = Field(ge=0)
+    partial_segment_count: int = Field(ge=0)
+    user_talk_time_ms: int | None = Field(ge=0)
+    assistant_talk_time_ms: int | None = Field(ge=0)
+    interruption_count: int = Field(ge=0)
+    dtmf_count: int = Field(ge=0)
+    transfer_count: int = Field(ge=0)
 
 
 class VoiceSessionRepository(BaseORMRepository[VoiceSessionModel]):
@@ -266,19 +273,23 @@ class VoiceSegmentRepository(BaseORMRepository[VoiceSegmentModel]):
                 select(
                     func.count(),
                     func.count().filter(self.model.is_partial.is_(True)),
-                    func.count().filter(self.model.role == "user"),
+                    func.count().filter(self.model.role == VoiceSegmentRole.USER),
                     func.count(self.model.duration_ms).filter(
-                        self.model.role == "user"
-                    ),
-                    func.sum(self.model.duration_ms).filter(self.model.role == "user"),
-                    func.count().filter(self.model.role == "assistant"),
-                    func.count(self.model.duration_ms).filter(
-                        self.model.role == "assistant"
+                        self.model.role == VoiceSegmentRole.USER
                     ),
                     func.sum(self.model.duration_ms).filter(
-                        self.model.role == "assistant"
+                        self.model.role == VoiceSegmentRole.USER
                     ),
-                    func.count().filter(self.model.speech_outcome == "interrupted"),
+                    func.count().filter(self.model.role == VoiceSegmentRole.ASSISTANT),
+                    func.count(self.model.duration_ms).filter(
+                        self.model.role == VoiceSegmentRole.ASSISTANT
+                    ),
+                    func.sum(self.model.duration_ms).filter(
+                        self.model.role == VoiceSegmentRole.ASSISTANT
+                    ),
+                    func.count().filter(
+                        self.model.speech_outcome == VoiceSpeechOutcome.INTERRUPTED
+                    ),
                     func.count().filter(self.model.dtmf_digits.is_not(None)),
                     func.count().filter(self.model.transfer_to.is_not(None)),
                 )

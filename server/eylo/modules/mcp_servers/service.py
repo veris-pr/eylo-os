@@ -5,12 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass
-from dataclasses import field as dataclass_field
 from datetime import datetime, timezone
-from typing import Any
 from uuid import UUID, uuid4
 
+from pydantic import BaseModel, ConfigDict, Field, InstanceOf, JsonValue, TypeAdapter
+from pydantic.json_schema import SkipJsonSchema
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -69,6 +68,7 @@ _UNSUPPORTED_SCHEMA_KEYS = frozenset(
 )
 
 _SLUG_SAFE = re.compile(r"[^a-z0-9_]+")
+_JSON_OBJECT = TypeAdapter(dict[str, JsonValue])
 
 
 class MCPServerError(Exception):
@@ -79,24 +79,46 @@ class MCPServerNotFoundError(MCPServerError):
     """The requested MCP server is not visible in the organization."""
 
 
-@dataclass(frozen=True, slots=True)
-class MCPToolDefinition:
+class MCPDiscoveredTool(BaseModel):
+    """Module-owned discovery input; schema/effect policy stays in the service."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    name: str
+    description: str
+    input_schema: dict[str, JsonValue]
+    output_schema: dict[str, JsonValue] | None = None
+    annotations: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+class MCPToolDefinition(BaseModel):
+    """Validated definition ready for explicit tool-module persistence."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
     wire_id: str
     name: str
     display_name: str
     description: str
-    llm_config: dict[str, Any]
-    executor_config: dict[str, Any]
-    output_schema: dict[str, Any]
+    llm_config: PlatformTool
+    executor_config: MCPToolExecutorConfig
+    output_schema: dict[str, JsonValue]
     execution_mode: ToolExecutionMode
 
 
-@dataclass(frozen=True, slots=True)
-class MCPDiscoveryTarget:
+class MCPDiscoveryTarget(BaseModel):
     """Locked server revision and its execution-only decrypted config."""
 
-    server: MCPServerModel = dataclass_field(repr=False)
-    config: ResolvedMCPServerConfig = dataclass_field(repr=False)
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    server: SkipJsonSchema[InstanceOf[MCPServerModel]] = Field(repr=False, exclude=True)
+    config: ResolvedMCPServerConfig = Field(repr=False, exclude=True)
 
 
 def _slugify(value: str) -> str:
@@ -181,7 +203,7 @@ class MCPServerService:
         organization_id: UUID,
         target: MCPDiscoveryTarget,
         actor_id: UUID,
-        discovered: list[dict[str, Any]],
+        discovered: list[MCPDiscoveredTool],
     ) -> list[ToolModel]:
         """Atomically apply one complete successful `tools/list` result."""
         server = target.server
@@ -201,7 +223,9 @@ class MCPServerService:
                     headers=target.config.origin_headers.values,
                 )
             except (ProviderConfigError, SecretCipherError, ValueError):
-                raise MCPServerError("MCP server configuration is unavailable.") from None
+                raise MCPServerError(
+                    "MCP server configuration is unavailable."
+                ) from None
             self._edit_server(
                 server,
                 expected_draft_version=server.draft_version,
@@ -245,7 +269,9 @@ class MCPServerService:
                         display_name=definition.display_name,
                         description=definition.description,
                         llm_config=definition.llm_config,
-                        executor_config=definition.executor_config,
+                        executor_config=definition.executor_config.model_dump(
+                            mode="json"
+                        ),
                         output_schema=definition.output_schema,
                         execution_mode=definition.execution_mode,
                     )
@@ -262,21 +288,21 @@ class MCPServerService:
                 or row.lifecycle == DefinitionLifecycle.WITHDRAWN.value
                 or server_republished
             ):
-                update_values: dict[str, Any] = {
-                    "expected_draft_version": row.draft_version,
-                    "name": definition.name,
-                    "display_name": definition.display_name,
-                    "description": definition.description,
-                    "llm_config": definition.llm_config,
-                    "executor_config": definition.executor_config,
-                    "output_schema": definition.output_schema,
-                }
+                update = ToolUpdateSchema(
+                    expected_draft_version=row.draft_version,
+                    name=definition.name,
+                    display_name=definition.display_name,
+                    description=definition.description,
+                    llm_config=definition.llm_config,
+                    executor_config=definition.executor_config.model_dump(mode="json"),
+                    output_schema=definition.output_schema,
+                )
                 if definition.execution_mode is ToolExecutionMode.DISABLED:
-                    update_values["execution_mode"] = ToolExecutionMode.DISABLED
+                    update.execution_mode = ToolExecutionMode.DISABLED
                 await self._tools.update_(
                     organization_id=organization_id,
                     tool_id=UUID(str(row.id)),
-                    data=ToolUpdateSchema(**update_values),
+                    data=update,
                 )
                 await self._tools.publish(
                     organization_id=organization_id,
@@ -310,7 +336,7 @@ class MCPServerService:
         name: str | None,
         url: str | None,
         header_patch: dict[str, str | None] | None,
-    ):
+    ) -> MCPServerModel:
         """Patch one MCP draft and re-encrypt secrets for its next revision."""
         server = await self._get(organization_id, server_id, for_update=True)
         current_revision = (
@@ -506,7 +532,7 @@ class MCPServerService:
         server: MCPServerModel,
         *,
         expected_draft_version: int,
-        config: dict[str, Any],
+        config: dict[str, JsonValue],
         name: str | None = None,
     ) -> None:
         state = _header_state(server).edit(
@@ -552,7 +578,7 @@ class MCPServerService:
 
 def _validate_definition_set(
     server: MCPServerModel,
-    entries: list[dict[str, Any]],
+    entries: list[MCPDiscoveredTool],
 ) -> tuple[MCPToolDefinition, ...]:
     if len(entries) > MAX_TOOLS_PER_SERVER:
         raise MCPServerError(
@@ -564,9 +590,7 @@ def _validate_definition_set(
     seen_names: set[str] = set()
     aggregate_schema_bytes = 0
     for entry in entries:
-        if not isinstance(entry, dict):
-            raise MCPServerError("Every MCP tool definition must be an object.")
-        wire_id = entry.get("name")
+        wire_id = entry.name
         if not isinstance(wire_id, str) or not wire_id.strip():
             raise MCPServerError("Every MCP tool requires a non-empty protocol name.")
         wire_id = wire_id.strip()
@@ -578,7 +602,7 @@ def _validate_definition_set(
             raise MCPServerError(f"Duplicate MCP protocol tool name: {wire_id!r}.")
         seen_wire_ids.add(wire_id)
 
-        description = entry.get("description") or (
+        description = entry.description or (
             f"MCP tool {wire_id} exposed by {server.name}."
         )
         if (
@@ -589,10 +613,11 @@ def _validate_definition_set(
                 f"MCP tool description exceeds {MAX_DESCRIPTION_LENGTH} characters."
             )
         input_schema, input_bytes = _validated_schema(
-            entry.get("input_schema"),
+            entry.input_schema,
             label=f"MCP tool {wire_id!r} input schema",
         )
-        remote_output_schema = entry.get("output_schema")
+        remote_output_schema = entry.output_schema
+        output_schema: dict[str, JsonValue]
         if remote_output_schema is None:
             output_schema = {"type": "object", "additionalProperties": True}
             output_bytes = 0
@@ -606,7 +631,7 @@ def _validate_definition_set(
             raise MCPServerError(
                 "MCP discovery schemas exceed the aggregate size limit."
             )
-        effect = _declared_effect(entry.get("annotations"), wire_id=wire_id)
+        effect = _declared_effect(entry.annotations, wire_id=wire_id)
         name = _model_name(server, wire_id)
         if name in seen_names:
             raise MCPServerError(f"MCP model-facing tool name collision: {name!r}.")
@@ -617,15 +642,17 @@ def _validate_definition_set(
                 name=name,
                 display_name=wire_id,
                 description=description,
-                llm_config={
-                    "name": name,
-                    "description": description,
-                    "input_schema": input_schema,
-                },
+                llm_config=PlatformTool.model_validate(
+                    {
+                        "name": name,
+                        "description": description,
+                        "input_schema": input_schema,
+                    }
+                ),
                 executor_config=MCPToolExecutorConfig(
                     mcp_tool_name=wire_id,
                     effect=effect,
-                ).model_dump(mode="json"),
+                ),
                 output_schema=output_schema,
                 execution_mode=(
                     ToolExecutionMode.DISABLED
@@ -663,7 +690,7 @@ def _declared_effect(value: object, *, wire_id: str) -> MCPToolEffect:
     return MCPToolEffect.UNSUPPORTED
 
 
-def _validated_schema(value: object, *, label: str) -> tuple[dict[str, Any], int]:
+def _validated_schema(value: object, *, label: str) -> tuple[dict[str, JsonValue], int]:
     if not isinstance(value, dict) or value.get("type") != "object":
         raise MCPServerError(f"{label} must be an object JSON Schema.")
     unsupported_root = set(value) - _ROOT_SCHEMA_KEYS
@@ -698,7 +725,7 @@ def _validated_schema(value: object, *, label: str) -> tuple[dict[str, Any], int
     size = len(canonical.encode("utf-8"))
     if size > MAX_SCHEMA_BYTES:
         raise MCPServerError(f"{label} exceeds the size limit.")
-    return json.loads(canonical), size
+    return _JSON_OBJECT.validate_json(canonical, strict=True), size
 
 
 def _validate_schema_node(
@@ -761,7 +788,7 @@ def _same_definition(row: ToolModel, definition: MCPToolDefinition) -> bool:
             row.description == definition.description,
             PlatformTool.model_validate(row.llm_config)
             == PlatformTool.model_validate(definition.llm_config),
-            row.executor_config == definition.executor_config,
+            row.executor_config == definition.executor_config.model_dump(mode="json"),
             row.output_schema == definition.output_schema,
         )
     )
@@ -797,7 +824,7 @@ def _apply_header_state(
     server.draft_dirty = state.draft_dirty
 
 
-def redacted_server(server: MCPServerModel) -> dict[str, Any]:
+def redacted_server(server: MCPServerModel) -> dict[str, JsonValue]:
     config = parse_mcp_server_config(server.config)
     return {
         "id": str(server.id),

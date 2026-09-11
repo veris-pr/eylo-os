@@ -8,12 +8,13 @@ import hmac
 import html
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import StrEnum
 from html.parser import HTMLParser
 from http import HTTPStatus
 from urllib.parse import urlsplit
+
+from pydantic import BaseModel, ConfigDict
 
 from eylo.modules.connections.domain import ConnectionAuthKind
 from eylo.sor.runtime.http import SorHttpTransport, SorJsonHttpClient, SorJsonResponse
@@ -48,6 +49,7 @@ from eylo.sor.shared.contracts import (
     SorWebhookSubscription,
     SorWebhookVerificationError,
 )
+from eylo.sor.shared.json_values import SorJsonValue, require_json_value
 from eylo.sor.support.contracts import (
     SupportAgent,
     SupportAgentPayload,
@@ -266,7 +268,7 @@ INTERCOM_MANIFEST = SorAdapterCapabilityManifest(
                 set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values()) - {stream_key}
             ),
             relationship_targets=SorRelationshipTargets(
-                _RELATIONSHIP_TARGETS.get(stream_key, {})
+                by_role=_RELATIONSHIP_TARGETS.get(stream_key, {}),
             ),
         )
         for stream_key, entity in _STREAM_ENTITY.items()
@@ -314,9 +316,12 @@ INTERCOM_MANIFEST = SorAdapterCapabilityManifest(
 )
 
 
-@dataclass(frozen=True, slots=True)
-class IntercomAppWebhookDelivery:
+class IntercomAppWebhookDelivery(BaseModel):
     """One signed workspace event before source-selection filtering."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     organization_external_id: str
     signal: SorWebhookSignal
@@ -406,11 +411,26 @@ def _field(
 _SCHEMA_FIELDS = {
     IntercomStream.CONVERSATIONS: (
         _field("subject", "Title", SorFieldDataType.TEXT, writable=True),
-        _field("normalized_description", "Opening message", SorFieldDataType.TEXT, writable=True),
-        _field("requester_external_id", "Contact ID", SorFieldDataType.REFERENCE, writable=True),
+        _field(
+            "normalized_description",
+            "Opening message",
+            SorFieldDataType.TEXT,
+            writable=True,
+        ),
+        _field(
+            "requester_external_id",
+            "Contact ID",
+            SorFieldDataType.REFERENCE,
+            writable=True,
+        ),
         _field("assignee_external_id", "Admin assignee ID", SorFieldDataType.REFERENCE),
         _field("group_external_id", "Team assignee ID", SorFieldDataType.REFERENCE),
-        _field("native_status", "State", SorFieldDataType.ENUM, choices=("open", "closed", "snoozed")),
+        _field(
+            "native_status",
+            "State",
+            SorFieldDataType.ENUM,
+            choices=("open", "closed", "snoozed"),
+        ),
         _field("normalized_status", "Normalized state", SorFieldDataType.ENUM),
         _field("priority", "Priority", SorFieldDataType.ENUM),
         _field("category", "Source type", SorFieldDataType.TEXT),
@@ -441,20 +461,34 @@ _SCHEMA_FIELDS = {
         _field("active", "Active", SorFieldDataType.BOOLEAN),
     ),
     IntercomStream.CONVERSATION_PARTS: (
-        _field("ticket_external_id", "Conversation ID", SorFieldDataType.REFERENCE, nullable=False),
+        _field(
+            "ticket_external_id",
+            "Conversation ID",
+            SorFieldDataType.REFERENCE,
+            nullable=False,
+        ),
         _field("visibility", "Visibility", SorFieldDataType.ENUM, nullable=False),
         _field("direction", "Direction", SorFieldDataType.ENUM),
         _field("author_external_id", "Author ID", SorFieldDataType.REFERENCE),
         _field("normalized_text", "Message", SorFieldDataType.TEXT, nullable=False),
         _field("source_body", "Source body", SorFieldDataType.BOUNDED_JSON),
         _field("body_format", "Body format", SorFieldDataType.TEXT),
-        _field("attachment_external_ids", "Attachment IDs", SorFieldDataType.STRING_ARRAY),
+        _field(
+            "attachment_external_ids", "Attachment IDs", SorFieldDataType.STRING_ARRAY
+        ),
         _field("created_at", "Created at", SorFieldDataType.TIMESTAMP, nullable=False),
         _field("updated_at", "Updated at", SorFieldDataType.TIMESTAMP),
     ),
-    IntercomStream.TAGS: (_field("name", "Name", SorFieldDataType.TEXT, nullable=False),),
+    IntercomStream.TAGS: (
+        _field("name", "Name", SorFieldDataType.TEXT, nullable=False),
+    ),
     IntercomStream.ATTACHMENTS: (
-        _field("ticket_external_id", "Conversation ID", SorFieldDataType.REFERENCE, nullable=False),
+        _field(
+            "ticket_external_id",
+            "Conversation ID",
+            SorFieldDataType.REFERENCE,
+            nullable=False,
+        ),
         _field("message_external_id", "Message ID", SorFieldDataType.REFERENCE),
         _field("name", "Name", SorFieldDataType.TEXT, nullable=False),
         _field("content_type", "Content type", SorFieldDataType.TEXT),
@@ -469,8 +503,13 @@ _STATUS_MAP = {
 }
 
 
-@dataclass(frozen=True, slots=True)
-class _SearchCursor:
+class _SearchCursor(BaseModel):
+    """Intercom search watermark and native continuation position."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
     watermark: int = 0
     starting_after: str | None = None
     max_seen: int = 0
@@ -860,9 +899,7 @@ class IntercomSupportAdapter:
     ) -> SupportTag:
         return SupportTag(
             external_id=record.external_id,
-            name=_required_string(
-                payload.name, field="Intercom tag name"
-            ),
+            name=_required_string(payload.name, field="Intercom tag name"),
         )
 
     def normalize_sla_metric(
@@ -2360,14 +2397,15 @@ def _string_tuple(value: object) -> tuple[str, ...]:
     return tuple(value)
 
 
-def _json_value(value: object) -> object | None:
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
+def _json_value(value: object) -> SorJsonValue:
     if isinstance(value, Mapping):
         return {str(key): _json_value(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_json_value(item) for item in value]
-    raise _invalid_response("Intercom value is not JSON-compatible.")
+    try:
+        return require_json_value(value)
+    except ValueError as error:
+        raise _invalid_response("Intercom value is not JSON-compatible.") from error
 
 
 def _safe_source_url(value: object) -> str | None:

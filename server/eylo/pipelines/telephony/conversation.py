@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from uuid import UUID
 
 from fastapi import HTTPException, WebSocket, status
+from pydantic import BaseModel, ConfigDict, Field
 
 from eylo.common.database import start_transaction
 from eylo.modules.agents.domain import ResolvedExecutableAgent
@@ -30,16 +30,22 @@ from eylo.modules.user_sessions.domain import UserSessionEntryChannel
 from eylo.modules.user_sessions.events import file_user_session_fact
 from eylo.modules.user_sessions.service import UserSessionService
 from eylo.pipelines.websocket.singleton import S_ws_manager
-from eylo.sockets.telephony.base import CallMetadata
+from eylo.sockets.telephony.base import (
+    CallMetadata,
+    TelephonyCallDirection,
+)
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True, slots=True)
-class ConversationBundle:
+class ConversationBundle(BaseModel):
     """Authenticated contact session and its new phone conversation."""
 
-    auth_session_token: str
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    auth_session_token: str = Field(repr=False, exclude=True)
     conversation_id: UUID
     contact_id: UUID
     user_session_id: UUID
@@ -165,7 +171,7 @@ def build_conversation_start_request(
     provider: str,
 ) -> ConversationStartRequest:
     """Build a direction-correct conversation without synthetic user speech."""
-    is_outbound = call_metadata.direction.upper() == "OUTBOUND"
+    is_outbound = call_metadata.direction is TelephonyCallDirection.OUTBOUND
     contact_number = _contact_number(call_metadata, from_number, to_number)
     contact = ConversationParticipant(
         kind=ParticipantKind.CONTACT,
@@ -184,7 +190,7 @@ def build_conversation_start_request(
             "to": (contact if is_outbound else agent).model_dump(by_alias=True),
             "message": None,
             "context": {
-                "direction": call_metadata.direction.upper(),
+                "direction": call_metadata.direction.value,
                 "from": from_number,
                 "to": to_number,
                 "provider": provider,
@@ -229,7 +235,9 @@ def _contact_number(
     to_number: str,
 ) -> str:
     contact_number = (
-        to_number if call_metadata.direction.upper() == "OUTBOUND" else from_number
+        to_number
+        if call_metadata.direction is TelephonyCallDirection.OUTBOUND
+        else from_number
     )
     if not contact_number:
         raise ValueError("Call contact phone number is required.")

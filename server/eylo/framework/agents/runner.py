@@ -17,7 +17,11 @@ from .common import FrameworkMetadata, FrozenFrameworkModel
 from .config import RunConfig
 from .context import RunContext, RunInput, RunMessage
 from .durable import InputRequestDetails
-from .errors import GuardrailTripwireError, ToolResultIdentityError
+from .errors import (
+    GuardrailTripwireError,
+    ModelOutputLimitError,
+    ToolResultIdentityError,
+)
 from .guardrail import Guardrail, GuardrailStage
 from .history import (
     HistoryMessageMetadata,
@@ -43,7 +47,7 @@ from .items import (
     RunToolCallItem,
     RunToolResultItem,
 )
-from .model import Model, ModelBlockKind, ModelResponse, ModelUsage
+from .model import Model, ModelBlockKind, ModelResponse, ModelStopReason, ModelUsage
 from .result import (
     RunFailureCode,
     RunFailureMetadata,
@@ -190,6 +194,11 @@ class FrameworkRunner:
                     self._hooks.on_llm_end(context, response), "on_llm_end"
                 )
 
+                if response.stop_reason is ModelStopReason.MAX_TOKENS:
+                    # Account for generation, but never accept truncated text or
+                    # execute commands from an incomplete model response.
+                    raise ModelOutputLimitError
+
                 text = _extract_text(response)
                 tool_calls = _extract_tool_calls(response)
 
@@ -326,26 +335,24 @@ class FrameworkRunner:
             return result
         except Exception as error:
             await _safe_hook(self._hooks.on_error(context, error), "on_error")
-            guardrail_blocked = isinstance(error, GuardrailTripwireError)
-            status = (
-                RunStatus.GUARDRAIL_TRIPPED if guardrail_blocked else RunStatus.FAILED
-            )
+            status = RunStatus.FAILED
+            failure_code = RunFailureCode.RUN_FAILED
+            error_message = "Run failed."
+            if isinstance(error, GuardrailTripwireError):
+                status = RunStatus.GUARDRAIL_TRIPPED
+                failure_code = RunFailureCode.GUARDRAIL_BLOCKED
+                error_message = "A guardrail blocked the run."
+            elif isinstance(error, ModelOutputLimitError):
+                failure_code = RunFailureCode.MODEL_OUTPUT_LIMIT
+                error_message = "The model reached its output token limit."
             result = self._build_result(
                 context,
                 status=status,
                 items=items,
                 model_responses=model_responses,
-                error_message=(
-                    "A guardrail blocked the run."
-                    if guardrail_blocked
-                    else "Run failed."
-                ),
+                error_message=error_message,
                 metadata=RunFailureMetadata(
-                    failure_code=(
-                        RunFailureCode.GUARDRAIL_BLOCKED
-                        if guardrail_blocked
-                        else RunFailureCode.RUN_FAILED
-                    ),
+                    failure_code=failure_code,
                     error_type=type(error).__name__,
                 ),
             )

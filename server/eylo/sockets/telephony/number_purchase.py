@@ -15,6 +15,7 @@ from eylo.common.outbound import (
 from eylo.sockets.telephony.base import (
     TelephonyOperationCapabilities,
     TelephonyOperationProfile,
+    TelephonyOperationSupport,
     classify_provider_failure,
 )
 
@@ -50,8 +51,8 @@ def number_purchase_profile(
         transport_kind=OutboundTransportKind.HTTP,
         destination_origin=destination_origin,
         capabilities=TelephonyOperationCapabilities(
-            provider_idempotency=False,
-            reconciliation=False,
+            provider_idempotency=TelephonyOperationSupport.UNSUPPORTED,
+            reconciliation=TelephonyOperationSupport.UNSUPPORTED,
         ),
     )
 

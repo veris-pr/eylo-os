@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
-from types import MappingProxyType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from pydantic import ValidationError
@@ -17,12 +15,28 @@ from eylo.modules.agent_runs.service import (
     resume_agent_run_from_tool_in_transaction,
 )
 from eylo.pipelines.outbound.durable_execution import DurableStepContext
+from eylo.pipelines.sor.tool_contracts import (
+    SorCommandToolError,
+    SorCommandToolResult,
+    SorReadToolResult,
+    SorSourceChoice,
+    SorSourceSelectionRequired,
+    SorToolError,
+    SorToolErrorCode,
+    SorToolExecutionOutcome,
+    SorToolMetadata,
+)
 from eylo.sor.knowledge.agent_reads import shape_knowledge_tool_response
 from eylo.sor.runtime.agent_reads import SorAgentReadError, read_agent_view
-from eylo.sor.runtime.authority import SorAuthorityError, resolve_agent_sources
+from eylo.sor.runtime.authority import (
+    AuthorizedSorSource,
+    SorAuthorityError,
+    resolve_agent_sources,
+)
 from eylo.sor.runtime.commands import (
     SOR_COMMAND_WAIT_OWNER_KIND,
     SorCommandAuthorizationError,
+    SorCommandReceipt,
     file_sor_command,
     read_sor_command_receipt,
     sor_command_terminal_event,
@@ -53,29 +67,16 @@ if TYPE_CHECKING:
     from eylo.pipelines.agent_execution_context import PlatformExecutionContext
 
 
-@dataclass(frozen=True, slots=True)
-class SorToolExecutionOutcome:
-    """Safe model-facing result and private dispatch metadata."""
-
-    content: dict[str, Any] = field(repr=False)
-    is_error: bool
-    metadata: Mapping[str, Any]
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "content", dict(self.content))
-        object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
-
-
 async def execute_sor_read_tool(
     *,
     tool_name: str,
-    tool_input: Mapping[str, Any],
+    tool_input: Mapping[str, object],
     conversation_context: PlatformExecutionContext,
 ) -> SorToolExecutionOutcome:
     """Read the Agent-safe canonical projection for one exact published tool."""
     resolved = resolve_sor_tool(tool_name)
     if resolved is None or resolved[1].effect is not SorToolEffect.READ:
-        return _error_outcome("sor_tool_unavailable")
+        return _error_outcome(SorToolErrorCode.TOOL_UNAVAILABLE)
     profile, spec = resolved
     try:
         command = read_tool_input_model(spec).model_validate(dict(tool_input))
@@ -103,7 +104,7 @@ async def execute_sor_read_tool(
                 include_relations="relation" in spec.entities,
             )
     except ValidationError:
-        return _error_outcome("sor_tool_input_invalid")
+        return _error_outcome(SorToolErrorCode.INPUT_INVALID)
     except (SorAgentReadError, SorAuthorityError, ValueError) as error:
         return _error_outcome(_safe_error_code(error))
 
@@ -131,14 +132,10 @@ async def execute_sor_read_tool(
         data["next_cursor"] = None
         data["has_more"] = False
     return SorToolExecutionOutcome(
-        content={"kind": "sor_result", "data": data},
-        is_error=False,
-        metadata={
-            "sor_execution": True,
-            "profile": profile.value,
-            "tool": tool_name,
-            "effect": SorToolEffect.READ.value,
-        },
+        content=SorReadToolResult(data=data),
+        metadata=SorToolMetadata(
+            profile=profile, tool=tool_name, effect=SorToolEffect.READ
+        ),
     )
 
 
@@ -146,7 +143,7 @@ async def execute_sor_mutation_tool(
     *,
     tool_name: str,
     tool_call_id: str,
-    tool_input: Mapping[str, Any],
+    tool_input: Mapping[str, object],
     conversation_context: PlatformExecutionContext,
     agent_run_id: UUID,
     durable_context: DurableStepContext,
@@ -154,7 +151,7 @@ async def execute_sor_mutation_tool(
     """File one command, wait without holding capacity, then return its receipt."""
     resolved = resolve_sor_tool(tool_name)
     if resolved is None or resolved[1].effect is not SorToolEffect.MUTATION:
-        return _error_outcome("sor_tool_unavailable")
+        return _error_outcome(SorToolErrorCode.TOOL_UNAVAILABLE)
     profile, spec = resolved
     try:
         command = mutation_tool_input_model(profile=profile, spec=spec).model_validate(
@@ -173,7 +170,7 @@ async def execute_sor_mutation_tool(
             source_id=command.source_id,
         )
     except ValidationError:
-        return _error_outcome("sor_tool_input_invalid")
+        return _error_outcome(SorToolErrorCode.INPUT_INVALID)
     except (SorAuthorityError, ValueError) as error:
         return _error_outcome(_safe_error_code(error))
 
@@ -183,7 +180,7 @@ async def execute_sor_mutation_tool(
     try:
         filed = await file_sor_command(
             organization_id=organization_id,
-            source_id=source["source_id"],
+            source_id=source.source_id,
             profile_tool=tool_name,
             agent_id=agent_id,
             agent_revision=agent_revision,
@@ -197,7 +194,7 @@ async def execute_sor_mutation_tool(
             organization_id=organization_id,
             command_id=filed.command_id,
         )
-        if not _terminal(receipt):
+        if not receipt.terminal:
             async with start_transaction() as session:
                 await pause_agent_run_for_tool_in_transaction(
                     session,
@@ -215,7 +212,7 @@ async def execute_sor_mutation_tool(
                 organization_id=organization_id,
                 command_id=filed.command_id,
             )
-        if not _terminal(receipt):
+        if not receipt.terminal:
             raise SorConfigurationError("SOR command woke before becoming terminal.")
         _require_receipt_identity(
             receipt,
@@ -246,24 +243,23 @@ async def execute_sor_mutation_tool(
     ) as error:
         return _error_outcome(_safe_error_code(error))
 
-    state = SorCommandState(str(receipt["state"]))
+    state = receipt.state
     succeeded = state is SorCommandState.SUCCEEDED
     return SorToolExecutionOutcome(
-        content={
-            "kind": "sor_command_result" if succeeded else "sor_command_error",
-            "data": receipt if succeeded else None,
-            "error": None if succeeded else receipt.get("safe_error_category"),
-            "message": None if succeeded else receipt.get("safe_error_summary"),
-        },
-        is_error=not succeeded,
-        metadata={
-            "sor_execution": True,
-            "profile": profile.value,
-            "tool": tool_name,
-            "effect": SorToolEffect.MUTATION.value,
-            "command_id": str(filed.command_id),
-            "command_state": state.value,
-        },
+        content=(
+            SorCommandToolResult(data=receipt)
+            if succeeded
+            else SorCommandToolError(
+                error=receipt.safe_error_category, message=receipt.safe_error_summary
+            )
+        ),
+        metadata=SorToolMetadata(
+            profile=profile,
+            tool=tool_name,
+            effect=SorToolEffect.MUTATION,
+            command_id=filed.command_id,
+            command_state=state,
+        ),
     )
 
 
@@ -276,7 +272,7 @@ async def _resolve_mutation_source(
     spec: SorToolSpec,
     entity: str,
     source_id: UUID | None,
-) -> dict[str, Any] | SorToolExecutionOutcome:
+) -> AuthorizedSorSource | SorToolExecutionOutcome:
     requested = (source_id,) if source_id is not None else ()
     async with start_transaction(ro=True) as session:
         sources = await resolve_agent_sources(
@@ -291,29 +287,21 @@ async def _resolve_mutation_source(
             entity=entity,
         )
     if len(sources) == 1:
-        source = sources[0]
-        return {
-            "source_id": source.source_id,
-            "name": source.name,
-            "vendor_key": source.vendor_key,
-        }
+        return sources[0]
     if not sources:
-        return _error_outcome("sor_source_unavailable")
+        return _error_outcome(SorToolErrorCode.SOURCE_UNAVAILABLE)
     return SorToolExecutionOutcome(
-        content={
-            "kind": "sor_source_selection_required",
-            "error": "sor_source_selection_required",
-            "sources": [
-                {
-                    "source_id": str(source.source_id),
-                    "name": source.name,
-                    "vendor_key": source.vendor_key,
-                }
+        content=SorSourceSelectionRequired(
+            sources=tuple(
+                SorSourceChoice(
+                    source_id=source.source_id,
+                    name=source.name,
+                    vendor_key=source.vendor_key,
+                )
                 for source in sources
-            ],
-        },
-        is_error=True,
-        metadata={"sor_execution": True, "source_selection_required": True},
+            )
+        ),
+        metadata=SorToolMetadata(source_selection_required=True),
     )
 
 
@@ -343,30 +331,17 @@ def _agent_identity(context: PlatformExecutionContext) -> tuple[UUID, int]:
     return UUID(str(agent.id)), revision
 
 
-def _terminal(receipt: Mapping[str, Any]) -> bool:
-    try:
-        state = SorCommandState(str(receipt["state"]))
-    except (KeyError, TypeError, ValueError):
-        return False
-    return state in {
-        SorCommandState.SUCCEEDED,
-        SorCommandState.FAILED,
-        SorCommandState.CONFLICT,
-        SorCommandState.CANCELLED,
-    }
-
-
 def _require_receipt_identity(
-    receipt: Mapping[str, Any],
+    receipt: SorCommandReceipt,
     *,
     agent_run_id: UUID,
     tool_call_id: str,
     tool_name: str,
 ) -> None:
     if (
-        receipt.get("agent_run_id") != str(agent_run_id)
-        or receipt.get("tool_call_id") != tool_call_id
-        or receipt.get("profile_tool") != tool_name
+        receipt.agent_run_id != agent_run_id
+        or receipt.tool_call_id != tool_call_id
+        or receipt.profile_tool != tool_name
     ):
         raise SorConfigurationError("SOR command receipt identity changed.")
 
@@ -376,17 +351,16 @@ def _safe_error_code(error: Exception) -> str:
     if isinstance(code, str) and code:
         return code.lower()
     if isinstance(error, AgentRunConflict):
-        return "agent_run_conflict"
+        return SorToolErrorCode.RUN_CONFLICT
     if isinstance(error, SorNotFoundError):
-        return "sor_resource_unavailable"
-    return "sor_request_invalid"
+        return SorToolErrorCode.RESOURCE_UNAVAILABLE
+    return SorToolErrorCode.REQUEST_INVALID
 
 
 def _error_outcome(code: str) -> SorToolExecutionOutcome:
     return SorToolExecutionOutcome(
-        content={"kind": "sor_error", "error": code},
-        is_error=True,
-        metadata={"sor_execution": True, "error_code": code},
+        content=SorToolError(error=code),
+        metadata=SorToolMetadata(error_code=code),
     )
 
 

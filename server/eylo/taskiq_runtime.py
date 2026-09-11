@@ -71,7 +71,7 @@ async def close_worker(_state: TaskiqState) -> None:
 @broker.task(
     task_name=ORDINARY_PERIODIC_TASK,
     schedule=[
-        {"cron": action.cron, "args": [action.name]}
+        {"cron": action.cron.value, "args": [action.name.value]}
         for action in PERIODIC_ACTIONS
     ],
 )

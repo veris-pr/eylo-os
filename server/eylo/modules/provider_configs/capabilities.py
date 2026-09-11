@@ -1,8 +1,8 @@
 """Capability metadata for the `provider_configs` domain."""
 
-from dataclasses import dataclass
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.modules.provider_configs.constants import Capability
@@ -10,8 +10,11 @@ from eylo.modules.provider_configs.crypto import get_secret_cipher
 from eylo.modules.provider_configs.repository import ProviderConfigRepository
 
 
-@dataclass(frozen=True)
-class CapabilityStatus:
+class CapabilityStatus(BaseModel):
+    """Independent readiness predicates aggregated across one capability's configs."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
     configured: bool
     verified: bool
     ready: bool

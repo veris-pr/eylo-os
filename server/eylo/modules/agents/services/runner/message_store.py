@@ -67,6 +67,10 @@ class ErrorMessages:
         "I apologize, but I encountered an error while processing your request. "
         "Please try again."
     )
+    MODEL_OUTPUT_LIMIT = (
+        "The model reached its response limit before finishing. "
+        "Please ask for a shorter answer or have the response limit increased."
+    )
     CIRCUIT_BREAKER = "I apologize, but could you please verify your request?\n{}"
 
 

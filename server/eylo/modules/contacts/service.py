@@ -6,7 +6,7 @@ from typing import Literal, override
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
-from sqlalchemy import or_
+from sqlalchemy import ColumnElement, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -572,7 +572,7 @@ class ContactService(EyloBaseService[ContactInDb, ContactsModel]):
         self,
         organization_id: UUID,
         query: ContactListQuery,
-    ) -> list:
+    ) -> list[ColumnElement[bool]]:
         """Build the one filter set shared by collection rows and totals."""
         model = self.repository.model
         _filters = [

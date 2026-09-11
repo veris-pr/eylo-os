@@ -8,8 +8,9 @@ configured provider makes every provider-backed tool usable everywhere.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from enum import Enum
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from eylo.common.contracts.provider_config import Capability
 
@@ -24,31 +25,34 @@ class ToolRuntimeFact(str, Enum):
     WIDGET = "widget"
 
 
-@dataclass(frozen=True, slots=True)
-class ToolRequirements:
+class ToolRequirements(BaseModel):
     """Code-owned requirements for one system tool."""
 
-    organization_capabilities: frozenset[Capability] = field(
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+    organization_capabilities: frozenset[Capability] = Field(
         default_factory=frozenset
     )
-    agent_capabilities: frozenset[Capability] = field(default_factory=frozenset)
-    runtime_facts: frozenset[ToolRuntimeFact] = field(default_factory=frozenset)
+    agent_capabilities: frozenset[Capability] = Field(default_factory=frozenset)
+    runtime_facts: frozenset[ToolRuntimeFact] = Field(default_factory=frozenset)
 
 
-@dataclass(frozen=True, slots=True)
-class ToolAvailabilityFacts:
+class ToolAvailabilityFacts(BaseModel):
     """Capabilities and runtime facts available to one agent execution."""
 
-    organization_capabilities: frozenset[Capability] = field(
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+    organization_capabilities: frozenset[Capability] = Field(
         default_factory=frozenset
     )
-    agent_capabilities: frozenset[Capability] = field(default_factory=frozenset)
-    runtime_facts: frozenset[ToolRuntimeFact] = field(default_factory=frozenset)
+    agent_capabilities: frozenset[Capability] = Field(default_factory=frozenset)
+    runtime_facts: frozenset[ToolRuntimeFact] = Field(default_factory=frozenset)
 
 
-@dataclass(frozen=True, slots=True)
-class MissingToolRequirements:
+class MissingToolRequirements(BaseModel):
     """Stable, machine-readable reasons a system tool is unavailable."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
     organization_capabilities: frozenset[Capability]
     agent_capabilities: frozenset[Capability]

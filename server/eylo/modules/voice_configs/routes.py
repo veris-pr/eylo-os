@@ -275,9 +275,7 @@ async def _verify_config(
     kind: VoiceKind,
 ) -> VoiceConfigVerificationResponse:
     try:
-        result = await VoiceConfigVerificationUseCase(
-            VoiceRuntimeVerifier()
-        ).verify(
+        result = await VoiceConfigVerificationUseCase(VoiceRuntimeVerifier()).verify(
             organization_id=organization_id,
             config_id=config_id,
             kind=kind,
@@ -288,7 +286,7 @@ async def _verify_config(
             detail="Voice provider verification failed.",
         ) from None
     return VoiceConfigVerificationResponse(
-        provider=result.provider,
+        provider=result.provider.value,
         kind=result.kind.value,
         revision=result.revision,
         verified_at=result.verified_at,

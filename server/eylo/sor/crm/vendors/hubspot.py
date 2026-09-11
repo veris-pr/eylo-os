@@ -9,7 +9,6 @@ import hmac
 import json
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
@@ -243,7 +242,7 @@ HUBSPOT_MANIFEST = SorAdapterCapabilityManifest(
             change_strategies=frozenset({SorChangeStrategy.FULL_RECONCILE}),
             depends_on=frozenset({HubSpotStream.CONTACTS, HubSpotStream.COMPANIES}),
             relationship_targets=SorRelationshipTargets(
-                _RELATIONSHIP_TARGETS[HubSpotStream.DEALS]
+                by_role=_RELATIONSHIP_TARGETS[HubSpotStream.DEALS],
             ),
         ),
         SorVendorStreamSpec(
@@ -256,7 +255,7 @@ HUBSPOT_MANIFEST = SorAdapterCapabilityManifest(
                 {HubSpotStream.CONTACTS, HubSpotStream.COMPANIES, HubSpotStream.DEALS}
             ),
             relationship_targets=SorRelationshipTargets(
-                _RELATIONSHIP_TARGETS[HubSpotStream.NOTES]
+                by_role=_RELATIONSHIP_TARGETS[HubSpotStream.NOTES],
             ),
         ),
     ),
@@ -313,9 +312,12 @@ class _HubSpotWebhookSignal(BaseModel):
         )
 
 
-@dataclass(frozen=True, slots=True)
-class HubSpotAppWebhookDelivery:
+class HubSpotAppWebhookDelivery(BaseModel):
     """One verified HubSpot account batch before source-selection filtering."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     organization_external_id: str
     signals: tuple[SorWebhookSignal, ...]

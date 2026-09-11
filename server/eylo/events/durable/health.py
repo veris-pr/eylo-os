@@ -3,40 +3,50 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.models import server_now
-from eylo.events.durable.domain import EventDeliveryState
+from eylo.events.durable.domain import MAX_EVENT_VERSION, EventDeliveryState
 from eylo.events.durable.models import EventDeliveryModel, EventOutboxModel
 from eylo.events.durable.registry import EventConsumerKey
 
 
-@dataclass(frozen=True, slots=True, order=True)
-class UnsupportedConsumerHealth:
+class UnsupportedConsumerHealth(BaseModel):
     """One outstanding delivery identity absent from the process manifest."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
     consumer_name: str
     event_type: str
-    event_version: int
-    delivery_count: int
+    event_version: int = Field(ge=1, le=MAX_EVENT_VERSION)
+    delivery_count: int = Field(ge=0)
+
+    def sort_key(self) -> tuple[str, str, int, int]:
+        return (
+            self.consumer_name,
+            self.event_type,
+            self.event_version,
+            self.delivery_count,
+        )
 
 
-@dataclass(frozen=True, slots=True)
-class EventDeliveryHealth:
+class EventDeliveryHealth(BaseModel):
     """Payload-free organization delivery snapshot at one database instant."""
 
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
     observed_at: datetime
-    total_count: int
-    pending_count: int
-    running_count: int
-    succeeded_count: int
-    dead_letter_count: int
-    oldest_pending_age_seconds: int | None
+    total_count: int = Field(ge=0)
+    pending_count: int = Field(ge=0)
+    running_count: int = Field(ge=0)
+    succeeded_count: int = Field(ge=0)
+    dead_letter_count: int = Field(ge=0)
+    oldest_pending_age_seconds: int | None = Field(ge=0)
     registered_consumers: tuple[EventConsumerKey, ...]
     unsupported_consumers: tuple[UnsupportedConsumerHealth, ...]
 
@@ -73,7 +83,7 @@ async def query_event_delivery_health(
         started_at=oldest_pending_at,
     )
 
-    registered = tuple(sorted(set(registered_consumers)))
+    registered = tuple(sorted(set(registered_consumers), key=EventConsumerKey.sort_key))
     registered_set = set(registered)
     outstanding_rows = await session.execute(
         select(
@@ -101,21 +111,24 @@ async def query_event_delivery_health(
     )
     unsupported = tuple(
         sorted(
-            UnsupportedConsumerHealth(
-                consumer_name=consumer_name,
-                event_type=event_type,
-                event_version=event_version,
-                delivery_count=int(delivery_count),
-            )
-            for consumer_name, event_type, event_version, delivery_count in (
-                outstanding_rows
-            )
-            if EventConsumerKey(
-                consumer_name=consumer_name,
-                event_type=event_type,
-                event_version=event_version,
-            )
-            not in registered_set
+            (
+                UnsupportedConsumerHealth(
+                    consumer_name=consumer_name,
+                    event_type=event_type,
+                    event_version=event_version,
+                    delivery_count=int(delivery_count),
+                )
+                for consumer_name, event_type, event_version, delivery_count in (
+                    outstanding_rows
+                )
+                if EventConsumerKey(
+                    consumer_name=consumer_name,
+                    event_type=event_type,
+                    event_version=event_version,
+                )
+                not in registered_set
+            ),
+            key=UnsupportedConsumerHealth.sort_key,
         )
     )
 

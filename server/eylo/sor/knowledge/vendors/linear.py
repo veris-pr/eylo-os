@@ -179,7 +179,7 @@ LINEAR_KNOWLEDGE_MANIFEST = SorAdapterCapabilityManifest(
                 set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values())
             ),
             relationship_targets=SorRelationshipTargets(
-                _RELATIONSHIP_TARGETS.get(stream_key, {})
+                by_role=_RELATIONSHIP_TARGETS.get(stream_key, {}),
             ),
         )
         for stream_key, entity in _STREAM_ENTITY.items()

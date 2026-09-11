@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
-from typing import Any
+from enum import StrEnum
+from typing import Literal
 
 from absurd_sdk import AsyncTaskContext
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic.json_schema import SkipJsonSchema
 from redis.exceptions import LockNotOwnedError
 
 from eylo.common.redis import get_redis_client
@@ -47,95 +49,157 @@ LEGACY_PERIODIC_WORKFLOW = "eylo.periodic.tick.v1"
 ORDINARY_TASK_MAX_RUNTIME_SECONDS = 8 * 60
 ORDINARY_TASK_LOCK_TIMEOUT_SECONDS = 10 * 60
 
-PeriodicCallable = Callable[[], Awaitable[Any]]
+PeriodicCallable = Callable[[], Awaitable[object]]
 
 
-@dataclass(frozen=True, slots=True)
-class PeriodicAction:
-    """One independently scheduled ordinary task."""
+class PeriodicActionName(StrEnum):
+    """Stable task payload names; changing a value would strand queued work."""
 
-    name: str
-    cron: str
-    run: PeriodicCallable
+    DISPATCH_DUE_SCHEDULES = "dispatch-due-schedules"
+    RECOVER_STRANDED_SCHEDULES = "recover-stranded-schedules"
+    RECONCILE_TERMINAL_AGENT_RUNS = "reconcile-terminal-agent-runs"
+    RECOVER_CONVERSATION_RUNS = "recover-conversation-runs"
+    RECOVER_PARALLEL_RUNS = "recover-parallel-runs"
+    RECOVER_OBJECTIVE_RUNS = "recover-objective-runs"
+    NUDGE_EVENT_DELIVERIES = "nudge-event-deliveries"
+    NUDGE_KNOWLEDGE_WORK = "nudge-knowledge-work"
+    NUDGE_RECORDING_UPLOADS = "nudge-recording-uploads"
+    PROCESS_CAMPAIGN_CALLS = "process-campaign-calls"
+    NUDGE_MEMORY_REINDEXES = "nudge-memory-reindexes"
+    NUDGE_MEMORY_RECONCILIATIONS = "nudge-memory-reconciliations"
+    NUDGE_MEMORY_FORMATIONS = "nudge-memory-formations"
+    NUDGE_DELETIONS = "nudge-deletions"
+    DISPATCH_DUE_SOR_SYNCS = "dispatch-due-sor-syncs"
+    NUDGE_SOR_WORK = "nudge-sor-work"
+    REAP_SANDBOX_RESOURCES = "reap-sandbox-resources"
+    REFRESH_EXPIRING_CURATED_TOKENS = "refresh-expiring-curated-tokens"
+    EXPIRE_OLD_CONVERSATIONS = "expire-old-conversations"
+    CLEANUP_OAUTH_STATES = "cleanup-oauth-states"
+    CLEANUP_INVALIDATED_CONNECTIONS = "cleanup-invalidated-connections"
+
+
+class PeriodicCadence(StrEnum):
+    EVERY_MINUTE = "* * * * *"
+    EVERY_FIVE_MINUTES = "*/5 * * * *"
+    HOURLY = "0 * * * *"
+    DAILY = "0 0 * * *"
+
+
+class PeriodicAction(BaseModel):
+    """One independently scheduled task; never serialize its live callable."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+    name: PeriodicActionName
+    cron: PeriodicCadence
+    run: SkipJsonSchema[PeriodicCallable] = Field(repr=False, exclude=True)
 
 
 PERIODIC_ACTIONS = (
-    PeriodicAction("dispatch-due-schedules", "* * * * *", dispatch_due_schedules),
     PeriodicAction(
-        "recover-stranded-schedules",
-        "* * * * *",
-        recover_stranded_schedules,
+        name=PeriodicActionName.DISPATCH_DUE_SCHEDULES,
+        cron=PeriodicCadence.EVERY_MINUTE,
+        run=dispatch_due_schedules,
     ),
     PeriodicAction(
-        "reconcile-terminal-agent-runs",
-        "* * * * *",
-        reconcile_terminal_agent_runs,
+        name=PeriodicActionName.RECOVER_STRANDED_SCHEDULES,
+        cron=PeriodicCadence.EVERY_MINUTE,
+        run=recover_stranded_schedules,
     ),
     PeriodicAction(
-        "recover-conversation-runs",
-        "* * * * *",
-        recover_unbound_conversation_agent_runs,
+        name=PeriodicActionName.RECONCILE_TERMINAL_AGENT_RUNS,
+        cron=PeriodicCadence.EVERY_MINUTE,
+        run=reconcile_terminal_agent_runs,
     ),
     PeriodicAction(
-        "recover-parallel-runs",
-        "* * * * *",
-        recover_unbound_parallel_agent_runs,
+        name=PeriodicActionName.RECOVER_CONVERSATION_RUNS,
+        cron=PeriodicCadence.EVERY_MINUTE,
+        run=recover_unbound_conversation_agent_runs,
     ),
     PeriodicAction(
-        "recover-objective-runs",
-        "* * * * *",
-        recover_unbound_objective_agent_runs,
+        name=PeriodicActionName.RECOVER_PARALLEL_RUNS,
+        cron=PeriodicCadence.EVERY_MINUTE,
+        run=recover_unbound_parallel_agent_runs,
     ),
     PeriodicAction(
-        "nudge-event-deliveries",
-        "* * * * *",
-        spawn_unbound_event_deliveries,
+        name=PeriodicActionName.RECOVER_OBJECTIVE_RUNS,
+        cron=PeriodicCadence.EVERY_MINUTE,
+        run=recover_unbound_objective_agent_runs,
     ),
     PeriodicAction(
-        "nudge-knowledge-work",
-        "* * * * *",
-        nudge_unbound_knowledge_work,
+        name=PeriodicActionName.NUDGE_EVENT_DELIVERIES,
+        cron=PeriodicCadence.EVERY_MINUTE,
+        run=spawn_unbound_event_deliveries,
     ),
     PeriodicAction(
-        "nudge-recording-uploads",
-        "* * * * *",
-        nudge_unbound_recording_uploads,
-    ),
-    PeriodicAction("process-campaign-calls", "* * * * *", process_campaign_calls),
-    PeriodicAction(
-        "nudge-memory-reindexes",
-        "* * * * *",
-        nudge_unbound_memory_reindexes,
+        name=PeriodicActionName.NUDGE_KNOWLEDGE_WORK,
+        cron=PeriodicCadence.EVERY_MINUTE,
+        run=nudge_unbound_knowledge_work,
     ),
     PeriodicAction(
-        "nudge-memory-reconciliations",
-        "* * * * *",
-        nudge_unbound_memory_reconciliations,
+        name=PeriodicActionName.NUDGE_RECORDING_UPLOADS,
+        cron=PeriodicCadence.EVERY_MINUTE,
+        run=nudge_unbound_recording_uploads,
     ),
     PeriodicAction(
-        "nudge-memory-formations",
-        "*/5 * * * *",
-        nudge_unbound_memory_formations,
-    ),
-    PeriodicAction("nudge-deletions", "* * * * *", nudge_unbound_deletions),
-    PeriodicAction("dispatch-due-sor-syncs", "* * * * *", dispatch_due_sor_syncs),
-    PeriodicAction("nudge-sor-work", "* * * * *", nudge_sor_work),
-    PeriodicAction("reap-sandbox-resources", "*/5 * * * *", reap_sandbox_resources),
-    PeriodicAction(
-        "refresh-expiring-curated-tokens",
-        "*/5 * * * *",
-        refresh_expiring_curated_tokens,
+        name=PeriodicActionName.PROCESS_CAMPAIGN_CALLS,
+        cron=PeriodicCadence.EVERY_MINUTE,
+        run=process_campaign_calls,
     ),
     PeriodicAction(
-        "expire-old-conversations",
-        "*/5 * * * *",
-        expire_old_conversations,
+        name=PeriodicActionName.NUDGE_MEMORY_REINDEXES,
+        cron=PeriodicCadence.EVERY_MINUTE,
+        run=nudge_unbound_memory_reindexes,
     ),
-    PeriodicAction("cleanup-oauth-states", "0 * * * *", cleanup_expired_oauth_states),
     PeriodicAction(
-        "cleanup-invalidated-connections",
-        "0 0 * * *",
-        cleanup_invalidated_connections,
+        name=PeriodicActionName.NUDGE_MEMORY_RECONCILIATIONS,
+        cron=PeriodicCadence.EVERY_MINUTE,
+        run=nudge_unbound_memory_reconciliations,
+    ),
+    PeriodicAction(
+        name=PeriodicActionName.NUDGE_MEMORY_FORMATIONS,
+        cron=PeriodicCadence.EVERY_FIVE_MINUTES,
+        run=nudge_unbound_memory_formations,
+    ),
+    PeriodicAction(
+        name=PeriodicActionName.NUDGE_DELETIONS,
+        cron=PeriodicCadence.EVERY_MINUTE,
+        run=nudge_unbound_deletions,
+    ),
+    PeriodicAction(
+        name=PeriodicActionName.DISPATCH_DUE_SOR_SYNCS,
+        cron=PeriodicCadence.EVERY_MINUTE,
+        run=dispatch_due_sor_syncs,
+    ),
+    PeriodicAction(
+        name=PeriodicActionName.NUDGE_SOR_WORK,
+        cron=PeriodicCadence.EVERY_MINUTE,
+        run=nudge_sor_work,
+    ),
+    PeriodicAction(
+        name=PeriodicActionName.REAP_SANDBOX_RESOURCES,
+        cron=PeriodicCadence.EVERY_FIVE_MINUTES,
+        run=reap_sandbox_resources,
+    ),
+    PeriodicAction(
+        name=PeriodicActionName.REFRESH_EXPIRING_CURATED_TOKENS,
+        cron=PeriodicCadence.EVERY_FIVE_MINUTES,
+        run=refresh_expiring_curated_tokens,
+    ),
+    PeriodicAction(
+        name=PeriodicActionName.EXPIRE_OLD_CONVERSATIONS,
+        cron=PeriodicCadence.EVERY_FIVE_MINUTES,
+        run=expire_old_conversations,
+    ),
+    PeriodicAction(
+        name=PeriodicActionName.CLEANUP_OAUTH_STATES,
+        cron=PeriodicCadence.HOURLY,
+        run=cleanup_expired_oauth_states,
+    ),
+    PeriodicAction(
+        name=PeriodicActionName.CLEANUP_INVALIDATED_CONNECTIONS,
+        cron=PeriodicCadence.DAILY,
+        run=cleanup_invalidated_connections,
     ),
 )
 
@@ -145,8 +209,8 @@ _ACTIONS_BY_NAME = {action.name: action for action in PERIODIC_ACTIONS}
 async def run_periodic_action(action_name: str) -> None:
     """Run one bounded catalog action without overlapping the same action."""
     try:
-        action = _ACTIONS_BY_NAME[action_name]
-    except KeyError as error:
+        action = _ACTIONS_BY_NAME[PeriodicActionName(action_name)]
+    except (KeyError, ValueError) as error:
         raise ValueError(f"Unknown periodic action: {action_name}") from error
 
     async with get_redis_client() as redis_client:
@@ -162,8 +226,7 @@ async def run_periodic_action(action_name: str) -> None:
                 await action.run()
         except Exception as error:
             logger.exception(
-                "Periodic action failed action=%s error_type=%s; "
-                "later schedules retry",
+                "Periodic action failed action=%s error_type=%s; later schedules retry",
                 action.name,
                 type(error).__name__,
             )
@@ -186,20 +249,28 @@ def register_legacy_periodic_workflow(runtime: PlatformDurableRuntime) -> None:
     )
 
 
+class LegacyPeriodicRetirement(BaseModel):
+    """Existing compatibility response; finite JSON without rearming a tick."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", allow_inf_nan=False
+    )
+
+    retired: Literal[True] = True
+    scheduled_for: JsonValue = Field(repr=False)
+    replacement: Literal["taskiq"] = "taskiq"
+
+
 async def _retire_legacy_periodic_tick(
-    params: dict[str, Any],
+    params: dict[str, JsonValue],
     _context: AsyncTaskContext,
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     scheduled_for = params.get("scheduled_for")
     logger.info(
         "Retired persisted Absurd periodic tick scheduled_for=%s; Taskiq owns cron",
         scheduled_for,
     )
-    return {
-        "retired": True,
-        "scheduled_for": scheduled_for,
-        "replacement": "taskiq",
-    }
+    return LegacyPeriodicRetirement(scheduled_for=scheduled_for).model_dump(mode="json")
 
 
 __all__ = [

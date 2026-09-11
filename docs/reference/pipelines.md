@@ -15,6 +15,7 @@ authority, transforms, sinks, and recovery path for every entry below.
 | `agent_execution_context.py` | own typed runtime context, exact command IDs, and command-step versus durable-wait authority across conversation, scheduled, objective, and voice callers |
 | `agent_run_continuations.py` | validate product pause snapshots, request kinds and exact tool identity when filing and resuming conversation, objective and scheduled runs |
 | `agent_run_heartbeat.py` | renew durable Agent-run claims, check active-time budgets, and settle owned operations on completion, cancellation, or lease failure |
+| `agent_run_results.py` | validate scheduled, objective and parallel-task result projections before canonical storage, preserving exact run/message references and finite output |
 | `agent_run_tools.py` | bind model tool calls to already-persisted Agent-run command IDs without synthetic message rows |
 | `agent_run_transcript.py` | persist/replay Agent-run model and tool exchanges; retain typed transient tool-call capture for pause/completion correlation |
 | `parallel_agents` | durable worker dispatch for LLM tasks, swarm members, and attached background Agents |

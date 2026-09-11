@@ -16,6 +16,10 @@ from eylo.modules.agent_runs.service import (
     file_objective_agent_run_in_transaction,
     get_agent_run,
 )
+from eylo.modules.sandbox.run_context import (
+    ObjectiveRunContext,
+    ObjectiveRunContextKind,
+)
 from eylo.modules.templates.domain import TemplateConsumerKind
 from eylo.pipelines.agents import build_executable_agent_resolver
 
@@ -33,6 +37,11 @@ async def create_objective_for_agent(
     """Pin one published agent revision and atomically file its objective run."""
     if deadline.tzinfo is None or deadline.utcoffset() is None:
         raise ValueError("Objective deadline must include a timezone.")
+    run_context = ObjectiveRunContext(
+        kind=ObjectiveRunContextKind.OBJECTIVE,
+        max_steps=max_steps,
+        deadline=deadline,
+    )
 
     async with start_transaction() as session:
         executable = await build_executable_agent_resolver(session).resolve_for_new_work(
@@ -51,11 +60,7 @@ async def create_objective_for_agent(
             agent_id=executable.ref.definition_id,
             agent_revision=executable.ref.revision,
             goal=goal,
-            context_manifest={
-                "kind": "objective",
-                "max_steps": max_steps,
-                "deadline": deadline.isoformat(),
-            },
+            context_manifest=run_context.model_dump(mode="json"),
             idempotency_token=idempotency_token,
         )
 

@@ -22,6 +22,7 @@ from eylo.sockets.llm.schemas import (
     LLMDeltaKind,
     LLMResponse,
     LLMResponseMetadata,
+    LLMStopReason,
     LLMTextBlock,
     LLMTextContent,
     LLMTextDelta,
@@ -484,13 +485,13 @@ class GeminiStream(BaseModel):
                 raise GeminiResponseError(
                     GeminiResponseErrorKind.INVALID_TOOL_CALL
                 ) from None
-        reason = "content_filter"
+        reason = LLMStopReason.CONTENT_FILTER
         if self.finish_reason == types.FinishReason.STOP:
-            reason = "tool_use" if tools else "end_turn"
+            reason = LLMStopReason.TOOL_USE if tools else LLMStopReason.END_TURN
         elif self.finish_reason == types.FinishReason.MAX_TOKENS:
-            reason = "max_tokens"
+            reason = LLMStopReason.MAX_TOKENS
         elif self.finish_reason == types.FinishReason.OTHER:
-            reason = "other"
+            reason = LLMStopReason.OTHER
         self.id = self.id or str(uuid4())
         return LLMResponse(
             id=self.id,

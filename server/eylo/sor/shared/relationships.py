@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Sequence
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,9 +23,12 @@ from .services import SorProjectionError
 _PENDING_RETRY_INTERVAL = timedelta(minutes=5)
 
 
-@dataclass(frozen=True, slots=True)
-class SorRelationshipResolutionStats:
+class SorRelationshipResolutionStats(BaseModel):
     """Bounded product counters for one relationship-resolution pass."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     checked: int = 0
     resolved: int = 0

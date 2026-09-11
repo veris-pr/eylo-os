@@ -63,7 +63,7 @@ class VoiceRuntimeVerifier:
                 "Voice provider verification failed."
             ) from None
         return VoiceProviderVerification(
-            provider=config.provider.value,
+            provider=config.provider,
             kind=config.kind,
         )
 

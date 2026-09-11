@@ -22,13 +22,16 @@ from eylo.common.outbound import (
 from eylo.sockets.telephony.base import (
     BaseTelephonyService,
     CallMetadata,
+    CarrierMediaEvent,
     InboundMediaMessage,
     OutboundMediaMessage,
+    StreamTokenRequirement,
     TelephonyConfig,
     TelephonyControlResult,
     TelephonyMessageParser,
     TelephonyOperationCapabilities,
     TelephonyOperationProfile,
+    TelephonyOperationSupport,
     TelephonyProvider,
     classify_provider_failure,
 )
@@ -88,7 +91,7 @@ class TwilioMessageParser(TelephonyMessageParser):
         payload = base64.b64decode(payload_b64)
 
         return InboundMediaMessage(
-            event="media",
+            event=CarrierMediaEvent.MEDIA,
             payload=payload,
             timestamp=media_data.get("timestamp", ""),
             track=media_data.get("track", "inbound"),
@@ -135,11 +138,17 @@ class TwilioMessageParser(TelephonyMessageParser):
             to_number=custom_params.get("To", ""),
             organization_id=UUID(org_id) if org_id else None,
             agent_id=UUID(agent_id) if agent_id else None,
-            direction=custom_params.get("Direction", "INBOUND"),
+            direction=CallMetadata.normalize_direction(
+                custom_params.get("Direction", "INBOUND")
+            ),
             initial_message=custom_params.get("InitialMessage"),
             media_stream_token=custom_params.get("StreamToken")
             or custom_params.get("stream_token"),
-            requires_media_stream_token=requires_stream_token,
+            stream_token_requirement=(
+                StreamTokenRequirement.REQUIRED
+                if requires_stream_token
+                else StreamTokenRequirement.NOT_REQUIRED
+            ),
         )
 
 
@@ -381,7 +390,7 @@ class TwilioService(BaseTelephonyService):
             transport_kind=OutboundTransportKind.HTTP,
             destination_origin="https://api.twilio.com",
             capabilities=TelephonyOperationCapabilities(
-                provider_idempotency=False,
-                reconciliation=False,
+                provider_idempotency=TelephonyOperationSupport.UNSUPPORTED,
+                reconciliation=TelephonyOperationSupport.UNSUPPORTED,
             ),
         )

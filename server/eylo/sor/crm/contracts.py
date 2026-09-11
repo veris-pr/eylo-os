@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum, StrEnum
@@ -13,11 +12,13 @@ from pydantic import Field
 
 from eylo.sor.shared.contracts import (
     SorCanonicalPayload,
+    SorCanonicalRecord,
     SorCommandPayload,
     SorExternalRecord,
     SorLifecycleAdapter,
     SorMappedFieldsCommandPayload,
 )
+from eylo.sor.shared.json_values import SorJsonValue
 
 
 class CrmDealState(str, Enum):
@@ -166,8 +167,7 @@ CRM_PAYLOAD_TYPES: Mapping[CrmEntityKind, type[SorCanonicalPayload]] = {
 }
 
 
-@dataclass(frozen=True, slots=True)
-class CrmContact:
+class CrmContact(SorCanonicalRecord):
     external_id: str
     name: str | None
     primary_email: str | None
@@ -177,11 +177,10 @@ class CrmContact:
     owner_external_id: str | None
     source_updated_at: datetime | None
     source_url: str | None
-    custom_fields: Mapping[str, object] = field(default_factory=dict)
+    custom_fields: dict[str, SorJsonValue] = Field(default_factory=dict)
 
 
-@dataclass(frozen=True, slots=True)
-class CrmCompany:
+class CrmCompany(SorCanonicalRecord):
     external_id: str
     name: str | None
     domain: str | None
@@ -189,11 +188,10 @@ class CrmCompany:
     owner_external_id: str | None
     source_updated_at: datetime | None
     source_url: str | None
-    custom_fields: Mapping[str, object] = field(default_factory=dict)
+    custom_fields: dict[str, SorJsonValue] = Field(default_factory=dict)
 
 
-@dataclass(frozen=True, slots=True)
-class CrmDeal:
+class CrmDeal(SorCanonicalRecord):
     external_id: str
     title: str
     pipeline_external_id: str | None
@@ -209,11 +207,10 @@ class CrmDeal:
     company_external_ids: tuple[str, ...]
     source_updated_at: datetime | None
     source_url: str | None
-    custom_fields: Mapping[str, object] = field(default_factory=dict)
+    custom_fields: dict[str, SorJsonValue] = Field(default_factory=dict)
 
 
-@dataclass(frozen=True, slots=True)
-class CrmActivity:
+class CrmActivity(SorCanonicalRecord):
     external_id: str
     kind: str
     subject: str | None

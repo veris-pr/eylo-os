@@ -1,14 +1,12 @@
 """Application services for the `conversations` domain."""
 
 import json
-from dataclasses import dataclass
 from hashlib import sha256
 from typing import TYPE_CHECKING, Any, List, Optional
 from uuid import UUID, uuid4
 
 import nh3 as bleach
-from pydantic import BaseModel
-from pydantic_core import to_jsonable_python
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.contracts.background_task import TaskContent
@@ -22,6 +20,7 @@ from eylo.modules.agent_runs.domain import (
     InitiatingPrincipalRef,
 )
 from eylo.modules.agent_runs.models import AgentRunModel
+from eylo.modules.agent_runs.serialization import validate_agent_run_json_object
 from eylo.modules.conversations.constants import REALTIME_MESSAGE_SOURCE
 from eylo.modules.conversations.message_facts import file_voice_message_fact
 from eylo.modules.conversations.models.messages import MessagesModel
@@ -64,11 +63,14 @@ if TYPE_CHECKING:
     )
 
 
-@dataclass(frozen=True, slots=True)
-class MessageAgentRunFiling:
+class MessageAgentRunFiling(BaseModel):
     """Result of atomically filing one inbound message and durable run."""
 
-    message: MessageInDb
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    message: MessageInDb = Field(repr=False, exclude=True)
     run_id: UUID
     created: bool
 
@@ -284,10 +286,26 @@ class MessageService(EyloBaseService[MessageInDb, MessagesModel]):
             MessageCreatedEvent(
                 conversation_id=message.conversation_id,
                 message_id=message_indb.id,
-                message=message_indb,
+                kind=message_indb.kind,
             )
         )
         return message_indb
+
+    async def get_by_conversation_and_id(
+        self,
+        *,
+        conversation_id: UUID,
+        message_id: UUID,
+    ) -> MessageInDb | None:
+        """Reload a live message only within the caller's resolved conversation."""
+        entity = await self.repository.filter_one_(
+            filters=[
+                self.repository.model.id == message_id,
+                self.repository.model.conversation_id == conversation_id,
+                self.repository.model.deleted.is_(False),
+            ]
+        )
+        return None if entity is None else self.orm_to_schema(entity)
 
     async def _inherit_user_session(
         self,
@@ -317,7 +335,7 @@ class MessageService(EyloBaseService[MessageInDb, MessagesModel]):
         principal: InitiatingPrincipalRef,
         agent_id: UUID,
         agent_revision: int,
-        context_manifest: dict,
+        context_manifest: dict[str, JsonValue],
         goal: str,
         idempotency_key: str,
     ) -> MessageAgentRunFiling:
@@ -342,7 +360,7 @@ class MessageService(EyloBaseService[MessageInDb, MessagesModel]):
         principal: InitiatingPrincipalRef,
         agent_id: UUID,
         agent_revision: int,
-        context_manifest: dict,
+        context_manifest: dict[str, JsonValue],
         idempotency_key: str,
     ) -> MessageAgentRunFiling:
         """Atomically file one agent-authored TASK message and its run."""
@@ -391,7 +409,7 @@ class MessageService(EyloBaseService[MessageInDb, MessagesModel]):
         principal: InitiatingPrincipalRef,
         agent_id: UUID,
         agent_revision: int,
-        context_manifest: dict,
+        context_manifest: dict[str, JsonValue],
         goal: str,
         idempotency_key: str,
         task_content: TaskContent | None,
@@ -408,11 +426,12 @@ class MessageService(EyloBaseService[MessageInDb, MessagesModel]):
                 "Message AgentRun goal must contain 1-16384 characters."
             )
 
-        normalized_context = to_jsonable_python(context_manifest)
-        if not isinstance(normalized_context, dict):
+        try:
+            normalized_context = validate_agent_run_json_object(context_manifest)
+        except ValueError as error:
             raise MessageAgentRunConflict(
-                "AgentRun context manifest must be an object."
-            )
+                "AgentRun context manifest must be a finite JSON object."
+            ) from error
 
         message = message.model_copy(deep=True)
         request_id_was_supplied = message.request_id is not None
@@ -533,7 +552,7 @@ class MessageService(EyloBaseService[MessageInDb, MessagesModel]):
         principal: InitiatingPrincipalRef,
         agent_id: UUID,
         agent_revision: int,
-        context_manifest: dict,
+        context_manifest: dict[str, JsonValue],
         goal: str,
         request_id_was_supplied: bool,
     ) -> MessageAgentRunFiling:
@@ -846,7 +865,7 @@ def _is_realtime_message(message: MessageCreate) -> bool:
     return meta.get("source") == REALTIME_MESSAGE_SOURCE
 
 
-def _context_digest(context_manifest: dict) -> str:
+def _context_digest(context_manifest: dict[str, JsonValue]) -> str:
     encoded = json.dumps(
         context_manifest,
         sort_keys=True,
@@ -869,7 +888,7 @@ def _same_filing(
     principal: InitiatingPrincipalRef,
     agent_id: UUID,
     agent_revision: int,
-    context_manifest: dict,
+    context_manifest: dict[str, JsonValue],
     goal: str,
     request_id_was_supplied: bool,
 ) -> bool:

@@ -183,13 +183,13 @@ class DeepgramAdapter(STTVendorAdapter):
     async def send_audio(self, audio_data: bytes) -> None:
         if self._stream is None:
             raise STTConnectionClosed("Deepgram stream is not connected.")
-        frame = AudioFrame(
-            data=audio_data,
-            sample_rate=self.sample_rate,
-            num_channels=1,
-            samples_per_channel=len(audio_data) // _PCM_BYTES_PER_SAMPLE,
-        )
         try:
+            frame = AudioFrame(
+                data=audio_data,
+                sample_rate=self.sample_rate,
+                num_channels=1,
+                samples_per_channel=len(audio_data) // _PCM_BYTES_PER_SAMPLE,
+            )
             await self._stream.push_audio(frame)
         except BaseException:
             self._is_connected = False

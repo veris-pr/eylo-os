@@ -30,6 +30,7 @@ from eylo.sockets.llm.schemas import (
     LLMDeltaKind,
     LLMResponse,
     LLMResponseMetadata,
+    LLMStopReason,
     LLMTextBlock,
     LLMTextContent,
     LLMTextDelta,
@@ -171,7 +172,7 @@ def message_response(value: Message) -> LLMResponse:
         id=value.id,
         model=value.model,
         content=content,
-        stop_reason=reason.value,
+        stop_reason=LLMStopReason(reason.value),
         usage=_usage(value.usage),
         metadata=LLMResponseMetadata(vendor=ANTHROPIC_VENDOR),
     )

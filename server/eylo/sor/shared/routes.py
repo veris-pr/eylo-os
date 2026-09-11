@@ -20,7 +20,7 @@ from eylo.sor.runtime.api_key_sources import (
     create_api_key_source,
     verify_api_key_source_candidate,
 )
-from eylo.sor.runtime.authority import SorAuthorityError
+from eylo.sor.runtime.authority import SorAuthorityError, SorAuthorityFailure
 from eylo.sor.runtime.catalog import get_sor_registry
 from eylo.sor.runtime.commands import cancel_active_sor_commands
 from eylo.sor.runtime.deletion import (
@@ -1278,7 +1278,7 @@ async def get_agent_sor_view(
     except SorAuthorityError as error:
         http_status = (
             status.HTTP_404_NOT_FOUND
-            if error.code == "SOR_SOURCE_UNAVAILABLE"
+            if error.code == SorAuthorityFailure.SOR_SOURCE_UNAVAILABLE
             else status.HTTP_422_UNPROCESSABLE_CONTENT
         )
         raise HTTPException(status_code=http_status, detail=str(error)) from None

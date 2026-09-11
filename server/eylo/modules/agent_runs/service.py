@@ -7,13 +7,12 @@ import json
 import re
 from collections import defaultdict
 from collections.abc import Sequence
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 from jsonschema import Draft202012Validator, validate
 from jsonschema.exceptions import SchemaError
-from pydantic import JsonValue, ValidationError
+from pydantic import BaseModel, ConfigDict, JsonValue, ValidationError
 from pydantic_core import to_jsonable_python
 from referencing.jsonschema import DRAFT202012
 from sqlalchemy import JSON, update
@@ -52,6 +51,7 @@ from eylo.modules.agent_runs.schemas import (
     AgentRunReservationRead,
     AgentRunStepRead,
 )
+from eylo.modules.agent_runs.serialization import validate_agent_run_json_object
 from eylo.modules.agent_runs.waits import (
     AgentApprovalResponse,
     AgentRunWaitState,
@@ -79,17 +79,23 @@ _MAX_INPUT_SCHEMA_NODES = 1_024
 _TOOL_WAIT_OWNER_KIND = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 
-@dataclass(frozen=True, slots=True)
-class ScheduleAgentRunFiling:
+class ScheduleAgentRunFiling(BaseModel):
     """Atomic schedule-occurrence filing result."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     run_id: UUID
     created: bool
 
 
-@dataclass(frozen=True, slots=True)
-class ObjectiveAgentRunFiling:
+class ObjectiveAgentRunFiling(BaseModel):
     """Idempotent direct-objective filing result."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     run_id: UUID
     created: bool
@@ -104,7 +110,7 @@ async def file_schedule_agent_run_in_transaction(
     agent_id: UUID,
     agent_revision: int,
     goal: str,
-    context_manifest: dict,
+    context_manifest: dict[str, JsonValue],
 ) -> ScheduleAgentRunFiling:
     """File one run for one immutable occurrence in the caller's transaction."""
     if principal.organization_id != organization_id:
@@ -122,9 +128,12 @@ async def file_schedule_agent_run_in_transaction(
     if agent_revision < 1:
         raise AgentRunConflict("Schedule AgentRun requires a positive agent revision.")
 
-    normalized_context = to_jsonable_python(context_manifest)
-    if not isinstance(normalized_context, dict):
-        raise AgentRunConflict("Schedule AgentRun context manifest must be an object.")
+    try:
+        normalized_context = validate_agent_run_json_object(context_manifest)
+    except ValueError as error:
+        raise AgentRunConflict(
+            "Schedule AgentRun context manifest must be a finite JSON object."
+        ) from error
     encoded_context = json.dumps(
         normalized_context,
         ensure_ascii=False,
@@ -192,7 +201,7 @@ async def file_objective_agent_run_in_transaction(
     agent_id: UUID,
     agent_revision: int,
     goal: str,
-    context_manifest: dict,
+    context_manifest: dict[str, JsonValue],
     idempotency_token: str,
 ) -> ObjectiveAgentRunFiling:
     """File one member-requested objective without a second durable resource."""
@@ -262,11 +271,14 @@ async def file_objective_agent_run_in_transaction(
 
 
 def _normalize_context_manifest(
-    context_manifest: dict, *, label: str
-) -> tuple[dict, str]:
-    normalized = to_jsonable_python(context_manifest)
-    if not isinstance(normalized, dict):
-        raise AgentRunConflict(f"{label} AgentRun context manifest must be an object.")
+    context_manifest: dict[str, JsonValue], *, label: str
+) -> tuple[dict[str, JsonValue], str]:
+    try:
+        normalized = validate_agent_run_json_object(context_manifest)
+    except ValueError as error:
+        raise AgentRunConflict(
+            f"{label} AgentRun context manifest must be a finite JSON object."
+        ) from error
     encoded = json.dumps(
         normalized,
         ensure_ascii=False,
@@ -288,7 +300,7 @@ def _same_schedule_filing(
     agent_id: UUID,
     agent_revision: int,
     goal: str,
-    context_manifest: dict,
+    context_manifest: dict[str, JsonValue],
     context_digest: str,
 ) -> bool:
     return (
@@ -312,7 +324,7 @@ def _same_objective_filing(
     agent_id: UUID,
     agent_revision: int,
     goal: str,
-    context_manifest: dict,
+    context_manifest: dict[str, JsonValue],
     context_digest: str,
 ) -> bool:
     return (
@@ -649,7 +661,7 @@ async def finish_agent_run_in_transaction(
     run_id: UUID,
     lifecycle: AgentRunLifecycle,
     outcome: AgentRunOutcome,
-    result: dict | None = None,
+    result: dict[str, JsonValue] | None = None,
     outcome_reason: str | None = None,
     failure_summary: str | None = None,
 ) -> None:
@@ -667,6 +679,8 @@ async def finish_agent_run_in_transaction(
         raise ValueError("AgentRun failure summary exceeds 2000 characters.")
     if outcome_reason is not None and len(outcome_reason) > 4000:
         raise ValueError("AgentRun outcome reason exceeds 4000 characters.")
+    if result is not None:
+        result = validate_agent_run_json_object(result)
 
     run = await AgentRunRepository(session).get(
         organization_id=organization_id,

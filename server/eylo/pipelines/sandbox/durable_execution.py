@@ -14,6 +14,7 @@ from pydantic import (
     JsonValue,
     StrictStr,
     ValidationError,
+    field_validator,
     model_validator,
 )
 
@@ -67,6 +68,7 @@ from eylo.modules.agent_runs.workflow import (
 )
 from eylo.modules.llm_configs.wiring import resolve_pinned_llm
 from eylo.modules.provider_configs.errors import NotConfiguredError
+from eylo.modules.sandbox.run_context import ObjectiveRunContext
 from eylo.modules.templates.domain import TemplateConsumerKind
 from eylo.pipelines.agent_execution_context import (
     AgentExecutionContext,
@@ -76,10 +78,15 @@ from eylo.pipelines.agent_execution_context import (
 )
 from eylo.pipelines.agent_run_continuations import (
     ObjectiveRunContinuation,
+    RunResumeReceipt,
     RunToolCallSnapshot,
     parse_run_continuation,
 )
 from eylo.pipelines.agent_run_heartbeat import run_with_agent_heartbeat
+from eylo.pipelines.agent_run_results import (
+    ObjectiveExhaustionSummary,
+    ObjectiveRunSummary,
+)
 from eylo.pipelines.agent_run_tools import bind_agent_run_tool_command
 from eylo.pipelines.agent_run_transcript import (
     AgentRunToolCapture,
@@ -147,6 +154,13 @@ class ObjectiveCompletion(BaseModel):
     result: JsonValue = None
     reason: StrictStr | None = None
 
+    @field_validator("result")
+    @classmethod
+    def require_finite_result(cls, value: JsonValue) -> JsonValue:
+        """Validate before model dumping, which may normalize non-finite floats."""
+        json.dumps(value, allow_nan=False)
+        return value
+
     @model_validator(mode="after")
     def require_unachievable_reason(self) -> ObjectiveCompletion:
         if self.outcome is AgentRunOutcome.UNACHIEVABLE:
@@ -187,7 +201,7 @@ class ObjectiveCompletion(BaseModel):
                 "Objective completion payload is invalid."
             ) from error
 
-    def as_json(self) -> dict[str, object]:
+    def as_json(self) -> dict[str, JsonValue]:
         return self.model_dump(mode="json")
 
 
@@ -200,19 +214,6 @@ class ObjectiveFrameworkTurn(BaseModel):
 
     result: RunResult
     captured: AgentRunToolCapture
-
-
-class ObjectiveRunSummary(BaseModel):
-    """Bounded persisted objective result with finite JSON output."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
-
-    kind: Literal["objective"] = "objective"
-    agent_run_id: UUID
-    framework_run_id: UUID
-    framework_status: RunStatus
-    output: JsonValue
-    usage: ModelUsage
 
 
 class ObjectiveControlToolExecutor:
@@ -429,7 +430,7 @@ class ObjectiveFrameworkRunner:
             ) from error
         call = continuation.objective.tool_call
 
-        async def resolve_result() -> dict[str, object]:
+        async def resolve_result() -> dict[str, bool]:
             if isinstance(wait, AgentApprovalWaitState):
                 response = wait.require_response()
                 if response.decision is AgentApprovalDecision.REJECT:
@@ -478,15 +479,21 @@ class ObjectiveFrameworkRunner:
                     },
                 )
             await transcript.record_tool_result(call, result)
-            return {"recorded": True, "is_error": result.is_error}
+            return RunResumeReceipt(
+                recorded=True, is_error=result.is_error
+            ).model_dump(mode="json")
 
         receipt = await workflow_context.step(
             key=f"resume:{wait.request_id}",
             version=1,
             operation=resolve_result,
         )
-        if not isinstance(receipt, dict) or receipt.get("recorded") is not True:
-            raise ObjectiveAgentRunInvalid("Objective resume receipt is invalid.")
+        try:
+            RunResumeReceipt.model_validate(receipt)
+        except ValidationError as error:
+            raise ObjectiveAgentRunInvalid(
+                "Objective resume receipt is invalid."
+            ) from error
         tool_result = await transcript.tool_result(call)
         if tool_result is None:
             raise ObjectiveAgentRunInvalid("Objective resume result is unavailable.")
@@ -515,7 +522,7 @@ class ObjectiveAgentRunExecutor:
             await _finish_completed(
                 claim,
                 outcome=AgentRunOutcome.EXHAUSTED,
-                result={"kind": "objective", "output": None},
+                result=ObjectiveExhaustionSummary(agent_run_id=claim.run_id),
                 reason=str(error),
             )
         except (
@@ -817,7 +824,7 @@ def _terminal_fields(
 ) -> tuple[
     AgentRunLifecycle,
     AgentRunOutcome,
-    dict[str, object] | None,
+    dict[str, JsonValue] | None,
     str | None,
     str | None,
 ]:
@@ -880,14 +887,17 @@ def _objective_result(
     claim: AgentRunExecutionClaim,
     result: RunResult,
     output: JsonValue,
-) -> dict[str, object]:
-    projected = ObjectiveRunSummary(
-        agent_run_id=claim.run_id,
-        framework_run_id=result.run_id,
-        framework_status=result.status,
-        output=output,
-        usage=result.usage,
-    ).model_dump(mode="json")
+) -> dict[str, JsonValue]:
+    try:
+        projected = ObjectiveRunSummary(
+            agent_run_id=claim.run_id,
+            framework_run_id=result.run_id,
+            framework_status=result.status,
+            output=output,
+            usage=result.usage,
+        ).model_dump(mode="json")
+    except ValidationError as error:
+        raise ObjectiveAgentRunInvalid("Objective result is invalid.") from error
     encoded = json.dumps(
         projected,
         ensure_ascii=False,
@@ -903,10 +913,12 @@ async def _finish_completed(
     claim: AgentRunExecutionClaim,
     *,
     outcome: AgentRunOutcome,
-    result: dict,
+    result: ObjectiveExhaustionSummary,
     reason: str | None,
 ) -> None:
-    projected = {**result, "agent_run_id": str(claim.run_id)}
+    if result.agent_run_id != claim.run_id:
+        raise ObjectiveAgentRunInvalid("Objective result belongs to another run.")
+    projected = result.model_dump(mode="json")
     async with start_transaction() as db:
         await finish_agent_run_in_transaction(
             db,
@@ -924,24 +936,17 @@ def _validate_claim(claim: AgentRunExecutionClaim) -> tuple[int, datetime]:
         claim.origin_kind is not AgentRunOriginKind.OBJECTIVE
         or claim.origin_message_id is not None
         or claim.origin_schedule_run_id is not None
-        or claim.context_manifest.get("kind") != "objective"
     ):
         raise ObjectiveAgentRunInvalid(
             "Objective executor received a different origin."
         )
-    max_steps = claim.context_manifest.get("max_steps")
-    deadline_value = claim.context_manifest.get("deadline")
-    if isinstance(max_steps, bool) or not isinstance(max_steps, int):
-        raise ObjectiveAgentRunInvalid("Objective max_steps is invalid.")
-    if not 1 <= max_steps <= 200 or not isinstance(deadline_value, str):
-        raise ObjectiveAgentRunInvalid("Objective bounds are invalid.")
     try:
-        deadline = datetime.fromisoformat(deadline_value)
+        run_context = ObjectiveRunContext.model_validate_json(
+            json.dumps(claim.context_manifest, allow_nan=False)
+        )
     except ValueError as error:
-        raise ObjectiveAgentRunInvalid("Objective deadline is invalid.") from error
-    if deadline.tzinfo is None or deadline.utcoffset() is None:
-        raise ObjectiveAgentRunInvalid("Objective deadline has no timezone.")
-    return max_steps, deadline
+        raise ObjectiveAgentRunInvalid("Objective context is invalid.") from error
+    return run_context.max_steps, run_context.deadline
 
 
 def _validate_resume_event(

@@ -5,10 +5,14 @@ from __future__ import annotations
 import json
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
+from enum import StrEnum
 from uuid import UUID
+
+from pydantic import JsonValue
 
 from eylo.common.contracts.background_task import BackgroundTaskOutcome, TaskContent
 from eylo.common.database import start_transaction
+from eylo.framework.agents.errors import ModelOutputLimitError
 from eylo.modules.agent_runs.domain import (
     AgentRunLifecycle,
     AgentRunOriginKind,
@@ -37,6 +41,7 @@ from eylo.modules.parallel_agents.schemas import (
 )
 from eylo.modules.provider_configs.errors import NotConfiguredError
 from eylo.pipelines.agent_run_heartbeat import run_with_agent_heartbeat
+from eylo.pipelines.agent_run_results import ParallelTaskRunSummary
 from eylo.pipelines.parallel_agents.background_agent_worker import (
     BackgroundAgentWorker,
 )
@@ -55,6 +60,15 @@ class ParallelAgentRunInvalid(Exception):
     """A persisted task no longer agrees with its immutable run authority."""
 
 
+class ParallelTaskFailureCode(StrEnum):
+    """Terminal parallel-task summaries persisted by this executor."""
+
+    INVALID = "parallel_task_invalid"
+    PROVIDER_NOT_CONFIGURED = "parallel_task_provider_not_configured"
+    MODEL_OUTPUT_LIMIT = "parallel_task_model_output_limit"
+    RESULT_INVALID = "parallel_task_result_invalid"
+
+
 class ParallelTaskAgentRunExecutor:
     """Run one task message and atomically publish its canonical result."""
 
@@ -70,7 +84,7 @@ class ParallelTaskAgentRunExecutor:
         try:
             task_content = await _validate_task_origin(claim, origin)
         except ParallelAgentRunInvalid:
-            await _fail_task(claim, origin, "parallel_task_invalid")
+            await _fail_task(claim, origin, ParallelTaskFailureCode.INVALID)
             return
 
         await _mark_processing(origin.id)
@@ -90,7 +104,12 @@ class ParallelTaskAgentRunExecutor:
         try:
             await run_with_agent_heartbeat(context, execute_task)
         except NotConfiguredError:
-            await _fail_task(claim, origin, "parallel_task_provider_not_configured")
+            await _fail_task(
+                claim, origin, ParallelTaskFailureCode.PROVIDER_NOT_CONFIGURED
+            )
+            return
+        except ModelOutputLimitError:
+            await _fail_task(claim, origin, ParallelTaskFailureCode.MODEL_OUTPUT_LIMIT)
             return
         try:
             await _persist_completion(
@@ -100,7 +119,7 @@ class ParallelTaskAgentRunExecutor:
                 worker_result=result_holder[0],
             )
         except ParallelAgentRunInvalid:
-            await _fail_task(claim, origin, "parallel_task_result_invalid")
+            await _fail_task(claim, origin, ParallelTaskFailureCode.RESULT_INVALID)
 
 
 async def _validate_task_origin(
@@ -142,7 +161,9 @@ async def _validate_task_origin(
             "Parallel task target does not match its AgentRun authority."
         ) from error
     try:
-        manifest = ParallelTaskManifest.model_validate(claim.context_manifest)
+        manifest = ParallelTaskManifest.model_validate_json(
+            json.dumps(claim.context_manifest, allow_nan=False)
+        )
     except ValueError as error:
         raise ParallelAgentRunInvalid("Parallel task context is invalid.") from error
     if (
@@ -230,15 +251,15 @@ async def _persist_completion(
             "iterations_used": worker_result.iterations_used,
         },
     )
-    projected_result = {
-        "kind": "parallel_task",
-        "task_message_id": str(origin.id),
-        "task_status": task_status.value,
-        "worker_type": worker_type,
-        "model_used": worker_result.model_used,
-        "iterations_used": worker_result.iterations_used,
-        "output": worker_result.text,
-    }
+    summary = ParallelTaskRunSummary(
+        task_message_id=origin.id,
+        task_status=task_status,
+        worker_type=task_content.task_kind,
+        model_used=worker_result.model_used,
+        iterations_used=worker_result.iterations_used,
+        output=worker_result.text,
+    )
+    projected_result = summary.model_dump(mode="json", exclude_none=True)
     _require_bounded_result(projected_result)
 
     async with start_transaction() as session:
@@ -266,7 +287,9 @@ async def _persist_completion(
             origin.id,
             {"request_status": task_status},
         )
-        projected_result["task_result_message_id"] = str(result_message.id)
+        projected_result = summary.with_result_message(result_message.id).model_dump(
+            mode="json", exclude_none=True
+        )
         _require_bounded_result(projected_result)
         await finish_agent_run_in_transaction(
             session,
@@ -286,7 +309,7 @@ async def _persist_completion(
 async def _fail_task(
     claim: AgentRunExecutionClaim,
     origin: MessageInDb,
-    summary: str,
+    summary: ParallelTaskFailureCode,
 ) -> None:
     task_meta = origin.meta.model_dump(mode="json") if origin.meta else {}
     async with start_transaction() as session:
@@ -307,7 +330,7 @@ async def _fail_task(
         )
 
 
-def _require_bounded_result(result: dict) -> None:
+def _require_bounded_result(result: dict[str, JsonValue]) -> None:
     encoded = json.dumps(
         result,
         ensure_ascii=False,

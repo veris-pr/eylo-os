@@ -12209,7 +12209,7 @@ export interface components {
             transform_kind: components["schemas"]["SorTransformKind"];
             /** Transform Config */
             transform_config?: {
-                [key: string]: unknown;
+                [key: string]: components["schemas"]["JsonValue"];
             };
             /** @default READ_ONLY */
             direction: components["schemas"]["SorFieldMappingDirection"];

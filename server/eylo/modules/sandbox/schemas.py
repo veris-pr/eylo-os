@@ -9,6 +9,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from eylo.common.contracts.sandbox import SandboxAccess, SandboxState
+from eylo.modules.sandbox.run_context import OBJECTIVE_MAX_STEPS
 
 
 class ObjectiveCreate(BaseModel):
@@ -30,7 +31,7 @@ class ObjectiveCreate(BaseModel):
             "the one thing that must not drift as the work goes on."
         ),
     )
-    max_steps: int = Field(ge=1, le=200)
+    max_steps: int = Field(ge=1, le=OBJECTIVE_MAX_STEPS)
     deadline: datetime
 
 

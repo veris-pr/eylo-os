@@ -19,6 +19,10 @@ class RunTimeoutError(FrameworkError):
     """Raised when a run exceeds its configured timeout."""
 
 
+class ModelOutputLimitError(FrameworkError):
+    """The provider exhausted its output budget before completing the response."""
+
+
 class GuardrailTripwireError(FrameworkError):
     """Raised when a guardrail blocks execution."""
 

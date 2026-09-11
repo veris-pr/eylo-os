@@ -65,7 +65,12 @@ from eylo.pipelines.telephony.voice import (
 from eylo.pipelines.voice import consent as _consent
 from eylo.pipelines.voice.tts_payloads import TTSFinalizeRequest, TTSTextRequest
 from eylo.pipelines.websocket.singleton import S_ws_manager
-from eylo.sockets.telephony.base import CallEndedReason, CallMetadata
+from eylo.sockets.telephony.base import (
+    CallEndedReason,
+    CallMetadata,
+    StreamTokenRequirement,
+    TelephonyCallDirection,
+)
 from eylo.sockets.telephony.config import TelephonyProvider as SocketTelephonyProvider
 from eylo.sockets.telephony.dtmf import DTMFCollector
 from eylo.sockets.telephony.manager import TelephonyRealtime
@@ -137,7 +142,7 @@ async def _handle_start_event(
         started_at=arrow.utcnow().datetime,
         opener_text=(
             initial_message
-            if metadata.direction.upper() == "OUTBOUND" and initial_message
+            if metadata.direction is TelephonyCallDirection.OUTBOUND and initial_message
             else None
         ),
     )
@@ -372,23 +377,23 @@ def _enrich_metadata_from_query_params(metadata: CallMetadata, ws: WebSocket) ->
             value := ws.query_params.get(query_key)
         ):
             setattr(metadata, attribute, UUID(value))
-            metadata.requires_media_stream_token = True
+            metadata.stream_token_requirement = StreamTokenRequirement.REQUIRED
     value = ws.query_params.get("agent_revision")
     if metadata.agent_revision is None and value:
         metadata.agent_revision = int(value)
-        metadata.requires_media_stream_token = True
+        metadata.stream_token_requirement = StreamTokenRequirement.REQUIRED
     value = ws.query_params.get("provider_config_revision")
     if metadata.provider_config_revision is None and value:
         metadata.provider_config_revision = int(value)
-        metadata.requires_media_stream_token = True
+        metadata.stream_token_requirement = StreamTokenRequirement.REQUIRED
     value = ws.query_params.get("direction")
-    if metadata.direction == "INBOUND" and value:
-        metadata.direction = value
-        metadata.requires_media_stream_token = True
+    if metadata.direction is TelephonyCallDirection.INBOUND and value:
+        metadata.direction = TelephonyCallDirection(value.upper())
+        metadata.stream_token_requirement = StreamTokenRequirement.REQUIRED
     value = ws.query_params.get("initial_message")
     if not metadata.initial_message and value:
         metadata.initial_message = value
-        metadata.requires_media_stream_token = True
+        metadata.stream_token_requirement = StreamTokenRequirement.REQUIRED
     value = ws.query_params.get("stream_token")
     if not metadata.media_stream_token and value:
         metadata.media_stream_token = value
@@ -469,7 +474,7 @@ def _is_media_stream_metadata_authorized(
         metadata.requires_media_stream_token
         or _has_query_metadata(ws)
         or bool(metadata.media_stream_token)
-        or metadata.direction.upper() == "OUTBOUND"
+        or metadata.direction is TelephonyCallDirection.OUTBOUND
     )
     if not requires_token:
         return client_ip_allowlisted
@@ -622,7 +627,7 @@ async def generic_media_ws(
             if telephony_manager.call_metadata is not None and sess is None:
                 metadata = telephony_manager.call_metadata
                 _enrich_metadata_from_query_params(metadata, ws)
-                if metadata.direction.upper() != "OUTBOUND":
+                if metadata.direction is not TelephonyCallDirection.OUTBOUND:
                     await _enrich_inbound_metadata_from_phone_number(
                         metadata,
                         provider,
@@ -637,7 +642,7 @@ async def generic_media_ws(
                     return
 
                 canonical_call = None
-                if metadata.direction.upper() == "OUTBOUND":
+                if metadata.direction is TelephonyCallDirection.OUTBOUND:
                     canonical_call = await _claim_and_canonicalize_outbound_metadata(
                         metadata,
                         provider,

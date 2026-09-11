@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from enum import Enum
+
+from pydantic import BaseModel, ConfigDict
 
 from eylo.common.contracts.aws_catalog import AWS_REGION_OPTIONS
 
@@ -16,6 +17,7 @@ __all__ = [
     "TTSProviders",
     "VoiceConfigFieldCatalog",
     "VoiceConfigOption",
+    "VoiceConfigInputMode",
     "VoiceKind",
     "voice_config_field_catalog",
 ]
@@ -81,25 +83,39 @@ class TTSProviders(str, Enum):
     MURF = "murf"
 
 
-@dataclass(frozen=True)
-class VoiceConfigOption:
+class VoiceConfigOption(BaseModel):
     """One value an operator can choose without consulting vendor docs."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
     value: str
     label: str
 
 
-@dataclass(frozen=True)
-class VoiceConfigFieldCatalog:
+class VoiceConfigInputMode(str, Enum):
+    """Whether the catalog permits account-specific values beyond its choices."""
+
+    CHOICES_ONLY = "choices_only"
+    CUSTOM_ALLOWED = "custom_allowed"
+
+
+class VoiceConfigFieldCatalog(BaseModel):
     """Published choices for one provider config field.
 
-    ``allow_custom`` is reserved for vendor-owned catalogs such as cloned voices.
+    Custom input is reserved for vendor-owned catalogs such as cloned voices.
     The published choices cover common built-in values; the escape hatch keeps
     account-specific IDs usable without pretending Eylo owns that catalog.
     """
 
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
     options: tuple[VoiceConfigOption, ...]
-    allow_custom: bool = False
+    input_mode: VoiceConfigInputMode = VoiceConfigInputMode.CHOICES_ONLY
+
+    @property
+    def allow_custom(self) -> bool:
+        """Project the internal mode to the existing onboarding API predicate."""
+        return self.input_mode is VoiceConfigInputMode.CUSTOM_ALLOWED
 
 
 def _option(value: str, label: str | None = None) -> VoiceConfigOption:
@@ -437,8 +453,8 @@ _VOICE_FIELD_CATALOGS: dict[
     # a custom escape hatch even though common commercial regions are published.
     **{
         (kind, provider, "region"): VoiceConfigFieldCatalog(
-            _AWS_REGIONS,
-            allow_custom=True,
+            options=_AWS_REGIONS,
+            input_mode=VoiceConfigInputMode.CUSTOM_ALLOWED,
         )
         for kind, provider in (
             (VoiceKind.STT, STTProviders.AMAZON_TRANSCRIBE.value),
@@ -447,10 +463,10 @@ _VOICE_FIELD_CATALOGS: dict[
         )
     },
     (VoiceKind.STT, STTProviders.AMAZON_TRANSCRIBE.value, "language"):
-        VoiceConfigFieldCatalog(_COMMON_LOCALES, allow_custom=True),
+        VoiceConfigFieldCatalog(options=_COMMON_LOCALES, input_mode=VoiceConfigInputMode.CUSTOM_ALLOWED),
     (VoiceKind.STT, STTProviders.DEEPGRAM.value, "model"):
         VoiceConfigFieldCatalog(
-            _options(
+            options=_options(
                 "nova-3",
                 "nova-3-general",
                 "nova-3-medical",
@@ -462,32 +478,32 @@ _VOICE_FIELD_CATALOGS: dict[
                 "nova-2-finance",
                 "nova-2-conversationalai",
             ),
-            allow_custom=True,
+            input_mode=VoiceConfigInputMode.CUSTOM_ALLOWED,
         ),
     (VoiceKind.STT, STTProviders.DEEPGRAM.value, "language"):
-        VoiceConfigFieldCatalog(_ISO_LANGUAGES, allow_custom=True),
+        VoiceConfigFieldCatalog(options=_ISO_LANGUAGES, input_mode=VoiceConfigInputMode.CUSTOM_ALLOWED),
     (VoiceKind.STT, STTProviders.DEEPGRAM_FLUX.value, "model"):
         VoiceConfigFieldCatalog(
-            _named_options(
+            options=_named_options(
                 ("flux-general-en", "Flux · English"),
                 ("flux-general-multi", "Flux · Multilingual"),
             )
         ),
     (VoiceKind.STT, STTProviders.SARVAM.value, "model"):
-        VoiceConfigFieldCatalog(_options("saaras:v3", "saarika:v2.5")),
+        VoiceConfigFieldCatalog(options=_options("saaras:v3", "saarika:v2.5")),
     (VoiceKind.STT, STTProviders.SARVAM.value, "language"):
-        VoiceConfigFieldCatalog(_SARVAM_LANGUAGES),
+        VoiceConfigFieldCatalog(options=_SARVAM_LANGUAGES),
     (VoiceKind.STT, STTProviders.SARVAM.value, "mode"):
         VoiceConfigFieldCatalog(
-            _options("transcribe", "translate", "verbatim", "translit", "codemix")
+            options=_options("transcribe", "translate", "verbatim", "translit", "codemix")
         ),
     (VoiceKind.STT, STTProviders.SARVAM.value, "input_audio_codec"):
         VoiceConfigFieldCatalog(
-            _options("pcm_s16le", "pcm_l16", "pcm_raw", "wav")
+            options=_options("pcm_s16le", "pcm_l16", "pcm_raw", "wav")
         ),
     (VoiceKind.STT, STTProviders.ASSEMBLYAI.value, "model"):
         VoiceConfigFieldCatalog(
-            _named_options(
+            options=_named_options(
                 ("u3-rt-pro", "Universal-3 Pro Streaming"),
                 ("universal-streaming-english", "Universal Streaming · English"),
                 (
@@ -498,12 +514,12 @@ _VOICE_FIELD_CATALOGS: dict[
             )
         ),
     (VoiceKind.STT, STTProviders.CARTESIA.value, "model"):
-        VoiceConfigFieldCatalog(_options("ink-whisper"), allow_custom=True),
+        VoiceConfigFieldCatalog(options=_options("ink-whisper"), input_mode=VoiceConfigInputMode.CUSTOM_ALLOWED),
     (VoiceKind.STT, STTProviders.CARTESIA.value, "language"):
-        VoiceConfigFieldCatalog(_ISO_LANGUAGES, allow_custom=True),
+        VoiceConfigFieldCatalog(options=_ISO_LANGUAGES, input_mode=VoiceConfigInputMode.CUSTOM_ALLOWED),
     (VoiceKind.STT, STTProviders.GOOGLE.value, "model"):
         VoiceConfigFieldCatalog(
-            _options(
+            options=_options(
                 "latest_long",
                 "latest_short",
                 "command_and_search",
@@ -513,16 +529,16 @@ _VOICE_FIELD_CATALOGS: dict[
             )
         ),
     (VoiceKind.STT, STTProviders.GOOGLE.value, "language"):
-        VoiceConfigFieldCatalog(_COMMON_LOCALES, allow_custom=True),
+        VoiceConfigFieldCatalog(options=_COMMON_LOCALES, input_mode=VoiceConfigInputMode.CUSTOM_ALLOWED),
     (VoiceKind.STT, STTProviders.GLADIA.value, "language"):
-        VoiceConfigFieldCatalog(_ISO_LANGUAGES, allow_custom=True),
+        VoiceConfigFieldCatalog(options=_ISO_LANGUAGES, input_mode=VoiceConfigInputMode.CUSTOM_ALLOWED),
     (VoiceKind.STT, STTProviders.REVAI.value, "language"):
-        VoiceConfigFieldCatalog(_ISO_LANGUAGES, allow_custom=True),
+        VoiceConfigFieldCatalog(options=_ISO_LANGUAGES, input_mode=VoiceConfigInputMode.CUSTOM_ALLOWED),
     (VoiceKind.STT, STTProviders.SPEECHMATICS.value, "language"):
-        VoiceConfigFieldCatalog(_ISO_LANGUAGES, allow_custom=True),
+        VoiceConfigFieldCatalog(options=_ISO_LANGUAGES, input_mode=VoiceConfigInputMode.CUSTOM_ALLOWED),
     (VoiceKind.TTS, TTSProviders.AMAZON_POLLY.value, "model"):
         VoiceConfigFieldCatalog(
-            _named_options(
+            options=_named_options(
                 ("standard", "Standard engine"),
                 ("neural", "Neural engine"),
                 ("long-form", "Long-form engine"),
@@ -530,69 +546,69 @@ _VOICE_FIELD_CATALOGS: dict[
             )
         ),
     (VoiceKind.TTS, TTSProviders.AMAZON_POLLY.value, "voice"):
-        VoiceConfigFieldCatalog(_POLLY_VOICES, allow_custom=True),
+        VoiceConfigFieldCatalog(options=_POLLY_VOICES, input_mode=VoiceConfigInputMode.CUSTOM_ALLOWED),
     (VoiceKind.TTS, TTSProviders.AMAZON_POLLY.value, "language"):
-        VoiceConfigFieldCatalog(_POLLY_LANGUAGES, allow_custom=True),
+        VoiceConfigFieldCatalog(options=_POLLY_LANGUAGES, input_mode=VoiceConfigInputMode.CUSTOM_ALLOWED),
     (VoiceKind.TTS, TTSProviders.ELEVENLABS.value, "model"):
         VoiceConfigFieldCatalog(
-            _named_options(
+            options=_named_options(
                 ("eleven_v3", "Eleven v3"),
                 ("eleven_multilingual_v2", "Eleven Multilingual v2"),
                 ("eleven_flash_v2_5", "Eleven Flash v2.5"),
                 ("eleven_flash_v2", "Eleven Flash v2"),
             ),
-            allow_custom=True,
+            input_mode=VoiceConfigInputMode.CUSTOM_ALLOWED,
         ),
     (VoiceKind.TTS, TTSProviders.ELEVENLABS.value, "voice"):
-        VoiceConfigFieldCatalog(_ELEVENLABS_VOICES, allow_custom=True),
+        VoiceConfigFieldCatalog(options=_ELEVENLABS_VOICES, input_mode=VoiceConfigInputMode.CUSTOM_ALLOWED),
     (VoiceKind.TTS, TTSProviders.ELEVENLABS.value, "language"):
-        VoiceConfigFieldCatalog(_ISO_LANGUAGES, allow_custom=True),
+        VoiceConfigFieldCatalog(options=_ISO_LANGUAGES, input_mode=VoiceConfigInputMode.CUSTOM_ALLOWED),
     (VoiceKind.TTS, TTSProviders.CARTESIA.value, "model"):
         VoiceConfigFieldCatalog(
-            _options("sonic-3.5", "sonic-3.5-2026-05-04", "sonic-latest", "sonic-3"),
-            allow_custom=True,
+            options=_options("sonic-3.5", "sonic-3.5-2026-05-04", "sonic-latest", "sonic-3"),
+            input_mode=VoiceConfigInputMode.CUSTOM_ALLOWED,
         ),
     (VoiceKind.TTS, TTSProviders.CARTESIA.value, "voice"):
         VoiceConfigFieldCatalog(
-            _named_options(
+            options=_named_options(
                 ("6f84f4b8-58a2-430c-8c79-688dad597532", "California Girl"),
                 ("6ccbfb76-1fc6-48f7-b71d-91ac6298247b", "Tessa"),
                 ("aef96ff9-4578-4b5d-9744-7fb347cbe4d4", "Holly"),
                 ("f786b574-daa5-4673-aa0c-cbe3e8534c02", "Katie"),
                 ("a5136bf9-224c-4d76-b823-52bd5efcffcc", "Jameson"),
             ),
-            allow_custom=True,
+            input_mode=VoiceConfigInputMode.CUSTOM_ALLOWED,
         ),
     (VoiceKind.TTS, TTSProviders.CARTESIA.value, "language"):
-        VoiceConfigFieldCatalog(_ISO_LANGUAGES, allow_custom=True),
+        VoiceConfigFieldCatalog(options=_ISO_LANGUAGES, input_mode=VoiceConfigInputMode.CUSTOM_ALLOWED),
     (VoiceKind.TTS, TTSProviders.SARVAM.value, "model"):
-        VoiceConfigFieldCatalog(_options("bulbul:v3", "bulbul:v2")),
+        VoiceConfigFieldCatalog(options=_options("bulbul:v3", "bulbul:v2")),
     (VoiceKind.TTS, TTSProviders.SARVAM.value, "voice"):
-        VoiceConfigFieldCatalog(_SARVAM_VOICES),
+        VoiceConfigFieldCatalog(options=_SARVAM_VOICES),
     (VoiceKind.TTS, TTSProviders.SARVAM.value, "language"):
-        VoiceConfigFieldCatalog(_SARVAM_LANGUAGES),
+        VoiceConfigFieldCatalog(options=_SARVAM_LANGUAGES),
     (VoiceKind.TTS, TTSProviders.OPENAI.value, "model"):
         VoiceConfigFieldCatalog(
-            _named_options(
+            options=_named_options(
                 ("gpt-4o-mini-tts", "GPT-4o mini TTS"),
                 ("tts-1", "TTS-1 · lower latency"),
                 ("tts-1-hd", "TTS-1 HD · higher quality"),
             )
         ),
     (VoiceKind.TTS, TTSProviders.OPENAI.value, "voice"):
-        VoiceConfigFieldCatalog(_OPENAI_VOICES),
+        VoiceConfigFieldCatalog(options=_OPENAI_VOICES),
     (VoiceKind.TTS, TTSProviders.DEEPGRAM.value, "model"):
-        VoiceConfigFieldCatalog(_DEEPGRAM_TTS_MODELS, allow_custom=True),
+        VoiceConfigFieldCatalog(options=_DEEPGRAM_TTS_MODELS, input_mode=VoiceConfigInputMode.CUSTOM_ALLOWED),
     (VoiceKind.TTS, TTSProviders.GROQ.value, "model"):
         VoiceConfigFieldCatalog(
-            _named_options(
+            options=_named_options(
                 ("canopylabs/orpheus-v1-english", "Orpheus · English"),
                 ("canopylabs/orpheus-arabic-saudi", "Orpheus · Arabic (Saudi)"),
             )
         ),
     (VoiceKind.TTS, TTSProviders.GROQ.value, "voice"):
         VoiceConfigFieldCatalog(
-            _named_options(
+            options=_named_options(
                 ("autumn", "Autumn · English"),
                 ("diana", "Diana · English"),
                 ("hannah", "Hannah · English"),
@@ -609,35 +625,35 @@ _VOICE_FIELD_CATALOGS: dict[
         ),
     (VoiceKind.TTS, TTSProviders.RIME.value, "model"):
         VoiceConfigFieldCatalog(
-            _options("arcana", "arcanav2", "mistv3", "mistv2", "mist")
+            options=_options("arcana", "arcanav2", "mistv3", "mistv2", "mist")
         ),
     (VoiceKind.TTS, TTSProviders.RIME.value, "voice"):
         VoiceConfigFieldCatalog(
-            _options("astra", "celeste", "orion", "luna", "peak", "amber"),
-            allow_custom=True,
+            options=_options("astra", "celeste", "orion", "luna", "peak", "amber"),
+            input_mode=VoiceConfigInputMode.CUSTOM_ALLOWED,
         ),
     (VoiceKind.TTS, TTSProviders.SMALLEST.value, "model"):
-        VoiceConfigFieldCatalog(_options("lightning-v2")),
+        VoiceConfigFieldCatalog(options=_options("lightning-v2")),
     (VoiceKind.TTS, TTSProviders.SMALLEST.value, "voice"):
         VoiceConfigFieldCatalog(
-            _options("meher", "magnus", "emily"),
-            allow_custom=True,
+            options=_options("meher", "magnus", "emily"),
+            input_mode=VoiceConfigInputMode.CUSTOM_ALLOWED,
         ),
     (VoiceKind.TTS, TTSProviders.SMALLEST.value, "language"):
-        VoiceConfigFieldCatalog(_ISO_LANGUAGES, allow_custom=True),
+        VoiceConfigFieldCatalog(options=_ISO_LANGUAGES, input_mode=VoiceConfigInputMode.CUSTOM_ALLOWED),
     (VoiceKind.TTS, TTSProviders.HUME.value, "model"):
         VoiceConfigFieldCatalog(
-            _named_options(
+            options=_named_options(
                 ("octave-2-preview", "Octave 2 · preview"),
                 ("octave-1", "Octave 1"),
             ),
-            allow_custom=True,
+            input_mode=VoiceConfigInputMode.CUSTOM_ALLOWED,
         ),
     (VoiceKind.TTS, TTSProviders.HUME.value, "language"):
-        VoiceConfigFieldCatalog(_ISO_LANGUAGES, allow_custom=True),
+        VoiceConfigFieldCatalog(options=_ISO_LANGUAGES, input_mode=VoiceConfigInputMode.CUSTOM_ALLOWED),
     (VoiceKind.TTS, TTSProviders.MURF.value, "voice"):
         VoiceConfigFieldCatalog(
-            _options(
+            options=_options(
                 "Alicia",
                 "Alina",
                 "Ariana",
@@ -665,17 +681,17 @@ _VOICE_FIELD_CATALOGS: dict[
                 "Ivy",
                 "Jimm",
             ),
-            allow_custom=True,
+            input_mode=VoiceConfigInputMode.CUSTOM_ALLOWED,
         ),
     (VoiceKind.REALTIME, RealtimeProviders.GEMINI_LIVE.value, "model"):
-        VoiceConfigFieldCatalog(_options("gemini-3.1-flash-live-preview")),
+        VoiceConfigFieldCatalog(options=_options("gemini-3.1-flash-live-preview")),
     (VoiceKind.REALTIME, RealtimeProviders.GEMINI_LIVE.value, "voice"):
-        VoiceConfigFieldCatalog(_GEMINI_VOICES),
+        VoiceConfigFieldCatalog(options=_GEMINI_VOICES),
     (VoiceKind.REALTIME, RealtimeProviders.OPENAI_REALTIME.value, "model"):
-        VoiceConfigFieldCatalog(_options("gpt-realtime", "gpt-realtime-mini")),
+        VoiceConfigFieldCatalog(options=_options("gpt-realtime", "gpt-realtime-mini")),
     (VoiceKind.REALTIME, RealtimeProviders.OPENAI_REALTIME.value, "voice"):
         VoiceConfigFieldCatalog(
-            _options(
+            options=_options(
                 "alloy",
                 "ash",
                 "ballad",
@@ -693,7 +709,7 @@ _VOICE_FIELD_CATALOGS: dict[
         RealtimeProviders.OPENAI_REALTIME.value,
         "input_transcription_model",
     ): VoiceConfigFieldCatalog(
-        _options(
+        options=_options(
             "whisper-1",
             "gpt-4o-mini-transcribe",
             "gpt-4o-mini-transcribe-2025-12-15",

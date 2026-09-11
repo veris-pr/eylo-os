@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -37,9 +37,12 @@ from .models import (
 from .services import SorConflictError, SorNotFoundError, SorSourceService
 
 
-@dataclass(frozen=True, slots=True)
-class SorSourceDeletionPlan:
+class SorSourceDeletionPlan(BaseModel):
     """Active durable work captured after the source authority fence commits."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     organization_id: UUID
     source_id: UUID

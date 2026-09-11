@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta, timezone
-from enum import Enum
+from enum import Enum, StrEnum
 from http import HTTPStatus
 from typing import Protocol
 from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.database import async_session_factory
 from eylo.common.http_egress import (
@@ -17,7 +20,9 @@ from eylo.common.http_egress import (
     HttpEgressPolicyError,
     HttpEgressRequest,
     HttpEgressResponse,
+    HttpMethod,
     HttpRoutePolicy,
+    OriginBoundHeaders,
     parse_https_target,
 )
 from eylo.modules.connections.domain import (
@@ -54,6 +59,11 @@ from eylo.sor.shared.contracts import (
     SorSourceState,
     SorSourceTransition,
 )
+from eylo.sor.shared.json_values import (
+    SorJsonValue,
+    SorJsonValueError,
+    require_json_object,
+)
 from eylo.sor.shared.models import SorSourceModel
 from eylo.sor.shared.repositories import SorRepository
 from eylo.sor.shared.secrets import (
@@ -77,12 +87,33 @@ class SorRefreshDisposition(str, Enum):
     SUPERSEDED = "SUPERSEDED"
 
 
+class SorRefreshFailure(StrEnum):
+    """Stable runtime-owned failure categories, retaining existing persisted codes."""
+
+    CONNECTION_ADAPTER_UNAVAILABLE = "CONNECTION_ADAPTER_UNAVAILABLE"
+    CONNECTION_CONNECTOR_MISSING = "CONNECTION_CONNECTOR_MISSING"
+    CONNECTION_CREDENTIALS_UNREADABLE = "CONNECTION_CREDENTIALS_UNREADABLE"
+    CONNECTION_REFRESH_RETRY_PENDING = "CONNECTION_REFRESH_RETRY_PENDING"
+    CONNECTION_REFRESH_UNSUPPORTED = "CONNECTION_REFRESH_UNSUPPORTED"
+    CREDENTIALS_UNAVAILABLE = "credentials_unavailable"
+    REFRESH_TOKEN_REJECTED = "refresh_token_rejected"
+    REFRESH_TOKEN_UNAVAILABLE = "refresh_token_unavailable"
+    REFRESHED_INSTANCE_ORIGIN_INVALID = "refreshed_instance_origin_invalid"
+    REFRESHED_SCOPE_MISSING = "refreshed_scope_missing"
+    TOKEN_ENDPOINT_RATE_LIMITED = "token_endpoint_rate_limited"
+    TOKEN_ENDPOINT_UNAVAILABLE = "token_endpoint_unavailable"
+    TOKEN_ENDPOINT_UNREACHABLE = "token_endpoint_unreachable"
+    TOKEN_LIFETIME_INVALID = "token_lifetime_invalid"
+    TOKEN_RESPONSE_MISSING_ACCESS_TOKEN = "token_response_missing_access_token"
+    TOKEN_RESPONSE_UNREADABLE = "token_response_unreadable"
+
+
 class SorConnectionRefreshError(Exception):
     """A safe credential-renewal failure for adapter acquisition."""
 
     def __init__(
         self,
-        code: str,
+        code: SorRefreshFailure,
         message: str,
         *,
         requires_reauthorization: bool,
@@ -106,8 +137,13 @@ class SorTokenTransport(Protocol):
     async def send(self, request: HttpEgressRequest) -> HttpEgressResponse: ...
 
 
-@dataclass(frozen=True, slots=True)
-class _RefreshSnapshot:
+class _RefreshSnapshot(BaseModel):
+    """Exact source/connector/connection revisions read before token endpoint I/O."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
     organization_id: UUID
     source_id: UUID
     source_config_revision: int
@@ -117,29 +153,34 @@ class _RefreshSnapshot:
     connection_id: UUID
     connection_revision: int
     connection_status: ExternalConnectionStatus
-    credentials: dict[str, object]
+    credentials: dict[str, SorJsonValue] = Field(repr=False, exclude=True)
     credentials_expires_at: datetime | None
     granted_scopes: tuple[str, ...]
     refresh_attempts: int
     last_refresh_failure_at: datetime | None
     client_id: str
-    client_secret: str
+    client_secret: str = Field(repr=False, exclude=True)
     oauth: SorOAuthSpec
     change_mode: SorChangeMode
     fixed_origin: str | None
     instance_origin: str | None
 
 
-@dataclass(frozen=True, slots=True)
-class _Renewal:
-    credentials: dict[str, object]
+class _Renewal(BaseModel):
+    """Renewed credential data filed only if snapshot authority still matches."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    credentials: dict[str, SorJsonValue] = Field(repr=False, exclude=True)
     expires_at: datetime | None
     granted_scopes: tuple[str, ...]
     instance_origin: str | None
 
 
 class _RefreshFailure(Exception):
-    def __init__(self, code: str, *, exhausted: bool = False) -> None:
+    def __init__(self, code: SorRefreshFailure, *, exhausted: bool = False) -> None:
         super().__init__(code)
         self.code = code
         self.exhausted = exhausted
@@ -153,7 +194,7 @@ async def refresh_source_connection_if_needed(
     force: bool = False,
     registry: SorRegistry | None = None,
     transport: SorTokenTransport | None = None,
-    session_factory=async_session_factory,
+    session_factory: Callable[[], AsyncSession] = async_session_factory,
 ) -> SorRefreshDisposition:
     """Refresh one due source credential through read, HTTP, guarded write."""
     if minimum_validity_seconds <= 0:
@@ -185,7 +226,7 @@ async def refresh_source_connection_if_needed(
         return SorRefreshDisposition.NOT_DUE
     if _inside_retry_cooldown(snapshot, force=force):
         raise SorConnectionRefreshError(
-            "CONNECTION_REFRESH_RETRY_PENDING",
+            SorRefreshFailure.CONNECTION_REFRESH_RETRY_PENDING,
             "The source connection is waiting before its next refresh attempt.",
             requires_reauthorization=False,
         )
@@ -227,7 +268,7 @@ async def _load_snapshot(
     minimum_validity_seconds: float,
     force: bool,
     registry: SorRegistry,
-    session_factory,
+    session_factory: Callable[[], AsyncSession],
 ) -> _RefreshSnapshot | None:
     async with session_factory() as session:
         repository = SorRepository(session)
@@ -260,7 +301,7 @@ async def _load_snapshot(
         )
         if connector is None or connector.vendor_key != source.vendor_key:
             raise _preflight_error(
-                "CONNECTION_CONNECTOR_MISSING",
+                SorRefreshFailure.CONNECTION_CONNECTOR_MISSING,
                 "The source connection requires authorization.",
                 source=source,
                 connection=connection,
@@ -272,13 +313,13 @@ async def _load_snapshot(
             )
         except KeyError as error:
             raise SorConnectionRefreshError(
-                "CONNECTION_ADAPTER_UNAVAILABLE",
+                SorRefreshFailure.CONNECTION_ADAPTER_UNAVAILABLE,
                 "The source connection adapter is unavailable.",
                 requires_reauthorization=False,
             ) from error
         if manifest.oauth is None:
             raise _preflight_error(
-                "CONNECTION_REFRESH_UNSUPPORTED",
+                SorRefreshFailure.CONNECTION_REFRESH_UNSUPPORTED,
                 "The source connection cannot be refreshed.",
                 source=source,
                 connection=connection,
@@ -291,16 +332,24 @@ async def _load_snapshot(
                 config_revision=connector.config_revision,
             )
             if connection.credentials is None:
-                raise _RefreshFailure("credentials_unavailable", exhausted=True)
+                raise _RefreshFailure(
+                    SorRefreshFailure.CREDENTIALS_UNAVAILABLE, exhausted=True
+                )
             credentials = decrypt_connection_credentials(
                 connection.credentials,
                 organization_id=organization_id,
                 connection_id=connection.id,
                 revision=connection.revision,
             )
-        except (SorSecretEnvelopeError, SecretCipherError) as error:
+            credentials = require_json_object(credentials)
+        except (
+            SorSecretEnvelopeError,
+            SecretCipherError,
+            ValidationError,
+            SorJsonValueError,
+        ) as error:
             raise _preflight_error(
-                "CONNECTION_CREDENTIALS_UNREADABLE",
+                SorRefreshFailure.CONNECTION_CREDENTIALS_UNREADABLE,
                 "The source connection requires authorization.",
                 source=source,
                 connection=connection,
@@ -323,7 +372,7 @@ async def _load_snapshot(
             connection_id=connection.id,
             connection_revision=connection.revision,
             connection_status=connection.status,
-            credentials=dict(credentials),
+            credentials=credentials,
             credentials_expires_at=connection.credentials_expires_at,
             granted_scopes=tuple(connection.granted_scopes or ()),
             refresh_attempts=connection.refresh_attempts,
@@ -344,7 +393,9 @@ async def _renew(
 ) -> _Renewal:
     refresh_token = snapshot.credentials.get("refresh_token")
     if not isinstance(refresh_token, str) or not refresh_token:
-        raise _RefreshFailure("refresh_token_unavailable", exhausted=True)
+        raise _RefreshFailure(
+            SorRefreshFailure.REFRESH_TOKEN_UNAVAILABLE, exhausted=True
+        )
     payload = await _post_refresh(
         oauth=snapshot.oauth,
         instance_origin=snapshot.instance_origin or snapshot.fixed_origin,
@@ -355,7 +406,7 @@ async def _renew(
     )
     access_token = payload.get("access_token")
     if not isinstance(access_token, str) or not access_token:
-        raise _RefreshFailure("token_response_missing_access_token")
+        raise _RefreshFailure(SorRefreshFailure.TOKEN_RESPONSE_MISSING_ACCESS_TOKEN)
 
     credentials = dict(snapshot.credentials)
     credentials["access_token"] = access_token
@@ -366,7 +417,7 @@ async def _renew(
 
     granted_scopes = _renewed_scopes(payload, snapshot)
     if not set(snapshot.granted_scopes).issubset(granted_scopes):
-        raise _RefreshFailure("refreshed_scope_missing", exhausted=True)
+        raise _RefreshFailure(SorRefreshFailure.REFRESHED_SCOPE_MISSING, exhausted=True)
 
     instance_origin = (
         snapshot.instance_origin
@@ -377,7 +428,9 @@ async def _renew(
     if origin_field is not None and origin_field in payload:
         raw_origin = payload.get(origin_field)
         if not isinstance(raw_origin, str):
-            raise _RefreshFailure("refreshed_instance_origin_invalid", exhausted=True)
+            raise _RefreshFailure(
+                SorRefreshFailure.REFRESHED_INSTANCE_ORIGIN_INVALID, exhausted=True
+            )
         try:
             instance_origin = normalize_sor_instance_origin(
                 raw_origin,
@@ -389,7 +442,7 @@ async def _renew(
             )
         except Exception as error:
             raise _RefreshFailure(
-                "refreshed_instance_origin_invalid",
+                SorRefreshFailure.REFRESHED_INSTANCE_ORIGIN_INVALID,
                 exhausted=True,
             ) from error
 
@@ -409,7 +462,7 @@ async def _post_refresh(
     client_secret: str,
     refresh_token: str,
     transport: SorTokenTransport | None,
-) -> dict[str, object]:
+) -> dict[str, JsonValue]:
     form = {
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
@@ -429,7 +482,7 @@ async def _post_refresh(
         origin, path = parse_https_target(token_url)
         response = await (transport or SafeHttpTransport()).send(
             HttpEgressRequest(
-                method="POST",
+                method=HttpMethod.POST,
                 url=token_url,
                 policy=HttpDestinationPolicy(
                     primary=HttpRoutePolicy(origin=origin, path_prefix=path),
@@ -438,15 +491,19 @@ async def _post_refresh(
                 headers={
                     "Accept": "application/json",
                     "Content-Type": content_type,
-                    **auth_headers,
                 },
+                origin_headers=(
+                    OriginBoundHeaders(origin=origin, values=auth_headers)
+                    if auth_headers
+                    else None
+                ),
                 body=body,
                 response_body_limit=262_144,
                 total_timeout_seconds=20.0,
             )
         )
     except (HttpEgressPolicyError, SorOAuthEndpointError, TimeoutError) as error:
-        raise _RefreshFailure("token_endpoint_unreachable") from error
+        raise _RefreshFailure(SorRefreshFailure.TOKEN_ENDPOINT_UNREACHABLE) from error
     if response.status_code != HTTPStatus.OK:
         payload = _optional_json_payload(response.body)
         provider_code = payload.get("error")
@@ -460,10 +517,12 @@ async def _post_refresh(
             "invalid_refresh_token",
         }
         if exhausted:
-            raise _RefreshFailure("refresh_token_rejected", exhausted=True)
+            raise _RefreshFailure(
+                SorRefreshFailure.REFRESH_TOKEN_REJECTED, exhausted=True
+            )
         if response.status_code == HTTPStatus.TOO_MANY_REQUESTS:
-            raise _RefreshFailure("token_endpoint_rate_limited")
-        raise _RefreshFailure("token_endpoint_unavailable")
+            raise _RefreshFailure(SorRefreshFailure.TOKEN_ENDPOINT_RATE_LIMITED)
+        raise _RefreshFailure(SorRefreshFailure.TOKEN_ENDPOINT_UNAVAILABLE)
     return _json_payload(response.body)
 
 
@@ -471,7 +530,7 @@ async def _persist_renewal(
     *,
     snapshot: _RefreshSnapshot,
     renewal: _Renewal,
-    session_factory,
+    session_factory: Callable[[], AsyncSession],
 ) -> bool:
     try:
         async with session_factory() as session, session.begin():
@@ -538,7 +597,7 @@ async def _record_failure(
     *,
     snapshot: _RefreshSnapshot,
     failure: _RefreshFailure,
-    session_factory,
+    session_factory: Callable[[], AsyncSession],
 ) -> bool:
     requires_reauthorization = (
         failure.exhausted or snapshot.refresh_attempts + 1 >= MAX_REFRESH_ATTEMPTS
@@ -628,12 +687,12 @@ async def _record_unrefreshable_connection(
     *,
     organization_id: UUID,
     source_id: UUID,
-    error_code: str,
+    error_code: SorRefreshFailure,
     connection_id: UUID | None,
     expected_connection_revision: int | None,
     source_config_revision: int | None,
     vendor_key: str | None,
-    session_factory,
+    session_factory: Callable[[], AsyncSession],
 ) -> None:
     """Persist a terminal preparation failure when its authority is still current."""
     if (
@@ -738,7 +797,7 @@ def _refresh_due(
 
 
 def _preflight_error(
-    code: str,
+    code: SorRefreshFailure,
     message: str,
     *,
     source: SorSourceModel,
@@ -767,7 +826,7 @@ def _inside_retry_cooldown(snapshot: _RefreshSnapshot, *, force: bool) -> bool:
 
 
 def _renewed_scopes(
-    payload: dict[str, object],
+    payload: Mapping[str, JsonValue],
     snapshot: _RefreshSnapshot,
 ) -> set[str]:
     listed = payload.get("scopes")
@@ -782,7 +841,7 @@ def _renewed_scopes(
     return set(snapshot.granted_scopes)
 
 
-def _expires_at(payload: dict[str, object]) -> datetime | None:
+def _expires_at(payload: Mapping[str, JsonValue]) -> datetime | None:
     expires_in = payload.get("expires_in")
     if expires_in is None:
         return None
@@ -791,21 +850,24 @@ def _expires_at(payload: dict[str, object]) -> datetime | None:
         or not isinstance(expires_in, int)
         or expires_in <= 0
     ):
-        raise _RefreshFailure("token_lifetime_invalid")
+        raise _RefreshFailure(SorRefreshFailure.TOKEN_LIFETIME_INVALID)
     return datetime.now(timezone.utc) + timedelta(seconds=expires_in)
 
 
-def _json_payload(body: bytes) -> dict[str, object]:
+def _json_payload(body: bytes) -> dict[str, JsonValue]:
     try:
         payload = json.loads(body)
     except (UnicodeDecodeError, ValueError) as error:
-        raise _RefreshFailure("token_response_unreadable") from error
+        raise _RefreshFailure(SorRefreshFailure.TOKEN_RESPONSE_UNREADABLE) from error
     if not isinstance(payload, dict):
-        raise _RefreshFailure("token_response_unreadable")
-    return payload
+        raise _RefreshFailure(SorRefreshFailure.TOKEN_RESPONSE_UNREADABLE)
+    try:
+        return require_json_object(payload)
+    except (ValidationError, SorJsonValueError) as error:
+        raise _RefreshFailure(SorRefreshFailure.TOKEN_RESPONSE_UNREADABLE) from error
 
 
-def _optional_json_payload(body: bytes) -> dict[str, object]:
+def _optional_json_payload(body: bytes) -> dict[str, JsonValue]:
     try:
         return _json_payload(body)
     except _RefreshFailure:

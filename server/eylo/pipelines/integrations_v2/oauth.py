@@ -27,6 +27,7 @@ from eylo.common.http_egress import (
     HttpDestinationPolicy,
     HttpEgressPolicyError,
     HttpEgressRequest,
+    HttpMethod,
     HttpRoutePolicy,
     parse_https_target,
 )
@@ -487,7 +488,7 @@ async def _exchange(
     try:
         origin, path = parse_https_target(token_url)
         request = HttpEgressRequest(
-            method="POST",
+            method=HttpMethod.POST,
             url=token_url,
             policy=HttpDestinationPolicy(
                 primary=HttpRoutePolicy(origin=origin, path_prefix=path),

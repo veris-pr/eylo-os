@@ -41,6 +41,7 @@ class RunFailureCode(str, Enum):
 
     RUN_FAILED = "run_failed"
     GUARDRAIL_BLOCKED = "guardrail_blocked"
+    MODEL_OUTPUT_LIMIT = "model_output_limit"
 
 
 class RunFailureMetadata(FrameworkMetadata):

@@ -5,10 +5,10 @@ from __future__ import annotations
 import base64
 import binascii
 import json
-from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,8 +34,13 @@ class SorOperationalReadQueryError(Exception):
     """Raised when an operational-read cursor is invalid for the source."""
 
 
-@dataclass(frozen=True)
-class _GenerationCursor:
+class _GenerationCursor(BaseModel):
+    """Source-scoped position for stable synchronization history pagination."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
     source_id: UUID
     created_at: datetime
     generation_id: UUID

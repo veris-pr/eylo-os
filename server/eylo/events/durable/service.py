@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.events.durable.domain import (
     DurableEventEnvelope,
+    EventDeliveryFailureCode,
     EventDeliveryState,
     validate_consumer_name,
 )
@@ -35,25 +36,30 @@ class EventDeliveryBindingPending(Exception):
     """Absurd claimed a task before its product binding became visible."""
 
 
-@dataclass(frozen=True, slots=True)
-class DurableEventFiling:
+class DurableEventFiling(BaseModel):
     """Stable identities produced by one atomic source transaction."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
     event_id: UUID
     delivery_ids: tuple[UUID, ...]
     created: bool
 
 
-@dataclass(frozen=True, slots=True)
-class EventDeliveryAttempt:
+class EventDeliveryAttempt(BaseModel):
     """One product attempt projection loaded after Absurd owns the claim."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
     delivery_id: UUID
     consumer_name: str
-    envelope: DurableEventEnvelope
+    envelope: DurableEventEnvelope = Field(repr=False, exclude=True)
     state: EventDeliveryState
-    attempts: int
-    should_consume: bool
+    attempts: int = Field(ge=0)
+
+    @property
+    def should_consume(self) -> bool:
+        return self.state is EventDeliveryState.RUNNING
 
 
 class DurableEventService:
@@ -227,9 +233,9 @@ class EventDeliveryService:
         )
         if delivery.state is EventDeliveryState.SUCCEEDED:
             await self._require_receipt(delivery)
-            return _attempt(delivery, envelope, should_consume=False)
+            return _attempt(delivery, envelope)
         if delivery.state is EventDeliveryState.DEAD_LETTER:
-            return _attempt(delivery, envelope, should_consume=False)
+            return _attempt(delivery, envelope)
         if delivery.absurd_task_id is None:
             raise EventDeliveryBindingPending(
                 "Event delivery task binding is not visible yet."
@@ -249,13 +255,13 @@ class EventDeliveryService:
             )
             delivery.finished_at = datetime.now(timezone.utc)
             await self.session.flush()
-            return _attempt(delivery, envelope, should_consume=False)
+            return _attempt(delivery, envelope)
 
         delivery.state = EventDeliveryState.RUNNING
         delivery.attempts += 1
         delivery.started_at = delivery.started_at or datetime.now(timezone.utc)
         await self.session.flush()
-        return _attempt(delivery, envelope, should_consume=True)
+        return _attempt(delivery, envelope)
 
     async def consume(
         self,
@@ -309,8 +315,7 @@ class EventDeliveryService:
         *,
         organization_id: UUID,
         delivery_id: UUID,
-        error_code: str,
-        permanent: bool,
+        error_code: EventDeliveryFailureCode,
     ) -> EventDeliveryState:
         delivery, _ = await self.get(
             organization_id=organization_id,
@@ -327,14 +332,10 @@ class EventDeliveryService:
                 f"A {delivery.state.value} delivery cannot record failure."
             )
 
-        if error_code not in {
-            "consumer_not_registered",
-            "consumer_rejected",
-            "delivery_failed",
-        }:
+        if not isinstance(error_code, EventDeliveryFailureCode):
             raise DurableEventConflict("Event delivery failure code is invalid.")
-        delivery.last_error = error_code
-        if permanent or delivery.attempts >= delivery.max_attempts:
+        delivery.last_error = error_code.value
+        if error_code.permanent or delivery.attempts >= delivery.max_attempts:
             delivery.state = EventDeliveryState.DEAD_LETTER
             delivery.finished_at = datetime.now(timezone.utc)
         await self.session.flush()
@@ -371,8 +372,6 @@ def _envelope_from_row(row: EventOutboxModel) -> DurableEventEnvelope:
 def _attempt(
     delivery: EventDeliveryModel,
     envelope: DurableEventEnvelope,
-    *,
-    should_consume: bool,
 ) -> EventDeliveryAttempt:
     return EventDeliveryAttempt(
         delivery_id=delivery.id,
@@ -380,5 +379,4 @@ def _attempt(
         envelope=envelope,
         state=delivery.state,
         attempts=delivery.attempts,
-        should_consume=should_consume,
     )

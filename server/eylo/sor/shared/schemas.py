@@ -37,6 +37,7 @@ from eylo.sor.shared.contracts import (
     SorWebhookSubscriptionState,
     SorWorkState,
 )
+from eylo.sor.shared.json_values import SorJsonValue
 from eylo.sor.shared.query import SorCollectionQuery, SorGridContract
 
 if TYPE_CHECKING:
@@ -621,7 +622,7 @@ class SorFieldMappingDraftRequest(SorApiModel):
     canonical_target_path: str | None = Field(default=None, max_length=320)
     custom_type: SorCustomFieldType | None = None
     transform_kind: SorTransformKind = SorTransformKind.DIRECT
-    transform_config: dict[str, object] = Field(default_factory=dict)
+    transform_config: dict[str, SorJsonValue] = Field(default_factory=dict)
     direction: SorFieldMappingDirection = SorFieldMappingDirection.READ_ONLY
     agent_visible: bool = False
     ui_default_column: bool = False

@@ -4,11 +4,11 @@ import datetime
 from enum import StrEnum
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from eylo.common.contracts.messages import MessageKind
 from eylo.common.identifiers import normalize_uuid_like
 from eylo.modules.conversations.schemas.conversations import ConversationInDb
-from eylo.modules.conversations.schemas.messages import MessageInDb
 from eylo.modules.conversations.schemas.participants import ParticipantInDb
 
 
@@ -30,9 +30,13 @@ class ConversationCreatedEvent(ConversationEvent):
 
 
 class MessageCreatedEvent(BaseEvent):
+    """Bounded committed-message reference; consumers reload canonical content."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
     conversation_id: UUID
     message_id: UUID
-    message: MessageInDb
+    kind: MessageKind
 
 
 class ParticipantCreatedEvent(BaseEvent):

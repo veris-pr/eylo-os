@@ -44,6 +44,7 @@ from eylo.modules.agent_runs.domain import (
 )
 from eylo.modules.agent_runs.models import AgentRunModel
 from eylo.modules.agent_runs.repositories import AgentRunRepository
+from eylo.modules.agent_runs.serialization import validate_agent_run_json_object
 from eylo.modules.agents.models import AgentRevisionModel, AgentsModel
 from eylo.modules.auth.models import ApiKeyModel, AuthSessionModel
 from eylo.modules.contacts.models import ContactsModel
@@ -126,8 +127,7 @@ class AgentRunExecutionClaim(BaseModel):
         cls, value: dict[str, JsonValue]
     ) -> dict[str, JsonValue]:
         """Product pipelines own manifest fields; claims contain finite JSON only."""
-        json.dumps(value, allow_nan=False)
-        return value
+        return validate_agent_run_json_object(value)
 
 
 class AgentRunWorkflowReceipt(BaseModel):

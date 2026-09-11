@@ -11,25 +11,36 @@ not carry without the module knowing the registry exists.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from typing import Self
+
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from .enums import VendorAuthKind
 
 
-@dataclass(frozen=True, slots=True)
-class CuratedVendorOffer:
+class CuratedVendorOffer(BaseModel):
     """One vendor as the running deployment can actually execute it."""
+
+    model_config = ConfigDict(
+        frozen=True,
+        strict=True,
+        extra="forbid",
+        validate_default=True,
+        hide_input_in_errors=True,
+    )
 
     vendor: str
     supported_auth_kinds: frozenset[VendorAuthKind]
     wire_ids: frozenset[str]
     requires_instance_url: bool = False
 
-    def __post_init__(self) -> None:
+    @model_validator(mode="after")
+    def require_vendor_auth(self) -> Self:
         if not self.vendor.strip():
             raise ValueError("Curated vendor offer requires a vendor id.")
         if not self.supported_auth_kinds:
             raise ValueError("Curated vendor offer requires at least one auth kind.")
+        return self
 
     def supports(self, auth_kind: VendorAuthKind) -> bool:
         return auth_kind in self.supported_auth_kinds

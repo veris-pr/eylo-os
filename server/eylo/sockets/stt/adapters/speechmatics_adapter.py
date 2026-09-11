@@ -68,6 +68,16 @@ class SpeechmaticsAdapterConfig(BaseModel):
     diarization: SpeechmaticsDiarization | None = None
     custom_vocabulary: tuple[str, ...] | None = Field(default=None, repr=False)
 
+    @field_validator("diarization", mode="before")
+    @classmethod
+    def translate_diarization_toggle(cls, value: object) -> object:
+        """Translate the platform toggle without forwarding booleans to the vendor."""
+        if value is True:
+            return SpeechmaticsDiarization.SPEAKER
+        if value is False:
+            return SpeechmaticsDiarization.NONE
+        return value
+
     @field_validator("encoding", mode="before")
     @classmethod
     def translate_pcm_encoding(cls, value: object) -> object:
@@ -194,13 +204,13 @@ class SpeechmaticsAdapter(STTVendorAdapter):
     async def send_audio(self, audio_data: bytes) -> None:
         if self._stream is None:
             raise STTConnectionClosed("Speechmatics stream is not connected.")
-        frame = AudioFrame(
-            data=audio_data,
-            sample_rate=self.sample_rate,
-            num_channels=1,
-            samples_per_channel=len(audio_data) // _PCM_BYTES_PER_SAMPLE,
-        )
         try:
+            frame = AudioFrame(
+                data=audio_data,
+                sample_rate=self.sample_rate,
+                num_channels=1,
+                samples_per_channel=len(audio_data) // _PCM_BYTES_PER_SAMPLE,
+            )
             await self._stream.push_audio(frame)
         except BaseException:
             self._is_connected = False

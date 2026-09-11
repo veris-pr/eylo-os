@@ -32,10 +32,10 @@ class ContextCompactionMeta(BaseModel):
 class ContextCompaction(BaseModel):
     """Validated latest summary and the message position it replaces."""
 
-    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
-    summary: MessageInDb
-    boundary: MessageInDb
+    summary: MessageInDb = Field(repr=False, exclude=True)
+    boundary: MessageInDb = Field(repr=False, exclude=True)
     meta: ContextCompactionMeta
 
 

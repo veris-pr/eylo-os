@@ -14,19 +14,32 @@ import re
 import secrets
 import stat
 import tempfile
-from dataclasses import dataclass
+from http import HTTPMethod
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Iterable, Mapping, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from uuid import UUID
 
 import typer
+from api_contracts import (
+    JSON_OBJECT,
+    JSON_VALUE,
+    ApiAuthentication,
+    ApiRequestOptions,
+    CliValue,
+    OpenApiDocument,
+    OpenApiParameter,
+    OpenApiRequestBody,
+    OpenApiSchema,
+    OperationDefinition,
+    ParameterLocation,
+)
+from pydantic import Field, JsonValue, ValidationError
 from rich.console import Console
 from rich.table import Table
 
-HTTP_METHODS = frozenset({"get", "post", "put", "patch", "delete"})
 RESOURCE_ALIASES = {
     "agent-swarm": "agent-swarms",
     "aggregate": "conversation-aggregates",
@@ -135,18 +148,16 @@ class ApiResponseError(RuntimeError):
         super().__init__(f"HTTP {status_code}: {detail}")
 
 
-@dataclass(frozen=True, slots=True)
-class CliOverrides:
+class CliOverrides(CliValue):
     base_url: str | None = None
     organization_id: str | None = None
-    token: str | None = None
+    token: str | None = Field(default=None, repr=False, exclude=True)
 
 
-@dataclass(frozen=True, slots=True)
-class CliConfig:
+class CliConfig(CliValue):
     base_url: str | None
     organization_id: str | None
-    token: str | None
+    token: str | None = Field(repr=False, exclude=True)
 
     def require_base_url(self) -> str:
         if self.base_url is None:
@@ -163,19 +174,8 @@ class CliConfig:
         return self.organization_id
 
 
-@dataclass(frozen=True, slots=True)
-class Operation:
-    resource: str
+class Operation(OperationDefinition):
     action: str
-    handler_name: str
-    operation_id: str
-    method: str
-    path: str
-    summary: str
-    parameters: tuple[dict[str, Any], ...]
-    request_body: dict[str, Any] | None
-    security: tuple[dict[str, Any], ...]
-    required_inputs: tuple[str, ...]
 
     @property
     def path_parameters(self) -> tuple[str, ...]:
@@ -183,7 +183,7 @@ class Operation:
 
     @property
     def destructive(self) -> bool:
-        if self.method == "DELETE":
+        if self.method is HTTPMethod.DELETE:
             return True
         words = set(self.handler_name.split("_"))
         return bool(words & _DESTRUCTIVE_WORDS)
@@ -199,10 +199,9 @@ class Operation:
         )
 
 
-@dataclass(frozen=True, slots=True)
-class ApiResponse:
-    status_code: int
-    data: Any
+class ApiResponse(CliValue):
+    status_code: int = Field(ge=100, le=599)
+    data: JsonValue = Field(repr=False, exclude=True)
 
 
 class ConfigStore:
@@ -241,7 +240,9 @@ class ConfigStore:
             base_url = normalize_base_url(base_url)
         if organization_id is not None:
             organization_id = normalize_organization_id(organization_id)
-        return CliConfig(base_url, organization_id, token)
+        return CliConfig(
+            base_url=base_url, organization_id=organization_id, token=token
+        )
 
     def update_config(
         self,
@@ -275,7 +276,7 @@ class ConfigStore:
         except FileNotFoundError:
             pass
 
-    def _read_credentials(self) -> dict[str, Any]:
+    def _read_credentials(self) -> dict[str, JsonValue]:
         if not self.credentials_path.exists():
             return {}
         mode = stat.S_IMODE(self.credentials_path.stat().st_mode)
@@ -287,7 +288,7 @@ class ConfigStore:
         return self._read_json(self.credentials_path)
 
     @staticmethod
-    def _read_json(path: Path) -> dict[str, Any]:
+    def _read_json(path: Path) -> dict[str, JsonValue]:
         try:
             value = json.loads(path.read_text())
         except FileNotFoundError:
@@ -296,12 +297,25 @@ class ConfigStore:
             raise CliUsageError(f"Unable to read CLI config {path}: {error}") from None
         if not isinstance(value, dict):
             raise CliUsageError(f"CLI config must contain a JSON object: {path}")
-        return value
+        try:
+            return JSON_OBJECT.validate_python(value)
+        except ValidationError:
+            raise CliUsageError("CLI config must contain finite JSON values.") from None
 
-    def _write_json(self, path: Path, value: Mapping[str, Any], *, mode: int) -> None:
+    def _write_json(
+        self, path: Path, value: Mapping[str, JsonValue], *, mode: int
+    ) -> None:
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(self.root, 0o700)
-        payload = json.dumps(value, indent=2, sort_keys=True) + "\n"
+        payload = (
+            json.dumps(
+                JSON_OBJECT.validate_python(dict(value)),
+                indent=2,
+                sort_keys=True,
+                allow_nan=False,
+            )
+            + "\n"
+        )
         temporary_name: str | None = None
         try:
             with tempfile.NamedTemporaryFile(
@@ -328,25 +342,27 @@ class ApiClient:
         self.config = config
         self.timeout = timeout
 
-    def openapi(self) -> dict[str, Any]:
-        response = self.request("GET", "/openapi.json", authenticated=False)
+    def openapi(self) -> OpenApiDocument:
+        response = self.request(
+            HTTPMethod.GET, "/openapi.json", authentication=ApiAuthentication.ANONYMOUS
+        )
         if not isinstance(response.data, dict):
             raise ApiTransportError(
                 "Target /openapi.json did not return a JSON object."
             )
-        return response.data
+        return parse_openapi(response.data)
 
     def request(
         self,
-        method: str,
+        method: HTTPMethod,
         path: str,
         *,
-        query: Mapping[str, Any] | None = None,
+        query: Mapping[str, JsonValue] | None = None,
         headers: Mapping[str, str] | None = None,
-        json_body: Any = None,
-        form: Mapping[str, Any] | None = None,
+        json_body: JsonValue = None,
+        form: Mapping[str, JsonValue] | None = None,
         uploads: Mapping[str, Path] | None = None,
-        authenticated: bool,
+        authentication: ApiAuthentication,
     ) -> ApiResponse:
         base_url = self.config.require_base_url()
         url = f"{base_url}{path}"
@@ -354,7 +370,7 @@ class ApiClient:
             url = f"{url}?{urlencode(query, doseq=True)}"
 
         request_headers = {"Accept": "application/json"}
-        if authenticated:
+        if authentication is ApiAuthentication.REQUIRED:
             if self.config.token is None:
                 raise CliUsageError("Login required. Run: eylo auth login")
             request_headers["Authorization"] = f"Bearer {self.config.token}"
@@ -377,11 +393,14 @@ class ApiClient:
             with urlopen(request, timeout=self.timeout) as response:
                 raw = response.read()
                 return ApiResponse(
-                    response.status, decode_response(raw, response.headers)
+                    status_code=response.status,
+                    data=decode_response(raw, response.headers.get("Content-Type", "")),
                 )
         except HTTPError as error:
             raw = error.read()
-            detail = error_detail(decode_response(raw, error.headers))
+            detail = error_detail(
+                decode_response(raw, error.headers.get("Content-Type", ""))
+            )
             raise ApiResponseError(error.code, method, path, detail) from None
         except (TimeoutError, URLError, OSError) as error:
             reason = getattr(error, "reason", error)
@@ -420,66 +439,66 @@ def resource_for_path(path: str) -> str:
     return RESOURCE_ALIASES.get(literal, literal)
 
 
-def operations_from_openapi(schema: Mapping[str, Any]) -> tuple[Operation, ...]:
-    discovered: list[dict[str, Any]] = []
-    for path, path_item in schema.get("paths", {}).items():
-        if not isinstance(path_item, dict):
-            continue
-        shared_parameters = tuple(path_item.get("parameters", ()))
-        for method, definition in path_item.items():
-            if method not in HTTP_METHODS or not isinstance(definition, dict):
-                continue
-            operation_id = str(definition.get("operationId") or f"{method}_{path}")
-            handler_name = handler_name_from_operation_id(
-                operation_id,
-                path=path,
-                method=method,
-            )
-            discovered.append(
-                {
-                    "resource": resource_for_path(path),
-                    "handler_name": handler_name,
-                    "operation_id": operation_id,
-                    "method": method.upper(),
-                    "path": path,
-                    "summary": str(definition.get("summary") or handler_name),
-                    "parameters": shared_parameters
-                    + tuple(definition.get("parameters", ())),
-                    "request_body": definition.get("requestBody"),
-                    "security": tuple(definition.get("security", ())),
-                    "required_inputs": required_input_hints(
-                        schema,
-                        shared_parameters + tuple(definition.get("parameters", ())),
-                        definition.get("requestBody"),
-                    ),
-                }
-            )
+def parse_openapi(value: Mapping[str, JsonValue]) -> OpenApiDocument:
+    try:
+        return OpenApiDocument.model_validate(value)
+    except ValidationError:
+        raise ApiTransportError("OpenAPI discovery fields are invalid.") from None
 
+
+def operations_from_openapi(
+    schema: OpenApiDocument | Mapping[str, JsonValue],
+) -> tuple[Operation, ...]:
+    document = schema if isinstance(schema, OpenApiDocument) else parse_openapi(schema)
+    discovered: list[OperationDefinition] = []
+    for path, path_item in document.paths.items():
+        shared_parameters = tuple(path_item.parameters)
+        for method, definition in path_item.operations():
+            operation_id = definition.operation_id or f"{method.value.lower()}_{path}"
+            handler_name = handler_name_from_operation_id(
+                operation_id, path=path, method=method
+            )
+            parameters = shared_parameters + tuple(definition.parameters)
+            discovered.append(
+                OperationDefinition(
+                    resource=resource_for_path(path),
+                    handler_name=handler_name,
+                    operation_id=operation_id,
+                    method=method,
+                    path=path,
+                    summary=definition.summary or handler_name,
+                    parameters=parameters,
+                    request_body=definition.request_body,
+                    security=tuple(definition.security),
+                    required_inputs=required_input_hints(
+                        document, parameters, definition.request_body
+                    ),
+                )
+            )
     candidates = [
-        preferred_action(item["resource"], item["handler_name"], item["method"])
+        preferred_action(item.resource, item.handler_name, item.method)
         for item in discovered
     ]
     counts: dict[tuple[str, str], int] = {}
     for item, candidate in zip(discovered, candidates, strict=True):
-        key = (item["resource"], candidate)
+        key = (item.resource, candidate)
         counts[key] = counts.get(key, 0) + 1
-
     operations: list[Operation] = []
     used: set[tuple[str, str]] = set()
     for item, candidate in zip(discovered, candidates, strict=True):
         action = candidate
-        if counts[(item["resource"], candidate)] > 1:
-            action = item["handler_name"].replace("_", "-")
-        key = (item["resource"], action)
+        if counts[(item.resource, candidate)] > 1:
+            action = item.handler_name.replace("_", "-")
+        key = (item.resource, action)
         if key in used:
-            action = f"{action}-{item['method'].lower()}"
-            key = (item["resource"], action)
+            action = f"{action}-{item.method.value.lower()}"
+            key = (item.resource, action)
         if key in used:
             raise CliUsageError(
-                f"Ambiguous API operation mapping for {item['method']} {item['path']}"
+                f"Ambiguous API operation mapping for {item.method} {item.path}"
             )
         used.add(key)
-        operations.append(Operation(action=action, **item))
+        operations.append(Operation(action=action, **item.model_dump()))
     return tuple(sorted(operations, key=lambda item: (item.resource, item.action)))
 
 
@@ -499,36 +518,37 @@ def handler_name_from_operation_id(
 
 
 def required_input_hints(
-    openapi: Mapping[str, Any],
-    parameters: Sequence[Mapping[str, Any]],
-    request_body: Mapping[str, Any] | None,
+    openapi: OpenApiDocument,
+    parameters: Sequence[OpenApiParameter],
+    request_body: OpenApiRequestBody | None,
 ) -> tuple[str, ...]:
-    """Describe required non-path input using operator-facing CLI flags."""
+    """Project required fields without interpreting arbitrary schema extensions."""
     hints: list[str] = []
     for parameter in parameters:
-        if not parameter.get("required") or parameter.get("in") == "path":
+        if not parameter.required or parameter.location in (
+            None,
+            ParameterLocation.PATH,
+        ):
             continue
-        location = str(parameter.get("in"))
-        name = str(parameter.get("name"))
-        flag = {"query": "--query", "header": "--header"}.get(location)
+        flag = {
+            ParameterLocation.QUERY: "--query",
+            ParameterLocation.HEADER: "--header",
+        }.get(parameter.location)
         if flag:
-            hints.append(f"{flag} {name}=VALUE")
-
-    if not request_body or not request_body.get("required"):
+            hints.append(f"{flag} {parameter.name}=VALUE")
+    if request_body is None or not request_body.required:
         return tuple(hints)
-    content = request_body.get("content", {})
     for content_type, option in (
         ("application/json", "--set"),
         ("application/x-www-form-urlencoded", "--form"),
         ("multipart/form-data", "--form/--upload"),
     ):
-        media = content.get(content_type)
-        if not isinstance(media, Mapping):
+        media = request_body.content.get(content_type)
+        if media is None:
             continue
-        body_schema = resolve_openapi_schema(openapi, media.get("schema", {}))
-        required = body_schema.get("required", ())
-        if required:
-            hints.extend(f"{option} {name}=VALUE" for name in required)
+        body_schema = resolve_openapi_schema(openapi, media.body_schema)
+        if body_schema.required:
+            hints.extend(f"{option} {name}=VALUE" for name in body_schema.required)
         else:
             hints.append(f"{option} BODY")
         break
@@ -536,26 +556,34 @@ def required_input_hints(
 
 
 def resolve_openapi_schema(
-    openapi: Mapping[str, Any], raw_schema: Mapping[str, Any]
-) -> dict[str, Any]:
-    """Resolve the local refs/allOf needed to display body requirements."""
-    reference = raw_schema.get("$ref")
+    openapi: OpenApiDocument,
+    raw_schema: OpenApiSchema,
+    *,
+    seen: frozenset[str] = frozenset(),
+) -> OpenApiSchema:
+    """Resolve local refs/allOf for hints; cyclic aliases cannot recurse forever."""
+    reference = raw_schema.reference
     if reference:
         prefix = "#/components/schemas/"
-        if not str(reference).startswith(prefix):
-            return dict(raw_schema)
-        name = str(reference).removeprefix(prefix)
-        components = openapi.get("components", {}).get("schemas", {})
-        target = components.get(name, {})
-        return resolve_openapi_schema(openapi, target)
-    if not raw_schema.get("allOf"):
-        return dict(raw_schema)
-    merged: dict[str, Any] = {"type": "object", "properties": {}, "required": []}
-    for part in raw_schema["allOf"]:
-        resolved = resolve_openapi_schema(openapi, part)
-        merged["properties"].update(resolved.get("properties", {}))
-        merged["required"].extend(resolved.get("required", ()))
-    return merged
+        if not reference.startswith(prefix):
+            return raw_schema
+        if reference in seen:
+            raise ApiTransportError(
+                "Cyclic OpenAPI schema reference in required-input hints."
+            )
+        target = openapi.components.schemas.get(
+            reference.removeprefix(prefix), OpenApiSchema()
+        )
+        return resolve_openapi_schema(openapi, target, seen=seen | {reference})
+    if not raw_schema.all_of:
+        return raw_schema
+    properties: dict[str, OpenApiSchema] = {}
+    required: list[str] = []
+    for part in raw_schema.all_of:
+        resolved = resolve_openapi_schema(openapi, part, seen=seen)
+        properties.update(resolved.properties)
+        required.extend(resolved.required)
+    return OpenApiSchema(properties=properties, required=required)
 
 
 def preferred_action(resource: str, handler_name: str, method: str) -> str:
@@ -618,7 +646,7 @@ def build_request(
     header_values: Sequence[str],
     form_values: Sequence[str],
     upload_values: Sequence[str],
-) -> tuple[str, dict[str, Any]]:
+) -> tuple[str, ApiRequestOptions]:
     path_values: dict[str, str] = {}
     remaining_path_parameters = list(operation.path_parameters)
     if "organization_id" in remaining_path_parameters:
@@ -651,44 +679,49 @@ def build_request(
         for key, raw_value in parse_raw_pairs(set_values, "set"):
             set_nested(json_body, key, coerce_value(raw_value))
 
-    if operation.request_body and operation.request_body.get("required"):
+    if operation.request_body and operation.request_body.required:
         if json_body is None and form is None and not uploads:
             raise CliUsageError(
                 f"{operation.resource} {operation.action} requires a body. "
                 "Use --set key=value, --data JSON, --data-file PATH, or --form."
             )
 
-    return path, {
-        "query": query or None,
-        "headers": headers or None,
-        "json_body": json_body,
-        "form": form,
-        "uploads": uploads or None,
-        "authenticated": bool(operation.security),
-    }
+    return path, ApiRequestOptions(
+        query=query or None,
+        headers=headers or None,
+        json_body=json_body,
+        form=form,
+        uploads=uploads or None,
+        authentication=ApiAuthentication.REQUIRED
+        if operation.security
+        else ApiAuthentication.ANONYMOUS,
+    )
 
 
 def validate_required_parameters(
     operation: Operation,
-    query: Mapping[str, Any],
-    headers: Mapping[str, Any],
+    query: Mapping[str, JsonValue],
+    headers: Mapping[str, JsonValue],
 ) -> None:
     missing: list[str] = []
     normalized_headers = {key.lower() for key in headers}
     for parameter in operation.parameters:
-        if not parameter.get("required"):
+        if not parameter.required:
             continue
-        name = str(parameter.get("name"))
-        location = parameter.get("in")
-        if location == "query" and name not in query:
+        name = str(parameter.name)
+        location = parameter.location
+        if location is ParameterLocation.QUERY and name not in query:
             missing.append(f"--query {name}=VALUE")
-        elif location == "header" and name.lower() not in normalized_headers:
+        elif (
+            location is ParameterLocation.HEADER
+            and name.lower() not in normalized_headers
+        ):
             missing.append(f"--header {name}=VALUE")
     if missing:
         raise CliUsageError("Missing required input: " + ", ".join(missing))
 
 
-def load_json_body(data: str | None, data_file: Path | None) -> Any:
+def load_json_body(data: str | None, data_file: Path | None) -> JsonValue:
     if data is not None and data_file is not None:
         raise CliUsageError("Use only one of --data or --data-file.")
     if data_file is not None:
@@ -699,13 +732,15 @@ def load_json_body(data: str | None, data_file: Path | None) -> Any:
     if data is None:
         return None
     try:
-        return json.loads(data)
+        return JSON_VALUE.validate_python(json.loads(data))
     except json.JSONDecodeError as error:
         raise CliUsageError(f"Invalid JSON body: {error.msg}") from None
+    except ValidationError:
+        raise CliUsageError("JSON body must contain finite JSON values.") from None
 
 
-def parse_pairs(values: Sequence[str], label: str) -> dict[str, Any]:
-    result: dict[str, Any] = {}
+def parse_pairs(values: Sequence[str], label: str) -> dict[str, JsonValue]:
+    result: dict[str, JsonValue] = {}
     for key, raw_value in parse_raw_pairs(values, label):
         value = coerce_value(raw_value)
         existing = result.get(key)
@@ -738,14 +773,16 @@ def parse_uploads(values: Sequence[str]) -> dict[str, Path]:
     return uploads
 
 
-def coerce_value(value: str) -> Any:
+def coerce_value(value: str) -> JsonValue:
     try:
-        return json.loads(value)
+        return JSON_VALUE.validate_python(json.loads(value))
     except json.JSONDecodeError:
         return value
+    except ValidationError:
+        raise CliUsageError("Command values must contain finite JSON values.") from None
 
 
-def set_nested(target: dict[str, Any], dotted_key: str, value: Any) -> None:
+def set_nested(target: dict[str, JsonValue], dotted_key: str, value: JsonValue) -> None:
     parts = dotted_key.split(".")
     if any(not part for part in parts):
         raise CliUsageError(f"Invalid dotted body key: {dotted_key!r}")
@@ -761,7 +798,7 @@ def set_nested(target: dict[str, Any], dotted_key: str, value: Any) -> None:
 
 
 def encode_multipart(
-    fields: Mapping[str, Any], uploads: Mapping[str, Path]
+    fields: Mapping[str, JsonValue], uploads: Mapping[str, Path]
 ) -> tuple[bytes, str]:
     boundary = f"eylo-{secrets.token_hex(16)}"
     chunks: list[bytes] = []
@@ -794,19 +831,22 @@ def encode_multipart(
     return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
 
 
-def decode_response(raw: bytes, headers: Mapping[str, Any]) -> Any:
+def decode_response(raw: bytes, content_type: str) -> JsonValue:
     if not raw:
         return None
-    content_type = str(headers.get("Content-Type", ""))
     if "json" in content_type:
         try:
-            return json.loads(raw)
+            return JSON_VALUE.validate_python(json.loads(raw))
         except json.JSONDecodeError:
             pass
+        except ValidationError:
+            raise ApiTransportError(
+                "API response contains non-finite JSON values."
+            ) from None
     return raw.decode(errors="replace")
 
 
-def error_detail(data: Any) -> str:
+def error_detail(data: JsonValue) -> str:
     if isinstance(data, dict):
         detail = data.get("detail", data)
     else:
@@ -819,7 +859,7 @@ def error_detail(data: Any) -> str:
     return rendered[:2000]
 
 
-def render_data(console: Console, data: Any, *, as_json: bool) -> None:
+def render_data(console: Console, data: JsonValue, *, as_json: bool) -> None:
     if as_json:
         typer.echo(json.dumps(data, indent=2, sort_keys=True, default=str))
         return
@@ -843,7 +883,7 @@ def render_data(console: Console, data: Any, *, as_json: bool) -> None:
         console.print_json(data=data, default=str)
 
 
-def table_rows(data: Any) -> tuple[list[dict[str, Any]], str | None]:
+def table_rows(data: JsonValue) -> tuple[list[dict[str, JsonValue]], str | None]:
     if isinstance(data, list) and all(isinstance(item, dict) for item in data):
         return data, f"{len(data)} item(s)"
     if isinstance(data, dict):
@@ -861,7 +901,7 @@ def table_rows(data: Any) -> tuple[list[dict[str, Any]], str | None]:
     return [], None
 
 
-def table_columns(rows: Sequence[Mapping[str, Any]]) -> list[str]:
+def table_columns(rows: Sequence[Mapping[str, JsonValue]]) -> list[str]:
     preferred = [
         "id",
         "name",
@@ -877,7 +917,7 @@ def table_columns(rows: Sequence[Mapping[str, Any]]) -> list[str]:
     return columns[:10]
 
 
-def compact_value(value: Any) -> str:
+def compact_value(value: JsonValue) -> str:
     if value is None:
         return ""
     if isinstance(value, (dict, list)):
@@ -996,7 +1036,16 @@ def execute_resource(
             f"Run {operation.method} {path}? This action may be irreversible.",
             abort=True,
         )
-    response = client.request(operation.method, path, **request_options)
+    response = client.request(
+        operation.method,
+        path,
+        query=request_options.query,
+        headers=request_options.headers,
+        json_body=request_options.json_body,
+        form=request_options.form,
+        uploads=request_options.uploads,
+        authentication=request_options.authentication,
+    )
 
     if resource == "auth" and operation.action == "login":
         complete_login(console, store, overrides, response.data, timeout, as_json)
@@ -1026,7 +1075,7 @@ def complete_login(
     console: Console,
     store: ConfigStore,
     overrides: CliOverrides,
-    data: Any,
+    data: JsonValue,
     timeout: float,
     as_json: bool,
 ) -> None:
@@ -1035,11 +1084,15 @@ def complete_login(
         raise ApiTransportError("Login response did not contain an access token.")
     store.save_token(access_token)
     authenticated = store.load(
-        CliOverrides(overrides.base_url, overrides.organization_id)
+        CliOverrides(
+            base_url=overrides.base_url, organization_id=overrides.organization_id
+        )
     )
     me = (
         ApiClient(authenticated, timeout=timeout)
-        .request("GET", "/api/auth/me", authenticated=True)
+        .request(
+            HTTPMethod.GET, "/api/auth/me", authentication=ApiAuthentication.REQUIRED
+        )
         .data
     )
     organization_id = response_field(me, "organization_id")
@@ -1053,8 +1106,8 @@ def complete_login(
     render_data(console, summary, as_json=as_json)
 
 
-def resolve_auth_status(config: CliConfig, *, timeout: float) -> dict[str, Any]:
-    status: dict[str, Any] = {
+def resolve_auth_status(config: CliConfig, *, timeout: float) -> dict[str, JsonValue]:
+    status: dict[str, JsonValue] = {
         "base_url": config.base_url,
         "organization_id": config.organization_id,
         "authenticated": False,
@@ -1065,7 +1118,11 @@ def resolve_auth_status(config: CliConfig, *, timeout: float) -> dict[str, Any]:
     try:
         me = (
             ApiClient(config, timeout=timeout)
-            .request("GET", "/api/auth/me", authenticated=True)
+            .request(
+                HTTPMethod.GET,
+                "/api/auth/me",
+                authentication=ApiAuthentication.REQUIRED,
+            )
             .data
         )
     except ApiResponseError as error:
@@ -1093,11 +1150,11 @@ def render_config_status(console: Console, config: CliConfig, *, as_json: bool) 
     )
 
 
-def _optional_string(value: Any) -> str | None:
+def _optional_string(value: JsonValue) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def response_field(data: Any, snake_name: str) -> Any:
+def response_field(data: JsonValue, snake_name: str) -> JsonValue:
     if not isinstance(data, dict):
         return None
     camel_name = snake_name.split("_")[0] + "".join(

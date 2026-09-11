@@ -1,6 +1,1044 @@
 # Python typing and literal-removal plan
 
-## Remaining-work checklist — current checkpoint
+## Acceptance board — 2026-09-11
+
+Platform-wide completion remains **open**. Close the deployed checkpoint with
+native QA before opening another conversion slice. Historical checkpoint notes
+below are evidence, not a completion percentage; their older deployment labels
+are superseded by the newest deployment record.
+
+| Gate | Current evidence | Remaining acceptance |
+| --- | --- | --- |
+| Static backend contracts | Lint passes; Pyrefly has zero errors and two existing redundant-cast warnings | Static success does not prove native input shapes |
+| CLI typing | CLI-owned Pydantic contracts, independent environment synchronized; explicit CLI typing passes; 102 function checks, 332 live-catalog action parity checks and authenticated collection reads passed | Not proof that every API action or vendor execution succeeds |
+| Stored provider compatibility | 25 saved configs inspected; 13 ready voice receipts restored; native Speechmatics connection/cleanup passed | Native conversations across configured providers |
+| Published voice bindings | Public CLI aggregate resolves both existing realtime and decomposed QA agents at revision 1 | Both have no storage binding; recording upload is not covered |
+| Scheduler filing and stranded recovery | Original one-shot recovered once, ran real `issue_search`/`issue_get`, completed/achieved and released capacity | Worker-crash and waiting/resume cases remain separate |
+| Widget and console | Both development servers return HTTP 200; earlier widget inventory/conversation list loaded | Latest browser inventory call also timed out; fresh browser conversation not submitted |
+| Durable execution | Saved contexts/results, isolated replay, and one native scheduled tool-bearing result validated | Background/objective execution, cancellation, crash/restart and waiting/resume |
+| Sandbox | Typed workspace/checkpoint/tool paths validated with substituted dependencies | Native configured sandbox execution/cleanup |
+| Final handoff | Changes remain uncommitted; no migrations or provider data reset | Complete remaining contracts, milestone review, final QA matrix |
+
+The current deployed checkpoint includes the scheduler correction, telephony,
+HTTP, PCM audio, collection/internal values, timeline/erasure, SOR tool-receipt
+and event/periodic contracts, plus the shared SOR catalog/mapping/projection and
+SOR HTTP response batch, on image
+`sha256:2c1e02a644c28e94b5bf41557946f7b2786465f6fc4b3520ff7be7cbafab58fc`.
+API, durable worker, ordinary worker and scheduler were recreated on that image;
+all four are running and API health passed. The 383 transport and 189 call-tool
+checks passed inside the new image before recreation. Console lint/type/build and widget SDK plus
+Preact lint/type/build passed; console build retains its large-chunk warning.
+Documentation validation and `git diff --check` passed. Native schedule recovery
+subsequently passed as recorded below; browser interaction remains unverified.
+
+DB and Redis container identities were rechecked after deployment and remain
+`615b91925226` and `c07c38389f13`. The native QA schedule remains revision 1,
+with no duplicate or manually rearmed occurrence. Its failed claim was recovered
+by the normal stranded-schedule scan at 23:05 UTC on 2026-09-10.
+
+### Contract checkpoint deployment — 2026-09-11 01:53 UTC
+
+The four application services were rebuilt/recreated; PostgreSQL and Redis retained
+their exact container identities. No migration or dependency files changed.
+The latest SOR tool probe passed 142 assertions inside the new image before
+recreation. Local reruns passed timeline/erasure (1,263), PCM frame (462) and
+native adapter-function (72) checks; vendor transport was substituted in those
+adapter checks. Backend and explicit CLI typing passed; backend/CLI lint and docs
+validation passed. The backend retains two existing redundant-cast warnings.
+
+On the new running image, read-only provider restoration again validated 25
+configured providers and 13 ready voice receipts. Authenticated public Agent,
+Contact and Member collection APIs returned valid paginated responses. Login was
+attempted before API readiness and failed during recreation; retry after the
+healthy state succeeded with the original private development credentials.
+
+Fresh public-CLI schedule `01a08e2c-8286-7ed3-82cf-58bff425a603` filed occurrence
+`01a08e2d-c7d2-7052-8d0b-916f146ac95b` and AgentRun
+`bfe9d112-9235-463a-87f7-d5cd0484f247`. Existing SOR audit agent revision 5 used
+the configured LLM, called `issue_search` and `issue_get`, and completed/achieved
+at 01:56:12 UTC. Read-only transcript replay confirmed exactly one occurrence,
+two correlated error-free tool results, no pending calls, typed context restoration
+and an exact result JSON round-trip. These reads use synchronized SOR data, not a
+live Linear API call. Native mutations, widget interaction, live voice and
+worker-crash/wait-resume acceptance remain open.
+
+### Earlier deployed checkpoint acceptance — 2026-09-11
+
+After recreation, read-only checks restored the existing 25 provider configs,
+13 ready voice receipts (5 STT, 5 TTS, 3 realtime), and 12 capability projections.
+The earlier scheduled result still restored with exactly one occurrence and two
+correlated successful tool calls. No migrations, dependency versions, DB/Redis
+containers or operator provider settings changed.
+
+A fresh one-shot schedule `01a08dc7-280b-7983-a044-9b2a302d357d`, created through
+the public CLI in Eylo Development, filed occurrence
+`01a08dc8-2811-70b1-b46c-77226596212a` and AgentRun
+`51a79044-0758-412d-a891-614565bdcae0`. Existing SOR audit agent revision 5 used
+the real configured LLM and executed `issue_search` followed by `issue_get`.
+It started at 00:05:00 UTC, completed/achieved at 00:05:10 UTC, and released its
+capacity reservation. Read-only transcript replay confirmed one occurrence, two
+correlated non-error results, no pending calls, typed context restoration and an
+exact typed result JSON round-trip. These tools read the synchronized local SOR
+projection; this was not a live Linear API request, widget conversation, phone
+call, or worker-crash test.
+
+QA limitations: browser inventory itself timed out again, although console and
+widget HTTP endpoints both returned 200. The CLI's prior bearer token was expired;
+normal login using the private credential file succeeded before creating the
+schedule. The API logged Passlib's caught bcrypt-version discovery warning
+(`bcrypt.__about__` is absent); the installed handler catches it and login worked.
+This dependency warning is not a typing regression and was not patched here.
+Bounded post-restart samples from all three worker services contained no error or
+traceback lines; that is a sampled observation, not an exhaustive clean-log claim.
+
+### Native scheduler regression
+
+One-shot QA schedule `01a08d82-e6b6-7461-9b2e-1cd7841dea36` was created through
+the public CLI in Eylo Development with existing SOR audit agent revision 5.
+The ordinary worker claimed it at 2026-09-10 22:50 UTC but filed no occurrence:
+`ScheduleRunContext.schedule_id` rejected a string. The scheduler store explicitly
+returns string IDs; assigning that string to a UUID-annotated SQLAlchemy column
+does not replace the in-memory value after flush. Earlier local fixtures supplied
+UUID objects and therefore missed the real producer boundary.
+
+`jobs/scheduler.py::_dispatch_one` now parses the store ID before DB access and
+uses the UUID in the occurrence model, retaining string IDs for the store API.
+The strict context contract stays strict. The regression probe runs the real
+dispatch function, ORM constructors and context model with DB/filing substitutes;
+the former assignment reproduces the exact validation failure. Invalid IDs fail
+before transaction entry. The original schedule was left intact and the existing
+15-minute recovery delay unchanged.
+
+Native outcome: occurrence `01a08d91-398e-7121-90e6-4c7581c7161a` filed AgentRun
+`cc55defd-c1b9-4dfc-b713-d97bf4ab98a2` at 23:05:00 UTC. The real configured LLM
+and SOR tools completed at 23:05:12 UTC with lifecycle `completed`, outcome
+`achieved`, and released budget capacity. Public schedule/run APIs exposed the
+result. A read-only ORM probe through `AgentRunTranscript.replay()` confirmed
+exactly one occurrence, calls `issue_search` then `issue_get`, two correlated
+non-error results, no pending calls, typed schedule-context restoration and exact
+typed result JSON round-trip. No source mutations were requested; the persisted
+calls were reads. This is native scheduler recovery and tool execution proof,
+not a widget conversation or worker-crash/approval-resume proof.
+
+### Remaining implementation scope
+
+1. Telephony native acceptance and remaining vendor wire schemas. Shared transport,
+   conversation-bootstrap and call-tool contracts are implemented and locally
+   verified below. Raw vendor request/response dictionaries still need the
+   complete data-flow coverage audit in item 5; native call QA remains.
+2. HTTP egress/resource contracts: shared errors and the eight HTTP value models
+   are verified and deployed below; broader native vendor acceptance remains.
+   The separate PCM audio contract slice is now deployed; native voice QA remains.
+3. Module/pipeline values: timeline definitions, memory/contact erasure
+   and SOR tool outcomes are now locally verified below. Listing queries, voice rollups, conversation upload
+   authority, memory reindex inspection, widget bootstrap and curated vendor
+   offers are locally verified below; native acceptance is not yet complete.
+4. SOR value dataclasses and the durable-work contract are converted and verified
+   below. Complete the remaining wire/receipt coverage audit; conversion counts
+   alone do not establish typed data flow. SDK-native
+   objects and connection/task resource owners are not blanket conversion targets.
+5. Vendor request/response coverage and finite JSON boundaries: close by complete
+   data flow, not by declaring all dictionaries invalid or all type-check passes
+   sufficient. Include the CLI in the final inventory.
+6. Run native acceptance and one final multi-facet milestone review; update docs
+   from observed behavior. Do not start unrelated UI polish or new features.
+
+### Shared SOR contract checkpoint — 2026-09-11, deployed
+
+Converted the 12 remaining shared catalog, relationship-target/intent,
+configuration, mapping/stream, deletion and projection-outcome values to strict
+Pydantic models. Positional producers now use explicit keywords. Wire roles are
+parsed at `from_wire`; internal roles remain platform enums. Mapping transform
+settings validate finite JSON at the public request boundary, before service
+construction. Regenerated console types reflect `JsonValue` instead of `unknown`.
+No domain policy, SQL schema, sync scheduling or relationship semantics changed.
+
+Verification:
+
+- 98 function assertions passed locally and in the new image: all 12 models,
+  native/wire types, frozen values, invalid inputs, API-to-draft conversion,
+  relationship intents, payload identity and diagnostic exclusions. The complete
+  public catalog remains byte-equivalent: 4 profiles, 13 vendor entries,
+  32 entities and 54 tools.
+- Read-only restoration in both the new image and recreated API validated the
+  existing five sources' 1,204 field mappings and 37 streams. No source settings,
+  credentials or data were reset. Jira/Zendesk still require reauthorization.
+- All four application services were recreated with matching environment values.
+  DB/Redis container identities stayed unchanged. Backend typing has zero errors
+  and two existing warnings; backend/CLI lint, console lint/type/build and
+  documentation checks passed. Console retains the large-chunk build warning.
+- Public API HubSpot reconciliation `01a08e7b-f555-79e0-a59a-b2ef6b1ee213`
+  succeeded at 03:21:28 UTC: 4/4 streams, 6 unchanged records, zero rejected records
+  and zero pending relationships. This executed real vendor reads and durable
+  projection, not mocked transport or vendor mutation.
+- Existing Confluence generation `01a08e79-c5c6-7ef2-837c-2bf48c531042` is being
+  observed without spawning a duplicate. It succeeded at 03:27:24 UTC:
+  6/6 streams, 3,772 unchanged records, zero rejected records and zero pending
+  relationships. This completes the native read/sync checkpoint for both sources.
+
+Bounded five-minute log samples contained no worker error/traceback lines. The
+API sample contained the previously recorded caught Passlib/bcrypt `__about__`
+warning during successful login, not a validation error. This is sampled evidence,
+not an exhaustive clean-log claim.
+
+One QA probe incorrectly expected a bare source list. The route and schema use
+an `items` envelope; the probe was corrected and public operations reads passed
+for all five sources. No production fix was needed for that assertion failure.
+Fresh widget interaction, native mutations and crash/wait-resume acceptance are
+still open. Changes are uncommitted.
+
+### Remaining SOR values checkpoint — 2026-09-11, verified, not deployed
+
+Converted 29 remaining vendor cursor/snapshot/delivery and runtime/service/media
+dataclasses to strict Pydantic values. Cursor wire codecs and their refusal codes
+are unchanged; 22 positional constructor sites now name their fields. Connector
+views preserve exact ORM identity and exclude rows from snapshots. Tool declarations
+preserve callable identity, exclude executable dependencies and type the deliberate
+dispatch-only refusal as `Awaitable[Never]`. Raw document bodies, image bytes and
+potentially signed attachment URLs are excluded from generic snapshots.
+
+Source creation configuration now returns its actual supported value type:
+string lists or explicit nulls. Omission/null distinction, list normalization,
+deduplication, bounds and configuration ownership remain unchanged.
+
+Evidence:
+
+- 196 model/identity/privacy assertions, 65 cursor assertions and 11 source-config
+  assertions passed locally and in the isolated Docker image. All 13 cursor
+  families retain the baseline encoded output and malformed-input outcomes.
+- Read-only DB checks restored all five source drafts and seven connector views.
+- Native adapter acquisition, verification and bounded reads returned one
+  Confluence page and one HubSpot contact with the new models; no projection rows
+  were written. This is not evidence for every vendor's live wire protocol.
+- Backend typing: zero errors, two existing redundant-cast warnings. Backend/CLI
+  lint and documentation checks passed. Public API/UI contracts are unchanged.
+
+Verification image:
+`sha256:22152e114b00f9479fecb70d11872e8e89f7008babe455a8afc6145c98980d67`.
+The running services remain on the deployed checkpoint above; the local image
+tag alone does not establish deployment. No migration or provider data reset.
+
+At this checkpoint the one remaining SOR dataclass was `runtime/work.py::SorWorkContract`. Its
+`type[Any]`, arbitrary result-field assignment and differing command/sync/webhook
+state types require a typed lifecycle/result change, not a decorator-only swap.
+Next: model-specific work/result contracts, update the three producers/consumers,
+verify binding, completion, retry, cancellation and recovery, then one rollout.
+Vendor wire coverage and final product acceptance remain open independently of
+the dataclass count.
+
+### Typed SOR lifecycle checkpoint — 2026-09-11
+
+`SorWorkContract` is now a frozen, strict Pydantic value with model-specific state
+validation. The generic service preserves exact sync/command/webhook ORM return
+types. Success consumes existing `SorSyncCounts`, a finite-JSON
+`SorCommandCompletion`, or no webhook payload; arbitrary result-key assignment
+and string-selected error columns are removed. Cross-lifecycle states are refused.
+The three definitions and both payload-producing completion callers are updated.
+No public API, SQL schema, task identity or transaction boundary changed.
+
+Verification: 140 lifecycle and 107 spawn/recovery assertions passed locally and
+inside image `sha256:a589d3ea8b336cf7a1c7b80050b4e05562d478127424e8dfe5962e767d503e1c`.
+PostgreSQL probes passed 28 checks across all three models using temporary rows
+under existing QA-org ownership, always rolled back; absence was verified after
+rollback. The command fixture tests DB lifecycle/result persistence, not vendor
+mutation or command authorization. Backend typing has zero errors and two existing
+warnings; lint and documentation verification passed. Full native worker crash,
+wait/resume and vendor mutation acceptance remain separate open gates.
+
+Two probe-stage issues were resolved before rollout: the installed Pydantic
+version rejects a named union bound inside `type[T]`, while the equivalent
+explicit union works; a cloned DB fixture initially reused its organization-unique
+`external_id`. The latter required a fixture correction, not a production change.
+Application-service rollout is in progress; DB/Redis and service environment
+values were checked before recreation and are unchanged.
+
+### SOR HTTP response checkpoint — 2026-09-11
+
+The shared JSON and binary response dataclasses are now strict, frozen Pydantic
+values. JSON parsing validates finite values at the transport-to-adapter boundary;
+invalid numbers receive the existing terminal `VENDOR_RESPONSE_INVALID` code.
+Bodies and raw headers are excluded from diagnostic snapshots. Adapters retain
+their explicit data/header access, and request/retry/redirect behavior is unchanged.
+
+The comparison probe passed 239 function assertions for finite JSON, response
+status/header behavior, invalid types, private snapshots, retries, cancellation,
+binary redirects and origin-bound credentials. Network I/O was substituted.
+One initial probe used a nonexistent error enum member; correcting that fixture
+to the actual `DESTINATION_NOT_PUBLIC` member required no production change.
+
+An isolated process in the running API container loaded the changed HTTP module
+and exercised real Confluence and HubSpot adapter acquisition, verification and
+one-record reads (spaces and contacts). Both returned typed records and closed
+normally. No projection records were written. This was native read-path evidence;
+the services were subsequently rebuilt with this HTTP change in the shared SOR
+checkpoint above. The isolated probe does
+not prove source-wide synchronization, vendor mutations or worker recovery.
+
+The updated source inventory contains one SOR dataclass: the durable-work
+contract identified above. The shared and remaining-value checkpoints cover the
+other 41 values counted at the start of these batches. Worker sync/webhook/work receipts and some vendor parsing
+helpers also retain untyped dictionaries. This inventory is not a completeness
+claim for request/response coverage or platform-wide literal removal.
+
+### CLI config-to-response checkpoint — 2026-09-11
+
+Replaced CLI dataclass values and untyped OpenAPI/request handoffs with CLI-owned
+Pydantic models. HTTP methods, parameter locations and authentication requirements
+have explicit enum types. Arbitrary API data remains finite JSON rather than a
+second server schema registry. Existing command names, request field encoding,
+saved config format and destructive-action confirmation are preserved.
+
+The separate CLI environment initially lacked the newly declared Pydantic
+dependency. After installation, the runtime import probe found a recursive schema
+annotation requiring deferred evaluation; this was not caught by the static
+checker. Required-input hint typing also needed an explicit absent-location
+guard. All three issues were corrected. Pydantic and its transitive versions are
+aligned with the existing server lockfile; no server dependency changed.
+
+Verification on the CLI's own Python environment:
+
+- 102 function assertions passed, covering saved config/token permissions,
+  overrides, logout, invalid/finite JSON, request construction, multipart bytes,
+  response rendering, auth headers and transport errors. HTTP was substituted
+  and config files were disposable for these checks.
+- The running API's 332 actions across 54 resources exactly matched the prior
+  implementation's names, paths, required-input hints and destructive flags.
+- Requests for all 332 live-catalog actions constructed successfully, without
+  sending those requests. This is construction evidence, not full API QA.
+- Normal CLI login and Agent, Contact and Member list commands succeeded in
+  the existing Eylo Development organization. A new private temporary CLI
+  profile was used; credentials and returned entity content were not printed.
+- Explicit CLI typing reports zero errors. The backend acceptance checks and
+  broader product acceptance remain separate from these CLI results.
+
+No migration, provider configuration, source data or running backend image was
+changed for this slice. Fresh widget/voice interaction and durable crash,
+cancellation and wait/resume coverage remain open.
+
+### Event delivery and periodic contracts — 2026-09-11, deployed
+
+Converted the periodic catalog, consumer keys, delivery filings/attempts and health
+snapshots to Pydantic. Names/cadences and failure classifications use owning enums.
+Binding and worker parsing now share typed UUID parameters. Consumption derives
+from delivery state; permanent/retry handling derives from the existing failure
+code. Snapshot exclusions preserve event-envelope and callable privacy. Existing
+JSON payload keys, retry decisions, action names, cron schedules and transaction
+boundaries are preserved.
+
+The comparison probe passed 306 assertions against the previous implementation:
+all 21 actions, four registered consumers, key validation/hash/order, success and
+duplicate receipt handling, missing binding, exhaustion, permanent/retry failures,
+workflow cancellation, health SQL/projection and periodic lock/timeout cleanup.
+DB/Redis I/O was substituted. A probe-only failure initially compared the isolated
+baseline exception class against the new module's class; correcting that fixture
+identity required no production change. Backend typing and backend/CLI lint pass.
+Native DB/worker acceptance remains separate.
+
+Native DB verification on image
+`sha256:50666bcdcc40af23b69794ed1a3d4e09bad28c351403c1124ce31befad53ee6c`
+passed 63 assertions in a rollback-only savepoint inside Eylo Development. It
+exercised actual filing, duplicate identity, wrong-tenant lookup, task binding,
+retry, exhaustion, permanent failure, inbox receipt and duplicate consumption.
+All four synthetic events plus their deliveries/receipts were confirmed absent
+after rollback. No vendor calls or committed QA event rows were introduced.
+The native Taskiq decorator also produced exactly the previous 21 string-valued
+schedule labels. This is DB service and installed-SDK compatibility proof, not a
+worker-crash or concurrent-delivery proof.
+
+All four application services now run that image (API started 02:14:56 UTC;
+workers/scheduler started 02:15:05 UTC). DB/Redis container identities remain
+unchanged. The authenticated event-health API returned 15 succeeded deliveries,
+zero pending/running/dead-letter/unsupported deliveries, four durable consumers
+and 41 healthy local listeners. The durable-worker startup sample reached normal
+workflow registration. No migrations, dependencies or provider settings changed.
+
+### Timeline, erasure and SOR tool receipts — 2026-09-11, not deployed
+
+Timeline definitions use frozen Pydantic values and derive technical visibility
+from category. Contact-erasure context retains live ORM identity but excludes all
+rows from snapshots. Memory-erasure values and owner-column predicates are typed;
+deletion policy and transaction order remain unchanged. The 1,263-assertion probe
+compared all 64 timeline definitions/projections and exact memory SQL predicates
+against the previous implementation, with DB execution substituted. No live
+deletion was performed.
+
+SOR command receipts carry UUIDs, command-state enums and finite JSON through
+worker and tool-resume code. A discriminated result union replaces untyped result
+envelopes; successful tool results reject non-succeeded receipts. Framework and
+Absurd boundaries explicitly serialize to the existing JSON format. The
+142-assertion probe covered receipt states, strict input rejection, source
+selection, identity refusal, pending-to-terminal resume and framework projection.
+External I/O was substituted; this is not native mutation or crash-recovery proof.
+The read-only native receipt comparison found zero receipts in Eylo Development,
+so it provides no stored-receipt compatibility evidence.
+
+### Internal collection and result contracts — 2026-09-11, not deployed
+
+Converted eight owned values: Agent/contact/member list queries, conversation-file
+authority, widget development session, Memory reindex inspection, curated vendor
+offer and voice segment rollup. Filters use domain enums and UUIDs; their SQL
+predicate results are explicitly typed. Query defaults and valid search behavior
+are unchanged. Raw tokens and ORM rows remain accessible to explicit consumers
+but are excluded from internal snapshots; ORM identity is preserved. Voice
+aggregation uses its owning role/outcome enums and retains unknown durations.
+
+Verification: 1,093 assertions exercised strict query inputs, JSON restoration,
+real HTTP parsing and service-generated PostgreSQL filter/order expressions.
+Controller execution and repository I/O were substituted; these are not live DB
+or browser checks. Another 514 assertions covered constructors, all 29 registered
+vendor offers, widget bootstrap/response mapping, exact upload authority and
+embedding resolution, and aggregate-to-rollup mapping. Memory inspection and
+its real API projection passed 112 assertions across missing/present indexes,
+available/unavailable config and credential-decryption fallback. Only external
+collaborators were substituted. Backend typing and backend/CLI lint passed;
+the two existing redundant-cast warnings remain. No deployment or DB changes.
+
+### PCM audio checkpoint — 2026-09-11, not deployed
+
+`AudioFrame` is a frozen Pydantic value with strict, validated dimensions and an
+exact PCM16 byte count. Its optional metadata sidecar is finite JSON rather than
+`Any`; raw PCM and metadata stay out of snapshots. Shared frame layout validation
+runs before zero-fill allocation or stream buffering. `AudioByteStream` retains
+mutable byte ownership but exposes fixed geometry and refuses zero-sized chunks.
+Deepgram/Speechmatics construct frames inside the existing send-failure boundary,
+so invalid input still marks the adapter disconnected and cleanup remains owned
+by the native stream/client. No provider policy or resampling algorithm changed.
+
+The previous dataclass accepted invalid dimensions. The previous byte stream's
+zero stride could not advance its write loop; its final flush cleared an odd tail
+and returned contradictory sample metadata. The baseline probe reproduced the
+invalid construction and tail loss, and inspected zero stride without executing
+the unbounded loop. New flush validation retains invalid tail bytes until a whole
+interleaved sample can be formed; no implicit padding or truncation was added.
+
+462 function assertions passed: PCM/WAV round-trips across five rates and three
+channel counts, scalar/metadata refusal, geometry immutability, identity/private
+snapshots, arbitrary transport byte splits, lossless chunking, final-tail recovery,
+combination and all resampler qualities. Another 72 assertions ran the actual
+adapter → frame → native stream → byte buffer → socket path for Deepgram and
+Speechmatics, substituting only aiohttp I/O. Normal, malformed PCM, send failure,
+cancellation and timeout all closed sockets/sessions and joined reader tasks.
+The first adapter fixture omitted Deepgram's required language; it was corrected
+from the owning schema, not by changing product config.
+
+A local 20,000-construction microbenchmark measured 0.250 microseconds for the
+old dataclass and 1.051 microseconds for Pydantic. This is constructor-only
+evidence, not native voice latency or audio-quality proof. Backend typing passed
+with zero errors and two existing cast warnings; backend/CLI lint passed.
+Native/deployed audio acceptance remains pending; the HTTP checkpoint is still
+the running image.
+
+### HTTP value checkpoint — 2026-09-11, deployed
+
+Converted seven HTTP policy/request/response values and the resolved transport
+target to frozen Pydantic models. Scalar types reject accidental coercion;
+header/query dictionaries are copied into immutable views. Credentials, raw URL,
+headers and bodies are excluded from snapshots and representations. Direct
+constructors retain the safe domain exception; new Pydantic validation APIs
+retain their standard `ValidationError` behavior. Method and target-phase enums
+are owned by the HTTP boundary; all fixed-method request producers use the enum.
+
+Port regression: `_port()` previously used `parsed.port or 443`, which treated an
+explicit zero as an omitted port. Only `None` now selects 443; explicit zero is
+rejected before network access. Existing error categories retain their spelling;
+`CONTRACT_INVALID` adds a category for malformed Pydantic constructor values.
+
+282 function assertions passed through real constructors and SOR, curated, MCP
+and SendGrid callers with only HTTP responses substituted. Coverage includes
+immutability, private-field exclusion, JSON-compatible policy readback, all seven
+methods and their redirect transformations, strict scalar errors, and port zero.
+The 392 error/transport assertions also passed with controlled DNS/wire responses;
+all eight model JSON schemas generated. Backend/CLI lint and both backend and
+explicit CLI type checks passed (backend retains two existing cast warnings).
+These checks passed again inside the new Docker image before recreation. API and
+all three worker/scheduler services started on that image at 00:44 UTC; API health
+passed and DB/Redis identities were preserved. Read-only provider restoration
+again passed for all 25 configs and 13 ready voice receipts. These assertions are
+contract proof; native product outcomes are recorded separately below.
+
+Browser control remained unavailable: the requested 20-second timeout was not
+honored by the tool, which returned a transport timeout after 300 seconds. The
+widget HTTP endpoint returned 200, but no fresh browser interaction is claimed.
+
+Native acceptance on this image:
+
+- Fresh public-CLI schedule `01a08def-d8cd-7561-8d7f-df89f56d0adb` produced exactly
+  one occurrence and AgentRun `f517c9f3-d007-4183-a60a-2442e82449b7`. The existing
+  SOR audit agent used the configured LLM, called `issue_search` then `issue_get`,
+  and completed/achieved at 00:49:11 UTC. Independent stored-transcript replay
+  confirmed two correlated non-error results, no pending calls, restored context
+  and exact result JSON round-trip. SOR tools read the local projection.
+- HubSpot's normal reconciliation generation `01a08dec-cb3a-76e2-ad59-aae1f5e65925`
+  started after deployment and succeeded across all four streams, with six
+  unchanged records and zero rejected records. This exercised native vendor
+  reads without initiating another sync or changing configuration.
+- Confluence generation `01a08dec-cb52-77f1-8ce6-c53264338128` also started after
+  deployment. An exact-generation read through the paginated public operations
+  API confirmed completion at 00:53:48 UTC: all six streams succeeded, 6,193
+  records were unchanged, and none were rejected. Linear's last
+  observed successful generation predates deployment and is not new-image proof.
+- Public source listing reports Jira and Zendesk `REAUTH_REQUIRED`; their native
+  acceptance needs reauthorization. The console and widget both returned HTTP
+  200, but browser-control transport failure still prevents visual QA.
+
+QA helper correction: schedule creation succeeded before its output formatter
+incorrectly requested a `revision` response key. The API exposes
+`published_revision`; readback recovered the schedule by its unique key and
+confirmed only one occurrence. Creation was not retried; no product patch was
+needed for that helper error. No migration, dependency, DB/Redis or provider
+configuration changes accompanied this checkpoint.
+
+### HTTP egress error checkpoint — 2026-09-11, deployed with HTTP values
+
+`HttpEgressErrorCode` owns all 34 existing egress failure categories. Every
+first-party `HttpEgressPolicyError` producer now supplies an enum member, and SOR,
+MCP and SendGrid translate that enum into their own domain errors. The exception
+remains a `ValueError`; existing category spellings, messages and retry/delivery
+classifications are unchanged. Arbitrary string categories are rejected at
+construction. URL helpers also declare their `SplitResult` contracts.
+
+382 function checks passed: all categories and consumer classifications, current
+constructor sites, URL/path/header/query refusals, mixed public/private DNS answers,
+bounded responses, redirect limits, cross-origin credential removal, pinned Host
+and TLS SNI, transport closure, timeout and cancellation. The actual HTTPX adapter
+and request/response path ran with controlled DNS and wire responses; no DB or
+external vendor effects occurred. Backend/CLI lint and backend type checks passed
+(zero errors, two existing redundant-cast warnings). This closes the error
+contract, not the remaining HTTP dataclasses or native vendor acceptance.
+
+### Telephony transport checkpoint — 2026-09-11, deployed above
+
+Replaced the twelve dataclass contracts in `sockets/telephony/base.py` plus
+`ConversationBundle` with Pydantic models. Resolved media config and progressively
+enriched call metadata retain explicit mutation with assignment validation;
+frames, profiles and results are frozen. Credentials, raw audio, opener text and
+session tokens are excluded from enclosing snapshots without copying or replacing
+the live resources. Socket-owned enums represent direction, stream-token
+requirements, operation support, media failures and live-control failures.
+All four adapters, number-purchase profiles, the media manager and bootstrap
+pipeline consume those contracts. No module imports were added to sockets.
+
+Vendor-shape correction: Exotel's documented media sequence number is on the
+envelope, but the old parser read only the nested `media` dictionary and defaulted
+to zero. The parser now prefers the envelope and retains the nested fallback.
+String and integer ordinals remain accepted; no ordering policy changed. Vendor
+references and their representation differences are recorded in the provider
+reference page.
+
+383 function assertions passed: real parsers/factories/manager, typed mutation,
+private-field exclusion, signature creation/verification through query enrichment,
+wrong-org and missing-token refusal, direction-correct conversation construction,
+all control-operation/status categories, media success/failure/cancellation and
+interruption outcomes. WebSocket write methods were substituted on real Starlette
+WebSocket objects. The initial AsyncMock WebSocket was false-valued and therefore
+correctly refused as disconnected; the fixture was corrected. Plivo's dummy auth
+ID was also corrected to its installed SDK's required shape, and client creation
+was asserted. These are not live carrier requests or audio-quality tests. The
+189 call-tool assertions passed again. Backend/CLI lint and backend type checking
+passed (zero errors, two existing redundant-cast warnings); no DB/config changes.
+
+### Call-tool contract checkpoint — 2026-09-11, deployed above
+
+`pipelines/telephony/tool_execution.py` and `pipelines/voice/end_call.py` now use
+frozen Pydantic content/outcome/metadata models and owning failure enums. The
+framework adapter explicitly projects their existing JSON shape. Call/config IDs
+stay UUIDs until that boundary; successful initiation must match the committed
+attempt's state and call identity. Error predicates are derived from the content.
+Missing provider call IDs remain null; early place-call refusals retain empty
+metadata and end-call refusals omit runtime mode. No call ownership, provider
+policy, transaction, migration or cleanup behavior was changed.
+
+Verification: 189 function assertions passed through real execution contexts,
+outbound result models, both tool producers and `PlatformToolExecutor.execute`.
+Provider sending, availability lookup and transport termination were substituted.
+Coverage includes every outbound attempt state with present/absent provider IDs,
+malformed inputs, missing published authority, missing durable execution,
+configuration/conflict errors, propagated cancellation, all voice runtime modes,
+cross-org refusal, strict construction and framework JSON round-trip. Two initial
+probe failures were incorrect `NotConfiguredError` fixture construction (keyword
+arguments and API-path validation); the corrected full probe passed. No DB or
+vendor writes were performed. Backend/CLI lint and backend type checks passed
+(zero errors, two pre-existing redundant-cast warnings). Deployment is recorded
+above; native phone/audio QA remains open.
+
+## Historical implementation checkpoints
+
+Earlier deployed checkpoint (2026-09-11): API, durable worker, ordinary worker and
+scheduler run `sha256:52949b97373f6c2612d642014bc13efa494c4f00f02eff5322fa96caf6fbf23b`.
+This includes the summary, sandbox workspace/evidence, capability/tool-availability,
+voice catalog/verification and Speechmatics correction below; their older
+not-deployed labels are superseded. API is healthy. PostgreSQL `615b91925226`
+and Redis `c07c38389f13` were preserved; no migrations or configured data changed.
+
+The prior checkpoint image passed 831 isolated function checks inside Docker
+(86 availability, 421 voice catalogs/receipts, 324 sandbox/summary). The corrective
+Speechmatics flow adds 46 checks. Backend/CLI lint and type checking passed; the
+two existing redundant-cast warnings remain. Documentation validation passed.
+
+Native readback on the final image validated all 12 capability projections over
+25 existing QA-org configs and restored all 13 ready voice receipts (5 STT,
+5 TTS, 3 realtime). A real bounded Speechmatics verification connected and closed
+using the existing saved credentials, outside the DB transaction and without
+marking or changing the configuration. This is connection/configuration acceptance,
+not audio-quality or live conversation acceptance. Browser-control inventory still
+timed out; no fresh widget message was sent in this checkpoint.
+
+Native-config finding (2026-09-11): read-only validation of Eylo Development's
+25 provider configs found one ready Speechmatics config rejected before adapter
+construction. Onboarding stored `diarization` as a boolean; the tightened shared
+contract incorrectly required text. Fixed the shared contract with enum-backed
+toggle/named modes and explicit translation to the vendor enum in the adapter.
+Stored configuration and credentials are not rewritten. The probe also restored
+12 other ready voice receipts (4 STT, 5 TTS, 3 realtime); the full successful
+readback after the correction is recorded above. This demonstrates why local constructor
+checks alone cannot close the product data-flow acceptance gate.
+
+Voice catalog/verification checkpoint (2026-09-11): options, input modes and
+verification receipts are typed Pydantic contracts. Provider enums retain STT/TTS/
+realtime identity, including overlapping vendor names during JSON restoration.
+Positive revisions and aware verification timestamps are required. All 49 field
+catalogs retain their public choices and custom-entry behavior. 421 function
+checks passed, including route-to-verifier-to-revision-write for all three voice
+kinds with external adapters and DB transactions substituted. Provider-native
+verification and calls remain separate acceptance gates. Deployment is recorded
+below when complete.
+
+Tool-availability checkpoint (2026-09-11, not deployed): requirements, execution
+facts, missing requirements and provider capability status use strict frozen
+Pydantic contracts. Capability/runtime enums, independent readiness predicates,
+explicit bindings, registry equality and public response fields are unchanged.
+86 function checks passed using real domain/context/tool models with DB/provider
+lookups substituted: requirement combinations, invalid types, exact revision
+lookup, refresh, active-session isolation, registry consistency and response
+projection. Native acceptance remains open.
+
+Summary-carrier checkpoint (2026-09-11, not deployed): token-count components,
+request message groups and compaction selection now use Pydantic contracts.
+Groups are built then frozen; selected messages retain identity and are excluded
+from snapshots, as are the shared cursor's live summary/boundary messages. Existing
+group ordering, recent-group retention, trigger thresholds, token estimation and
+persisted cursor fields remain unchanged. All 61 function checks passed, including
+selection after an earlier summary and exact persisted cursor metadata, with the
+persistence collaborator substituted. Native background-agent acceptance is open.
+
+Workspace/evidence checkpoint (2026-09-11, not deployed): replaced `WorkspaceExport`
+with a frozen Pydantic transfer contract and private archive exclusion. Added an
+owning typed policy for settings, verified image and grant ceiling; session and
+checkpoint JSON retain the historical flat shape. Capacity, session restoration,
+checkpoint comparison, export and filing use named attributes. Malformed stored
+policy is translated to `SandboxError`; export cleanup also runs on that refusal.
+Current grant resolution remains the authority, not the checkpoint grant ceiling.
+
+Action-specific intents and exec/read/write evidence also use owning Pydantic
+contracts. Failure filing explicitly projects typed evidence to the generic step
+JSON. Raw content is absent; omitted text/output-refusal fields stay omitted.
+Safe summaries use named fields rather than indexing dictionaries.
+
+Verification: 76 workspace checks passed, including the real write/export/store/receipt/replay
+orchestration with DB/provider collaborators substituted, no repeated write on
+replay, field/byte serialization, malformed policy, conflicting checkpoint,
+capacity and cleanup under cancellation. Another 57 evidence checks cover exact
+JSON compatibility, invalid fields, fingerprints, timeout versus output-limit
+refusal and failed-step/replay projections. The 130 sandbox-tool checks also passed;
+full backend/CLI lint and type checking passed. Native sandbox/provider execution
+and post-deployment browser QA remain open. This closes these workspace/evidence
+carriers, not the platform-wide plan.
+
+Latest runtime checkpoint (2026-09-11): API, durable worker, ordinary worker and
+scheduler now run image
+`sha256:9502d421c89e128d01c8b83391f2dbc2c7fdaca8225ca94a936268cc1477331d`.
+This supersedes earlier undeployed labels for context, result and sandbox-tool
+contracts below. API health passed; PostgreSQL `615b91925226` and Redis
+`c07c38389f13` retained their identities. No migrations changed or data reset.
+
+The rebuilt container passed 130 sandbox-tool, 111 result/resume and 130 context
+function checks in isolated processes. These still substitute DB/provider/durable
+collaborators; running them inside the image proves packaging and contract paths,
+not native provider or crash/replay acceptance. Backend/CLI lint, type checking
+(zero errors, two existing redundant-cast warnings) and docs validation passed.
+
+Post-restart browser QA is open: the widget HTTP server returned 200, but browser
+control timed out both on DOM inspection and a subsequent tab inventory. No new
+QA message was submitted. Previous browser success below applies to the earlier
+image, not this one. Recent API/durable-worker logs contained no tracebacks or
+error-level lines; ordinary-worker/scheduler log samples were truncated and are
+not a complete clean-log proof.
+
+Next acceptance gate: restore browser control, run fresh tool-bearing conversation
+and parallel-agent turns, inspect canonical results in the console, then exercise
+schedule/objective and worker recovery paths where configured. Remaining typing
+includes other session/voice/resource
+contracts and vendor-native request/response gaps. The platform-wide goal remains
+open; a clean type-check report does not close those contracts.
+
+Sandbox-tool checkpoint (2026-09-11, not deployed yet): actions, private results,
+failure codes, workspace references, durable receipts and presentation metadata
+now use strict Pydantic contracts. Replay compares the receipt revision/digest
+against the scoped canonical checkpoint. Invalid adapter results use cleanup;
+timeouts discard compute and cancellation propagates. Existing output shapes
+and reject-not-truncate limits are preserved. Evidence dictionaries and workspace
+export/policy carriers remain separate typing work.
+
+Verification: 130 function checks passed using real pipeline methods with vendor,
+DB and durable-engine collaborators substituted. Covered exec/read/write,
+malformed input/output/artifacts, exact projection, receipt mismatch, replay,
+timeout and cancellation. Full backend/CLI Pyrefly reports zero errors and two
+existing redundant-cast warnings. Native sandbox execution remains unverified.
+
+Durable-result checkpoint (2026-09-11, not deployed yet): scheduled and objective
+summaries, pre-turn objective exhaustion, parallel task completion and resume
+checkpoint receipts now have owning Pydantic contracts. Conversation result
+projections retain their existing model and no longer erase JSON types on the
+way to storage. The generic terminal writer validates/copies finite JSON before
+locking the run; product models remain outside the module. Invalid nested
+objective numbers are refused before serialization can turn them into null.
+Existing result fields, message binding, byte limits and transaction ownership
+remain. Resume receipts cannot replace canonical transcript readback.
+
+Verification: 111 result/resume checks and 21 generic JSON checks passed with
+real worker methods and ORM constructors. DB, checkpoint and external effects
+were substituted: fresh/replayed resume, no duplicate recording, malformed
+receipts, missing canonical output, cancellation, terminal serialization,
+exhaustion, invalid numbers and pre-lock refusal were exercised. A separate
+read-only check validated all 138 saved QA results (99 conversation, 39 parallel)
+against exact current models and reproduced their JSON unchanged, including
+null fields. Native schedule/objective execution and worker crash/replay remain
+open. No provider, DB, migration or deployment changes in this slice.
+
+Durable-context checkpoint (2026-09-11, not deployed yet): conversation,
+schedule and objective context now have product-owned frozen Pydantic models;
+parallel task context also has strict validation and an owning discriminator
+enum. Producers serialize these models, and worker readback restores them before
+using fields. Generic filing, ORM annotations and claim validation retain only
+finite JSON, without importing product schemas. Existing JSON fields and ISO
+offset spelling are preserved, as are transaction, revision and idempotency
+ownership. Objective limits are validated before the filing transaction.
+
+Local verification: 130 context checks, 21 generic JSON checks and the existing
+110 filing checks passed. Covered exact snapshots, offset preservation, invalid
+numbers/identities/bounds, foreign conversation references, revoked schedule
+revisions, cancellation and no-DB refusal of invalid input. DB/native effects
+were substituted in these function checks. A separate read-only check applied
+the exact new models to all 143 saved Eylo Development runs: 104 conversation
+contexts and 39 parallel task contexts validated and reproduced their stored
+JSON unchanged. This org contains no saved schedule/objective runs, so native
+execution/restart acceptance for those remains open. No DB writes, migrations,
+provider changes or new deployment occurred in this slice.
+
+Latest deployment and live acceptance (2026-09-11): API, durable worker, ordinary
+worker and scheduler all run image
+`sha256:0cf29e31f2b5a65d090db03cc9d3465686572cf0c0e48775360bf1ed6306b3b8`.
+This includes the discovery, OAuth/refresh, webhook, CLI and durable/filing slices
+that earlier checkpoints below describe as not yet deployed. PostgreSQL and Redis
+retained their exact container identities and operator configuration; no migration
+files changed. API is healthy and all three workers are running.
+
+In Eylo Development's existing QA SOR Audit Agent conversation
+`01a08a9f-bfbc-7ae0-b5bd-6f5ca21ecd2c`, `QA_TYPED_EVENT_DEPLOY_20260911`
+produced fresh `issue_get` and `docs_get` calls. Both tool results and the final
+reply were inspected as Completed in the operator console. This proves read
+authority and fresh agent execution, not native SOR mutations or webhook delivery.
+
+Bounded-message live acceptance: sent `QA_UTF8_START` through the real widget,
+with 16,356 Unicode characters, below the existing 16,384-character goal limit.
+A second independently connected widget, already viewing the same conversation,
+received both markers and all 16,280 emoji padding characters without a reload.
+The real agent returned `ACK_UTF8_20260911`. Read-only ORM verification confirmed
+both user message `01a08cf2-1298-70c3-b295-97219d2100e2` and assistant message
+`01a08cf2-2d8b-74b2-ad88-03d75c76ecc1` Completed. The exact persisted message
+would produce a 131,288-byte old event; the new reference is 124 bytes. This
+closes the oversized message-created event acceptance gate without increasing the
+global budget. The temporary second widget was closed; the original widget and
+console remain available. Large assistant output has local coverage, not native
+LLM generation beyond configured output limits.
+
+A preceding 70,194-character input was correctly refused by the existing AgentRun
+goal limit before persistence, but its generic widget failure was not clearly
+visible. Explicit typed validation/error presentation remains a follow-up; this
+test does not authorize removing the goal limit. Native OAuth refresh, MCP,
+mutation/replay and full voice acceptance are still open. Post-restart service logs
+had no tracebacks/oversized events during the successful read turn; the two
+intentional oversized-input attempts logged MessageAgentRunConflict.
+
+Durable/filing checkpoint (2026-09-11): runtime config, registration, run origin,
+terminal result and the three filing results now use strict frozen Pydantic
+contracts. Explicit nullable cancellation limits have an owning model and one
+documented Absurd 0.5.0 annotation exception at native translation. Connection
+strings, live handlers and message bodies stay out of generic snapshots.
+Zero attempts are rejected instead of falling through to the configured limit.
+
+Re-executed 54 runtime checks and 110 filing checks: actual SDK registration and
+spawn serialization, model validation, handler/message identity, heartbeat cleanup,
+schedule/objective idempotency and conflicting-input refusal passed. DB, budget
+and native I/O were substituted; worker restart/replay acceptance is still open.
+Full backend/CLI Pyrefly now reports zero errors, no suppressed diagnostics, and
+two redundant-cast warnings. Deployment and bounded live acceptance are recorded
+above; native worker crash/replay acceptance remains open.
+
+Message notification RCA reproduced with a 70,000-character user message:
+the 70,651-byte event exceeded the 65,536-byte limit before listener invocation.
+The event now carries only typed conversation/message references and kind.
+Presentation reloads the live message within the referenced conversation after
+commit and sends full content after releasing the read transaction. No global
+budget increase, message truncation, or new durable delivery authority.
+All 91 local function checks passed: bounded references, exact writer registration,
+full 70,000-character Unicode user/assistant delivery, conversation/message query
+predicates, missing/deleted/mismatched rows, ignored tool/system messages and
+cancellation. DB/Redis were substituted. Deployment and browser acceptance remain
+separate gates below. Documentation validation and backend/CLI lint passed.
+
+SOR webhook checkpoint (2026-09-11): five signal/subscription/authority/maintenance
+carriers now use strict frozen Pydantic models. Source ORM identity is preserved;
+signing secrets, endpoint tokens and ORM references are excluded from generic
+snapshots. Linear's unselected-stream fallback reconstructs the typed signal
+instead of calling dataclass replacement. The existing persisted signal envelope,
+UTC normalization, deduplication and revision-checked subscription commits remain.
+
+All 105 local checks passed, including seven vendor normalization paths (Linear,
+Jira, GitHub, HubSpot, Notion, Intercom and Zendesk), exact persisted signal round
+trips, malformed/bounded inputs, subscription cancellation/cleanup and real secret
+encryption/owner binding. Network and DB collaborators were substituted. No live
+webhook delivery, subscription registration or DB-race acceptance is claimed.
+This webhook slice is not deployed.
+
+Broader CLI checkpoint: corrected three contract errors uncovered by checking
+the complete backend and CLI together. Response decoding accepts only the content
+type it consumes, including standard-library HTTPError headers. Deployment's
+project root is explicitly optional; a missing bucket is refused before build
+cleanup or AWS work. All 31 function checks passed, including the real HTTPError
+branch and missing-bucket no-effect checks. No build, deletion, network request or
+deployment ran. Full backend/CLI Pyrefly reports zero unsuppressed errors, two
+existing suppressions and two existing redundant-cast warnings. Lint passes.
+The two suppressions were subsequently removed by the durable-runtime changes
+above. Remaining broad/dynamic contracts still require the full typing audit;
+a clean reported error count does not close this plan.
+
+SOR OAuth checkpoint (2026-09-11): converted seven authorization/refresh carriers
+to strict frozen Pydantic contracts and introduced a named token-grant result.
+Secrets are excluded from generic snapshots and representations. Transport and
+session-factory collaborators are typed; decoded token bodies require finite
+JSON. The 41 authorization/refresh failure codes now use owning enums without
+changing their wire values. Native token request/response field DTOs remain open.
+
+Exact request construction reproduced a pre-existing Basic-auth integration bug:
+code exchange and refresh passed Authorization in public headers, so the egress
+guard refused the request before network I/O. Both paths now use the existing
+origin-bound header contract. Token endpoint redirects remain disabled; body
+authentication is unchanged. No egress guard was weakened.
+
+All 214 local checks passed: carrier validation, safe snapshots, scope/lifetime
+handling, JSON/form and Basic/body request combinations, refresh outcomes and
+cancellation. Checks execute the actual SafeHttpTransport and pinned HTTPX
+adapter with substituted DNS/network I/O: exact Host/SNI and credential headers,
+redirect refusal, client cleanup and wrong-origin refusal passed. This is not
+native OAuth consent/refresh or DB concurrency acceptance. Full SOR/pipeline type
+checks report zero errors with two existing redundant-cast warnings; backend/CLI
+lint passed. OAuth and the preceding discovery changes are not deployed yet.
+
+SOR discovery checkpoint (2026-09-11): converted ten carriers across adapter
+context/field selection, connection verification, discovered fields/objects/schema,
+schema differences, discovery authority/result and verified API-key candidates.
+Credential/configuration mappings now validate finite JSON and seal their top
+level, including empty defaults. Secrets are excluded from generic snapshots.
+Discovery phase/failure enums preserve existing state and error-code spellings.
+The existing factory, schema persistence and short transaction boundaries remain.
+
+All 135 local function checks passed: context typing and copying, secret snapshot exclusion, real
+credential encryption owner/revision binding, exact schema snapshots/readback,
+schema differences, verification/discovery/cancellation failures and API-key
+candidate cleanup. Native I/O and DB collaborators were substituted for the
+orchestration checks; no native discovery/replay acceptance is claimed. The
+existing 72 normalization comparisons across all 11 adapter registrations still
+pass (909 checks). Full SOR/pipeline type checks report zero errors with two
+pre-existing redundant-cast warnings. This newest discovery slice is not deployed.
+
+SOR command checkpoint (2026-09-11): converted authority, filing, claim,
+vendor request and result carriers to strict Pydantic contracts. Live typed
+payload identity is preserved; raw request/result data stays out of generic
+snapshots. The explicit `SorStoredCommandResult` schema retains the six-field
+durable JSON envelope and validates readback without manual dictionary lookups.
+Adapter collaborators use the existing `SorLifecycleAdapter` protocol. Runtime
+authorization/failure enums preserve persisted codes and remain separate from
+vendor error enums. Transaction, idempotency and retry ownership are unchanged.
+
+Local verification: 121 function checks passed for constructors, identity,
+snapshot exclusion, finite JSON, exact checkpoint round trips, malformed/oversize
+refusals, terminal failure classification and actual vendor-request assembly,
+including conditional revision versus platform hash revisions. Vendor I/O was
+substituted; this is not native mutation, DB authorization or durable-replay
+acceptance. Full SOR and its pipeline type checks report zero errors, with two
+pre-existing redundant-cast warnings. Full backend/CLI lint passed.
+
+Deployment checkpoint: API, durable worker, ordinary worker and scheduler now run
+`sha256:9f221cfd61f0a33765fe8150bf87f9fbb94872a069a884eaac401fb5398fce88`.
+DB and Redis containers/volumes were preserved. Existing widget transport
+reconnected after restart. In the same QA SOR Audit Agent conversation,
+`QA_COMMAND_CONTRACT_DEPLOY_20260911` produced fresh `issue_get` and `docs_get`
+calls; the operator console showed both persisted results and the final answer
+Completed. This exercises read authority, not native command mutation/replay.
+MCP code is deployed; native server discovery/execution acceptance is still open.
+Backend lint, documentation validation, console lint/types/production build and
+both widget builds passed. Console build retains its large-chunk warning.
+Post-restart logs showed a trapped Passlib/bcrypt version-metadata warning during
+login; sign-in succeeded. This warning was observed, not diagnosed or fixed in
+the command-contract slice.
+
+MCP carrier checkpoint (2026-09-11): converted six remaining MCP dataclasses to
+Pydantic values and added the explicit module-owned discovery input. Socket JSON
+values no longer use `Any`; published definitions retain typed LLM/executor
+objects until persistence. Discovery targets and resolved configs preserve live
+ORM/egress identity and exclude secret/runtime fields from snapshots. Adapter
+method/error enums and pipeline failure enums retain existing wire values.
+The service constructs typed updates while preserving omission of execution mode
+unless a discovered tool must be disabled.
+
+Local verification: 111 function checks passed using real encryption, ORM/model
+constructors and an in-memory transport. Covered secret owner/revision binding,
+snapshot exclusion, tool-schema projection, JSON/SSE response parsing, cancellation
+propagation and read/mutation failure classification. MCP type checking has zero
+errors. This is not deployed HTTP, DB publication, durable mutation/replay or
+remote-session cleanup acceptance.
+
+MCP wire checkpoint: added adapter-owned request, JSON-RPC response, initialization,
+tool-list and text-result schemas for the existing 2025-06-18 protocol. An additional
+64 function checks passed for exact request shapes, ID matching, initialization,
+pagination, text-only results, malformed replies and safe failures. Replies must
+contain exactly one result/error and valid server identity; invalid peer data is
+refused. No protocol upgrade or new content support. Deployed discovery/execution,
+durable replay and remote-session lifecycle acceptance remain open.
+
+SOR canonical checkpoint: all 29 canonical record carriers across CRM, Ticketing,
+Knowledge and Support now use strict, frozen Pydantic contracts. Raw body and
+attachment fields are excluded from generic snapshots without changing the
+explicit profile-service storage inputs. Six changed vendor JSON helpers now
+return recursively validated, finite JSON values; custom mapping data remains
+supported. No migration or domain policy change is introduced.
+
+Local evidence: 277 constructor/serialization/refusal checks passed. A separate
+probe constructed all 11 adapter registrations and compared 72 normalization
+outputs field-by-field with the pre-conversion dataclasses: 909 checks passed,
+including eight unchanged unsupported-operation refusals. These are local pure
+normalization checks, not native HTTP or DB execution. Full SOR type checking has
+zero errors (two pre-existing redundant-cast warnings); backend/CLI lint passed.
+Deployment and selected live acceptance for these edits are recorded below;
+the earlier live results farther down this file do not cover these new edits.
+
+Audit/read checkpoint (2026-09-11): converted 15 audit and related-record carriers
+across Ticketing, Knowledge and Support. Live ORM references use exact instance
+validation, retain object identity, and are excluded from snapshots/JSON schemas.
+Fixed Support lifecycle fields and Knowledge source format now restore profile
+enums at the DB read boundary. All 121 local audit checks passed, including the
+actual public response models and the ORM JSON serializer. This is not a DB
+query or HTTP acceptance claim. The API response schema has not changed.
+The stored Zendesk ticket audit was also inspected in the console: requester,
+assignee, queue, public/private replies and SLA values rendered. This verifies
+stored-data readback, not a new vendor synchronization or OAuth session.
+
+Deployed SOR checkpoint (2026-09-11): API, durable worker, ordinary worker and
+scheduler all run image
+`sha256:d8b8a02a26f3e2fd25b41231526bd0569c6ce18bb1fb67a0fffa140875c14d6b`.
+PostgreSQL, Redis and configured sources/providers were preserved. Fresh console
+reconciliations completed Linear 9/9 and HubSpot 4/4. The existing Confluence run
+was rechecked in the console and completed 7/7, with 8,956 resolved relationships
+and zero pending. In the existing QA SOR Audit Agent widget conversation,
+marker `QA_CANONICAL_20260911` triggered fresh `issue_get` and `docs_get` calls;
+the console confirmed both persisted tool results and the final answer Completed.
+The issue projection timestamp is `2026-09-10T18:34:31.260101Z`; the document's is
+`2026-09-10T18:35:27.382629Z` (UTC). The document console displayed structured
+content, author/version and ten attachment metadata records. Inline image fetch
+completion was not verified. Support native sync/HTTP acceptance remains open.
+
+LLM completion checkpoint (2026-09-10): native stop reasons now cross the socket
+and framework boundaries through separate owning enums. Capped responses produce
+typed failure before final-text acceptance or tool execution. One-shot and swarm
+workers apply the same rule after usage accounting; parallel durable execution
+records a terminal failure rather than allowing an automatic task retry. Two
+background prompt/result dataclasses are now frozen Pydantic contracts.
+
+Local evidence: 84 framework/conversation/serialization checks, 20 installed-SDK
+normalizer cases and 11 background/terminal-dispatch checks passed. Native fixtures
+exercise seven normalizers (Bedrock shares Anthropic); they do not prove seven
+vendor accounts. Background DB/auth/provider edges were substituted. Targeted
+type checks and full backend/CLI lint passed. Documentation verification passed.
+
+Deployed acceptance: API, durable worker, ordinary worker and scheduler run
+`sha256:f92f02bf67112c6c6a28ce70478173ef30ec741a13f9a7d0d331c151cce14c7a`.
+PostgreSQL/Redis and operator configuration were preserved. In conversation
+`01a08a9f-bfbc-7ae0-b5bd-6f5ca21ecd2c`, the QA SOR Audit Agent executed one
+read-only issue lookup, then exhausted its output limit on an intentionally long
+answer. The widget displayed the response-limit notice, not the partial essay.
+Console message `01a08c85-09dd-7360-94c9-1afcb1f322d3` is Failed, with
+`run_metadata.failure_code=model_output_limit`, `error_type=ModelOutputLimitError`,
+and accounted usage. AgentRun correlation is
+`ade3dd52-dc3e-4ed8-8914-553d88d3f55c`. A subsequent one-sentence request completed
+and used the earlier lookup without a new tool call. This proves the conversational
+Bedrock path and message projection, not live background/swarm/voice acceptance.
+
+### Remaining carrier inventory and execution order
+
+AST inventory at this checkpoint found 80 dataclasses in 39 files across
+`framework`, `common`, `modules`, `pipelines`, `sockets` and `sor`. Framework has
+zero; common has 7, modules 6, pipelines 9, sockets 14, and SOR 44. The preceding
+88/43 inventory was before the tool-availability and voice catalog/verification conversions. Two root
+durable-runtime dataclasses were also converted, outside this selected inventory. This is
+not the whole typing audit or an instruction to convert SDK/resource owners
+blindly. Each retained dataclass needs its concrete exception documented.
+
+Continue by data flow, with each producer/readback/consumer verified together:
+
+1. SOR canonical entities and audit/read projections: implementation and local
+   verification complete; continue the outstanding live acceptance above.
+2. SOR dispatch and readback: remaining values in `sor/shared/contracts.py`, then
+   runtime authority, discovery, OAuth, refresh, command and webhook carriers;
+   finish vendor-native cursor/request/response contracts along those operations.
+3. MCP: carrier, error-code and native envelope implementation locally verified;
+   finish deployed discovery/execution/durable-replay acceptance.
+4. Durable filings: `modules/agent_runs/{domain,service}.py`, conversation filing,
+   sandbox/tool outcomes and summary-generator state; verify saved readback.
+5. Capability and resource edges: `common/contracts/tool_availability.py`,
+   provider capability status, voice catalog/verification, telephony contracts,
+   voice outcomes, file-upload authority and HTTP egress values. Inspect the audio
+   frame/resource exception explicitly instead of introducing per-frame overhead.
+6. Remaining list/session projections and all provider-factory consumers; reconcile
+   the F0–F10 ledger and run final acceptance gates. The larger checklist below
+   remains authoritative for native vendor coverage and other non-carrier gaps.
+
+Latest implementation checkpoint: shared SOR source payload, external-record and
+page contracts are frozen Pydantic values. Sync, webhook and command refetches use
+one explicit durable codec with the existing JSON envelope. All 165 local codec
+checks passed, including custom fields, raw snapshot exclusion, timestamp and
+JSON validation, page/record budgets, and terminal failure classification. All
+11 adapter registrations import and the full SOR type check passes. This does
+not complete native vendor DTO coverage or live synchronization acceptance.
+The shared SOR changes are deployed in image
+`sha256:9e0d2f5e70237fed3626385c6e6e96fcb62d5f4a82d7b23cae534f285ed06e9c`;
+API and all three workers were confirmed running that image. Database and Redis
+were not recreated. Documentation verification and full backend/CLI lint passed.
+
+Milestone diff review: shared ownership remains vendor-neutral; explicit durable
+serialization is separate from live snapshots; no transaction, authorization or
+vendor HTTP boundary moved. Duplicate codecs were removed from the three flows.
+Local verification covers wire compatibility and refusal paths; deployed sync,
+webhook and command execution remain separate acceptance gates.
+
+Live acceptance on that SOR image (2026-09-10): used the existing Eylo
+Development console to trigger reconciliation without clearing records. Linear
+completed 9/9 objects and HubSpot 4/4; their relationship health showed zero
+pending links. A Confluence reconciliation that overlapped the restart completed
+6/6 selected objects. The subsequent fresh source-wide run was rechecked in the
+console and completed 7/7 objects, including Attachments and Properties.
+Confluence has 8,956 resolved and zero pending links.
+Jira and Zendesk remain reauthorization-required and were not retried.
+
+Widget QA continued conversation `01a08a9f-bfbc-7ae0-b5bd-6f5ca21ecd2c` with
+QA SOR Audit Agent. `issue_search`, `issue_get`, `docs_search` and `docs_get`
+completed; the console showed their persisted tool calls/results. VER-50 retained
+its title, completed status, named assignee and Engineering team; its projection
+timestamp advanced to the fresh Linear run. Confluence search returned paginated
+onboarding documents and a document detail. A concise follow-up rendered the
+document title, source, author, version and summary. No vendor mutation was
+requested. This proves existing source reads and these sync paths, not native
+webhook delivery or command-write acceptance.
 
 This is the short completion tracker. The chronological evidence below is not a
 percentage-complete claim; local contracts and live product acceptance are separate.
@@ -11,10 +1049,11 @@ percentage-complete claim; local contracts and live product acceptance are separ
   HubSpot, Pipedrive, Google Docs, Google Drive, Google Tasks, Dropbox,
   Google Calendar, Calendly, PagerDuty, Sentry, Typeform, Airtable, Confluence, Slack,
   Outlook, Gmail, Zoom, Notion, Shopify, Stripe).
-  Local coverage is not native account or deployed acceptance. Close
-  GitLab named-project transport refusal without weakening shared egress policy.
-  Plan Sentry's deprecated project-list/ID-only route migration explicitly rather
-  than guessing an organization in existing tool inputs.
+  Local coverage is not native account or deployed acceptance. GitLab named-project
+  routing is fixed and public native reads passed; authenticated installation QA
+  remains open.
+  Sentry's deprecated project-list/ID-only routes are migrated to explicit
+  organization inputs and locally verified; native account acceptance remains open.
   Pipedrive now uses supported v2 CRM operations and v1 notes; live acceptance
   remains pending, alongside the other curated vendors.
 - [ ] Complete native acceptance of corrected curated Atlassian OAuth routing:
@@ -30,6 +1069,14 @@ percentage-complete claim; local contracts and live product acceptance are separ
   reconcile every provider factory and consumer against F0–F10 below.
 - [ ] Fix outstanding product findings: generated-card text presentation and SOR
   duplicate field descriptors; verify other recorded findings remain applicable.
+- [ ] Reconcile provider stop reasons with persisted run/message completion.
+  The confirmed `max_tokens` false-completion bug is fixed and the conversational
+  widget/console path passed live QA above. Background dispatch has local coverage;
+  live background/swarm and voice paths remain separate acceptance work.
+- [x] Bound message-created notifications independently of stored content. Typed
+  references and canonical readback passed 91 local checks and two-widget live
+  Unicode delivery with exact DB verification above. Native assistant responses
+  beyond configured output limits are not claimed.
 - [ ] Repeat deployment/acceptance after the remaining implementation without
   resetting operator data. The completed curated-contract batch was rebuilt and
   text/retrieval acceptance passed on 2026-09-10 (below); full voice, upload,
@@ -41,6 +1088,64 @@ Completed foundation: all eight LLM native branches, shared execution/config/
 identity contracts, and substantial retrieval, storage, voice, email, telephony,
 campaign and session typing. The detailed evidence remains below. No entire flow
 is closed merely because its enums, config or type checker pass.
+
+Sentry organization-route correction (2026-09-10): the four tools use current
+organization-scoped endpoints. Listing retains an explicit single-project filter;
+detail/resolve/ignore require the organization rather than guessing it from an ID.
+Results include the organization for follow-up calls. Missing organization inputs
+fail before auth resolution; old bindings remain, but their old ID-only arguments
+must be corrected. Chart statistics use `groupStatsPeriod`, avoiding the changed
+meaning of `statsPeriod` on the organization endpoint. Source references and exact
+contracts are recorded in the Sentry section of the integrations reference.
+
+Evidence: 77 actual executor cases passed across all four tools, including
+pagination, missing organization before auth, cross-project/wrong issue replies,
+malformed stack traces, exact credential placement, mutation acknowledgements,
+replay without resend and vendor refusals. Auth/grants, vendor HTTP and durable
+receipt storage were substituted; no native Sentry account was exercised.
+
+The executor probe also reproduced doubled Bearer separators through the real
+credential builder. The shared contract now treats `value_prefix` as the exact
+vendor prefix, including its separator, and appends the key without extra spaces.
+All 14 API-key declarations passed 101 credential/request cases, including
+cross-origin refusal and malformed credentials; OAuth/basic/no-auth remained
+unchanged. PagerDuty now produces `Token token=<key>` as its official schema
+requires. Multiple Bearer spaces alone do not prove vendor rejection (RFC 6750
+permits them); that part is consistent serialization, not a claimed live outage.
+No credentials, DB or operator configurations were changed. Both corrections and
+the GitLab routing fix are now deployed in API, durable worker, ordinary worker
+and scheduler image
+`sha256:051aa0b85951f4272a0809ee7a6f850c893655eba73152201f63aa9756811c44`.
+All four services were confirmed running. The in-container integration contract
+probe passed for all 29 registrations and 148 tools, including Sentry input,
+GitLab API-root and PagerDuty credential placement. Native account acceptance
+remains open. Integrations type checking and backend/CLI lint passed.
+
+GitLab project routing correction (2026-09-10): reproduced named-project refusal
+through the real request model before network send. The earlier proposal to extend
+encoded-separator policy is superseded: the vendor resolves an exact full path with
+one fixed GraphQL query, validates its project identity, then uses numeric IDs in
+REST v4. Numeric inputs skip lookup. GitLab's declared API root is now `/api`,
+containing `/graphql` and `/v4`; the configured origin and PRIVATE-TOKEN placement
+are unchanged. Shared URL/redirect/path/credential protection was not modified.
+Project inputs reject URLs, traversal, pre-encoding and malformed segments before
+auth resolution. Null/inaccessible lookup is not reported as an empty issue list.
+Lists, details and mutation replies now check the resolved project ID.
+
+Evidence: 147 checks passed across all six actual executor paths with numeric,
+group and subgroup inputs, malformed/absent GraphQL results, wrong resource
+identity, input refusal before auth, and one-receipt mutation replay without a
+second send. Grant/auth, vendor HTTP and receipt storage were substituted there.
+Separately, all four read tools ran against the public `gitlab-org/gitlab` project
+through Eylo's real guarded HTTPS transport: eight calls, including four exact
+lookups. No credential or mutation was used in that live check. This is public
+vendor acceptance, not authenticated organization QA or real mutation recovery.
+Focused lint and full integrations type checking passed. Existing accounts/data
+and shared transport code remain unchanged. This correction is not included in
+the earlier `d6c9b9...` development image described below.
+
+Source: [GitLab GraphQL project identity and token access](https://docs.gitlab.com/api/graphql/),
+[PRIVATE-TOKEN GraphQL support](https://docs.gitlab.com/user/profile/personal_access_tokens/).
 
 Deployed checkpoint (2026-09-10, 22:32 IST): development API, durable worker,
 ordinary worker and scheduler all run image

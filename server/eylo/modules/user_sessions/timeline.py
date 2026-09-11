@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any
+from pydantic import BaseModel, ConfigDict
 
 from eylo.events.durable.models import EventOutboxModel
 from eylo.modules.user_sessions.schemas import (
@@ -13,13 +12,22 @@ from eylo.modules.user_sessions.schemas import (
 )
 
 
-@dataclass(frozen=True, slots=True)
-class TimelineEventDefinition:
+class TimelineEventDefinition(BaseModel):
+    """Closed presentation and detail allowlist for one durable event type."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", validate_default=True
+    )
+
     category: TimelineCategory
     label: str
     detail_keys: frozenset[str]
-    technical: bool = False
     severity: TimelineSeverity = TimelineSeverity.DEFAULT
+
+    @property
+    def technical(self) -> bool:
+        """Technical visibility follows its category, never a competing flag."""
+        return self.category is TimelineCategory.TECHNICAL
 
 
 _IDS = frozenset(
@@ -79,15 +87,13 @@ def _definition(
     label: str,
     *,
     details: frozenset[str] = frozenset(),
-    technical: bool = False,
-    danger: bool = False,
+    severity: TimelineSeverity = TimelineSeverity.DEFAULT,
 ) -> TimelineEventDefinition:
     return TimelineEventDefinition(
         category=category,
         label=label,
         detail_keys=details,
-        technical=technical,
-        severity=TimelineSeverity.DANGER if danger else TimelineSeverity.DEFAULT,
+        severity=severity,
     )
 
 
@@ -116,7 +122,7 @@ TIMELINE_EVENT_CATALOG: dict[str, TimelineEventDefinition] = {
         TimelineCategory.SESSION,
         "Session failed",
         details=frozenset({"reason", "connection_sequence"}),
-        danger=True,
+        severity=TimelineSeverity.DANGER,
     ),
     "conversation.started": _definition(
         TimelineCategory.CONVERSATION,
@@ -138,7 +144,11 @@ TIMELINE_EVENT_CATALOG: dict[str, TimelineEventDefinition] = {
             TimelineCategory.MESSAGE,
             f"Message request {state.replace('_', ' ')}",
             details=_IDS | _STATE,
-            danger=state == "failed",
+            severity=(
+                TimelineSeverity.DANGER
+                if state == "failed"
+                else TimelineSeverity.DEFAULT
+            ),
         )
         for state in (
             "processing",
@@ -154,7 +164,11 @@ TIMELINE_EVENT_CATALOG: dict[str, TimelineEventDefinition] = {
             TimelineCategory.AGENT,
             f"Agent run {state.replace('_', ' ')}",
             details=_IDS | _STATE | _COUNTS,
-            danger=state == "failed",
+            severity=(
+                TimelineSeverity.DANGER
+                if state == "failed"
+                else TimelineSeverity.DEFAULT
+            ),
         )
         for state in (
             "queued",
@@ -184,7 +198,11 @@ TIMELINE_EVENT_CATALOG: dict[str, TimelineEventDefinition] = {
             TimelineCategory.TOOL,
             f"Tool {state}",
             details=_IDS | frozenset({"tool_name"}),
-            danger=state == "failed",
+            severity=(
+                TimelineSeverity.DANGER
+                if state == "failed"
+                else TimelineSeverity.DEFAULT
+            ),
         )
         for state in ("started", "completed", "failed")
     },
@@ -203,7 +221,11 @@ TIMELINE_EVENT_CATALOG: dict[str, TimelineEventDefinition] = {
             TimelineCategory.FILE,
             f"File ingestion {state}",
             details=_IDS | _STATE,
-            danger=state == "failed",
+            severity=(
+                TimelineSeverity.DANGER
+                if state == "failed"
+                else TimelineSeverity.DEFAULT
+            ),
         )
         for state in ("queued", "started", "completed", "failed", "cancelled")
     },
@@ -227,7 +249,11 @@ TIMELINE_EVENT_CATALOG: dict[str, TimelineEventDefinition] = {
             TimelineCategory.VOICE,
             f"Recording {state}",
             details=_IDS | _STATE,
-            danger=state == "failed",
+            severity=(
+                TimelineSeverity.DANGER
+                if state == "failed"
+                else TimelineSeverity.DEFAULT
+            ),
         )
         for state in ("queued", "available", "failed")
     },
@@ -236,7 +262,11 @@ TIMELINE_EVENT_CATALOG: dict[str, TimelineEventDefinition] = {
             TimelineCategory.TELEPHONY,
             f"Call {state}",
             details=_IDS | _STATE | _COUNTS,
-            danger=state == "failed",
+            severity=(
+                TimelineSeverity.DANGER
+                if state == "failed"
+                else TimelineSeverity.DEFAULT
+            ),
         )
         for state in (
             "started",
@@ -252,8 +282,11 @@ TIMELINE_EVENT_CATALOG: dict[str, TimelineEventDefinition] = {
             TimelineCategory.TECHNICAL,
             f"WebSocket {state}",
             details=_STATE | _COUNTS,
-            technical=True,
-            danger=state == "failed",
+            severity=(
+                TimelineSeverity.DANGER
+                if state == "failed"
+                else TimelineSeverity.DEFAULT
+            ),
         )
         for state in ("connected", "disconnected", "failed")
     },
@@ -262,8 +295,11 @@ TIMELINE_EVENT_CATALOG: dict[str, TimelineEventDefinition] = {
             TimelineCategory.TECHNICAL,
             f"WebRTC {state}",
             details=frozenset({"negotiation_id"}),
-            technical=True,
-            danger=state == "failed",
+            severity=(
+                TimelineSeverity.DANGER
+                if state == "failed"
+                else TimelineSeverity.DEFAULT
+            ),
         )
         for state in ("connecting", "connected", "disconnected", "failed")
     },
@@ -272,8 +308,11 @@ TIMELINE_EVENT_CATALOG: dict[str, TimelineEventDefinition] = {
             TimelineCategory.TECHNICAL,
             f"{kind.upper()} provider {state}",
             details=_STATE,
-            technical=True,
-            danger=state == "failed",
+            severity=(
+                TimelineSeverity.DANGER
+                if state == "failed"
+                else TimelineSeverity.DEFAULT
+            ),
         )
         for kind in ("stt", "tts", "realtime")
         for state in ("connected", "disconnected", "failed")

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from eylo.common.database import start_transaction
 from eylo.sor.knowledge.contracts import KnowledgeAttachmentReader
@@ -17,11 +18,14 @@ class KnowledgeImageUnavailableError(Exception):
     """The attachment cannot be exposed as a safe raster image."""
 
 
-@dataclass(frozen=True, slots=True)
-class KnowledgeDocumentImage:
+class KnowledgeDocumentImage(BaseModel):
     """Validated current image bytes ready for an authenticated response."""
 
-    content: bytes
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    content: bytes = Field(repr=False, exclude=True)
     media_type: str
 
 

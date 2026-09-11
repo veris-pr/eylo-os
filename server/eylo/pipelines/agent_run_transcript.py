@@ -22,6 +22,7 @@ from eylo.framework.agents.model import (
     ModelBlockKind,
     ModelResponse,
     ModelSettings,
+    ModelStopReason,
     ModelToolCallBlock,
     ModelUsage,
 )
@@ -422,7 +423,7 @@ class PendingToolCallsModel:
                     for call in calls
                 ),
                 usage=ModelUsage(),
-                stop_reason="tool_use",
+                stop_reason=ModelStopReason.TOOL_USE,
             )
         return await self._delegate.generate(run_input, settings)
 

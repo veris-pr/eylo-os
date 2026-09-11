@@ -53,6 +53,9 @@ from eylo.pipelines.sor.tool_execution import (
 )
 from eylo.pipelines.telephony.tool_execution import (
     PLACE_CALL_TOOL_NAME,
+    PlaceCallFailure,
+    PlaceCallInvocationMetadata,
+    PlaceCallToolFailureCode,
     execute_agent_place_call_tool,
 )
 from eylo.pipelines.voice.end_call import (
@@ -187,9 +190,9 @@ class PlatformToolExecutor:
                 )
             return ToolResult(
                 tool_call_id=call.id,
-                content=outcome.content,
+                content=outcome.content.model_dump(mode="json"),
                 is_error=outcome.is_error,
-                metadata=dict(outcome.metadata),
+                metadata=outcome.metadata.model_dump(mode="json", exclude_none=True),
             )
         if (
             requested_tool.kind is ToolKind.SYSTEM
@@ -206,9 +209,11 @@ class PlatformToolExecutor:
                 )
                 return ToolResult(
                     tool_call_id=call.id,
-                    content=outcome.content,
+                    content=outcome.content.model_dump(mode="json"),
                     is_error=outcome.is_error,
-                    metadata=outcome.metadata,
+                    metadata=outcome.metadata.model_dump(
+                        mode="json", exclude_none=True
+                    ),
                 )
         if (
             requested_tool.kind is ToolKind.SYSTEM
@@ -248,9 +253,9 @@ class PlatformToolExecutor:
             )
             return ToolResult(
                 tool_call_id=call.id,
-                content=outcome.content,
+                content=outcome.content.model_dump(mode="json"),
                 is_error=outcome.is_error,
-                metadata=outcome.metadata,
+                metadata=outcome.metadata.model_dump(mode="json", exclude_none=True),
             )
         if (
             requested_tool.kind is ToolKind.SYSTEM
@@ -289,12 +294,11 @@ class PlatformToolExecutor:
             if state is None:
                 return ToolResult(
                     tool_call_id=call.id,
-                    content={
-                        "kind": "telephony_error",
-                        "error": "durable_execution_required",
-                    },
+                    content=PlaceCallFailure(
+                        error=PlaceCallToolFailureCode.DURABLE_EXECUTION_REQUIRED,
+                    ).model_dump(mode="json"),
                     is_error=True,
-                    metadata={"telephony_delivery": True},
+                    metadata=PlaceCallInvocationMetadata().model_dump(mode="json"),
                 )
             tool_use_message_id, durable_context = state
             outcome = await execute_agent_place_call_tool(
@@ -305,9 +309,13 @@ class PlatformToolExecutor:
             )
             return ToolResult(
                 tool_call_id=call.id,
-                content=outcome.content,
+                content=outcome.content.model_dump(mode="json"),
                 is_error=outcome.is_error,
-                metadata=dict(outcome.metadata),
+                metadata=(
+                    outcome.metadata.model_dump(mode="json")
+                    if outcome.metadata is not None
+                    else {}
+                ),
             )
         if requested_tool.kind is ToolKind.CURATED:
             # Policy is not enforced here. A curated tool's definition is code

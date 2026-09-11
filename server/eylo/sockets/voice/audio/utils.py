@@ -68,17 +68,16 @@ def combine_audio_frames(frames: list[AudioFrame] | AudioFrame) -> AudioFrame:
     total_samples = sum(f.samples_per_channel for f in frames)
 
     # Merge userdata dictionaries (later frames override earlier ones)
-    combined_userdata = {}
-    for frame in frames:
-        if hasattr(frame, "userdata") and frame.userdata:
-            combined_userdata.update(frame.userdata)
+    combined_userdata = dict(first_frame.userdata)
+    for frame in frames[1:]:
+        combined_userdata.update(frame.userdata)
 
     return AudioFrame(
         data=combined_data,
         sample_rate=sample_rate,
         num_channels=num_channels,
         samples_per_channel=total_samples,
-        userdata=combined_userdata if combined_userdata else {},
+        userdata=combined_userdata,
     )
 
 

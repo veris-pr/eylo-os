@@ -18,6 +18,7 @@ from eylo.common.http_egress import (
     HttpDestinationPolicy,
     HttpEgressPolicyError,
     HttpEgressRequest,
+    HttpMethod,
     HttpOrigin,
     HttpRoutePolicy,
     OriginBoundHeaders,
@@ -161,7 +162,7 @@ async def discover_site_binding(
         expected_origin = str(HttpOrigin.parse(site_origin or ""))
         origin = HttpOrigin.parse(API_ORIGIN)
         request = HttpEgressRequest(
-            method="GET",
+            method=HttpMethod.GET,
             url=f"{API_ORIGIN}{_RESOURCES_PATH}",
             policy=HttpDestinationPolicy(
                 primary=HttpRoutePolicy(origin=origin, path_prefix=_RESOURCES_PATH),

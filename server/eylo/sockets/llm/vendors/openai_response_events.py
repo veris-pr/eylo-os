@@ -44,6 +44,7 @@ from eylo.sockets.llm.schemas import (
     LLMDeltaKind,
     LLMResponse,
     LLMResponseMetadata,
+    LLMStopReason,
     LLMTextBlock,
     LLMTextContent,
     LLMTextDelta,
@@ -150,7 +151,7 @@ def _text(text: str) -> list[LLMContentBlock]:
     return [LLMTextContent(content=LLMTextBlock(text=text))] if text else []
 
 
-def _stop_reason(value: Response) -> str:
+def _stop_reason(value: Response) -> LLMStopReason:
     if value.error is not None or value.status in (
         OpenAIResponseStatus.FAILED,
         OpenAIResponseStatus.CANCELLED,
@@ -162,16 +163,16 @@ def _stop_reason(value: Response) -> str:
             and value.incomplete_details.reason is not None
         ):
             raise OpenAIResponseError(OpenAIResponseErrorKind.INVALID_RESPONSE)
-        return "end_turn"
+        return LLMStopReason.END_TURN
     if (
         value.status == OpenAIResponseStatus.INCOMPLETE
         and value.incomplete_details is not None
     ):
         match value.incomplete_details.reason:
             case "max_output_tokens":
-                return "max_tokens"
+                return LLMStopReason.MAX_TOKENS
             case "content_filter":
-                return "content_filter"
+                return LLMStopReason.CONTENT_FILTER
     raise OpenAIResponseError(OpenAIResponseErrorKind.INCOMPLETE_RESPONSE)
 
 

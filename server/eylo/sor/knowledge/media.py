@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,9 +15,12 @@ from eylo.sor.shared.reads import SorReadNotFoundError
 from .models import KnowledgeAttachmentModel, KnowledgeDocumentModel
 
 
-@dataclass(frozen=True, slots=True)
-class KnowledgeAttachmentAuthority:
+class KnowledgeAttachmentAuthority(BaseModel):
     """Current source identity after document and attachment ownership checks."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     source_id: UUID
     document_external_id: str

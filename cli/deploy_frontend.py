@@ -82,8 +82,8 @@ def deploy_widget_to_cdn(
     build_dir: str,
     profile: Optional[str] = None,
     region: str = "us-east-1",
-    project_root: str = None,
-):
+    project_root: str | None = None,
+) -> bool:
     """Deploy widget to S3/CloudFront with ETag caching for third-party embedding.
 
     Uses Cache-Control headers with must-revalidate to ensure:

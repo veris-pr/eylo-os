@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, StrEnum
 from typing import Protocol, runtime_checkable
@@ -12,10 +11,12 @@ from pydantic import Field, model_validator
 
 from eylo.sor.shared.contracts import (
     SorCanonicalPayload,
+    SorCanonicalRecord,
     SorCommandPayload,
     SorExternalRecord,
     SorLifecycleAdapter,
 )
+from eylo.sor.shared.json_values import SorJsonValue
 
 
 class KnowledgeBodyRepresentation(str, Enum):
@@ -137,7 +138,7 @@ class KnowledgeDocumentPayload(SorCanonicalPayload):
     unsupported_blocks: tuple[str, ...] = ()
     source_created_at: datetime | None = None
     source_updated_at: datetime | None = None
-    custom_fields: Mapping[str, object] = field(default_factory=dict)
+    custom_fields: dict[str, SorJsonValue] = Field(default_factory=dict)
 
 
 class KnowledgeBlockPayload(SorCanonicalPayload):
@@ -168,7 +169,7 @@ class KnowledgePropertyPayload(SorCanonicalPayload):
     key: str
     label: str
     value_type: str
-    value: object | None = None
+    value: SorJsonValue = None
     source_updated_at: datetime | None = None
 
 
@@ -210,17 +211,15 @@ KNOWLEDGE_PAYLOAD_TYPES: Mapping[KnowledgeEntityKind, type[SorCanonicalPayload]]
 }
 
 
-@dataclass(frozen=True, slots=True)
-class KnowledgeSpace:
+class KnowledgeSpace(SorCanonicalRecord):
     external_id: str
     name: str
     kind: str
     source_url: str | None
-    custom_fields: Mapping[str, object] = field(default_factory=dict)
+    custom_fields: dict[str, SorJsonValue] = Field(default_factory=dict)
 
 
-@dataclass(frozen=True, slots=True)
-class KnowledgeDocument:
+class KnowledgeDocument(SorCanonicalRecord):
     external_id: str
     title: str
     space_external_id: str | None
@@ -228,7 +227,7 @@ class KnowledgeDocument:
     path: tuple[str, ...]
     source_format: KnowledgeSourceFormat
     normalized_text: str
-    source_body: KnowledgeSourceBody | None
+    source_body: KnowledgeSourceBody | None = Field(repr=False, exclude=True)
     content_hash: str
     version: str | None
     lifecycle_state: str | None
@@ -238,25 +237,23 @@ class KnowledgeDocument:
     source_created_at: datetime | None
     source_updated_at: datetime | None
     source_url: str | None
-    custom_fields: Mapping[str, object] = field(default_factory=dict)
+    custom_fields: dict[str, SorJsonValue] = Field(default_factory=dict)
 
 
-@dataclass(frozen=True, slots=True)
-class KnowledgeBlock:
+class KnowledgeBlock(SorCanonicalRecord):
     external_id: str
     document_external_id: str
     parent_external_id: str | None
     kind: str
     order: int
     normalized_text: str | None
-    source_body: KnowledgeSourceBody | None
+    source_body: KnowledgeSourceBody | None = Field(repr=False, exclude=True)
     supported: bool
     source_created_at: datetime | None
     source_updated_at: datetime | None
 
 
-@dataclass(frozen=True, slots=True)
-class KnowledgeVersion:
+class KnowledgeVersion(SorCanonicalRecord):
     external_id: str
     document_external_id: str
     number: str
@@ -264,23 +261,21 @@ class KnowledgeVersion:
     message: str | None
     source_format: KnowledgeSourceFormat | None
     normalized_text: str | None
-    source_body: KnowledgeSourceBody | None
+    source_body: KnowledgeSourceBody | None = Field(repr=False, exclude=True)
     created_at: datetime
 
 
-@dataclass(frozen=True, slots=True)
-class KnowledgeProperty:
+class KnowledgeProperty(SorCanonicalRecord):
     external_id: str
     document_external_id: str
     key: str
     label: str
     value_type: str
-    value: object | None
+    value: SorJsonValue
     source_updated_at: datetime | None
 
 
-@dataclass(frozen=True, slots=True)
-class KnowledgeAttachment:
+class KnowledgeAttachment(SorCanonicalRecord):
     external_id: str
     document_external_id: str
     name: str
@@ -290,16 +285,14 @@ class KnowledgeAttachment:
     source_url_expires_at: datetime | None
 
 
-@dataclass(frozen=True, slots=True)
-class KnowledgeAttachmentContent:
+class KnowledgeAttachmentContent(SorCanonicalRecord):
     """Bounded source bytes returned only at an authenticated read boundary."""
 
-    content: bytes
+    content: bytes = Field(repr=False, exclude=True)
     media_type: str | None
 
 
-@dataclass(frozen=True, slots=True)
-class KnowledgeAuthor:
+class KnowledgeAuthor(SorCanonicalRecord):
     external_id: str
     name: str
     primary_email: str | None

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
 from uuid import UUID
 
 import uuid_utils
+from pydantic import BaseModel, ConfigDict, Field, InstanceOf
+from pydantic.json_schema import SkipJsonSchema
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.modules.connections.domain import ConnectionAuthKind
@@ -27,12 +28,19 @@ from eylo.sor.shared.services import (
 )
 
 
-@dataclass(frozen=True, slots=True)
-class SorConnectorView:
+class SorConnectorView(BaseModel):
     """One safe connector projection plus its current external account."""
 
-    connector: SorConnectorModel
-    connection: ExternalConnectionModel | None
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    connector: SkipJsonSchema[InstanceOf[SorConnectorModel]] = Field(
+        repr=False, exclude=True
+    )
+    connection: SkipJsonSchema[InstanceOf[ExternalConnectionModel] | None] = Field(
+        repr=False, exclude=True
+    )
 
 
 class SorConnectorService:

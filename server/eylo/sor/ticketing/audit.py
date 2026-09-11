@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict, Field, InstanceOf
+from pydantic.json_schema import SkipJsonSchema
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,9 +19,12 @@ from eylo.sor.ticketing.models import TicketingCommentModel, TicketingIssueModel
 TICKETING_ISSUE_COMMENT_LIMIT = 100
 
 
-@dataclass(frozen=True, slots=True)
-class TicketingIssueCommentAudit:
+class TicketingIssueCommentAudit(BaseModel):
     """One bounded, normalized comment shown beside its canonical issue."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     record_id: UUID
     author_external_id: str | None
@@ -31,11 +35,14 @@ class TicketingIssueCommentAudit:
     source_url: str | None
 
 
-@dataclass(frozen=True, slots=True)
-class TicketingIssueAuditContext:
+class TicketingIssueAuditContext(BaseModel):
     """Issue-owned audit data plus the source facts needed for capability copy."""
 
-    source: SorSourceModel
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    source: SkipJsonSchema[InstanceOf[SorSourceModel]] = Field(repr=False, exclude=True)
     comments_selected: bool
     comments_truncated: bool
     comments: tuple[TicketingIssueCommentAudit, ...]

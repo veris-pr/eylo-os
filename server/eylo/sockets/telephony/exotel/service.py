@@ -28,16 +28,21 @@ from eylo.common.outbound import (
 from eylo.sockets.telephony.base import (
     BaseTelephonyService,
     CallMetadata,
+    CarrierMediaEvent,
     InboundMediaMessage,
     OutboundMediaMessage,
+    StreamTokenRequirement,
     TelephonyConfig,
     TelephonyControlAccepted,
+    TelephonyControlFailureCode,
+    TelephonyControlOperation,
     TelephonyControlResult,
     TelephonyControlUnknown,
     TelephonyControlUnsupported,
     TelephonyMessageParser,
     TelephonyOperationCapabilities,
     TelephonyOperationProfile,
+    TelephonyOperationSupport,
     TelephonyProvider,
     classify_control_failure,
 )
@@ -97,10 +102,12 @@ class ExotelMessageParser(TelephonyMessageParser):
         payload = base64.b64decode(payload_b64)
         timestamp = media_data.get("timestamp", "")
         track = media_data.get("track", "inbound")
-        sequence_number = media_data.get("sequence_number", 0)
+        sequence_number = message.get(
+            "sequence_number", media_data.get("sequence_number", 0)
+        )
 
         return InboundMediaMessage(
-            event="media",
+            event=CarrierMediaEvent.MEDIA,
             payload=payload,
             timestamp=timestamp,
             track=track,
@@ -234,10 +241,14 @@ class ExotelMessageParser(TelephonyMessageParser):
             organization_id=UUID(org_id) if org_id else None,
             agent_id=UUID(agent_id) if agent_id else None,
             conversation_id=conversation_id,
-            direction=direction,
+            direction=CallMetadata.normalize_direction(direction),
             initial_message=initial_message,
             media_stream_token=media_stream_token,
-            requires_media_stream_token=custom_routing_present,
+            stream_token_requirement=(
+                StreamTokenRequirement.REQUIRED
+                if custom_routing_present
+                else StreamTokenRequirement.NOT_REQUIRED
+            ),
         )
 
 
@@ -493,14 +504,18 @@ class ExotelService(BaseTelephonyService):
                     if resp.status >= 300:
                         return classify_control_failure(
                             HTTPException(status_code=resp.status),
-                            operation="call_end",
+                            operation=TelephonyControlOperation.END,
                         )
                     return TelephonyControlAccepted(status_code=resp.status)
         except (TimeoutError, aiohttp.ClientError):
             logger.warning("Exotel call end outcome is unconfirmed")
-            return TelephonyControlUnknown(failure_code="call_end_unconfirmed")
+            return TelephonyControlUnknown(
+                failure_code=TelephonyControlFailureCode.END_UNCONFIRMED
+            )
         except Exception as error:  # noqa: BLE001 - provider failure taxonomy
-            return classify_control_failure(error, operation="call_end")
+            return classify_control_failure(
+                error, operation=TelephonyControlOperation.END
+            )
 
     async def transfer_call(
         self,
@@ -509,7 +524,9 @@ class ExotelService(BaseTelephonyService):
     ) -> TelephonyControlResult:
         """Return explicit unsupported for Exotel live transfer."""
         del call_sid, to_number
-        return TelephonyControlUnsupported(failure_code="call_transfer_unsupported")
+        return TelephonyControlUnsupported(
+            failure_code=TelephonyControlFailureCode.TRANSFER_UNSUPPORTED
+        )
 
     async def send_dtmf(
         self,
@@ -538,14 +555,18 @@ class ExotelService(BaseTelephonyService):
                     if resp.status >= 300:
                         return classify_control_failure(
                             HTTPException(status_code=resp.status),
-                            operation="call_dtmf",
+                            operation=TelephonyControlOperation.DTMF,
                         )
                     return TelephonyControlAccepted(status_code=resp.status)
         except (TimeoutError, aiohttp.ClientError):
             logger.warning("Exotel DTMF outcome is unconfirmed")
-            return TelephonyControlUnknown(failure_code="call_dtmf_unconfirmed")
+            return TelephonyControlUnknown(
+                failure_code=TelephonyControlFailureCode.DTMF_UNCONFIRMED
+            )
         except Exception as error:  # noqa: BLE001 - provider failure taxonomy
-            return classify_control_failure(error, operation="call_dtmf")
+            return classify_control_failure(
+                error, operation=TelephonyControlOperation.DTMF
+            )
 
     def outbound_call_profile(self) -> TelephonyOperationProfile:
         host = self.settings.api_host
@@ -554,7 +575,7 @@ class ExotelService(BaseTelephonyService):
             transport_kind=OutboundTransportKind.HTTP,
             destination_origin=f"https://{host}",
             capabilities=TelephonyOperationCapabilities(
-                provider_idempotency=False,
-                reconciliation=False,
+                provider_idempotency=TelephonyOperationSupport.UNSUPPORTED,
+                reconciliation=TelephonyOperationSupport.UNSUPPORTED,
             ),
         )

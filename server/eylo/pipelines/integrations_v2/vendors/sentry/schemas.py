@@ -28,6 +28,7 @@ DEFAULT_PAGE_SIZE = 25
 MAX_CURSOR_CHARS = 4_096
 API_ORIGIN = "sentry.io"
 API_ROOT = "/api/0"
+ALL_PROJECTS = "-1"
 
 
 class SentryErrorCode(StrEnum):
@@ -218,10 +219,11 @@ class Event(SentryModel):
 
 
 class IssuesQuery(SentryRequest):
+    project: Slug
     query: str
     limit: int = Field(ge=1, le=MAX_PAGE_SIZE)
-    stats_period: StatisticsPeriod = Field(
-        default=StatisticsPeriod.FORTNIGHT, alias="statsPeriod"
+    group_stats_period: StatisticsPeriod = Field(
+        default=StatisticsPeriod.FORTNIGHT, alias="groupStatsPeriod"
     )
     cursor: Cursor | None = None
 
@@ -231,6 +233,7 @@ class ChangeIssueRequest(SentryRequest):
 
 
 class IssueView(SentryModel):
+    organization: Slug
     id: str
     title: str
     culprit: str | None
@@ -246,6 +249,7 @@ class IssueView(SentryModel):
 
 
 class IssuesView(SentryModel):
+    organization: Slug
     project: str
     issues: list[IssueView]
     count: int
@@ -278,6 +282,7 @@ class IssueDetail(IssueView):
 
 
 class ChangeIssueView(SentryModel):
+    organization: Slug
     issue_id: str
     status: IssueStatus
     web_link: str

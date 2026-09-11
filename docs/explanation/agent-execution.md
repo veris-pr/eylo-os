@@ -75,13 +75,93 @@ primary Agent's voice configuration still applies throughout swarm handoffs.
 9. Ephemeral events project live changes to connected widget sessions.
 10. The run reaches a terminal outcome or yields on durable input/approval.
 
+Message, scheduled and objective filing results use frozen Pydantic values with
+an exact run ID and an intrinsic created-versus-existing predicate. The message
+filing result retains the live validated message for its caller, but excludes
+its body from generic snapshots. Filing still owns its existing transaction,
+idempotency lock and budget reservation; changing the value contracts does not
+introduce another execution authority.
+
+Execution context is serialized by its owning product: conversation routing,
+parallel task identity, scheduled occurrence, or objective bounds. The generic
+AgentRun module validates only a finite JSON object; it does not import or
+interpret those product schemas. Workers restore the owning Pydantic model
+before using context fields, then perform the existing organization, origin and
+published-revision checks against canonical rows. Context is not a substitute
+for current authority. Timestamp serializers preserve the original ISO offsets
+so this validation does not change persisted idempotency digests. Malformed
+objective bounds are refused before opening the filing transaction.
+
+Scheduled, objective and parallel-task conclusions use typed result projections
+before the generic terminal write. The AgentRun module copies and validates the
+result as finite JSON before acquiring the terminal row lock. An objective that
+exhausts its bounds before a framework turn exists stores the existing minimal
+result, without inventing a framework ID or usage. Parallel results bind their
+newly persisted task-result message through validated reconstruction.
+
+Scheduled/objective resume checkpoints contain a typed recorded/error receipt,
+not tool output. Both fresh execution and checkpoint replay still reload the
+canonical tool result from the transcript. A malformed receipt or missing
+transcript result refuses continuation; cancellation before a completed write
+does not produce a receipt. These contracts do not add another retry authority.
+
+Sandbox actions and tool results have separate typed contracts. Durable receipts
+identify the exact private workspace checkpoint by revision and digest; replay
+requires both to match before restoring the canonical tool result. Raw command
+and file content are excluded from generic execution snapshots. Malformed adapter
+results follow the failure cleanup path, while cancellation releases compute and
+propagates. Output limits reject the complete result rather than truncating it.
+
+Workspace transfers carry typed pinned settings and an explicitly private archive.
+The storage boundary preserves the existing flat policy JSON; session limits and
+checkpoint comparisons use named fields internally. A current grant ceiling is
+resolved at acquisition rather than trusted from an older checkpoint. Invalid
+stored export policy follows compute cleanup without attempting an export.
+Step intents and execution evidence are action-specific typed values. Their JSON
+projections retain hashes, byte counts and outcome facts without command/file
+bodies; optional facts remain absent unless the action actually establishes them.
+
 A tool may finish a turn with an already-persisted widget instead of new text.
 Terminal persistence loads that exact message through the message service and
 checks its conversation/request ownership and content kind before associating
 it with the AgentRun. It does not search the older model-input history: that
 snapshot deliberately excludes artifacts created during tool execution.
 
+## Conversation compaction
+
+The summarizer groups validated messages by request and freezes each completed
+group before selecting an older range. It retains complete recent groups and
+persists the exact last selected message as the summary cursor. Selection values
+preserve live message identity but exclude message bodies from generic snapshots.
+Token-count components are nonnegative typed estimates with one derived total;
+they are not provider-reported usage. Provider/model estimation and the existing
+token/group trigger thresholds remain separate from these value contracts.
+
 ## Tool availability
+
+MCP discovery crosses explicit adapter and module contracts. The pipeline maps
+the socket's `MCPTool` to the module's `MCPDiscoveredTool`; the service retains
+schema budgets, effect validation, publication and tenant policy. Validated
+definitions carry `PlatformTool` and `MCPToolExecutorConfig` objects until the
+explicit persistence boundary. Dynamic JSON Schema and arguments remain JSON
+values, not arbitrary Python objects.
+
+Resolved MCP settings and discovery targets use frozen Pydantic models. Existing
+validated egress objects and live ORM references retain identity rather than
+being copied into reconstructed resources. Decrypted headers and ORM rows are
+excluded from generic snapshots. Remote result text is available through explicit
+result/content access, not generic snapshots. Adapter protocol failures and
+pipeline execution failures have separate owning enums with stable wire values.
+These contracts do not add retry authority or alter transaction/session ownership.
+
+The socket validates native request/reply envelopes separately from published
+tool definitions. It retains MCP 2025-06-18: typed initialization, tool listing,
+pagination and text-only tool results. Replies must match the request ID and
+contain exactly one result or error; initialization requires the negotiated
+version, tools capability and server identity. Unsupported content remains a
+refusal. These checks follow the pinned [message contract](https://modelcontextprotocol.io/specification/2025-06-18/basic)
+and [lifecycle](https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle),
+not a protocol-version upgrade.
 
 Code-owned declaration metadata uses frozen `ToolFunctionMetadata` values:
 an optional input-schema class, a feature flag, and catalog visibility. Producers
@@ -93,6 +173,11 @@ signature inference. These declarations are not grants or provider permissions.
 
 Tool assignment and tool availability are different facts.
 
+Requirements, resolved facts and missing requirements are strict, frozen Pydantic
+values with capability and runtime enums. Capability status aggregates independent
+configured, verified and ready predicates; it does not confer an Agent binding.
+Refreshing an execution replaces its facts rather than mutating the snapshot.
+
 - Assignment: the published Agent revision contains the tool relation.
 - Availability: current org provider readiness, Agent capability mapping, and
   runtime facts satisfy the tool's requirements.
@@ -100,6 +185,16 @@ Tool assignment and tool availability are different facts.
 For example, `place_call` needs ready telephony, an Agent telephony mapping,
 and durable execution. `dial_keypad` needs an active call. `end_call` needs an
 active voice session and works for widget/realtime voice as well as telephony.
+
+Call-tool outcomes remain typed until the framework's JSON projection. `place_call`
+retains the committed attempt state, call/config UUIDs and config revision; an
+accepted result must match that successful attempt. Unknown delivery remains a
+refusal, not permission to retry. `end_call` retains the exact voice runtime only
+on accepted termination requests. Both use enum-backed failure codes and derive
+the error predicate from their content, so an acknowledgement cannot be labelled
+as an error independently. Existing transcript JSON, including an unknown/null
+provider call ID and omitted metadata on early refusals, is preserved. These
+contracts neither grant tool access nor change transport cleanup ownership.
 
 ## Scheduling from an agent
 
@@ -134,6 +229,22 @@ Per-organization limits cover concurrency, tokens, active time, and cost.
 Budget authority is checked before an external side effect or persisted output.
 Exhaustion rejects the operation; Eylo does not truncate or publish partial
 results as success.
+
+Provider output-token limits are separate from organization budgets. Adapters
+normalize their native finish reasons into `LLMStopReason`; the pipeline translates
+that value into the standalone framework's `ModelStopReason`. A `max_tokens`
+response is accounted for, then rejected before its text becomes a final answer
+or its tool calls execute. The framework returns a failed result with
+`RunFailureCode.MODEL_OUTPUT_LIMIT`, and conversation persistence records the
+failed request with a readable response-limit notice. Earlier completed tool
+effects are not rolled back. Streaming text already delivered cannot be recalled;
+it does not establish successful completion.
+
+One-shot background prompts and swarm workers apply the same check after metering.
+The parallel durable executor records `parallel_task_model_output_limit` as a
+terminal failure rather than retrying the same output budget automatically.
+Background prompt and result carriers are frozen Pydantic values; prompt text is
+excluded from diagnostic representations and generic snapshots.
 
 ## Background Agents and swarms
 

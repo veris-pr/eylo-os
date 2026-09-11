@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum, StrEnum
@@ -13,11 +12,13 @@ from pydantic import Field, model_validator
 
 from eylo.sor.shared.contracts import (
     SorCanonicalPayload,
+    SorCanonicalRecord,
     SorCommandPayload,
     SorExternalRecord,
     SorLifecycleAdapter,
     SorMappedFieldsCommandPayload,
 )
+from eylo.sor.shared.json_values import SorJsonValue
 
 
 class SupportTicketState(str, Enum):
@@ -208,7 +209,7 @@ class SupportMessagePayload(SorCanonicalPayload):
     direction: SupportMessageDirection | None = None
     author_external_id: str | None = None
     normalized_text: str
-    source_body: object | None = None
+    source_body: SorJsonValue = None
     body_format: str | None = None
     attachment_external_ids: tuple[str, ...] = ()
     created_at: datetime
@@ -278,8 +279,7 @@ SUPPORT_PAYLOAD_TYPES: Mapping[SupportEntityKind, type[SorCanonicalPayload]] = {
 }
 
 
-@dataclass(frozen=True, slots=True)
-class SupportTicket:
+class SupportTicket(SorCanonicalRecord):
     external_id: str
     subject: str | None
     normalized_description: str | None
@@ -299,11 +299,10 @@ class SupportTicket:
     sla_state: SupportSlaState | None
     source_updated_at: datetime | None
     source_url: str | None
-    custom_fields: Mapping[str, object] = field(default_factory=dict)
+    custom_fields: dict[str, SorJsonValue] = Field(default_factory=dict)
 
 
-@dataclass(frozen=True, slots=True)
-class SupportCustomer:
+class SupportCustomer(SorCanonicalRecord):
     external_id: str
     name: str | None
     primary_email: str | None
@@ -311,11 +310,10 @@ class SupportCustomer:
     company_external_id: str | None
     active: bool | None
     source_url: str | None
-    custom_fields: Mapping[str, object] = field(default_factory=dict)
+    custom_fields: dict[str, SorJsonValue] = Field(default_factory=dict)
 
 
-@dataclass(frozen=True, slots=True)
-class SupportAgent:
+class SupportAgent(SorCanonicalRecord):
     external_id: str
     name: str
     primary_email: str | None
@@ -324,45 +322,40 @@ class SupportAgent:
     avatar_url: str | None
 
 
-@dataclass(frozen=True, slots=True)
-class SupportMessage:
+class SupportMessage(SorCanonicalRecord):
     external_id: str
     ticket_external_id: str
     visibility: SupportMessageVisibility
     direction: SupportMessageDirection | None
     author_external_id: str | None
     normalized_text: str
-    source_body: object | None
+    source_body: SorJsonValue = Field(repr=False, exclude=True)
     body_format: str | None
     attachment_external_ids: tuple[str, ...]
     created_at: datetime
     updated_at: datetime | None
 
 
-@dataclass(frozen=True, slots=True)
-class SupportQueue:
+class SupportQueue(SorCanonicalRecord):
     external_id: str
     name: str
     description: str | None
     active: bool | None
 
 
-@dataclass(frozen=True, slots=True)
-class SupportInbox:
+class SupportInbox(SorCanonicalRecord):
     external_id: str
     name: str
     kind: str | None
     active: bool | None
 
 
-@dataclass(frozen=True, slots=True)
-class SupportTag:
+class SupportTag(SorCanonicalRecord):
     external_id: str
     name: str
 
 
-@dataclass(frozen=True, slots=True)
-class SupportSlaMetric:
+class SupportSlaMetric(SorCanonicalRecord):
     external_id: str
     ticket_external_id: str
     metric: str
@@ -375,8 +368,7 @@ class SupportSlaMetric:
     breached_at: datetime | None
 
 
-@dataclass(frozen=True, slots=True)
-class SupportAttachment:
+class SupportAttachment(SorCanonicalRecord):
     external_id: str
     ticket_external_id: str
     message_external_id: str | None

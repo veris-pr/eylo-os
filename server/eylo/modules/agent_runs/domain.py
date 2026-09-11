@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from enum import Enum
+from typing import Self
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class InitiatingPrincipalKind(str, Enum):
@@ -202,27 +202,31 @@ class InitiatingPrincipalRef(BaseModel):
     principal_id: UUID
 
 
-@dataclass(frozen=True, slots=True)
-class AgentRunOrigin:
+class AgentRunOrigin(BaseModel):
     """One immutable external origin, or an explicitly filed objective."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     kind: AgentRunOriginKind
     message_id: UUID | None = None
     schedule_run_id: UUID | None = None
 
-    def __post_init__(self) -> None:
+    @model_validator(mode="after")
+    def _validate_origin(self) -> Self:
         message_origin = self.message_id is not None and self.schedule_run_id is None
         schedule_origin = self.schedule_run_id is not None and self.message_id is None
         if self.kind is AgentRunOriginKind.MESSAGE and message_origin:
-            return
+            return self
         if self.kind is AgentRunOriginKind.SCHEDULE_OCCURRENCE and schedule_origin:
-            return
+            return self
         if (
             self.kind is AgentRunOriginKind.OBJECTIVE
             and self.message_id is None
             and self.schedule_run_id is None
         ):
-            return
+            return self
         raise ValueError(f"Invalid {self.kind.value} AgentRun origin fields.")
 
     @classmethod
@@ -241,13 +245,18 @@ class AgentRunOrigin:
         return cls(kind=AgentRunOriginKind.OBJECTIVE)
 
 
-@dataclass(frozen=True, slots=True)
-class AgentRunTerminalResult:
+class AgentRunTerminalResult(BaseModel):
     """One validated immutable lifecycle/outcome pair."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     lifecycle: AgentRunLifecycle
     outcome: AgentRunOutcome
     reason: str | None = None
 
-    def __post_init__(self) -> None:
+    @model_validator(mode="after")
+    def _validate_outcome(self) -> Self:
         validate_lifecycle_outcome(self.lifecycle, self.outcome)
+        return self

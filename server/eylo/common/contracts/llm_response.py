@@ -31,6 +31,19 @@ def _finite_json(value: dict[str, JsonValue]) -> dict[str, JsonValue]:
     return value
 
 
+class LLMStopReason(StrEnum):
+    """Normalized socket stop reasons; native protocol enums stay in adapters."""
+
+    END_TURN = "end_turn"
+    MAX_TOKENS = "max_tokens"
+    STOP_SEQUENCE = "stop_sequence"
+    TOOL_USE = "tool_use"
+    PAUSE_TURN = "pause_turn"
+    REFUSAL = "refusal"
+    CONTENT_FILTER = "content_filter"
+    OTHER = "other"
+
+
 class LLMContentType(str, Enum):
     """Generic content types that can appear in LLM responses.
 
@@ -262,7 +275,7 @@ class LLMResponse(BaseModel):
     content: List[LLMContentBlock] = Field(
         default_factory=list, description="Content blocks in the response"
     )
-    stop_reason: Optional[str] = Field(
+    stop_reason: LLMStopReason | None = Field(
         None,
         description="Reason the model stopped generating (e.g., 'end_turn', 'max_tokens', 'tool_use')",
     )

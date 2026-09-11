@@ -21,6 +21,7 @@ from eylo.sor.knowledge.agent_reads import (
 from eylo.sor.runtime.authority import (
     AuthorizedSorSource,
     SorAuthorityError,
+    SorAuthorityFailure,
     resolve_agent_sources,
     resolve_profile_tool,
 )
@@ -454,9 +455,9 @@ async def _resolve_view_sources(
                 registry=registry,
             )
         except SorAuthorityError as error:
-            if error.code == "AGENT_REVISION_TOOL_UNAVAILABLE":
+            if error.code == SorAuthorityFailure.AGENT_REVISION_TOOL_UNAVAILABLE:
                 continue
-            if error.code == "SOR_SOURCE_UNAVAILABLE":
+            if error.code == SorAuthorityFailure.SOR_SOURCE_UNAVAILABLE:
                 requested_rejected = True
                 continue
             raise
@@ -465,11 +466,11 @@ async def _resolve_view_sources(
     if not authorized_tools:
         if requested_rejected:
             raise SorAuthorityError(
-                "SOR_SOURCE_UNAVAILABLE",
+                SorAuthorityFailure.SOR_SOURCE_UNAVAILABLE,
                 "One or more requested sources are unavailable.",
             )
         raise SorAuthorityError(
-            "AGENT_REVISION_TOOL_UNAVAILABLE",
+            SorAuthorityFailure.AGENT_REVISION_TOOL_UNAVAILABLE,
             "The pinned Agent revision has no read tool for this entity.",
         )
     return tuple(authorized_tools), tuple(authorized_sources.values())

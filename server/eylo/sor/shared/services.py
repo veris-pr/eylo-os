@@ -6,12 +6,11 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from uuid import UUID
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy import delete, func, or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -102,11 +101,14 @@ class SorProjectionError(SorError):
     """A source payload cannot satisfy its published mapping."""
 
 
-@dataclass(frozen=True, slots=True)
-class _SourceDraft:
+class _SourceDraft(BaseModel):
     """Normalized source identity used for create-request idempotency."""
 
-    configuration: dict[str, object]
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    configuration: dict[str, list[str] | None]
     freshness_target_seconds: int
     manifest: SorAdapterCapabilityManifest
     name: str
@@ -2272,7 +2274,7 @@ def _normalize_source_configuration(
     configuration: Mapping[str, object] | None,
     *,
     manifest: SorAdapterCapabilityManifest,
-) -> dict[str, object]:
+) -> dict[str, list[str] | None]:
     """Validate code-owned non-secret settings before a source is persisted."""
     normalized = dict(configuration or {})
     _bounded_json(
@@ -2289,6 +2291,9 @@ def _normalize_source_configuration(
             + ", ".join(sorted(unknown))
             + "."
         )
+    result: dict[str, list[str] | None] = {
+        key: None for key, value in normalized.items() if value is None
+    }
     for key, field in fields.items():
         value = normalized.get(key)
         if value is None:
@@ -2323,8 +2328,8 @@ def _normalize_source_configuration(
                 f"Source configuration field {field.label} requires "
                 f"{field.minimum_items} to {field.maximum_items} items."
             )
-        normalized[key] = items
-    return normalized
+        result[key] = items
+    return result
 
 
 def _validate_source_connection(

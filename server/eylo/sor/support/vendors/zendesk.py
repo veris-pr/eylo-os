@@ -7,13 +7,14 @@ import hashlib
 import hmac
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from email.utils import parsedate_to_datetime
 from enum import StrEnum
 from http import HTTPStatus
 from urllib.parse import urlsplit
+
+from pydantic import BaseModel, ConfigDict
 
 from eylo.modules.connections.domain import ConnectionAuthKind
 from eylo.sor.runtime.http import SorHttpTransport, SorJsonHttpClient, SorJsonResponse
@@ -46,6 +47,7 @@ from eylo.sor.shared.contracts import (
     SorWebhookSignal,
     SorWebhookSubscription,
 )
+from eylo.sor.shared.json_values import SorJsonValue, require_json_value
 from eylo.sor.support.contracts import (
     SupportAgent,
     SupportAgentPayload,
@@ -168,12 +170,8 @@ _RELATIONSHIP_TARGETS = {
         SorRelationshipRole.INBOX: ZendeskStream.BRANDS,
         SorRelationshipRole.TAG: ZendeskStream.TAGS,
     },
-    ZendeskStream.COMMENTS: {
-        SorRelationshipRole.TICKET: ZendeskStream.TICKETS
-    },
-    ZendeskStream.TICKET_METRICS: {
-        SorRelationshipRole.TICKET: ZendeskStream.TICKETS
-    },
+    ZendeskStream.COMMENTS: {SorRelationshipRole.TICKET: ZendeskStream.TICKETS},
+    ZendeskStream.TICKET_METRICS: {SorRelationshipRole.TICKET: ZendeskStream.TICKETS},
     ZendeskStream.ATTACHMENTS: {
         SorRelationshipRole.TICKET: ZendeskStream.TICKETS,
         SorRelationshipRole.MESSAGE: ZendeskStream.COMMENTS,
@@ -278,7 +276,7 @@ ZENDESK_MANIFEST = SorAdapterCapabilityManifest(
                 set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values()) - {stream_key}
             ),
             relationship_targets=SorRelationshipTargets(
-                _RELATIONSHIP_TARGETS.get(stream_key, {})
+                by_role=_RELATIONSHIP_TARGETS.get(stream_key, {}),
             ),
         )
         for stream_key, entity in _STREAM_ENTITY.items()
@@ -346,17 +344,38 @@ def _field(
 _SCHEMA_FIELDS = {
     ZendeskStream.TICKETS: (
         _field("subject", "Subject", SorFieldDataType.TEXT, writable=True),
-        _field("normalized_description", "Description", SorFieldDataType.TEXT, writable=True),
-        _field("requester_external_id", "Requester ID", SorFieldDataType.REFERENCE, writable=True),
-        _field("assignee_external_id", "Assignee ID", SorFieldDataType.REFERENCE, writable=True),
-        _field("group_external_id", "Group ID", SorFieldDataType.REFERENCE, writable=True),
-        _field("inbox_external_id", "Brand ID", SorFieldDataType.REFERENCE, writable=True),
+        _field(
+            "normalized_description",
+            "Description",
+            SorFieldDataType.TEXT,
+            writable=True,
+        ),
+        _field(
+            "requester_external_id",
+            "Requester ID",
+            SorFieldDataType.REFERENCE,
+            writable=True,
+        ),
+        _field(
+            "assignee_external_id",
+            "Assignee ID",
+            SorFieldDataType.REFERENCE,
+            writable=True,
+        ),
+        _field(
+            "group_external_id", "Group ID", SorFieldDataType.REFERENCE, writable=True
+        ),
+        _field(
+            "inbox_external_id", "Brand ID", SorFieldDataType.REFERENCE, writable=True
+        ),
         _field("native_status", "Status", SorFieldDataType.TEXT, writable=True),
         _field("normalized_status", "Normalized status", SorFieldDataType.ENUM),
         _field("priority", "Priority", SorFieldDataType.TEXT, writable=True),
         _field("category", "Type", SorFieldDataType.TEXT, writable=True),
         _field("channel", "Channel", SorFieldDataType.TEXT),
-        _field("tag_external_ids", "Tags", SorFieldDataType.STRING_ARRAY, writable=True),
+        _field(
+            "tag_external_ids", "Tags", SorFieldDataType.STRING_ARRAY, writable=True
+        ),
         _field("resolved_at", "Solved at", SorFieldDataType.TIMESTAMP),
         _field("closed_at", "Closed at", SorFieldDataType.TIMESTAMP),
     ),
@@ -385,20 +404,34 @@ _SCHEMA_FIELDS = {
         _field("active", "Active", SorFieldDataType.BOOLEAN),
     ),
     ZendeskStream.COMMENTS: (
-        _field("ticket_external_id", "Ticket ID", SorFieldDataType.REFERENCE, nullable=False),
+        _field(
+            "ticket_external_id",
+            "Ticket ID",
+            SorFieldDataType.REFERENCE,
+            nullable=False,
+        ),
         _field("visibility", "Visibility", SorFieldDataType.ENUM, nullable=False),
         _field("direction", "Direction", SorFieldDataType.ENUM),
         _field("author_external_id", "Author ID", SorFieldDataType.REFERENCE),
         _field("normalized_text", "Comment", SorFieldDataType.TEXT, nullable=False),
         _field("source_body", "Source body", SorFieldDataType.BOUNDED_JSON),
         _field("body_format", "Body format", SorFieldDataType.TEXT),
-        _field("attachment_external_ids", "Attachment IDs", SorFieldDataType.STRING_ARRAY),
+        _field(
+            "attachment_external_ids", "Attachment IDs", SorFieldDataType.STRING_ARRAY
+        ),
         _field("created_at", "Created at", SorFieldDataType.TIMESTAMP, nullable=False),
         _field("updated_at", "Updated at", SorFieldDataType.TIMESTAMP),
     ),
-    ZendeskStream.TAGS: (_field("name", "Name", SorFieldDataType.TEXT, nullable=False),),
+    ZendeskStream.TAGS: (
+        _field("name", "Name", SorFieldDataType.TEXT, nullable=False),
+    ),
     ZendeskStream.TICKET_METRICS: (
-        _field("ticket_external_id", "Ticket ID", SorFieldDataType.REFERENCE, nullable=False),
+        _field(
+            "ticket_external_id",
+            "Ticket ID",
+            SorFieldDataType.REFERENCE,
+            nullable=False,
+        ),
         _field("metric", "Metric", SorFieldDataType.TEXT, nullable=False),
         _field("value", "Value", SorFieldDataType.DECIMAL),
         _field("unit", "Unit", SorFieldDataType.TEXT),
@@ -409,7 +442,12 @@ _SCHEMA_FIELDS = {
         _field("breached_at", "Breached at", SorFieldDataType.TIMESTAMP),
     ),
     ZendeskStream.ATTACHMENTS: (
-        _field("ticket_external_id", "Ticket ID", SorFieldDataType.REFERENCE, nullable=False),
+        _field(
+            "ticket_external_id",
+            "Ticket ID",
+            SorFieldDataType.REFERENCE,
+            nullable=False,
+        ),
         _field("message_external_id", "Comment ID", SorFieldDataType.REFERENCE),
         _field("name", "Name", SorFieldDataType.TEXT, nullable=False),
         _field("content_type", "Content type", SorFieldDataType.TEXT),
@@ -449,14 +487,24 @@ _METRIC_FIELDS = (
 )
 
 
-@dataclass(frozen=True, slots=True)
-class _ExpandedCursor:
+class _ExpandedCursor(BaseModel):
+    """Zendesk child offset within one native export page."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
     vendor_cursor: str | None
     offset: int
 
 
-@dataclass(frozen=True, slots=True)
-class _EventCursor:
+class _EventCursor(BaseModel):
+    """Zendesk event-export watermark and child offset."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
     start_time: int
     offset: int
 
@@ -2577,14 +2625,11 @@ def _optional_decimal(value: object) -> Decimal | None:
     return parsed
 
 
-def _json_value(value: object) -> object | None:
-    if value is None or isinstance(value, (str, int, float, bool, list, dict)):
-        try:
-            json.dumps(value, ensure_ascii=False, allow_nan=False)
-        except (TypeError, ValueError) as error:
-            raise _invalid_response("Zendesk value is not JSON compatible.") from error
-        return value
-    raise _invalid_response("Zendesk value is not JSON compatible.")
+def _json_value(value: object) -> SorJsonValue:
+    try:
+        return require_json_value(value)
+    except ValueError as error:
+        raise _invalid_response("Zendesk value is not JSON compatible.") from error
 
 
 def _invalid_command(message: str) -> SorVendorOperationError:

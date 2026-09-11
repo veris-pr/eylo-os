@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, TypeVar
+from enum import StrEnum
+from typing import TYPE_CHECKING, Literal, Self, TypeVar
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from eylo.common.contracts.telephony import CallEndedReason
 from eylo.common.contracts.voice import BrowserVoiceTerminationReason
@@ -25,13 +27,60 @@ END_CALL_TOOL_NAME = "end_call"
 SessionT = TypeVar("SessionT")
 
 
-@dataclass(frozen=True, slots=True)
-class AgentVoiceTerminationOutcome:
+class VoiceTerminationStatus(StrEnum):
+    SUCCESS = "success"
+    ERROR = "error"
+
+
+class VoiceTerminationFailureCode(StrEnum):
+    SESSION_NOT_AVAILABLE = "voice_session_not_available"
+    TERMINATION_NOT_ACCEPTED = "voice_termination_not_accepted"
+
+
+class _VoiceTerminationValue(BaseModel):
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+
+class VoiceTerminationAccepted(_VoiceTerminationValue):
+    status: Literal[VoiceTerminationStatus.SUCCESS] = VoiceTerminationStatus.SUCCESS
+    message: Literal["Voice session termination requested."] = (
+        "Voice session termination requested."
+    )
+
+
+class VoiceTerminationFailure(_VoiceTerminationValue):
+    status: Literal[VoiceTerminationStatus.ERROR] = VoiceTerminationStatus.ERROR
+    error: VoiceTerminationFailureCode
+    message: Literal["The active voice session could not be ended."] = (
+        "The active voice session could not be ended."
+    )
+
+
+class VoiceTerminationMetadata(_VoiceTerminationValue):
+    """Omit runtime mode on refusals, preserving the existing transcript shape."""
+
+    voice_termination: Literal[True] = True
+    runtime_mode: VoiceRuntimeMode | None = None
+
+
+class AgentVoiceTerminationOutcome(_VoiceTerminationValue):
     """Safe tool result for one exact live voice termination request."""
 
-    content: dict[str, Any]
-    is_error: bool
-    metadata: dict[str, Any] = field(default_factory=dict)
+    content: VoiceTerminationAccepted | VoiceTerminationFailure = Field(
+        discriminator="status"
+    )
+    metadata: VoiceTerminationMetadata
+
+    @property
+    def is_error(self) -> bool:
+        return isinstance(self.content, VoiceTerminationFailure)
+
+    @model_validator(mode="after")
+    def require_matching_runtime(self) -> Self:
+        """Only accepted requests identify a transport in the result metadata."""
+        if self.is_error == (self.metadata.runtime_mode is not None):
+            raise ValueError("Voice termination metadata differs from its result.")
+        return self
 
 
 async def is_live_voice_session_active(identity: LiveVoiceBufferIdentity) -> bool:
@@ -53,7 +102,7 @@ async def execute_agent_end_call_tool(
         or identity.conversation_id != conversation.id
     ):
         logger.error("Live voice end-call authority did not match the conversation.")
-        return _error_outcome("voice_session_not_available")
+        return _error_outcome(VoiceTerminationFailureCode.SESSION_NOT_AVAILABLE)
 
     if identity.runtime_mode is VoiceRuntimeMode.TELEPHONY:
         return await _end_telephony_session(identity)
@@ -67,7 +116,7 @@ async def _end_telephony_session(
 
     session = _resolve_telephony_session(identity)
     if session is None or session.telephony_manager is None:
-        return _error_outcome("voice_session_not_available")
+        return _error_outcome(VoiceTerminationFailureCode.SESSION_NOT_AVAILABLE)
 
     accepted = await terminate_telephony_voice(
         sess=session,
@@ -85,7 +134,7 @@ async def _end_browser_session(
 
     session = await _resolve_browser_session(identity)
     if session is None:
-        return _error_outcome("voice_session_not_available")
+        return _error_outcome(VoiceTerminationFailureCode.SESSION_NOT_AVAILABLE)
 
     context = SessionContext(
         channel=SessionChannel.WEBSOCKET,
@@ -171,29 +220,17 @@ def _termination_outcome(
     runtime_mode: VoiceRuntimeMode,
 ) -> AgentVoiceTerminationOutcome:
     if not accepted:
-        return _error_outcome("voice_termination_not_accepted")
+        return _error_outcome(VoiceTerminationFailureCode.TERMINATION_NOT_ACCEPTED)
     return AgentVoiceTerminationOutcome(
-        content={
-            "status": "success",
-            "message": "Voice session termination requested.",
-        },
-        is_error=False,
-        metadata={
-            "voice_termination": True,
-            "runtime_mode": runtime_mode.value,
-        },
+        content=VoiceTerminationAccepted(),
+        metadata=VoiceTerminationMetadata(runtime_mode=runtime_mode),
     )
 
 
-def _error_outcome(code: str) -> AgentVoiceTerminationOutcome:
+def _error_outcome(code: VoiceTerminationFailureCode) -> AgentVoiceTerminationOutcome:
     return AgentVoiceTerminationOutcome(
-        content={
-            "status": "error",
-            "error": code,
-            "message": "The active voice session could not be ended.",
-        },
-        is_error=True,
-        metadata={"voice_termination": True},
+        content=VoiceTerminationFailure(error=code),
+        metadata=VoiceTerminationMetadata(),
     )
 
 

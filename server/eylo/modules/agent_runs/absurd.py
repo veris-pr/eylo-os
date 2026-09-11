@@ -123,9 +123,8 @@ class AgentRunAbsurdAdapter:
             workflow_name=AGENT_RUN_WORKFLOW,
             queue_name=self._config.queue_name,
             max_attempts=self._config.max_attempts,
-            has_automatic_timeout=any(
-                value is not None
-                for value in self._config.cancellation_policy().values()
+            has_automatic_timeout=(
+                self._config.cancellation_policy().has_automatic_timeout
             ),
         )
         return self._registration

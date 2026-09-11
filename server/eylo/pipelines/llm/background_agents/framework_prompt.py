@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict, Field
+
+from eylo.common.contracts.llm_response import LLMStopReason
 from eylo.common.contracts.llm_runtime import LLMInferenceConfig
+from eylo.framework.agents.errors import ModelOutputLimitError
 from eylo.modules.agent_runs.budgets import meter_current_agent_run_usage
 from eylo.modules.agents.models import AgentStatus
 from eylo.modules.agents.schemas.indb import AgentInDb
@@ -22,19 +25,21 @@ from eylo.sockets.llm.transient import text_message
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True, slots=True)
-class BackgroundPrompt:
+class BackgroundPrompt(BaseModel):
     """One instruction and user-text input; not a vendor message envelope."""
 
-    system_prompt: str
-    user_content: str
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    system_prompt: str = Field(repr=False, exclude=True)
+    user_content: str = Field(repr=False, exclude=True)
 
 
-@dataclass(frozen=True)
-class BackgroundPromptResult:
+class BackgroundPromptResult(BaseModel):
     """Sanitized output metadata from one background LLM request."""
 
-    text: str
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    text: str = Field(repr=False)
     model: str
     input_tokens: int = 0
     output_tokens: int = 0
@@ -114,6 +119,8 @@ async def run_background_prompt_agent(
 
 
 def _result_from_response(response: LLMResponse) -> BackgroundPromptResult | None:
+    if response.stop_reason is LLMStopReason.MAX_TOKENS:
+        raise ModelOutputLimitError
     text = next(
         (
             block.content.text

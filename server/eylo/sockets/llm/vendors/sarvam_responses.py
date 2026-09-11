@@ -12,6 +12,7 @@ from eylo.sockets.llm.schemas import (
     LLMDeltaKind,
     LLMResponse,
     LLMResponseMetadata,
+    LLMStopReason,
     LLMTextBlock,
     LLMTextContent,
     LLMTextDelta,
@@ -63,10 +64,10 @@ class SarvamResponseMetadata(BaseModel):
 
 
 _STOP_REASONS = {
-    SarvamFinishReason.STOP: "end_turn",
-    SarvamFinishReason.LENGTH: "max_tokens",
-    SarvamFinishReason.TOOL_CALLS: "tool_use",
-    SarvamFinishReason.CONTENT_FILTER: "content_filter",
+    SarvamFinishReason.STOP: LLMStopReason.END_TURN,
+    SarvamFinishReason.LENGTH: LLMStopReason.MAX_TOKENS,
+    SarvamFinishReason.TOOL_CALLS: LLMStopReason.TOOL_USE,
+    SarvamFinishReason.CONTENT_FILTER: LLMStopReason.CONTENT_FILTER,
 }
 
 

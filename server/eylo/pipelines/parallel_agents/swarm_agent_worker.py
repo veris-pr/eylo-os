@@ -13,8 +13,10 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, JsonValue, TypeAdapter
 
+from eylo.common.contracts.llm_response import LLMStopReason
 from eylo.common.contracts.llm_runtime import LLMInferenceConfig
 from eylo.common.database import start_transaction
+from eylo.framework.agents.errors import ModelOutputLimitError
 from eylo.modules.agent_runs.budgets import meter_current_agent_run_usage
 from eylo.modules.agents.domain import ResolvedExecutableAgent
 from eylo.modules.agents.services.tool_execution_utils import (
@@ -119,6 +121,8 @@ class SwarmAgentWorker:
                 input_tokens=None if usage is None else usage.input_tokens,
                 output_tokens=None if usage is None else usage.output_tokens,
             )
+            if response.stop_reason is LLMStopReason.MAX_TOKENS:
+                raise ModelOutputLimitError
             last_text_parts = text_parts(response.content)
             requested_tools = tool_uses(response.content)
 

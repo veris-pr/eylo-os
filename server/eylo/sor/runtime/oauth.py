@@ -8,13 +8,16 @@ import json
 import logging
 import secrets
 import uuid
-from dataclasses import dataclass
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
+from enum import StrEnum
 from http import HTTPStatus
+from typing import Protocol
 from urllib.parse import urlencode, urlsplit
 from uuid import UUID
 
 import uuid_utils
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 
 from eylo.common.database import start_transaction
 from eylo.common.http_egress import (
@@ -22,7 +25,9 @@ from eylo.common.http_egress import (
     HttpEgressPolicyError,
     HttpEgressRequest,
     HttpEgressResponse,
+    HttpMethod,
     HttpRoutePolicy,
+    OriginBoundHeaders,
     parse_https_target,
 )
 from eylo.modules.connections.domain import (
@@ -62,6 +67,11 @@ from eylo.sor.shared.contracts import (
     SorSourceState,
     SorSyncRunKind,
 )
+from eylo.sor.shared.json_values import (
+    SorJsonValue,
+    SorJsonValueError,
+    require_json_object,
+)
 from eylo.sor.shared.models import SorConnectorModel
 from eylo.sor.shared.repositories import SorRepository
 from eylo.sor.shared.secrets import (
@@ -76,35 +86,78 @@ STATE_TTL_MINUTES = 10
 logger = logging.getLogger(__name__)
 
 
+class SorOAuthFailure(StrEnum):
+    """Stable runtime-owned failure categories, retaining existing persisted codes."""
+
+    APP_WEBHOOK_ENDPOINT_UNAVAILABLE = "app_webhook_endpoint_unavailable"
+    APP_WEBHOOK_NOT_CONFIGURED = "app_webhook_not_configured"
+    OAUTH_APP_UNAVAILABLE = "oauth_app_unavailable"
+    OAUTH_CALLBACK_UNCONFIGURED = "oauth_callback_unconfigured"
+    OAUTH_CODE_INVALID = "oauth_code_invalid"
+    OAUTH_CONNECTION_UNAVAILABLE = "oauth_connection_unavailable"
+    OAUTH_ENDPOINT_INVALID = "oauth_endpoint_invalid"
+    OAUTH_ENDPOINT_UNREACHABLE = "oauth_endpoint_unreachable"
+    OAUTH_EXCHANGE_REJECTED = "oauth_exchange_rejected"
+    OAUTH_INSTANCE_ORIGIN_CHANGED = "oauth_instance_origin_changed"
+    OAUTH_INSTANCE_ORIGIN_INVALID = "oauth_instance_origin_invalid"
+    OAUTH_INSTANCE_ORIGIN_MISSING = "oauth_instance_origin_missing"
+    OAUTH_INSTANCE_ORIGIN_UNEXPECTED = "oauth_instance_origin_unexpected"
+    OAUTH_SCOPE_MISSING = "oauth_scope_missing"
+    OAUTH_SELECTION_INVALID = "oauth_selection_invalid"
+    OAUTH_STATE_EXPIRED = "oauth_state_expired"
+    OAUTH_STATE_INVALID = "oauth_state_invalid"
+    OAUTH_STATE_STALE = "oauth_state_stale"
+    OAUTH_TOKEN_INVALID = "oauth_token_invalid"
+    OAUTH_UNSUPPORTED = "oauth_unsupported"
+    SOURCE_CONNECTION_OWNER_INVALID = "source_connection_owner_invalid"
+    SOURCE_CONNECTION_UNAVAILABLE = "source_connection_unavailable"
+    SOURCE_CONNECTOR_UNAVAILABLE = "source_connector_unavailable"
+    SOURCE_NOT_ACTIVATED = "source_not_activated"
+    SOURCE_REAUTHORIZATION_UNAVAILABLE = "source_reauthorization_unavailable"
+
+
 class SorOAuthError(Exception):
     """A safe OAuth refusal with a stable machine code."""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: SorOAuthFailure, message: str) -> None:
         super().__init__(message)
         self.code = code
 
 
-class SorOAuthTransport:
+class SorOAuthTransport(Protocol):
     """Structural port for recorded OAuth transport proofs."""
 
     async def send(self, request: HttpEgressRequest) -> HttpEgressResponse: ...
 
 
-@dataclass(frozen=True, slots=True)
-class SorAuthorizationRedirect:
-    authorization_url: str
+class SorAuthorizationRedirect(BaseModel):
+    """Explicit browser handoff; URLs and state may contain one-time secrets."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    authorization_url: str = Field(repr=False, exclude=True)
     callback_url: str
-    state: str
+    state: str = Field(repr=False, exclude=True)
 
 
-@dataclass(frozen=True, slots=True)
-class SorAuthorizationResult:
+class SorAuthorizationResult(BaseModel):
+    """Activated connection identity, never its credential data."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
     connection_id: UUID
     vendor_key: str
 
 
-@dataclass(frozen=True, slots=True)
-class _AuthorizationContext:
+class _AuthorizationContext(BaseModel):
+    """Consumed state and exact configuration authority for one code exchange."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
     organization_id: UUID
     connector_id: UUID
     connector_revision: int
@@ -112,14 +165,27 @@ class _AuthorizationContext:
     expected_connection_revision: int
     vendor_key: str
     client_id: str
-    client_secret: str
+    client_secret: str = Field(repr=False, exclude=True)
     redirect_uri: str
-    code_verifier: str | None
+    code_verifier: str | None = Field(repr=False, exclude=True)
     requested_scopes: tuple[str, ...]
     oauth: SorOAuthSpec
     change_mode: SorChangeMode
     fixed_origin: str | None
     preset_instance_origin: str | None
+
+
+class _TokenGrant(BaseModel):
+    """Validated credential filing consumed explicitly by connection activation."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    credentials: dict[str, SorJsonValue] = Field(repr=False, exclude=True)
+    expires_at: datetime | None
+    granted_scopes: tuple[str, ...]
+    instance_origin: str | None
 
 
 def default_sor_callback_url() -> str:
@@ -129,7 +195,7 @@ def default_sor_callback_url() -> str:
     base_url = settings.API_BASE_URL
     if not isinstance(base_url, str) or not base_url.strip():
         raise SorOAuthError(
-            "oauth_callback_unconfigured",
+            SorOAuthFailure.OAUTH_CALLBACK_UNCONFIGURED,
             "The SOR OAuth callback base URL is not configured.",
         )
     return f"{base_url.rstrip('/')}{SOR_OAUTH_CALLBACK_PATH}"
@@ -201,7 +267,7 @@ async def begin_sor_authorization(
         elif oauth.operator_instance_origin:
             if connection.instance_origin != requested_instance_origin:
                 raise SorOAuthError(
-                    "oauth_instance_origin_changed",
+                    SorOAuthFailure.OAUTH_INSTANCE_ORIGIN_CHANGED,
                     "This saved connection belongs to another provider site. "
                     "Create a new connection for this site.",
                 )
@@ -261,7 +327,7 @@ async def begin_sor_source_reauthorization(
             SorSourceState.REAUTH_REQUIRED,
         }:
             raise SorOAuthError(
-                "source_reauthorization_unavailable",
+                SorOAuthFailure.SOURCE_REAUTHORIZATION_UNAVAILABLE,
                 "Only an activated source can restart provider authorization.",
             )
         if (
@@ -269,7 +335,7 @@ async def begin_sor_source_reauthorization(
             or source.active_mapping_revision_id is None
         ):
             raise SorOAuthError(
-                "source_not_activated",
+                SorOAuthFailure.SOURCE_NOT_ACTIVATED,
                 "This source has not been activated. Continue source setup instead.",
             )
 
@@ -291,12 +357,12 @@ async def begin_sor_source_reauthorization(
             or connector.vendor_key != source.vendor_key
         ):
             raise SorOAuthError(
-                "source_connector_unavailable",
+                SorOAuthFailure.SOURCE_CONNECTOR_UNAVAILABLE,
                 "The source OAuth connector is unavailable.",
             )
         if connection.owner_kind is not ConnectionOwnerKind.ORGANIZATION:
             raise SorOAuthError(
-                "source_connection_owner_invalid",
+                SorOAuthFailure.SOURCE_CONNECTION_OWNER_INVALID,
                 "The source connection is not organization-owned.",
             )
 
@@ -335,7 +401,7 @@ async def begin_sor_source_reauthorization(
             ExternalConnectionStatus.REAUTH_REQUIRED,
         }:
             raise SorOAuthError(
-                "source_connection_unavailable",
+                SorOAuthFailure.SOURCE_CONNECTION_UNAVAILABLE,
                 "The source connection cannot be reauthorized.",
             )
 
@@ -430,7 +496,7 @@ def _authorization_redirect(
         )
     except SorOAuthEndpointError as error:
         raise SorOAuthError(
-            "oauth_endpoint_invalid",
+            SorOAuthFailure.OAUTH_ENDPOINT_INVALID,
             "The provider authorization endpoint is not configured safely.",
         ) from error
     return SorAuthorizationRedirect(
@@ -459,16 +525,16 @@ async def complete_sor_authorization_from_state(
             context=context,
             transport=transport,
         )
-        credentials, expires_at, granted_scopes, instance_origin = _token_grant(
+        grant = _token_grant(
             tokens=tokens,
             context=context,
         )
         connection_revision = await _activate_connection(
             context=context,
-            credentials=credentials,
-            expires_at=expires_at,
-            granted_scopes=granted_scopes,
-            instance_origin=instance_origin,
+            credentials=grant.credentials,
+            expires_at=grant.expires_at,
+            granted_scopes=list(grant.granted_scopes),
+            instance_origin=grant.instance_origin,
         )
     except Exception:
         await _revoke_initiated_connection(context)
@@ -514,13 +580,13 @@ async def _consume_authorization_context(
         candidate = await states.get_by_state(state)
         if candidate is None or candidate.redirect_uri != default_sor_callback_url():
             raise SorOAuthError(
-                "oauth_state_invalid",
+                SorOAuthFailure.OAUTH_STATE_INVALID,
                 "Authorization state is unknown or already used.",
             )
         stored = await states.consume_by_state(state)
         if stored is None:
             raise SorOAuthError(
-                "oauth_state_invalid",
+                SorOAuthFailure.OAUTH_STATE_INVALID,
                 "Authorization state is unknown or already used.",
             )
         repository = SorRepository(session)
@@ -535,7 +601,7 @@ async def _consume_authorization_context(
         )
         if connector is None or connection is None:
             raise SorOAuthError(
-                "oauth_state_invalid",
+                SorOAuthFailure.OAUTH_STATE_INVALID,
                 "Authorization state does not belong to a SOR connector.",
             )
         if (
@@ -543,7 +609,7 @@ async def _consume_authorization_context(
             or stored.expected_connection_revision != connection.revision
         ):
             raise SorOAuthError(
-                "oauth_state_stale",
+                SorOAuthFailure.OAUTH_STATE_STALE,
                 "The connection changed after this authorization started.",
             )
         manifest = registry.get_manifest(
@@ -560,7 +626,7 @@ async def _consume_authorization_context(
             )
         except SorSecretEnvelopeError as error:
             raise SorOAuthError(
-                "oauth_app_unavailable",
+                SorOAuthFailure.OAUTH_APP_UNAVAILABLE,
                 "The SOR connector credentials could not be opened.",
             ) from error
         expired = stored.is_expired()
@@ -584,7 +650,7 @@ async def _consume_authorization_context(
     if expired and not allow_expired:
         await _revoke_initiated_connection(context)
         raise SorOAuthError(
-            "oauth_state_expired",
+            SorOAuthFailure.OAUTH_STATE_EXPIRED,
             "Authorization state has expired.",
         )
     return context
@@ -595,11 +661,11 @@ async def _exchange_code(
     code: str,
     context: _AuthorizationContext,
     transport: SorOAuthTransport | None,
-) -> dict[str, object]:
+) -> dict[str, JsonValue]:
     normalized_code = code.strip()
     if not normalized_code or len(normalized_code) > 8192:
         raise SorOAuthError(
-            "oauth_code_invalid",
+            SorOAuthFailure.OAUTH_CODE_INVALID,
             "The provider returned an invalid authorization code.",
         )
     form = {"code": normalized_code}
@@ -624,7 +690,7 @@ async def _exchange_code(
         origin, path = parse_https_target(token_url)
         response = await (transport or SafeHttpTransport()).send(
             HttpEgressRequest(
-                method="POST",
+                method=HttpMethod.POST,
                 url=token_url,
                 policy=HttpDestinationPolicy(
                     primary=HttpRoutePolicy(origin=origin, path_prefix=path),
@@ -633,8 +699,12 @@ async def _exchange_code(
                 headers={
                     "Accept": "application/json",
                     "Content-Type": content_type,
-                    **auth_headers,
                 },
+                origin_headers=(
+                    OriginBoundHeaders(origin=origin, values=auth_headers)
+                    if auth_headers
+                    else None
+                ),
                 body=body,
                 response_body_limit=262_144,
                 total_timeout_seconds=20.0,
@@ -642,41 +712,47 @@ async def _exchange_code(
         )
     except (HttpEgressPolicyError, SorOAuthEndpointError, TimeoutError) as error:
         raise SorOAuthError(
-            "oauth_endpoint_unreachable",
+            SorOAuthFailure.OAUTH_ENDPOINT_UNREACHABLE,
             "The provider token endpoint could not be reached safely.",
         ) from error
     if response.status_code != HTTPStatus.OK:
         raise SorOAuthError(
-            "oauth_exchange_rejected",
+            SorOAuthFailure.OAUTH_EXCHANGE_REJECTED,
             "The provider rejected the authorization code exchange.",
         )
     try:
         payload = json.loads(response.body)
     except (UnicodeDecodeError, ValueError) as error:
         raise SorOAuthError(
-            "oauth_token_invalid",
+            SorOAuthFailure.OAUTH_TOKEN_INVALID,
             "The provider returned an unreadable token response.",
         ) from error
     if not isinstance(payload, dict):
         raise SorOAuthError(
-            "oauth_token_invalid",
+            SorOAuthFailure.OAUTH_TOKEN_INVALID,
             "The provider returned an unreadable token response.",
         )
-    return payload
+    try:
+        return require_json_object(payload)
+    except (ValidationError, SorJsonValueError) as error:
+        raise SorOAuthError(
+            SorOAuthFailure.OAUTH_TOKEN_INVALID,
+            "The provider returned an unreadable token response.",
+        ) from error
 
 
 def _token_grant(
     *,
-    tokens: dict[str, object],
+    tokens: Mapping[str, JsonValue],
     context: _AuthorizationContext,
-) -> tuple[dict[str, object], datetime | None, list[str], str | None]:
+) -> _TokenGrant:
     access_token = tokens.get("access_token")
     if not isinstance(access_token, str) or not access_token:
         raise SorOAuthError(
-            "oauth_token_invalid",
+            SorOAuthFailure.OAUTH_TOKEN_INVALID,
             "The provider returned no access token.",
         )
-    credentials: dict[str, object] = {"access_token": access_token}
+    credentials: dict[str, JsonValue] = {"access_token": access_token}
     for key in ("refresh_token", "token_type"):
         value = tokens.get(key)
         if isinstance(value, str) and value:
@@ -686,7 +762,7 @@ def _token_grant(
     missing_scopes = set(context.requested_scopes) - set(granted_scopes)
     if missing_scopes:
         raise SorOAuthError(
-            "oauth_scope_missing",
+            SorOAuthFailure.OAUTH_SCOPE_MISSING,
             "The provider did not grant every required SOR permission.",
         )
 
@@ -695,7 +771,7 @@ def _token_grant(
     if isinstance(expires_in, int) and not isinstance(expires_in, bool):
         if expires_in <= 0:
             raise SorOAuthError(
-                "oauth_token_invalid",
+                SorOAuthFailure.OAUTH_TOKEN_INVALID,
                 "The provider returned an invalid token lifetime.",
             )
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
@@ -705,7 +781,7 @@ def _token_grant(
         raw_origin = tokens.get(context.oauth.instance_origin_field)
         if not isinstance(raw_origin, str):
             raise SorOAuthError(
-                "oauth_instance_origin_missing",
+                SorOAuthFailure.OAUTH_INSTANCE_ORIGIN_MISSING,
                 "The provider returned no account API origin.",
             )
         instance_origin = normalize_sor_instance_origin(
@@ -717,16 +793,21 @@ def _token_grant(
         )
     elif context.oauth.operator_instance_origin and instance_origin is None:
         raise SorOAuthError(
-            "oauth_instance_origin_missing",
+            SorOAuthFailure.OAUTH_INSTANCE_ORIGIN_MISSING,
             "The configured provider site is unavailable.",
         )
-    return credentials, expires_at, granted_scopes, instance_origin
+    return _TokenGrant(
+        credentials=credentials,
+        expires_at=expires_at,
+        granted_scopes=tuple(granted_scopes),
+        instance_origin=instance_origin,
+    )
 
 
 async def _activate_connection(
     *,
     context: _AuthorizationContext,
-    credentials: dict[str, object],
+    credentials: Mapping[str, JsonValue],
     expires_at: datetime | None,
     granted_scopes: list[str],
     instance_origin: str | None,
@@ -752,7 +833,7 @@ async def _activate_connection(
             or connection.revision != context.expected_connection_revision
         ):
             raise SorOAuthError(
-                "oauth_state_stale",
+                SorOAuthFailure.OAUTH_STATE_STALE,
                 "The SOR connector changed during authorization.",
             )
         next_revision = connection.revision + 1
@@ -791,7 +872,7 @@ async def _activate_connection(
             )
         else:
             raise SorOAuthError(
-                "oauth_connection_unavailable",
+                SorOAuthFailure.OAUTH_CONNECTION_UNAVAILABLE,
                 "This external connection can no longer be authorized.",
             )
         await file_sor_connection_event(
@@ -817,7 +898,7 @@ async def _activate_connection(
                 and connector.webhook_signing_secret is None
             ):
                 raise SorOAuthError(
-                    "app_webhook_not_configured",
+                    SorOAuthFailure.APP_WEBHOOK_NOT_CONFIGURED,
                     "Configure the OAuth app webhook before authorizing it.",
                 )
             connector.webhook_authorized_connection_revision = (
@@ -840,14 +921,14 @@ def _require_app_webhook_authorization_ready(
         and connector.webhook_signing_secret is None
     ):
         raise SorOAuthError(
-            "app_webhook_not_configured",
+            SorOAuthFailure.APP_WEBHOOK_NOT_CONFIGURED,
             "Configure the OAuth app webhook URL and signing secret before authorization.",
         )
     try:
         public_webhook_api_base_url()
     except SorConfigurationError as error:
         raise SorOAuthError(
-            "app_webhook_endpoint_unavailable",
+            SorOAuthFailure.APP_WEBHOOK_ENDPOINT_UNAVAILABLE,
             "Configure a public HTTPS API_BASE_URL before authorization.",
         ) from error
 
@@ -993,7 +1074,7 @@ async def _revoke_initiated_connection(context: _AuthorizationContext) -> None:
 def _require_oauth(manifest: SorAdapterCapabilityManifest) -> SorOAuthSpec:
     if manifest.oauth is None:
         raise SorOAuthError(
-            "oauth_unsupported",
+            SorOAuthFailure.OAUTH_UNSUPPORTED,
             "This SOR vendor does not support OAuth authorization.",
         )
     return manifest.oauth
@@ -1008,13 +1089,13 @@ def _authorization_instance_origin(
     if not oauth.operator_instance_origin:
         if value is not None:
             raise SorOAuthError(
-                "oauth_instance_origin_unexpected",
+                SorOAuthFailure.OAUTH_INSTANCE_ORIGIN_UNEXPECTED,
                 "This provider does not accept an operator-supplied site origin.",
             )
         return None
     if value is None:
         raise SorOAuthError(
-            "oauth_instance_origin_missing",
+            SorOAuthFailure.OAUTH_INSTANCE_ORIGIN_MISSING,
             "Enter the exact HTTPS site URL before authorization.",
         )
     return normalize_sor_instance_origin(
@@ -1033,14 +1114,14 @@ def _selected_objects(
     selected = tuple(dict.fromkeys(value.strip() for value in selected_objects))
     if not selected or any(not value for value in selected):
         raise SorOAuthError(
-            "oauth_selection_invalid",
+            SorOAuthFailure.OAUTH_SELECTION_INVALID,
             "Select at least one vendor object before authorization.",
         )
     available = {stream.key for stream in manifest.streams}
     unknown = set(selected) - available
     if unknown:
         raise SorOAuthError(
-            "oauth_selection_invalid",
+            SorOAuthFailure.OAUTH_SELECTION_INVALID,
             "Authorization selected an unsupported vendor object.",
         )
     return selected
@@ -1065,7 +1146,7 @@ def _requested_scopes(
 
 def _granted_scopes(
     *,
-    tokens: dict[str, object],
+    tokens: Mapping[str, JsonValue],
     context: _AuthorizationContext,
 ) -> list[str]:
     listed = tokens.get("scopes")
@@ -1101,7 +1182,7 @@ def normalize_sor_instance_origin(
         or parsed.fragment
     ):
         raise SorOAuthError(
-            "oauth_instance_origin_invalid",
+            SorOAuthFailure.OAUTH_INSTANCE_ORIGIN_INVALID,
             "The configured or provider-returned account origin is untrusted.",
         )
     origin = f"https://{host}"
@@ -1114,7 +1195,7 @@ def normalize_sor_instance_origin(
     )
     if not trusted:
         raise SorOAuthError(
-            "oauth_instance_origin_invalid",
+            SorOAuthFailure.OAUTH_INSTANCE_ORIGIN_INVALID,
             "The configured or provider-returned account origin is untrusted.",
         )
     return origin

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import UUID
 
 from absurd_sdk import AsyncTaskContext
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -54,17 +54,28 @@ from eylo.products.campaigns.models import (
 CONTACT_WORK_POLL_SECONDS = 5.0
 
 
-@dataclass(frozen=True, slots=True)
-class _ContactScope:
-    contact: ContactsModel
-    campaigns: tuple[CampaignModel, ...]
-    campaign_contacts: tuple[CampaignContactModel, ...]
-    attempts: tuple[CampaignAttemptModel, ...]
-    calls: tuple[TelephonyCallModel, ...]
-    voice_sessions: tuple[VoiceSessionModel, ...]
-    conversations: tuple[ConversationsModel, ...]
-    participants: tuple[ParticipantsModel, ...]
-    user_sessions: tuple[UserSessionModel, ...]
+class _ContactScope(BaseModel):
+    """Locked ORM graph; preserve row identity and never serialize its PII."""
+
+    model_config = ConfigDict(
+        frozen=True,
+        strict=True,
+        extra="forbid",
+        arbitrary_types_allowed=True,
+        hide_input_in_errors=True,
+    )
+
+    contact: ContactsModel = Field(repr=False, exclude=True)
+    campaigns: tuple[CampaignModel, ...] = Field(repr=False, exclude=True)
+    campaign_contacts: tuple[CampaignContactModel, ...] = Field(
+        repr=False, exclude=True
+    )
+    attempts: tuple[CampaignAttemptModel, ...] = Field(repr=False, exclude=True)
+    calls: tuple[TelephonyCallModel, ...] = Field(repr=False, exclude=True)
+    voice_sessions: tuple[VoiceSessionModel, ...] = Field(repr=False, exclude=True)
+    conversations: tuple[ConversationsModel, ...] = Field(repr=False, exclude=True)
+    participants: tuple[ParticipantsModel, ...] = Field(repr=False, exclude=True)
+    user_sessions: tuple[UserSessionModel, ...] = Field(repr=False, exclude=True)
 
 
 class _ContactGraphChanged(Exception):

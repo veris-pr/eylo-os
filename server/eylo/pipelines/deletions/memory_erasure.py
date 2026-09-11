@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Callable
 from uuid import UUID
 
-from sqlalchemy import delete, select
+from pydantic import BaseModel, ConfigDict
+from sqlalchemy import ColumnElement, delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.contracts.memory import MemoryLevel, MemoryScope
@@ -25,9 +26,10 @@ class MemoryOwnerGraphChanged(Exception):
     """A reconciliation generation appeared while its owner was being erased."""
 
 
-@dataclass(frozen=True, slots=True)
-class MemoryOwnerErasure:
+class MemoryOwnerErasure(BaseModel):
     """IDs erased for one exact Memory owner partition."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
     fact_ids: frozenset[UUID]
     reconciliation_job_ids: frozenset[UUID]
@@ -139,8 +141,19 @@ async def erase_memory_owner(
     )
 
 
-def _partition_predicates(scope: MemoryScope):
-    def predicates(model) -> tuple:
+type _PartitionModel = type[
+    MemoryReconciliationCursorModel
+    | MemoryReconciliationJobModel
+    | MemoryRelationshipModel
+]
+type _OwnerModel = type[MemoryModel | MemoryChangeModel]
+type _Predicates = tuple[ColumnElement[bool], ...]
+
+
+def _partition_predicates(
+    scope: MemoryScope,
+) -> Callable[[_PartitionModel], _Predicates]:
+    def predicates(model: _PartitionModel) -> _Predicates:
         return (
             model.organization_id == scope.organization_id,
             model.scope_level == scope.level,
@@ -150,18 +163,17 @@ def _partition_predicates(scope: MemoryScope):
     return predicates
 
 
-def _owner_predicates(scope: MemoryScope):
-    owner_field = {
-        MemoryLevel.AGENT: "agent_id",
-        MemoryLevel.USER: "contact_id",
-        MemoryLevel.CONVERSATION: "conversation_id",
-    }[scope.level]
-
-    def predicates(model) -> tuple:
+def _owner_predicates(scope: MemoryScope) -> Callable[[_OwnerModel], _Predicates]:
+    def predicates(model: _OwnerModel) -> _Predicates:
+        owner_column = {
+            MemoryLevel.AGENT: model.agent_id,
+            MemoryLevel.USER: model.contact_id,
+            MemoryLevel.CONVERSATION: model.conversation_id,
+        }[scope.level]
         return (
             model.organization_id == scope.organization_id,
             model.scope_level == scope.level,
-            getattr(model, owner_field) == scope.owner_id,
+            owner_column == scope.owner_id,
         )
 
     return predicates

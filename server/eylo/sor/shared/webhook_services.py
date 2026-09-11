@@ -7,10 +7,11 @@ import json
 import secrets
 import uuid
 from collections.abc import Sequence
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict, Field, InstanceOf
+from pydantic.json_schema import SkipJsonSchema
 from sqlalchemy import case, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import CursorResult
@@ -47,28 +48,36 @@ SOR_WEBHOOK_RENEWAL_MARGIN = timedelta(days=7)
 SOR_WEBHOOK_SUBSCRIPTION_ID_MAX_BYTES = 32_768
 
 
-@dataclass(frozen=True, slots=True)
-class SorWebhookSubscriptionPlan:
+class SorWebhookSubscriptionPlan(BaseModel):
     """One claimed vendor operation whose network I/O must run after commit."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     operation: SorWebhookSubscriptionState
     vendor_key: str
     expected_config_revision: int
     current: SorWebhookSubscription | None = None
-    endpoint_token: str | None = None
+    endpoint_token: str | None = Field(default=None, repr=False, exclude=True)
 
 
-@dataclass(frozen=True, slots=True)
-class SorAppWebhookAuthority:
+class SorAppWebhookAuthority(BaseModel):
     """Current connector authority for one signed app-level delivery."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     organization_id: UUID
     connector_id: UUID
     vendor_key: str
     vendor_account_external_id: str | None
-    signing_secret: str
+    signing_secret: str = Field(repr=False, exclude=True)
     signing_secret_revision: int
-    sources: tuple[SorSourceModel, ...]
+    sources: SkipJsonSchema[tuple[InstanceOf[SorSourceModel], ...]] = Field(
+        repr=False, exclude=True
+    )
 
 
 class SorWebhookService:

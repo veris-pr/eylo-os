@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict, Field, InstanceOf
+from pydantic.json_schema import SkipJsonSchema
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +15,11 @@ from eylo.sor.shared.contracts import SorProfile
 from eylo.sor.shared.models import SorRecordModel, SorSourceModel
 from eylo.sor.shared.reads import SorReadNotFoundError, resolve_reference_labels
 from eylo.sor.shared.repositories import SorRepository
+from eylo.sor.support.contracts import (
+    SupportMessageDirection,
+    SupportMessageVisibility,
+    SupportSlaState,
+)
 from eylo.sor.support.models import (
     SupportAttachmentModel,
     SupportMessageModel,
@@ -26,14 +32,17 @@ SUPPORT_TICKET_ATTACHMENT_LIMIT = 250
 SUPPORT_TICKET_SLA_METRIC_LIMIT = 100
 
 
-@dataclass(frozen=True, slots=True)
-class SupportTicketMessageAudit:
+class SupportTicketMessageAudit(BaseModel):
     """One bounded public reply or private note in source chronology."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     record_id: UUID
     external_id: str
-    visibility: str
-    direction: str | None
+    visibility: SupportMessageVisibility
+    direction: SupportMessageDirection | None
     author_external_id: str | None
     author_name: str | None
     text: str
@@ -44,9 +53,12 @@ class SupportTicketMessageAudit:
     source_url: str | None
 
 
-@dataclass(frozen=True, slots=True)
-class SupportTicketAttachmentAudit:
+class SupportTicketAttachmentAudit(BaseModel):
     """One bounded source-owned attachment metadata record."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     record_id: UUID
     external_id: str
@@ -57,26 +69,32 @@ class SupportTicketAttachmentAudit:
     source_url: str | None
 
 
-@dataclass(frozen=True, slots=True)
-class SupportTicketSlaMetricAudit:
+class SupportTicketSlaMetricAudit(BaseModel):
     """One source-supplied SLA measurement without inferred values."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     record_id: UUID
     metric: str
     value: Decimal | None
     unit: str | None
     native_state: str | None
-    normalized_state: str | None
+    normalized_state: SupportSlaState | None
     target_at: datetime | None
     achieved_at: datetime | None
     breached_at: datetime | None
 
 
-@dataclass(frozen=True, slots=True)
-class SupportTicketAuditContext:
+class SupportTicketAuditContext(BaseModel):
     """Ticket-owned audit data plus source selection facts for availability."""
 
-    source: SorSourceModel
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    source: SkipJsonSchema[InstanceOf[SorSourceModel]] = Field(repr=False, exclude=True)
     selected_entities: frozenset[str]
     messages_truncated: bool
     messages: tuple[SupportTicketMessageAudit, ...]
@@ -223,8 +241,12 @@ class SupportTicketAuditService:
             SupportTicketMessageAudit(
                 record_id=record.id,
                 external_id=record.vendor_external_id,
-                visibility=message.visibility,
-                direction=message.direction,
+                visibility=SupportMessageVisibility(message.visibility),
+                direction=(
+                    SupportMessageDirection(message.direction)
+                    if message.direction is not None
+                    else None
+                ),
                 author_external_id=message.author_external_id,
                 author_name=(
                     author_labels.get((source_id, "agent", message.author_external_id))
@@ -341,7 +363,11 @@ class SupportTicketAuditService:
                 value=metric.value,
                 unit=metric.unit,
                 native_state=metric.native_state,
-                normalized_state=metric.normalized_state,
+                normalized_state=(
+                    SupportSlaState(metric.normalized_state)
+                    if metric.normalized_state is not None
+                    else None
+                ),
                 target_at=metric.target_at,
                 achieved_at=metric.achieved_at,
                 breached_at=metric.breached_at,

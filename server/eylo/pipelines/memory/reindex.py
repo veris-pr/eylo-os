@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from eylo.common.contracts.embedding import (
     EmbeddingSpace,
@@ -32,13 +33,22 @@ from eylo.pipelines.memory.reindex_durable_execution import spawn_memory_reindex
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True, slots=True)
-class MemoryReindexInspection:
-    index: MemoryIndexModel | None
+class MemoryReindexInspection(BaseModel):
+    """Inspection values preserve ORM identity; snapshots omit those live rows."""
+
+    model_config = ConfigDict(
+        frozen=True,
+        strict=True,
+        extra="forbid",
+        arbitrary_types_allowed=True,
+        hide_input_in_errors=True,
+    )
+
+    index: MemoryIndexModel | None = Field(repr=False, exclude=True)
     active_space: EmbeddingSpace | None
     target_space: EmbeddingSpace | None
     available_space: EmbeddingSpace | None
-    latest_job: MemoryReindexJobModel | None
+    latest_job: MemoryReindexJobModel | None = Field(repr=False, exclude=True)
 
 
 async def inspect_memory_reindex(

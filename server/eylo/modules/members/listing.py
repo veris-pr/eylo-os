@@ -1,7 +1,8 @@
 """Typed member collection query owned by the members domain."""
 
-from dataclasses import dataclass
 from enum import StrEnum
+
+from pydantic import BaseModel, ConfigDict
 
 from eylo.modules.members.models import MemberStatus
 
@@ -19,8 +20,17 @@ class MemberSortDirection(StrEnum):
     DESC = "desc"
 
 
-@dataclass(frozen=True)
-class MemberListQuery:
+class MemberListQuery(BaseModel):
+    """Validated filters; organization authority and pagination stay with the caller."""
+
+    model_config = ConfigDict(
+        frozen=True,
+        strict=True,
+        extra="forbid",
+        validate_default=True,
+        hide_input_in_errors=True,
+    )
+
     search: str | None = None
     statuses: tuple[MemberStatus, ...] = ()
     sort_by: MemberSortField = MemberSortField.CREATED_AT

@@ -5,16 +5,19 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Protocol
 from urllib.parse import urlencode, urljoin
+
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from eylo.common.http_egress import (
     DEFAULT_RESPONSE_BODY_BYTES,
     HttpDestinationPolicy,
+    HttpEgressErrorCode,
     HttpEgressPolicyError,
     HttpEgressRequest,
     HttpEgressResponse,
+    HttpMethod,
     HttpOrigin,
     HttpRoutePolicy,
     OriginBoundHeaders,
@@ -26,6 +29,7 @@ from eylo.sor.shared.contracts import (
     SorVendorErrorCode,
     SorVendorOperationError,
 )
+from eylo.sor.shared.json_values import SorJsonValue, require_json_value
 
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _SAFE_TRANSPORT_RETRY_DELAYS = (0.25, 1.0)
@@ -64,12 +68,12 @@ def _transport_error(
             recovery=SorRecoveryPolicy.RETRY,
         )
     code = {
-        "dns_resolution_failed": SorVendorErrorCode.VENDOR_DNS_UNAVAILABLE,
-        "transport_failed": SorVendorErrorCode.VENDOR_TRANSPORT_FAILED,
+        HttpEgressErrorCode.DNS_RESOLUTION_FAILED: SorVendorErrorCode.VENDOR_DNS_UNAVAILABLE,
+        HttpEgressErrorCode.TRANSPORT_FAILED: SorVendorErrorCode.VENDOR_TRANSPORT_FAILED,
     }.get(error.code, SorVendorErrorCode.VENDOR_EGRESS_REJECTED)
     summary = (
         "The vendor connection failed before a response was received."
-        if error.code == "transport_failed"
+        if error.code == HttpEgressErrorCode.TRANSPORT_FAILED
         else "The vendor request was refused by the egress boundary."
     )
     return SorVendorTransportError(
@@ -77,19 +81,26 @@ def _transport_error(
         summary,
         recovery=(
             SorRecoveryPolicy.RETRY
-            if error.code in {"dns_resolution_failed", "transport_failed"}
+            if error.code
+            in {
+                HttpEgressErrorCode.DNS_RESOLUTION_FAILED,
+                HttpEgressErrorCode.TRANSPORT_FAILED,
+            }
             else SorRecoveryPolicy.TERMINAL
         ),
     )
 
 
-@dataclass(frozen=True, slots=True)
-class SorJsonResponse:
-    """One bounded JSON response including safe request-correlation headers."""
+class SorJsonResponse(BaseModel):
+    """Bounded vendor JSON; bodies and raw headers stay out of snapshots."""
 
-    status_code: int
-    data: Any = field(repr=False)
-    headers: tuple[tuple[str, str], ...] = ()
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    status_code: int = Field(ge=100, le=599)
+    data: SorJsonValue = Field(repr=False, exclude=True)
+    headers: tuple[tuple[str, str], ...] = Field(default=(), repr=False, exclude=True)
 
     @property
     def ok(self) -> bool:
@@ -100,13 +111,16 @@ class SorJsonResponse:
         return tuple(value for key, value in self.headers if key.casefold() == expected)
 
 
-@dataclass(frozen=True, slots=True)
-class SorBinaryResponse:
-    """One bounded binary response with no request or credential material."""
+class SorBinaryResponse(BaseModel):
+    """Bounded vendor bytes; adapters explicitly consume content and raw headers."""
 
-    status_code: int
-    content: bytes = field(repr=False)
-    headers: tuple[tuple[str, str], ...] = ()
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    status_code: int = Field(ge=100, le=599)
+    content: bytes = Field(repr=False, exclude=True)
+    headers: tuple[tuple[str, str], ...] = Field(default=(), repr=False, exclude=True)
 
     @property
     def ok(self) -> bool:
@@ -217,7 +231,7 @@ class SorJsonHttpClient:
                 origin, target_path = parse_https_target(next_url)
                 if origin.port != 443:
                     raise HttpEgressPolicyError(
-                        "port_not_allowed",
+                        HttpEgressErrorCode.PORT_NOT_ALLOWED,
                         "Vendor downloads require the default HTTPS port.",
                     )
                 policy = HttpDestinationPolicy(
@@ -227,7 +241,7 @@ class SorJsonHttpClient:
                     )
                 )
                 request = HttpEgressRequest(
-                    method="GET",
+                    method=HttpMethod.GET,
                     url=next_url,
                     policy=policy,
                     headers={
@@ -295,7 +309,7 @@ class SorJsonHttpClient:
             url = f"{url}?{urlencode(pairs)}"
         try:
             return HttpEgressRequest(
-                method="GET",
+                method=HttpMethod.GET,
                 url=url,
                 policy=self._policy,
                 headers={
@@ -457,7 +471,7 @@ def _validated_default_headers(
     return validated
 
 
-def _parse_json(response: HttpEgressResponse) -> object | None:
+def _parse_json(response: HttpEgressResponse) -> JsonValue:
     if not response.body:
         return None
     media_types = response.header_values("content-type")
@@ -470,7 +484,7 @@ def _parse_json(response: HttpEgressResponse) -> object | None:
                 recovery=SorRecoveryPolicy.TERMINAL,
             )
     try:
-        return json.loads(response.body)
+        return require_json_value(json.loads(response.body))
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
         raise SorVendorTransportError(
             SorVendorErrorCode.VENDOR_RESPONSE_INVALID,

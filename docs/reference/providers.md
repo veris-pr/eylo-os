@@ -26,6 +26,62 @@ Catalog membership means the implementation carries a configuration and
 adapter path. It does not mean every vendor has been live-tested in the current
 deployment. Verification state is per organization configuration.
 
+### Telephony runtime contracts
+
+Carrier config and call routing use assignment-validated Pydantic models: routing
+is enriched after authentication, and Vonage applies its media format during
+adapter initialization. Media frames, operation profiles and control outcomes are
+frozen values. SDK clients and transport managers remain ordinary resource owners.
+Resolved credentials, raw audio, opener text and session tokens are excluded from
+their enclosing runtime snapshots; adapters still access them directly to execute.
+
+Call direction, stream-token requirements, operation support and control failures
+have socket-owned enums. Platform call/event enums are translated at the pipeline
+boundary. These declarations do not change grants or signed-routing enforcement.
+
+Media sequence values retain carrier string/integer representations rather than
+assuming one wire type. [Twilio's Media Streams reference](https://www.twilio.com/docs/voice/media-streams/websocket-messages)
+shows string sequence numbers. [Exotel's VoiceBot reference](https://docs.exotel.com/exotel-agentstream/voicebot-applet)
+shows numeric envelope sequence numbers, while its field table also describes
+strings. The Exotel adapter reads the envelope first and retains the older nested
+sequence fallback. This metadata does not introduce an ordering policy.
+
+### Voice configuration and verification contracts
+
+Voice catalog options use frozen Pydantic values. An owning input-mode enum
+distinguishes fixed choices from account-specific custom values; the onboarding
+API still projects its existing `allow_custom` field. Catalog labels, option
+ordering and provider-owned identifiers are unchanged.
+
+Verification receipts retain the voice kind and its provider enum together.
+Identical vendor spellings in STT and TTS are decoded using the kind, not whichever
+enum happens to match first. Successful persisted receipts require a positive
+revision and timezone-aware verification timestamp. External checks remain outside
+DB transactions; the final write targets the revision originally checked.
+
+Speechmatics onboarding stores diarization as a toggle. The shared inference
+contract retains that boolean JSON through `SpeechOptionState` and also accepts
+the named single-stream modes through `SpeechDiarizationMode`. The adapter maps
+the toggle explicitly to its own `SpeechmaticsDiarization` enum before building
+the native request. Only `none` and `speaker` are supported by this mono-stream
+adapter; channel modes require a different transport path. See the current
+[Speechmatics Realtime API](https://docs.speechmatics.com/api-ref/realtime-transcription-websocket).
+
+### Shared PCM frame contracts
+
+`sockets/voice/audio/buffer.py` owns frozen Pydantic `AudioFrame` values, not
+vendor SDK frames. PCM16 bytes must exactly match the channel/sample dimensions;
+rates and channel counts are positive integers, and empty frames have zero
+samples. Raw audio and optional JSON metadata are excluded from snapshots.
+Geometry is immutable; the metadata sidecar remains separately mutable.
+
+`AudioByteStream` owns mutable buffering with a fixed, positive chunk size.
+Transport writes may split a sample across chunks; complete frames preserve the
+original bytes. A final flush refuses an incomplete interleaved sample without
+clearing the tail, rather than padding or discarding it. Deepgram/Speechmatics
+adapters keep frame-validation failures inside their existing send-failure
+boundary. Buffer/resampler resource owners remain ordinary classes.
+
 ### Murf WebSocket contracts
 
 Murf's adapter uses private typed handshake, voice, buffering, text and clear

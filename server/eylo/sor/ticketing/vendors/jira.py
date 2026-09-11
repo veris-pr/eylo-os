@@ -6,7 +6,6 @@ import asyncio
 import json
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
@@ -14,6 +13,7 @@ from http import HTTPStatus
 
 import jwt
 from jwt.exceptions import PyJWTError
+from pydantic import BaseModel, ConfigDict
 
 from eylo.modules.connections.domain import ConnectionAuthKind
 from eylo.sor.runtime.http import SorHttpTransport, SorJsonHttpClient, SorJsonResponse
@@ -57,6 +57,7 @@ from eylo.sor.shared.contracts import (
     SorWebhookSubscription,
     SorWebhookVerificationError,
 )
+from eylo.sor.shared.json_values import SorJsonValue, require_json_value
 from eylo.sor.ticketing.contracts import (
     TicketingAssignCommandPayload,
     TicketingComment,
@@ -245,7 +246,7 @@ JIRA_MANIFEST = SorAdapterCapabilityManifest(
                 set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values()) - {stream_key}
             ),
             relationship_targets=SorRelationshipTargets(
-                _RELATIONSHIP_TARGETS.get(stream_key, {})
+                by_role=_RELATIONSHIP_TARGETS.get(stream_key, {}),
             ),
         )
         for stream_key, entity in _STREAM_ENTITY.items()
@@ -319,23 +320,51 @@ _SCHEMA_FIELDS = {
     JiraStream.ISSUES: (
         _field("key", "Key", SorFieldDataType.TEXT, nullable=False),
         _field("title", "Title", SorFieldDataType.TEXT, nullable=False, writable=True),
-        _field("normalized_description", "Description", SorFieldDataType.TEXT, writable=True),
+        _field(
+            "normalized_description",
+            "Description",
+            SorFieldDataType.TEXT,
+            writable=True,
+        ),
         _field(
             "source_description",
             "Source description",
             SorFieldDataType.BOUNDED_JSON,
             description="The original Atlassian Document Format value retained for audit.",
         ),
-        _field("issue_type", "Issue type", SorFieldDataType.TEXT, nullable=False, writable=True),
+        _field(
+            "issue_type",
+            "Issue type",
+            SorFieldDataType.TEXT,
+            nullable=False,
+            writable=True,
+        ),
         _field("native_status", "Status", SorFieldDataType.TEXT),
         _field("normalized_status", "Normalized status", SorFieldDataType.ENUM),
         _field("priority", "Priority", SorFieldDataType.TEXT, writable=True),
-        _field("project_external_id", "Project ID", SorFieldDataType.REFERENCE, writable=True),
-        _field("assignee_external_id", "Assignee ID", SorFieldDataType.REFERENCE, writable=True),
+        _field(
+            "project_external_id",
+            "Project ID",
+            SorFieldDataType.REFERENCE,
+            writable=True,
+        ),
+        _field(
+            "assignee_external_id",
+            "Assignee ID",
+            SorFieldDataType.REFERENCE,
+            writable=True,
+        ),
         _field("reporter_external_id", "Reporter ID", SorFieldDataType.REFERENCE),
         _field("estimate", "Estimate", SorFieldDataType.DECIMAL, writable=True),
-        _field("label_external_ids", "Labels", SorFieldDataType.STRING_ARRAY, writable=True),
-        _field("parent_external_id", "Parent issue ID", SorFieldDataType.REFERENCE, writable=True),
+        _field(
+            "label_external_ids", "Labels", SorFieldDataType.STRING_ARRAY, writable=True
+        ),
+        _field(
+            "parent_external_id",
+            "Parent issue ID",
+            SorFieldDataType.REFERENCE,
+            writable=True,
+        ),
         _field("due_date", "Due date", SorFieldDataType.DATE, writable=True),
         _field("completed_at", "Completed at", SorFieldDataType.TIMESTAMP),
     ),
@@ -376,7 +405,9 @@ _SCHEMA_FIELDS = {
         _field("active", "Active", SorFieldDataType.BOOLEAN),
     ),
     JiraStream.COMMENTS: (
-        _field("issue_external_id", "Issue ID", SorFieldDataType.REFERENCE, nullable=False),
+        _field(
+            "issue_external_id", "Issue ID", SorFieldDataType.REFERENCE, nullable=False
+        ),
         _field("author_external_id", "Author ID", SorFieldDataType.REFERENCE),
         _field("normalized_text", "Comment", SorFieldDataType.TEXT, nullable=False),
         _field("source_body", "Source body", SorFieldDataType.BOUNDED_JSON),
@@ -384,10 +415,30 @@ _SCHEMA_FIELDS = {
         _field("updated_at", "Updated at", SorFieldDataType.TIMESTAMP),
     ),
     JiraStream.ISSUE_RELATIONS: (
-        _field("issue_vendor_object_key", "Issue stream", SorFieldDataType.TEXT, nullable=False),
-        _field("from_issue_external_id", "From issue ID", SorFieldDataType.REFERENCE, nullable=False),
-        _field("to_issue_external_id", "To issue ID", SorFieldDataType.REFERENCE, nullable=False),
-        _field("canonical_kind", "Normalized relation", SorFieldDataType.ENUM, nullable=False),
+        _field(
+            "issue_vendor_object_key",
+            "Issue stream",
+            SorFieldDataType.TEXT,
+            nullable=False,
+        ),
+        _field(
+            "from_issue_external_id",
+            "From issue ID",
+            SorFieldDataType.REFERENCE,
+            nullable=False,
+        ),
+        _field(
+            "to_issue_external_id",
+            "To issue ID",
+            SorFieldDataType.REFERENCE,
+            nullable=False,
+        ),
+        _field(
+            "canonical_kind",
+            "Normalized relation",
+            SorFieldDataType.ENUM,
+            nullable=False,
+        ),
         _field("native_kind", "Source relation", SorFieldDataType.TEXT, nullable=False),
     ),
 }
@@ -428,8 +479,13 @@ _NORMALIZED_TO_JIRA_FIELD = {
 }
 
 
-@dataclass(frozen=True, slots=True)
-class _IssueCursor:
+class _IssueCursor(BaseModel):
+    """Jira issue-search position owned by the vendor cursor codec."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
     floor: datetime | None
     project_offset: int
     next_token: str | None
@@ -438,9 +494,12 @@ class _IssueCursor:
     completed: bool
 
 
-@dataclass(frozen=True, slots=True)
-class _CommentCursor:
+class _CommentCursor(BaseModel):
     """Resume missing comment ranges around Jira's embedded issue comments."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     project_offset: int
     next_issue_token: str | None
@@ -451,17 +510,23 @@ class _CommentCursor:
     current_project_is_last: bool
 
 
-@dataclass(frozen=True, slots=True)
-class _RelationCursor:
+class _RelationCursor(BaseModel):
     """Resume project-bounded Jira issue-link search pages."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     project_offset: int
     next_issue_token: str | None
 
 
-@dataclass(frozen=True, slots=True)
-class _SprintCursor:
+class _SprintCursor(BaseModel):
     """Resume Sprint extraction within stable issue-search pages."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     floor: datetime | None
     project_offset: int
@@ -472,9 +537,12 @@ class _SprintCursor:
     completed: bool
 
 
-@dataclass(frozen=True, slots=True)
-class _JiraIssueLinkSnapshot:
+class _JiraIssueLinkSnapshot(BaseModel):
     """Validated Jira link values shared by projection and mutation lookup."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     relation_id: str
     from_issue_external_id: str
@@ -3587,10 +3655,13 @@ def _string_tuple(value: object) -> tuple[str, ...]:
     return tuple(_string_list(value, field="Jira label IDs"))
 
 
-def _json_value(value: object) -> object | None:
-    if value is None or isinstance(value, (str, int, float, bool, list, dict)):
-        return value
-    raise _invalid_response("Jira source content is not JSON-compatible.")
+def _json_value(value: object) -> SorJsonValue:
+    try:
+        return require_json_value(value)
+    except ValueError as error:
+        raise _invalid_response(
+            "Jira source content is not JSON-compatible."
+        ) from error
 
 
 def _datetime_value(value: datetime | None) -> str | None:

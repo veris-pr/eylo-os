@@ -8,6 +8,7 @@ from ...contracts import VendorToolContext
 from ...registry import curated_tool
 from .definition import EVENT_READ, EVENT_WRITE, PROJECT_READ, vendor
 from .schemas import (
+    ALL_PROJECTS,
     DEFAULT_PAGE_SIZE,
     EVENT_RESPONSE,
     FILTER_QUERIES,
@@ -54,6 +55,13 @@ class ListIssuesInput(BaseModel):
         description="Use next_cursor with the same project, filters and limit.",
     )
 
+    @field_validator("project")
+    @classmethod
+    def require_single_project(cls, value: str) -> str:
+        if value == ALL_PROJECTS:
+            raise ValueError("A single project slug is required, not all projects.")
+        return value
+
     @field_validator("state", mode="before")
     @classmethod
     def normalize_state(cls, value: object) -> object:
@@ -61,11 +69,17 @@ class ListIssuesInput(BaseModel):
 
 
 class GetIssueInput(BaseModel):
+    organization: Slug = Field(
+        description="Sentry organization slug from list_issues or the issue URL; never infer it from the issue ID."
+    )
     issue_id: IssueId
     include_stack_trace: StrictBool = True
 
 
 class ChangeIssueInput(BaseModel):
+    organization: Slug = Field(
+        description="Sentry organization slug from list_issues or the issue URL; never infer it from the issue ID."
+    )
     issue_id: IssueId
 
 
@@ -82,26 +96,30 @@ async def list_issues(
     payload: ListIssuesInput, ctx: VendorToolContext
 ) -> dict[str, JsonValue]:
     query = IssuesQuery(
+        project=payload.project,
         query=" ".join(
             term for term in (FILTER_QUERIES[payload.state], payload.text) if term
         ),
         limit=payload.limit,
         cursor=payload.cursor,
     )
-    path = f"/projects/{payload.organization}/{payload.project}/issues/"
+    path = f"/organizations/{payload.organization}/issues/"
     response = await ctx.read(
         path, query=query.model_dump(mode="json", by_alias=True, exclude_none=True)
     )
     issues = parse_response(response, ISSUES_RESPONSE)
     if len(issues) > payload.limit or any(
-        issue.project is not None and issue.project.slug != payload.project
+        issue.project is None or issue.project.slug != payload.project
         for issue in issues
     ):
         invalid_response()
     continuation = next_cursor(response, path=path, previous=payload.cursor)
     return IssuesView(
+        organization=payload.organization,
         project=payload.project,
-        issues=[_issue_view(issue) for issue in issues],
+        issues=[
+            _issue_view(issue, organization=payload.organization) for issue in issues
+        ],
         count=len(issues),
         next_cursor=continuation,
     ).model_dump(mode="json")
@@ -119,19 +137,14 @@ async def list_issues(
 async def get_issue(
     payload: GetIssueInput, ctx: VendorToolContext
 ) -> dict[str, JsonValue]:
-    # Existing ID-only tools retain Sentry's served legacy routes. New organization-
-    # scoped routes require a deliberate public-input migration, not a guessed org.
-    issue = parse_response(
-        await ctx.read(f"/issues/{payload.issue_id}/"), ISSUE_RESPONSE
-    )
+    path = f"/organizations/{payload.organization}/issues/{payload.issue_id}/"
+    issue = parse_response(await ctx.read(path), ISSUE_RESPONSE)
     if issue.id != payload.issue_id:
         invalid_response()
-    view = _issue_view(issue)
+    view = _issue_view(issue, organization=payload.organization)
     if not payload.include_stack_trace:
         return view.model_dump(mode="json")
-    event = parse_response(
-        await ctx.read(f"/issues/{issue.id}/events/latest/"), EVENT_RESPONSE
-    )
+    event = parse_response(await ctx.read(f"{path}events/latest/"), EVENT_RESPONSE)
     if event.group_id != issue.id:
         invalid_response()
     exception = _exception(event)
@@ -182,7 +195,7 @@ async def _change_issue(
     request = ChangeIssueRequest(status=status)
     issue = parse_response(
         await ctx.mutate(
-            f"/issues/{payload.issue_id}/",
+            f"/organizations/{payload.organization}/issues/{payload.issue_id}/",
             method="PUT",
             json=request.model_dump(mode="json"),
         ),
@@ -191,7 +204,10 @@ async def _change_issue(
     if issue.id != payload.issue_id or issue.status != status:
         invalid_response()
     return ChangeIssueView(
-        issue_id=issue.id, status=issue.status, web_link=issue.permalink
+        organization=payload.organization,
+        issue_id=issue.id,
+        status=issue.status,
+        web_link=issue.permalink,
     ).model_dump(mode="json")
 
 
@@ -239,8 +255,9 @@ def _source_context(context: list[ContextPair] | None) -> list[SourceLine] | Non
     return result
 
 
-def _issue_view(issue: Issue) -> IssueView:
+def _issue_view(issue: Issue, *, organization: str) -> IssueView:
     return IssueView(
+        organization=organization,
         id=issue.id,
         title=issue.title,
         culprit=issue.culprit,

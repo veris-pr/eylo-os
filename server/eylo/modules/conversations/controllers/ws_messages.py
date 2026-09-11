@@ -39,6 +39,7 @@ from eylo.modules.conversations.schemas.messages import (
     MessageKind,
 )
 from eylo.modules.conversations.schemas.participants import ParticipantKind
+from eylo.modules.conversations.schemas.run_context import ConversationRunContext
 from eylo.modules.conversations.schemas.websocket import (
     WsMessageEvent,
     WsMessageFeedbackEvent,
@@ -381,12 +382,11 @@ class MessageWsController:
                     ),
                     agent_id=agent_participant.agent_id,
                     agent_revision=agent_participant.agent_revision,
-                    context_manifest={
-                        "kind": "conversation_message",
-                        "conversation_id": str(conversation_indb.id),
-                        "channel": ctx.channel.value,
-                        "is_voice": ctx.is_voice,
-                    },
+                    context_manifest=ConversationRunContext(
+                        conversation_id=conversation_indb.id,
+                        channel=ctx.channel,
+                        is_voice=ctx.is_voice,
+                    ).model_dump(mode="json"),
                     goal=goal or "Handle the submitted conversation message.",
                     idempotency_key=_message_idempotency_key(
                         conversation_id=conversation_indb.id,

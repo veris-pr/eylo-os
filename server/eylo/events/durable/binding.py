@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from eylo.common.database import start_transaction
 from eylo.durable_runtime import PlatformDurableRuntime
-from eylo.events.durable.domain import EventDeliveryState
+from eylo.events.durable.domain import EventDeliveryState, EventDeliveryTaskParams
 from eylo.events.durable.models import EventDeliveryModel
 from eylo.events.durable.service import (
     DurableEventConflict,
@@ -32,15 +32,6 @@ class EventDeliverySpawnBatch(BaseModel):
 
     task_ids: tuple[UUID, ...]
     failures: tuple[tuple[UUID, str], ...]
-
-
-class _DeliveryIdentity(BaseModel):
-    """Detached delivery ownership, never an ORM row or request session."""
-
-    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
-
-    organization_id: UUID
-    delivery_id: UUID
 
 
 async def spawn_event_delivery(
@@ -81,7 +72,9 @@ async def spawn_event_deliveries(
         )
     return await _spawn_batch(
         tuple(
-            _DeliveryIdentity(organization_id=organization_id, delivery_id=delivery_id)
+            EventDeliveryTaskParams(
+                organization_id=organization_id, delivery_id=delivery_id
+            )
             for delivery_id in delivery_ids
         )
     )
@@ -96,7 +89,9 @@ async def spawn_unbound_event_deliveries(
         raise ValueError("Event delivery recovery limit must be positive.")
     async with start_transaction(ro=True) as session:
         rows = tuple(
-            _DeliveryIdentity(organization_id=organization_id, delivery_id=delivery_id)
+            EventDeliveryTaskParams(
+                organization_id=organization_id, delivery_id=delivery_id
+            )
             for organization_id, delivery_id in (
                 await session.execute(
                     select(
@@ -123,7 +118,7 @@ async def spawn_unbound_event_deliveries(
 
 
 async def _spawn_batch(
-    rows: tuple[_DeliveryIdentity, ...],
+    rows: tuple[EventDeliveryTaskParams, ...],
 ) -> EventDeliverySpawnBatch:
     if not rows:
         return EventDeliverySpawnBatch(task_ids=(), failures=())
@@ -177,10 +172,9 @@ async def _spawn_with_runtime(
 
     task_id = await runtime.spawn_task(
         name=EVENT_DELIVERY_WORKFLOW,
-        params={
-            "organization_id": str(organization_id),
-            "delivery_id": str(delivery_id),
-        },
+        params=EventDeliveryTaskParams(
+            organization_id=organization_id, delivery_id=delivery_id
+        ).model_dump(mode="json"),
         idempotency_key=(
             f"{EVENT_DELIVERY_IDEMPOTENCY_PREFIX}:{organization_id}:{delivery_id}"
         ),

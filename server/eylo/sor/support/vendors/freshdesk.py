@@ -5,13 +5,14 @@ from __future__ import annotations
 import base64
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from enum import IntEnum, StrEnum
 from html.parser import HTMLParser
 from http import HTTPStatus
 from urllib.parse import parse_qsl, urlencode, urlsplit
+
+from pydantic import BaseModel, ConfigDict
 
 from eylo.modules.connections.domain import ConnectionAuthKind
 from eylo.sor.runtime.http import SorHttpTransport, SorJsonHttpClient, SorJsonResponse
@@ -42,6 +43,7 @@ from eylo.sor.shared.contracts import (
     SorWebhookSignal,
     SorWebhookSubscription,
 )
+from eylo.sor.shared.json_values import SorJsonValue, require_json_value
 from eylo.sor.support.contracts import (
     SupportAgent,
     SupportAgentPayload,
@@ -162,9 +164,7 @@ _RELATIONSHIP_TARGETS = {
     FreshdeskStream.CONVERSATIONS: {
         SorRelationshipRole.TICKET: FreshdeskStream.TICKETS
     },
-    FreshdeskStream.SLA_METRICS: {
-        SorRelationshipRole.TICKET: FreshdeskStream.TICKETS
-    },
+    FreshdeskStream.SLA_METRICS: {SorRelationshipRole.TICKET: FreshdeskStream.TICKETS},
     FreshdeskStream.ATTACHMENTS: {
         SorRelationshipRole.TICKET: FreshdeskStream.TICKETS,
         SorRelationshipRole.MESSAGE: FreshdeskStream.CONVERSATIONS,
@@ -287,7 +287,7 @@ FRESHDESK_MANIFEST = SorAdapterCapabilityManifest(
                 set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values()) - {stream_key}
             ),
             relationship_targets=SorRelationshipTargets(
-                _RELATIONSHIP_TARGETS.get(stream_key, {})
+                by_role=_RELATIONSHIP_TARGETS.get(stream_key, {}),
             ),
         )
         for stream_key, entity in _STREAM_ENTITY.items()
@@ -342,11 +342,33 @@ def _field(
 _SCHEMA_FIELDS = {
     FreshdeskStream.TICKETS: (
         _field("subject", "Subject", SorFieldDataType.TEXT, writable=True),
-        _field("normalized_description", "Description", SorFieldDataType.TEXT, writable=True),
-        _field("requester_external_id", "Requester ID", SorFieldDataType.REFERENCE, writable=True),
-        _field("assignee_external_id", "Assignee ID", SorFieldDataType.REFERENCE, writable=True),
-        _field("group_external_id", "Group ID", SorFieldDataType.REFERENCE, writable=True),
-        _field("inbox_external_id", "Email config ID", SorFieldDataType.REFERENCE, writable=True),
+        _field(
+            "normalized_description",
+            "Description",
+            SorFieldDataType.TEXT,
+            writable=True,
+        ),
+        _field(
+            "requester_external_id",
+            "Requester ID",
+            SorFieldDataType.REFERENCE,
+            writable=True,
+        ),
+        _field(
+            "assignee_external_id",
+            "Assignee ID",
+            SorFieldDataType.REFERENCE,
+            writable=True,
+        ),
+        _field(
+            "group_external_id", "Group ID", SorFieldDataType.REFERENCE, writable=True
+        ),
+        _field(
+            "inbox_external_id",
+            "Email config ID",
+            SorFieldDataType.REFERENCE,
+            writable=True,
+        ),
         _field(
             "native_status",
             "Status",
@@ -364,7 +386,9 @@ _SCHEMA_FIELDS = {
         ),
         _field("category", "Type", SorFieldDataType.TEXT, writable=True),
         _field("channel", "Source channel", SorFieldDataType.TEXT),
-        _field("tag_external_ids", "Tags", SorFieldDataType.STRING_ARRAY, writable=True),
+        _field(
+            "tag_external_ids", "Tags", SorFieldDataType.STRING_ARRAY, writable=True
+        ),
         _field("first_response_at", "First response", SorFieldDataType.TIMESTAMP),
         _field("resolved_at", "Resolved", SorFieldDataType.TIMESTAMP),
         _field("closed_at", "Closed", SorFieldDataType.TIMESTAMP),
@@ -374,7 +398,12 @@ _SCHEMA_FIELDS = {
         _field("name", "Name", SorFieldDataType.TEXT, writable=True),
         _field("primary_email", "Email", SorFieldDataType.TEXT, writable=True),
         _field("primary_phone", "Phone", SorFieldDataType.TEXT, writable=True),
-        _field("company_external_id", "Company ID", SorFieldDataType.REFERENCE, writable=True),
+        _field(
+            "company_external_id",
+            "Company ID",
+            SorFieldDataType.REFERENCE,
+            writable=True,
+        ),
         _field("active", "Active", SorFieldDataType.BOOLEAN, writable=True),
     ),
     FreshdeskStream.AGENTS: (
@@ -395,20 +424,34 @@ _SCHEMA_FIELDS = {
         _field("active", "Active", SorFieldDataType.BOOLEAN),
     ),
     FreshdeskStream.CONVERSATIONS: (
-        _field("ticket_external_id", "Ticket ID", SorFieldDataType.REFERENCE, nullable=False),
+        _field(
+            "ticket_external_id",
+            "Ticket ID",
+            SorFieldDataType.REFERENCE,
+            nullable=False,
+        ),
         _field("visibility", "Visibility", SorFieldDataType.ENUM, nullable=False),
         _field("direction", "Direction", SorFieldDataType.ENUM),
         _field("author_external_id", "Author ID", SorFieldDataType.REFERENCE),
         _field("normalized_text", "Message", SorFieldDataType.TEXT, nullable=False),
         _field("source_body", "Source body", SorFieldDataType.JSON),
         _field("body_format", "Body format", SorFieldDataType.TEXT),
-        _field("attachment_external_ids", "Attachment IDs", SorFieldDataType.STRING_ARRAY),
+        _field(
+            "attachment_external_ids", "Attachment IDs", SorFieldDataType.STRING_ARRAY
+        ),
         _field("created_at", "Created", SorFieldDataType.TIMESTAMP, nullable=False),
         _field("updated_at", "Updated", SorFieldDataType.TIMESTAMP),
     ),
-    FreshdeskStream.TAGS: (_field("name", "Name", SorFieldDataType.TEXT, nullable=False),),
+    FreshdeskStream.TAGS: (
+        _field("name", "Name", SorFieldDataType.TEXT, nullable=False),
+    ),
     FreshdeskStream.SLA_METRICS: (
-        _field("ticket_external_id", "Ticket ID", SorFieldDataType.REFERENCE, nullable=False),
+        _field(
+            "ticket_external_id",
+            "Ticket ID",
+            SorFieldDataType.REFERENCE,
+            nullable=False,
+        ),
         _field("metric", "Metric", SorFieldDataType.TEXT, nullable=False),
         _field("value", "Value", SorFieldDataType.DECIMAL),
         _field("unit", "Unit", SorFieldDataType.TEXT),
@@ -419,7 +462,12 @@ _SCHEMA_FIELDS = {
         _field("breached_at", "Breached", SorFieldDataType.TIMESTAMP),
     ),
     FreshdeskStream.ATTACHMENTS: (
-        _field("ticket_external_id", "Ticket ID", SorFieldDataType.REFERENCE, nullable=False),
+        _field(
+            "ticket_external_id",
+            "Ticket ID",
+            SorFieldDataType.REFERENCE,
+            nullable=False,
+        ),
         _field("message_external_id", "Message ID", SorFieldDataType.REFERENCE),
         _field("name", "Name", SorFieldDataType.TEXT, nullable=False),
         _field("content_type", "Content type", SorFieldDataType.TEXT),
@@ -429,26 +477,50 @@ _SCHEMA_FIELDS = {
 }
 
 _COMPANY_FIELDS = (
-    _field("name", "Name", SorFieldDataType.TEXT, nullable=False, group="Freshdesk company"),
-    _field("domains", "Domains", SorFieldDataType.STRING_ARRAY, group="Freshdesk company"),
-    _field("description", "Description", SorFieldDataType.TEXT, group="Freshdesk company"),
+    _field(
+        "name", "Name", SorFieldDataType.TEXT, nullable=False, group="Freshdesk company"
+    ),
+    _field(
+        "domains", "Domains", SorFieldDataType.STRING_ARRAY, group="Freshdesk company"
+    ),
+    _field(
+        "description", "Description", SorFieldDataType.TEXT, group="Freshdesk company"
+    ),
     _field("note", "Note", SorFieldDataType.TEXT, group="Freshdesk company"),
-    _field("health_score", "Health score", SorFieldDataType.TEXT, group="Freshdesk company"),
-    _field("account_tier", "Account tier", SorFieldDataType.TEXT, group="Freshdesk company"),
+    _field(
+        "health_score", "Health score", SorFieldDataType.TEXT, group="Freshdesk company"
+    ),
+    _field(
+        "account_tier", "Account tier", SorFieldDataType.TEXT, group="Freshdesk company"
+    ),
     _field("industry", "Industry", SorFieldDataType.TEXT, group="Freshdesk company"),
-    _field("created_at", "Created", SorFieldDataType.TIMESTAMP, group="Freshdesk company"),
-    _field("updated_at", "Updated", SorFieldDataType.TIMESTAMP, group="Freshdesk company"),
+    _field(
+        "created_at", "Created", SorFieldDataType.TIMESTAMP, group="Freshdesk company"
+    ),
+    _field(
+        "updated_at", "Updated", SorFieldDataType.TIMESTAMP, group="Freshdesk company"
+    ),
 )
 
 
-@dataclass(frozen=True, slots=True)
-class _UpdatedCursor:
+class _UpdatedCursor(BaseModel):
+    """Freshdesk updated-since watermark and native page number."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
     since: datetime
     page: int
 
 
-@dataclass(frozen=True, slots=True)
-class _ExpansionCursor:
+class _ExpansionCursor(BaseModel):
+    """Freshdesk child offset within an updated-ticket scan."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
     scan: _UpdatedCursor
     offset: int
 
@@ -1215,11 +1287,16 @@ class FreshdeskSupportAdapter:
         if len(rows) == limit:
             if checkpoint.page >= FRESHDESK_MAX_PAGES:
                 raise _scan_limit()
-            return rows, _UpdatedCursor(checkpoint.since, checkpoint.page + 1), True
+            return (
+                rows,
+                _UpdatedCursor(since=checkpoint.since, page=checkpoint.page + 1),
+                True,
+            )
         return (
             rows,
             _UpdatedCursor(
-                max(FRESHDESK_INITIAL_SINCE, requested_at - FRESHDESK_OVERLAP), 1
+                since=max(FRESHDESK_INITIAL_SINCE, requested_at - FRESHDESK_OVERLAP),
+                page=1,
             ),
             False,
         )
@@ -2073,7 +2150,7 @@ def _encode_updated_cursor(cursor: _UpdatedCursor, *, stream_key: str) -> str:
 
 def _decode_updated_cursor(cursor: str | None, *, stream_key: str) -> _UpdatedCursor:
     if cursor is None:
-        return _UpdatedCursor(FRESHDESK_INITIAL_SINCE, 1)
+        return _UpdatedCursor(since=FRESHDESK_INITIAL_SINCE, page=1)
     data = _decode_cursor(cursor, stream_key=stream_key, kind="updated")
     return _updated_cursor_values(data)
 
@@ -2095,12 +2172,14 @@ def _decode_expansion_cursor(
     cursor: str | None, *, stream_key: str
 ) -> _ExpansionCursor:
     if cursor is None:
-        return _ExpansionCursor(_UpdatedCursor(FRESHDESK_INITIAL_SINCE, 1), 0)
+        return _ExpansionCursor(
+            scan=_UpdatedCursor(since=FRESHDESK_INITIAL_SINCE, page=1), offset=0
+        )
     data = _decode_cursor(cursor, stream_key=stream_key, kind="expanded")
     offset = data.get("offset")
     if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
         raise _invalid_cursor("Freshdesk expansion cursor offset is invalid.")
-    return _ExpansionCursor(_updated_cursor_values(data), offset)
+    return _ExpansionCursor(scan=_updated_cursor_values(data), offset=offset)
 
 
 def _updated_cursor_values(data: Mapping[str, object]) -> _UpdatedCursor:
@@ -2112,7 +2191,7 @@ def _updated_cursor_values(data: Mapping[str, object]) -> _UpdatedCursor:
         or not 1 <= page <= FRESHDESK_MAX_PAGES
     ):
         raise _invalid_cursor("Freshdesk cursor page is invalid.")
-    return _UpdatedCursor(since, page)
+    return _UpdatedCursor(since=since, page=page)
 
 
 def _encode_page_cursor(page: int, *, stream_key: str) -> str:
@@ -2656,19 +2735,14 @@ def _optional_decimal(value: object) -> Decimal | None:
     return parsed
 
 
-def _json_value(value: object) -> object | None:
-    if value is None or isinstance(value, (str, int, float, bool, list, dict)):
-        try:
-            json.dumps(value, ensure_ascii=False, allow_nan=False)
-        except (TypeError, ValueError) as error:
-            raise _invalid_response(
-                "Freshdesk value is not JSON compatible."
-            ) from error
-        return value
-    raise _invalid_response("Freshdesk value is not JSON compatible.")
+def _json_value(value: object) -> SorJsonValue:
+    try:
+        return require_json_value(value)
+    except ValueError as error:
+        raise _invalid_response("Freshdesk value is not JSON compatible.") from error
 
 
-def _json_mapping(value: Mapping[str, object]) -> dict[str, object]:
+def _json_mapping(value: Mapping[str, object]) -> dict[str, SorJsonValue]:
     result = {key: _json_value(item) for key, item in value.items()}
     return result
 

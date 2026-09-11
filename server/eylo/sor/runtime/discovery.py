@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Sequence
-from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import StrEnum
 from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict
 
 from eylo.common.database import start_transaction
 from eylo.sor.runtime.adapters import (
@@ -32,9 +34,26 @@ from eylo.sor.shared.services import (
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True, slots=True)
-class SorDiscoveryResult:
+class SorDiscoveryPhase(StrEnum):
+    """Operation currently owning discovery progress and failure reporting."""
+
+    VERIFICATION = "verification"
+    DISCOVERY = "discovery"
+
+
+class SorDiscoveryFailure(StrEnum):
+    """Runtime-owned failure codes; vendor and adapter errors keep their owners."""
+
+    OPERATION_CANCELLED = "OPERATION_CANCELLED"
+    OPERATION_TIMEOUT = "OPERATION_TIMEOUT"
+    VERIFICATION_FAILED = "VERIFICATION_FAILED"
+    DISCOVERY_FAILED = "DISCOVERY_FAILED"
+
+
+class SorDiscoveryResult(BaseModel):
     """Stable outcome of one complete source verification and discovery."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
     verification: SorConnectionVerification
     schema_revision_id: UUID
@@ -43,8 +62,10 @@ class SorDiscoveryResult:
     difference: SorSchemaDifference
 
 
-@dataclass(frozen=True, slots=True)
-class _DiscoveryAuthority:
+class _DiscoveryAuthority(BaseModel):
+    """Exact source configuration/mapping revision checked again at commit."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
     config_revision: int
     mapping_revision_id: UUID | None
 
@@ -66,7 +87,7 @@ async def verify_and_discover_source(
         source_id=source_id,
         transition=SorSourceTransition.BEGIN_VERIFICATION,
     )
-    phase = "verification"
+    phase = SorDiscoveryPhase.VERIFICATION
     try:
         async with acquire_source_adapter(
             organization_id=organization_id,
@@ -85,7 +106,7 @@ async def verify_and_discover_source(
                 source_id=source_id,
                 transition=SorSourceTransition.VERIFICATION_SUCCEEDED,
             )
-            phase = "discovery"
+            phase = SorDiscoveryPhase.DISCOVERY
             async with asyncio.timeout(discovery_timeout_seconds):
                 schema = await adapter.discover_schema()
         return await _commit_schema(
@@ -121,7 +142,7 @@ async def verify_and_discover_source(
             organization_id=organization_id,
             source_id=source_id,
             phase=phase,
-            error_code="OPERATION_CANCELLED",
+            error_code=SorDiscoveryFailure.OPERATION_CANCELLED,
             error_summary="The source operation was cancelled before completion.",
         )
         raise
@@ -130,7 +151,7 @@ async def verify_and_discover_source(
             organization_id=organization_id,
             source_id=source_id,
             phase=phase,
-            error_code="OPERATION_TIMEOUT",
+            error_code=SorDiscoveryFailure.OPERATION_TIMEOUT,
             error_summary=f"Source {phase} exceeded its time budget.",
         )
         raise
@@ -148,7 +169,9 @@ async def verify_and_discover_source(
             source_id=source_id,
             phase=phase,
             error_code=(
-                "VERIFICATION_FAILED" if phase == "verification" else "DISCOVERY_FAILED"
+                SorDiscoveryFailure.VERIFICATION_FAILED
+                if phase is SorDiscoveryPhase.VERIFICATION
+                else SorDiscoveryFailure.DISCOVERY_FAILED
             ),
             error_summary=f"Source {phase} failed.",
         )
@@ -171,7 +194,7 @@ async def rediscover_source_schema(
         organization_id=organization_id,
         source_id=source_id,
     )
-    phase = "verification"
+    phase = SorDiscoveryPhase.VERIFICATION
     try:
         async with acquire_source_adapter(
             organization_id=organization_id,
@@ -185,7 +208,7 @@ async def rediscover_source_schema(
             async with asyncio.timeout(verification_timeout_seconds):
                 verification = await adapter.verify_connection()
             verified_at = datetime.now(timezone.utc)
-            phase = "discovery"
+            phase = SorDiscoveryPhase.DISCOVERY
             async with asyncio.timeout(discovery_timeout_seconds):
                 schema = await adapter.discover_schema()
         return await _commit_schema(
@@ -239,7 +262,7 @@ async def rediscover_source_schema(
             organization_id=organization_id,
             source_id=source_id,
             authority=authority,
-            error_code="OPERATION_CANCELLED",
+            error_code=SorDiscoveryFailure.OPERATION_CANCELLED,
             error_summary="The schema refresh was cancelled before completion.",
         )
         raise
@@ -248,7 +271,7 @@ async def rediscover_source_schema(
             organization_id=organization_id,
             source_id=source_id,
             authority=authority,
-            error_code="OPERATION_TIMEOUT",
+            error_code=SorDiscoveryFailure.OPERATION_TIMEOUT,
             error_summary=f"Source {phase} exceeded its time budget.",
         )
         raise
@@ -266,7 +289,9 @@ async def rediscover_source_schema(
             source_id=source_id,
             authority=authority,
             error_code=(
-                "VERIFICATION_FAILED" if phase == "verification" else "DISCOVERY_FAILED"
+                SorDiscoveryFailure.VERIFICATION_FAILED
+                if phase is SorDiscoveryPhase.VERIFICATION
+                else SorDiscoveryFailure.DISCOVERY_FAILED
             ),
             error_summary=f"Source {phase} failed.",
         )
@@ -418,7 +443,7 @@ async def _mark_failure(
     *,
     organization_id: UUID,
     source_id: UUID,
-    phase: str,
+    phase: SorDiscoveryPhase,
     error_code: str,
     error_summary: str,
     requires_reauthorization: bool = False,
@@ -428,7 +453,7 @@ async def _mark_failure(
         if requires_reauthorization
         else (
             SorSourceTransition.VERIFICATION_FAILED
-            if phase == "verification"
+            if phase is SorDiscoveryPhase.VERIFICATION
             else SorSourceTransition.DISCOVERY_FAILED
         )
     )

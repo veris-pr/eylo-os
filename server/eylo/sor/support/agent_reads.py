@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict, Field, InstanceOf
+from pydantic.json_schema import SkipJsonSchema
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,13 +17,18 @@ from eylo.sor.support.models import SupportMessageModel, SupportTicketModel
 SUPPORT_AGENT_RELATED_RECORD_LIMIT = 100
 
 
-@dataclass(frozen=True, slots=True)
-class SupportAgentRelatedRecords:
+class SupportAgentRelatedRecords(BaseModel):
     """One primary record's bounded related Support projection."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     parent_record_id: UUID
     entity: str
-    records: tuple[SorRecordModel, ...]
+    records: SkipJsonSchema[tuple[InstanceOf[SorRecordModel], ...]] = Field(
+        repr=False, exclude=True
+    )
     truncated: bool
 
 

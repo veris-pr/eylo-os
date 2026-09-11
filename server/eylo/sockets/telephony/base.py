@@ -5,20 +5,22 @@ enabling a pluggable architecture for different vendors (Twilio, Plivo, Exotel, 
 """
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from enum import Enum
-from typing import Any, Dict, Optional, Protocol, TypeAlias
+from enum import Enum, StrEnum
+from typing import Any, Dict, Literal, Optional, Protocol, Self, TypeAlias
 from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from eylo.common.contracts.telephony import CallEndedReason as CallEndedReason
 from eylo.common.outbound import (
+    OUTBOUND_STATUS_CODE_MAX,
+    OUTBOUND_STATUS_CODE_MIN,
     OutboundSendAuthorization,
     OutboundSendOutcome,
     OutboundSendRetryable,
     OutboundSendTerminal,
     OutboundSendUnknown,
     OutboundTransportKind,
-    require_failure_code,
 )
 from eylo.sockets.telephony.config import SettingsT, TelephonyVendorSettings
 from eylo.sockets.telephony.config import TelephonyProvider as TelephonyProvider
@@ -34,14 +36,25 @@ class AudioEncoding(str, Enum):
     PCM_MULAW = "pcm_mulaw"
 
 
-@dataclass
-class TelephonyConfig:
+TELEPHONY_SAMPLE_RATE = 8000
+TELEPHONY_CHANNELS = 1
+
+
+class _TelephonyValue(BaseModel):
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+
+class TelephonyConfig(_TelephonyValue):
     """Resolved carrier settings and media format for one adapter instance."""
 
-    settings: TelephonyVendorSettings
+    model_config = ConfigDict(frozen=False, validate_assignment=True)
+
+    settings: TelephonyVendorSettings = Field(repr=False, exclude=True)
     encoding: AudioEncoding = AudioEncoding.MULAW
-    sample_rate: int = 8000
-    channels: int = 1
+    sample_rate: int = Field(default=TELEPHONY_SAMPLE_RATE, gt=0)
+    channels: int = Field(default=TELEPHONY_CHANNELS, gt=0)
 
     @property
     def provider(self) -> TelephonyProvider:
@@ -54,43 +67,73 @@ class TelephonyConfig:
         return self.settings
 
 
-@dataclass
-class CallMetadata:
-    """Metadata for a telephony call."""
+class TelephonyCallDirection(StrEnum):
+    INBOUND = "INBOUND"
+    OUTBOUND = "OUTBOUND"
+
+
+class StreamTokenRequirement(StrEnum):
+    NOT_REQUIRED = "not_required"
+    REQUIRED = "required"
+
+
+class CallMetadata(_TelephonyValue):
+    """Parsed routing, enriched in place only by authenticated platform lookups."""
+
+    model_config = ConfigDict(frozen=False, validate_assignment=True)
 
     call_sid: str
     call_id: Optional[UUID] = None
     stream_sid: Optional[str] = None
-    from_number: Optional[str] = None
-    to_number: Optional[str] = None
+    from_number: Optional[str] = Field(default=None, repr=False)
+    to_number: Optional[str] = Field(default=None, repr=False)
     organization_id: Optional[UUID] = None
     agent_id: Optional[UUID] = None
-    agent_revision: Optional[int] = None
+    agent_revision: Optional[int] = Field(default=None, gt=0)
     provider_config_id: Optional[UUID] = None
-    provider_config_revision: Optional[int] = None
+    provider_config_revision: Optional[int] = Field(default=None, gt=0)
     conversation_id: Optional[UUID] = None
-    direction: str = "INBOUND"  # INBOUND or OUTBOUND
-    initial_message: Optional[str] = None
-    media_stream_token: Optional[str] = None
-    requires_media_stream_token: bool = False
+    direction: TelephonyCallDirection = TelephonyCallDirection.INBOUND
+    initial_message: Optional[str] = Field(default=None, repr=False, exclude=True)
+    media_stream_token: Optional[str] = Field(default=None, repr=False, exclude=True)
+    stream_token_requirement: StreamTokenRequirement = (
+        StreamTokenRequirement.NOT_REQUIRED
+    )
+
+    @field_validator("direction", mode="before")
+    @classmethod
+    def normalize_direction(cls, value: object) -> TelephonyCallDirection:
+        """Routing signatures already compare direction case-insensitively."""
+        if isinstance(value, TelephonyCallDirection):
+            return value
+        if isinstance(value, str):
+            return TelephonyCallDirection(value.upper())
+        raise ValueError("Call direction must be inbound or outbound.")
+
+    @property
+    def requires_media_stream_token(self) -> bool:
+        return self.stream_token_requirement is StreamTokenRequirement.REQUIRED
 
 
-@dataclass
-class InboundMediaMessage:
+class CarrierMediaEvent(StrEnum):
+    MEDIA = "media"
+
+
+class InboundMediaMessage(_TelephonyValue):
     """Standardized inbound media message from any telephony provider."""
 
-    event: str
-    payload: bytes  # Raw audio bytes
-    timestamp: str
+    event: Literal[CarrierMediaEvent.MEDIA] = CarrierMediaEvent.MEDIA
+    payload: bytes = Field(repr=False, exclude=True)
+    timestamp: str | int
     track: str = "inbound"
-    sequence_number: Optional[str] = None
+    # Carrier ordinals are opaque: Twilio uses strings, Exotel also sends integers.
+    sequence_number: str | int | None = None
 
 
-@dataclass
-class OutboundMediaMessage:
+class OutboundMediaMessage(_TelephonyValue):
     """Standardized outbound media message to any telephony provider."""
 
-    payload: bytes  # Raw audio bytes
+    payload: bytes = Field(repr=False, exclude=True)
     stream_sid: str
 
 
@@ -102,29 +145,39 @@ class CarrierMediaStatus(str, Enum):
     FAILED = "failed"
 
 
-@dataclass(frozen=True, slots=True)
-class CarrierMediaResult:
+class CarrierMediaFailureCode(StrEnum):
+    AUDIO_WRITE_FAILED = "carrier_audio_write_failed"
+    INTERRUPTION_WRITE_FAILED = "carrier_interruption_write_failed"
+
+
+class CarrierMediaResult(_TelephonyValue):
     """Safe typed projection of one carrier audio or buffer-control write."""
 
     status: CarrierMediaStatus
-    bytes_count: int = 0
-    failure_code: str | None = None
+    bytes_count: int = Field(default=0, ge=0)
+    failure_code: CarrierMediaFailureCode | None = None
 
     @property
     def accepted(self) -> bool:
         return self.status is CarrierMediaStatus.ACCEPTED
 
 
-@dataclass(frozen=True, slots=True)
-class TelephonyOperationCapabilities:
+class TelephonyOperationSupport(StrEnum):
+    UNSUPPORTED = "unsupported"
+    SUPPORTED = "supported"
+
+    def __bool__(self) -> bool:
+        raise TypeError("Compare telephony operation support explicitly.")
+
+
+class TelephonyOperationCapabilities(_TelephonyValue):
     """Provider guarantees that affect safe charged-operation replay."""
 
-    provider_idempotency: bool
-    reconciliation: bool
+    provider_idempotency: TelephonyOperationSupport
+    reconciliation: TelephonyOperationSupport
 
 
-@dataclass(frozen=True, slots=True)
-class TelephonyOperationProfile:
+class TelephonyOperationProfile(_TelephonyValue):
     """Static provider-operation metadata needed before durable send begins."""
 
     provider_operation: str
@@ -132,48 +185,54 @@ class TelephonyOperationProfile:
     destination_origin: str
     capabilities: TelephonyOperationCapabilities
 
-    def __post_init__(self) -> None:
+    @model_validator(mode="after")
+    def validate_destination(self) -> Self:
         if not self.provider_operation.strip():
             raise ValueError("Telephony provider operation is required.")
         if not self.destination_origin.startswith("https://"):
             raise ValueError("Telephony provider destination must use HTTPS.")
+        return self
 
 
-@dataclass(frozen=True, slots=True)
-class TelephonyControlAccepted:
+class TelephonyControlAccepted(_TelephonyValue):
     """The carrier accepted one live call-control operation."""
 
-    status_code: int | None = None
-
-    def __post_init__(self) -> None:
-        _validate_control_status(self.status_code)
-
-
-@dataclass(frozen=True, slots=True)
-class _TelephonyControlFailure:
-    failure_code: str
-    status_code: int | None = None
-
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "failure_code",
-            require_failure_code(self.failure_code),
-        )
-        _validate_control_status(self.status_code)
+    status_code: int | None = Field(
+        default=None, ge=OUTBOUND_STATUS_CODE_MIN, le=OUTBOUND_STATUS_CODE_MAX
+    )
 
 
-@dataclass(frozen=True, slots=True)
+class TelephonyControlOperation(StrEnum):
+    END = "call_end"
+    TRANSFER = "call_transfer"
+    DTMF = "call_dtmf"
+
+
+class TelephonyControlFailureCode(StrEnum):
+    END_REJECTED = "call_end_rejected"
+    END_UNCONFIRMED = "call_end_unconfirmed"
+    TRANSFER_REJECTED = "call_transfer_rejected"
+    TRANSFER_UNCONFIRMED = "call_transfer_unconfirmed"
+    TRANSFER_UNSUPPORTED = "call_transfer_unsupported"
+    DTMF_REJECTED = "call_dtmf_rejected"
+    DTMF_UNCONFIRMED = "call_dtmf_unconfirmed"
+
+
+class _TelephonyControlFailure(_TelephonyValue):
+    failure_code: TelephonyControlFailureCode
+    status_code: int | None = Field(
+        default=None, ge=OUTBOUND_STATUS_CODE_MIN, le=OUTBOUND_STATUS_CODE_MAX
+    )
+
+
 class TelephonyControlRejected(_TelephonyControlFailure):
     """The carrier explicitly rejected the requested control."""
 
 
-@dataclass(frozen=True, slots=True)
 class TelephonyControlUnknown(_TelephonyControlFailure):
     """The carrier may have applied the control; do not claim success."""
 
 
-@dataclass(frozen=True, slots=True)
 class TelephonyControlUnsupported(_TelephonyControlFailure):
     """The carrier adapter does not implement this control."""
 
@@ -184,11 +243,6 @@ TelephonyControlResult: TypeAlias = (
     | TelephonyControlUnknown
     | TelephonyControlUnsupported
 )
-
-
-def _validate_control_status(status_code: int | None) -> None:
-    if status_code is not None and not 100 <= status_code <= 599:
-        raise ValueError("Control status must be an HTTP status between 100 and 599.")
 
 
 def classify_provider_failure(
@@ -218,17 +272,17 @@ def classify_provider_failure(
 def classify_control_failure(
     error: Exception,
     *,
-    operation: str,
+    operation: TelephonyControlOperation,
 ) -> TelephonyControlRejected | TelephonyControlUnknown:
     """Map a live control failure without leaking provider response content."""
     status_code = _provider_status_code(error)
     if status_code is not None and 400 <= status_code < 500 and status_code != 408:
         return TelephonyControlRejected(
-            failure_code=f"{operation}_rejected",
+            failure_code=TelephonyControlFailureCode(f"{operation.value}_rejected"),
             status_code=status_code,
         )
     return TelephonyControlUnknown(
-        failure_code=f"{operation}_unconfirmed",
+        failure_code=TelephonyControlFailureCode(f"{operation.value}_unconfirmed"),
         status_code=status_code,
     )
 

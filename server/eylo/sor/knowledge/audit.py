@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict, Field, InstanceOf
+from pydantic.json_schema import SkipJsonSchema
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from eylo.sor.knowledge.contracts import KnowledgeSourceFormat
 from eylo.sor.shared.contracts import SorProfile
 from eylo.sor.shared.models import SorRecordModel, SorSourceModel
 from eylo.sor.shared.reads import SorReadNotFoundError
@@ -34,9 +36,12 @@ PROPERTY_VALUE_PREVIEW_CHARS = 4_000
 VERSION_MESSAGE_PREVIEW_CHARS = 4_000
 
 
-@dataclass(frozen=True, slots=True)
-class KnowledgeDocumentBlockAudit:
+class KnowledgeDocumentBlockAudit(BaseModel):
     """One ordered block with explicit translation support."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     record_id: UUID
     external_id: str
@@ -50,9 +55,12 @@ class KnowledgeDocumentBlockAudit:
     updated_at: datetime | None
 
 
-@dataclass(frozen=True, slots=True)
-class KnowledgeDocumentVersionAudit:
+class KnowledgeDocumentVersionAudit(BaseModel):
     """One source-provided version summary without copying its full body."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     record_id: UUID
     external_id: str
@@ -60,14 +68,17 @@ class KnowledgeDocumentVersionAudit:
     author_external_id: str | None
     message: str | None
     message_truncated: bool
-    source_format: str | None
+    source_format: KnowledgeSourceFormat | None
     created_at: datetime
     source_url: str | None
 
 
-@dataclass(frozen=True, slots=True)
-class KnowledgeDocumentPropertyAudit:
+class KnowledgeDocumentPropertyAudit(BaseModel):
     """One bounded native property preview; full value remains its own record."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     record_id: UUID
     external_id: str
@@ -79,9 +90,12 @@ class KnowledgeDocumentPropertyAudit:
     updated_at: datetime | None
 
 
-@dataclass(frozen=True, slots=True)
-class KnowledgeDocumentAttachmentAudit:
+class KnowledgeDocumentAttachmentAudit(BaseModel):
     """One source-owned file metadata record."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     record_id: UUID
     external_id: str
@@ -92,9 +106,12 @@ class KnowledgeDocumentAttachmentAudit:
     source_url_expires_at: datetime | None
 
 
-@dataclass(frozen=True, slots=True)
-class KnowledgeDocumentSpaceAudit:
+class KnowledgeDocumentSpaceAudit(BaseModel):
     """Resolved source container for one document."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     record_id: UUID
     external_id: str
@@ -103,9 +120,12 @@ class KnowledgeDocumentSpaceAudit:
     source_url: str | None
 
 
-@dataclass(frozen=True, slots=True)
-class KnowledgeDocumentAuthorAudit:
+class KnowledgeDocumentAuthorAudit(BaseModel):
     """Resolved source author for one document."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     record_id: UUID
     external_id: str
@@ -115,11 +135,14 @@ class KnowledgeDocumentAuthorAudit:
     avatar_url: str | None
 
 
-@dataclass(frozen=True, slots=True)
-class KnowledgeDocumentAuditContext:
+class KnowledgeDocumentAuditContext(BaseModel):
     """Document-owned audit data plus source selection facts for availability."""
 
-    source: SorSourceModel
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    source: SkipJsonSchema[InstanceOf[SorSourceModel]] = Field(repr=False, exclude=True)
     selected_entities: frozenset[str]
     blocks_truncated: bool
     blocks: tuple[KnowledgeDocumentBlockAudit, ...]
@@ -354,7 +377,11 @@ class KnowledgeDocumentAuditService:
                     author_external_id=version.author_external_id,
                     message=message,
                     message_truncated=message_truncated,
-                    source_format=version.source_format,
+                    source_format=(
+                        KnowledgeSourceFormat(version.source_format)
+                        if version.source_format is not None
+                        else None
+                    ),
                     created_at=version.source_created_at,
                     source_url=record.source_url,
                 )

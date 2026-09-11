@@ -6,11 +6,18 @@ import asyncio
 import logging
 import uuid
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
 from types import MappingProxyType
 from uuid import UUID
 
 import uuid_utils
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    field_serializer,
+    field_validator,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.modules.connections.domain import (
@@ -30,6 +37,7 @@ from eylo.sor.runtime.action_events import (
 from eylo.sor.runtime.catalog import get_sor_registry
 from eylo.sor.runtime.registry import SorRegistry
 from eylo.sor.shared.contracts import SorAdapterContext, SorProfile
+from eylo.sor.shared.json_values import SorJsonValue, require_json_object
 from eylo.sor.shared.models import SorSourceModel
 from eylo.sor.shared.services import SorConfigurationError, SorSourceService
 
@@ -37,17 +45,37 @@ _VERIFY_TIMEOUT_SECONDS = 30.0
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True, slots=True)
-class _VerifiedApiKeySourceCandidate:
+class _VerifiedApiKeySourceCandidate(BaseModel):
     """Transient proof binding verified authority to its persistence inputs."""
+
+    model_config = ConfigDict(
+        frozen=True,
+        strict=True,
+        extra="forbid",
+        hide_input_in_errors=True,
+        validate_default=True,
+    )
 
     organization_id: UUID
     profile: SorProfile
     vendor_key: str
-    api_key: str = field(repr=False)
+    api_key: str = Field(repr=False, exclude=True)
     instance_origin: str | None = None
     selected_objects: tuple[str, ...] = ()
-    configuration: Mapping[str, object] = field(default_factory=dict)
+    configuration: Mapping[str, SorJsonValue] = Field(default_factory=dict)
+
+    @field_validator("configuration")
+    @classmethod
+    def _seal_configuration(
+        cls, value: Mapping[str, SorJsonValue]
+    ) -> Mapping[str, SorJsonValue]:
+        return MappingProxyType(dict(value))
+
+    @field_serializer("configuration")
+    def _configuration_snapshot(
+        self, value: Mapping[str, SorJsonValue]
+    ) -> dict[str, JsonValue]:
+        return dict(value)
 
 
 async def verify_api_key_source_candidate(
@@ -65,6 +93,7 @@ async def verify_api_key_source_candidate(
     active_registry = registry or get_sor_registry()
     normalized_vendor = vendor_key.strip().lower()
     normalized_key = _api_key(api_key)
+    validated_configuration = require_json_object(configuration or {})
     try:
         manifest = active_registry.get_manifest(
             profile=profile,
@@ -96,7 +125,7 @@ async def verify_api_key_source_candidate(
                 mapping_revision_id=None,
                 fields=(),
                 credentials=MappingProxyType({"api_key": normalized_key}),
-                configuration=MappingProxyType(dict(configuration or {})),
+                configuration=validated_configuration,
             ),
         )
     except (KeyError, ValueError) as error:
@@ -123,7 +152,7 @@ async def verify_api_key_source_candidate(
             api_key=normalized_key,
             instance_origin=instance_origin,
             selected_objects=tuple(selected_objects),
-            configuration=MappingProxyType(dict(configuration or {})),
+            configuration=validated_configuration,
         )
 
 

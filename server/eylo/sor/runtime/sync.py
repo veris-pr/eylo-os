@@ -10,7 +10,7 @@ from typing import Any
 from uuid import UUID
 
 from absurd_sdk import AsyncTaskContext, CancelledTask
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, JsonValue, ValidationError
 from sqlalchemy import select
 
 from eylo.common.database import start_transaction
@@ -21,7 +21,7 @@ from eylo.sor.runtime.adapters import (
 )
 from eylo.sor.runtime.projection import project_source_record
 from eylo.sor.runtime.registry import SorRegistry
-from eylo.sor.runtime.serialization import json_safe_payload
+from eylo.sor.runtime.serialization import SorStoredPage, encode_external_record
 from eylo.sor.runtime.work import (
     SorBoundWorkService,
     SorWorkBindingPending,
@@ -39,7 +39,6 @@ from eylo.sor.shared.contracts import (
     SorProjectionDisposition,
     SorRecordPage,
     SorRecoveryPolicy,
-    SorSourcePayload,
     SorSourceState,
     SorSyncRunKind,
     SorVendorOperationError,
@@ -74,7 +73,7 @@ SOR_SYNC_SOURCE_STATES = frozenset(
     }
 )
 
-SOR_SYNC_WORK = SorWorkContract(
+SOR_SYNC_WORK = SorWorkContract[SorSyncRunModel](
     model=SorSyncRunModel,
     pending=SorWorkState.PENDING,
     running=SorWorkState.RUNNING,
@@ -88,7 +87,6 @@ SOR_SYNC_WORK = SorWorkContract(
             SorWorkState.CANCELLED,
         }
     ),
-    error_code_field="safe_error_code",
 )
 
 _NONTERMINAL_SYNC_STATES = (
@@ -558,7 +556,7 @@ class SorSyncWorkflow:
             row = await SorBoundWorkService(SOR_SYNC_WORK, session).succeed(
                 work_id=run_id,
                 organization_id=organization_id,
-                values=_count_values(total),
+                values=total,
             )
             generation_id = row.generation_id
             receipt = _receipt(row)
@@ -792,6 +790,8 @@ def _engine_terminal_failure(engine_state: _TerminalEngineState) -> _SyncFailure
 
 
 def _classify_failure(error: Exception) -> _SyncFailure:
+    if isinstance(error, ValidationError):
+        error = SorProjectionError("SOR adapter returned an invalid typed contract.")
     if isinstance(error, SorAdapterUnavailableError):
         return _SyncFailure(
             code=error.error_code,
@@ -846,16 +846,8 @@ def _encode_page(page: SorRecordPage) -> dict[str, Any]:
     return encoded
 
 
-def _encode_record(record: SorExternalRecord) -> dict[str, Any]:
-    encoded = {
-        "vendor_object_key": record.vendor_object_key,
-        "external_id": record.external_id,
-        "payload": json_safe_payload(record.payload),
-        "source_created_at": _datetime_value(record.source_created_at),
-        "source_updated_at": _datetime_value(record.source_updated_at),
-        "source_revision": record.source_revision,
-        "source_url": record.source_url,
-    }
+def _encode_record(record: SorExternalRecord) -> dict[str, JsonValue]:
+    encoded = encode_external_record(record)
     _require_json_size(
         encoded,
         maximum=SOR_SYNC_RECORD_MAX_BYTES,
@@ -865,66 +857,24 @@ def _encode_record(record: SorExternalRecord) -> dict[str, Any]:
 
 
 def _decode_page(value: object) -> SorRecordPage:
-    if not isinstance(value, dict) or set(value) != {
-        "records",
-        "next_cursor",
-        "has_more",
-    }:
-        raise SorProjectionError("Durable SOR page result is malformed.")
     _require_json_size(
         value,
         maximum=SOR_SYNC_PAGE_MAX_BYTES,
         field_name="Durable SOR page",
     )
-    raw_records = value["records"]
-    if not isinstance(raw_records, list) or len(raw_records) > SOR_SYNC_PAGE_LIMIT:
+    try:
+        stored = SorStoredPage.model_validate(value)
+    except ValidationError as error:
+        raise SorProjectionError("Durable SOR page result is malformed.") from error
+    if len(stored.records) > SOR_SYNC_PAGE_LIMIT:
         raise SorProjectionError("Durable SOR page records are malformed.")
-    records: list[SorExternalRecord] = []
-    for raw in raw_records:
-        if not isinstance(raw, dict) or set(raw) != {
-            "vendor_object_key",
-            "external_id",
-            "payload",
-            "source_created_at",
-            "source_updated_at",
-            "source_revision",
-            "source_url",
-        }:
-            raise SorProjectionError("Durable SOR record is malformed.")
+    for record in stored.records:
         _require_json_size(
-            raw,
+            record.model_dump(mode="json"),
             maximum=SOR_SYNC_RECORD_MAX_BYTES,
             field_name="Durable SOR record",
         )
-        if not isinstance(raw["vendor_object_key"], str) or not isinstance(
-            raw["external_id"], str
-        ):
-            raise SorProjectionError("Durable SOR record identity is malformed.")
-        if not isinstance(raw["payload"], dict):
-            raise SorProjectionError("Durable SOR record payload is malformed.")
-        records.append(
-            SorExternalRecord(
-                vendor_object_key=raw["vendor_object_key"],
-                external_id=raw["external_id"],
-                payload=SorSourcePayload.from_mapping(raw["payload"]),
-                source_created_at=_parse_datetime(raw["source_created_at"]),
-                source_updated_at=_parse_datetime(raw["source_updated_at"]),
-                source_revision=_optional_string(raw["source_revision"]),
-                source_url=_optional_string(raw["source_url"]),
-            )
-        )
-    next_cursor = value["next_cursor"]
-    if next_cursor is not None and (
-        not isinstance(next_cursor, str) or not next_cursor
-    ):
-        raise SorProjectionError("Durable SOR next cursor is malformed.")
-    if not isinstance(value["has_more"], bool):
-        raise SorProjectionError("Durable SOR page completion flag is malformed.")
-    return SorRecordPage(
-        records=tuple(records),
-        next_cursor=next_cursor,
-        has_more=value["has_more"],
-    )
+    return stored.to_page()
 
 
 def _require_json_size(value: object, *, maximum: int, field_name: str) -> None:
@@ -989,36 +939,6 @@ def _parse_params(params: dict[str, Any]) -> tuple[UUID, UUID]:
         return UUID(str(params["organization_id"])), UUID(str(params["run_id"]))
     except (TypeError, ValueError) as error:
         raise ValueError("SOR sync task params contain an invalid UUID.") from error
-
-
-def _datetime_value(value: datetime | None) -> str | None:
-    if value is None:
-        return None
-    if value.tzinfo is None or value.utcoffset() is None:
-        raise SorProjectionError("SOR source timestamps must include a timezone.")
-    return value.isoformat()
-
-
-def _parse_datetime(value: object) -> datetime | None:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise SorProjectionError("Durable SOR timestamp is malformed.")
-    try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError as error:
-        raise SorProjectionError("Durable SOR timestamp is malformed.") from error
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        raise SorProjectionError("Durable SOR timestamp lacks a timezone.")
-    return parsed
-
-
-def _optional_string(value: object) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise SorProjectionError("Durable SOR optional string is malformed.")
-    return value
 
 
 def _count_values(counts: SorSyncCounts) -> dict[str, int]:

@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
-from typing import Any
 from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from eylo.common.outbound import (
     OutboundAttemptIdentity,
@@ -36,30 +36,37 @@ from eylo.sockets.mcp.client import (
     MCPClient,
     MCPDeliveryState,
     MCPError,
+    MCPErrorCode,
     MCPHttpTransport,
+    MCPMethod,
     MCPToolResult,
 )
+
+from .errors import MCPFailureCode
 
 _TERMINAL_RPC_CODES = frozenset({-32700, -32600, -32601, -32602})
 _COMPLETED_RESULT_ERRORS = frozenset(
     {
-        "structured_result_unsupported",
-        "tool_content_invalid",
-        "tool_content_unsupported",
-        "tool_error_flag_invalid",
-        "tool_result_exceeded",
+        MCPErrorCode.STRUCTURED_RESULT_UNSUPPORTED,
+        MCPErrorCode.TOOL_CONTENT_INVALID,
+        MCPErrorCode.TOOL_CONTENT_UNSUPPORTED,
+        MCPErrorCode.TOOL_ERROR_FLAG_INVALID,
+        MCPErrorCode.TOOL_RESULT_EXCEEDED,
     }
 )
 
 
-@dataclass(frozen=True, slots=True)
-class MCPToolExecutionOutcome:
+class MCPToolExecutionOutcome(BaseModel):
     """Agent-facing result plus optional durable external-effect receipt."""
 
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
     effect: MCPToolEffect
-    result: MCPToolResult | None = field(default=None, repr=False)
+    result: MCPToolResult | None = Field(default=None, repr=False, exclude=True)
     receipt: OutboundExecutionReceipt | None = None
-    failure_code: str | None = None
+    failure_code: MCPFailureCode | MCPErrorCode | None = None
 
     @property
     def is_error(self) -> bool:
@@ -73,11 +80,11 @@ class MCPToolExecutionOutcome:
         )
 
     @property
-    def content(self) -> str | dict[str, Any]:
+    def content(self) -> str | dict[str, JsonValue]:
         if self.result is not None:
             if self.result.is_error:
                 return {
-                    "kind": "mcp_tool_error",
+                    "kind": MCPFailureCode.MCP_TOOL_ERROR,
                     "error": self.result.text or "MCP tool reported an error.",
                 }
             return self.result.text
@@ -85,12 +92,12 @@ class MCPToolExecutionOutcome:
             return _receipt_value(self.receipt, self.failure_code)
         return {
             "kind": "integration_error",
-            "error": self.failure_code or "mcp_execution_unavailable",
+            "error": self.failure_code or MCPFailureCode.MCP_EXECUTION_UNAVAILABLE,
         }
 
     @property
-    def metadata(self) -> dict[str, Any]:
-        values: dict[str, Any] = {
+    def metadata(self) -> dict[str, JsonValue]:
+        values: dict[str, JsonValue] = {
             "mcp_execution": True,
             "mcp_effect": self.effect.value,
         }
@@ -112,7 +119,7 @@ async def execute_mcp_operation(
     *,
     config: ResolvedMCPServerConfig,
     executor: MCPToolExecutorConfig,
-    arguments: Mapping[str, Any],
+    arguments: Mapping[str, JsonValue],
     organization_id: UUID | None = None,
     tool_use_message_id: UUID | None = None,
     tool_id: UUID | None = None,
@@ -126,7 +133,7 @@ async def execute_mcp_operation(
     if executor.effect is MCPToolEffect.UNSUPPORTED:
         return MCPToolExecutionOutcome(
             effect=executor.effect,
-            failure_code="mcp_effect_unsupported",
+            failure_code=MCPFailureCode.MCP_EFFECT_UNSUPPORTED,
         )
     wire_transport = transport or SafeHttpTransport()
     if executor.effect is MCPToolEffect.READ_ONLY:
@@ -148,7 +155,7 @@ async def execute_mcp_operation(
     ):
         return MCPToolExecutionOutcome(
             effect=executor.effect,
-            failure_code="durable_execution_required",
+            failure_code=MCPFailureCode.DURABLE_EXECUTION_REQUIRED,
         )
 
     return await _execute_mutation(
@@ -170,7 +177,7 @@ async def _execute_read(
     *,
     config: ResolvedMCPServerConfig,
     executor: MCPToolExecutorConfig,
-    arguments: Mapping[str, Any],
+    arguments: Mapping[str, JsonValue],
     transport: MCPHttpTransport,
 ) -> MCPToolExecutionOutcome:
     try:
@@ -192,7 +199,7 @@ async def _execute_mutation(
     *,
     config: ResolvedMCPServerConfig,
     executor: MCPToolExecutorConfig,
-    arguments: Mapping[str, Any],
+    arguments: Mapping[str, JsonValue],
     organization_id: UUID,
     tool_use_message_id: UUID,
     tool_id: UUID,
@@ -227,7 +234,7 @@ async def _execute_mutation(
         ),
     )
     result_holder: list[MCPToolResult] = []
-    projection_failure: list[str] = []
+    projection_failure: list[MCPErrorCode] = []
 
     async def send(
         authorization: OutboundSendAuthorization,
@@ -251,7 +258,7 @@ async def _execute_mutation(
         result_holder.append(result)
         if result.is_error:
             return OutboundSendTerminal(
-                failure_code="mcp_tool_error",
+                failure_code=MCPFailureCode.MCP_TOOL_ERROR,
                 status_code=200,
             )
         return OutboundSendSucceeded(status_code=200)
@@ -273,7 +280,7 @@ async def _call_once(
     *,
     config: ResolvedMCPServerConfig,
     executor: MCPToolExecutorConfig,
-    arguments: Mapping[str, Any],
+    arguments: Mapping[str, JsonValue],
     transport: MCPHttpTransport,
 ) -> MCPToolResult:
     return await MCPClient(
@@ -284,35 +291,39 @@ async def _call_once(
 
 
 def _mutation_failure_outcome(error: MCPError) -> OutboundSendOutcome:
-    if error.method != "tools/call":
+    if error.method != MCPMethod.CALL_TOOL:
         if error.retryable:
-            return OutboundSendRetryable(failure_code="mcp_handshake_unavailable")
-        return OutboundSendTerminal(failure_code="mcp_handshake_rejected")
+            return OutboundSendRetryable(
+                failure_code=MCPFailureCode.MCP_HANDSHAKE_UNAVAILABLE
+            )
+        return OutboundSendTerminal(failure_code=MCPFailureCode.MCP_HANDSHAKE_REJECTED)
     if error.delivery is MCPDeliveryState.NOT_SENT:
         if error.retryable:
-            return OutboundSendRetryable(failure_code="mcp_egress_unavailable")
-        return OutboundSendTerminal(failure_code="mcp_egress_rejected")
+            return OutboundSendRetryable(
+                failure_code=MCPFailureCode.MCP_EGRESS_UNAVAILABLE
+            )
+        return OutboundSendTerminal(failure_code=MCPFailureCode.MCP_EGRESS_REJECTED)
     if error.delivery is MCPDeliveryState.UNKNOWN:
-        return OutboundSendUnknown(failure_code="mcp_outcome_unconfirmed")
+        return OutboundSendUnknown(failure_code=MCPFailureCode.MCP_OUTCOME_UNCONFIRMED)
     if error.status_code is not None:
         if error.retryable:
             return OutboundSendRetryable(
-                failure_code="mcp_provider_retryable",
+                failure_code=MCPFailureCode.MCP_PROVIDER_RETRYABLE,
                 status_code=error.status_code,
             )
         return OutboundSendTerminal(
-            failure_code="mcp_provider_rejected",
+            failure_code=MCPFailureCode.MCP_PROVIDER_REJECTED,
             status_code=error.status_code,
         )
     if error.rpc_code in _TERMINAL_RPC_CODES:
-        return OutboundSendTerminal(failure_code="mcp_rpc_rejected")
-    return OutboundSendUnknown(failure_code="mcp_outcome_unconfirmed")
+        return OutboundSendTerminal(failure_code=MCPFailureCode.MCP_RPC_REJECTED)
+    return OutboundSendUnknown(failure_code=MCPFailureCode.MCP_OUTCOME_UNCONFIRMED)
 
 
 def _receipt_value(
     receipt: OutboundExecutionReceipt,
-    projection_failure: str | None,
-) -> dict[str, Any]:
+    projection_failure: MCPFailureCode | MCPErrorCode | None,
+) -> dict[str, JsonValue]:
     if receipt.state is OutboundAttemptState.SUCCEEDED:
         return {
             "kind": "outbound_succeeded",

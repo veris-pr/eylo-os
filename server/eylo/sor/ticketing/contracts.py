@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum, StrEnum
@@ -13,11 +12,13 @@ from pydantic import Field
 
 from eylo.sor.shared.contracts import (
     SorCanonicalPayload,
+    SorCanonicalRecord,
     SorCommandPayload,
     SorExternalRecord,
     SorLifecycleAdapter,
     SorMappedFieldsCommandPayload,
 )
+from eylo.sor.shared.json_values import SorJsonValue
 
 
 class TicketingWorkState(str, Enum):
@@ -72,13 +73,12 @@ class TicketingToolName(StrEnum):
     REMOVE_LABEL = "issue_remove_label"
 
 
-@dataclass(frozen=True, slots=True)
-class TicketingIssue:
+class TicketingIssue(SorCanonicalRecord):
     external_id: str
     key: str | None
     title: str
     normalized_description: str | None
-    source_description: object | None
+    source_description: SorJsonValue = Field(repr=False, exclude=True)
     issue_type: str | None
     native_status: str | None
     normalized_status: TicketingWorkState | None
@@ -97,11 +97,10 @@ class TicketingIssue:
     cancelled_at: datetime | None
     source_updated_at: datetime | None
     source_url: str | None
-    custom_fields: Mapping[str, object] = field(default_factory=dict)
+    custom_fields: dict[str, SorJsonValue] = Field(default_factory=dict)
 
 
-@dataclass(frozen=True, slots=True)
-class TicketingProject:
+class TicketingProject(SorCanonicalRecord):
     external_id: str
     key: str | None
     name: str
@@ -109,8 +108,7 @@ class TicketingProject:
     source_url: str | None
 
 
-@dataclass(frozen=True, slots=True)
-class TicketingWorkflowState:
+class TicketingWorkflowState(SorCanonicalRecord):
     external_id: str
     name: str
     native_category: str | None
@@ -118,8 +116,7 @@ class TicketingWorkflowState:
     order: int | None
 
 
-@dataclass(frozen=True, slots=True)
-class TicketingUser:
+class TicketingUser(SorCanonicalRecord):
     """One source user that may own, report, or receive ticketing work."""
 
     external_id: str
@@ -132,8 +129,7 @@ class TicketingUser:
     source_url: str | None
 
 
-@dataclass(frozen=True, slots=True)
-class TicketingLabel:
+class TicketingLabel(SorCanonicalRecord):
     """One source classification label with optional hierarchy and scope."""
 
     external_id: str
@@ -145,8 +141,7 @@ class TicketingLabel:
     is_group: bool
 
 
-@dataclass(frozen=True, slots=True)
-class TicketingCycle:
+class TicketingCycle(SorCanonicalRecord):
     """One sprint, cycle, or milestone used to time-box ticketing work."""
 
     external_id: str
@@ -160,13 +155,12 @@ class TicketingCycle:
     active: bool | None
 
 
-@dataclass(frozen=True, slots=True)
-class TicketingComment:
+class TicketingComment(SorCanonicalRecord):
     external_id: str
     issue_external_id: str
     author_external_id: str | None
     normalized_text: str
-    source_body: object | None
+    source_body: SorJsonValue = Field(repr=False, exclude=True)
     created_at: datetime
     updated_at: datetime | None
 
@@ -237,7 +231,7 @@ class TicketingIssuePayload(SorCanonicalPayload):
     key: str | None = None
     title: str
     normalized_description: str | None = None
-    source_description: object | None = None
+    source_description: SorJsonValue = None
     issue_type: str | None = None
     native_status: str | None = None
     normalized_status: TicketingWorkState | None = None
@@ -302,7 +296,7 @@ class TicketingCommentPayload(SorCanonicalPayload):
     issue_external_id: str
     author_external_id: str | None = None
     normalized_text: str
-    source_body: object | None = None
+    source_body: SorJsonValue = None
     created_at: datetime
     updated_at: datetime | None = None
 
@@ -338,8 +332,7 @@ TICKETING_PAYLOAD_TYPES: Mapping[TicketingEntityKind, type[SorCanonicalPayload]]
 }
 
 
-@dataclass(frozen=True, slots=True)
-class TicketingIssueRelation:
+class TicketingIssueRelation(SorCanonicalRecord):
     """One vendor relation plus the exact issue stream containing its endpoints."""
 
     external_id: str

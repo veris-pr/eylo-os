@@ -20,6 +20,7 @@ from eylo.modules.tools.schemas.executors.mcp import (
 from eylo.pipelines.outbound.durable_execution import CommandStepContext
 from eylo.sockets.mcp.client import MCPHttpTransport
 
+from .errors import MCPFailureCode
 from .execution import MCPToolExecutionOutcome, execute_mcp_operation
 from .tools import MCPToolError, server_config
 
@@ -49,20 +50,20 @@ async def execute_mcp_tool(
     try:
         executor = validate_mcp_tool_executor_config(tool.executor_config)
     except ValueError:
-        return _unavailable("mcp_configuration_invalid")
+        return _unavailable(MCPFailureCode.MCP_CONFIGURATION_INVALID)
     if executor.effect is MCPToolEffect.UNSUPPORTED:
-        return _unavailable("mcp_effect_unsupported")
+        return _unavailable(MCPFailureCode.MCP_EFFECT_UNSUPPORTED)
     try:
         arguments = _ARGUMENTS.validate_python(dict(tool_input), strict=True)
     except (TypeError, ValueError):
-        return _unavailable("mcp_input_invalid", effect=executor.effect)
+        return _unavailable(MCPFailureCode.MCP_INPUT_INVALID, effect=executor.effect)
     if (
         tool.mcp_server_id is None
         or tool.mcp_server_revision is None
         or tool.published_revision is None
     ):
         return _unavailable(
-            "mcp_configuration_invalid",
+            MCPFailureCode.MCP_CONFIGURATION_INVALID,
             effect=executor.effect,
         )
 
@@ -89,7 +90,7 @@ async def execute_mcp_tool(
             )
     except (DefinitionRevisionError, MCPServerError, MCPToolError):
         return _unavailable(
-            "mcp_configuration_invalid",
+            MCPFailureCode.MCP_CONFIGURATION_INVALID,
             effect=executor.effect,
         )
 
@@ -109,7 +110,7 @@ async def execute_mcp_tool(
 
 
 def _unavailable(
-    code: str,
+    code: MCPFailureCode,
     *,
     effect: MCPToolEffect = MCPToolEffect.UNSUPPORTED,
 ) -> MCPToolExecutionOutcome:

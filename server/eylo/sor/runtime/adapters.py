@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from types import MappingProxyType
 from uuid import UUID
 
+from pydantic import JsonValue, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.database import async_session_factory
@@ -39,6 +40,7 @@ from eylo.sor.shared.contracts import (
     SorVendorErrorCode,
     SorVendorOperationError,
 )
+from eylo.sor.shared.json_values import SorJsonValueError, require_json_object
 from eylo.sor.shared.models import SorSourceModel
 from eylo.sor.shared.repositories import SorRepository
 from eylo.sor.shared.secrets import (
@@ -325,7 +327,7 @@ async def _resolve_source_adapter(
         ),
         webhook_auth_secret=webhook_auth_secret,
         webhook_subscription_id=source.webhook_subscription_id,
-        configuration=MappingProxyType(dict(source.configuration or {})),
+        configuration=require_json_object(source.configuration or {}),
     )
     return registry.create_adapter(
         profile=source.profile,
@@ -510,7 +512,7 @@ def _resolve_credentials(
     organization_id: UUID,
     connection_id: UUID,
     revision: int,
-) -> dict[str, object]:
+) -> dict[str, JsonValue]:
     if auth_kind is ConnectionAuthKind.NO_AUTH:
         if envelope is not None:
             raise SorAdapterUnavailableError(
@@ -543,7 +545,14 @@ def _resolve_credentials(
             "The source connection credentials are invalid.",
             requires_reauthorization=True,
         )
-    return dict(credentials)
+    try:
+        return require_json_object(credentials)
+    except (ValidationError, SorJsonValueError) as error:
+        raise SorAdapterUnavailableError(
+            "CONNECTION_CREDENTIALS_INVALID",
+            "The source connection credentials are invalid.",
+            requires_reauthorization=True,
+        ) from error
 
 
 def _normalize_auth_kind(value: ConnectionAuthKind | str) -> ConnectionAuthKind:

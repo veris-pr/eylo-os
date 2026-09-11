@@ -12,7 +12,8 @@ from eylo.common.database import start_transaction
 from eylo.framework.agents.common import FrameworkMetadata
 from eylo.framework.agents.config import RunConfig
 from eylo.framework.agents.context import RunInput
-from eylo.framework.agents.result import RunResult
+from eylo.framework.agents.errors import ModelOutputLimitError
+from eylo.framework.agents.result import RunFailureCode, RunFailureMetadata, RunResult
 from eylo.modules.agents.schemas.indb import AgentInDb
 from eylo.modules.conversations.schemas.conversations import ConversationContext
 from eylo.modules.llm_configs.wiring import resolve_pinned_llm
@@ -219,6 +220,11 @@ class BackgroundAgentWorker:
         from eylo.framework.agents.result import RunStatus
 
         if result.status is not RunStatus.COMPLETED:
+            if (
+                isinstance(result.metadata, RunFailureMetadata)
+                and result.metadata.failure_code is RunFailureCode.MODEL_OUTPUT_LIMIT
+            ):
+                raise ModelOutputLimitError
             summary = (
                 result.error_message or "Background framework run did not complete."
             )

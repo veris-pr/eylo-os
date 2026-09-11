@@ -7,10 +7,10 @@ import base64
 import hashlib
 import hmac
 import logging
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import or_, select
 
 from eylo.common.config import settings
@@ -52,9 +52,12 @@ _FAILED_RETRY_DELAY = timedelta(minutes=15)
 _MAINTENANCE_LIMIT = 10
 
 
-@dataclass(frozen=True, slots=True)
-class SorWebhookMaintenanceResult:
+class SorWebhookMaintenanceResult(BaseModel):
     """Bounded scheduler outcome for operational diagnostics."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     eligible: int
     activated: int

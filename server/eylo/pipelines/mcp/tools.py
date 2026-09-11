@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
 from uuid import UUID
 
 from eylo.common.contracts.provider_config import ProviderConfigError
@@ -11,6 +10,7 @@ from eylo.modules.mcp_servers.config import (
     resolve_mcp_server_config,
 )
 from eylo.modules.mcp_servers.service import (
+    MCPDiscoveredTool,
     MCPServerError,
     MCPServerService,
 )
@@ -20,8 +20,11 @@ from eylo.sockets.http.transport import SafeHttpTransport
 from eylo.sockets.mcp.client import (
     MCPClient,
     MCPError,
+    MCPErrorCode,
     MCPHttpTransport,
 )
+
+from .errors import MCPFailureCode
 
 
 class MCPToolError(Exception):
@@ -29,7 +32,7 @@ class MCPToolError(Exception):
 
     def __init__(
         self,
-        code: str,
+        code: MCPFailureCode | MCPErrorCode,
         message: str,
         *,
         retryable: bool = False,
@@ -40,7 +43,7 @@ class MCPToolError(Exception):
 
 
 def server_config(
-    config: dict[str, Any] | None,
+    config: object,
     *,
     organization_id: UUID,
     server_id: UUID,
@@ -56,7 +59,7 @@ def server_config(
         )
     except (ProviderConfigError, SecretCipherError, ValueError):
         raise MCPToolError(
-            "configuration_unavailable",
+            MCPFailureCode.CONFIGURATION_UNAVAILABLE,
             "MCP server configuration is unavailable.",
         ) from None
 
@@ -65,7 +68,7 @@ async def discover_tools(
     *,
     config: ResolvedMCPServerConfig,
     transport: MCPHttpTransport | None = None,
-) -> list[dict[str, Any]]:
+) -> list[MCPDiscoveredTool]:
     """Return one complete, bounded, successful `tools/list` snapshot."""
     try:
         tools = await MCPClient(
@@ -80,13 +83,13 @@ async def discover_tools(
             retryable=error.retryable,
         ) from None
     return [
-        {
-            "name": tool.name,
-            "description": tool.description,
-            "input_schema": tool.input_schema,
-            "output_schema": tool.output_schema,
-            "annotations": tool.annotations,
-        }
+        MCPDiscoveredTool(
+            name=tool.name,
+            description=tool.description,
+            input_schema=tool.input_schema,
+            output_schema=tool.output_schema,
+            annotations=tool.annotations,
+        )
         for tool in tools
     ]
 

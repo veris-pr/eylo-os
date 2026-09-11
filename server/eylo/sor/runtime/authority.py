@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -39,17 +40,30 @@ from eylo.sor.shared.models import (
 )
 
 
+class SorAuthorityFailure(StrEnum):
+    """Stable runtime-owned refusal categories; vendor failures stay separate."""
+
+    AGENT_REVISION_TOOL_UNAVAILABLE = "AGENT_REVISION_TOOL_UNAVAILABLE"
+    AGENT_REVISION_UNAVAILABLE = "AGENT_REVISION_UNAVAILABLE"
+    SOR_SOURCE_UNAVAILABLE = "SOR_SOURCE_UNAVAILABLE"
+    SOR_TOOL_ENTITY_UNAVAILABLE = "SOR_TOOL_ENTITY_UNAVAILABLE"
+    SOR_TOOL_UNAVAILABLE = "SOR_TOOL_UNAVAILABLE"
+
+
 class SorAuthorityError(Exception):
     """A safe refusal that does not reveal unavailable source identities."""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: SorAuthorityFailure, message: str) -> None:
         super().__init__(message)
         self.code = code
 
 
-@dataclass(frozen=True, slots=True)
-class AuthorizedSorSource:
+class AuthorizedSorSource(BaseModel):
     """Immutable facts an Agent read or command may use after authorization."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     source_id: UUID
     name: str
@@ -81,12 +95,12 @@ def resolve_profile_tool(
     )
     if tool is None or (effect is not None and tool.effect is not effect):
         raise SorAuthorityError(
-            "SOR_TOOL_UNAVAILABLE",
+            SorAuthorityFailure.SOR_TOOL_UNAVAILABLE,
             "The requested source tool is unavailable.",
         )
     if entity is not None and entity not in tool.target_entities:
         raise SorAuthorityError(
-            "SOR_TOOL_ENTITY_UNAVAILABLE",
+            SorAuthorityFailure.SOR_TOOL_ENTITY_UNAVAILABLE,
             "The requested source tool cannot target this entity.",
         )
     return tool
@@ -248,7 +262,7 @@ async def resolve_agent_sources(
 
     if requested and {source.id for _, _, source in authorized_rows} != set(requested):
         raise SorAuthorityError(
-            "SOR_SOURCE_UNAVAILABLE",
+            SorAuthorityFailure.SOR_SOURCE_UNAVAILABLE,
             "One or more requested sources are unavailable.",
         )
     return tuple(
@@ -286,7 +300,7 @@ async def _require_published_revision_tool(
     )
     if revision is None:
         raise SorAuthorityError(
-            "AGENT_REVISION_UNAVAILABLE",
+            SorAuthorityFailure.AGENT_REVISION_UNAVAILABLE,
             "The pinned Agent revision cannot access source data.",
         )
     revision_tool = await session.scalar(
@@ -301,7 +315,7 @@ async def _require_published_revision_tool(
     )
     if revision_tool is None:
         raise SorAuthorityError(
-            "AGENT_REVISION_TOOL_UNAVAILABLE",
+            SorAuthorityFailure.AGENT_REVISION_TOOL_UNAVAILABLE,
             "The pinned Agent revision has no matching source tool.",
         )
 

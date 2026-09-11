@@ -164,7 +164,7 @@ SALESFORCE_MANIFEST = SorAdapterCapabilityManifest(
             change_strategies=frozenset({SorChangeStrategy.UPDATED_AT}),
             depends_on=frozenset({SalesforceStream.CONTACT, SalesforceStream.ACCOUNT}),
             relationship_targets=SorRelationshipTargets(
-                _RELATIONSHIP_TARGETS[SalesforceStream.OPPORTUNITY]
+                by_role=_RELATIONSHIP_TARGETS[SalesforceStream.OPPORTUNITY],
             ),
         ),
         SorVendorStreamSpec(

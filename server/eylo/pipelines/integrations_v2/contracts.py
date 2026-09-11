@@ -201,6 +201,8 @@ class ApiKeyPlacement(_FrozenContract):
     in vendor code rather than stored per install. Linear, for example, sends a
     personal API key as the raw `Authorization` value with no `Bearer` prefix,
     and getting that wrong is a per-vendor fact no operator should have to know.
+    The prefix includes its exact separator: `Bearer ` or `Token token=`.
+    Credential placement appends the key verbatim; it adds no whitespace.
     """
 
     location: CredentialLocation

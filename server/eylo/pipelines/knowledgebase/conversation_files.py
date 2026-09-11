@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.modules.agents.services.revisions import AgentRevisionService
@@ -24,14 +24,19 @@ class ConversationFileUploadsNotAllowed(KnowledgebaseError):
     """The exact Agent revision does not permit end-user file uploads."""
 
 
-@dataclass(frozen=True, slots=True)
-class ConversationFileUploadAuthority:
+class ConversationFileUploadAuthority(BaseModel):
+    """Exact published references resolved from contact-owned conversation authority."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
     organization_id: UUID
     conversation_id: UUID
     agent_id: UUID
-    agent_revision: int
+    agent_revision: int = Field(gt=0)
     embedding_provider_config_id: UUID
-    embedding_provider_config_revision: int
+    embedding_provider_config_revision: int = Field(gt=0)
 
 
 async def resolve_conversation_file_upload_authority(

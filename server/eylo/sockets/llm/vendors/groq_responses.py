@@ -11,6 +11,7 @@ from eylo.sockets.llm.schemas import (
     LLMDeltaKind,
     LLMResponse,
     LLMResponseMetadata,
+    LLMStopReason,
     LLMTextBlock,
     LLMTextContent,
     LLMTextDelta,
@@ -63,10 +64,10 @@ class GroqResponseMetadata(BaseModel):
 
 
 _STOP_REASONS = {
-    GroqFinishReason.STOP: "end_turn",
-    GroqFinishReason.LENGTH: "max_tokens",
-    GroqFinishReason.TOOL_CALLS: "tool_use",
-    GroqFinishReason.CONTENT_FILTER: "content_filter",
+    GroqFinishReason.STOP: LLMStopReason.END_TURN,
+    GroqFinishReason.LENGTH: LLMStopReason.MAX_TOKENS,
+    GroqFinishReason.TOOL_CALLS: LLMStopReason.TOOL_USE,
+    GroqFinishReason.CONTENT_FILTER: LLMStopReason.CONTENT_FILTER,
 }
 
 

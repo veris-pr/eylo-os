@@ -13,8 +13,11 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
+from uuid import UUID
 
 import arrow
+from pydantic import JsonValue
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -36,6 +39,7 @@ from eylo.modules.scheduler.models import (
 )
 from eylo.modules.scheduler.persistence import PostgresSchedulerStore
 from eylo.modules.scheduler.recurrence import next_occurrence, resolve_due
+from eylo.modules.scheduler.run_context import ScheduleRunContext
 
 logger = logging.getLogger(__name__)
 
@@ -83,14 +87,15 @@ async def dispatch_due_schedules() -> dict:
 
 
 async def _dispatch_one(
-    adapter,
+    adapter: PostgresSchedulerStore,
     schedule_id: str,
     schedule_revision: int,
-    now,
+    now: datetime,
 ) -> int:
-    """File occurrences against the revision captured by the due claim."""
+    """Translate the store's string ID before constructing UUID-owned ORM rows."""
+    schedule_record_id = UUID(schedule_id)
     async with start_transaction() as session:
-        schedule = await session.get(ScheduleModel, schedule_id)
+        schedule = await session.get(ScheduleModel, schedule_record_id)
         if schedule is None:
             return 0
         definition = await session.scalar(
@@ -164,7 +169,7 @@ async def _dispatch_one(
         async with start_transaction() as session:
             run = ScheduleRunModel(
                 organization_id=organization_id,
-                schedule_id=schedule_id,
+                schedule_id=schedule_record_id,
                 schedule_revision=schedule_revision,
                 agent_id=agent_id,
                 agent_revision=agent_revision,
@@ -307,16 +312,17 @@ def _schedule_goal(action: str, payload: dict) -> str:
     )
 
 
-def _schedule_context_manifest(run: ScheduleRunModel) -> dict:
-    return {
-        "schedule_id": str(run.schedule_id),
-        "schedule_revision": run.schedule_revision,
-        "schedule_run_id": str(run.id),
-        "scheduled_for": run.scheduled_for.isoformat(),
-        "action": run.action,
-        "payload": dict(run.payload or {}),
-        "misfired_count": run.misfired_count,
-    }
+def _schedule_context_manifest(run: ScheduleRunModel) -> dict[str, JsonValue]:
+    """Validate the pinned occurrence without changing its persisted JSON shape."""
+    return ScheduleRunContext(
+        schedule_id=run.schedule_id,
+        schedule_revision=run.schedule_revision,
+        schedule_run_id=run.id,
+        scheduled_for=run.scheduled_for,
+        action=run.action,
+        payload=dict(run.payload or {}),
+        misfired_count=run.misfired_count,
+    ).model_dump(mode="json")
 
 
 async def _spawn_unbound_schedule_agent_runs() -> tuple[int, int]:

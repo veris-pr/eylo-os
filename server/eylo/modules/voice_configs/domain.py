@@ -458,7 +458,7 @@ class VoiceProviderConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate_kind(self) -> Self:
-        _validate_provider_kind(self.provider, self.kind)
+        validate_voice_provider_kind(self.provider, self.kind)
         return self
 
     def to_storage_config(self) -> dict[str, object]:
@@ -514,7 +514,8 @@ def _parse_provider(provider: str, kind: VoiceKind) -> VoiceProvider:
     raise InvalidVoiceConfig(f"Unknown voice kind: {kind}")
 
 
-def _validate_provider_kind(provider: VoiceProvider, kind: VoiceKind) -> None:
+def validate_voice_provider_kind(provider: VoiceProvider, kind: VoiceKind) -> None:
+    """Refuse a provider from a different voice capability, even with shared names."""
     matches = (
         (kind is VoiceKind.STT and isinstance(provider, STTProviders))
         or (kind is VoiceKind.TTS and isinstance(provider, TTSProviders))

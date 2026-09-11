@@ -33,6 +33,113 @@ tool-stream and mutation-result mappings are copied and frozen so changing a
 vendor's source dictionary cannot change an already registered capability.
 Factory callables retain their identity and never enter catalog snapshots.
 
+Shared catalog entries, mapping/stream drafts and relationship intents are also
+strict Pydantic values. API parsing converts wire enums before constructing
+internal drafts; transformation settings admit only finite JSON. Relationship
+roles use platform enums internally and explicit wire conversion at serialization
+boundaries. Projection outcomes preserve the profile payload's concrete type and
+identity, while excluding its content from generic diagnostic snapshots. These
+contracts do not move mapping or relationship policy out of domain services.
+
+Vendor cursor and snapshot values are validated Pydantic objects inside their
+adapters; vendor codecs still own durable cursor formats, version compatibility
+and malformed-cursor errors. Connector projections hold live ORM instances, not
+copies, and omit those rows from generic snapshots. Explicit read projections
+remain responsible for the public response. Media values similarly omit raw bytes
+and document content from diagnostics while retaining direct runtime access.
+
+Source payloads, external records and record pages are frozen Pydantic contracts.
+Runtime-discovered fields remain a dynamic mapping; native vendor schemas stay
+inside their adapters. Raw payloads are excluded from generic runtime snapshots
+and representations. Persistence uses an explicit encoder, not `model_dump()` on
+the live record.
+
+The shared SOR HTTP client returns frozen Pydantic JSON/binary response values.
+HTTP status and header shapes are strict; JSON is validated as finite before a
+vendor parser receives it. Invalid JSON numbers produce the existing terminal
+`VENDOR_RESPONSE_INVALID` classification. Raw headers, bodies and attachment
+bytes are excluded from generic representations and snapshots; adapters still
+read explicit attributes for correlation IDs, pagination and media handling.
+This envelope does not replace each vendor's request/response schema. Existing
+origin pinning, byte limits, retries and cancellation remain transport-owned.
+
+Canonical CRM, Ticketing, Knowledge and Support records use a shared, strict
+Pydantic base at the adapter-to-profile boundary. Native construction preserves
+platform enum, decimal, timestamp and relationship-ID types. Unknown fields and
+invalid native values fail before a profile write. Custom fields and raw document
+or message bodies accept finite JSON values, not arbitrary Python objects.
+Fields are top-level frozen; nested JSON is copied and validated, not recursively
+immutable. Raw source bodies and attachment bytes are omitted from generic
+snapshots and representations. Profile services still persist explicit attributes;
+`model_dump()` is not a substitute for that persistence path. Domain services
+retain their field budgets, relationship rules and transaction ownership.
+
+Audit and related-record read contexts are also typed Pydantic values. Live ORM
+source/record references retain identity and are excluded from snapshots and
+generated JSON schemas. The public response models still select the visible
+fields explicitly. Support message visibility/direction and SLA state, plus
+Knowledge source format, are restored to profile enums when reading stored rows;
+their public JSON spelling remains unchanged.
+
+Periodic sync, webhook refetches and command readbacks share the same stored-record
+codec in `sor/runtime/serialization.py`. It preserves the existing JSON envelope
+and timestamp spelling, validates timezone-aware timestamps and finite JSON
+values, and rejects malformed records rather than projecting partial data. Sync
+retains ownership of page-count and byte limits. Validation failures are terminal
+contract errors with a safe summary; vendor transport failures retain their
+existing retry classification. This contract change does not require a DB migration.
+
+Command authority, filings, claims and vendor request/results also use strict
+Pydantic values. Validated command subclasses retain identity across the runtime
+boundary; raw arguments and responses are excluded from generic snapshots.
+`SorStoredCommandResult` explicitly retains response data for durable recovery,
+with the existing six-field JSON envelope. Missing, extra or invalid fields are
+terminal contract failures. Runtime refusal enums retain existing stored codes;
+vendor failures keep their adapter-owned classification. None of these value
+contracts grants authority: command execution still rechecks live source, grant,
+published revision and run state at the existing transaction boundaries.
+
+Command receipts remain typed through worker execution and Agent-tool resume.
+`SorCommandReceipt` carries UUID identity, the command-state enum and finite JSON
+result data. Terminal status comes from the existing command state machine.
+The Absurd return boundary explicitly encodes that receipt as JSON; internal
+callers do not inspect untyped receipt dictionaries. Model-facing SOR outcomes
+use a discriminated result union, with error status derived from its kind. A
+successful command result requires a succeeded receipt. The conversation tool
+executor explicitly serializes content and metadata into the framework contract;
+the private outcome snapshot excludes tool content.
+
+Adapter configuration and discovery values use typed Pydantic contracts too.
+Decrypted credentials and source settings are copied, validated as finite JSON
+and sealed at the top level before factory invocation. Credentials and webhook
+secrets never enter generic snapshots; adapters still receive the explicit
+values needed for vendor requests. Verification and discovered fields/objects
+return typed values through the existing schema snapshot and difference logic.
+Field data types are platform enums, restored explicitly from persisted snapshots.
+Discovery phase/failure enums retain current state transitions and stored codes;
+vendor I/O still runs outside the short commit transactions. A verified API-key
+candidate carries its secret only to encrypted connection creation, not to a
+response or generic snapshot.
+
+OAuth authorization and refresh carry typed immutable context, grant and renewal
+values. Client secrets, PKCE verifiers, tokens and authorization URLs are omitted
+from generic snapshots and representations; the public authorization response
+selects its URL explicitly. Token bodies validate finite JSON before interpretation.
+Runtime failure enums preserve existing error codes and retry decisions.
+Basic client authentication uses origin-bound headers for the resolved token
+endpoint, never public headers. Token requests refuse redirects for both Basic
+and body authentication. Vendor I/O remains outside the revision-checked commit
+transaction. Native token field schemas remain a separate typing work item.
+
+Webhook signals and subscriptions are typed at the vendor/runtime boundary.
+Vendor event names and stream identifiers remain vendor-defined strings there;
+subscription lifecycle operations use the shared state enum. App-level authority
+preserves live source ORM identity without serializing those rows or its signing
+secret. Subscription plans similarly exclude endpoint tokens and nested signing
+secrets from generic snapshots. Receipt persistence still explicitly writes the
+normalized five-field signal envelope, keeping deduplication and replay separate
+from model snapshots.
+
 On execution, HubSpot validates shared stream/tool identifiers against its own
 enum and the active source selection before constructing HTTP requests. Custom
 property names remain dynamic mapping data. Its webhook normalizer retains the
@@ -207,6 +314,15 @@ rechecks the binding under the product-row lock. A cancelled task cancels the
 unfinished receipt; a failed task, or completed task without a committed product
 result, fails it. Terminal product rows are not overwritten. Source projection
 and generation advancement happen after the receipt transaction commits.
+
+Sync, command and webhook work share lifecycle orchestration, not interchangeable
+row schemas. The frozen `SorWorkContract` validates the model's own state enum;
+`SorBoundWorkService` retains that model type through reads and transitions.
+Successful sync work accepts `SorSyncCounts`, command work accepts
+`SorCommandCompletion`, and webhook work has no completion payload. Result fields
+are assigned explicitly; callers cannot supply arbitrary ORM attribute names.
+Command result JSON is finite and excluded from diagnostic snapshots. Task spawn
+and engine cancellation remain outside the short product-row transactions.
 
 HTTP contract refusals (invalid requests, query values, redirects or response
 media) retain typed terminal vendor errors. They must not become generic Python

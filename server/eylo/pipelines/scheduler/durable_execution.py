@@ -6,11 +6,13 @@ import json
 from collections.abc import Callable
 from uuid import UUID
 
+from pydantic import JsonValue, ValidationError
 from sqlalchemy import select
 
 from eylo.common.config import settings
 from eylo.common.contracts.tool_availability import ToolRuntimeFact
 from eylo.common.database import get_transaction, start_transaction
+from eylo.common.revisions import RevisionAvailability
 from eylo.framework.agents.config import RunConfig, RunPromptCaching, RunStreaming
 from eylo.framework.agents.context import RunContext, RunInput, RunMessage
 from eylo.framework.agents.hooks import RunCallbacks
@@ -48,6 +50,7 @@ from eylo.modules.agent_runs.workflow import (
 )
 from eylo.modules.llm_configs.wiring import resolve_pinned_llm
 from eylo.modules.scheduler.models import ScheduleRevisionModel, ScheduleRunModel
+from eylo.modules.scheduler.run_context import ScheduleRunContext
 from eylo.modules.templates.domain import TemplateConsumerKind
 from eylo.pipelines.agent_execution_context import (
     AgentExecutionContext,
@@ -56,11 +59,13 @@ from eylo.pipelines.agent_execution_context import (
     PlatformRunState,
 )
 from eylo.pipelines.agent_run_continuations import (
+    RunResumeReceipt,
     RunToolCallSnapshot,
     ScheduledRunContinuation,
     parse_run_continuation,
 )
 from eylo.pipelines.agent_run_heartbeat import run_with_agent_heartbeat
+from eylo.pipelines.agent_run_results import ScheduledRunSummary
 from eylo.pipelines.agent_run_tools import bind_agent_run_tool_command
 from eylo.pipelines.agent_run_transcript import (
     AgentRunToolCapture,
@@ -249,7 +254,7 @@ class ScheduledFrameworkRunner:
             ) from error
         call = continuation.scheduled.tool_call
 
-        async def resolve_result() -> dict:
+        async def resolve_result() -> dict[str, bool]:
             if isinstance(wait, AgentApprovalWaitState):
                 response = wait.require_response()
                 if response.decision is AgentApprovalDecision.REJECT:
@@ -298,20 +303,21 @@ class ScheduledFrameworkRunner:
                     },
                 )
             await transcript.record_tool_result(call, result)
-            return {"recorded": True, "is_error": result.is_error}
+            return RunResumeReceipt(
+                recorded=True, is_error=result.is_error
+            ).model_dump(mode="json")
 
         checkpointed = await workflow_context.step(
             key=f"resume:{wait.request_id}",
             version=1,
             operation=resolve_result,
         )
-        if (
-            not isinstance(checkpointed, dict)
-            or checkpointed.get("recorded") is not True
-        ):
+        try:
+            RunResumeReceipt.model_validate(checkpointed)
+        except ValidationError as error:
             raise ScheduledAgentRunInvalid(
                 "Scheduled AgentRun resume receipt is invalid."
-            )
+            ) from error
         tool_result = await transcript.tool_result(call)
         if tool_result is None:
             raise ScheduledAgentRunInvalid(
@@ -571,7 +577,7 @@ def _terminal_fields(
 ) -> tuple[
     AgentRunLifecycle,
     AgentRunOutcome,
-    dict | None,
+    dict[str, JsonValue] | None,
     str | None,
     str | None,
 ]:
@@ -601,15 +607,21 @@ def _terminal_fields(
     )
 
 
-def _run_result(claim: AgentRunExecutionClaim, result: RunResult) -> dict:
-    projected = {
-        "kind": "scheduled_agent",
-        "schedule_run_id": str(claim.origin_schedule_run_id),
-        "framework_run_id": str(result.run_id),
-        "framework_status": result.status.value,
-        "output": result.final_output,
-        "usage": result.usage.model_dump(mode="json"),
-    }
+def _run_result(
+    claim: AgentRunExecutionClaim, result: RunResult
+) -> dict[str, JsonValue]:
+    if claim.origin_schedule_run_id is None:
+        raise ScheduledAgentRunInvalid("Scheduled result has no occurrence identity.")
+    try:
+        projected = ScheduledRunSummary(
+            schedule_run_id=claim.origin_schedule_run_id,
+            framework_run_id=result.run_id,
+            framework_status=result.status,
+            output=result.final_output,
+            usage=result.usage,
+        ).model_dump(mode="json")
+    except ValidationError as error:
+        raise ScheduledAgentRunInvalid("Scheduled result is invalid.") from error
     if len(json.dumps(projected, separators=(",", ":")).encode("utf-8")) > 65536:
         raise ScheduledAgentRunInvalid(
             "Scheduled agent result exceeds the canonical 65536-byte limit."
@@ -625,6 +637,12 @@ async def _validate_occurrence(claim: AgentRunExecutionClaim) -> None:
         raise ScheduledAgentRunInvalid(
             "Scheduled execution requires a schedule occurrence origin."
         )
+    try:
+        run_context = ScheduleRunContext.model_validate_json(
+            json.dumps(claim.context_manifest, allow_nan=False)
+        )
+    except ValueError as error:
+        raise ScheduledAgentRunInvalid("Schedule context is invalid.") from error
     async with start_transaction(ro=True) as session:
         occurrence = await session.scalar(
             select(ScheduleRunModel).where(
@@ -643,15 +661,14 @@ async def _validate_occurrence(claim: AgentRunExecutionClaim) -> None:
                 ScheduleRevisionModel.deleted.is_(False),
             )
         )
-    if revision is None or revision.availability != "published":
+    if revision is None or revision.availability != RevisionAvailability.PUBLISHED:
         raise ScheduledAgentRunCancelled
     if (
         occurrence.agent_id != claim.agent_id
         or occurrence.agent_revision != claim.agent_revision
-        or claim.context_manifest.get("schedule_run_id") != str(occurrence.id)
-        or claim.context_manifest.get("schedule_id") != str(occurrence.schedule_id)
-        or claim.context_manifest.get("schedule_revision")
-        != occurrence.schedule_revision
+        or run_context.schedule_run_id != occurrence.id
+        or run_context.schedule_id != occurrence.schedule_id
+        or run_context.schedule_revision != occurrence.schedule_revision
     ):
         raise ScheduledAgentRunInvalid(
             "AgentRun does not match its immutable schedule occurrence."

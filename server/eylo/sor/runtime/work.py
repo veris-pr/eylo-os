@@ -3,18 +3,39 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 from datetime import datetime, timezone
-from enum import Enum
-from typing import Any
+from typing import Self, overload
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic.json_schema import SkipJsonSchema
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.database import start_transaction
 from eylo.durable_runtime import PlatformDurableRuntime
-from eylo.sor.shared.models import SorSourceModel
+from eylo.sor.shared.contracts import (
+    SorCommandState,
+    SorSourceState,
+    SorWebhookReceiptState,
+    SorWorkState,
+)
+from eylo.sor.shared.json_values import SorJsonValue
+from eylo.sor.shared.models import (
+    SorCommandModel,
+    SorSourceModel,
+    SorSyncRunModel,
+    SorWebhookReceiptModel,
+)
+from eylo.sor.shared.sync_services import SorSyncCounts
+
+type SorWorkRow = SorSyncRunModel | SorCommandModel | SorWebhookReceiptModel
+type SorWorkLifecycleState = SorWorkState | SorCommandState | SorWebhookReceiptState
+
+SOR_WORK_ERROR_CODE_LIMIT = 128
+SOR_WORK_ERROR_SUMMARY_LIMIT = 8192
+SOR_WORK_RECOVERY_LIMIT = 100
+SOR_WORK_RECOVERY_MAX_LIMIT = 1000
 
 
 class SorWorkNotFound(Exception):
@@ -29,41 +50,94 @@ class SorWorkConflict(Exception):
     """A SOR work row cannot accept the requested lifecycle transition."""
 
 
-@dataclass(frozen=True, slots=True)
-class SorWorkContract:
+class SorWorkContract[
+    WorkModel: SorSyncRunModel | SorCommandModel | SorWebhookReceiptModel
+](BaseModel):
     """Describe one persisted SOR lifecycle without flattening its domain enum."""
 
-    model: type[Any]
-    pending: Enum
-    running: Enum
-    succeeded: Enum
-    failed: Enum
-    terminal: frozenset[Enum]
-    error_code_field: str
-    error_summary_field: str = "safe_error_summary"
-    cancelled: Enum | None = None
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
-    def __post_init__(self) -> None:
-        required = {
+    model: SkipJsonSchema[type[WorkModel]] = Field(repr=False, exclude=True)
+    pending: SorWorkLifecycleState
+    running: SorWorkLifecycleState
+    succeeded: SorWorkLifecycleState
+    failed: SorWorkLifecycleState
+    terminal: frozenset[SorWorkLifecycleState]
+    cancelled: SorWorkLifecycleState | None = None
+
+    @model_validator(mode="after")
+    def validate_lifecycle(self) -> Self:
+        states = [
             self.pending,
             self.running,
             self.succeeded,
             self.failed,
-        }
-        if not required.issubset(self.terminal | {self.pending, self.running}):
-            raise ValueError("SOR work contract states are internally inconsistent.")
+            *self.terminal,
+        ]
+        if self.cancelled is not None:
+            states.append(self.cancelled)
+        expected = _state_type(self.model)
+        if any(type(state) is not expected for state in states):
+            raise ValueError("SOR work states must belong to the row's lifecycle enum.")
         if self.succeeded not in self.terminal or self.failed not in self.terminal:
             raise ValueError("SOR success and failure states must be terminal.")
         if self.cancelled is not None and self.cancelled not in self.terminal:
             raise ValueError("SOR cancellation state must be terminal.")
+        return self
 
 
-class SorBoundWorkService:
+class SorCommandCompletion(BaseModel):
+    """Only command result fields that may be committed with successful work."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    safe_result: dict[str, SorJsonValue] = Field(repr=False, exclude=True)
+    source_revision_after: str | None
+
+
+def _state_type(model: type[SorWorkRow]) -> type[SorWorkLifecycleState]:
+    if issubclass(model, SorSyncRunModel):
+        return SorWorkState
+    if issubclass(model, SorCommandModel):
+        return SorCommandState
+    return SorWebhookReceiptState
+
+
+def _set_state(row: SorWorkRow, state: SorWorkLifecycleState) -> None:
+    """Keep independently owned lifecycle enums intact at the ORM boundary."""
+    if isinstance(row, SorSyncRunModel) and isinstance(state, SorWorkState):
+        row.state = state
+    elif isinstance(row, SorCommandModel) and isinstance(state, SorCommandState):
+        row.state = state
+    elif isinstance(row, SorWebhookReceiptModel) and isinstance(
+        state, SorWebhookReceiptState
+    ):
+        row.state = state
+    else:
+        raise SorWorkConflict("SOR state does not belong to the work row's lifecycle.")
+
+
+def _set_error(row: SorWorkRow, code: str | None, summary: str | None) -> None:
+    code = code[:SOR_WORK_ERROR_CODE_LIMIT] if code is not None else None
+    if isinstance(row, SorCommandModel):
+        row.safe_error_category = code
+    else:
+        row.safe_error_code = code
+    row.safe_error_summary = (
+        summary[:SOR_WORK_ERROR_SUMMARY_LIMIT] if summary is not None else None
+    )
+
+
+class SorBoundWorkService[WorkModel: SorWorkRow]:
     """Lock and project one typed SOR lifecycle while Absurd owns execution."""
 
     def __init__(
         self,
-        contract: SorWorkContract,
+        contract: SorWorkContract[WorkModel],
         session: AsyncSession,
     ) -> None:
         self.contract = contract
@@ -75,7 +149,7 @@ class SorBoundWorkService:
         work_id: UUID,
         organization_id: UUID,
         for_update: bool = False,
-    ) -> Any:
+    ) -> WorkModel:
         model = self.contract.model
         query = select(model).where(
             model.id == work_id,
@@ -94,7 +168,7 @@ class SorBoundWorkService:
         *,
         work_id: UUID,
         organization_id: UUID,
-    ) -> Any:
+    ) -> WorkModel:
         row = await self.get(
             work_id=work_id,
             organization_id=organization_id,
@@ -108,7 +182,7 @@ class SorBoundWorkService:
             raise SorWorkConflict(
                 f"A {row.state.value} SOR row cannot begin an attempt."
             )
-        row.state = self.contract.running
+        _set_state(row, self.contract.running)
         row.attempts += 1
         row.started_at = row.started_at or datetime.now(timezone.utc)
         row.finished_at = None
@@ -144,13 +218,39 @@ class SorBoundWorkService:
         await self.session.flush()
         return True, self._cancelled(row)
 
+    @overload
+    async def succeed(
+        self: SorBoundWorkService[SorSyncRunModel],
+        *,
+        work_id: UUID,
+        organization_id: UUID,
+        values: SorSyncCounts,
+    ) -> SorSyncRunModel: ...
+
+    @overload
+    async def succeed(
+        self: SorBoundWorkService[SorCommandModel],
+        *,
+        work_id: UUID,
+        organization_id: UUID,
+        values: SorCommandCompletion,
+    ) -> SorCommandModel: ...
+
+    @overload
+    async def succeed(
+        self: SorBoundWorkService[SorWebhookReceiptModel],
+        *,
+        work_id: UUID,
+        organization_id: UUID,
+    ) -> SorWebhookReceiptModel: ...
+
     async def succeed(
         self,
         *,
         work_id: UUID,
         organization_id: UUID,
-        values: dict[str, Any] | None = None,
-    ) -> Any:
+        values: SorSyncCounts | SorCommandCompletion | None = None,
+    ) -> WorkModel:
         row = await self.get(
             work_id=work_id,
             organization_id=organization_id,
@@ -160,10 +260,9 @@ class SorBoundWorkService:
             return row
         if row.state is not self.contract.running:
             return row
-        self._assign(row, values or {})
-        row.state = self.contract.succeeded
-        setattr(row, self.contract.error_code_field, None)
-        setattr(row, self.contract.error_summary_field, None)
+        self._assign(row, values)
+        _set_state(row, self.contract.succeeded)
+        _set_error(row, None, None)
         row.finished_at = datetime.now(timezone.utc)
         await self.session.flush()
         return row
@@ -176,7 +275,7 @@ class SorBoundWorkService:
         error_code: str,
         error_summary: str,
         permanent: bool,
-    ) -> Enum:
+    ) -> SorWorkLifecycleState:
         row = await self.get(
             work_id=work_id,
             organization_id=organization_id,
@@ -187,9 +286,8 @@ class SorBoundWorkService:
         if row.state is not self.contract.running:
             raise SorWorkConflict(f"A {row.state.value} SOR row cannot record failure.")
         exhausted = permanent or row.attempts >= row.max_attempts
-        row.state = self.contract.failed if exhausted else self.contract.pending
-        setattr(row, self.contract.error_code_field, error_code[:128])
-        setattr(row, self.contract.error_summary_field, error_summary[:8192])
+        _set_state(row, self.contract.failed if exhausted else self.contract.pending)
+        _set_error(row, error_code, error_summary)
         row.finished_at = datetime.now(timezone.utc) if exhausted else None
         await self.session.flush()
         return row.state
@@ -202,7 +300,7 @@ class SorBoundWorkService:
         task_id: UUID,
         error_code: str,
         error_summary: str,
-    ) -> tuple[Any, bool]:
+    ) -> tuple[WorkModel, bool]:
         """Terminalize product work after its exact durable task has stopped."""
         row = await self.get(
             work_id=work_id,
@@ -213,9 +311,8 @@ class SorBoundWorkService:
             raise SorWorkConflict("SOR work is not bound to the inspected Absurd task.")
         if row.state in self.contract.terminal:
             return row, False
-        row.state = self.contract.failed
-        setattr(row, self.contract.error_code_field, error_code[:128])
-        setattr(row, self.contract.error_summary_field, error_summary[:8192])
+        _set_state(row, self.contract.failed)
+        _set_error(row, error_code, error_summary)
         row.finished_at = datetime.now(timezone.utc)
         await self.session.flush()
         return row, True
@@ -225,13 +322,15 @@ class SorBoundWorkService:
         *,
         work_id: UUID,
         organization_id: UUID,
-        state: Enum,
-        values: dict[str, Any] | None = None,
+        state: SorWorkLifecycleState,
         error_code: str | None = None,
         error_summary: str | None = None,
-    ) -> Any:
+    ) -> WorkModel:
         """Finish in a nonstandard terminal state such as command conflict."""
-        if state not in self.contract.terminal:
+        if (
+            type(state) is not type(self.contract.pending)
+            or state not in self.contract.terminal
+        ):
             raise SorWorkConflict("Requested SOR state is not terminal.")
         row = await self.get(
             work_id=work_id,
@@ -242,18 +341,8 @@ class SorBoundWorkService:
             return row
         if row.state is not self.contract.running:
             raise SorWorkConflict(f"A {row.state.value} SOR row cannot finish.")
-        self._assign(row, values or {})
-        row.state = state
-        setattr(
-            row,
-            self.contract.error_code_field,
-            error_code[:128] if error_code else None,
-        )
-        setattr(
-            row,
-            self.contract.error_summary_field,
-            error_summary[:8192] if error_summary else None,
-        )
+        _set_state(row, state)
+        _set_error(row, error_code or None, error_summary or None)
         row.finished_at = datetime.now(timezone.utc)
         await self.session.flush()
         return row
@@ -273,32 +362,47 @@ class SorBoundWorkService:
         )
         if row.state in self.contract.terminal:
             return False, row.absurd_task_id
-        row.state = self.contract.cancelled
+        _set_state(row, self.contract.cancelled)
         row.finished_at = datetime.now(timezone.utc)
         await self.session.flush()
         return True, row.absurd_task_id
 
-    def _cancelled(self, row: Any) -> bool:
+    def _cancelled(self, row: WorkModel) -> bool:
         return (
             self.contract.cancelled is not None and row.state is self.contract.cancelled
         )
 
-    def _assign(self, row: Any, values: dict[str, Any]) -> None:
-        for field, value in values.items():
-            if not hasattr(row, field):
-                raise SorWorkConflict(f"Unknown SOR result field {field}.")
-            setattr(row, field, value)
+    def _assign(
+        self, row: WorkModel, values: SorSyncCounts | SorCommandCompletion | None
+    ) -> None:
+        if isinstance(row, SorSyncRunModel) and isinstance(values, SorSyncCounts):
+            row.records_added = values.added
+            row.records_updated = values.updated
+            row.records_tombstoned = values.tombstoned
+            row.records_unchanged = values.unchanged
+            row.records_rejected = values.rejected
+        elif isinstance(row, SorCommandModel) and isinstance(
+            values, SorCommandCompletion
+        ):
+            row.safe_result = values.safe_result
+            row.source_revision_after = values.source_revision_after
+        elif isinstance(row, SorWebhookReceiptModel) and values is None:
+            return
+        else:
+            raise SorWorkConflict(
+                "SOR completion payload does not belong to the work row."
+            )
 
 
-async def spawn_sor_bound_work(
+async def spawn_sor_bound_work[WorkModel: SorWorkRow](
     *,
-    contract: SorWorkContract,
+    contract: SorWorkContract[WorkModel],
     organization_id: UUID,
     work_id: UUID,
     workflow_name: str,
     params_name: str,
     idempotency_prefix: str,
-    eligible_source_states: frozenset[Enum],
+    eligible_source_states: frozenset[SorSourceState],
 ) -> UUID:
     """Idempotently spawn and bind one already-committed SOR product row."""
     async with start_transaction(ro=True) as session:
@@ -344,15 +448,15 @@ async def spawn_sor_bound_work(
         await runtime.close()
 
 
-async def spawn_unbound_sor_work(
+async def spawn_unbound_sor_work[WorkModel: SorWorkRow](
     *,
-    contract: SorWorkContract,
+    contract: SorWorkContract[WorkModel],
     spawn: Callable[[UUID, UUID], Awaitable[UUID]],
-    eligible_source_states: frozenset[Enum],
-    limit: int = 100,
+    eligible_source_states: frozenset[SorSourceState],
+    limit: int = SOR_WORK_RECOVERY_LIMIT,
 ) -> tuple[int, list[tuple[UUID, Exception]]]:
     """Recover committed SOR outbox rows without executing the product work."""
-    if not 1 <= limit <= 1000:
+    if not 1 <= limit <= SOR_WORK_RECOVERY_MAX_LIMIT:
         raise ValueError("SOR recovery limit must be between 1 and 1000.")
     model = contract.model
     async with start_transaction(ro=True) as session:
@@ -393,8 +497,8 @@ async def spawn_unbound_sor_work(
 async def _require_spawn_source_authority(
     session: AsyncSession,
     *,
-    row: Any,
-    eligible_source_states: frozenset[Enum],
+    row: SorWorkRow,
+    eligible_source_states: frozenset[SorSourceState],
 ) -> None:
     source_id = await session.scalar(
         select(SorSourceModel.id).where(
@@ -408,9 +512,9 @@ async def _require_spawn_source_authority(
         raise SorWorkConflict("SOR work source no longer permits durable spawn.")
 
 
-async def cancel_sor_bound_work(
+async def cancel_sor_bound_work[WorkModel: SorWorkRow](
     *,
-    contract: SorWorkContract,
+    contract: SorWorkContract[WorkModel],
     organization_id: UUID,
     work_id: UUID,
 ) -> bool:

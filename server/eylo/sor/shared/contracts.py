@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from types import MappingProxyType
@@ -14,15 +13,29 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    InstanceOf,
     JsonValue,
     TypeAdapter,
     field_serializer,
     field_validator,
     model_validator,
 )
+from pydantic.json_schema import SkipJsonSchema
 
 from eylo.modules.connections.domain import ConnectionAuthKind
-from eylo.sor.shared.json_values import to_json_value
+from eylo.sor.shared.json_values import SorJsonValue, to_json_value
+
+
+class _SorValue(BaseModel):
+    """Strict immutable shared values; services retain domain policy ownership."""
+
+    model_config = ConfigDict(
+        frozen=True,
+        strict=True,
+        extra="forbid",
+        validate_default=True,
+        hide_input_in_errors=True,
+    )
 
 
 class SorProfile(str, Enum):
@@ -231,25 +244,32 @@ class SorRelationshipDirection(str, Enum):
     INCOMING = "incoming"
 
 
-@dataclass(frozen=True, slots=True)
-class SorRelationshipTargets:
+class SorRelationshipTargets(_SorValue):
     """Typed relationship-role routing with explicit JSON conversion."""
 
-    by_role: Mapping[SorRelationshipRole, str] = field(default_factory=dict)
+    by_role: Mapping[SorRelationshipRole, str] = Field(default_factory=dict)
 
-    def __post_init__(self) -> None:
-        normalized = {
-            SorRelationshipRole(role): target
-            for role, target in self.by_role.items()
-        }
-        if not all(isinstance(target, str) and target for target in normalized.values()):
-            raise TypeError("SOR relationship targets must be non-empty strings.")
-        object.__setattr__(self, "by_role", MappingProxyType(normalized))
+    @field_validator("by_role")
+    @classmethod
+    def _seal_targets(
+        cls, values: Mapping[SorRelationshipRole, str]
+    ) -> Mapping[SorRelationshipRole, str]:
+        if not all(values.values()):
+            raise ValueError("SOR relationship targets must be non-empty strings.")
+        return MappingProxyType(dict(values))
+
+    @field_serializer("by_role")
+    def _targets_snapshot(
+        self, values: Mapping[SorRelationshipRole, str]
+    ) -> dict[str, str]:
+        return {role.value: target for role, target in values.items()}
 
     @classmethod
     def from_wire(cls, values: Mapping[str, str]) -> "SorRelationshipTargets":
         return cls(
-            by_role={SorRelationshipRole(role): target for role, target in values.items()}
+            by_role={
+                SorRelationshipRole(role): target for role, target in values.items()
+            }
         )
 
     def target(self, role: SorRelationshipRole) -> str | None:
@@ -606,8 +626,7 @@ class SorConfigurationFieldKind(str, Enum):
     STRING_LIST = "STRING_LIST"
 
 
-@dataclass(frozen=True, slots=True)
-class SorCanonicalFieldSpec:
+class SorCanonicalFieldSpec(_SorValue):
     """One stable Eylo-owned field available as a mapping target."""
 
     key: str
@@ -617,12 +636,8 @@ class SorCanonicalFieldSpec:
     writable: bool = True
     required: bool = False
 
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "data_type", SorFieldDataType(self.data_type))
 
-
-@dataclass(frozen=True, slots=True)
-class SorEntitySpec:
+class SorEntitySpec(_SorValue):
     """One canonical entity exposed by a profile."""
 
     key: str
@@ -631,8 +646,7 @@ class SorEntitySpec:
     fields: tuple[SorCanonicalFieldSpec, ...] = ()
 
 
-@dataclass(frozen=True, slots=True)
-class SorToolSpec:
+class SorToolSpec(_SorValue):
     """One stable profile-native Agent tool name."""
 
     name: str
@@ -643,8 +657,7 @@ class SorToolSpec:
     entities: frozenset[str]
 
 
-@dataclass(frozen=True, slots=True)
-class SorProfileSpec:
+class SorProfileSpec(_SorValue):
     """Human and Agent-facing contract for one SOR profile."""
 
     profile: SorProfile
@@ -654,8 +667,7 @@ class SorProfileSpec:
     tools: tuple[SorToolSpec, ...]
 
 
-@dataclass(frozen=True, slots=True)
-class SorVendorCandidate:
+class SorVendorCandidate(_SorValue):
     """A roadmap catalog entry that does not claim an executable adapter."""
 
     profile: SorProfile
@@ -690,8 +702,7 @@ class SorVendorStreamSpec(BaseModel):
         return {"by_role": value.to_wire()}
 
 
-@dataclass(frozen=True, slots=True)
-class SorRelationIntentDraft:
+class SorRelationIntentDraft(_SorValue):
     """Exact same-source endpoint identities emitted by profile projection."""
 
     from_vendor_object_key: str
@@ -705,18 +716,20 @@ class SorRelationIntentDraft:
     source_revision: str | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class SorOAuthOriginOption:
+class SorOAuthOriginOption(BaseModel):
     """One exact API region and the consent host paired with it."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
     api_origin: str
     authorization_origin: str
     label: str
 
 
-@dataclass(frozen=True, slots=True)
-class SorOAuthSpec:
+class SorOAuthSpec(BaseModel):
     """Pinned OAuth protocol facts owned by one executable vendor adapter."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
     authorization_url: str | None = None
     token_url: str | None = None
@@ -728,12 +741,8 @@ class SorOAuthSpec:
     authorization_params: tuple[tuple[str, str], ...] = ()
     authorization_response_type: str | None = "code"
     send_authorization_scope: bool = True
-    token_request_format: SorOAuthTokenRequestFormat = (
-        SorOAuthTokenRequestFormat.FORM
-    )
-    token_client_auth_method: SorOAuthClientAuthMethod = (
-        SorOAuthClientAuthMethod.BODY
-    )
+    token_request_format: SorOAuthTokenRequestFormat = SorOAuthTokenRequestFormat.FORM
+    token_client_auth_method: SorOAuthClientAuthMethod = SorOAuthClientAuthMethod.BODY
     token_grant_type: str | None = "authorization_code"
     send_token_redirect_uri: bool = True
     pkce: bool = False
@@ -742,21 +751,8 @@ class SorOAuthSpec:
     instance_origin_options: tuple[SorOAuthOriginOption, ...] = ()
     operator_instance_origin: bool = False
 
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "token_request_format",
-            SorOAuthTokenRequestFormat(self.token_request_format),
-        )
-        object.__setattr__(
-            self,
-            "token_client_auth_method",
-            SorOAuthClientAuthMethod(self.token_client_auth_method),
-        )
 
-
-@dataclass(frozen=True, slots=True)
-class SorAdapterConfigurationFieldSpec:
+class SorAdapterConfigurationFieldSpec(_SorValue):
     """One schema-driven non-secret source setting rendered by the console."""
 
     key: str
@@ -825,7 +821,10 @@ class SorAdapterCapabilityManifest(BaseModel):
         return MappingProxyType(dict(value))
 
     @field_serializer(
-        "required_scopes", "tool_required_scopes", "tool_streams", "mutation_result_streams"
+        "required_scopes",
+        "tool_required_scopes",
+        "tool_streams",
+        "mutation_result_streams",
     )
     def _mapping_snapshot(
         self,
@@ -836,9 +835,10 @@ class SorAdapterCapabilityManifest(BaseModel):
         return dict(value)
 
 
-@dataclass(frozen=True, slots=True)
-class SorAdapterFieldSelection:
+class SorAdapterFieldSelection(BaseModel):
     """One field selected by the active mapping and exposed to an adapter."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
     vendor_object_key: str
     vendor_field_key: str
@@ -846,9 +846,16 @@ class SorAdapterFieldSelection:
     writable: bool
 
 
-@dataclass(frozen=True, slots=True)
-class SorAdapterContext:
+class SorAdapterContext(BaseModel):
     """Resolved, tenant-owned inputs used to construct one adapter instance."""
+
+    model_config = ConfigDict(
+        frozen=True,
+        strict=True,
+        extra="forbid",
+        hide_input_in_errors=True,
+        validate_default=True,
+    )
 
     organization_id: UUID
     source_id: UUID
@@ -860,16 +867,30 @@ class SorAdapterContext:
     selected_objects: tuple[str, ...]
     mapping_revision_id: UUID | None
     fields: tuple[SorAdapterFieldSelection, ...]
-    credentials: Mapping[str, object] = field(repr=False)
-    webhook_signing_secret: str | None = field(default=None, repr=False)
-    webhook_auth_secret: str | None = field(default=None, repr=False)
+    credentials: Mapping[str, SorJsonValue] = Field(repr=False, exclude=True)
+    webhook_signing_secret: str | None = Field(default=None, repr=False, exclude=True)
+    webhook_auth_secret: str | None = Field(default=None, repr=False, exclude=True)
     webhook_subscription_id: str | None = None
-    configuration: Mapping[str, object] = field(default_factory=dict)
+    configuration: Mapping[str, SorJsonValue] = Field(default_factory=dict)
+
+    @field_validator("credentials", "configuration")
+    @classmethod
+    def _seal_mapping(
+        cls, value: Mapping[str, SorJsonValue]
+    ) -> Mapping[str, SorJsonValue]:
+        return MappingProxyType(dict(value))
+
+    @field_serializer("configuration")
+    def _configuration_snapshot(
+        self, value: Mapping[str, SorJsonValue]
+    ) -> dict[str, JsonValue]:
+        return dict(value)
 
 
-@dataclass(frozen=True, slots=True)
-class SorConnectionVerification:
+class SorConnectionVerification(BaseModel):
     """Bounded result of checking one configured external account."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
     account_external_id: str | None = None
     account_display_name: str | None = None
@@ -877,9 +898,10 @@ class SorConnectionVerification:
     vendor_api_version: str | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class SorDiscoveredField:
+class SorDiscoveredField(BaseModel):
     """One stable field identity discovered from a vendor object."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
     key: str
     label: str
@@ -891,13 +913,11 @@ class SorDiscoveredField:
     group: str | None = None
     vendor_type: str | None = None
 
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "data_type", SorFieldDataType(self.data_type))
 
-
-@dataclass(frozen=True, slots=True)
-class SorDiscoveredObject:
+class SorDiscoveredObject(BaseModel):
     """One source object and its stable fields."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
     key: str
     label: str
@@ -905,16 +925,16 @@ class SorDiscoveredObject:
     custom: bool = False
 
 
-@dataclass(frozen=True, slots=True)
-class SorDiscoveredSchema:
+class SorDiscoveredSchema(BaseModel):
     """Complete immutable discovery result from one adapter invocation."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
     objects: tuple[SorDiscoveredObject, ...]
     vendor_api_version: str | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class SorSourcePayload:
+class SorSourcePayload(BaseModel):
     """Immutable dynamic source fields at the vendor-to-mapping boundary.
 
     Vendor and custom fields are runtime data, so they cannot be represented by
@@ -923,12 +943,18 @@ class SorSourcePayload:
     payload.
     """
 
-    values: Mapping[str, object] = field(repr=False)
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
-    def __post_init__(self) -> None:
-        if not all(isinstance(key, str) and key for key in self.values):
-            raise TypeError("SOR source payload keys must be non-empty strings.")
-        object.__setattr__(self, "values", MappingProxyType(dict(self.values)))
+    values: Mapping[str, object] = Field(repr=False, exclude=True)
+
+    @field_validator("values")
+    @classmethod
+    def seal_fields(cls, values: Mapping[str, object]) -> Mapping[str, object]:
+        if not all(values):
+            raise ValueError("SOR source payload keys must be non-empty strings.")
+        return MappingProxyType(dict(values))
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, object]) -> "SorSourcePayload":
@@ -948,6 +974,27 @@ class SorSourcePayload:
     def to_wire(self) -> dict[str, object]:
         """Return a detached mapping for durable and persistence serialization."""
         return dict(self.values)
+
+
+class SorCanonicalRecord(BaseModel):
+    """Validated adapter output before profile storage and relationship linking.
+
+    Native constructors require exact platform types. Fields are top-level frozen
+    and nested JSON is independently validated/copied, not recursively immutable.
+    Raw source bodies are excluded from generic snapshots; profile services write
+    explicit fields, not these snapshots. Domain services still own field budgets,
+    source identity, relationships and transaction policy.
+    """
+
+    model_config = ConfigDict(
+        frozen=True,
+        strict=True,
+        extra="forbid",
+        validate_default=True,
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+        allow_inf_nan=False,
+    )
 
 
 class SorCanonicalPayload(BaseModel):
@@ -982,6 +1029,7 @@ class SorMappedFieldsCommandPayload(SorCommandPayload):
     """
 
     model_config = ConfigDict(extra="allow", frozen=True)
+
     @model_validator(mode="before")
     @classmethod
     def validate_json_fields(cls, value: object) -> dict[str, JsonValue]:
@@ -1005,13 +1053,16 @@ class SorMappedFieldsCommandPayload(SorCommandPayload):
         return MappingProxyType(dict(self.__pydantic_extra__ or {}))
 
 
-@dataclass(frozen=True, slots=True, init=False)
-class SorExternalRecord:
+class SorExternalRecord(BaseModel):
     """One source record before profile normalization and projection."""
 
-    vendor_object_key: str
-    external_id: str
-    payload: SorSourcePayload
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    vendor_object_key: str = Field(min_length=1)
+    external_id: str = Field(min_length=1)
+    payload: SorSourcePayload = Field(repr=False, exclude=True)
     source_created_at: datetime | None = None
     source_updated_at: datetime | None = None
     source_revision: str | None = None
@@ -1035,30 +1086,30 @@ class SorExternalRecord:
             if isinstance(payload, SorSourcePayload)
             else SorSourcePayload.from_mapping(payload)
         )
-        object.__setattr__(self, "vendor_object_key", vendor_object_key)
-        object.__setattr__(self, "external_id", external_id)
-        object.__setattr__(self, "payload", sealed_payload)
-        object.__setattr__(self, "source_created_at", source_created_at)
-        object.__setattr__(self, "source_updated_at", source_updated_at)
-        object.__setattr__(self, "source_revision", source_revision)
-        object.__setattr__(
-            self,
-            "source_url",
-            source_url,
+        super().__init__(
+            vendor_object_key=vendor_object_key,
+            external_id=external_id,
+            payload=sealed_payload,
+            source_created_at=source_created_at,
+            source_updated_at=source_updated_at,
+            source_revision=source_revision,
+            source_url=source_url,
         )
 
 
-@dataclass(frozen=True, slots=True)
-class SorRecordPage:
+class SorRecordPage(BaseModel):
     """One bounded page plus the opaque checkpoint it covers."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     records: tuple[SorExternalRecord, ...]
     next_cursor: str | None
     has_more: bool
 
 
-@dataclass(frozen=True, slots=True)
-class SorDeletedRecord:
+class SorDeletedRecord(_SorValue):
     """One source identity the vendor reports deleted or archived."""
 
     vendor_object_key: str
@@ -1067,18 +1118,24 @@ class SorDeletedRecord:
     reason: str | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class SorWebhookSubscription:
+class SorWebhookSubscription(BaseModel):
     """Vendor subscription identity and renewal deadline."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     external_id: str
     expires_at: datetime | None = None
-    signing_secret: str | None = field(default=None, repr=False)
+    signing_secret: str | None = Field(default=None, repr=False, exclude=True)
 
 
-@dataclass(frozen=True, slots=True)
-class SorWebhookSignal:
+class SorWebhookSignal(BaseModel):
     """Verified hint that identifies records to refetch."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     delivery_id: str | None
     event_type: str
@@ -1087,31 +1144,60 @@ class SorWebhookSignal:
     occurred_at: datetime | None
 
 
-@dataclass(frozen=True, slots=True)
-class SorCommandRequest:
+class SorCommandRequest(BaseModel):
     """One typed, idempotent authoritative-source mutation."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     tool_name: str
     idempotency_key: str
-    payload: SorCommandPayload
+    payload: SkipJsonSchema[InstanceOf[SorCommandPayload]] = Field(
+        repr=False, exclude=True
+    )
     target_external_id: str | None = None
     expected_source_revision: str | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class SorCommandResult:
-    """Vendor mutation result used for receipt completion and refetch."""
+class SorCommandResult(BaseModel):
+    """Validated mutation result; durable codecs explicitly persist response data."""
 
-    vendor_object_key: str
-    external_id: str
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    vendor_object_key: str = Field(min_length=1)
+    external_id: str = Field(min_length=1)
     external_request_id: str | None = None
     source_revision: str | None = None
     source_url: str | None = None
-    response: Mapping[str, object] = field(default_factory=dict)
+    response: dict[str, SorJsonValue] = Field(
+        default_factory=dict, repr=False, exclude=True
+    )
+
+    def __init__(
+        self,
+        *,
+        vendor_object_key: str,
+        external_id: str,
+        external_request_id: str | None = None,
+        source_revision: str | None = None,
+        source_url: str | None = None,
+        response: Mapping[str, object] | None = None,
+    ) -> None:
+        """Accept vendor mappings at construction, expose only validated JSON."""
+        super().__init__(
+            vendor_object_key=vendor_object_key,
+            external_id=external_id,
+            external_request_id=external_request_id,
+            source_revision=source_revision,
+            source_url=source_url,
+            response={} if response is None else dict(response),
+        )
 
 
-@dataclass(frozen=True, slots=True)
-class SorFieldMappingDraft:
+class SorFieldMappingDraft(_SorValue):
     """Operator-selected target for one exact discovered source field."""
 
     vendor_object_key: str
@@ -1119,15 +1205,14 @@ class SorFieldMappingDraft:
     canonical_target_path: str | None = None
     custom_type: SorCustomFieldType | None = None
     transform_kind: SorTransformKind = SorTransformKind.DIRECT
-    transform_config: Mapping[str, object] = field(default_factory=dict)
+    transform_config: dict[str, SorJsonValue] = Field(default_factory=dict)
     direction: SorFieldMappingDirection = SorFieldMappingDirection.READ_ONLY
     agent_visible: bool = False
     ui_default_column: bool = False
     sensitivity: SorSensitivity = SorSensitivity.STANDARD
 
 
-@dataclass(frozen=True, slots=True)
-class SorStreamDraft:
+class SorStreamDraft(_SorValue):
     """Operator-selected execution policy for one source object."""
 
     vendor_object_key: str
@@ -1137,9 +1222,10 @@ class SorStreamDraft:
     schedule: str | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class SorSchemaDifference:
+class SorSchemaDifference(BaseModel):
     """Human-auditable difference between two immutable discoveries."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
     added: tuple[str, ...] = ()
     removed: tuple[str, ...] = ()
@@ -1151,13 +1237,12 @@ class SorSchemaDifference:
         return any((self.added, self.removed, self.renamed, self.type_changed))
 
 
-@dataclass(frozen=True, slots=True)
-class SorProjectionOutcome:
+class SorProjectionOutcome(_SorValue):
     """Canonical values and record identity produced by shared projection."""
 
     record_id: UUID
     disposition: SorProjectionDisposition
-    canonical_payload: SorCanonicalPayload
+    canonical_payload: SorCanonicalPayload = Field(repr=False, exclude=True)
     custom_field_keys: tuple[str, ...]
 
 

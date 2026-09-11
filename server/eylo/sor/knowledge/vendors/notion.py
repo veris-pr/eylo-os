@@ -9,11 +9,12 @@ import json
 import mimetypes
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from http import HTTPStatus
 from urllib.parse import quote, quote_from_bytes, unquote_to_bytes, urlsplit
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from eylo.modules.connections.domain import ConnectionAuthKind
 from eylo.sor.knowledge.contracts import (
@@ -113,12 +114,8 @@ _RELATIONSHIP_TARGETS = {
         SorRelationshipRole.DOCUMENT: NotionStream.PAGES,
         SorRelationshipRole.PARENT: NotionStream.BLOCKS,
     },
-    NotionStream.PROPERTIES: {
-        SorRelationshipRole.DOCUMENT: NotionStream.PAGES
-    },
-    NotionStream.ATTACHMENTS: {
-        SorRelationshipRole.DOCUMENT: NotionStream.PAGES
-    },
+    NotionStream.PROPERTIES: {SorRelationshipRole.DOCUMENT: NotionStream.PAGES},
+    NotionStream.ATTACHMENTS: {SorRelationshipRole.DOCUMENT: NotionStream.PAGES},
 }
 _READ_TOOLS = frozenset(
     {
@@ -230,7 +227,7 @@ NOTION_MANIFEST = SorAdapterCapabilityManifest(
                 set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values()) - {stream_key}
             ),
             relationship_targets=SorRelationshipTargets(
-                _RELATIONSHIP_TARGETS.get(stream_key, {})
+                by_role=_RELATIONSHIP_TARGETS.get(stream_key, {}),
             ),
         )
         for stream_key, entity in _STREAM_ENTITY.items()
@@ -263,9 +260,12 @@ NOTION_MANIFEST = SorAdapterCapabilityManifest(
 )
 
 
-@dataclass(frozen=True, slots=True)
-class NotionAppWebhookDelivery:
+class NotionAppWebhookDelivery(BaseModel):
     """One signed workspace event before source-selection filtering."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     organization_external_id: str
     signal: SorWebhookSignal
@@ -378,8 +378,18 @@ _SCHEMA_FIELDS = {
     ),
     NotionStream.PAGES: (
         _field("title", "Title", SorFieldDataType.TEXT, nullable=False, writable=True),
-        _field("space_external_id", "Data source ID", SorFieldDataType.REFERENCE, writable=True),
-        _field("parent_external_id", "Parent page ID", SorFieldDataType.REFERENCE, writable=True),
+        _field(
+            "space_external_id",
+            "Data source ID",
+            SorFieldDataType.REFERENCE,
+            writable=True,
+        ),
+        _field(
+            "parent_external_id",
+            "Parent page ID",
+            SorFieldDataType.REFERENCE,
+            writable=True,
+        ),
         _field("path", "Path", SorFieldDataType.STRING_ARRAY),
         _field("source_format", "Source format", SorFieldDataType.TEXT, nullable=False),
         _field("normalized_text", "Content", SorFieldDataType.TEXT, writable=True),
@@ -388,13 +398,22 @@ _SCHEMA_FIELDS = {
         _field("version", "Source revision", SorFieldDataType.TEXT),
         _field("lifecycle_state", "State", SorFieldDataType.TEXT),
         _field("author_external_id", "Last editor ID", SorFieldDataType.REFERENCE),
-        _field("label_external_ids", "Select option IDs", SorFieldDataType.STRING_ARRAY),
-        _field("unsupported_blocks", "Unsupported content", SorFieldDataType.STRING_ARRAY),
+        _field(
+            "label_external_ids", "Select option IDs", SorFieldDataType.STRING_ARRAY
+        ),
+        _field(
+            "unsupported_blocks", "Unsupported content", SorFieldDataType.STRING_ARRAY
+        ),
         _field("source_created_at", "Created", SorFieldDataType.TIMESTAMP),
         _field("source_updated_at", "Updated", SorFieldDataType.TIMESTAMP),
     ),
     NotionStream.BLOCKS: (
-        _field("document_external_id", "Document ID", SorFieldDataType.REFERENCE, nullable=False),
+        _field(
+            "document_external_id",
+            "Document ID",
+            SorFieldDataType.REFERENCE,
+            nullable=False,
+        ),
         _field("parent_external_id", "Parent block ID", SorFieldDataType.REFERENCE),
         _field("kind", "Kind", SorFieldDataType.TEXT, nullable=False),
         _field("order", "Order", SorFieldDataType.INTEGER, nullable=False),
@@ -405,7 +424,12 @@ _SCHEMA_FIELDS = {
         _field("source_updated_at", "Updated", SorFieldDataType.TIMESTAMP),
     ),
     NotionStream.PROPERTIES: (
-        _field("document_external_id", "Document ID", SorFieldDataType.REFERENCE, nullable=False),
+        _field(
+            "document_external_id",
+            "Document ID",
+            SorFieldDataType.REFERENCE,
+            nullable=False,
+        ),
         _field("key", "Property ID", SorFieldDataType.TEXT, nullable=False),
         _field("label", "Property name", SorFieldDataType.TEXT, nullable=False),
         _field("value_type", "Value type", SorFieldDataType.TEXT, nullable=False),
@@ -413,7 +437,12 @@ _SCHEMA_FIELDS = {
         _field("source_updated_at", "Updated", SorFieldDataType.TIMESTAMP),
     ),
     NotionStream.ATTACHMENTS: (
-        _field("document_external_id", "Document ID", SorFieldDataType.REFERENCE, nullable=False),
+        _field(
+            "document_external_id",
+            "Document ID",
+            SorFieldDataType.REFERENCE,
+            nullable=False,
+        ),
         _field("name", "Name", SorFieldDataType.TEXT, nullable=False),
         _field("media_type", "Media type", SorFieldDataType.TEXT),
         _field("size_bytes", "Size", SorFieldDataType.INTEGER),
@@ -429,16 +458,26 @@ _SCHEMA_FIELDS = {
 }
 
 
-@dataclass(frozen=True, slots=True)
-class _MemberCursor:
+class _MemberCursor(BaseModel):
+    """Notion property-page position owned by the vendor cursor codec."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
     page_cursor: str | None
     current_page_id: str | None
     current_page_is_last: bool
     offset: int
 
 
-@dataclass(frozen=True, slots=True)
-class _TreeFrame:
+class _TreeFrame(BaseModel):
+    """One Notion child traversal position within a serialized cursor."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
     parent_id: str
     parent_external_id: str | None
     child_cursor: str | None
@@ -446,8 +485,13 @@ class _TreeFrame:
     depth: int
 
 
-@dataclass(frozen=True, slots=True)
-class _TreeCursor:
+class _TreeCursor(BaseModel):
+    """Notion document traversal position owned by the vendor cursor codec."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
     page_cursor: str | None
     current_page_id: str | None
     current_page_is_last: bool
@@ -456,13 +500,18 @@ class _TreeCursor:
     frames: tuple[_TreeFrame, ...]
 
 
-@dataclass(frozen=True, slots=True)
-class _AttachmentValue:
+class _AttachmentValue(BaseModel):
+    """Current Notion attachment metadata before canonical projection."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
     external_id: str
     document_external_id: str
     name: str
     media_type: str | None
-    source_url: str | None
+    source_url: str | None = Field(repr=False, exclude=True)
     source_url_expires_at: datetime | None
     source_created_at: datetime | None
     source_updated_at: datetime | None
@@ -915,7 +964,12 @@ class NotionKnowledgeAdapter:
                 )
                 if page_id is None:
                     return SorRecordPage(records=(), next_cursor=None, has_more=False)
-                checkpoint = _MemberCursor(page_cursor, page_id, page_is_last, 0)
+                checkpoint = _MemberCursor(
+                    page_cursor=page_cursor,
+                    current_page_id=page_id,
+                    current_page_is_last=page_is_last,
+                    offset=0,
+                )
             assert checkpoint.current_page_id is not None
             page = await self._fetch_page(checkpoint.current_page_id)
             properties = _page_properties(page)
@@ -936,10 +990,10 @@ class NotionKnowledgeAdapter:
             next_offset = checkpoint.offset + len(selected)
             if next_offset < len(properties):
                 next_checkpoint = _MemberCursor(
-                    checkpoint.page_cursor,
-                    checkpoint.current_page_id,
-                    checkpoint.current_page_is_last,
-                    next_offset,
+                    page_cursor=checkpoint.page_cursor,
+                    current_page_id=checkpoint.current_page_id,
+                    current_page_is_last=checkpoint.current_page_is_last,
+                    offset=next_offset,
                 )
                 return SorRecordPage(
                     records=records,
@@ -948,7 +1002,12 @@ class NotionKnowledgeAdapter:
                 )
             if checkpoint.current_page_is_last:
                 return SorRecordPage(records=records, next_cursor=None, has_more=False)
-            boundary = _MemberCursor(checkpoint.page_cursor, None, False, 0)
+            boundary = _MemberCursor(
+                page_cursor=checkpoint.page_cursor,
+                current_page_id=None,
+                current_page_is_last=False,
+                offset=0,
+            )
             if records:
                 return SorRecordPage(
                     records=records,
@@ -985,7 +1044,15 @@ class NotionKnowledgeAdapter:
                     current_page_is_last=page_is_last,
                     page_attachment_offset=0,
                     page_attachments_done=stream_key != NotionStream.ATTACHMENTS,
-                    frames=(_TreeFrame(page_id, None, None, 0, 0),),
+                    frames=(
+                        _TreeFrame(
+                            parent_id=page_id,
+                            parent_external_id=None,
+                            child_cursor=None,
+                            offset=0,
+                            depth=0,
+                        ),
+                    ),
                 )
             current_page_id = checkpoint.current_page_id
             assert current_page_id is not None
@@ -1027,12 +1094,12 @@ class NotionKnowledgeAdapter:
                 if checkpoint.current_page_is_last:
                     return SorRecordPage(records=(), next_cursor=None, has_more=False)
                 checkpoint = _TreeCursor(
-                    checkpoint.page_cursor,
-                    None,
-                    False,
-                    0,
-                    stream_key != NotionStream.ATTACHMENTS,
-                    (),
+                    page_cursor=checkpoint.page_cursor,
+                    current_page_id=None,
+                    current_page_is_last=False,
+                    page_attachment_offset=0,
+                    page_attachments_done=stream_key != NotionStream.ATTACHMENTS,
+                    frames=(),
                 )
                 scans += 1
                 continue
@@ -1041,11 +1108,11 @@ class NotionKnowledgeAdapter:
             continuation = (
                 (
                     _TreeFrame(
-                        frame.parent_id,
-                        frame.parent_external_id,
-                        child_cursor,
-                        frame.offset + len(rows),
-                        frame.depth,
+                        parent_id=frame.parent_id,
+                        parent_external_id=frame.parent_external_id,
+                        child_cursor=child_cursor,
+                        offset=frame.offset + len(rows),
+                        depth=frame.depth,
                     ),
                 )
                 if child_cursor is not None
@@ -1053,11 +1120,11 @@ class NotionKnowledgeAdapter:
             )
             child_frames = tuple(
                 _TreeFrame(
-                    _notion_id(row.get("id"), field="block ID"),
-                    _notion_id(row.get("id"), field="block ID"),
-                    None,
-                    0,
-                    frame.depth + 1,
+                    parent_id=_notion_id(row.get("id"), field="block ID"),
+                    parent_external_id=_notion_id(row.get("id"), field="block ID"),
+                    child_cursor=None,
+                    offset=0,
+                    depth=frame.depth + 1,
                 )
                 for row in rows
                 if row.get("has_children") is True
@@ -1086,12 +1153,12 @@ class NotionKnowledgeAdapter:
                     )
                 )
             next_checkpoint = _TreeCursor(
-                checkpoint.page_cursor,
-                checkpoint.current_page_id,
-                checkpoint.current_page_is_last,
-                checkpoint.page_attachment_offset,
-                checkpoint.page_attachments_done,
-                tuple(frames),
+                page_cursor=checkpoint.page_cursor,
+                current_page_id=checkpoint.current_page_id,
+                current_page_is_last=checkpoint.current_page_is_last,
+                page_attachment_offset=checkpoint.page_attachment_offset,
+                page_attachments_done=checkpoint.page_attachments_done,
+                frames=tuple(frames),
             )
             if not frames:
                 if checkpoint.current_page_is_last:
@@ -1099,12 +1166,12 @@ class NotionKnowledgeAdapter:
                         records=records, next_cursor=None, has_more=False
                     )
                 next_checkpoint = _TreeCursor(
-                    checkpoint.page_cursor,
-                    None,
-                    False,
-                    0,
-                    stream_key != NotionStream.ATTACHMENTS,
-                    (),
+                    page_cursor=checkpoint.page_cursor,
+                    current_page_id=None,
+                    current_page_is_last=False,
+                    page_attachment_offset=0,
+                    page_attachments_done=stream_key != NotionStream.ATTACHMENTS,
+                    frames=(),
                 )
             if records:
                 return SorRecordPage(
@@ -1487,9 +1554,7 @@ class NotionKnowledgeAdapter:
     ) -> SorJsonResponse:
         if not isinstance(command.payload, KnowledgeUpdateCommandPayload):
             raise _invalid_command("Notion update payload is invalid.")
-        if (command.payload.title is None) == (
-            command.payload.normalized_text is None
-        ):
+        if (command.payload.title is None) == (command.payload.normalized_text is None):
             raise _invalid_command(
                 "A Notion update changes either title or content per command."
             )
@@ -1994,7 +2059,9 @@ def _vendor_cursor(value: str, *, stream: str) -> str:
 
 def _decode_member_cursor(value: str | None) -> _MemberCursor:
     if value is None:
-        return _MemberCursor(None, None, False, 0)
+        return _MemberCursor(
+            page_cursor=None, current_page_id=None, current_page_is_last=False, offset=0
+        )
     payload = _cursor_payload(value, stream_key=NotionStream.PROPERTIES)
     expected = {
         "current_page_id",
@@ -2021,7 +2088,12 @@ def _decode_member_cursor(value: str | None) -> _MemberCursor:
         and (offset != 0 or is_last)
     ):
         raise _invalid_cursor(NotionStream.PROPERTIES)
-    return _MemberCursor(page_cursor, page_id, is_last, offset)
+    return _MemberCursor(
+        page_cursor=page_cursor,
+        current_page_id=page_id,
+        current_page_is_last=is_last,
+        offset=offset,
+    )
 
 
 def _encode_member_cursor(cursor: _MemberCursor) -> str:
@@ -2041,7 +2113,12 @@ def _encode_member_cursor(cursor: _MemberCursor) -> str:
 def _decode_tree_cursor(value: str | None, *, stream_key: str) -> _TreeCursor:
     if value is None:
         return _TreeCursor(
-            None, None, False, 0, stream_key != NotionStream.ATTACHMENTS, ()
+            page_cursor=None,
+            current_page_id=None,
+            current_page_is_last=False,
+            page_attachment_offset=0,
+            page_attachments_done=stream_key != NotionStream.ATTACHMENTS,
+            frames=(),
         )
     payload = _cursor_payload(value, stream_key=stream_key)
     expected = {
@@ -2083,12 +2160,12 @@ def _decode_tree_cursor(value: str | None, *, stream_key: str) -> _TreeCursor:
     ):
         raise _invalid_cursor(stream_key)
     return _TreeCursor(
-        page_cursor,
-        page_id,
-        is_last,
-        attachment_offset,
-        attachments_done,
-        frames,
+        page_cursor=page_cursor,
+        current_page_id=page_id,
+        current_page_is_last=is_last,
+        page_attachment_offset=attachment_offset,
+        page_attachments_done=attachments_done,
+        frames=frames,
     )
 
 
@@ -2115,7 +2192,13 @@ def _decode_tree_frame(value: object, *, stream_key: str) -> _TreeFrame:
         or not 0 <= depth <= MAX_TREE_DEPTH
     ):
         raise _invalid_cursor(stream_key)
-    return _TreeFrame(parent_id, parent_external_id, child_cursor, offset, depth)
+    return _TreeFrame(
+        parent_id=parent_id,
+        parent_external_id=parent_external_id,
+        child_cursor=child_cursor,
+        offset=offset,
+        depth=depth,
+    )
 
 
 def _encode_tree_cursor(cursor: _TreeCursor, *, stream_key: str) -> str:

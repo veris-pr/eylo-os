@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from eylo.framework.agents.approval import ApprovalRequest
 from eylo.framework.agents.durable import InputRequestDetails
@@ -30,6 +30,25 @@ class RunToolCallSnapshot(_ContinuationSnapshot):
     """Exact persisted invocation needed by non-conversation runners."""
 
     tool_call: ToolCall
+
+
+class RunResumeReceipt(BaseModel):
+    """Checkpoint fact only; the canonical tool result remains in the transcript."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    recorded: bool
+    is_error: bool
+
+    @field_validator("recorded")
+    @classmethod
+    def require_recorded(cls, value: bool) -> bool:
+        """Only a completed transcript write may produce a resume checkpoint."""
+        if not value:
+            raise ValueError("Resume receipt requires a recorded tool result.")
+        return value
 
 
 class RunContinuation(_ContinuationSnapshot):

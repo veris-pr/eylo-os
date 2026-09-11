@@ -37,15 +37,19 @@ from eylo.sockets.telephony.base import (
     AudioEncoding,
     BaseTelephonyService,
     CallMetadata,
+    CarrierMediaEvent,
     InboundMediaMessage,
     OutboundMediaMessage,
     TelephonyConfig,
     TelephonyControlAccepted,
+    TelephonyControlFailureCode,
+    TelephonyControlOperation,
     TelephonyControlResult,
     TelephonyControlUnknown,
     TelephonyMessageParser,
     TelephonyOperationCapabilities,
     TelephonyOperationProfile,
+    TelephonyOperationSupport,
     TelephonyProvider,
     classify_control_failure,
 )
@@ -129,7 +133,7 @@ class VonageMessageParser(TelephonyMessageParser):
 
         """
         return InboundMediaMessage(
-            event="media",
+            event=CarrierMediaEvent.MEDIA,
             payload=raw_bytes,
             timestamp="",  # Vonage doesn't include timestamps in binary frames
             track="inbound",
@@ -500,7 +504,7 @@ class VonageService(BaseTelephonyService):
                     if not response.ok:
                         return classify_control_failure(
                             HTTPException(status_code=response.status),
-                            operation="call_end",
+                            operation=TelephonyControlOperation.END,
                         )
 
                     logger.info("Ended Vonage call")
@@ -508,9 +512,13 @@ class VonageService(BaseTelephonyService):
 
         except (TimeoutError, aiohttp.ClientError):
             logger.warning("Vonage call end outcome is unconfirmed")
-            return TelephonyControlUnknown(failure_code="call_end_unconfirmed")
+            return TelephonyControlUnknown(
+                failure_code=TelephonyControlFailureCode.END_UNCONFIRMED
+            )
         except Exception as error:  # noqa: BLE001 - JWT/provider failure taxonomy
-            return classify_control_failure(error, operation="call_end")
+            return classify_control_failure(
+                error, operation=TelephonyControlOperation.END
+            )
 
     async def transfer_call(
         self,
@@ -571,7 +579,7 @@ class VonageService(BaseTelephonyService):
                     if not response.ok:
                         return classify_control_failure(
                             HTTPException(status_code=response.status),
-                            operation="call_dtmf",
+                            operation=TelephonyControlOperation.DTMF,
                         )
 
                     logger.debug("Sent DTMF to Vonage call")
@@ -579,9 +587,13 @@ class VonageService(BaseTelephonyService):
 
         except (TimeoutError, aiohttp.ClientError):
             logger.warning("Vonage DTMF outcome is unconfirmed")
-            return TelephonyControlUnknown(failure_code="call_dtmf_unconfirmed")
+            return TelephonyControlUnknown(
+                failure_code=TelephonyControlFailureCode.DTMF_UNCONFIRMED
+            )
         except Exception as error:  # noqa: BLE001 - JWT/provider failure taxonomy
-            return classify_control_failure(error, operation="call_dtmf")
+            return classify_control_failure(
+                error, operation=TelephonyControlOperation.DTMF
+            )
 
     async def update_call(
         self,
@@ -622,7 +634,7 @@ class VonageService(BaseTelephonyService):
                     if not response.ok:
                         return classify_control_failure(
                             HTTPException(status_code=response.status),
-                            operation="call_transfer",
+                            operation=TelephonyControlOperation.TRANSFER,
                         )
 
                     logger.info("Updated Vonage call")
@@ -630,9 +642,13 @@ class VonageService(BaseTelephonyService):
 
         except (TimeoutError, aiohttp.ClientError):
             logger.warning("Vonage call transfer outcome is unconfirmed")
-            return TelephonyControlUnknown(failure_code="call_transfer_unconfirmed")
+            return TelephonyControlUnknown(
+                failure_code=TelephonyControlFailureCode.TRANSFER_UNCONFIRMED
+            )
         except Exception as error:  # noqa: BLE001 - JWT/provider failure taxonomy
-            return classify_control_failure(error, operation="call_transfer")
+            return classify_control_failure(
+                error, operation=TelephonyControlOperation.TRANSFER
+            )
 
     def create_message_parser(self) -> TelephonyMessageParser:
         """Create a message parser for Vonage.
@@ -678,7 +694,7 @@ class VonageService(BaseTelephonyService):
             transport_kind=OutboundTransportKind.HTTP,
             destination_origin="https://api.nexmo.com",
             capabilities=TelephonyOperationCapabilities(
-                provider_idempotency=False,
-                reconciliation=False,
+                provider_idempotency=TelephonyOperationSupport.UNSUPPORTED,
+                reconciliation=TelephonyOperationSupport.UNSUPPORTED,
             ),
         )

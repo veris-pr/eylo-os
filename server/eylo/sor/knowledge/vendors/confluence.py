@@ -7,12 +7,13 @@ import html
 import json
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from html.parser import HTMLParser
 from http import HTTPStatus
 from urllib.parse import parse_qs, urlsplit
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from eylo.modules.connections.domain import ConnectionAuthKind
 from eylo.sor.knowledge.contracts import (
@@ -134,9 +135,7 @@ _RELATIONSHIP_TARGETS = {
         SorRelationshipRole.DOCUMENT: ConfluenceStream.PAGES,
         SorRelationshipRole.AUTHOR: ConfluenceStream.AUTHORS,
     },
-    ConfluenceStream.PROPERTIES: {
-        SorRelationshipRole.DOCUMENT: ConfluenceStream.PAGES
-    },
+    ConfluenceStream.PROPERTIES: {SorRelationshipRole.DOCUMENT: ConfluenceStream.PAGES},
     ConfluenceStream.ATTACHMENTS: {
         SorRelationshipRole.DOCUMENT: ConfluenceStream.PAGES
     },
@@ -206,7 +205,7 @@ CONFLUENCE_MANIFEST = SorAdapterCapabilityManifest(
                 set(_RELATIONSHIP_TARGETS.get(stream_key, {}).values()) - {stream_key}
             ),
             relationship_targets=SorRelationshipTargets(
-                _RELATIONSHIP_TARGETS.get(stream_key, {})
+                by_role=_RELATIONSHIP_TARGETS.get(stream_key, {}),
             ),
         )
         for stream_key, entity in _STREAM_ENTITY.items()
@@ -281,8 +280,15 @@ _SCHEMA_FIELDS = {
     ),
     ConfluenceStream.PAGES: (
         _field("title", "Title", SorFieldDataType.TEXT, nullable=False, writable=True),
-        _field("space_external_id", "Space ID", SorFieldDataType.REFERENCE, writable=True),
-        _field("parent_external_id", "Parent page ID", SorFieldDataType.REFERENCE, writable=True),
+        _field(
+            "space_external_id", "Space ID", SorFieldDataType.REFERENCE, writable=True
+        ),
+        _field(
+            "parent_external_id",
+            "Parent page ID",
+            SorFieldDataType.REFERENCE,
+            writable=True,
+        ),
         _field("path", "Path", SorFieldDataType.STRING_ARRAY),
         _field("source_format", "Source format", SorFieldDataType.TEXT, nullable=False),
         _field("normalized_text", "Content", SorFieldDataType.TEXT, writable=True),
@@ -292,12 +298,19 @@ _SCHEMA_FIELDS = {
         _field("lifecycle_state", "State", SorFieldDataType.TEXT),
         _field("author_external_id", "Author ID", SorFieldDataType.REFERENCE),
         _field("label_external_ids", "Labels", SorFieldDataType.STRING_ARRAY),
-        _field("unsupported_blocks", "Unsupported macros", SorFieldDataType.STRING_ARRAY),
+        _field(
+            "unsupported_blocks", "Unsupported macros", SorFieldDataType.STRING_ARRAY
+        ),
         _field("source_created_at", "Created", SorFieldDataType.TIMESTAMP),
         _field("source_updated_at", "Updated", SorFieldDataType.TIMESTAMP),
     ),
     ConfluenceStream.PAGE_BODIES: (
-        _field("document_external_id", "Document ID", SorFieldDataType.REFERENCE, nullable=False),
+        _field(
+            "document_external_id",
+            "Document ID",
+            SorFieldDataType.REFERENCE,
+            nullable=False,
+        ),
         _field("parent_external_id", "Parent block ID", SorFieldDataType.REFERENCE),
         _field("kind", "Kind", SorFieldDataType.TEXT, nullable=False),
         _field("order", "Order", SorFieldDataType.INTEGER, nullable=False),
@@ -308,17 +321,29 @@ _SCHEMA_FIELDS = {
         _field("source_updated_at", "Updated", SorFieldDataType.TIMESTAMP),
     ),
     ConfluenceStream.VERSIONS: (
-        _field("document_external_id", "Document ID", SorFieldDataType.REFERENCE, nullable=False),
+        _field(
+            "document_external_id",
+            "Document ID",
+            SorFieldDataType.REFERENCE,
+            nullable=False,
+        ),
         _field("number", "Version", SorFieldDataType.TEXT, nullable=False),
         _field("author_external_id", "Author ID", SorFieldDataType.REFERENCE),
         _field("message", "Message", SorFieldDataType.TEXT),
         _field("source_format", "Source format", SorFieldDataType.TEXT),
         _field("normalized_text", "Content", SorFieldDataType.TEXT),
         _field("source_body", "Source body", SorFieldDataType.BOUNDED_JSON),
-        _field("source_created_at", "Created", SorFieldDataType.TIMESTAMP, nullable=False),
+        _field(
+            "source_created_at", "Created", SorFieldDataType.TIMESTAMP, nullable=False
+        ),
     ),
     ConfluenceStream.PROPERTIES: (
-        _field("document_external_id", "Document ID", SorFieldDataType.REFERENCE, nullable=False),
+        _field(
+            "document_external_id",
+            "Document ID",
+            SorFieldDataType.REFERENCE,
+            nullable=False,
+        ),
         _field("key", "Key", SorFieldDataType.TEXT, nullable=False),
         _field("label", "Label", SorFieldDataType.TEXT, nullable=False),
         _field("value_type", "Value type", SorFieldDataType.TEXT, nullable=False),
@@ -326,7 +351,12 @@ _SCHEMA_FIELDS = {
         _field("source_updated_at", "Updated", SorFieldDataType.TIMESTAMP),
     ),
     ConfluenceStream.ATTACHMENTS: (
-        _field("document_external_id", "Document ID", SorFieldDataType.REFERENCE, nullable=False),
+        _field(
+            "document_external_id",
+            "Document ID",
+            SorFieldDataType.REFERENCE,
+            nullable=False,
+        ),
         _field("name", "Name", SorFieldDataType.TEXT, nullable=False),
         _field("media_type", "Media type", SorFieldDataType.TEXT),
         _field("size_bytes", "Size", SorFieldDataType.INTEGER),
@@ -336,24 +366,32 @@ _SCHEMA_FIELDS = {
 }
 
 
-@dataclass(frozen=True, slots=True)
-class _NestedCursor:
+class _NestedCursor(BaseModel):
+    """Confluence page/child position owned by the vendor cursor codec."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
     page_cursor: str | None
     current_page_id: str | None
     current_page_is_last: bool
     child_cursor: str | None
 
 
-@dataclass(frozen=True, slots=True)
-class _ConfluencePageSnapshot:
+class _ConfluencePageSnapshot(BaseModel):
     """Validated page values shared by page and body source records."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     page_id: str
     title: str
     space_external_id: str | None
     parent_external_id: str | None
-    normalized_text: str
-    source_body: KnowledgeSourceBody
+    normalized_text: str = Field(repr=False, exclude=True)
+    source_body: KnowledgeSourceBody = Field(repr=False, exclude=True)
     content_hash: str
     version: str | None
     lifecycle_state: str | None
@@ -1640,7 +1678,12 @@ def _next_cursor(response: SorJsonResponse, data: Mapping[str, object]) -> str |
 
 def _decode_nested_cursor(value: str | None, *, stream_key: str) -> _NestedCursor:
     if value is None:
-        return _NestedCursor(None, None, False, None)
+        return _NestedCursor(
+            page_cursor=None,
+            current_page_id=None,
+            current_page_is_last=False,
+            child_cursor=None,
+        )
     try:
         payload = json.loads(value)
     except (TypeError, ValueError, json.JSONDecodeError) as error:
@@ -1673,7 +1716,12 @@ def _decode_nested_cursor(value: str | None, *, stream_key: str) -> _NestedCurso
         raise _invalid_cursor(stream_key)
     if page_id is not None:
         _identifier(page_id)
-    return _NestedCursor(page_cursor, page_id, is_last, child_cursor)
+    return _NestedCursor(
+        page_cursor=page_cursor,
+        current_page_id=page_id,
+        current_page_is_last=is_last,
+        child_cursor=child_cursor,
+    )
 
 
 def _encode_nested_cursor(cursor: _NestedCursor, *, stream_key: str) -> str:
