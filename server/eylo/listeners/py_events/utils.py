@@ -1,8 +1,10 @@
 """Common utility functions for py_events listeners."""
 
 import logging
-from typing import Any, Dict
+from collections.abc import Mapping
 from uuid import UUID
+
+from pydantic import JsonValue
 
 from eylo.pipelines.websocket.schemas import WsEventAction
 from eylo.pipelines.websocket.singleton import S_ws_manager
@@ -16,7 +18,7 @@ async def broadcast_to_conversation_contacts(
     organization_id: UUID,
     conversation_id: UUID,
     kind: WsEventAction,
-    payload: Dict[str, Any],
+    payload: Mapping[str, JsonValue],
     event_name: str | None = None,
 ) -> None:
     """Broadcast one bounded lifecycle projection to explicit contacts."""
@@ -45,7 +47,7 @@ async def broadcast_to_contact(
     contact_id: UUID,
     organization_id: UUID,
     kind: WsEventAction,
-    payload: Dict[str, Any],
+    payload: Mapping[str, JsonValue],
     event_name: str | None = None,
 ) -> None:
     """Broadcast WebSocket event to a specific contact.
@@ -80,7 +82,7 @@ async def broadcast_to_conversation_contact(
     organization_id: UUID,
     conversation_id: UUID,
     kind: WsEventAction,
-    payload: Dict[str, Any],
+    payload: Mapping[str, JsonValue],
     event_name: str | None = None,
 ) -> None:
     """Broadcast one delta only to the contact's session for this chat."""

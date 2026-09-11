@@ -5,6 +5,7 @@ import base64
 import json
 import logging
 from collections import defaultdict
+from collections.abc import AsyncIterator, Mapping
 from datetime import datetime
 from typing import Dict, List, Optional, Set, Tuple, Union
 from uuid import UUID
@@ -14,6 +15,7 @@ from fastapi import APIRouter, WebSocket, status
 from fastapi.websockets import WebSocketState
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 from starlette.websockets import WebSocketDisconnect
+from uuid_utils import UUID as NativeUUID
 from uuid_utils import uuid7
 
 from eylo.common.database import json_serializer, start_transaction
@@ -29,6 +31,7 @@ from eylo.pipelines.websocket.schemas import (
     OrganizationUUID,
     WSSessionState,
     WSSessionType,
+    WebSocketClientInfo,
     WsEventAction,
     WsRequestEvent,
     WsResponse,
@@ -83,21 +86,21 @@ class ContactDelivery(BaseModel):
 
 
 class WSPubSubManager:
-    def __init__(self, default_channel: str):
+    def __init__(self, default_channel: str) -> None:
         self._redis = get_redis_client()
         self._pubsub = self._redis.pubsub()
         self.default_channel = default_channel
 
-    async def subscribe(self, channel: str | None = None):
+    async def subscribe(self, channel: str | None = None) -> None:
         """Subscribe to a Redis channel."""
         await self._pubsub.subscribe(channel or self.default_channel)
 
-    async def unsubscribe(self, channel: str | None = None):
+    async def unsubscribe(self, channel: str | None = None) -> None:
         """Unsubscribe from a Redis channel."""
         await self._pubsub.unsubscribe(channel or self.default_channel)
 
     async def publish(
-        self, message: Union[dict, BaseModel], channel: str | None = None
+        self, message: Mapping[str, object] | BaseModel, channel: str | None = None
     ) -> None:
         """Publish a message to a Redis channel."""
         if isinstance(message, BaseModel):
@@ -106,7 +109,7 @@ class WSPubSubManager:
             serialized = json_serializer(message)
         await self._redis.publish(channel or self.default_channel, serialized)
 
-    async def listen(self):
+    async def listen(self) -> AsyncIterator[dict[str, object]]:
         """Listen for messages on subscribed channels."""
         while True:
             message = await self._pubsub.get_message(ignore_subscribe_messages=True)
@@ -140,11 +143,11 @@ class WsConnectionManager:
     RATE_LIMIT_MAX_MESSAGES = 300  # messages per window
 
     @property
-    def id(self):
+    def id(self) -> NativeUUID:
         """Unique identifier for this connection manager instance."""
         return self._id
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._id = uuid7()
         # Additional tracking for enhanced functionality
         self._rate_limits: Dict[Tuple[OrganizationUUID, str], List[float]] = (
@@ -170,12 +173,12 @@ class WsConnectionManager:
         self._webrtc_pubsub_manager = WSPubSubManager(
             default_channel=EYLO_WEBRTC_PUBSUB_CHANNEL
         )
-        self._tasks = []
+        self._tasks: list[asyncio.Task[None]] = []
         self.sessions: Dict[Tuple[OrganizationUUID, str], WSSessionState] = {}
 
         logger.info(f"Initialized WebSocket manager {self.id}")
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<WsConnectionManager id={self.id}>"
 
     def _get_session_key(
@@ -213,7 +216,9 @@ class WsConnectionManager:
         # Check if we've exceeded the limit
         return len(self._rate_limits[key]) <= self.RATE_LIMIT_MAX_MESSAGES
 
-    async def _get_active_connection(self, organization_id: UUID, session_id: str):
+    async def _get_active_connection(
+        self, organization_id: UUID, session_id: str
+    ) -> WebSocket | None:
         """Get active WebSocket for a session if it exists."""
         return self._active_connections.get(
             self._get_session_key(organization_id, session_id)
@@ -221,7 +226,7 @@ class WsConnectionManager:
 
     async def _set_active_connection(
         self, organization_id: UUID, session_id: str, websocket: WebSocket
-    ):
+    ) -> None:
         """Register an active WebSocket session."""
         self._active_connections[self._get_session_key(organization_id, session_id)] = (
             websocket
@@ -229,12 +234,14 @@ class WsConnectionManager:
 
     async def _check_active_connection_status(
         self, organization_id: UUID, session_id: str
-    ):
+    ) -> bool | None:
         """Get active WebSocket for a session if it exists."""
         ws = self._active_connections.get(
             self._get_session_key(organization_id, session_id)
         )
-        return ws and ws.client_state == WebSocketState.CONNECTED
+        if ws is None:
+            return None
+        return ws.client_state == WebSocketState.CONNECTED
 
     async def _remove_from_active_connection(
         self,
@@ -278,8 +285,8 @@ class WsConnectionManager:
         organization_id: UUID,
         session_id: str,
         websocket: WebSocket,
-        client_info: dict | None = None,
-    ):
+        client_info: WebSocketClientInfo | None = None,
+    ) -> bool:
         """Initialize a session in Redis and memory.
 
         Returns:
@@ -365,7 +372,7 @@ class WsConnectionManager:
             ]
 
     # Tasks
-    async def _listen_for_pubsub_messages(self):
+    async def _listen_for_pubsub_messages(self) -> None:
         while True:
             try:
                 async for message in self._pubsub_manager.listen():
@@ -430,7 +437,7 @@ class WsConnectionManager:
                 )
                 await asyncio.sleep(1)
 
-    async def start_background_tasks(self):
+    async def start_background_tasks(self) -> None:
         await self._pubsub_manager.subscribe()
         await self._webrtc_pubsub_manager.subscribe()
         self._tasks.append(asyncio.create_task(self._listen_for_pubsub_messages()))
@@ -438,7 +445,7 @@ class WsConnectionManager:
             asyncio.create_task(self._listen_for_webrtc_pubsub_messages())
         )
 
-    async def stop_background_tasks(self):
+    async def stop_background_tasks(self) -> None:
         await self._pubsub_manager.unsubscribe()
         await self._webrtc_pubsub_manager.unsubscribe()
         for task in self._tasks:
@@ -460,7 +467,7 @@ class WsConnectionManager:
         websocket: WebSocket,
         organization_id: UUID,
         session_id: str,
-        client_info: dict | None = None,
+        client_info: WebSocketClientInfo | None = None,
     ) -> bool:
         """Connect a new WebSocket client with reliability enhancements."""
         session_key = self._get_session_key(organization_id, session_id)
@@ -715,7 +722,7 @@ class WsConnectionManager:
                 text_payload = ""  # Initialize to prevent unbound error
 
                 # Use a custom serializer to handle non-standard types like bytes, enums, etc.
-                def custom_serializer(obj):
+                def custom_serializer(obj: object) -> object:
                     if isinstance(obj, bytes):
                         return obj.decode("utf-8", "ignore")
                     if isinstance(obj, datetime):
@@ -811,13 +818,8 @@ class WsConnectionManager:
         organization_id: UUID,
         session_ids: List[str] | None = None,
         exclude_session_id: str | None = None,
-    ):
-        """Broadcast a message to multiple sessions efficiently.
-
-        Returns:
-            Number of successful sends
-
-        """
+    ) -> None:
+        """Attempt each selected session; individual failures do not abort fan-out."""
         if session_ids is None:
             # Broadcast to all sessions in organization
             targets = [
@@ -847,7 +849,7 @@ class WsConnectionManager:
 
     async def associate_contact_session(
         self, contact_id: UUID, session_id: str, organization_id: UUID
-    ):
+    ) -> None:
         """Associate a contact with a session."""
         self._session_contact[self._get_session_key(organization_id, session_id)] = (
             contact_id
@@ -860,7 +862,7 @@ class WsConnectionManager:
         conversation_id: UUID,
         session_id: str,
         organization_id: UUID,
-    ):
+    ) -> None:
         """Associate a conversation with a session."""
         conversation_key = (organization_id, conversation_id)
         session_key = self._get_session_key(organization_id, session_id)
@@ -955,9 +957,9 @@ class WsConnectionManager:
         self,
         contact_id: ContactUUID | str,
         organization_id: OrganizationUUID,
-        payload: dict,
+        payload: Mapping[str, JsonValue],
         kind: WsEventAction,
-    ):
+    ) -> None:
         if kind in _CONVERSATION_SCOPED_PUBSUB_EVENTS:
             raise ValueError(
                 f"{kind.value} requires conversation-scoped WebSocket routing."
@@ -976,7 +978,7 @@ class WsConnectionManager:
         contact_id: ContactUUID | str,
         organization_id: OrganizationUUID,
         conversation_id: ConversationUUID,
-        payload: dict,
+        payload: Mapping[str, JsonValue],
         kind: WsEventAction,
     ) -> None:
         """Publish a conversation delta only to sessions bound to that chat."""
@@ -994,7 +996,7 @@ class WsConnectionManager:
         contact_id: ContactUUID | str,
         organization_id: OrganizationUUID,
         conversation_id: ConversationUUID | None,
-        payload: dict,
+        payload: Mapping[str, JsonValue],
         kind: WsEventAction,
     ) -> None:
         message = {
@@ -1012,9 +1014,9 @@ class WsConnectionManager:
         contact_id: ContactUUID | str,
         organization_id: OrganizationUUID | str,
         conversation_id: ConversationUUID | None,
-        payload: dict,
+        payload: dict[str, JsonValue],
         kind: WsEventAction,
-    ):
+    ) -> None:
         contact_id = UUID(str(contact_id))
         organization_id = UUID(str(organization_id))
         contact_sessions = await self.get_sessions_for_contact(

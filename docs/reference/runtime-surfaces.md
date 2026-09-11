@@ -36,6 +36,13 @@ Memory-erasure results contain exact UUID sets; owner predicates use explicit OR
 columns for agent, contact and conversation partitions. These contracts do not
 change deletion ownership, transaction boundaries or graph-change refusal.
 
+Deletion task producers and workers share `DeletionTaskParams`: organization and
+job UUIDs only. `DeletionTaskReceipt` contains those IDs, target type, status and
+an optional bounded error code; raw content and extra fields are not part of the
+contract. Serialization retains the existing string UUIDs, enum values and null
+error code. Bookkeeping transactions end before call/contact erasure starts;
+retryable failures still return the product job to pending and raise for retry.
+
 ## Durable worker
 
 `python -m eylo.agent_run_worker` registers model metadata, pipeline tools,

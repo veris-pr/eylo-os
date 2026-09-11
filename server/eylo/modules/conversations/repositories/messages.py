@@ -446,7 +446,7 @@ class MessageRepository(BaseORMRepository[MessagesModel]):
 class MessageAgentRunRepository:
     """Persistence seam joining conversation messages to durable agent runs."""
 
-    def __init__(self, session: AsyncSession | None = None):
+    def __init__(self, session: AsyncSession | None = None) -> None:
         self._session = session
 
     @property

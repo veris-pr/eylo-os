@@ -27,7 +27,7 @@ class SessionValidationError(Exception):
 class PublicSessionService:
     """Public Session Service."""
 
-    def __init__(self, db: AsyncSession):
+    def __init__(self, db: AsyncSession) -> None:
         """Initialize the public session service.
 
         Args:

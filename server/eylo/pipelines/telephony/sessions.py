@@ -3,7 +3,6 @@
 import asyncio
 from datetime import datetime
 from enum import Enum
-from typing import Protocol, runtime_checkable
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, InstanceOf, StrictBool
@@ -14,6 +13,7 @@ from eylo.events.schema.py_events.call import CallDirection
 from eylo.modules.voice.schemas.api import VoiceConfig
 from eylo.pipelines.voice.live_buffer import LiveVoiceBuffer
 from eylo.pipelines.voice.recording import AudioRecorder
+from eylo.pipelines.voice.runtime_ports import VoiceTurnRunner
 from eylo.pipelines.voice.stt import STTRealtime
 from eylo.pipelines.voice.transcript_inputs import VoiceTranscriptInput
 from eylo.pipelines.voice.tts import TTSRealtime
@@ -42,13 +42,6 @@ class CallFinalizationState(str, Enum):
 
     PENDING = "pending"
     COMPLETE = "complete"
-
-
-@runtime_checkable
-class CallTurnRunner(Protocol):
-    """Teardown's narrow port; the voice runner owns its execution internals."""
-
-    async def drain(self) -> None: ...
 
 
 class CallSessionMetadata(BaseModel):
@@ -147,7 +140,7 @@ class CallSession(BaseModel):
     live_voice_buffer: SkipJsonSchema[InstanceOf[LiveVoiceBuffer] | None] = Field(
         default=None, exclude=True, repr=False
     )
-    live_voice_turn_runner: SkipJsonSchema[InstanceOf[CallTurnRunner] | None] = Field(
+    live_voice_turn_runner: SkipJsonSchema[InstanceOf[VoiceTurnRunner] | None] = Field(
         default=None, exclude=True, repr=False
     )
     opener_text: str | None = Field(default=None, repr=False)

@@ -29,6 +29,7 @@ from eylo.common.contracts.llm_response import (
     LLMResponsePhase,
 )
 from eylo.common.contracts.llm_runtime import LLMInferenceConfig, LLMPromptCaching
+from eylo.common.contracts.session_timeline import SessionTimelineEvent
 from eylo.common.contracts.tool_platform import PlatformTool, PlatformToolInputSchema
 from eylo.common.contracts.tool_record import ToolRecord
 from eylo.common.database import get_transaction
@@ -1166,7 +1167,7 @@ class FrameworkConversationHooks(RunHooks):
             message_id=self._user_message.id,
         )
         await self._file_timeline(
-            event_type="agent.tool.started",
+            event_type=SessionTimelineEvent.AGENT_TOOL_STARTED,
             payload={
                 "tool_name": call.name,
                 "tool_call_id": call.id,
@@ -1188,7 +1189,9 @@ class FrameworkConversationHooks(RunHooks):
         )
         await self._file_timeline(
             event_type=(
-                "agent.tool.failed" if result.is_error else "agent.tool.completed"
+                SessionTimelineEvent.AGENT_TOOL_FAILED
+                if result.is_error
+                else SessionTimelineEvent.AGENT_TOOL_COMPLETED
             ),
             payload={
                 "tool_name": call.name,
@@ -1204,7 +1207,7 @@ class FrameworkConversationHooks(RunHooks):
         to_agent: AgentSpec,
     ) -> None:
         await self._file_timeline(
-            event_type="agent.handoff.completed",
+            event_type=SessionTimelineEvent.AGENT_HANDOFF_COMPLETED,
             payload={
                 "from_agent_id": str(from_agent.id),
                 "to_agent_id": str(to_agent.id),
@@ -1215,7 +1218,7 @@ class FrameworkConversationHooks(RunHooks):
     async def _file_timeline(
         self,
         *,
-        event_type: str,
+        event_type: SessionTimelineEvent,
         payload: dict[str, JsonValue],
         subject_type: str,
     ) -> None:
@@ -2143,11 +2146,12 @@ def _agent_run_terminal_fields(
 
 def _agent_run_pause_fields(
     result: RunResult,
-) -> tuple[AgentInputRequestKind, str, dict, dict]:
+) -> tuple[AgentInputRequestKind, str, dict[str, JsonValue], dict[str, JsonValue]]:
     """Project framework interruption metadata onto a typed product request."""
     interruption = result.metadata
     if not isinstance(interruption, (RunApprovalInterruption, RunInputInterruption)):
         raise ValueError("Framework pause is missing continuation metadata.")
+    expected_schema: dict[str, JsonValue]
     if result.status is RunStatus.WAITING_FOR_APPROVAL and isinstance(
         interruption, RunApprovalInterruption
     ):

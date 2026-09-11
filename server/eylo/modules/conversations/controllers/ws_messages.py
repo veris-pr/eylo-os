@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.contracts.messages import MessageInteraction, MessageMeta
+from eylo.common.contracts.session_timeline import SessionTimelineEvent
 from eylo.common.contracts.websocket import (
     WsEventAction,
     WsRequestEvent,
@@ -40,6 +41,9 @@ from eylo.modules.conversations.schemas.messages import (
 )
 from eylo.modules.conversations.schemas.participants import ParticipantKind
 from eylo.modules.conversations.schemas.run_context import ConversationRunContext
+from eylo.modules.conversations.schemas.timeline import (
+    ConversationParticipationTimelineFact,
+)
 from eylo.modules.conversations.schemas.websocket import (
     WsMessageEvent,
     WsMessageFeedbackEvent,
@@ -144,7 +148,7 @@ def _invalid_message_response(
 
 
 class MessageWsController:
-    def __init__(self, db: AsyncSession | None = None):
+    def __init__(self, db: AsyncSession | None = None) -> None:
         self.conversation_base_service = ConversationBaseService(db)
         self.conversation_participant_service = ConversationParticipantService(db)
         self.message_service = MessageService(db)
@@ -315,11 +319,11 @@ class MessageWsController:
                         user_session_id=user_session_id,
                         subject_type="conversation",
                         subject_id=conversation_indb.id,
-                        event_type="conversation.continued",
-                        payload={
-                            "channel": conversation_indb.channel.value,
-                            "agent_id": str(agent_participant.agent_id),
-                        },
+                        event_type=SessionTimelineEvent.CONVERSATION_CONTINUED,
+                        payload=ConversationParticipationTimelineFact(
+                            channel=conversation_indb.channel,
+                            agent_id=agent_participant.agent_id,
+                        ).to_payload(),
                     )
                 message_content: UserMessageContent | WidgetResponseMessageContent
                 if request.content_kind == MessageContentKind.WIDGET_RESPONSE:

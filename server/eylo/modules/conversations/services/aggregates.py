@@ -29,7 +29,7 @@ class ConversationAggregateService(
     agents, messages, participants) in a single operation.
     """
 
-    def __init__(self, db: AsyncSession | None = None):
+    def __init__(self, db: AsyncSession | None = None) -> None:
         """Initialize the service with an aggregate repository.
 
         Args:

@@ -72,6 +72,33 @@ Payload keys are allowlisted per event type. Display projections exclude
 message text, contact identifiers, credentials, provider payloads, transcript
 content, and other unbounded PII.
 
+`SessionTimelineEvent` in `common/contracts/session_timeline.py` owns the closed
+event-name vocabulary shared by producers and the timeline catalog. Persisted
+and public names remain strings. The session module owns presentation and
+payload privacy policy; unrecognized names or payload keys are refused before
+filing. Lifecycle producers serialize typed facts without changing omitted
+fields into explicit nulls.
+
+Conversation producers retain UUIDs and message/status/channel enums in the
+conversation-owned timeline schemas until serialization. Message creation and
+request transitions preserve explicit nulls, including an absent request ID or
+previous status; content and tool arguments are not fields on these contracts.
+Browser and telephony provider facts share `ProviderTimelineFact` and the
+connection observations in `ProviderTimelineState`. Browser facts omit an absent
+vendor; telephony facts retain an explicitly provided null. Runtime filing remains
+best-effort and does not swallow cancellation.
+
+Agent-run producers use the run-owned fact contracts in
+`modules/agent_runs/timeline.py`: input-request identity/kind, terminal outcome,
+and safe startup refusal reason. The filing helper adds the pinned Agent identity;
+it accepts those contracts rather than arbitrary payload keys. Questions,
+responses, continuations and result content remain outside timeline facts.
+
+Durable tool waits file `agent.run.waiting_for_tool` and `agent.run.resumed`
+with the operation's `tool_owner_kind` and `tool_owner_id`. Only these two run
+events allow those details. Run state, capacity changes and the timeline fact
+share the caller's transaction: a filing failure rolls back the whole transition.
+
 ## Ordering
 
 Neither mechanism promises global event ordering. Durable envelopes retain

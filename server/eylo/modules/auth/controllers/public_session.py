@@ -40,7 +40,7 @@ class SessionValidationResponse(EyloBaseApiSchema):
 class PublicSessionController:
     """Validate public sessions without exposing authentication internals."""
 
-    def __init__(self, db: AsyncSession):
+    def __init__(self, db: AsyncSession) -> None:
         """Initialize the public session controller.
 
         Args:

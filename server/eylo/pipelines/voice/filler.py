@@ -4,8 +4,8 @@ Sends short filler phrases to TTS during LLM "thinking" gaps to avoid
 dead silence. Fillers are automatically interrupted when real LLM tokens arrive
 via the TTS manager's turn_id mechanism.
 
-Configuration is read from ``session_state.filler_config`` (a dict matching
-:class:`~eylo.modules.voice.schemas.api.FillerConfig`).  When no config is
+Configuration is read from ``session_state.filler_config`` as a
+:class:`~eylo.modules.voice.schemas.api.FillerConfig`. When no config is
 present the built-in defaults are used.
 
 Usage:
@@ -21,6 +21,7 @@ import random
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
+from eylo.modules.voice.schemas.api import FillerConfig
 from eylo.pipelines.voice.request_state import VoiceRequestSource
 from eylo.pipelines.voice.tts_payloads import TTSFinalizeRequest, TTSTextRequest
 
@@ -98,13 +99,13 @@ class FillerPhraseManager:
         config = await cls._get_filler_config(
             ws_manager, conversation_id, organization_id
         )
-        enabled = config.get("enabled", True)
-        if not enabled:
+        if config is not None and not config.enabled:
             cls._pending.pop(conversation_id, None)
             return
 
-        phrases = config.get("phrases") or _DEFAULT_PHRASES
-        delay_s = (config.get("delay_ms") or (_DEFAULT_DELAY_S * 1000)) / 1000.0
+        phrases = config.phrases if config is not None else _DEFAULT_PHRASES
+        phrases = phrases or _DEFAULT_PHRASES
+        delay_s = config.delay_ms / 1000.0 if config is not None else _DEFAULT_DELAY_S
 
         try:
             await asyncio.sleep(delay_s)
@@ -181,8 +182,8 @@ class FillerPhraseManager:
         ws_manager: WsConnectionManager,
         conversation_id: UUID,
         organization_id: UUID,
-    ) -> dict:
-        """Return the filler config dict from the first voice session, or empty dict."""
+    ) -> FillerConfig | None:
+        """Return the first configured voice session's policy, without defaults."""
         session_ids = await ws_manager.get_sessions_for_conversation(
             organization_id, conversation_id
         )
@@ -192,7 +193,7 @@ class FillerPhraseManager:
             )
             if session_state and session_state.filler_config:
                 return session_state.filler_config
-        return {}
+        return None
 
     @classmethod
     async def _agent_is_thinking(

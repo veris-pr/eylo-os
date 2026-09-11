@@ -4,13 +4,14 @@ from typing import List, Optional
 from uuid import UUID
 
 from pydantic import EmailStr
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.repositories import BaseORMRepository
 from eylo.modules.members.models import MemberModel, MemberStatus
 
 
 class MemberRepository(BaseORMRepository[MemberModel]):
-    def __init__(self, session):
+    def __init__(self, session: AsyncSession | None) -> None:
         super().__init__(session)
 
     @property

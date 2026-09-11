@@ -13,6 +13,8 @@ from pydantic import ValidationError
 from starlette.requests import HTTPConnection
 from starlette.websockets import WebSocketDisconnect
 
+from eylo.common.contracts.session_timeline import SessionTimelineEvent
+from eylo.modules.user_sessions.fact_payloads import SessionLifecycleFact
 from eylo.common.contracts.voice import BrowserVoiceTerminationReason
 from eylo.common.contracts.websocket import WsRequestEvent, WsResponse
 from eylo.common.database import start_transaction
@@ -26,23 +28,23 @@ from eylo.modules.user_sessions.domain import (
 from eylo.modules.user_sessions.events import file_user_session_fact
 from eylo.modules.user_sessions.service import UserSessionService
 from eylo.pipelines.websocket.handlers import handle_event
-from eylo.pipelines.websocket.schemas import WsEventAction
+from eylo.pipelines.websocket.schemas import WebSocketClientInfo, WsEventAction
 from eylo.pipelines.websocket.singleton import S_ws_manager
 
 logger = logging.getLogger(__name__)
 
 
-def extract_client_info(request: HTTPConnection) -> dict[str, str | None]:
+def extract_client_info(request: HTTPConnection) -> WebSocketClientInfo:
     """Extract client information from request headers."""
     try:
-        return {
-            "ip": request.client.host if request.client else None,
-            "user_agent": request.headers.get("user-agent"),
-            "referer": request.headers.get("referer"),
-            "origin": request.headers.get("origin"),
-        }
+        return WebSocketClientInfo(
+            ip=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+            referer=request.headers.get("referer"),
+            origin=request.headers.get("origin"),
+        )
     except Exception:
-        return {}
+        return WebSocketClientInfo()
 
 
 class WebSocketController:
@@ -203,7 +205,7 @@ class WebSocketController:
             )
             return
 
-        close_reason = "transport.websocket.disconnected"
+        close_reason = SessionTimelineEvent.TRANSPORT_WEBSOCKET_DISCONNECTED
         explicitly_ended = False
         cancellation: asyncio.CancelledError | None = None
         try:
@@ -314,7 +316,7 @@ class WebSocketController:
             close_reason = (
                 "widget.closed"
                 if explicitly_ended
-                else "transport.websocket.disconnected"
+                else SessionTimelineEvent.TRANSPORT_WEBSOCKET_DISCONNECTED
             )
             await S_ws_manager.disconnect(
                 organization_id,
@@ -327,7 +329,7 @@ class WebSocketController:
                 organization_id,
             )
         except Exception as error:
-            close_reason = "transport.websocket.failed"
+            close_reason = SessionTimelineEvent.TRANSPORT_WEBSOCKET_FAILED
             logger.error(
                 "WebSocket error organization_id=%s category=%s",
                 organization_id,
@@ -412,8 +414,10 @@ class WebSocketController:
                 user_session_id=user_session_id,
                 subject_type="transport.websocket",
                 subject_id=user_session_id,
-                event_type="transport.websocket.connected",
-                payload={"connection_sequence": connection_sequence},
+                event_type=SessionTimelineEvent.TRANSPORT_WEBSOCKET_CONNECTED,
+                payload=SessionLifecycleFact(
+                    connection_sequence=connection_sequence,
+                ).to_payload(),
             )
 
     @staticmethod
@@ -449,14 +453,14 @@ class WebSocketController:
                 subject_type="transport.websocket",
                 subject_id=user_session_id,
                 event_type=(
-                    "transport.websocket.failed"
-                    if reason == "transport.websocket.failed"
-                    else "transport.websocket.disconnected"
+                    SessionTimelineEvent.TRANSPORT_WEBSOCKET_FAILED
+                    if reason == SessionTimelineEvent.TRANSPORT_WEBSOCKET_FAILED
+                    else SessionTimelineEvent.TRANSPORT_WEBSOCKET_DISCONNECTED
                 ),
-                payload={
-                    "reason": reason,
-                    "connection_sequence": connection_sequence,
-                },
+                payload=SessionLifecycleFact(
+                    reason=reason,
+                    connection_sequence=connection_sequence,
+                ).to_payload(),
             )
 
     @staticmethod
@@ -481,11 +485,11 @@ class WebSocketController:
                 user_session_id=user_session_id,
                 subject_type="transport.websocket",
                 subject_id=user_session_id,
-                event_type="transport.websocket.failed",
-                payload={
-                    "reason": reason,
-                    "connection_sequence": connection_sequence,
-                },
+                event_type=SessionTimelineEvent.TRANSPORT_WEBSOCKET_FAILED,
+                payload=SessionLifecycleFact(
+                    reason=reason,
+                    connection_sequence=connection_sequence,
+                ).to_payload(),
             )
 
 

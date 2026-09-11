@@ -118,7 +118,7 @@ class AgentService(EyloBaseService[AgentInDb, AgentsModel]):
         reranking_configs: RerankingConfigService | None = None,
         memory_configs: MemoryConfigService | None = None,
         embedding_configs: EmbeddingConfigService | None = None,
-    ):
+    ) -> None:
         """Initialize agent persistence and optional LLM config validation."""
         self._repository = AgentsRepository(db)
         self._db = db
@@ -890,7 +890,7 @@ class AgentToolService(EyloBaseService[AgentToolInDb, AgentToolMappingModal]):
         """Repository for the "agents" domain."""
         self._repository = value
 
-    def __init__(self, db: Optional[AsyncSession] = None):
+    def __init__(self, db: Optional[AsyncSession] = None) -> None:
         """Initialize Agent Tool Service."""
         self._repository = AgentToolMappingRepository(db=db)
         self.tool_service = ToolService(db=db)

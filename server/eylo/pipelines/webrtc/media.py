@@ -281,10 +281,12 @@ class OutgoingAudioTrack(AudioStreamTrack):
         self._last_frame_time: float | None = None
         self._frame_interval = self.frame_duration_ms / 1000.0
 
-        ambient_cfg = session_state.ambient_noise_config or {}
-        self._ambient_enabled = bool(ambient_cfg.get("enabled", True))
+        ambient_cfg = session_state.ambient_noise_config
+        self._ambient_enabled = ambient_cfg.enabled if ambient_cfg is not None else True
         self._ambient_amplitude = self._coerce_ambient_amplitude(
-            ambient_cfg.get("amplitude", self._DEFAULT_AMBIENT_AMPLITUDE)
+            ambient_cfg.amplitude
+            if ambient_cfg is not None
+            else self._DEFAULT_AMBIENT_AMPLITUDE
         )
 
         self._ambient_noise = generate_brown_noise(

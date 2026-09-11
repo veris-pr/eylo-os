@@ -7,6 +7,7 @@ from fastapi import status
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from eylo.common.contracts.session_timeline import SessionTimelineEvent
 from eylo.common.contracts.websocket import (
     WsConversationQueryEvent,
     WsConversationReadEvent,
@@ -32,6 +33,9 @@ from eylo.modules.conversations.schemas.conversations import (
 )
 from eylo.modules.conversations.schemas.messages import MessageKind
 from eylo.modules.conversations.schemas.participants import ParticipantKind
+from eylo.modules.conversations.schemas.timeline import (
+    ConversationParticipationTimelineFact,
+)
 from eylo.modules.conversations.services.aggregates import (
     ConversationAggregateService,
 )
@@ -104,7 +108,7 @@ def _canonicalize_widget_start_request(
 
 
 class ConversationWsController:
-    def __init__(self, db: AsyncSession | None = None):
+    def __init__(self, db: AsyncSession | None = None) -> None:
         self.conversation_base_service = ConversationBaseService(db)
         self.contact_service = ContactService(db)
         self.db = db
@@ -307,6 +311,9 @@ class ConversationWsController:
                     contact_indb,
                     request,
                 )
+                agent_id = request.to_.id
+                if agent_id is None:
+                    raise InvalidWidgetConversationStart
                 conversation_indb = await start_conversation_for_new_work(
                     service=self.conversation_base_service,
                     organization_id=ctx.organization_id,
@@ -324,19 +331,19 @@ class ConversationWsController:
                     user_session_id=ctx.user_session_id,
                     subject_type="conversation",
                     subject_id=conversation_indb.id,
-                    event_type="conversation.started",
+                    event_type=SessionTimelineEvent.CONVERSATION_STARTED,
                     occurred_at=conversation_indb.created_at,
-                    payload={
-                        "channel": conversation_indb.channel.value,
-                        "agent_id": str(request.to_.id),
-                    },
+                    payload=ConversationParticipationTimelineFact(
+                        channel=conversation_indb.channel,
+                        agent_id=agent_id,
+                    ).to_payload(),
                 )
             logger.info(
                 "Conversation started organization_id=%s conversation_id=%s",
                 ctx.organization_id,
                 conversation_indb.id,
             )
-            ws.agent_id = request.to_.id
+            ws.agent_id = agent_id
 
             return WsResponse(
                 status=status.HTTP_200_OK,

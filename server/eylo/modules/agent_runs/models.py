@@ -481,14 +481,14 @@ class AgentRunStepModel(EyloOrganizationModel):
         default=AgentRunStepStatus.PENDING,
         server_default=AgentRunStepStatus.PENDING.value,
     )
-    intent: Mapped[dict] = mapped_column(
+    intent: Mapped[dict[str, JsonValue]] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
     safe_summary: Mapped[str | None] = mapped_column(String(4000), nullable=True)
-    evidence: Mapped[dict | None] = mapped_column(
+    evidence: Mapped[dict[str, JsonValue] | None] = mapped_column(
         JSONB(none_as_null=True), nullable=True
     )
-    artifact_refs: Mapped[list] = mapped_column(
+    artifact_refs: Mapped[list[JsonValue]] = mapped_column(
         JSONB, nullable=False, server_default=text("'[]'::jsonb")
     )
     provider_idempotency_key: Mapped[str | None] = mapped_column(
@@ -628,10 +628,10 @@ class AgentInputRequestModel(EyloOrganizationModel):
         nullable=False,
     )
     prompt: Mapped[str] = mapped_column(Text, nullable=False)
-    expected_response_schema: Mapped[dict] = mapped_column(
+    expected_response_schema: Mapped[dict[str, JsonValue]] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
-    continuation: Mapped[dict] = mapped_column(
+    continuation: Mapped[dict[str, JsonValue]] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
     event_name: Mapped[str] = mapped_column(String(512), nullable=False)
@@ -642,9 +642,7 @@ class AgentInputRequestModel(EyloOrganizationModel):
         default=AgentInputRequestStatus.PENDING,
         server_default=AgentInputRequestStatus.PENDING.value,
     )
-    response: Mapped[dict | list | str | int | float | bool | None] = mapped_column(
-        JSONB, nullable=True
-    )
+    response: Mapped[JsonValue] = mapped_column(JSONB, nullable=True)
     answered_by_principal_kind: Mapped[InitiatingPrincipalKind | None] = mapped_column(
         _enum(InitiatingPrincipalKind, "agent_run_principal_kind_enum"),
         nullable=True,

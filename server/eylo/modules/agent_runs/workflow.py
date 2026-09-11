@@ -24,6 +24,7 @@ from pydantic import (
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from eylo.common.contracts.session_timeline import SessionTimelineEvent
 from eylo.common.database import start_transaction
 from eylo.common.revisions import DefinitionLifecycle, RevisionAvailability
 from eylo.modules.agent_runs.budgets import (
@@ -45,6 +46,11 @@ from eylo.modules.agent_runs.domain import (
 from eylo.modules.agent_runs.models import AgentRunModel
 from eylo.modules.agent_runs.repositories import AgentRunRepository
 from eylo.modules.agent_runs.serialization import validate_agent_run_json_object
+from eylo.modules.agent_runs.timeline import (
+    AgentRunRefusalFact,
+    AgentRunRefusalReason,
+    AgentRunTimelineIdentity,
+)
 from eylo.modules.agents.models import AgentRevisionModel, AgentsModel
 from eylo.modules.auth.models import ApiKeyModel, AuthSessionModel
 from eylo.modules.contacts.models import ContactsModel
@@ -486,8 +492,7 @@ async def _claim_run(
             await _file_run_fact(
                 session,
                 run,
-                event_type="agent.run.cancelled",
-                payload={},
+                event_type=SessionTimelineEvent.AGENT_RUN_CANCELLED,
             )
             return receipt
 
@@ -513,8 +518,10 @@ async def _claim_run(
             await _file_run_fact(
                 session,
                 run,
-                event_type="agent.run.failed",
-                payload={"reason": "agent_revision_unavailable"},
+                event_type=SessionTimelineEvent.AGENT_RUN_FAILED,
+                details=AgentRunRefusalFact(
+                    reason=AgentRunRefusalReason.AGENT_REVISION_UNAVAILABLE
+                ),
             )
             return receipt
         if not await _principal_is_current(session, run):
@@ -530,8 +537,10 @@ async def _claim_run(
             await _file_run_fact(
                 session,
                 run,
-                event_type="agent.run.failed",
-                payload={"reason": "principal_inactive"},
+                event_type=SessionTimelineEvent.AGENT_RUN_FAILED,
+                details=AgentRunRefusalFact(
+                    reason=AgentRunRefusalReason.PRINCIPAL_INACTIVE
+                ),
             )
             return receipt
 
@@ -548,8 +557,7 @@ async def _claim_run(
             await _file_run_fact(
                 session,
                 run,
-                event_type="agent.run.started",
-                payload={},
+                event_type=SessionTimelineEvent.AGENT_RUN_STARTED,
             )
         elif run.lifecycle is AgentRunLifecycle.RUNNING:
             await activate_agent_run_reservation_in_transaction(
@@ -657,8 +665,8 @@ async def _file_run_fact(
     session: AsyncSession,
     run: AgentRunModel,
     *,
-    event_type: str,
-    payload: dict,
+    event_type: SessionTimelineEvent,
+    details: AgentRunRefusalFact | None = None,
 ) -> None:
     if run.user_session_id is None:
         return
@@ -670,9 +678,11 @@ async def _file_run_fact(
         subject_id=run.id,
         event_type=event_type,
         payload={
-            "agent_id": str(run.agent_id),
-            "agent_revision": run.agent_revision,
-            **payload,
+            **AgentRunTimelineIdentity(
+                agent_id=run.agent_id,
+                agent_revision=run.agent_revision,
+            ).to_payload(),
+            **(details.to_payload() if details is not None else {}),
         },
     )
 

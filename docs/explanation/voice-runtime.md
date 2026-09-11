@@ -239,6 +239,18 @@ voice-session persistence boundaries. Unavailable provider branches remain absen
 null measurements inside an available snapshot remain null. A metrics failure
 does not prevent completion or misrepresent unavailable measurements as zeros.
 
+Browser finalization also retains typed STT/TTS observations until that boundary.
+Disabled metrics do not read provider counters. Its latency projection omits the
+TTS first-audio latency field without modifying the snapshot; other counters and
+timestamps retain their existing shape. The terminal reason remains present even
+when observation collection or serialization fails. Realtime sessions do not
+invent STT/TTS observations for providers they did not use.
+
+Browser STT/TTS startup normalizes resolved material into the socket-owned config
+models before assembling the live session. Provider-native options and explicit
+credentials retain their existing factory handoff; no provider or model fallback
+is introduced by the typed browser boundary.
+
 ## Recording and post-call work
 
 Recording captures the live flow first. Upload, redaction, canonical transcript
@@ -277,6 +289,21 @@ preserves the original object;
 serializing or rebuilding it would detach cleanup from the actual tasks and
 queues. Missing state is allowed during teardown, but startup requires it.
 An incompatible holder is a wiring error rather than an unchecked cast.
+
+The WebSocket session validates resource assignments without copying their
+instances. STT queues carry audio bytes or transcript inputs; TTS queues carry
+typed requests or audio bytes. Session task registries use named task enums.
+Handles, callbacks and client request metadata are excluded from snapshots;
+queue instance validation does not inspect payloads already inside a queue.
+Browser and telephony teardown share a narrow voice-runner drain port instead
+of importing each other's runtime implementation.
+
+Ambient-noise and filler settings stay as their owning voice-config models
+through playback and filler injection. Each session receives independent copies,
+including the phrase list. Configured delays are interpreted in milliseconds;
+the existing no-config filler delay remains 600 ms. Browser ambient fallback
+and telephony's no-config silence remain distinct. Runtime mode and interaction
+callbacks retain their existing enums until the event/persistence boundary.
 
 Peer terminal callbacks accept awaitables, including Futures. A retained
 coroutine task awaits that callback; its completion callback observes failures.

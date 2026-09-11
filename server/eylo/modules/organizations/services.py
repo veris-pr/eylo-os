@@ -33,7 +33,7 @@ class OrganizationService(EyloBaseService[OrganizationModelSchema, OrganizationM
         """Repository for the "organizations" domain."""
         self._repository = value
 
-    def __init__(self, db: Optional[AsyncSession] = None):
+    def __init__(self, db: Optional[AsyncSession] = None) -> None:
         """Init for the "organizations" domain."""
         self._repository = OrganizationRepository(db)
         self._db = db

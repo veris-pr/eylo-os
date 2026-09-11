@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from eylo.common.contracts.session_timeline import SessionTimelineEvent
 from eylo.common.redaction import redact, redact_value
 from eylo.common.services import EyloBaseService
 from eylo.modules.conversations.models.conversations import ConversationsModel
@@ -97,7 +98,7 @@ class VoiceTranscriptService(EyloBaseService[VoiceSessionInDb, VoiceSessionModel
                 user_session_id=created.user_session_id,
                 subject_type="voice.session",
                 subject_id=created.id,
-                event_type="voice.session.started",
+                event_type=SessionTimelineEvent.VOICE_SESSION_STARTED,
                 occurred_at=created.started_at,
                 payload={
                     "conversation_id": str(created.conversation_id),

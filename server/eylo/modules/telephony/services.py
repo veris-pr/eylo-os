@@ -67,7 +67,7 @@ class PhoneNumberService(EyloBaseService[PhoneNumberInDb, PhoneNumberModel]):
     def repository(self) -> PhoneNumberRepository:
         return self._repository
 
-    def __init__(self, db: Optional[AsyncSession] = None):
+    def __init__(self, db: Optional[AsyncSession] = None) -> None:
         self._repository = PhoneNumberRepository(db)
 
     async def create(
@@ -258,7 +258,7 @@ class TelephonyCallService(EyloBaseService[TelephonyCallInDb, TelephonyCallModel
     def repository(self) -> TelephonyCallRepository:
         return self._repository
 
-    def __init__(self, db: Optional[AsyncSession] = None):
+    def __init__(self, db: Optional[AsyncSession] = None) -> None:
         self._repository = TelephonyCallRepository(db)
 
     async def get_by_organization(

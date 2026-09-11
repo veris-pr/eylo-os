@@ -125,16 +125,18 @@ class AgentRunCancellationDisposition(str, Enum):
 
 
 class AgentRunStepRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True, extra="forbid")
+    """Public step evidence; product-owned payloads cross this boundary as JSON."""
+
+    model_config = ConfigDict(from_attributes=True, extra="forbid", allow_inf_nan=False)
 
     id: UUID
     step_key: str
     kind: AgentRunStepKind
     status: AgentRunStepStatus
-    intent: dict
+    intent: dict[str, JsonValue]
     safe_summary: str | None
-    evidence: dict | None
-    artifact_refs: list
+    evidence: dict[str, JsonValue] | None
+    artifact_refs: list[JsonValue]
     started_at: datetime | None
     completed_at: datetime | None
     created_at: datetime
@@ -142,12 +144,14 @@ class AgentRunStepRead(BaseModel):
 
 
 class AgentInputRequestRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True, extra="forbid")
+    """Public question and JSON response schema, never the private continuation."""
+
+    model_config = ConfigDict(from_attributes=True, extra="forbid", allow_inf_nan=False)
 
     id: UUID
     kind: AgentInputRequestKind
     prompt: str
-    expected_response_schema: dict
+    expected_response_schema: dict[str, JsonValue]
     status: AgentInputRequestStatus
     response: JsonValue | None
     answered_by_principal_kind: InitiatingPrincipalKind | None
@@ -162,7 +166,7 @@ class AgentInputRequestRead(BaseModel):
 class AgentRunRead(BaseModel):
     """Organization-owned run state without internal engine identifiers."""
 
-    model_config = ConfigDict(from_attributes=True, extra="forbid")
+    model_config = ConfigDict(from_attributes=True, extra="forbid", allow_inf_nan=False)
 
     id: UUID
     organization_id: UUID
@@ -176,7 +180,7 @@ class AgentRunRead(BaseModel):
     lifecycle: AgentRunLifecycle
     outcome: AgentRunOutcome | None
     goal: str
-    result: dict | None
+    result: dict[str, JsonValue] | None
     outcome_reason: str | None
     failure_summary: str | None
     state_revision: int

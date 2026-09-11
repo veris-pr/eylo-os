@@ -12,13 +12,14 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from functools import partial
-from typing import Any, Final, Literal
+from typing import Final, Literal
 from uuid import UUID, uuid4
 
 import arrow
 from fastapi import status
 
 from eylo.common.contracts.provider_config import Capability
+from eylo.common.contracts.session_timeline import ProviderTimelineState
 from eylo.common.contracts.speech_runtime import (
     SpeechTransportEncoding,
     SpeechTransportFormat,
@@ -36,7 +37,9 @@ from eylo.modules.conversations.services.participants import (
 )
 from eylo.modules.provider_configs.errors import NotConfiguredError
 from eylo.modules.session_context.schemas import SessionContext
+from eylo.modules.user_sessions.fact_payloads import ProviderTimelineFact
 from eylo.modules.voice.schemas.api import (
+    ArtifactPlan,
     CompliancePlan,
     ConversationControl,
     SilenceConfig,
@@ -70,6 +73,7 @@ from eylo.pipelines.voice.live_buffer import (
     LiveVoiceBufferIdentity,
 )
 from eylo.pipelines.voice.live_runner import LiveVoiceTurnRunner
+from eylo.pipelines.voice.metrics import BrowserAudioMetrics, VendorLatencyProjection
 from eylo.pipelines.voice.policy_speech import play_policy_speech
 from eylo.pipelines.voice.post_call import finalize_live_voice_history
 from eylo.pipelines.voice.provider_runtime import (
@@ -87,6 +91,7 @@ from eylo.pipelines.websocket.errors import not_configured_response
 from eylo.pipelines.websocket.schemas import (
     _DEFAULT_SAMPLE_RATE,
     STTEncodingInfo,
+    VoiceSessionTask,
     WSSessionState,
     WsEventAction,
     WsRequestEvent,
@@ -97,12 +102,12 @@ from eylo.pipelines.websocket.session_state import (
     resolve_websocket_state,
 )
 from eylo.pipelines.websocket.singleton import S_ws_manager
+from eylo.sockets.stt.schemas import STTConfig
 from eylo.sockets.tts.schemas import TTSConfig, normalize_tts_config
 
 logger = logging.getLogger(__name__)
 
 
-_LATENCY_METRIC_KEYS = ("first_audio_latency_seconds", "time_to_first_byte_seconds")
 _VOICE_PROVIDER_STARTUP_TIMEOUT_SECONDS = 15.0
 _VOICE_PROVIDER_FAILURE_REASONS: Final = {
     Capability.STT: BrowserVoiceTerminationReason.STT_RUNTIME_FAILED,
@@ -113,20 +118,22 @@ _VOICE_PROVIDER_FAILURE_REASONS: Final = {
 async def _record_voice_provider_fact(
     session_state: WSSessionState,
     *,
-    provider_kind: str,
-    state: str,
+    provider_kind: Capability,
+    state: ProviderTimelineState,
     vendor: str | None = None,
 ) -> None:
+    fact = (
+        ProviderTimelineFact(provider_kind=provider_kind, vendor=vendor)
+        if vendor
+        else ProviderTimelineFact(provider_kind=provider_kind)
+    )
     await try_file_runtime_fact(
         organization_id=session_state.organization_id,
         user_session_id=session_state.user_session_id,
-        subject_type=f"provider.{provider_kind}",
+        subject_type=f"provider.{provider_kind.value}",
         subject_id=session_state.voice_session_id,
-        event_type=f"provider.{provider_kind}.{state}",
-        payload={
-            "provider_kind": provider_kind,
-            **({"vendor": vendor} if vendor else {}),
-        },
+        event_type=f"provider.{provider_kind.value}.{state.value}",
+        payload=fact.to_payload(),
     )
 
 
@@ -199,34 +206,28 @@ def _cancel_browser_output(session_state: WSSessionState) -> None:
     session_state.transport_playback_gate.cancel()
 
 
-def _collect_audio_metrics(session_state: WSSessionState) -> dict[str, Any]:
+def _collect_audio_metrics(session_state: WSSessionState) -> BrowserAudioMetrics:
     """Vendor metrics for this session, subject to the agent's ObservabilityPlan.
 
-    Returning `{}` when metrics are disabled is what makes the switch real:
-    the session-ended event then carries no metrics, and the teardown logs
-    have nothing to print.
+    Disabled metrics never read provider counters. The termination reason is
+    filed separately even when observations are disabled or unavailable.
     """
     if not session_state.metrics_enabled:
-        return {}
-
-    metrics: dict[str, Any] = {}
-    if session_state.stt_socket:
-        metrics["stt"] = session_state.stt_socket.metrics
-    if session_state.tts_socket:
-        metrics["tts"] = session_state.tts_socket.metrics_snapshot().model_dump()
-
-    if not session_state.vendor_latency_tracking_enabled:
-        for vendor_metrics in metrics.values():
-            if isinstance(vendor_metrics, dict):
-                for key in _LATENCY_METRIC_KEYS:
-                    vendor_metrics.pop(key, None)
-    return metrics
+        return BrowserAudioMetrics()
+    return BrowserAudioMetrics(
+        stt=session_state.stt_socket.metrics_snapshot()
+        if session_state.stt_socket is not None
+        else None,
+        tts=session_state.tts_socket.metrics_snapshot()
+        if session_state.tts_socket is not None
+        else None,
+    )
 
 
 async def _run_voice_cleanup_step(
     organization_id: UUID,
     step: str,
-    operation: Awaitable[Any],
+    operation: Awaitable[object],
 ) -> None:
     """Contain secondary cleanup failures so terminal persistence still runs."""
     try:
@@ -274,7 +275,7 @@ def _compliance_plan(voice_config: VoiceConfig | None) -> CompliancePlan:
     return voice_config.compliance if voice_config else CompliancePlan()
 
 
-def _compliance_meta(voice_config: VoiceConfig | None) -> dict:
+def _compliance_meta(voice_config: VoiceConfig | None) -> dict[str, bool]:
     """Compliance decisions post-call projection needs, as content-free meta."""
     plan = _compliance_plan(voice_config)
     return {
@@ -285,15 +286,13 @@ def _compliance_meta(voice_config: VoiceConfig | None) -> dict:
     }
 
 
-def _artifact_plan(voice_config: VoiceConfig | None):
+def _artifact_plan(voice_config: VoiceConfig | None) -> ArtifactPlan:
     """The agent's ArtifactPlan, or schema defaults when unconfigured.
 
     Attribute access is direct rather than `getattr(..., default)`: the field
     is `artifacts`, and a defensive getattr on the wrong name silently
     returned defaults, so both storage gates read nothing.
     """
-    from eylo.modules.voice.schemas.api import ArtifactPlan
-
     return voice_config.artifacts if voice_config else ArtifactPlan()
 
 
@@ -405,7 +404,7 @@ async def _start_browser_voice_session(
     )
     session_state.is_voice_mode = True
     session_state.voice_transcript_session_started = True
-    session_state.voice_transcript_runtime_mode = runtime_mode.value
+    session_state.voice_transcript_runtime_mode = runtime_mode
     if session_state.audio_recorder is not None:
         session_state.audio_recorder.bind_voice_session(
             voice_session_id=voice_session.id,
@@ -499,20 +498,27 @@ async def cleanup_audio_services(ctx: SessionContext) -> None:
     if session_state is None:
         return
     was_realtime_mode = session_state.realtime_mode
+    ended_reason = (
+        session_state.voice_termination_reason
+        or BrowserVoiceTerminationReason.VOICE_CLEANUP_WITHOUT_REASON
+    )
     try:
         audio_metrics = _collect_audio_metrics(session_state)
+        audio_metrics.termination_reason = ended_reason
+        metrics_payload = audio_metrics.to_payload(
+            latency=VendorLatencyProjection.INCLUDE
+            if session_state.vendor_latency_tracking_enabled
+            else VendorLatencyProjection.OMIT
+        )
     except Exception as error:
-        audio_metrics = {}
+        metrics_payload = BrowserAudioMetrics(
+            termination_reason=ended_reason
+        ).to_payload()
         logger.error(
             "Browser voice metrics collection failed organization_id=%s error_type=%s",
             ctx.organization_id,
             type(error).__name__,
         )
-    ended_reason = (
-        session_state.voice_termination_reason
-        or BrowserVoiceTerminationReason.VOICE_CLEANUP_WITHOUT_REASON
-    )
-    audio_metrics["termination_reason"] = ended_reason.value
     voice_transcript_session_started = session_state.voice_transcript_session_started
     voice_session_id = session_state.voice_session_id
     voice_transcript_runtime_mode = session_state.voice_transcript_runtime_mode
@@ -549,8 +555,8 @@ async def cleanup_audio_services(ctx: SessionContext) -> None:
         )
         await _record_voice_provider_fact(
             session_state,
-            provider_kind="realtime",
-            state="disconnected",
+            provider_kind=Capability.REALTIME,
+            state=ProviderTimelineState.DISCONNECTED,
         )
     session_state.realtime_manager = None
 
@@ -586,12 +592,12 @@ async def cleanup_audio_services(ctx: SessionContext) -> None:
         logger.info(
             "STT services cleaned up organization_id=%s metrics=%s",
             ctx.organization_id,
-            audio_metrics.get("stt", {}),
+            metrics_payload.get("stt", {}),
         )
         await _record_voice_provider_fact(
             session_state,
-            provider_kind="stt",
-            state="disconnected",
+            provider_kind=Capability.STT,
+            state=ProviderTimelineState.DISCONNECTED,
         )
     session_state.stt_started = False
     session_state.stt_socket = None
@@ -633,12 +639,12 @@ async def cleanup_audio_services(ctx: SessionContext) -> None:
         logger.info(
             "TTS services cleaned up organization_id=%s metrics=%s",
             ctx.organization_id,
-            audio_metrics.get("tts", {}),
+            metrics_payload.get("tts", {}),
         )
         await _record_voice_provider_fact(
             session_state,
-            provider_kind="tts",
-            state="disconnected",
+            provider_kind=Capability.TTS,
+            state=ProviderTimelineState.DISCONNECTED,
         )
     session_state.tts_started = False
     session_state.tts_socket = None
@@ -670,7 +676,7 @@ async def cleanup_audio_services(ctx: SessionContext) -> None:
 
     if voice_transcript_session_started and voice_session_id is not None:
         runtime_mode = (
-            VoiceRuntimeMode(voice_transcript_runtime_mode)
+            voice_transcript_runtime_mode
             if voice_transcript_runtime_mode
             else (
                 VoiceRuntimeMode.BROWSER_REALTIME
@@ -688,7 +694,7 @@ async def cleanup_audio_services(ctx: SessionContext) -> None:
                 ended_at=ended_at,
                 ended_reason=ended_reason.value,
                 status=browser_voice_session_status(ended_reason),
-                metrics=audio_metrics or None,
+                metrics=metrics_payload or None,
             ),
         )
     session_state.voice_transcript_session_started = False
@@ -1005,8 +1011,8 @@ async def _initialize_realtime_mode(
         if failed:
             await _record_voice_provider_fact(
                 session_state,
-                provider_kind="realtime",
-                state="failed",
+                provider_kind=Capability.REALTIME,
+                state=ProviderTimelineState.FAILED,
                 vendor=resolved_realtime.provider.value,
             )
         try:
@@ -1091,29 +1097,29 @@ async def _initialize_realtime_mode(
     except Exception:
         await _record_voice_provider_fact(
             session_state,
-            provider_kind="realtime",
-            state="failed",
+            provider_kind=Capability.REALTIME,
+            state=ProviderTimelineState.FAILED,
             vendor=resolved_realtime.provider.value,
         )
         raise
     await _record_voice_provider_fact(
         session_state,
-        provider_kind="realtime",
-        state="connected",
+        provider_kind=Capability.REALTIME,
+        state=ProviderTimelineState.CONNECTED,
         vendor=resolved_realtime.provider.value,
     )
 
 
 async def _initialize_stt_service(
     session_state: WSSessionState,
-    stt_config: dict[str, Any],
+    stt_config: STTConfig,
     *,
     stt_api_key: str | None = None,
 ) -> None:
     session_state.stt_request_queue = asyncio.Queue()
     session_state.stt_response_queue = asyncio.Queue()
 
-    stt_vendor = stt_config["vendor"]
+    stt_vendor = stt_config.vendor.value
     logger.debug("STT Vendor: %s", stt_vendor)
 
     session_state.stt_socket = STTRealtime(
@@ -1126,7 +1132,7 @@ async def _initialize_stt_service(
     )
 
     stt_task = asyncio.create_task(session_state.stt_socket.initialize())
-    session_state.stt_session_tasks["stt_initialize"] = stt_task
+    session_state.stt_session_tasks[VoiceSessionTask.STT_INITIALIZE] = stt_task
     try:
         await _wait_for_provider_ready(
             task=stt_task,
@@ -1136,12 +1142,12 @@ async def _initialize_stt_service(
     except Exception:
         await _record_voice_provider_fact(
             session_state,
-            provider_kind="stt",
-            state="failed",
+            provider_kind=Capability.STT,
+            state=ProviderTimelineState.FAILED,
             vendor=stt_vendor,
         )
         await _cancel_failed_provider_startup(stt_task)
-        session_state.stt_session_tasks.pop("stt_initialize", None)
+        session_state.stt_session_tasks.pop(VoiceSessionTask.STT_INITIALIZE, None)
         session_state.stt_socket = None
         session_state.stt_started = False
         raise
@@ -1149,8 +1155,8 @@ async def _initialize_stt_service(
     session_state.stt_started = True
     await _record_voice_provider_fact(
         session_state,
-        provider_kind="stt",
-        state="connected",
+        provider_kind=Capability.STT,
+        state=ProviderTimelineState.CONNECTED,
         vendor=stt_vendor,
     )
     _watch_voice_provider_task(
@@ -1164,7 +1170,7 @@ async def _initialize_stt_service(
 
 async def _initialize_tts_service(
     session_state: WSSessionState,
-    tts_config: TTSConfig | dict[str, object] | None,
+    tts_config: TTSConfig | None,
     *,
     tts_api_key: str | None = None,
 ) -> bool:
@@ -1209,7 +1215,7 @@ async def _initialize_tts_service(
     session_state.tts_manager = tts_manager
 
     tts_task = asyncio.create_task(tts_manager.initialize())
-    session_state.tts_session_tasks["tts_initialize"] = tts_task
+    session_state.tts_session_tasks[VoiceSessionTask.TTS_INITIALIZE] = tts_task
     try:
         await _wait_for_provider_ready(
             task=tts_task,
@@ -1219,12 +1225,12 @@ async def _initialize_tts_service(
     except Exception:
         await _record_voice_provider_fact(
             session_state,
-            provider_kind="tts",
-            state="failed",
+            provider_kind=Capability.TTS,
+            state=ProviderTimelineState.FAILED,
             vendor=runtime_config.vendor.value,
         )
         await _cancel_failed_provider_startup(tts_task)
-        session_state.tts_session_tasks.pop("tts_initialize", None)
+        session_state.tts_session_tasks.pop(VoiceSessionTask.TTS_INITIALIZE, None)
         session_state.tts_socket = None
         session_state.tts_manager = None
         session_state.tts_started = False
@@ -1233,8 +1239,8 @@ async def _initialize_tts_service(
     session_state.tts_started = True
     await _record_voice_provider_fact(
         session_state,
-        provider_kind="tts",
-        state="connected",
+        provider_kind=Capability.TTS,
+        state=ProviderTimelineState.CONNECTED,
         vendor=runtime_config.vendor.value,
     )
     _watch_voice_provider_task(
@@ -1283,8 +1289,8 @@ def _watch_voice_provider_task(
         async def record_and_terminate() -> None:
             await _record_voice_provider_fact(
                 session_state,
-                provider_kind=provider_kind.value,
-                state="failed",
+                provider_kind=provider_kind,
+                state=ProviderTimelineState.FAILED,
                 vendor=vendor,
             )
             await terminal_callback(_VOICE_PROVIDER_FAILURE_REASONS[provider_kind])
@@ -1485,21 +1491,25 @@ async def _start_browser_interaction_policies(
         _mark_browser_awaiting_user(session_state)
 
     if conversation_control.max_duration_seconds > 0:
-        session_state.voice_policy_tasks["max_duration_timeout"] = asyncio.create_task(
-            _enforce_max_duration(
-                ctx,
-                conversation_control.max_duration_seconds,
-                conversation_control.end_call_message,
+        session_state.voice_policy_tasks[VoiceSessionTask.MAX_DURATION_TIMEOUT] = (
+            asyncio.create_task(
+                _enforce_max_duration(
+                    ctx,
+                    conversation_control.max_duration_seconds,
+                    conversation_control.end_call_message,
+                )
             )
         )
 
     silence_config = voice_config.silence
     if silence_config and should_start_silence_monitor(silence_config):
-        session_state.voice_policy_tasks["silence_monitor"] = asyncio.create_task(
-            _monitor_silence(
-                ctx,
-                silence_config,
-                conversation_control.end_call_message,
+        session_state.voice_policy_tasks[VoiceSessionTask.SILENCE_MONITOR] = (
+            asyncio.create_task(
+                _monitor_silence(
+                    ctx,
+                    silence_config,
+                    conversation_control.end_call_message,
+                )
             )
         )
 
@@ -1674,8 +1684,8 @@ async def handle_audio_config(
         resolved_tts: ResolvedTTS | None = None
         resolved_realtime: ResolvedRealtime | None = None
         decomposed_identity: DecomposedVoiceRuntimeIdentity | None = None
-        stt_config: dict[str, Any] | None = None
-        tts_config: dict[str, Any] | None = None
+        stt_config: STTConfig | None = None
+        tts_config: TTSConfig | None = None
         if voice_config.realtime_provider_config_id is None:
             async with start_transaction(ro=True) as voice_runtime_db:
                 resolved_stt, resolved_tts = await resolve_decomposed_voice_runtime(
@@ -1697,14 +1707,18 @@ async def handle_audio_config(
                 tts_transport = SpeechTransportFormat(
                     sample_rate=16000, encoding=SpeechTransportEncoding.PCM_S16LE
                 )
-            stt_config = build_stt_runtime_config(
-                voice_config,
-                resolved_stt,
-                transport=stt_transport,
+            stt_config = STTConfig.from_mapping(
+                build_stt_runtime_config(
+                    voice_config,
+                    resolved_stt,
+                    transport=stt_transport,
+                )
             )
-            tts_config = build_tts_runtime_config(
-                resolved_tts,
-                transport=tts_transport,
+            tts_config = normalize_tts_config(
+                build_tts_runtime_config(
+                    resolved_tts,
+                    transport=tts_transport,
+                )
             )
             decomposed_identity = DecomposedVoiceRuntimeIdentity.from_resolved(
                 resolved_stt,
@@ -1843,7 +1857,7 @@ async def handle_audio_config(
                     live_buffer=live_buffer,
                 )
             )
-            session_state.stt_session_tasks["user_transcript_writer"] = (
+            session_state.stt_session_tasks[VoiceSessionTask.USER_TRANSCRIPT_WRITER] = (
                 user_transcript_task
             )
 

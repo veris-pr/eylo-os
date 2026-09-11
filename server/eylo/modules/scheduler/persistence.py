@@ -14,7 +14,9 @@ from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy import text as sql
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from eylo.common.contracts.scheduler import (
     ScheduleSpec,
@@ -33,7 +35,7 @@ PROVIDER = "postgres"
 class PostgresSchedulerStore:
     """Schedule storage on the platform's own database."""
 
-    def __init__(self, session_factory) -> None:
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         # A factory rather than a session: claiming runs on a worker poll and
         # registration runs on a request, and they must not share a
         # transaction.
@@ -229,9 +231,7 @@ class PostgresSchedulerStore:
                 ),
                 {"now": now, "limit": limit},
             )
-            claimed = [
-                (str(row.id), row.published_revision, now) for row in rows
-            ]
+            claimed = [(str(row.id), row.published_revision, now) for row in rows]
             await session.commit()
             return claimed
 
@@ -271,6 +271,10 @@ class PostgresSchedulerStore:
                     "next_at": next_at,
                 },
             )
+            if not isinstance(result, CursorResult):
+                raise TypeError(
+                    "Schedule dispatch update did not return a DML cursor result."
+                )
             await session.commit()
             return bool(result.rowcount)
 
@@ -339,7 +343,7 @@ class PostgresSchedulerStore:
 
     @staticmethod
     async def _resolve_agent_revision(
-        session,
+        session: AsyncSession,
         *,
         organization_id: UUID,
         agent_id: UUID,

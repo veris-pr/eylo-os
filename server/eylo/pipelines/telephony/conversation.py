@@ -8,6 +8,7 @@ from uuid import UUID
 from fastapi import HTTPException, WebSocket, status
 from pydantic import BaseModel, ConfigDict, Field
 
+from eylo.common.contracts.session_timeline import SessionTimelineEvent
 from eylo.common.database import start_transaction
 from eylo.modules.agents.domain import ResolvedExecutableAgent
 from eylo.modules.auth.schemas import SessionInitiateRequest
@@ -133,7 +134,7 @@ async def init_conversation(
                 user_session_id=user_session_id,
                 subject_type="conversation",
                 subject_id=conversation.id,
-                event_type="conversation.started",
+                event_type=SessionTimelineEvent.CONVERSATION_STARTED,
                 payload={"channel": ConversationChannels.PHONE.value},
             )
             await S_ws_manager.associate_conversation_session(

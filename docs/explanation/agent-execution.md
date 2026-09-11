@@ -140,6 +140,12 @@ Step intents and execution evidence are action-specific typed values. Their JSON
 projections retain hashes, byte counts and outcome facts without command/file
 bodies; optional facts remain absent unless the action actually establishes them.
 
+Agent-run persistence and public responses retain these projections as JSON-safe
+objects/lists, not arbitrary Python values. Product-specific models stay with
+their product; the Agent-run module does not import sandbox action schemas.
+Public step evidence, run results and input schemas reject non-JSON/non-finite
+values. Input responses never expose the private continuation snapshot.
+
 A tool may finish a turn with an already-persisted widget instead of new text.
 Terminal persistence loads that exact message through the message service and
 checks its conversation/request ownership and content kind before associating

@@ -29,7 +29,7 @@ class AgentBackgroundAgentService(
     def repository(self, repo: AgentBackgroundAgentRepository):
         self._repository = repo
 
-    def __init__(self, db: Optional[AsyncSession] = None):
+    def __init__(self, db: Optional[AsyncSession] = None) -> None:
         self._repository = AgentBackgroundAgentRepository(db)
 
     async def attach(

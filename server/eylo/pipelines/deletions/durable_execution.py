@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 from uuid import UUID
 
 from absurd_sdk import AsyncTaskContext, CancelledTask, SuspendTask
+from pydantic import BaseModel, ConfigDict, JsonValue
 from sqlalchemy import select
 
 from eylo.common.database import start_transaction
@@ -16,6 +16,7 @@ from eylo.modules.deletions.domain import (
     DeletionExecutionFailure,
     DeletionJobConflict,
     DeletionJobStatus,
+    DeletionTargetType,
 )
 from eylo.modules.deletions.models import DeletionJobModel
 from eylo.modules.deletions.service import DeletionJobService
@@ -24,6 +25,27 @@ from eylo.pipelines.deletions.erasure import erase_deletion_target
 logger = logging.getLogger(__name__)
 
 DELETION_WORKFLOW = "eylo.deletion.execute.v1"
+
+
+class DeletionTaskParams(BaseModel):
+    """Content-free identity shared by the task producer and worker."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+    organization_id: UUID
+    job_id: UUID
+
+
+class DeletionTaskReceipt(BaseModel):
+    """Only bounded lifecycle facts survive the deletion workflow."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+    organization_id: UUID
+    job_id: UUID
+    target_type: DeletionTargetType
+    status: DeletionJobStatus
+    error_code: DeletionErrorCode | None
 
 
 def register_deletion_workflow(runtime: PlatformDurableRuntime) -> None:
@@ -50,10 +72,10 @@ async def spawn_deletion(*, organization_id: UUID, job_id: UUID) -> UUID:
     try:
         task_id = await runtime.spawn_task(
             name=DELETION_WORKFLOW,
-            params={
-                "organization_id": str(organization_id),
-                "job_id": str(job_id),
-            },
+            params=DeletionTaskParams(
+                organization_id=organization_id,
+                job_id=job_id,
+            ).model_dump(mode="json"),
             idempotency_key=f"deletion:v1:{organization_id}:{job_id}",
             max_attempts=max_attempts,
         )
@@ -108,10 +130,11 @@ class DeletionWorkflow:
 
     async def execute(
         self,
-        params: dict[str, Any],
+        params: dict[str, JsonValue],
         task_context: AsyncTaskContext,
-    ) -> dict[str, Any]:
-        organization_id, job_id = _parse_params(params)
+    ) -> dict[str, JsonValue]:
+        identity = _parse_params(params)
+        organization_id, job_id = identity.organization_id, identity.job_id
         async with start_transaction() as session:
             job = await DeletionJobService(session).begin_attempt(
                 organization_id=organization_id,
@@ -154,7 +177,7 @@ async def _record_failure(
     job_id: UUID,
     error_code: DeletionErrorCode,
     retryable: bool,
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     async with start_transaction() as session:
         row = await DeletionJobService(session).fail(
             organization_id=organization_id,
@@ -168,23 +191,26 @@ async def _record_failure(
     return receipt
 
 
-def _parse_params(params: dict[str, Any]) -> tuple[UUID, UUID]:
+def _parse_params(params: dict[str, JsonValue]) -> DeletionTaskParams:
     if set(params) != {"organization_id", "job_id"}:
         raise ValueError("Deletion task params must contain IDs only.")
     try:
-        return UUID(str(params["organization_id"])), UUID(str(params["job_id"]))
+        return DeletionTaskParams(
+            organization_id=UUID(str(params["organization_id"])),
+            job_id=UUID(str(params["job_id"])),
+        )
     except (TypeError, ValueError):
         raise ValueError("Deletion task params contain an invalid UUID.") from None
 
 
-def _receipt(job: DeletionJobModel) -> dict[str, Any]:
-    return {
-        "organization_id": str(job.organization_id),
-        "job_id": str(job.id),
-        "target_type": job.target_type.value,
-        "status": job.status.value,
-        "error_code": None if job.error_code is None else job.error_code.value,
-    }
+def _receipt(job: DeletionJobModel) -> dict[str, JsonValue]:
+    return DeletionTaskReceipt(
+        organization_id=job.organization_id,
+        job_id=job.id,
+        target_type=job.target_type,
+        status=job.status,
+        error_code=job.error_code,
+    ).model_dump(mode="json")
 
 
 __all__ = [

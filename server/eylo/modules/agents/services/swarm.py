@@ -56,7 +56,7 @@ class AgentSwarmService(EyloBaseService[AgentSwarmInDb, AgentSwarmModel]):
     def repository(self, repo: AgentSwarmRepository) -> None:
         self._repository = repo
 
-    def __init__(self, db: Optional[AsyncSession] = None):
+    def __init__(self, db: Optional[AsyncSession] = None) -> None:
         self._repository = AgentSwarmRepository(db)
 
     async def list_by_organization(self, organization_id: UUID) -> list[AgentSwarmInDb]:
@@ -159,7 +159,7 @@ class AgentSwarmMappingService(
     def repository(self, repo: AgentSwarmMappingRepository) -> None:
         self._repository = repo
 
-    def __init__(self, db: Optional[AsyncSession] = None):
+    def __init__(self, db: Optional[AsyncSession] = None) -> None:
         self._repository = AgentSwarmMappingRepository(db)
 
     async def create(

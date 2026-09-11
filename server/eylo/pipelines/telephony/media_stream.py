@@ -12,6 +12,8 @@ from fastapi import APIRouter, WebSocket, status
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from eylo.common.config import Environment, settings
+from eylo.common.contracts.provider_config import Capability
+from eylo.common.contracts.session_timeline import ProviderTimelineState
 from eylo.common.database import start_transaction
 from eylo.events.schema.py_events.call import CallDirection
 from eylo.modules.agents.domain import ResolvedExecutableAgent
@@ -29,6 +31,7 @@ from eylo.modules.telephony.webhook_security import (
 )
 from eylo.modules.telephony.wiring import build_telephony_config_resolver
 from eylo.modules.user_sessions.domain import UserSessionState
+from eylo.modules.user_sessions.fact_payloads import ProviderTimelineFact
 from eylo.modules.user_sessions.service import UserSessionService
 from eylo.pipelines.session_timeline import try_file_runtime_fact
 from eylo.pipelines.telephony.config import build_telephony_runtime_config
@@ -205,16 +208,18 @@ async def _handle_start_event(
             voice_bundle.runtime_identity,
         )
         for provider_kind, vendor in (
-            ("stt", voice_bundle.runtime_identity.stt_vendor),
-            ("tts", voice_bundle.runtime_identity.tts_vendor),
+            (Capability.STT, voice_bundle.runtime_identity.stt_vendor),
+            (Capability.TTS, voice_bundle.runtime_identity.tts_vendor),
         ):
             await try_file_runtime_fact(
                 organization_id=organization_id,
                 user_session_id=sess.user_session_id,
-                subject_type=f"provider.{provider_kind}",
+                subject_type=f"provider.{provider_kind.value}",
                 subject_id=sess.voice_session_id,
-                event_type=f"provider.{provider_kind}.connected",
-                payload={"provider_kind": provider_kind, "vendor": vendor},
+                event_type=f"provider.{provider_kind.value}.{ProviderTimelineState.CONNECTED.value}",
+                payload=ProviderTimelineFact(
+                    provider_kind=provider_kind, vendor=vendor
+                ).to_payload(),
             )
         start_transcriptor(
             sess=sess,

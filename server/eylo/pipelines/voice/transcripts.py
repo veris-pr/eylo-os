@@ -14,6 +14,7 @@ import time
 from collections.abc import Awaitable, Callable
 from uuid import UUID, uuid4
 
+from eylo.common.contracts.session_timeline import SessionTimelineEvent
 from eylo.common.database import start_transaction
 from eylo.modules.user_sessions.events import file_user_session_fact
 from eylo.modules.voice.schemas.api import (
@@ -390,7 +391,7 @@ async def write_user_transcript(
                                     user_session_id=session_state.user_session_id,
                                     subject_type="voice.session",
                                     subject_id=voice_session_row_id,
-                                    event_type="voice.user.interrupted_agent",
+                                    event_type=SessionTimelineEvent.VOICE_USER_INTERRUPTED_AGENT,
                                     payload={
                                         "conversation_id": str(conversation_id),
                                         "request_id": interrupted_request_id,

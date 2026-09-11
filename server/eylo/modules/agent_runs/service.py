@@ -18,6 +18,7 @@ from referencing.jsonschema import DRAFT202012
 from sqlalchemy import JSON, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from eylo.common.contracts.session_timeline import SessionTimelineEvent
 from eylo.common.database import start_transaction
 from eylo.modules.agent_runs.budgets import (
     activate_agent_run_reservation_in_transaction,
@@ -52,12 +53,20 @@ from eylo.modules.agent_runs.schemas import (
     AgentRunStepRead,
 )
 from eylo.modules.agent_runs.serialization import validate_agent_run_json_object
+from eylo.modules.agent_runs.timeline import (
+    AgentInputReferenceFact,
+    AgentInputTimelineFact,
+    AgentRunOutcomeFact,
+    AgentRunTimelineDetails,
+    AgentRunTimelineIdentity,
+)
 from eylo.modules.agent_runs.waits import (
     AgentApprovalResponse,
     AgentRunWaitState,
     parse_agent_run_wait_state,
 )
 from eylo.modules.user_sessions.events import file_user_session_fact
+from eylo.modules.user_sessions.fact_payloads import ToolWaitTimelineFact
 
 
 class AgentRunNotFound(Exception):
@@ -348,8 +357,8 @@ async def pause_agent_run_in_transaction(
     run_id: UUID,
     kind: AgentInputRequestKind,
     prompt: str,
-    expected_response_schema: dict,
-    continuation: dict,
+    expected_response_schema: dict[str, JsonValue],
+    continuation: dict[str, JsonValue],
 ) -> AgentInputRequestModel:
     """Persist one identified indefinite wait with the run and pause message."""
     prompt = prompt.strip()
@@ -405,20 +414,20 @@ async def pause_agent_run_in_transaction(
         session,
         run,
         event_type=(
-            "agent.run.waiting_for_input"
+            SessionTimelineEvent.AGENT_RUN_WAITING_FOR_INPUT
             if kind is AgentInputRequestKind.INPUT
-            else "agent.run.waiting_for_approval"
+            else SessionTimelineEvent.AGENT_RUN_WAITING_FOR_APPROVAL
         ),
-        payload={"input_request_id": str(request.id)},
+        details=AgentInputReferenceFact(input_request_id=request.id),
     )
     await _file_agent_run_fact(
         session,
         run,
-        event_type="agent.input.requested",
-        payload={
-            "input_request_id": str(request.id),
-            "request_kind": kind.value,
-        },
+        event_type=SessionTimelineEvent.AGENT_INPUT_REQUESTED,
+        details=AgentInputTimelineFact(
+            input_request_id=request.id,
+            request_kind=kind,
+        ),
         subject_type="agent.input",
         subject_id=request.id,
     )
@@ -475,11 +484,11 @@ async def pause_agent_run_for_tool_in_transaction(
     await _file_agent_run_fact(
         session,
         run,
-        event_type="agent.run.waiting_for_tool",
-        payload={
-            "tool_owner_kind": normalized_kind,
-            "tool_owner_id": str(owner_id),
-        },
+        event_type=SessionTimelineEvent.AGENT_RUN_WAITING_FOR_TOOL,
+        details=ToolWaitTimelineFact(
+            tool_owner_kind=normalized_kind,
+            tool_owner_id=owner_id,
+        ),
     )
     return run
 
@@ -532,11 +541,11 @@ async def resume_agent_run_from_tool_in_transaction(
     await _file_agent_run_fact(
         session,
         run,
-        event_type="agent.run.resumed",
-        payload={
-            "tool_owner_kind": normalized_kind,
-            "tool_owner_id": str(owner_id),
-        },
+        event_type=SessionTimelineEvent.AGENT_RUN_RESUMED,
+        details=ToolWaitTimelineFact(
+            tool_owner_kind=normalized_kind,
+            tool_owner_id=owner_id,
+        ),
     )
     return run
 
@@ -631,8 +640,8 @@ async def resume_agent_run_in_transaction(
         await _file_agent_run_fact(
             session,
             run,
-            event_type="agent.run.resumed",
-            payload={"input_request_id": str(request.id)},
+            event_type=SessionTimelineEvent.AGENT_RUN_RESUMED,
+            details=AgentInputReferenceFact(input_request_id=request.id),
         )
     return wait
 
@@ -714,8 +723,8 @@ async def finish_agent_run_in_transaction(
     await _file_agent_run_fact(
         session,
         run,
-        event_type=f"agent.run.{lifecycle.value}",
-        payload={"outcome": outcome.value},
+        event_type=SessionTimelineEvent(f"agent.run.{lifecycle.value}"),
+        details=AgentRunOutcomeFact(outcome=outcome),
     )
 
 
@@ -797,8 +806,8 @@ async def fail_agent_run_in_transaction(
     await _file_agent_run_fact(
         session,
         run,
-        event_type="agent.run.failed",
-        payload={"outcome": AgentRunOutcome.FAILED.value},
+        event_type=SessionTimelineEvent.AGENT_RUN_FAILED,
+        details=AgentRunOutcomeFact(outcome=AgentRunOutcome.FAILED),
     )
     return run
 
@@ -917,15 +926,13 @@ async def cancel_agent_run(
             await _file_agent_run_fact(
                 session,
                 run,
-                event_type="agent.run.cancelled",
-                payload={},
+                event_type=SessionTimelineEvent.AGENT_RUN_CANCELLED,
             )
         elif not cancellation_was_requested:
             await _file_agent_run_fact(
                 session,
                 run,
-                event_type="agent.run.cancellation_requested",
-                payload={},
+                event_type=SessionTimelineEvent.AGENT_RUN_CANCELLATION_REQUESTED,
             )
         projection = await _project_one(repository, run)
         result = AgentRunCancellationRead(
@@ -979,15 +986,13 @@ async def request_agent_run_cancellation_in_transaction(
         await _file_agent_run_fact(
             session,
             run,
-            event_type="agent.run.cancelled",
-            payload={},
+            event_type=SessionTimelineEvent.AGENT_RUN_CANCELLED,
         )
     elif not cancellation_was_requested:
         await _file_agent_run_fact(
             session,
             run,
-            event_type="agent.run.cancellation_requested",
-            payload={},
+            event_type=SessionTimelineEvent.AGENT_RUN_CANCELLATION_REQUESTED,
         )
     if disposition is AgentRunCancellationDisposition.REQUESTED:
         return run.absurd_task_id
@@ -1039,8 +1044,7 @@ async def accept_agent_run_cancellation(
         await _file_agent_run_fact(
             session,
             run,
-            event_type="agent.run.cancelled",
-            payload={},
+            event_type=SessionTimelineEvent.AGENT_RUN_CANCELLED,
         )
 
 
@@ -1108,11 +1112,11 @@ async def answer_input_request(
             await _file_agent_run_fact(
                 session,
                 run,
-                event_type="agent.input.received",
-                payload={
-                    "input_request_id": str(input_request.id),
-                    "request_kind": input_request.kind.value,
-                },
+                event_type=SessionTimelineEvent.AGENT_INPUT_RECEIVED,
+                details=AgentInputTimelineFact(
+                    input_request_id=input_request.id,
+                    request_kind=input_request.kind,
+                ),
                 subject_type="agent.input",
                 subject_id=input_request.id,
             )
@@ -1167,8 +1171,8 @@ async def _file_agent_run_fact(
     session: AsyncSession,
     run: AgentRunModel,
     *,
-    event_type: str,
-    payload: dict,
+    event_type: SessionTimelineEvent,
+    details: AgentRunTimelineDetails | None = None,
     subject_type: str = "agent.run",
     subject_id: UUID | None = None,
 ) -> None:
@@ -1182,10 +1186,12 @@ async def _file_agent_run_fact(
         subject_id=subject_id or run.id,
         event_type=event_type,
         payload={
-            "agent_id": str(run.agent_id),
-            "agent_revision": run.agent_revision,
-            "run_id": str(run.id),
-            **payload,
+            **AgentRunTimelineIdentity(
+                agent_id=run.agent_id,
+                agent_revision=run.agent_revision,
+                run_id=run.id,
+            ).to_payload(),
+            **(details.to_payload() if details is not None else {}),
         },
     )
 
@@ -1246,7 +1252,7 @@ def _validate_input_response(
         raise AgentRunConflict("Approval response is invalid.") from error
 
 
-def _validated_response_schema(value: object) -> dict:
+def _validated_response_schema(value: object) -> dict[str, JsonValue]:
     normalized = to_jsonable_python(value)
     if not isinstance(normalized, dict):
         raise ValueError("Agent input response schema must be an object.")

@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.contracts.background_task import TaskContent
+from eylo.common.contracts.session_timeline import SessionTimelineEvent
 from eylo.common.database import register_ephemeral_event_post_txn
 from eylo.common.services import EyloBaseService
 from eylo.events.schema.py_events.base import MessageCreatedEvent
@@ -50,6 +51,10 @@ from eylo.modules.conversations.schemas.messages import (
 )
 from eylo.modules.conversations.schemas.request_status import (
     RequestStatusTransitionResult,
+)
+from eylo.modules.conversations.schemas.timeline import (
+    MessageCreatedTimelineFact,
+    MessageRunQueuedTimelineFact,
 )
 from eylo.modules.conversations.services.participants import (
     ConversationParticipantService,
@@ -105,7 +110,7 @@ class MessageService(EyloBaseService[MessageInDb, MessagesModel]):
         db: Optional[AsyncSession] = None,
         *,
         llm_readiness: "ConversationLLMReadinessService | None" = None,
-    ):
+    ) -> None:
         self._db = db
         self._repository = MessageRepository(db)
         self._agent_run_repository = MessageAgentRunRepository(db)
@@ -264,23 +269,15 @@ class MessageService(EyloBaseService[MessageInDb, MessagesModel]):
                 user_session_id=message_indb.user_session_id,
                 subject_type="message",
                 subject_id=message_indb.id,
-                event_type="message.created",
+                event_type=SessionTimelineEvent.MESSAGE_CREATED,
                 occurred_at=message_indb.created_at,
-                payload={
-                    "conversation_id": str(message_indb.conversation_id),
-                    "kind": message_indb.kind.value,
-                    "content_kind": message_indb.content_kind.value,
-                    "request_id": (
-                        str(message_indb.request_id)
-                        if message_indb.request_id is not None
-                        else None
-                    ),
-                    "request_status": (
-                        message_indb.request_status.value
-                        if message_indb.request_status is not None
-                        else None
-                    ),
-                },
+                payload=MessageCreatedTimelineFact(
+                    conversation_id=message_indb.conversation_id,
+                    kind=message_indb.kind,
+                    content_kind=message_indb.content_kind,
+                    request_id=message_indb.request_id,
+                    request_status=message_indb.request_status,
+                ).to_payload(),
             )
         register_ephemeral_event_post_txn(
             MessageCreatedEvent(
@@ -525,13 +522,13 @@ class MessageService(EyloBaseService[MessageInDb, MessagesModel]):
                 user_session_id=run.user_session_id,
                 subject_type="agent.run",
                 subject_id=run.id,
-                event_type="agent.run.queued",
-                payload={
-                    "agent_id": str(run.agent_id),
-                    "agent_revision": run.agent_revision,
-                    "conversation_id": str(created_message.conversation_id),
-                    "origin_message_id": str(created_message.id),
-                },
+                event_type=SessionTimelineEvent.AGENT_RUN_QUEUED,
+                payload=MessageRunQueuedTimelineFact(
+                    agent_id=run.agent_id,
+                    agent_revision=run.agent_revision,
+                    conversation_id=created_message.conversation_id,
+                    origin_message_id=created_message.id,
+                ).to_payload(),
             )
         await reserve_agent_run_in_transaction(
             self.repository.db_session,

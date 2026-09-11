@@ -6,6 +6,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, JsonValue
 
 from eylo.absurd_work import DurableState
+from eylo.common.contracts.session_timeline import SessionTimelineEvent
 
 
 class KnowledgeIngestionFailure(StrEnum):
@@ -21,10 +22,10 @@ class KnowledgeIngestionFailure(StrEnum):
 class KnowledgeIngestionEvent(StrEnum):
     """Existing user-session events emitted by the ingestion workflow."""
 
-    STARTED = "knowledge.ingestion.started"
-    COMPLETED = "knowledge.ingestion.completed"
-    FAILED = "knowledge.ingestion.failed"
-    CANCELLED = "knowledge.ingestion.cancelled"
+    STARTED = SessionTimelineEvent.KNOWLEDGE_INGESTION_STARTED
+    COMPLETED = SessionTimelineEvent.KNOWLEDGE_INGESTION_COMPLETED
+    FAILED = SessionTimelineEvent.KNOWLEDGE_INGESTION_FAILED
+    CANCELLED = SessionTimelineEvent.KNOWLEDGE_INGESTION_CANCELLED
 
 
 KNOWLEDGE_INGESTION_SUBJECT = "knowledge.ingestion"

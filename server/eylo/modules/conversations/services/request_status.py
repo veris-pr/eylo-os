@@ -4,6 +4,7 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from eylo.common.contracts.session_timeline import SessionTimelineEvent
 from eylo.modules.conversations.message_facts import file_voice_message_fact
 from eylo.modules.conversations.repositories.messages import MessageRepository
 from eylo.modules.conversations.schemas.messages import (
@@ -14,6 +15,7 @@ from eylo.modules.conversations.schemas.messages import (
 from eylo.modules.conversations.schemas.request_status import (
     RequestStatusTransitionResult,
 )
+from eylo.modules.conversations.schemas.timeline import RequestStatusTimelineFact
 from eylo.modules.user_sessions.events import file_user_session_fact
 
 _TERMINAL_REQUEST_STATUSES = (
@@ -26,6 +28,7 @@ _TERMINAL_REQUEST_STATUSES = (
     RequestStatus.SKIPPED,
 )
 
+# CaseInSensitiveEnum is unhashable; keys use its canonical values.
 _VALID_REQUEST_STATUS_TRANSITIONS: dict[str, tuple[RequestStatus, ...]] = {
     RequestStatus.PENDING.value: (
         RequestStatus.PROCESSING,
@@ -93,7 +96,7 @@ class RequestStatusService:
                 request_id,
                 conversation_id,
             ):
-                if message.kind != MessageKind.ASSISTANT.value:
+                if message.kind != MessageKind.ASSISTANT:
                     continue
                 await file_voice_message_fact(
                     session=self.repository.db_session,
@@ -111,17 +114,14 @@ class RequestStatusService:
                     user_session_id=authority.user_session_id,
                     subject_type="message.request",
                     subject_id=request_id,
-                    event_type=(
-                        "message.request."
-                        f"{requested_status.value.lower()}"
+                    event_type=SessionTimelineEvent(
+                        f"message.request.{requested_status.value.lower()}"
                     ),
-                    payload={
-                        "conversation_id": str(authority.conversation_id),
-                        "previous_status": (
-                            current_status.value if current_status is not None else None
-                        ),
-                        "current_status": requested_status.value,
-                    },
+                    payload=RequestStatusTimelineFact(
+                        conversation_id=authority.conversation_id,
+                        previous_status=current_status,
+                        current_status=requested_status,
+                    ).to_payload(),
                 )
 
         return self._result(

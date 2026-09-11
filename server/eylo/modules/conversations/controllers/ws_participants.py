@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 class ParticipantWsController:
-    def __init__(self, db: AsyncSession | None = None):
+    def __init__(self, db: AsyncSession | None = None) -> None:
         self.conversation_base_service = ConversationBaseService(db)
         self.conversation_participant_service = ConversationParticipantService(db)
 

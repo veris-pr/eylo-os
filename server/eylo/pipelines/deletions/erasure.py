@@ -9,11 +9,14 @@ from eylo.modules.deletions.domain import (
     DeletionExecutionFailure,
     DeletionTargetType,
 )
+from eylo.modules.deletions.models import DeletionJobModel
 from eylo.pipelines.deletions.call_erasure import erase_call
 from eylo.pipelines.deletions.contact_erasure import erase_contact
 
 
-async def erase_deletion_target(job, task_context: AsyncTaskContext) -> None:
+async def erase_deletion_target(
+    job: DeletionJobModel, task_context: AsyncTaskContext
+) -> None:
     """Dispatch one target without allowing the scheduler to choose behavior."""
     if job.target_type is DeletionTargetType.CALL:
         await erase_call(

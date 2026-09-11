@@ -21,7 +21,7 @@ from eylo.modules.auth.schemas import (
 class ApiKeyService(EyloBaseService[ApiKeyInDb, ApiKeyModel]):
     """API Key Service."""
 
-    def __init__(self, db: AsyncSession):
+    def __init__(self, db: AsyncSession) -> None:
         """Initialize the API key service.
 
         Args:

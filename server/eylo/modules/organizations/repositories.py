@@ -5,6 +5,8 @@ This module contains the repository classes for the organizations domain.
 
 from typing import Type
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from eylo.common.repositories import BaseORMRepository
 from eylo.modules.organizations.models import OrganizationModel
 
@@ -15,7 +17,7 @@ class OrganizationRepository(BaseORMRepository[OrganizationModel]):
     This repository handles database operations for organization entities.
     """
 
-    def __init__(self, session):
+    def __init__(self, session: AsyncSession | None) -> None:
         super().__init__(session)
 
     @property

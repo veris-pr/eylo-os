@@ -42,7 +42,7 @@ class MemberService(EyloBaseService[MemberInDb, MemberModel]):
     def repository(self, value: MemberRepository):
         self._repository = value
 
-    def __init__(self, db: Optional[AsyncSession] = None):
+    def __init__(self, db: Optional[AsyncSession] = None) -> None:
         self._repository = MemberRepository(db)
 
     async def get_by_email(self, email: EmailStr) -> MemberInDb:

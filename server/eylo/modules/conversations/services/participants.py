@@ -80,7 +80,7 @@ class ConversationParticipantService(
             if p.entity_kind == ParticipantKind.CONTACT and p.is_primary
         ]
 
-    def __init__(self, db: Optional[AsyncSession] = None):
+    def __init__(self, db: Optional[AsyncSession] = None) -> None:
         from eylo.modules.contacts.service import ContactService
 
         self._repository = ConversationParticipantRepository(db)

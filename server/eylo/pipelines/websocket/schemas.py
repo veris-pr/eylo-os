@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-# eylo/sockets/enhanced_websocket.py
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from enum import Enum
-from typing import TYPE_CHECKING, Any, Literal, Optional, TypeAlias
+from enum import Enum, StrEnum
+from typing import TYPE_CHECKING, TypeAlias
 from uuid import UUID
 
 import arrow
-from pydantic import BaseModel, Field, SkipValidation
+from pydantic import BaseModel, ConfigDict, Field, InstanceOf
+from pydantic.json_schema import SkipJsonSchema
 
 from eylo.common.contracts.voice import (
     BrowserVoiceTerminationReason,
@@ -49,10 +49,13 @@ from eylo.common.contracts.websocket import (
 from eylo.modules.conversations.schemas import (
     websocket as conversation_websocket_schemas,
 )
+from eylo.modules.voice.schemas.api import AmbientNoiseConfig, FillerConfig
+from eylo.modules.voice_transcripts.constants import VoiceRuntimeMode
 from eylo.pipelines.voice.activity_gate import (
     TransportPlaybackGate,
     VoiceActivityGate,
 )
+from eylo.pipelines.voice.interaction_state import VoiceInteractionState
 from eylo.pipelines.voice.live_buffer import LiveVoiceBuffer
 from eylo.pipelines.voice.recording import AudioRecorder
 from eylo.pipelines.voice.request_state import (
@@ -61,9 +64,11 @@ from eylo.pipelines.voice.request_state import (
     VoiceRequestStatus,
     resolve_voice_request_status,
 )
+from eylo.pipelines.voice.runtime_ports import VoiceTurnRunner
 from eylo.pipelines.voice.stt import STTRealtime
 from eylo.pipelines.voice.transcript_inputs import VoiceTranscriptInput
 from eylo.pipelines.voice.tts import TTSRealtime
+from eylo.pipelines.voice.tts_payloads import TTSRequest
 
 if TYPE_CHECKING:
     from eylo.pipelines.voice.realtime import RealtimeManager
@@ -119,48 +124,103 @@ class STTEncodingInfo(BaseModel):
     language: str = "en-US"
 
 
+class WebSocketClientInfo(BaseModel):
+    """Request metadata retained locally, not provider configuration or authority."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    ip: str | None = None
+    user_agent: str | None = None
+    referer: str | None = None
+    origin: str | None = None
+
+
+class VoiceSessionTask(StrEnum):
+    """Session-owned children cancelled during voice teardown."""
+
+    STT_INITIALIZE = "stt_initialize"
+    TTS_INITIALIZE = "tts_initialize"
+    USER_TRANSCRIPT_WRITER = "user_transcript_writer"
+    MAX_DURATION_TIMEOUT = "max_duration_timeout"
+    SILENCE_MONITOR = "silence_monitor"
+
+
 class WSSessionState(BaseModel):
+    """Mutable transport state with validated, identity-preserving live handles.
+
+    Resource handles and request metadata never enter snapshots. Queue producers
+    own payload validation; checking a queue instance does not inspect its contents.
+    """
+
+    model_config = ConfigDict(validate_assignment=True, hide_input_in_errors=True)
+
     organization_id: OrganizationUUID
     session_id: SessionUUID
     user_session_id: UUID | None = None
     contact_id: ContactUUID | None = None
     session_type: WSSessionType = WSSessionType.BROWSER
     stream_sid: str | None = None
-    stt_socket: Optional[STTRealtime] = None
-    stt_response_queue: Optional[asyncio.Queue[VoiceTranscriptInput]] = None
-    stt_request_queue: Optional[asyncio.Queue[bytes]] = None
-    client_info: dict | None = None
-    stt_started: bool = False
-    stt_encoding_info: STTEncodingInfo = STTEncodingInfo()
-    stt_session_tasks: dict[str, asyncio.Task] = {}
-    tts_started: bool = False
-    tts_socket: Optional[TTSRealtime] = None
-    tts_manager: Optional[TTSRealtime] = None
-    tts_response_queue: Optional[asyncio.Queue] = (
-        None  # Only initialized when TTS is enabled
+    stt_socket: SkipJsonSchema[InstanceOf[STTRealtime] | None] = Field(
+        default=None, exclude=True, repr=False
     )
-    tts_request_queue: Optional[asyncio.Queue] = None
-    tts_session_tasks: dict[str, asyncio.Task] = {}
-    voice_policy_tasks: dict[str, asyncio.Task] = Field(default_factory=dict)
-    speech_activity_event: asyncio.Event = Field(default_factory=asyncio.Event)
-    tts_interrupt_event: asyncio.Event = Field(default_factory=asyncio.Event)
+    stt_response_queue: SkipJsonSchema[
+        InstanceOf[asyncio.Queue[VoiceTranscriptInput]] | None
+    ] = Field(default=None, exclude=True, repr=False)
+    stt_request_queue: SkipJsonSchema[InstanceOf[asyncio.Queue[bytes]] | None] = Field(
+        default=None, exclude=True, repr=False
+    )
+    client_info: WebSocketClientInfo | None = Field(
+        default=None, exclude=True, repr=False
+    )
+    stt_started: bool = False
+    stt_encoding_info: STTEncodingInfo = Field(default_factory=STTEncodingInfo)
+    stt_session_tasks: SkipJsonSchema[
+        dict[VoiceSessionTask, InstanceOf[asyncio.Task[None]]]
+    ] = Field(default_factory=dict, exclude=True, repr=False)
+    tts_started: bool = False
+    tts_socket: SkipJsonSchema[InstanceOf[TTSRealtime] | None] = Field(
+        default=None, exclude=True, repr=False
+    )
+    tts_manager: SkipJsonSchema[InstanceOf[TTSRealtime] | None] = Field(
+        default=None, exclude=True, repr=False
+    )
+    tts_response_queue: SkipJsonSchema[InstanceOf[asyncio.Queue[bytes]] | None] = Field(
+        default=None, exclude=True, repr=False
+    )
+    tts_request_queue: SkipJsonSchema[InstanceOf[asyncio.Queue[TTSRequest]] | None] = (
+        Field(default=None, exclude=True, repr=False)
+    )
+    tts_session_tasks: SkipJsonSchema[
+        dict[VoiceSessionTask, InstanceOf[asyncio.Task[None]]]
+    ] = Field(default_factory=dict, exclude=True, repr=False)
+    voice_policy_tasks: SkipJsonSchema[
+        dict[VoiceSessionTask, InstanceOf[asyncio.Task[None]]]
+    ] = Field(default_factory=dict, exclude=True, repr=False)
+    speech_activity_event: SkipJsonSchema[InstanceOf[asyncio.Event]] = Field(
+        default_factory=asyncio.Event, exclude=True, repr=False
+    )
+    tts_interrupt_event: SkipJsonSchema[InstanceOf[asyncio.Event]] = Field(
+        default_factory=asyncio.Event, exclude=True, repr=False
+    )
     is_voice_mode: bool = False
     is_agent_thinking: bool = (
         False  # Set True while LLM is processing, enables ambient audio
     )
-    voice_activity_gate: SkipValidation[VoiceActivityGate] = Field(
-        default_factory=VoiceActivityGate
+    voice_activity_gate: SkipJsonSchema[InstanceOf[VoiceActivityGate]] = Field(
+        default_factory=VoiceActivityGate, exclude=True, repr=False
     )
-    transport_playback_gate: SkipValidation[TransportPlaybackGate] = Field(
-        default_factory=TransportPlaybackGate
+    transport_playback_gate: SkipJsonSchema[InstanceOf[TransportPlaybackGate]] = Field(
+        default_factory=TransportPlaybackGate, exclude=True, repr=False
     )
-    voice_output_drained_callback: SkipValidation[Callable[[], None]] | None = None
+    voice_output_drained_callback: SkipJsonSchema[Callable[[], None] | None] = Field(
+        default=None, exclude=True, repr=False
+    )
     # Resolved once from the agent's ObservabilityPlan when audio is
     # configured, so teardown need not re-read it. Defaults match the schema.
     metrics_enabled: bool = True
     vendor_latency_tracking_enabled: bool = True
-    ambient_noise_config: dict | None = None  # AmbientNoiseConfig as dict
-    filler_config: dict | None = None  # FillerConfig as dict
+    ambient_noise_config: AmbientNoiseConfig | None = None
+    filler_config: FillerConfig | None = None
     agent_id: UUID | None = None
     agent_revision: int | None = None
     # Populated from the published agent revision before WebRTC setup. D-014
@@ -171,7 +231,9 @@ class WSSessionState(BaseModel):
 
     # Realtime mode (Gemini Live / OpenAI Realtime)
     realtime_mode: bool = False
-    realtime_manager: Optional["RealtimeManager"] = None
+    realtime_manager: SkipJsonSchema[InstanceOf["RealtimeManager"] | None] = Field(
+        default=None, exclude=True, repr=False
+    )
 
     # Voice recording (non-blocking audio capture)
     #
@@ -181,34 +243,40 @@ class WSSessionState(BaseModel):
     recording_consent_state: RecordingDisclosureState = (
         RecordingDisclosureState.NOT_REQUIRED
     )
-    audio_recorder: Optional[AudioRecorder] = None
+    audio_recorder: SkipJsonSchema[InstanceOf[AudioRecorder] | None] = Field(
+        default=None, exclude=True, repr=False
+    )
     # Fresh identity for one call on a potentially long-lived WebSocket.
     # ``session_id`` identifies the transport connection and must not be reused
     # as the voice runtime identity when a caller starts another call.
     voice_call_id: str | None = None
     voice_interaction_sequence: int = 0
     voice_interaction_started_at: float | None = None
-    voice_interaction_callback: SkipValidation[Callable[[str], None]] | None = None
+    voice_interaction_callback: SkipJsonSchema[
+        Callable[[VoiceInteractionState], None] | None
+    ] = Field(default=None, exclude=True, repr=False)
     voice_session_id: UUID | None = None
     voice_transcript_session_started: bool = False
-    voice_transcript_runtime_mode: str | None = None
-    live_voice_buffer: SkipValidation[LiveVoiceBuffer] | None = None
-    live_voice_turn_runner: SkipValidation[Any] | None = None
+    voice_transcript_runtime_mode: VoiceRuntimeMode | None = None
+    live_voice_buffer: SkipJsonSchema[InstanceOf[LiveVoiceBuffer] | None] = Field(
+        default=None, exclude=True, repr=False
+    )
+    live_voice_turn_runner: SkipJsonSchema[InstanceOf[VoiceTurnRunner] | None] = Field(
+        default=None, exclude=True, repr=False
+    )
     voice_requests: dict[UUID, VoiceRequestState] = Field(default_factory=dict)
     current_voice_request_id: UUID | None = None
-    voice_termination_lock: SkipValidation[asyncio.Lock] = Field(
-        default_factory=asyncio.Lock
+    voice_termination_lock: SkipJsonSchema[InstanceOf[asyncio.Lock]] = Field(
+        default_factory=asyncio.Lock, exclude=True, repr=False
     )
-    voice_termination_task: SkipValidation[asyncio.Task[bool]] | None = None
+    voice_termination_task: SkipJsonSchema[InstanceOf[asyncio.Task[bool]] | None] = (
+        Field(default=None, exclude=True, repr=False)
+    )
     voice_termination_complete: bool = False
     voice_termination_reason: BrowserVoiceTerminationReason | None = None
-    voice_terminal_callback: (
-        SkipValidation[Callable[[BrowserVoiceTerminationReason], Awaitable[None]]]
-        | None
-    ) = None
-
-    class Config:
-        arbitrary_types_allowed = True
+    voice_terminal_callback: SkipJsonSchema[
+        Callable[[BrowserVoiceTerminationReason], Awaitable[None]] | None
+    ] = Field(default=None, exclude=True, repr=False)
 
     @property
     def current_voice_request(self) -> VoiceRequestState | None:
@@ -277,26 +345,6 @@ class WSSessionState(BaseModel):
         if state.source == VoiceRequestSource.USER:
             self.current_voice_request_id = normalized_request_id
         return state
-
-
-class WSManagerTask:
-    PROCESS_STT_REQUEST_QUEUE = "process_stt_request_queue"
-    PROCESS_STT_RESPONSE_QUEUE = "process_stt_response_queue"
-    PROCESS_TTS_REQUEST_QUEUE = "process_tts_request_queue"
-    PROCESS_TTS_RESPONSE_QUEUE = "process_tts_response_queue"
-    STT_PROCESS_AUDIO = "stt_process_audio"
-    TTS_PROCESS_TEXT = "tts_process_text"
-
-    @classmethod
-    def all(cls):
-        return [
-            cls.PROCESS_STT_REQUEST_QUEUE,
-            cls.PROCESS_STT_RESPONSE_QUEUE,
-            cls.PROCESS_TTS_REQUEST_QUEUE,
-            cls.PROCESS_TTS_RESPONSE_QUEUE,
-            cls.STT_PROCESS_AUDIO,
-            cls.TTS_PROCESS_TEXT,
-        ]
 
 
 # Resolve forward reference to RealtimeManager (imported under TYPE_CHECKING).

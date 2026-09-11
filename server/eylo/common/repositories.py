@@ -23,8 +23,8 @@ ModelClass = TypeVar("ModelClass", bound=EyloBaseModel)
 class BaseORMRepository(ABC, Generic[ModelClass]):
     """Full-row persistence for Eylo identities; callers supply scope filters."""
 
-    def __init__(self, db: AsyncSession | None = None):
-        """Init for the "common" platform."""
+    def __init__(self, db: AsyncSession | None = None) -> None:
+        """Retain the caller's session; otherwise resolve the active transaction lazily."""
         self._db_session = db
 
     @property
@@ -33,7 +33,7 @@ class BaseORMRepository(ABC, Generic[ModelClass]):
         return self._db_session or get_transaction()
 
     @db_session.setter
-    def db_session(self, db_session: AsyncSession):
+    def db_session(self, db_session: AsyncSession) -> None:
         """Set Database Session."""
         self._db_session = db_session
 

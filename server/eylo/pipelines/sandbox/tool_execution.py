@@ -580,9 +580,12 @@ def _receipt_from_step(step: AgentRunStepModel) -> dict[str, JsonValue]:
     if step.status is AgentRunStepStatus.FAILED:
         evidence = step.evidence or {}
         try:
-            code = SandboxToolFailureCode(
+            raw_code = (
                 evidence.get("failure_code") or SandboxToolFailureCode.EXECUTION_FAILED
             )
+            if not isinstance(raw_code, str):
+                raise ValueError("Sandbox step failure code must be text.")
+            code = SandboxToolFailureCode(raw_code)
         except ValueError as error:
             raise SandboxError("Sandbox step failure code is invalid.") from error
         return SandboxFailedReceipt(failure_code=code).model_dump(mode="json")

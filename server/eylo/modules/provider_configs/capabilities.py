@@ -24,7 +24,7 @@ class CapabilityStatus(BaseModel):
 class CapabilityRegistry:
     """Read capability availability from active shared provider configs only."""
 
-    def __init__(self, session: AsyncSession):
+    def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
     async def get_for_organization(

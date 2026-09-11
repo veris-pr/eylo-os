@@ -24,7 +24,7 @@ class ConversationAggregateController:
     (contacts, agents, messages, participants) in single API calls.
     """
 
-    def __init__(self, db_session: AsyncSession):
+    def __init__(self, db_session: AsyncSession) -> None:
         """Initialize controller with database session.
 
         Args:

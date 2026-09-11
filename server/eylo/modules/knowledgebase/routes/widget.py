@@ -12,6 +12,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from fastapi import APIRouter, Depends, HTTPException, Header, Request, status
 
 from eylo.common.contracts.knowledgebase import KnowledgeDocument, KnowledgeScope
+from eylo.common.contracts.session_timeline import SessionTimelineEvent
 from eylo.common.database import get_transaction, start_transaction
 from eylo.common.revisions import DefinitionRevisionError
 from eylo.modules.agents.exceptions import AgentNotFoundError
@@ -248,7 +249,7 @@ async def upload_widget_knowledge_file(
             user_session_id=user_session_id,
             subject_type="knowledge.ingestion",
             subject_id=job.id,
-            event_type="knowledge.file.accepted",
+            event_type=SessionTimelineEvent.KNOWLEDGE_FILE_ACCEPTED,
             payload={
                 "conversation_id": str(conversation_id),
                 "knowledgebase_id": str(knowledgebase.id),
@@ -263,7 +264,7 @@ async def upload_widget_knowledge_file(
                 user_session_id=user_session_id,
                 subject_type="knowledge.ingestion",
                 subject_id=job.id,
-                event_type="knowledge.ingestion.queued",
+                event_type=SessionTimelineEvent.KNOWLEDGE_INGESTION_QUEUED,
                 event_id=uuid5(
                     NAMESPACE_URL,
                     f"eylo:knowledge.ingestion.queued:v1:{organization_id}:{job.id}",

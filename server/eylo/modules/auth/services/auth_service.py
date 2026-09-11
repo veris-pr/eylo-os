@@ -55,7 +55,7 @@ def _member_credentials_exception() -> HTTPException:
 class AuthService:
     """AuthService behavior for the "auth" domain."""
 
-    def __init__(self, db: Optional[AsyncSession] = None):
+    def __init__(self, db: Optional[AsyncSession] = None) -> None:
         """Initialize Authentication Service."""
         from eylo.modules.members.services import MemberService
         from eylo.modules.organizations.services import OrganizationService

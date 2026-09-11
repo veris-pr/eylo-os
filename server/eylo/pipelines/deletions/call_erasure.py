@@ -8,6 +8,7 @@ from uuid import UUID
 from absurd_sdk import AsyncTaskContext
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import and_, delete, or_, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
 from eylo.absurd_work import TERMINAL_STATES, DurableState
@@ -677,7 +678,7 @@ def _require_exclusive_ownership(
 
 
 async def _erase_event_facts(
-    session,
+    session: AsyncSession,
     *,
     organization_id: UUID,
     call_id: UUID,
@@ -724,7 +725,7 @@ async def _erase_event_facts(
 
 
 async def _erase_outbound_facts(
-    session,
+    session: AsyncSession,
     *,
     organization_id: UUID,
     call_id: UUID,
@@ -751,7 +752,9 @@ async def _erase_outbound_facts(
     )
 
 
-async def _detach_campaign_tracking(session, call: TelephonyCallModel) -> None:
+async def _detach_campaign_tracking(
+    session: AsyncSession, call: TelephonyCallModel
+) -> None:
     tracking_ids = {str(call.id)}
     if call.call_sid is not None:
         tracking_ids.add(call.call_sid)
@@ -778,7 +781,7 @@ async def _detach_campaign_tracking(session, call: TelephonyCallModel) -> None:
 
 
 async def _require_call_graph_absent(
-    session,
+    session: AsyncSession,
     *,
     organization_id: UUID,
     call_id: UUID,

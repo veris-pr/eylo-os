@@ -46,6 +46,12 @@ repository's model, never an unrelated type variable. Deletion is intentionally
 absent from the shared service: module-specific operations own the lifecycle and
 ownership checks before calling repository persistence.
 
+DB-backed constructors retain the caller's `AsyncSession`; they do not create or
+commit a transaction. Repositories without an explicit session resolve the active
+transaction when accessed and refuse access when none exists. The scheduler store
+instead receives `async_sessionmaker[AsyncSession]`: each operation creates its own
+session so request registration and worker polling cannot share transaction state.
+
 ## Revisioned definitions
 
 Agents, tools, templates, schedules, campaigns, MCP servers, and provider

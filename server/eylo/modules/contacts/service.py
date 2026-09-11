@@ -101,7 +101,7 @@ class ContactService(EyloBaseService[ContactInDb, ContactsModel]):
         """Repository for the "contacts" domain."""
         self._repository = value
 
-    def __init__(self, db: AsyncSession | None = None):
+    def __init__(self, db: AsyncSession | None = None) -> None:
         """Initialize Contact Service."""
         self._repository = ContactsRepository(db=db)
 

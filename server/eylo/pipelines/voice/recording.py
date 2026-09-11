@@ -19,9 +19,11 @@ from uuid import UUID
 
 import arrow
 import uuid_utils
+from pydantic import JsonValue
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from eylo.common.contracts.session_timeline import SessionTimelineEvent
 from eylo.modules.provider_configs.constants import Capability
 from eylo.modules.provider_configs.errors import NotConfiguredError
 from eylo.modules.user_sessions.events import file_user_session_fact
@@ -389,7 +391,7 @@ class AudioRecorder:
                     voice_session_id=self._voice_session_id,
                     recording_id=recording_id,
                     conversation_id=self._conversation_id,
-                    event_type="voice.recording.queued",
+                    event_type=SessionTimelineEvent.VOICE_RECORDING_QUEUED,
                 )
 
             from eylo.pipelines.voice.recording_durable_execution import (
@@ -465,7 +467,7 @@ class AudioRecorder:
                     voice_session_id=self._voice_session_id,
                     recording_id=recording_id,
                     conversation_id=self._conversation_id,
-                    event_type="voice.recording.failed",
+                    event_type=SessionTimelineEvent.VOICE_RECORDING_FAILED,
                     payload={"reason": "filing_failed"},
                 )
 
@@ -528,8 +530,8 @@ async def _file_recording_session_fact(
     voice_session_id: UUID,
     recording_id: UUID,
     conversation_id: UUID,
-    event_type: str,
-    payload: dict | None = None,
+    event_type: SessionTimelineEvent,
+    payload: dict[str, JsonValue] | None = None,
 ) -> None:
     voice_session = await db.scalar(
         select(VoiceSessionModel).where(

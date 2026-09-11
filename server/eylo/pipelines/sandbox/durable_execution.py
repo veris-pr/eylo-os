@@ -479,9 +479,9 @@ class ObjectiveFrameworkRunner:
                     },
                 )
             await transcript.record_tool_result(call, result)
-            return RunResumeReceipt(
-                recorded=True, is_error=result.is_error
-            ).model_dump(mode="json")
+            return RunResumeReceipt(recorded=True, is_error=result.is_error).model_dump(
+                mode="json"
+            )
 
         receipt = await workflow_context.step(
             key=f"resume:{wait.request_id}",
@@ -749,7 +749,7 @@ async def _persist_turn(
 def _pause_fields(
     result: RunResult,
     captured: AgentRunToolCapture,
-) -> tuple[AgentInputRequestKind, str, dict, dict]:
+) -> tuple[AgentInputRequestKind, str, dict[str, JsonValue], dict[str, JsonValue]]:
     interruption = result.metadata
     if not isinstance(interruption, (RunApprovalInterruption, RunInputInterruption)):
         raise ObjectiveAgentRunInvalid(
@@ -771,6 +771,7 @@ def _pause_fields(
             "Framework pause continuation differs from its tool call."
         )
 
+    expected_schema: dict[str, JsonValue]
     if result.status is RunStatus.WAITING_FOR_APPROVAL and isinstance(
         interruption, RunApprovalInterruption
     ):

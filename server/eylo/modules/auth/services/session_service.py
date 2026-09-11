@@ -46,7 +46,7 @@ class AuthSessionInitiation(BaseModel):
 class AuthSessionService(EyloBaseService[AuthSessionInDb, AuthSessionModel]):
     """Service for handling widget sessions."""
 
-    def __init__(self, db: AsyncSession | None = None):
+    def __init__(self, db: AsyncSession | None = None) -> None:
         self._repository = AuthSessionRepository(db=db)
         self._contact_service = ContactService(db=db)
 

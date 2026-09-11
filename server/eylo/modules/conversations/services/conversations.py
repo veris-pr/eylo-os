@@ -86,7 +86,7 @@ class ConversationBaseService(EyloBaseService[ConversationInDb, ConversationsMod
         """
         self._repository = value
 
-    def __init__(self, db: Optional[AsyncSession] = None):
+    def __init__(self, db: Optional[AsyncSession] = None) -> None:
         """Initializes a new instance of the ConversationService class.
 
         Sets up the repository and dependent services with the provided database session.

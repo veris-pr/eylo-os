@@ -20,7 +20,7 @@ from eylo.modules.agent_runs.models import (
 class AgentRunRepository:
     """Require organization scope on every run and child lookup."""
 
-    def __init__(self, session: AsyncSession):
+    def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
     async def acquire_filing_lock(self, idempotency_key: str) -> None:

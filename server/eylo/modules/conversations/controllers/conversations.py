@@ -20,7 +20,7 @@ from eylo.pipelines.conversation.start import start_conversation_for_new_work
 class ConversationController:
     """ConversationController behavior for the "conversations" domain."""
 
-    def __init__(self, db: AsyncSession | None = None):
+    def __init__(self, db: AsyncSession | None = None) -> None:
         """Init for the "conversations" domain."""
         self.conversation_service = ConversationService(db)
         self.message_service = MessageService(db)

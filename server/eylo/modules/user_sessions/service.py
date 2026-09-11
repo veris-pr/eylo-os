@@ -11,6 +11,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from eylo.common.contracts.session_timeline import SessionTimelineEvent
 from eylo.modules.user_sessions.domain import (
     TERMINAL_USER_SESSION_STATES,
     UserSessionEntryChannel,
@@ -20,6 +21,7 @@ from eylo.modules.user_sessions.domain import (
     UserSessionTerminal,
 )
 from eylo.modules.user_sessions.events import file_user_session_fact
+from eylo.modules.user_sessions.fact_payloads import SessionLifecycleFact
 from eylo.modules.user_sessions.models import (
     UserSessionConversationModel,
     UserSessionModel,
@@ -82,12 +84,12 @@ class UserSessionService:
                 user_session_id=user_session.id,
                 subject_type="user.session",
                 subject_id=user_session.id,
-                event_type="user.session.started",
+                event_type=SessionTimelineEvent.USER_SESSION_STARTED,
                 occurred_at=now,
-                payload={
-                    "entry_channel": entry_channel.value,
-                    "connection_sequence": 1,
-                },
+                payload=SessionLifecycleFact(
+                    entry_channel=entry_channel,
+                    connection_sequence=user_session.connection_sequence,
+                ).to_payload(),
             )
             return UserSessionStartResult(
                 user_session=user_session, outcome=UserSessionStartOutcome.CREATED
@@ -113,9 +115,11 @@ class UserSessionService:
             user_session_id=user_session.id,
             subject_type="user.session",
             subject_id=user_session.id,
-            event_type="user.session.reconnected",
+            event_type=SessionTimelineEvent.USER_SESSION_RECONNECTED,
             occurred_at=now,
-            payload={"connection_sequence": user_session.connection_sequence},
+            payload=SessionLifecycleFact(
+                connection_sequence=user_session.connection_sequence,
+            ).to_payload(),
         )
         return UserSessionStartResult(
             user_session=user_session, outcome=UserSessionStartOutcome.RECONNECTED
@@ -204,12 +208,12 @@ class UserSessionService:
             user_session_id=user_session.id,
             subject_type="user.session",
             subject_id=user_session.id,
-            event_type="user.session.disconnected",
+            event_type=SessionTimelineEvent.USER_SESSION_DISCONNECTED,
             occurred_at=now,
-            payload={
-                "reason": reason,
-                "connection_sequence": user_session.connection_sequence,
-            },
+            payload=SessionLifecycleFact(
+                reason=reason,
+                connection_sequence=user_session.connection_sequence,
+            ).to_payload(),
         )
         return True
 
@@ -249,15 +253,15 @@ class UserSessionService:
             subject_type="user.session",
             subject_id=user_session.id,
             event_type=(
-                "user.session.ended"
+                SessionTimelineEvent.USER_SESSION_ENDED
                 if state is UserSessionState.ENDED
-                else "user.session.failed"
+                else SessionTimelineEvent.USER_SESSION_FAILED
             ),
             occurred_at=now,
-            payload={
-                "reason": reason,
-                "connection_sequence": user_session.connection_sequence,
-            },
+            payload=SessionLifecycleFact(
+                reason=reason,
+                connection_sequence=user_session.connection_sequence,
+            ).to_payload(),
         )
         return True
 

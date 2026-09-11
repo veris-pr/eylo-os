@@ -18,6 +18,7 @@ from eylo.absurd_work import (
     spawn_bound_work,
     spawn_unbound_work,
 )
+from eylo.common.contracts.session_timeline import SessionTimelineEvent
 from eylo.common.contracts.storage import StorageAuthority, StorageLocator
 from eylo.common.database import start_transaction
 from eylo.common.identifiers import as_stdlib_uuid
@@ -560,7 +561,7 @@ async def _handle_failure(
                         user_session_id=voice_session.user_session_id,
                         subject_type=VOICE_RECORDING_SUBJECT_TYPE,
                         subject_id=recording_id,
-                        event_type="voice.recording.failed",
+                        event_type=SessionTimelineEvent.VOICE_RECORDING_FAILED,
                         payload={
                             "conversation_id": str(row.conversation_id),
                             "voice_session_id": str(voice_session.id),

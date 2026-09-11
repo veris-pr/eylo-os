@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from eylo.common.contracts.session_timeline import SessionTimelineEvent
 from eylo.common.database import start_transaction
 from eylo.common.outbound import OutboundAttemptState, require_failure_code
 from eylo.common.schemas import EyloBaseSchema
@@ -38,7 +39,7 @@ from eylo.modules.user_sessions.events import file_user_session_fact
 
 logger = logging.getLogger(__name__)
 
-CALL_ENDED_EVENT_TYPE = "telephony.call.ended"
+CALL_ENDED_EVENT_TYPE = SessionTimelineEvent.TELEPHONY_CALL_ENDED
 CALL_ENDED_EVENT_VERSION = 1
 CALL_SUBJECT_TYPE = "telephony.call"
 CAMPAIGN_CALL_OUTCOME_CONSUMER = "campaign.call_outcome"
@@ -557,7 +558,7 @@ async def record_call_started(
                 user_session_id=call.user_session_id,
                 subject_type=CALL_SUBJECT_TYPE,
                 subject_id=call.id,
-                event_type="telephony.call.started",
+                event_type=SessionTimelineEvent.TELEPHONY_CALL_STARTED,
                 occurred_at=call.started_at,
                 event_id=uuid5(
                     NAMESPACE_URL,
@@ -626,9 +627,9 @@ async def record_call_status(
             terminal_event_id = fact.event_id
         elif update.status_changed and call.user_session_id is not None:
             event_type = {
-                CallStatus.RINGING.value: "telephony.call.ringing",
-                CallStatus.IN_PROGRESS.value: "telephony.call.answered",
-            }.get(status_value, "telephony.call.status_changed")
+                CallStatus.RINGING.value: SessionTimelineEvent.TELEPHONY_CALL_RINGING,
+                CallStatus.IN_PROGRESS.value: SessionTimelineEvent.TELEPHONY_CALL_ANSWERED,
+            }.get(status_value, SessionTimelineEvent.TELEPHONY_CALL_STATUS_CHANGED)
             await file_user_session_fact(
                 session,
                 organization_id=call.organization_id,
@@ -777,7 +778,7 @@ async def record_call_transfer_completed(
                 user_session_id=result.user_session_id,
                 subject_type=CALL_SUBJECT_TYPE,
                 subject_id=result.id,
-                event_type="telephony.call.transferred",
+                event_type=SessionTimelineEvent.TELEPHONY_CALL_TRANSFERRED,
                 occurred_at=result.transferred_at,
                 payload={
                     "conversation_id": (

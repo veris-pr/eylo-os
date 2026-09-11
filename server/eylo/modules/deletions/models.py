@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from enum import StrEnum
 
 from sqlalchemy import (
     CheckConstraint,
@@ -24,7 +25,7 @@ from eylo.modules.deletions.domain import (
 )
 
 
-def _enum(enum_type, name: str):
+def _enum(enum_type: type[StrEnum], name: str) -> ENUM:
     return ENUM(
         enum_type,
         name=name,

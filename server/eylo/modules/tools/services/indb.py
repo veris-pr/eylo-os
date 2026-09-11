@@ -50,7 +50,7 @@ class ToolService(EyloBaseService[ToolInDb, ToolModel]):
     def repository(self, value: ToolRepository):
         self._repository = value
 
-    def __init__(self, db: Optional[AsyncSession] = None):
+    def __init__(self, db: Optional[AsyncSession] = None) -> None:
         self._db = db or get_transaction()
         self._repository = ToolRepository(db=self._db)
 

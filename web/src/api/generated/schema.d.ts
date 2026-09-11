@@ -5252,7 +5252,10 @@ export interface components {
          * @enum {string}
          */
         AgentInputRequestKind: "input" | "approval";
-        /** AgentInputRequestRead */
+        /**
+         * AgentInputRequestRead
+         * @description Public question and JSON response schema, never the private continuation.
+         */
         AgentInputRequestRead: {
             /**
              * Id
@@ -5264,7 +5267,7 @@ export interface components {
             prompt: string;
             /** Expected Response Schema */
             expected_response_schema: {
-                [key: string]: unknown;
+                [key: string]: components["schemas"]["JsonValue"];
             };
             status: components["schemas"]["AgentInputRequestStatus"];
             response: components["schemas"]["JsonValue"] | null;
@@ -5533,7 +5536,7 @@ export interface components {
             goal: string;
             /** Result */
             result: {
-                [key: string]: unknown;
+                [key: string]: components["schemas"]["JsonValue"];
             } | null;
             /** Outcome Reason */
             outcome_reason: string | null;
@@ -5598,7 +5601,10 @@ export interface components {
          * @enum {string}
          */
         AgentRunStepKind: "agent_turn" | "model_inference" | "tool" | "sandbox" | "artifact_export";
-        /** AgentRunStepRead */
+        /**
+         * AgentRunStepRead
+         * @description Public step evidence; product-owned payloads cross this boundary as JSON.
+         */
         AgentRunStepRead: {
             /**
              * Id
@@ -5611,16 +5617,16 @@ export interface components {
             status: components["schemas"]["AgentRunStepStatus"];
             /** Intent */
             intent: {
-                [key: string]: unknown;
+                [key: string]: components["schemas"]["JsonValue"];
             };
             /** Safe Summary */
             safe_summary: string | null;
             /** Evidence */
             evidence: {
-                [key: string]: unknown;
+                [key: string]: components["schemas"]["JsonValue"];
             } | null;
             /** Artifact Refs */
-            artifact_refs: unknown[];
+            artifact_refs: components["schemas"]["JsonValue"][];
             /** Started At */
             started_at: string | null;
             /** Completed At */

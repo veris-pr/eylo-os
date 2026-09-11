@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict
 
+from eylo.common.contracts.session_timeline import SessionTimelineEvent
 from eylo.events.durable.models import EventOutboxModel
+from eylo.modules.user_sessions.fact_payloads import ToolWaitTimelineFact
 from eylo.modules.user_sessions.schemas import (
     TimelineCategory,
     TimelineSeverity,
@@ -98,49 +100,49 @@ def _definition(
 
 
 TIMELINE_EVENT_CATALOG: dict[str, TimelineEventDefinition] = {
-    "user.session.started": _definition(
+    SessionTimelineEvent.USER_SESSION_STARTED: _definition(
         TimelineCategory.SESSION,
         "Session started",
         details=frozenset({"entry_channel", "connection_sequence"}),
     ),
-    "user.session.reconnected": _definition(
+    SessionTimelineEvent.USER_SESSION_RECONNECTED: _definition(
         TimelineCategory.SESSION,
         "Session reconnected",
         details=frozenset({"connection_sequence"}),
     ),
-    "user.session.disconnected": _definition(
+    SessionTimelineEvent.USER_SESSION_DISCONNECTED: _definition(
         TimelineCategory.SESSION,
         "Session disconnected",
         details=frozenset({"reason", "connection_sequence"}),
     ),
-    "user.session.ended": _definition(
+    SessionTimelineEvent.USER_SESSION_ENDED: _definition(
         TimelineCategory.SESSION,
         "Session ended",
         details=frozenset({"reason", "connection_sequence"}),
     ),
-    "user.session.failed": _definition(
+    SessionTimelineEvent.USER_SESSION_FAILED: _definition(
         TimelineCategory.SESSION,
         "Session failed",
         details=frozenset({"reason", "connection_sequence"}),
         severity=TimelineSeverity.DANGER,
     ),
-    "conversation.started": _definition(
+    SessionTimelineEvent.CONVERSATION_STARTED: _definition(
         TimelineCategory.CONVERSATION,
         "Conversation started",
         details=_IDS | frozenset({"channel"}),
     ),
-    "conversation.continued": _definition(
+    SessionTimelineEvent.CONVERSATION_CONTINUED: _definition(
         TimelineCategory.CONVERSATION,
         "Conversation continued",
         details=_IDS | frozenset({"channel"}),
     ),
-    "message.created": _definition(
+    SessionTimelineEvent.MESSAGE_CREATED: _definition(
         TimelineCategory.MESSAGE,
         "Message created",
         details=_IDS | _STATE,
     ),
     **{
-        f"message.request.{state}": _definition(
+        SessionTimelineEvent(f"message.request.{state}"): _definition(
             TimelineCategory.MESSAGE,
             f"Message request {state.replace('_', ' ')}",
             details=_IDS | _STATE,
@@ -160,10 +162,19 @@ TIMELINE_EVENT_CATALOG: dict[str, TimelineEventDefinition] = {
         )
     },
     **{
-        f"agent.run.{state}": _definition(
+        SessionTimelineEvent(f"agent.run.{state}"): _definition(
             TimelineCategory.AGENT,
             f"Agent run {state.replace('_', ' ')}",
-            details=_IDS | _STATE | _COUNTS,
+            details=(
+                _IDS
+                | _STATE
+                | _COUNTS
+                | (
+                    frozenset(ToolWaitTimelineFact.model_fields)
+                    if state in {"waiting_for_tool", "resumed"}
+                    else frozenset()
+                )
+            ),
             severity=(
                 TimelineSeverity.DANGER
                 if state == "failed"
@@ -183,18 +194,18 @@ TIMELINE_EVENT_CATALOG: dict[str, TimelineEventDefinition] = {
             "cancelled",
         )
     },
-    "agent.input.requested": _definition(
+    SessionTimelineEvent.AGENT_INPUT_REQUESTED: _definition(
         TimelineCategory.AGENT,
         "Agent requested user input",
         details=_IDS | _STATE,
     ),
-    "agent.input.received": _definition(
+    SessionTimelineEvent.AGENT_INPUT_RECEIVED: _definition(
         TimelineCategory.AGENT,
         "Agent received user input",
         details=_IDS | _STATE,
     ),
     **{
-        f"agent.tool.{state}": _definition(
+        SessionTimelineEvent(f"agent.tool.{state}"): _definition(
             TimelineCategory.TOOL,
             f"Tool {state}",
             details=_IDS | frozenset({"tool_name"}),
@@ -206,18 +217,18 @@ TIMELINE_EVENT_CATALOG: dict[str, TimelineEventDefinition] = {
         )
         for state in ("started", "completed", "failed")
     },
-    "agent.handoff.completed": _definition(
+    SessionTimelineEvent.AGENT_HANDOFF_COMPLETED: _definition(
         TimelineCategory.TOOL,
         "Agent handoff completed",
         details=_IDS | _STATE,
     ),
-    "knowledge.file.accepted": _definition(
+    SessionTimelineEvent.KNOWLEDGE_FILE_ACCEPTED: _definition(
         TimelineCategory.FILE,
         "File accepted",
         details=_IDS | frozenset({"byte_size"}),
     ),
     **{
-        f"knowledge.ingestion.{state}": _definition(
+        SessionTimelineEvent(f"knowledge.ingestion.{state}"): _definition(
             TimelineCategory.FILE,
             f"File ingestion {state}",
             details=_IDS | _STATE,
@@ -229,23 +240,23 @@ TIMELINE_EVENT_CATALOG: dict[str, TimelineEventDefinition] = {
         )
         for state in ("queued", "started", "completed", "failed", "cancelled")
     },
-    "voice.session.started": _definition(
+    SessionTimelineEvent.VOICE_SESSION_STARTED: _definition(
         TimelineCategory.VOICE,
         "Voice session started",
         details=_IDS | _STATE | _COUNTS,
     ),
-    "voice.session.ended": _definition(
+    SessionTimelineEvent.VOICE_SESSION_ENDED: _definition(
         TimelineCategory.VOICE,
         "Voice session ended",
         details=_IDS | _STATE | _COUNTS,
     ),
-    "voice.user.interrupted_agent": _definition(
+    SessionTimelineEvent.VOICE_USER_INTERRUPTED_AGENT: _definition(
         TimelineCategory.VOICE,
         "User interrupted Agent speech",
         details=_IDS,
     ),
     **{
-        f"voice.recording.{state}": _definition(
+        SessionTimelineEvent(f"voice.recording.{state}"): _definition(
             TimelineCategory.VOICE,
             f"Recording {state}",
             details=_IDS | _STATE,
@@ -258,7 +269,7 @@ TIMELINE_EVENT_CATALOG: dict[str, TimelineEventDefinition] = {
         for state in ("queued", "available", "failed")
     },
     **{
-        f"telephony.call.{state}": _definition(
+        SessionTimelineEvent(f"telephony.call.{state}"): _definition(
             TimelineCategory.TELEPHONY,
             f"Call {state}",
             details=_IDS | _STATE | _COUNTS,
@@ -278,7 +289,7 @@ TIMELINE_EVENT_CATALOG: dict[str, TimelineEventDefinition] = {
         )
     },
     **{
-        f"transport.websocket.{state}": _definition(
+        SessionTimelineEvent(f"transport.websocket.{state}"): _definition(
             TimelineCategory.TECHNICAL,
             f"WebSocket {state}",
             details=_STATE | _COUNTS,
@@ -291,7 +302,7 @@ TIMELINE_EVENT_CATALOG: dict[str, TimelineEventDefinition] = {
         for state in ("connected", "disconnected", "failed")
     },
     **{
-        f"transport.webrtc.{state}": _definition(
+        SessionTimelineEvent(f"transport.webrtc.{state}"): _definition(
             TimelineCategory.TECHNICAL,
             f"WebRTC {state}",
             details=frozenset({"negotiation_id"}),
@@ -304,7 +315,7 @@ TIMELINE_EVENT_CATALOG: dict[str, TimelineEventDefinition] = {
         for state in ("connecting", "connected", "disconnected", "failed")
     },
     **{
-        f"provider.{kind}.{state}": _definition(
+        SessionTimelineEvent(f"provider.{kind}.{state}"): _definition(
             TimelineCategory.TECHNICAL,
             f"{kind.upper()} provider {state}",
             details=_STATE,
@@ -350,9 +361,10 @@ def project_timeline_event(row: EventOutboxModel) -> UserSessionTimelineEventRea
     }
     label = definition.label
     severity = definition.severity
-    if row.event_type in {"voice.session.ended", "telephony.call.ended"} and (
-        str(payload.get("status", "")).lower() == "failed"
-    ):
+    if row.event_type in {
+        SessionTimelineEvent.VOICE_SESSION_ENDED,
+        SessionTimelineEvent.TELEPHONY_CALL_ENDED,
+    } and (str(payload.get("status", "")).lower() == "failed"):
         label = label.removesuffix("ended") + "failed"
         severity = TimelineSeverity.DANGER
     return UserSessionTimelineEventRead(

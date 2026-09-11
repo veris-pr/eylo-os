@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
 from uuid import UUID, uuid4
 
 from pydantic import JsonValue, TypeAdapter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from eylo.common.contracts.session_timeline import SessionTimelineEvent
 from eylo.events.durable.domain import DurableEventEnvelope
 from eylo.events.durable.service import DurableEventFiling, DurableEventService
 from eylo.modules.user_sessions.domain import (
@@ -30,7 +30,7 @@ async def file_user_session_fact(
     subject_type: str,
     subject_id: UUID,
     event_type: str,
-    payload: dict[str, Any] | None = None,
+    payload: dict[str, JsonValue] | None = None,
     occurred_at: datetime | None = None,
     causation_id: UUID | None = None,
     event_id: UUID | None = None,
@@ -38,9 +38,13 @@ async def file_user_session_fact(
     """File one validated, unordered timeline fact in the source transaction."""
     recorded_at = datetime.now(timezone.utc)
     occurred_at = occurred_at or recorded_at
-    definition = TIMELINE_EVENT_CATALOG.get(event_type)
-    if definition is None:
-        raise ValueError(f"Unsupported user-session timeline event: {event_type}")
+    try:
+        timeline_event = SessionTimelineEvent(event_type)
+    except ValueError:
+        raise ValueError(
+            f"Unsupported user-session timeline event: {event_type}"
+        ) from None
+    definition = TIMELINE_EVENT_CATALOG[timeline_event]
     safe_payload = _SAFE_PAYLOAD.validate_python(payload or {})
     unexpected_keys = safe_payload.keys() - definition.detail_keys
     if unexpected_keys:
@@ -71,7 +75,7 @@ async def file_user_session_fact(
         organization_id=organization_id,
         subject_type=subject_type,
         subject_id=subject_id,
-        event_type=event_type,
+        event_type=timeline_event.value,
         event_version=1,
         occurred_at=occurred_at,
         recorded_at=recorded_at,

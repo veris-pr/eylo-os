@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 from uuid import UUID
+
+from pydantic import JsonValue
 
 from eylo.common.database import start_transaction
 from eylo.modules.user_sessions.events import file_user_session_fact
@@ -19,7 +20,7 @@ async def try_file_runtime_fact(
     subject_type: str,
     subject_id: UUID | None,
     event_type: str,
-    payload: dict[str, Any] | None = None,
+    payload: dict[str, JsonValue] | None = None,
 ) -> None:
     """File observability without letting it interrupt the product flow."""
     if user_session_id is None:

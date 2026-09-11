@@ -82,8 +82,8 @@ async def monitor_long_running_tasks(
         active_tasks[name] = asyncio.create_task(factory())
 
 
-async def teardown_long_running_tasks[T](
-    active_tasks: Mapping[str, asyncio.Task[T]],
+async def teardown_long_running_tasks[K: str, T](
+    active_tasks: Mapping[K, asyncio.Task[T]],
 ) -> None:
     """Cancel owned children together and collect failures, including done tasks.
 

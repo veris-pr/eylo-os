@@ -12,6 +12,8 @@ import logging
 
 import arrow
 
+from eylo.common.contracts.provider_config import Capability
+from eylo.common.contracts.session_timeline import ProviderTimelineState
 from eylo.common.database import start_transaction
 from eylo.events.py_events.emitter import emit_ephemeral
 from eylo.events.schema.py_events.call import (
@@ -28,6 +30,7 @@ from eylo.modules.telephony.lifecycle import (
 )
 from eylo.modules.telephony.schemas import CallStatus
 from eylo.modules.user_sessions.domain import UserSessionState
+from eylo.modules.user_sessions.fact_payloads import ProviderTimelineFact
 from eylo.modules.user_sessions.service import UserSessionService
 from eylo.modules.voice_transcripts.constants import (
     VoiceRuntimeMode,
@@ -47,6 +50,7 @@ from eylo.pipelines.voice.audio_transport import ComfortAudioStream
 from eylo.pipelines.voice.live_buffer import LiveVoiceDraft, LiveVoiceItemKind
 from eylo.pipelines.voice.post_call import finalize_live_voice_history
 from eylo.pipelines.voice.transcript_inputs import DTMFInput
+from eylo.pipelines.websocket.schemas import WSSessionState
 from eylo.pipelines.websocket.singleton import S_ws_manager
 from eylo.runtime.tasks import teardown_queues
 from eylo.sockets.telephony.base import CallEndedReason, InboundMediaMessage
@@ -259,19 +263,21 @@ async def tts_producer_task(
         raise
 
 
-def _telephony_comfort_audio(sess: CallSession):
+def _telephony_comfort_audio(
+    sess: CallSession,
+) -> tuple[ComfortAudioStream | None, WSSessionState | None]:
     if not sess.organization_id or not sess.auth_session_token:
         return None, None
     session_state = S_ws_manager.get_session_state(
         sess.organization_id,
         sess.auth_session_token,
     )
-    config = getattr(session_state, "ambient_noise_config", None)
-    if not config or not bool(config.get("enabled", True)):
+    config = session_state.ambient_noise_config if session_state is not None else None
+    if config is None or not config.enabled:
         return None, session_state
     if sess.tts is None:
         return None, session_state
-    amplitude = int(config.get("amplitude", 50))
+    amplitude = config.amplitude
     if amplitude <= 0:
         return None, session_state
     return (
@@ -466,27 +472,27 @@ async def _finalize_call_session_once(
             sess.live_voice_buffer = None
 
     failed_provider = {
-        CallEndedReason.ERROR_STT_FAILED: "stt",
-        CallEndedReason.ERROR_TTS_FAILED: "tts",
+        CallEndedReason.ERROR_STT_FAILED: Capability.STT,
+        CallEndedReason.ERROR_TTS_FAILED: Capability.TTS,
     }.get(ended_reason)
     if failed_provider and sess.organization_id:
         await try_file_runtime_fact(
             organization_id=sess.organization_id,
             user_session_id=sess.user_session_id,
-            subject_type=f"provider.{failed_provider}",
+            subject_type=f"provider.{failed_provider.value}",
             subject_id=sess.voice_session_id,
-            event_type=f"provider.{failed_provider}.failed",
-            payload={"provider_kind": failed_provider},
+            event_type=f"provider.{failed_provider.value}.{ProviderTimelineState.FAILED.value}",
+            payload=ProviderTimelineFact(provider_kind=failed_provider).to_payload(),
         )
     if sess.organization_id:
-        for provider_kind in ("stt", "tts"):
+        for provider_kind in (Capability.STT, Capability.TTS):
             await try_file_runtime_fact(
                 organization_id=sess.organization_id,
                 user_session_id=sess.user_session_id,
-                subject_type=f"provider.{provider_kind}",
+                subject_type=f"provider.{provider_kind.value}",
                 subject_id=sess.voice_session_id,
-                event_type=f"provider.{provider_kind}.disconnected",
-                payload={"provider_kind": provider_kind},
+                event_type=f"provider.{provider_kind.value}.{ProviderTimelineState.DISCONNECTED.value}",
+                payload=ProviderTimelineFact(provider_kind=provider_kind).to_payload(),
             )
 
     if sess.organization_id and sess.user_session_id is not None:
