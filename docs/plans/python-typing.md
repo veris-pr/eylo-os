@@ -19,10 +19,130 @@ are superseded by the newest deployment record.
 | Published voice bindings | Public CLI aggregate resolves both existing realtime and decomposed QA agents at revision 1 | Both have no storage binding; recording upload is not covered |
 | Scheduler filing and stranded recovery | Original one-shot recovered once, ran real `issue_search`/`issue_get`, completed/achieved and released capacity | Worker-crash and waiting/resume cases remain separate |
 | Widget and console | Widget opened and sent one fresh read-only message on image `d190e5e81c29`; public console API confirms both SOR tools and final answer completed without tool errors | Browser observation timed out after submission and on recheck; visual response and console rendering remain unverified |
-| Durable execution | Native scheduled execution plus direct background-objective memory recall and input wait/resume passed; persisted tool-result readback verified | Cancellation, worker crash/restart and broader tool-bearing replay |
+| Durable execution | Native schedule, direct recall, input wait/resume, waiting-run cancellation and controlled worker restart while waiting passed; persisted tool-result readback verified | In-flight cancellation, forced worker crash, concurrent execution and broader tool-bearing replay |
 | Direct-objective memory | Fixed conversation-only context assumption; native recall returns four agent-owned facts and releases capacity | Direct-objective writes need run-based provenance; current mutation contract requires a real conversation/message |
 | Sandbox | Typed workspace/checkpoint/tool paths validated with substituted dependencies | Native configured sandbox execution/cleanup |
-| Final handoff | Checkout is `13b51691`; receipt and direct-objective recall changes are deployed but remain uncommitted. No migration or provider reset was performed by this run | Complete remaining contracts, native QA and the full acceptance matrix |
+| Final handoff | Checkout advanced independently to `dc12c8d1` during verification; receipt, direct-objective recall and Freshdesk mutation implementation are included. Local documentation/formatting edits remain. No migration or provider reset was performed by this run | Complete remaining contracts, native QA and the full acceptance matrix |
+
+### Current continuation — Zendesk writes and explicit SOR coverage
+
+The eleven registrations in `sor/runtime/catalog.py::get_sor_registry` are the
+scope authority. Operation tracing confirms these remaining SOR native-contract
+gaps; a webhook model does not close its vendor's record operations:
+
+| Registration | Remaining native record-operation work |
+| --- | --- |
+| Jira Ticketing | Verification/discovery, reads/expansions and mutations in `ticketing/vendors/jira.py` still consume mapping-shaped native records |
+| GitHub Ticketing | REST record/mutation and GraphQL repository projections in `ticketing/vendors/github.py`; webhook management/ingress already typed |
+| Zendesk Support | Verification/discovery, cursor exports, event expansion and exact reads in `support/vendors/zendesk.py`; mutations now locally verified below |
+| Intercom Support | Discovery/search, conversation-part/attachment expansion and mutation wire objects in `support/vendors/intercom.py` |
+| Notion Knowledge | Page/property/block traversal, markdown/attachment envelopes and writes in `knowledge/vendors/notion.py` |
+
+HubSpot CRM, Salesforce CRM, Linear Ticketing, Linear Knowledge, Confluence
+Knowledge and Freshdesk Support have operation-contract checkpoints recorded in
+this ledger. That is not a declaration of native acceptance or proof that no
+secondary omission remains. Provider/socket and curated-integration coverage are
+separate inventories; their final operation audit is still required.
+
+Zendesk's eight Support mutation tools now use native request models, ticket
+identity/revision responses and typed audit events. Writable mapping authority
+stays in the adapter's existing boundary; custom field values remain JSON.
+Status/priority/type/write fields and tag actions use Zendesk-owned enums.
+The vendor's `safe_update`/`updated_stamp` pair is validated together; partial
+requests preserve omitted fields and explicit nulls. Only one matching comment
+event with the requested visibility can produce a comment receipt.
+
+- 192 function assertions passed through `execute_command`, the real HTTP client
+  and a recorded transport, comparing valid requests/results with immutable
+  `dc12c8d1`. All eight tools, guarded/unguarded writes, tag methods, exact comment
+  matching, malformed results, invalid mappings, null/empty fields, JSON
+  restoration, timeout uncertainty and cancellation were exercised. No native
+  vendor or DB effects occurred; the batch is not deployed.
+- Invalid native field types and closed choices now fail before transport. This
+  is deliberate input validation, not parity for malformed values previously
+  forwarded to Zendesk. Unknown non-comment audit event types remain accepted.
+- Runtime probes caught an unsupported direct enum-constructor validator
+  signature. Explicit input-narrowing conversion functions now satisfy both
+  Pydantic construction and static typing. No suppression or dependency change.
+- Next SOR implementation: complete Zendesk verification/discovery/read/export
+  contracts, then the other four gaps above. Native QA and the remaining platform
+  contracts remain open; no configuration, migration or source reset is needed
+  for the local contract work.
+
+### Freshdesk native reads and mutations
+
+The Freshdesk native read batch is now implemented **locally, not deployed**.
+Verification, schema discovery, list/exact reads and expansions use explicit
+vendor models. This covers all nine built-in streams, companies and discovered
+custom-object envelopes. Dynamic company/custom fields remain JSON. Explicit
+parent values carry conversation/attachment ownership; source bodies retain
+native IDs, timestamp spelling and additional JSON. Request pagination and SLA
+metric variants are typed; the existing continuation fence and scan budgets stay
+in place. Obsolete dictionary parsers and the redundant tag-only response model
+were removed.
+
+- Read/discovery probes passed 571 function assertions through the actual adapter
+  and shared HTTP port with recorded responses. Checks compare requests, source
+  payloads, metadata and cursors with immutable `13b51691`; query parameter order
+  is normalized because it is not a transport contract. Cases include all read
+  families, custom discovery, optional discovery refusal, pagination/offsets,
+  exact missing records, HTTP classifications, custom continuation fences, raw
+  snapshots, unknown status values and invalid native fields. Ordinary record
+  snapshots exclude payloads, so the probe explicitly reads `payload.to_wire()`.
+- The eight mutation tools still pass 256 assertions after sharing the full
+  ticket response model for preflight reads. No live vendor or DB writes were
+  performed. Native Freshdesk remains unverified because it is not configured.
+- Type-error RCA: the frozen model overrode Pydantic's writable internal
+  `__pydantic_extra__` member. Native input now uses the existing strict JSON
+  validator before field parsing, preserving extra content without overriding
+  library storage. Frozen assignment, invalid extra values and JSON round trips
+  are exercised. No type suppression or relaxed field types were introduced.
+- Full backend lint and typing pass (zero errors, two pre-existing redundant-cast
+  warnings). This batch does not close platform-wide vendor coverage or native QA.
+
+### Previous checkpoint — Freshdesk mutations and recovery acceptance
+
+Freshdesk v2 mutation contracts are implemented **locally, not deployed**. All
+eight existing Support write tools now pass typed native inputs to HTTP and parse
+consumed identity/revision results. Tag/revision preflight reads use narrow typed
+projections. Native enums own write-field names, status, priority and tag action;
+the platform's writable mapping still owns authority. Dynamic custom fields remain
+JSON. The conversion does not add vendor capabilities or change sync streams.
+
+- The actual adapter `execute_command` entrypoint, shared HTTP client and typed
+  HTTP port passed 256 function assertions with a recorded transport. Cases cover
+  every write tool, exact request/result comparisons with immutable `13b51691`,
+  optional revision reads, tag add/remove/idempotence, null/omitted fields, custom
+  mappings, malformed fields/results, HTTP error classifications, timeout
+  ambiguity, cancellation propagation and JSON round trips. No vendor or DB write
+  was performed. An initial fixture incorrectly nested mapped fields under
+  `fields`; both baseline and current code refused it. The fixture was corrected
+  to use the actual flat command-body contract; no product fix was inferred.
+- At this checkpoint Freshdesk native read/discovery/expansion contracts were
+  pending; the newer local batch above supersedes that implementation gap.
+  Native Freshdesk execution remains unverified.
+- Backend lint and full typing passed (zero errors, two existing redundant-cast
+  warnings); documentation verification and `git diff --check` passed. The
+  current development image still predates this Freshdesk mutation change.
+- Reinspection corrected an earlier candidate-gap entry: Linear Ticketing's
+  create/update/comment/relation operations already use typed request/result
+  models. Linear Documents deliberately rejects writes as read-only. Neither
+  requires a speculative mutation implementation.
+
+Recovery QA readback closes two previously open checks on the deployed image:
+
+- `02fd6bb1-85a8-4266-bdba-cd2fd367fdd4`: waiting run cancelled at 10:24:06 UTC;
+  stale cancellation revision and late input were refused with 409. Run/input
+  remain cancelled after restart, response remains null and capacity is released.
+  Transcript contains no memory call; the unanswered input call remains as
+  historical evidence, not proof of active work.
+- `34b80794-335d-455a-835d-e5a36e6876cb`: controlled durable-worker restart at
+  10:26:42 UTC preserved the waiting run and input identities/revisions. Answering
+  the saved request resumed that run; it completed/achieved at 10:27:27 UTC.
+  Public API confirms released capacity; typed persisted transcript confirms
+  one successful memory recall (four Agent-owned facts), correlated input and
+  completion results, and no pending calls. This was a controlled restart while
+  waiting, not a forced crash during an external operation.
 
 The current deployed checkpoint includes the scheduler correction, telephony,
 HTTP, PCM audio, collection/internal values, timeline/erasure, SOR tool-receipt
@@ -716,12 +836,14 @@ describe the consumed envelopes. The currently opened `latest` association page
 now renders `2026-09`; no API version upgrade was inferred from it. Native reads
 above verify the configured adapter's actual `2026-03` paths.
 
-Remaining vendor-boundary audit: HubSpot app-webhook parsing and auth management;
-Jira, GitHub, Zendesk, Intercom, Freshdesk, Confluence and Notion
-operation helpers; remaining Linear ticketing/document mutation helpers. These
-are candidate gaps identified from the executable registry and helper signatures,
-not eleven fully reviewed or fully live-tested adapters. Continue with complete
-operation flows; dynamic mapped properties are not blanket conversion targets.
+Historical candidate inventory at this checkpoint: HubSpot auth/webhook and
+Jira, GitHub, Zendesk, Intercom, Freshdesk, Confluence and Notion operation helpers.
+Later checkpoints supersede covered portions. Reinspection confirms Linear
+Ticketing mutations already have native models and Linear Documents is read-only;
+the earlier suggestion of missing Linear mutation helpers was not a verified gap.
+Continue with complete operation flows; dynamic mapped properties are not blanket
+conversion targets. The current continuation above records Freshdesk mutation
+coverage separately from its still-untyped native read/discovery operations.
 
 ### Salesforce SOR wire coverage — 2026-09-11, verified locally; not deployed
 

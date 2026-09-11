@@ -248,6 +248,37 @@ than inventing new vendor support. Freshdesk's known numeric status, priority
 and source codes use native enums, while unknown read-side values remain visible
 as text. Writes still require a recognized code.
 
+Freshdesk's existing Support mutation tools use vendor-owned Pydantic inputs and
+identity/revision response projections. The writable source mapping is resolved
+before constructing these inputs; discovered custom fields remain JSON. Partial
+updates serialize only supplied fields, including explicit null text, and private
+notes retain Freshdesk's native `private` boolean at the HTTP boundary. Revision
+checks and tag read-modify-write use typed preflight projections. Uncertain writes
+still require reconciliation rather than blind retries. These contracts cover the
+adapter's existing [Freshdesk v2 ticket and conversation operations](https://developers.freshdesk.com/api/),
+not every vendor field or write capability.
+
+Freshdesk verification, discovery, list/exact reads and child expansions also
+parse native Pydantic responses before projection. Consumed fields have explicit
+types; additional source fields must remain valid JSON. Ticket/conversation
+ownership is carried by typed expansion values, not hidden keys injected into
+vendor dictionaries. Source-body snapshots preserve supplied IDs, timestamp
+spelling and extra content; only canonical metadata normalizes those values.
+Discovered company/custom-object fields remain open JSON rather than a fixed
+platform schema. Pagination queries are typed, and custom continuation links
+still pass the source/schema path fence before another request. Malformed known
+fields are rejected before returning a page, even where older code ignored them.
+
+Zendesk's Support mutations likewise construct vendor-owned inputs after resolving
+writable mappings. Closed ticket choices are native enums; discovered custom
+field values remain JSON. The native safe-update flag and timestamp form one
+validated pair, preserving [Zendesk's collision protection](https://developer.zendesk.com/documentation/ticketing/managing-tickets/creating-and-updating-tickets/).
+Ticket responses supply typed identity/revision evidence. Replies and private
+notes instead select exactly one matching [comment audit event](https://developer.zendesk.com/api-reference/ticketing/tickets/ticket_audits/)
+before producing their receipt; a successful HTTP status alone is insufficient.
+This mutation contract does not imply that all Zendesk sync envelopes are typed
+or that an uncertain external write can safely be retried.
+
 ## Source lifecycle
 
 An organization configures a source in this order:

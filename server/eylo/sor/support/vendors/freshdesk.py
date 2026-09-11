@@ -76,6 +76,7 @@ from eylo.sor.support.contracts import (
     SupportTicketState,
     SupportToolName,
 )
+from eylo.sor.support.vendors import freshdesk_contracts as native
 from eylo.sor.support.vendors.freshdesk_contracts import (
     FreshdeskMutationInput,
     FreshdeskMutationRecord,
@@ -85,7 +86,6 @@ from eylo.sor.support.vendors.freshdesk_contracts import (
     FreshdeskTicketCreate,
     FreshdeskTicketPriorityCode,
     FreshdeskTicketStatusCode,
-    FreshdeskTicketTags,
     FreshdeskTicketUpdate,
     FreshdeskTicketWriteField,
     FreshdeskWriteInput,
@@ -123,6 +123,11 @@ _NORMALIZED_STATUS = {
 _PRIORITY_NAMES = {code: code.name.casefold() for code in FreshdeskTicketPriorityCode}
 _PRIORITY_CODES = {value: key for key, value in _PRIORITY_NAMES.items()}
 _SOURCE_NAMES = {code: code.name.casefold() for code in FreshdeskTicketSourceCode}
+_SLA_STATES = {
+    native.FreshdeskSlaMetricState.ACTIVE: SupportSlaState.ACTIVE,
+    native.FreshdeskSlaMetricState.ACHIEVED: SupportSlaState.ACHIEVED,
+    native.FreshdeskSlaMetricState.BREACHED: SupportSlaState.BREACHED,
+}
 
 
 class FreshdeskStream(StrEnum):
@@ -548,19 +553,16 @@ class FreshdeskSupportAdapter:
 
     async def verify_connection(self) -> SorConnectionVerification:
         response = await self._client.request("/api/v2/agents/me")
-        agent = _object(_expect(response, operation="identify the Freshdesk Agent"))
-        contact = agent.get("contact")
-        contact_name = (
-            _optional_string(contact.get("name"))
-            if isinstance(contact, Mapping)
-            else None
+        agent = _parse_native(
+            _expect(response, operation="identify the Freshdesk Agent"),
+            native.FreshdeskAgent,
         )
+        contact = agent.contact
+        contact_name = _optional_string(contact.name) if contact is not None else None
         return SorConnectionVerification(
-            account_external_id=_required_id(
-                agent.get("id"), field="Freshdesk Agent ID"
-            ),
-            account_display_name=(contact_name or _optional_string(agent.get("name")))
-            or _optional_string(agent.get("email"))
+            account_external_id=agent.external_id,
+            account_display_name=(contact_name or _optional_string(agent.name))
+            or _optional_string(agent.email)
             or "Freshdesk account",
             granted_scopes=(),
             vendor_api_version=FRESHDESK_API_VERSION,
@@ -647,7 +649,9 @@ class FreshdeskSupportAdapter:
         )
         if stream_key == FreshdeskStream.TAGS:
             name = _required_string(external_id, field="Freshdesk tag")
-            return self._external_record(FreshdeskStream.TAGS, {"name": name})
+            return self._external_record(
+                FreshdeskStream.TAGS, native.FreshdeskTag(name=name)
+            )
         if stream_key in {FreshdeskStream.CONVERSATIONS, FreshdeskStream.ATTACHMENTS}:
             ticket_id, child_id, attachment_id = _split_expanded_id(
                 external_id,
@@ -655,12 +659,7 @@ class FreshdeskSupportAdapter:
             )
             conversations = await self._ticket_conversations(ticket_id)
             conversation = next(
-                (
-                    row
-                    for row in conversations
-                    if _required_id(row.get("id"), field="Freshdesk conversation ID")
-                    == child_id
-                ),
+                (row for row in conversations if row.external_id == child_id),
                 None,
             )
             if conversation is None:
@@ -669,18 +668,17 @@ class FreshdeskSupportAdapter:
                     external_id=external_id,
                 )
             if stream_key == FreshdeskStream.CONVERSATIONS:
-                row = dict(conversation)
-                row["_ticket_id"] = ticket_id
-                return self._external_record(stream_key, row)
+                return self._external_record(
+                    stream_key,
+                    native.FreshdeskConversationRow(
+                        ticket_id=ticket_id, conversation=conversation
+                    ),
+                )
             attachment = next(
                 (
                     row
-                    for row in _object_list(
-                        conversation.get(FreshdeskStream.ATTACHMENTS) or [],
-                        field="Freshdesk conversation attachments",
-                    )
-                    if _required_id(row.get("id"), field="Freshdesk attachment ID")
-                    == attachment_id
+                    for row in conversation.attachments or []
+                    if row.external_id == attachment_id
                 ),
                 None,
             )
@@ -689,19 +687,17 @@ class FreshdeskSupportAdapter:
                     vendor_object_key=stream_key,
                     external_id=external_id,
                 )
-            row = dict(attachment)
-            row["_ticket_id"] = ticket_id
-            row["_conversation_id"] = child_id
-            return self._external_record(stream_key, row)
+            return self._external_record(
+                stream_key,
+                native.FreshdeskAttachmentRow(
+                    ticket_id=ticket_id, conversation_id=child_id, attachment=attachment
+                ),
+            )
         if stream_key == FreshdeskStream.SLA_METRICS:
             ticket_id, metric = _split_metric_id(external_id)
             ticket = await self._ticket(ticket_id)
             row = next(
-                (
-                    item
-                    for item in _expand_sla_metrics(ticket)
-                    if item["_metric"] == metric
-                ),
+                (item for item in _expand_sla_metrics(ticket) if item.metric == metric),
                 None,
             )
             if row is None:
@@ -731,7 +727,9 @@ class FreshdeskSupportAdapter:
         }[FreshdeskStream(stream_key)]
         response = await self._client.request(
             endpoint,
-            query={"include": "stats"}
+            query=native.FreshdeskTicketQuery(
+                include=native.FreshdeskInclude.STATS
+            ).model_dump(mode="json")
             if stream_key == FreshdeskStream.TICKETS
             else None,
         )
@@ -994,14 +992,12 @@ class FreshdeskSupportAdapter:
             HTTPStatus.NOT_FOUND,
         }:
             return ()
-        rows = _object_list(
+        rows = _parse_native_list(
             _expect(response, operation=f"list Freshdesk {kind} fields"),
-            field=f"Freshdesk {kind} fields",
+            native.FreshdeskFieldDefinition,
         )
         fields = [
-            _custom_field(row, kind=kind)
-            for row in rows
-            if row.get("default") is not True
+            _custom_field(row, kind=kind) for row in rows if row.default is not True
         ]
         return tuple(sorted(fields, key=lambda item: (item.label.casefold(), item.key)))
 
@@ -1009,22 +1005,19 @@ class FreshdeskSupportAdapter:
         response = await self._client.request("/api/v2/custom_objects/schemas")
         if response.status_code in {HTTPStatus.FORBIDDEN, HTTPStatus.NOT_FOUND}:
             return ()
-        data = _object(_expect(response, operation="list Freshdesk custom objects"))
-        schemas = _object_list(
-            data.get("schemas") or [], field="Freshdesk custom schemas"
+        data = _parse_native(
+            _expect(response, operation="list Freshdesk custom objects"),
+            native.FreshdeskCustomSchemas,
         )
         objects: list[SorDiscoveredObject] = []
-        for schema in schemas:
-            if schema.get("deleted") is True:
+        for schema in data.schemas or []:
+            if schema.deleted is True:
                 continue
-            schema_id = _path_id(schema.get("id"))
+            schema_id = _path_id(schema.id)
             fields = [
                 _custom_object_field(row)
-                for row in _object_list(
-                    schema.get("fields") or [],
-                    field="Freshdesk custom object fields",
-                )
-                if row.get("deleted") is not True and row.get("visible") is not False
+                for row in schema.fields or []
+                if row.deleted is not True and row.visible is not False
             ]
             fields.extend(
                 (
@@ -1052,8 +1045,7 @@ class FreshdeskSupportAdapter:
             objects.append(
                 SorDiscoveredObject(
                     key=f"freshdesk_custom_{schema_id}",
-                    label=_optional_string(schema.get("name"))
-                    or f"Custom object {schema_id}",
+                    label=_optional_string(schema.name) or f"Custom object {schema_id}",
                     fields=tuple(_unique_fields(fields)),
                     custom=True,
                 )
@@ -1139,11 +1131,13 @@ class FreshdeskSupportAdapter:
                 FreshdeskStream.EMAIL_CONFIGS: "/api/v2/email_configs",
                 "companies": "/api/v2/companies",
             }[stream_key],
-            query={"page": page, "per_page": limit},
+            query=native.FreshdeskPageQuery(page=page, per_page=limit).model_dump(
+                mode="json"
+            ),
         )
-        rows = _object_list(
+        rows = _parse_stream_rows(
             _expect(response, operation=f"list Freshdesk {stream_key}"),
-            field=f"Freshdesk {stream_key}",
+            stream_key=stream_key,
         )
         if len(rows) > limit:
             raise _invalid_response("Freshdesk returned more rows than requested.")
@@ -1230,15 +1224,20 @@ class FreshdeskSupportAdapter:
         path = _decode_custom_cursor(cursor, stream_key=stream_key, schema_id=schema_id)
         if path is None:
             path = f"/api/v2/custom_objects/schemas/{schema_id}/records"
-            query: Mapping[str, object] | None = {"page_size": limit}
+            query: Mapping[str, object] | None = native.FreshdeskCustomPageQuery(
+                page_size=limit
+            ).model_dump(mode="json")
         else:
             query = None
         response = await self._client.request(path, query=query)
-        data = _object(_expect(response, operation="list Freshdesk custom records"))
-        rows = _object_list(data.get("records") or [], field="Freshdesk custom records")
+        data = _parse_native(
+            _expect(response, operation="list Freshdesk custom records"),
+            native.FreshdeskCustomRecords,
+        )
+        rows = data.records or []
         if len(rows) > limit:
             raise _invalid_response("Freshdesk returned too many custom records.")
-        next_path = _custom_next_path(data.get("_links"), schema_id=schema_id)
+        next_path = _custom_next_path(data.links, schema_id=schema_id)
         return SorRecordPage(
             records=tuple(self._external_record(stream_key, row) for row in rows),
             next_cursor=(
@@ -1255,33 +1254,35 @@ class FreshdeskSupportAdapter:
         stream_key: str,
         checkpoint: _UpdatedCursor,
         limit: int,
-    ) -> tuple[list[dict[str, object]], _UpdatedCursor, bool]:
+    ) -> tuple[list[native.FreshdeskReadRecord], _UpdatedCursor, bool]:
         if checkpoint.page > FRESHDESK_MAX_PAGES:
             raise _scan_limit()
         requested_at = datetime.now(timezone.utc)
-        query: dict[str, object] = {
-            "updated_since": _timestamp(checkpoint.since),
-            "page": checkpoint.page,
-            "per_page": limit,
-        }
         if stream_key == FreshdeskStream.TICKETS:
-            query.update(
-                {
-                    "include": "stats",
-                    "order_by": "updated_at",
-                    "order_type": "asc",
-                }
+            query = native.FreshdeskUpdatedQuery(
+                updated_since=_timestamp(checkpoint.since),
+                page=checkpoint.page,
+                per_page=limit,
+                include=native.FreshdeskInclude.STATS,
+                order_by=native.FreshdeskSortField.UPDATED_AT,
+                order_type=native.FreshdeskSortDirection.ASC,
+            )
+        else:
+            query = native.FreshdeskUpdatedQuery(
+                updated_since=_timestamp(checkpoint.since),
+                page=checkpoint.page,
+                per_page=limit,
             )
         response = await self._client.request(
             {
                 FreshdeskStream.TICKETS: "/api/v2/tickets",
                 FreshdeskStream.CONTACTS: "/api/v2/contacts",
             }[FreshdeskStream(stream_key)],
-            query=query,
+            query=query.model_dump(mode="json", exclude_unset=True),
         )
-        rows = _object_list(
+        rows = _parse_stream_rows(
             _expect(response, operation=f"list updated Freshdesk {stream_key}"),
-            field=f"Freshdesk {stream_key}",
+            stream_key=stream_key,
         )
         if len(rows) > limit:
             raise _invalid_response("Freshdesk returned more rows than requested.")
@@ -1305,60 +1306,68 @@ class FreshdeskSupportAdapter:
     async def _expand_tickets(
         self,
         stream_key: str,
-        tickets: Sequence[Mapping[str, object]],
-    ) -> list[dict[str, object]]:
+        tickets: Sequence[native.FreshdeskReadRecord],
+    ) -> list[native.FreshdeskReadRecord]:
+        native_tickets: list[native.FreshdeskTicket] = []
+        for ticket in tickets:
+            if not isinstance(ticket, native.FreshdeskTicket):
+                raise _invalid_response("Freshdesk expansion requires ticket records.")
+            native_tickets.append(ticket)
         if stream_key == FreshdeskStream.TAGS:
-            return _deduplicate_rows(
-                [
-                    {"name": tag}
-                    for ticket in tickets
-                    for tag in _string_list(
-                        ticket.get(FreshdeskStream.TAGS) or [], field="Freshdesk tags"
-                    )
-                ],
-                identity="name",
-            )
+            tags = {
+                _required_string(tag, field="Freshdesk tag"): native.FreshdeskTag(
+                    name=tag
+                )
+                for ticket in native_tickets
+                for tag in ticket.tags or []
+            }
+            return list(tags.values())
         if stream_key == FreshdeskStream.SLA_METRICS:
             return [
-                metric for ticket in tickets for metric in _expand_sla_metrics(ticket)
+                metric
+                for ticket in native_tickets
+                for metric in _expand_sla_metrics(ticket)
             ]
-        rows: list[dict[str, object]] = []
-        for ticket in tickets:
-            ticket_id = _required_id(ticket.get("id"), field="Freshdesk ticket ID")
+        rows: list[native.FreshdeskReadRecord] = []
+        for ticket in native_tickets:
+            ticket_id = ticket.external_id
             conversations = await self._ticket_conversations(ticket_id)
             for conversation in conversations:
-                conversation_id = _required_id(
-                    conversation.get("id"),
-                    field="Freshdesk conversation ID",
-                )
+                conversation_id = conversation.external_id
                 if stream_key == FreshdeskStream.CONVERSATIONS:
-                    row = dict(conversation)
-                    row["_ticket_id"] = ticket_id
-                    rows.append(row)
+                    rows.append(
+                        native.FreshdeskConversationRow(
+                            ticket_id=ticket_id, conversation=conversation
+                        )
+                    )
                     continue
-                for attachment in _object_list(
-                    conversation.get(FreshdeskStream.ATTACHMENTS) or [],
-                    field="Freshdesk conversation attachments",
-                ):
-                    row = dict(attachment)
-                    row["_ticket_id"] = ticket_id
-                    row["_conversation_id"] = conversation_id
-                    rows.append(row)
+                for attachment in conversation.attachments or []:
+                    rows.append(
+                        native.FreshdeskAttachmentRow(
+                            ticket_id=ticket_id,
+                            conversation_id=conversation_id,
+                            attachment=attachment,
+                        )
+                    )
         return rows
 
-    async def _ticket_conversations(self, ticket_id: str) -> list[dict[str, object]]:
-        rows: list[dict[str, object]] = []
+    async def _ticket_conversations(
+        self, ticket_id: str
+    ) -> list[native.FreshdeskConversation]:
+        rows: list[native.FreshdeskConversation] = []
         for page in range(1, FRESHDESK_MAX_CONVERSATION_PAGES + 1):
             response = await self._client.request(
                 f"/api/v2/tickets/{_path_id(ticket_id)}/conversations",
-                query={"page": page, "per_page": 100},
+                query=native.FreshdeskPageQuery(
+                    page=page, per_page=native.FRESHDESK_MAX_PAGE_SIZE
+                ).model_dump(mode="json"),
             )
-            page_rows = _object_list(
+            page_rows = _parse_native_list(
                 _expect(response, operation="list Freshdesk ticket conversations"),
-                field="Freshdesk ticket conversations",
+                native.FreshdeskConversation,
             )
             rows.extend(page_rows)
-            if len(page_rows) < 100:
+            if len(page_rows) < native.FRESHDESK_MAX_PAGE_SIZE:
                 return rows
         raise SorVendorOperationError(
             SorVendorErrorCode.VENDOR_EXPANSION_LIMIT_EXCEEDED,
@@ -1366,17 +1375,22 @@ class FreshdeskSupportAdapter:
             recovery=SorRecoveryPolicy.TERMINAL,
         )
 
-    async def _ticket(self, ticket_id: str) -> dict[str, object]:
+    async def _ticket(self, ticket_id: str) -> native.FreshdeskTicket:
         response = await self._client.request(
             f"/api/v2/tickets/{_path_id(ticket_id)}",
-            query={"include": "stats"},
+            query=native.FreshdeskTicketQuery(
+                include=native.FreshdeskInclude.STATS
+            ).model_dump(mode="json"),
         )
         if response.status_code in {HTTPStatus.NOT_FOUND, HTTPStatus.GONE}:
             raise SorExternalRecordNotFound(
                 vendor_object_key=FreshdeskStream.TICKETS,
                 external_id=ticket_id,
             )
-        return _object(_expect(response, operation="read a Freshdesk ticket"))
+        return _parse_native(
+            _expect(response, operation="read a Freshdesk ticket"),
+            native.FreshdeskTicket,
+        )
 
     def _fetched_record(
         self,
@@ -1389,144 +1403,149 @@ class FreshdeskSupportAdapter:
                 vendor_object_key=stream_key,
                 external_id=external_id,
             )
-        row = _object(_expect(response, operation=f"read Freshdesk {stream_key}"))
+        row = _parse_stream_record(
+            _expect(response, operation=f"read Freshdesk {stream_key}"),
+            stream_key=stream_key,
+        )
         return self._external_record(stream_key, row)
 
     def _external_record(
         self,
         stream_key: str,
-        row: Mapping[str, object],
+        row: native.FreshdeskReadRecord,
     ) -> SorExternalRecord:
-        if stream_key == FreshdeskStream.TICKETS:
-            ticket_id = _required_id(row.get("id"), field="Freshdesk ticket ID")
-            status = _status_name(row.get("status"))
-            stats = _optional_object(row.get("stats"))
-            updated_at = _optional_datetime(row.get("updated_at"))
+        if isinstance(row, native.FreshdeskTicket):
+            ticket_id = row.external_id
+            status = _status_name(row.status)
+            stats = row.stats
+            updated_at = _optional_datetime(row.updated_at)
             payload: dict[str, object] = {
-                "subject": row.get("subject"),
+                "subject": row.subject,
                 "normalized_description": _plain_text(
-                    row.get("description_text") or row.get("description")
+                    row.description_text or row.description
                 ),
-                "requester_external_id": row.get("requester_id"),
-                "assignee_external_id": row.get("responder_id"),
-                "group_external_id": row.get("group_id"),
-                "inbox_external_id": row.get("email_config_id"),
+                "requester_external_id": row.requester_id,
+                "assignee_external_id": row.responder_id,
+                "group_external_id": row.group_id,
+                "inbox_external_id": row.email_config_id,
                 "native_status": status,
                 "normalized_status": _NORMALIZED_STATUS.get(status or ""),
-                "priority": _priority_name(row.get("priority")),
-                "category": row.get("type"),
-                "channel": _source_name(row.get("source")),
-                "tag_external_ids": row.get(FreshdeskStream.TAGS) or [],
-                "first_response_at": stats.get("first_responded_at"),
-                "resolved_at": stats.get("resolved_at"),
-                "closed_at": stats.get("closed_at"),
+                "priority": _priority_name(row.priority),
+                "category": row.type,
+                "channel": _source_name(row.source),
+                "tag_external_ids": row.tags or [],
+                "first_response_at": stats.first_responded_at if stats else None,
+                "resolved_at": stats.resolved_at if stats else None,
+                "closed_at": stats.closed_at if stats else None,
                 "sla_state": _ticket_sla_state(row, status=status),
             }
-            payload.update(_custom_field_values(row.get("custom_fields")))
+            payload.update(_custom_field_values(row.custom_fields))
             return SorExternalRecord(
                 vendor_object_key=stream_key,
                 external_id=ticket_id,
                 payload=payload,
-                source_created_at=_optional_datetime(row.get("created_at")),
+                source_created_at=_optional_datetime(row.created_at),
                 source_updated_at=updated_at,
                 source_revision=_revision(updated_at),
                 source_url=f"{self._origin}/a/tickets/{ticket_id}",
             )
-        if stream_key == FreshdeskStream.CONTACTS:
-            contact_id = _required_id(row.get("id"), field="Freshdesk contact ID")
-            updated_at = _optional_datetime(row.get("updated_at"))
+        if isinstance(row, native.FreshdeskContact):
+            contact_id = row.external_id
+            updated_at = _optional_datetime(row.updated_at)
             payload = {
-                "name": row.get("name"),
-                "primary_email": row.get("email"),
-                "primary_phone": row.get("phone") or row.get("mobile"),
-                "company_external_id": row.get("company_id"),
-                "active": row.get("active"),
+                "name": row.name,
+                "primary_email": row.email,
+                "primary_phone": row.phone or row.mobile,
+                "company_external_id": row.company_id,
+                "active": row.active,
             }
-            payload.update(_custom_field_values(row.get("custom_fields")))
+            payload.update(_custom_field_values(row.custom_fields))
             return SorExternalRecord(
                 vendor_object_key=stream_key,
                 external_id=contact_id,
                 payload=payload,
-                source_created_at=_optional_datetime(row.get("created_at")),
+                source_created_at=_optional_datetime(row.created_at),
                 source_updated_at=updated_at,
                 source_revision=_revision(updated_at),
                 source_url=f"{self._origin}/a/contacts/{contact_id}",
             )
-        if stream_key == FreshdeskStream.AGENTS:
-            contact = _optional_object(row.get("contact"))
-            agent_id = _required_id(row.get("id"), field="Freshdesk Agent ID")
-            avatar = _optional_object(contact.get("avatar"))
+        if isinstance(row, native.FreshdeskAgent):
+            contact = row.contact
+            agent_id = row.external_id
+            avatar = contact.avatar if contact else None
             return SorExternalRecord(
                 vendor_object_key=stream_key,
                 external_id=agent_id,
                 payload={
-                    "name": contact.get("name") or row.get("name") or row.get("email"),
-                    "primary_email": contact.get("email") or row.get("email"),
-                    "active": row.get("active", contact.get("active")),
-                    "assignable": row.get("occasional") is not True,
-                    "avatar_url": avatar.get("avatar_url"),
+                    "name": (contact.name if contact else None)
+                    or row.name
+                    or row.email,
+                    "primary_email": (contact.email if contact else None) or row.email,
+                    "active": row.active
+                    if "active" in row.model_fields_set
+                    else (contact.active if contact else None),
+                    "assignable": row.occasional is not True,
+                    "avatar_url": avatar.avatar_url if avatar else None,
                 },
             )
-        if stream_key == FreshdeskStream.GROUPS:
+        if isinstance(row, native.FreshdeskGroup):
             return SorExternalRecord(
                 vendor_object_key=stream_key,
-                external_id=_required_id(row.get("id"), field="Freshdesk group ID"),
+                external_id=row.external_id,
                 payload={
-                    "name": row.get("name"),
-                    "description": row.get("description"),
-                    "active": row.get("deleted") is not True,
+                    "name": row.name,
+                    "description": row.description,
+                    "active": row.deleted is not True,
                 },
-                source_created_at=_optional_datetime(row.get("created_at")),
-                source_updated_at=_optional_datetime(row.get("updated_at")),
+                source_created_at=_optional_datetime(row.created_at),
+                source_updated_at=_optional_datetime(row.updated_at),
             )
-        if stream_key == FreshdeskStream.EMAIL_CONFIGS:
-            inbox_id = _required_id(row.get("id"), field="Freshdesk email config ID")
+        if isinstance(row, native.FreshdeskEmailConfig):
+            inbox_id = row.external_id
             return SorExternalRecord(
                 vendor_object_key=stream_key,
                 external_id=inbox_id,
                 payload={
-                    "name": row.get("name")
-                    or row.get("reply_email")
-                    or row.get("email"),
+                    "name": row.name or row.reply_email or row.email,
                     "kind": "email",
-                    "active": row.get("active"),
+                    "active": row.active,
                 },
             )
-        if stream_key == FreshdeskStream.CONVERSATIONS:
-            ticket_id = _required_id(row.get("_ticket_id"), field="Freshdesk ticket ID")
-            conversation_id = _required_id(
-                row.get("id"), field="Freshdesk conversation ID"
-            )
-            attachments = _object_list(
-                row.get(FreshdeskStream.ATTACHMENTS) or [],
-                field="Freshdesk conversation attachments",
-            )
+        if isinstance(row, native.FreshdeskConversationRow):
+            ticket_id = row.ticket_id
+            conversation = row.conversation
+            conversation_id = conversation.external_id
+            attachments = conversation.attachments or []
             created_at = _required_datetime(
-                row.get("created_at"), field="Freshdesk conversation creation time"
+                conversation.created_at, field="Freshdesk conversation creation time"
             )
-            updated_at = _optional_datetime(row.get("updated_at"))
+            updated_at = _optional_datetime(conversation.updated_at)
             return SorExternalRecord(
                 vendor_object_key=stream_key,
                 external_id=_conversation_id(ticket_id, conversation_id),
                 payload={
                     "ticket_external_id": ticket_id,
-                    "visibility": "PRIVATE" if row.get("private") is True else "PUBLIC",
-                    "direction": "INBOUND"
-                    if row.get("incoming") is True
-                    else "OUTBOUND",
-                    "author_external_id": row.get("user_id") or row.get("from_email"),
+                    "visibility": SupportMessageVisibility.PRIVATE
+                    if conversation.private is True
+                    else SupportMessageVisibility.PUBLIC,
+                    "direction": SupportMessageDirection.INBOUND
+                    if conversation.incoming is True
+                    else SupportMessageDirection.OUTBOUND,
+                    "author_external_id": conversation.user_id
+                    or conversation.from_email,
                     "normalized_text": _plain_text(
-                        row.get("body_text") or row.get("body")
+                        conversation.body_text or conversation.body
                     ),
-                    "source_body": dict(row),
-                    "body_format": "text/html" if row.get("body") else "text/plain",
+                    "source_body": {
+                        **conversation.model_dump(mode="json", exclude_unset=True),
+                        "_ticket_id": ticket_id,
+                    },
+                    "body_format": "text/html" if conversation.body else "text/plain",
                     "attachment_external_ids": [
                         _attachment_id(
                             ticket_id,
                             conversation_id,
-                            _required_id(
-                                item.get("id"), field="Freshdesk attachment ID"
-                            ),
+                            item.external_id,
                         )
                         for item in attachments
                     ],
@@ -1538,16 +1557,16 @@ class FreshdeskSupportAdapter:
                 source_revision=_revision(updated_at or created_at),
                 source_url=f"{self._origin}/a/tickets/{ticket_id}",
             )
-        if stream_key == FreshdeskStream.TAGS:
-            name = _required_string(row.get("name"), field="Freshdesk tag")
+        if isinstance(row, native.FreshdeskTag):
+            name = _required_string(row.name, field="Freshdesk tag")
             return SorExternalRecord(
                 vendor_object_key=stream_key,
                 external_id=name,
                 payload={"name": name},
             )
-        if stream_key == FreshdeskStream.SLA_METRICS:
-            ticket_id = _required_id(row.get("id"), field="Freshdesk SLA ticket ID")
-            metric = _required_string(row.get("_metric"), field="Freshdesk SLA metric")
+        if isinstance(row, native.FreshdeskSlaMetricRow):
+            ticket_id = row.ticket_id
+            metric = row.metric
             return SorExternalRecord(
                 vendor_object_key=stream_key,
                 external_id=_metric_id(ticket_id, metric),
@@ -1556,56 +1575,52 @@ class FreshdeskSupportAdapter:
                     "metric": metric,
                     "value": None,
                     "unit": None,
-                    "native_state": row.get("_native_state"),
-                    "normalized_state": row.get("_normalized_state"),
-                    "target_at": row.get("_target_at"),
-                    "achieved_at": row.get("_achieved_at"),
-                    "breached_at": row.get("_breached_at"),
+                    "native_state": row.state.value,
+                    "normalized_state": _SLA_STATES[row.state],
+                    "target_at": row.target_at,
+                    "achieved_at": row.achieved_at,
+                    "breached_at": row.breached_at,
                 },
-                source_updated_at=_optional_datetime(row.get("updated_at")),
-                source_revision=_revision(_optional_datetime(row.get("updated_at"))),
+                source_updated_at=_optional_datetime(row.updated_at),
+                source_revision=_revision(_optional_datetime(row.updated_at)),
                 source_url=f"{self._origin}/a/tickets/{ticket_id}",
             )
-        if stream_key == FreshdeskStream.ATTACHMENTS:
-            ticket_id = _required_id(row.get("_ticket_id"), field="Freshdesk ticket ID")
-            conversation_id = _required_id(
-                row.get("_conversation_id"), field="Freshdesk conversation ID"
-            )
-            attachment_id = _required_id(row.get("id"), field="Freshdesk attachment ID")
-            source_url = _safe_source_url(row.get("attachment_url"))
+        if isinstance(row, native.FreshdeskAttachmentRow):
+            ticket_id = row.ticket_id
+            conversation_id = row.conversation_id
+            attachment_id = row.attachment.external_id
+            source_url = _safe_source_url(row.attachment.attachment_url)
             return SorExternalRecord(
                 vendor_object_key=stream_key,
                 external_id=_attachment_id(ticket_id, conversation_id, attachment_id),
                 payload={
                     "ticket_external_id": ticket_id,
                     "message_external_id": _conversation_id(ticket_id, conversation_id),
-                    "name": row.get("name"),
-                    "content_type": row.get("content_type"),
-                    "size_bytes": row.get("size"),
+                    "name": row.attachment.name,
+                    "content_type": row.attachment.content_type,
+                    "size_bytes": row.attachment.size,
                     "source_url": source_url,
                 },
                 source_url=source_url,
             )
-        if stream_key == "companies":
-            company_id = _required_id(row.get("id"), field="Freshdesk company ID")
-            payload = dict(row)
-            payload.update(_custom_field_values(row.get("custom_fields")))
+        if isinstance(row, native.FreshdeskCompany):
+            company_id = row.external_id
+            payload = row.model_dump(mode="json", exclude_unset=True)
+            payload.update(_custom_field_values(row.custom_fields))
             payload.pop("custom_fields", None)
             return SorExternalRecord(
                 vendor_object_key=stream_key,
                 external_id=company_id,
                 payload=_json_mapping(payload),
-                source_created_at=_optional_datetime(row.get("created_at")),
-                source_updated_at=_optional_datetime(row.get("updated_at")),
-                source_revision=_revision(_optional_datetime(row.get("updated_at"))),
+                source_created_at=_optional_datetime(row.created_at),
+                source_updated_at=_optional_datetime(row.updated_at),
+                source_revision=_revision(_optional_datetime(row.updated_at)),
                 source_url=f"{self._origin}/a/companies/{company_id}",
             )
-        display_id = _required_id(
-            row.get("display_id"), field="Freshdesk custom record ID"
-        )
-        payload = _object(row.get("data"), field="Freshdesk custom record data")
-        created_at = _epoch_millis_datetime(row.get("created_time"))
-        updated_at = _epoch_millis_datetime(row.get("updated_time"))
+        display_id = _required_id(row.display_id, field="Freshdesk custom record ID")
+        payload = dict(row.data)
+        created_at = _epoch_millis_datetime(row.created_time)
+        updated_at = _epoch_millis_datetime(row.updated_time)
         payload.update(
             {
                 "display_id": display_id,
@@ -1786,9 +1801,7 @@ class FreshdeskSupportAdapter:
         if not isinstance(command.payload, SupportTagCommandPayload):
             raise _invalid_command("Freshdesk tag payload is invalid.")
         tag = command.payload.tag_external_id
-        ticket = _parse_mutation_record(
-            await self._ticket(ticket_id), FreshdeskTicketTags
-        )
+        ticket = await self._ticket(ticket_id)
         self._assert_revision(ticket, command.expected_source_revision)
         tags = list(ticket.tags or [])
         if action is FreshdeskTagAction.ADD and tag not in tags:
@@ -1877,19 +1890,15 @@ class FreshdeskSupportAdapter:
     async def _require_revision(self, ticket_id: str, revision: str | None) -> None:
         if revision is None:
             return
-        ticket = _parse_mutation_record(
-            await self._ticket(ticket_id), FreshdeskMutationRecord
-        )
+        ticket = await self._ticket(ticket_id)
         self._assert_revision(ticket, revision)
 
     @staticmethod
-    def _assert_revision(
-        ticket: FreshdeskMutationRecord, revision: str | None
-    ) -> None:
+    def _assert_revision(ticket: native.FreshdeskTicket, revision: str | None) -> None:
         if revision is None:
             return
         expected = _required_datetime(revision, field="Freshdesk expected revision")
-        current = ticket.updated_at
+        current = _optional_datetime(ticket.updated_at)
         if current is None:
             raise _invalid_response("Freshdesk ticket revision is invalid.")
         if current != expected:
@@ -1953,6 +1962,51 @@ def _parse_write[InputT: FreshdeskMutationInput](
         return model.model_validate(value)
     except ValidationError as error:
         raise _invalid_command("Freshdesk mutation fields are invalid.") from error
+
+
+def _parse_native[RecordT: native.FreshdeskNativeModel](
+    value: object, model: type[RecordT]
+) -> RecordT:
+    try:
+        return model.model_validate(value)
+    except ValidationError as error:
+        raise _invalid_response("Freshdesk native response is invalid.") from error
+
+
+def _parse_native_list[RecordT: native.FreshdeskNativeModel](
+    value: object, model: type[RecordT]
+) -> list[RecordT]:
+    if not isinstance(value, list):
+        raise _invalid_response("Freshdesk records must be a list.")
+    return [_parse_native(row, model) for row in value]
+
+
+def _parse_stream_record(
+    value: object, *, stream_key: str
+) -> native.FreshdeskReadRecord:
+    if stream_key == FreshdeskStream.TICKETS:
+        return _parse_native(value, native.FreshdeskTicket)
+    if stream_key == FreshdeskStream.CONTACTS:
+        return _parse_native(value, native.FreshdeskContact)
+    if stream_key == FreshdeskStream.AGENTS:
+        return _parse_native(value, native.FreshdeskAgent)
+    if stream_key == FreshdeskStream.GROUPS:
+        return _parse_native(value, native.FreshdeskGroup)
+    if stream_key == FreshdeskStream.EMAIL_CONFIGS:
+        return _parse_native(value, native.FreshdeskEmailConfig)
+    if stream_key == "companies":
+        return _parse_native(value, native.FreshdeskCompany)
+    if _is_freshdesk_custom_object(stream_key):
+        return _parse_native(value, native.FreshdeskCustomRecord)
+    raise _invalid_stream("Freshdesk stream does not contain direct native records.")
+
+
+def _parse_stream_rows(
+    value: object, *, stream_key: str
+) -> list[native.FreshdeskReadRecord]:
+    if not isinstance(value, list):
+        raise _invalid_response("Freshdesk records must be a list.")
+    return [_parse_stream_record(row, stream_key=stream_key) for row in value]
 
 
 def _parse_mutation_record[RecordT: FreshdeskMutationRecord](
@@ -2038,27 +2092,29 @@ def _custom_schema_id(value: str) -> str:
     return _path_id(value.removeprefix("freshdesk_custom_"))
 
 
-def _custom_field(row: Mapping[str, object], *, kind: str) -> SorDiscoveredField:
-    name = _required_string(row.get("name"), field=f"Freshdesk {kind} field name")
-    choices = _field_choices(row.get("choices"))
+def _custom_field(
+    row: native.FreshdeskFieldDefinition, *, kind: str
+) -> SorDiscoveredField:
+    name = _required_string(row.name, field=f"Freshdesk {kind} field name")
+    choices = _field_choices(row.choices)
     return _field(
         f"custom_field_{name}",
-        _optional_string(row.get("label")) or name,
-        _freshdesk_field_type(row.get("type")),
-        nullable=row.get("required_for_agents") is not True,
-        writable=row.get("agents_can_edit") is not False,
+        _optional_string(row.label) or name,
+        _freshdesk_field_type(row.type),
+        nullable=row.required_for_agents is not True,
+        writable=row.agents_can_edit is not False,
         choices=choices,
         group=f"Freshdesk {kind} custom fields",
     )
 
 
-def _custom_object_field(row: Mapping[str, object]) -> SorDiscoveredField:
-    name = _required_string(row.get("name"), field="Freshdesk custom field name")
+def _custom_object_field(row: native.FreshdeskFieldDefinition) -> SorDiscoveredField:
+    name = _required_string(row.name, field="Freshdesk custom field name")
     return _field(
         name,
-        _optional_string(row.get("label")) or name,
-        _freshdesk_custom_object_type(row.get("type")),
-        nullable=row.get("required") is not True,
+        _optional_string(row.label) or name,
+        _freshdesk_custom_object_type(row.type),
+        nullable=row.required is not True,
         group="Freshdesk custom object",
     )
 
@@ -2110,18 +2166,20 @@ def _field_choices(value: object) -> tuple[str, ...]:
             if isinstance(item, str) and item.strip():
                 choices.append(item.strip())
             elif isinstance(item, Mapping):
-                label = _optional_string(item.get("value") or item.get("label"))
+                choice = _parse_native(item, native.FreshdeskFieldChoice)
+                label = _optional_string(choice.value or choice.label)
                 if label is not None:
                     choices.append(label)
         return tuple(dict.fromkeys(choices))[:256]
     return ()
 
 
-def _custom_field_values(value: object) -> dict[str, object]:
+def _custom_field_values(
+    value: Mapping[str, SorJsonValue] | None,
+) -> dict[str, SorJsonValue]:
     if value is None:
         return {}
-    fields = _object(value, field="Freshdesk custom fields")
-    return {f"custom_field_{key}": _json_value(item) for key, item in fields.items()}
+    return {f"custom_field_{key}": item for key, item in value.items()}
 
 
 def _unique_objects(values: Sequence[SorDiscoveredObject]) -> list[SorDiscoveredObject]:
@@ -2156,7 +2214,7 @@ def _page_limit(limit: int) -> int:
             "Freshdesk page limit must be positive.",
             recovery=SorRecoveryPolicy.TERMINAL,
         )
-    return min(limit, 100)
+    return min(limit, native.FRESHDESK_MAX_PAGE_SIZE)
 
 
 def _encode_updated_cursor(cursor: _UpdatedCursor, *, stream_key: str) -> str:
@@ -2296,14 +2354,15 @@ def _decode_cursor(cursor: str, *, stream_key: str, kind: str) -> dict[str, obje
     return payload
 
 
-def _custom_next_path(value: object, *, schema_id: str) -> str | None:
-    links = _optional_object(value)
-    next_link = links.get("next")
+def _custom_next_path(
+    value: native.FreshdeskLinks | None, *, schema_id: str
+) -> str | None:
+    next_link = value.next if value else None
     if next_link is None:
         return None
     href = (
-        _optional_string(next_link.get("href"))
-        if isinstance(next_link, Mapping)
+        _optional_string(next_link.href)
+        if isinstance(next_link, native.FreshdeskLink)
         else _optional_string(next_link)
     )
     if href is None:
@@ -2332,60 +2391,57 @@ def _validate_custom_path(value: str, *, schema_id: str) -> str:
     return f"{path}?{urlencode(pairs)}" if pairs else path
 
 
-def _expand_sla_metrics(ticket: Mapping[str, object]) -> list[dict[str, object]]:
-    ticket_id = _required_id(ticket.get("id"), field="Freshdesk ticket ID")
-    stats = _optional_object(ticket.get("stats"))
-    updated_at = ticket.get("updated_at")
-    metrics: list[dict[str, object]] = []
-    for metric, target_key, achieved_key, breached in (
+def _expand_sla_metrics(
+    ticket: native.FreshdeskTicket,
+) -> list[native.FreshdeskSlaMetricRow]:
+    stats = ticket.stats
+    updated_at = ticket.updated_at
+    metrics: list[native.FreshdeskSlaMetricRow] = []
+    for metric, target, achieved, breached in (
         (
-            "first_response",
-            "fr_due_by",
-            "first_responded_at",
-            ticket.get("fr_escalated") is True,
+            native.FreshdeskSlaMetricKind.FIRST_RESPONSE,
+            ticket.fr_due_by,
+            stats.first_responded_at if stats else None,
+            ticket.fr_escalated is True,
         ),
-        ("resolution", "due_by", "resolved_at", ticket.get("is_escalated") is True),
+        (
+            native.FreshdeskSlaMetricKind.RESOLUTION,
+            ticket.due_by,
+            stats.resolved_at if stats else None,
+            ticket.is_escalated is True,
+        ),
     ):
-        target = ticket.get(target_key)
-        achieved = stats.get(achieved_key)
         if target is None and achieved is None:
             continue
         state = (
-            "breached" if breached else "achieved" if achieved is not None else "active"
+            native.FreshdeskSlaMetricState.BREACHED
+            if breached
+            else native.FreshdeskSlaMetricState.ACHIEVED
+            if achieved is not None
+            else native.FreshdeskSlaMetricState.ACTIVE
         )
         metrics.append(
-            {
-                "id": ticket_id,
-                "_metric": metric,
-                "_target_at": target,
-                "_achieved_at": achieved,
-                "_breached_at": updated_at if breached else None,
-                "_native_state": state,
-                "_normalized_state": state.upper(),
-                "updated_at": updated_at,
-            }
+            native.FreshdeskSlaMetricRow(
+                ticket_id=ticket.external_id,
+                metric=metric,
+                target_at=target,
+                achieved_at=achieved,
+                breached_at=updated_at if breached else None,
+                state=state,
+                updated_at=updated_at,
+            )
         )
     return metrics
 
 
-def _ticket_sla_state(ticket: Mapping[str, object], *, status: str | None) -> str:
-    if ticket.get("is_escalated") is True or ticket.get("fr_escalated") is True:
-        return "BREACHED"
+def _ticket_sla_state(
+    ticket: native.FreshdeskTicket, *, status: str | None
+) -> SupportSlaState:
+    if ticket.is_escalated is True or ticket.fr_escalated is True:
+        return SupportSlaState.BREACHED
     if status in {"resolved", "closed"}:
-        return "ACHIEVED"
-    return "ACTIVE"
-
-
-def _deduplicate_rows(
-    rows: Sequence[dict[str, object]],
-    *,
-    identity: str,
-) -> list[dict[str, object]]:
-    values: dict[str, dict[str, object]] = {}
-    for row in rows:
-        key = _required_string(row.get(identity), field="Freshdesk expanded identity")
-        values[key] = row
-    return list(values.values())
+        return SupportSlaState.ACHIEVED
+    return SupportSlaState.ACTIVE
 
 
 def _conversation_id(ticket_id: str, conversation_id: str) -> str:
@@ -2630,22 +2686,6 @@ def _expect(response: SorJsonResponse, *, operation: str) -> object:
         f"Freshdesk refused the request to {operation}.",
         recovery=SorRecoveryPolicy.TERMINAL,
     )
-
-
-def _object(value: object, *, field: str = "Freshdesk response") -> dict[str, object]:
-    if not isinstance(value, Mapping) or any(not isinstance(key, str) for key in value):
-        raise _invalid_response(f"{field} must be an object.")
-    return dict(value)
-
-
-def _optional_object(value: object) -> dict[str, object]:
-    return {} if value is None else _object(value)
-
-
-def _object_list(value: object, *, field: str) -> list[dict[str, object]]:
-    if not isinstance(value, list):
-        raise _invalid_response(f"{field} must be a list.")
-    return [_object(item, field=field) for item in value]
 
 
 def _string_list(value: object, *, field: str) -> list[str]:

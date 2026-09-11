@@ -14,7 +14,7 @@ from enum import StrEnum
 from http import HTTPMethod, HTTPStatus
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from eylo.modules.connections.domain import ConnectionAuthKind
 from eylo.sor.runtime.http import SorHttpTransport, SorJsonHttpClient, SorJsonResponse
@@ -79,6 +79,7 @@ from eylo.sor.support.contracts import (
     SupportTicketState,
     SupportToolName,
 )
+from eylo.sor.support.vendors import zendesk_contracts as native
 from eylo.sor.support.vendors.zendesk_webhooks import (
     ZENDESK_WEBHOOK_DELIVERY_HEADER,
     ZENDESK_WEBHOOK_SIGNATURE_HEADER,
@@ -476,16 +477,16 @@ _SCHEMA_FIELDS = {
 }
 
 _TICKET_FIELD_MAP = {
-    "subject": "subject",
-    "normalized_description": "description",
-    "requester_external_id": "requester_id",
-    "assignee_external_id": "assignee_id",
-    "group_external_id": "group_id",
-    "inbox_external_id": "brand_id",
-    "native_status": "status",
-    "priority": "priority",
-    "category": "type",
-    "tag_external_ids": ZendeskStream.TAGS,
+    "subject": native.ZendeskTicketWriteField.SUBJECT,
+    "normalized_description": native.ZendeskTicketWriteField.DESCRIPTION,
+    "requester_external_id": native.ZendeskTicketWriteField.REQUESTER_ID,
+    "assignee_external_id": native.ZendeskTicketWriteField.ASSIGNEE_ID,
+    "group_external_id": native.ZendeskTicketWriteField.GROUP_ID,
+    "inbox_external_id": native.ZendeskTicketWriteField.BRAND_ID,
+    "native_status": native.ZendeskTicketWriteField.STATUS,
+    "priority": native.ZendeskTicketWriteField.PRIORITY,
+    "category": native.ZendeskTicketWriteField.TYPE,
+    "tag_external_ids": native.ZendeskTicketWriteField.TAGS,
 }
 _STATUS_MAP = {
     "new": SupportTicketState.NEW,
@@ -946,7 +947,9 @@ class ZendeskSupportAdapter:
         return await self._change_tag(
             ticket_id,
             command,
-            add=command.tool_name == SupportToolName.ADD_TAG,
+            action=native.ZendeskTagAction.ADD
+            if command.tool_name == SupportToolName.ADD_TAG
+            else native.ZendeskTagAction.REMOVE,
         )
 
     def normalize_ticket(
@@ -1611,21 +1614,34 @@ class ZendeskSupportAdapter:
         if not isinstance(command.payload, SupportMappedFieldsCommandPayload):
             raise _invalid_command("Zendesk ticket fields payload is invalid.")
         fields = self._ticket_write_values(command.payload.fields)
-        description = fields.pop("description", None)
+        description = fields.description
         if not isinstance(description, str) or not description.strip():
             raise _invalid_command(
                 "Opening a Zendesk ticket requires normalized_description for its initial comment."
             )
-        fields["comment"] = {"body": description.strip(), "public": True}
+        fields = _parse_write(
+            {
+                **fields.model_dump(
+                    exclude_unset=True,
+                    exclude={native.ZendeskTicketWriteField.DESCRIPTION.value},
+                ),
+                "comment": native.ZendeskCommentInput(
+                    body=description.strip(), public=True
+                ),
+            },
+            native.ZendeskTicketFields,
+        )
         response = await self._mutation_request(
             "/api/v2/tickets",
             method="POST",
-            payload={"ticket": fields},
+            payload=native.ZendeskTicketRequest(ticket=fields),
             command=command,
             operation="open a Zendesk ticket",
         )
-        data = _object(_expect(response, operation="open a Zendesk ticket"))
-        ticket = _object(data.get("ticket"), field="Zendesk ticket")
+        ticket = _parse_mutation_response(
+            _expect(response, operation="open a Zendesk ticket"),
+            native.ZendeskTicketResponse,
+        ).ticket
         return self._ticket_result(ticket, response=response)
 
     async def _update_ticket(
@@ -1636,18 +1652,20 @@ class ZendeskSupportAdapter:
         if not isinstance(command.payload, SupportMappedFieldsCommandPayload):
             raise _invalid_command("Zendesk ticket fields payload is invalid.")
         fields = self._ticket_write_values(command.payload.fields)
-        if not fields:
+        if not fields.model_fields_set:
             raise _invalid_command("Updating a Zendesk ticket requires mapped fields.")
-        _add_safe_update(fields, command.expected_source_revision)
+        fields = _with_revision(fields, command.expected_source_revision)
         response = await self._mutation_request(
             f"/api/v2/tickets/{_path_id(ticket_id)}",
             method="PUT",
-            payload={"ticket": fields},
+            payload=native.ZendeskTicketRequest(ticket=fields),
             command=command,
             operation="update a Zendesk ticket",
         )
-        data = _object(_expect(response, operation="update a Zendesk ticket"))
-        ticket = _object(data.get("ticket"), field="Zendesk ticket")
+        ticket = _parse_mutation_response(
+            _expect(response, operation="update a Zendesk ticket"),
+            native.ZendeskTicketResponse,
+        ).ticket
         return self._ticket_result(ticket, response=response)
 
     async def _assign_ticket(
@@ -1657,27 +1675,32 @@ class ZendeskSupportAdapter:
     ) -> SorCommandResult:
         if not isinstance(command.payload, SupportAssignCommandPayload):
             raise _invalid_command("Zendesk assignment payload is invalid.")
-        fields: dict[str, object] = {}
+        values: dict[str, object] = {}
         if command.payload.assignee_external_id is not None:
-            fields["assignee_id"] = _required_id(
+            values[native.ZendeskTicketWriteField.ASSIGNEE_ID] = _required_id(
                 command.payload.assignee_external_id,
                 field="Zendesk assignee ID",
             )
         if command.payload.group_external_id is not None:
-            fields["group_id"] = _required_id(
+            values[native.ZendeskTicketWriteField.GROUP_ID] = _required_id(
                 command.payload.group_external_id,
                 field="Zendesk group ID",
             )
-        _add_safe_update(fields, command.expected_source_revision)
+        fields = _with_revision(
+            _parse_write(values, native.ZendeskTicketFields),
+            command.expected_source_revision,
+        )
         response = await self._mutation_request(
             f"/api/v2/tickets/{_path_id(ticket_id)}",
             method="PUT",
-            payload={"ticket": fields},
+            payload=native.ZendeskTicketRequest(ticket=fields),
             command=command,
             operation="assign a Zendesk ticket",
         )
-        data = _object(_expect(response, operation="assign a Zendesk ticket"))
-        ticket = _object(data.get("ticket"), field="Zendesk ticket")
+        ticket = _parse_mutation_response(
+            _expect(response, operation="assign a Zendesk ticket"),
+            native.ZendeskTicketResponse,
+        ).ticket
         return self._ticket_result(ticket, response=response)
 
     async def _add_comment(
@@ -1690,17 +1713,18 @@ class ZendeskSupportAdapter:
         if not isinstance(command.payload, SupportMessageCommandPayload):
             raise _invalid_command("Zendesk message payload is invalid.")
         text = command.payload.normalized_text
-        fields: dict[str, object] = {
-            "comment": {
-                "body": text,
-                "public": visibility is SupportMessageVisibility.PUBLIC,
-            },
-        }
-        _add_safe_update(fields, command.expected_source_revision)
+        fields = _with_revision(
+            native.ZendeskTicketFields(
+                comment=native.ZendeskCommentInput(
+                    body=text, public=visibility is SupportMessageVisibility.PUBLIC
+                )
+            ),
+            command.expected_source_revision,
+        )
         response = await self._mutation_request(
             f"/api/v2/tickets/{_path_id(ticket_id)}",
             method="PUT",
-            payload={"ticket": fields},
+            payload=native.ZendeskTicketRequest(ticket=fields),
             command=command,
             operation=(
                 "reply to a Zendesk ticket"
@@ -1708,10 +1732,12 @@ class ZendeskSupportAdapter:
                 else "add a Zendesk private note"
             ),
         )
-        data = _object(_expect(response, operation="add a Zendesk comment"))
-        audit = _object(data.get("audit"), field="Zendesk ticket audit")
+        audit = _parse_mutation_response(
+            _expect(response, operation="add a Zendesk comment"),
+            native.ZendeskCommentResponse,
+        ).audit
         comment = _audit_comment(audit, visibility=visibility)
-        comment_id = _required_id(comment.get("id"), field="Zendesk comment ID")
+        comment_id = _required_id(comment.id, field="Zendesk comment ID")
         return SorCommandResult(
             vendor_object_key=ZendeskStream.COMMENTS,
             external_id=_comment_external_id(ticket_id, comment_id),
@@ -1733,20 +1759,27 @@ class ZendeskSupportAdapter:
             or command.payload.normalized_text is not None
         ):
             raise _invalid_command("Zendesk close payload is invalid.")
-        status = command.payload.native_status or "solved"
-        if status not in {"solved", "closed"}:
+        status = command.payload.native_status or native.ZendeskTicketStatus.SOLVED
+        if status not in {
+            native.ZendeskTicketStatus.SOLVED,
+            native.ZendeskTicketStatus.CLOSED,
+        }:
             raise _invalid_command("Zendesk close status must be solved or closed.")
-        fields: dict[str, object] = {"status": status}
-        _add_safe_update(fields, command.expected_source_revision)
+        fields = _with_revision(
+            native.ZendeskTicketFields(status=native.ZendeskTicketStatus(status)),
+            command.expected_source_revision,
+        )
         response = await self._mutation_request(
             f"/api/v2/tickets/{_path_id(ticket_id)}",
             method="PUT",
-            payload={"ticket": fields},
+            payload=native.ZendeskTicketRequest(ticket=fields),
             command=command,
             operation="close a Zendesk ticket",
         )
-        data = _object(_expect(response, operation="close a Zendesk ticket"))
-        ticket = _object(data.get("ticket"), field="Zendesk ticket")
+        ticket = _parse_mutation_response(
+            _expect(response, operation="close a Zendesk ticket"),
+            native.ZendeskTicketResponse,
+        ).ticket
         return self._ticket_result(ticket, response=response)
 
     async def _change_tag(
@@ -1754,16 +1787,19 @@ class ZendeskSupportAdapter:
         ticket_id: str,
         command: SorCommandRequest,
         *,
-        add: bool,
+        action: native.ZendeskTagAction,
     ) -> SorCommandResult:
         if not isinstance(command.payload, SupportTagCommandPayload):
             raise _invalid_command("Zendesk tag payload is invalid.")
         tag = command.payload.tag_external_id
-        payload: dict[str, object] = {ZendeskStream.TAGS: [tag]}
-        _add_safe_update(payload, command.expected_source_revision)
+        payload = _with_revision(
+            native.ZendeskTagsRequest(tags=[tag]), command.expected_source_revision
+        )
         response = await self._mutation_request(
             f"/api/v2/tickets/{_path_id(ticket_id)}/tags",
-            method="PUT" if add else "DELETE",
+            method=HTTPMethod.PUT
+            if action is native.ZendeskTagAction.ADD
+            else HTTPMethod.DELETE,
             payload=payload,
             command=command,
             operation="change a Zendesk ticket tag",
@@ -1777,7 +1813,9 @@ class ZendeskSupportAdapter:
             response={"status": "accepted"},
         )
 
-    def _ticket_write_values(self, payload: Mapping[str, object]) -> dict[str, object]:
+    def _ticket_write_values(
+        self, payload: Mapping[str, object]
+    ) -> native.ZendeskTicketFields:
         writable = {
             field.agent_key: field.vendor_field_key
             for field in self._context.fields
@@ -1793,18 +1831,21 @@ class ZendeskSupportAdapter:
                 recovery=SorRecoveryPolicy.TERMINAL,
             )
         fields: dict[str, object] = {}
-        custom_fields: list[dict[str, object]] = []
+        custom_fields: list[native.ZendeskCustomFieldInput] = []
         for agent_key, value in payload.items():
             vendor_key = writable[agent_key]
             if vendor_key.startswith("custom_field_"):
                 custom_fields.append(
-                    {
-                        "id": _required_id(
-                            vendor_key.removeprefix("custom_field_"),
-                            field="Zendesk custom field ID",
-                        ),
-                        "value": value,
-                    }
+                    _parse_write(
+                        {
+                            "id": _required_id(
+                                vendor_key.removeprefix("custom_field_"),
+                                field="Zendesk custom field ID",
+                            ),
+                            "value": value,
+                        },
+                        native.ZendeskCustomFieldInput,
+                    )
                 )
                 continue
             source_key = _TICKET_FIELD_MAP.get(vendor_key)
@@ -1816,15 +1857,15 @@ class ZendeskSupportAdapter:
                 )
             fields[source_key] = value
         if custom_fields:
-            fields["custom_fields"] = custom_fields
-        return fields
+            fields[native.ZendeskTicketWriteField.CUSTOM_FIELDS] = custom_fields
+        return _parse_write(fields, native.ZendeskTicketFields)
 
     async def _mutation_request(
         self,
         path: str,
         *,
         method: str,
-        payload: object,
+        payload: native.ZendeskWriteInput,
         command: SorCommandRequest,
         operation: str,
     ) -> SorJsonResponse:
@@ -1832,7 +1873,7 @@ class ZendeskSupportAdapter:
             response = await self._client.request(
                 path,
                 method=method,
-                payload=payload,
+                payload=payload.model_dump(mode="json", exclude_unset=True),
                 idempotency_key=command.idempotency_key,
             )
             if response.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR:
@@ -1853,12 +1894,12 @@ class ZendeskSupportAdapter:
 
     def _ticket_result(
         self,
-        ticket: Mapping[str, object],
+        ticket: native.ZendeskTicketResult,
         *,
         response: SorJsonResponse,
     ) -> SorCommandResult:
-        ticket_id = _required_id(ticket.get("id"), field="Zendesk ticket ID")
-        updated_at = _optional_datetime(ticket.get("updated_at"))
+        ticket_id = _required_id(ticket.id, field="Zendesk ticket ID")
+        updated_at = _optional_datetime(ticket.updated_at)
         return SorCommandResult(
             vendor_object_key=ZendeskStream.TICKETS,
             external_id=ticket_id,
@@ -2410,28 +2451,53 @@ def _header(headers: Mapping[str, str], name: str) -> str | None:
 
 
 def _audit_comment(
-    audit: Mapping[str, object],
+    audit: native.ZendeskAudit,
     *,
     visibility: SupportMessageVisibility,
-) -> Mapping[str, object]:
-    events = _object_list(audit.get("events"), field="Zendesk ticket audit events")
+) -> native.ZendeskAuditEvent:
     matches = [
         event
-        for event in events
-        if event.get("type") == "Comment"
-        and event.get("public") is (visibility is SupportMessageVisibility.PUBLIC)
+        for event in audit.events
+        if event.type == native.ZendeskAuditEventKind.COMMENT
+        and event.public is (visibility is SupportMessageVisibility.PUBLIC)
     ]
     if len(matches) != 1:
         raise _invalid_response("Zendesk did not return the exact created comment.")
     return matches[0]
 
 
-def _add_safe_update(values: dict[str, object], revision: str | None) -> None:
+def _with_revision[InputT: native.ZendeskSafeUpdate](
+    values: InputT, revision: str | None
+) -> InputT:
     if revision is None:
-        return
+        return values
     timestamp = _required_datetime(revision, field="Zendesk expected revision")
-    values["safe_update"] = True
-    values["updated_stamp"] = _revision(timestamp)
+    return _parse_write(
+        {
+            **values.model_dump(exclude_unset=True),
+            "safe_update": True,
+            "updated_stamp": _revision(timestamp),
+        },
+        type(values),
+    )
+
+
+def _parse_write[InputT: native.ZendeskWriteInput](
+    value: object, model: type[InputT]
+) -> InputT:
+    try:
+        return model.model_validate(value)
+    except ValidationError as error:
+        raise _invalid_command("Zendesk native write fields are invalid.") from error
+
+
+def _parse_mutation_response[ResultT: native.ZendeskMutationResponse](
+    value: object, model: type[ResultT]
+) -> ResultT:
+    try:
+        return model.model_validate(value)
+    except ValidationError as error:
+        raise _invalid_response("Zendesk mutation response is invalid.") from error
 
 
 def _revision(value: datetime | None) -> str | None:
