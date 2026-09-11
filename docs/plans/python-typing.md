@@ -22,9 +22,122 @@ are superseded by the newest deployment record.
 | Durable execution | Native schedule, direct recall, input wait/resume, waiting-run cancellation and controlled worker restart while waiting passed; persisted tool-result readback verified | In-flight cancellation, forced worker crash, concurrent execution and broader tool-bearing replay |
 | Direct-objective memory | Fixed conversation-only context assumption; native recall returns four agent-owned facts and releases capacity | Direct-objective writes need run-based provenance; current mutation contract requires a real conversation/message |
 | Sandbox | Typed workspace/checkpoint/tool paths validated with substituted dependencies | Native configured sandbox execution/cleanup |
-| Final handoff | Checkout advanced independently to `dc12c8d1` during verification; receipt, direct-objective recall and Freshdesk mutation implementation are included. Local documentation/formatting edits remain. No migration or provider reset was performed by this run | Complete remaining contracts, native QA and the full acceptance matrix |
+| Final handoff | Checkout advanced independently to `4561302f`; earlier Freshdesk read/write and Zendesk mutation work is included. Latest Zendesk and Jira directory/comment changes are verified, deployed and uncommitted. No migration or provider reset was performed by this run | Complete remaining contracts, native QA and the full acceptance matrix |
 
-### Current continuation — Zendesk writes and explicit SOR coverage
+### Latest deployment and real-agent checkpoint — 2026-09-11
+
+Image `sha256:d2aff4b15908950ec7f4fa45c49c2c19c9527658e43cad442f7696252ffc2ae4`
+now runs the API, durable worker, ordinary worker and scheduler. The application
+environment matched before recreation; PostgreSQL and Redis retain container
+identities `615b91925226` and `c07c38389f13`. No source, provider, credential or
+schema was reset. API health passed. This supersedes older deployment labels
+below, not their recorded native-acceptance limits.
+
+- Jira discovery/directory/comment comparisons: 645 assertions. Zendesk read/
+  cursor/metric comparisons: 618; mutation comparisons: 192. These use recorded
+  HTTP with actual adapter code; they are not live vendor tests. Backend lint,
+  typing and documentation checks pass; two existing redundant-cast warnings
+  remain.
+- Real configured `QA Background Memory Observer`, revision 1, ran through the
+  public CLI on the new image. Run `34a45d8c-4919-4c7e-abd7-1c4e8e1aa2fd`
+  completed/achieved at `2026-09-11T12:49:06.735397Z` and released capacity.
+  Read-only typed durable transcript replay confirms `memory_recall` succeeded
+  with four Agent-level memories, followed by successful `complete_objective`;
+  no pending tool calls. No memory mutation was requested or recorded.
+- Public API recheck confirms Jira and Zendesk remain `REAUTH_REQUIRED`;
+  Confluence, HubSpot and Linear remain `ACTIVE`. Native Jira/Zendesk sync needs
+  the existing sources reauthorized, not replacement sources or new credentials.
+- Browser-control inventory timed out before returning tabs. Visual widget and
+  console QA remains unverified; the API/worker check above does not replace it.
+
+Next: finish Jira issue/relation/Sprint reads, writes and saved cursors, then
+GitHub, Intercom and Notion operation contracts. Final provider/integration
+inventory, direct-objective memory-write provenance and full acceptance remain
+open. Do not count this deployed checkpoint as platform-wide completion.
+
+### Current continuation — Jira discovery, directories and comments
+
+Jira's `verify_connection`, `_resolve_site`, `discover_schema` and custom-field
+projection now consume vendor-owned models in `ticketing/vendors/jira_wire.py`.
+The configured site still requires exactly one origin match; the API gateway,
+scopes and authorization behavior are unchanged. Native field names serialize
+through aliases without shadowing Pydantic methods. Known field-type constants
+map to platform types; unknown vendor types retain bounded JSON.
+
+178 adapter function assertions passed against immutable `4561302f`, using the
+real HTTP client and recorded responses: exact and ambiguous sites, missing
+site identities, viewer fallback, every mapped field type, Sprint fields,
+empty selection/discovery, malformed fields, error classes and cancellation.
+No live Jira or DB effects occurred.
+
+The subsequent directory/comment batch now validates projects, workflow states,
+users, labels and comments before projection. Project dependency scans consume
+only the identity they need. Comment search and range requests have native
+models; missing prefix/suffix pages retain their existing continuation fences.
+Parent issue identity is passed explicitly, not injected into a vendor dictionary.
+Native comment bodies and timestamp spelling retain the existing source contract.
+
+645 combined function assertions pass through the actual adapter and recorded
+HTTP transport against `4561302f`. They compare request bodies, output payloads,
+exact-read identities and continuation cursors, including a complete embedded
+middle + parallel prefix/suffix read and malformed-pagination refusal. The first
+comment fixture omitted comments from source selection; both implementations
+correctly refused it. The fixture was corrected, not the selection guard.
+Backend lint and typing pass (zero errors, two existing redundant-cast warnings).
+Issue/relation/Sprint reads, mutations and cursor codecs remain open. This
+checkpoint is now deployed above; it does not close Jira or imply live acceptance.
+
+### Zendesk reads, cursors and metric identities verified locally
+
+Zendesk verification, custom-field discovery, cursor exports, event expansion,
+reconciliation pages and exact reads now use native Pydantic contracts across
+all nine streams. Query models preserve native parameter names at serialization;
+custom values remain JSON. Typed owner rows replace injected comment/attachment
+keys. Obsolete object/list/tag parsers were removed. This batch is uncommitted
+and deployed in the latest checkpoint above; native Zendesk acceptance is open.
+
+- 618 function assertions passed through the actual adapter and shared HTTP
+  transport with recorded responses, comparing against immutable `4561302f`.
+  Checks cover all nine streams, exact reads, discovery, custom fields, role
+  filtering, child-offset continuation, terminal empty exports, nonadvancing
+  event watermarks, malformed native records, missing records, HTTP failures,
+  bounded transport retries and cancellation. Cursor cases compare byte-for-byte
+  encoding and restoration against version-one checkpoints, including child
+  offsets, Unicode native tokens, length bounds and malformed metadata. Source payloads are compared via
+  `payload.to_wire()`, not excluded model snapshots.
+- The existing 192 mutation assertions still pass. Backend lint and typing pass
+  with zero errors and the two existing redundant-cast warnings. No type
+  suppression, dependency upgrade, migration, credential or source reset.
+- Confirmed and fixed an existing exact-read defect: the shared tail applied
+  user-role filtering to tickets/groups/brands, incorrectly reporting valid
+  records missing. The baseline reproduces this; the new path filters only
+  native user records. Wrong-role user reads still report missing.
+- Empty `ticket_fields` is now valid discovery. Previously `[] or None` treated
+  an empty native list as malformed. Known invalid field types are deliberately
+  rejected instead of being silently ignored. Native query aliases are output
+  names, not Python constructor names.
+- **Metric identity correction, locally verified:** Zendesk can supply both
+  `reply_time_in_minutes.calendar` and `reply_time_in_seconds.calendar` in one
+  [ticket metric](https://developer.zendesk.com/api-reference/ticketing/tickets/ticket_metrics/).
+  The baseline omitted the unit and produced duplicate `33:reply_time:calendar`
+  IDs. Existing minute IDs stay unchanged; second-based records now use the
+  native metric name, `33:reply_time_in_seconds:calendar`. List and exact reads
+  use the same enum and pass value/unit round trips. No DB rewrite occurred.
+  Source inspection confirms projection updates changed payload hashes even
+  when the native revision is unchanged. The metric stream uses full
+  reconciliation, whose completed-scan finalization tombstones unseen old IDs
+  under organization/source/stream/run fences. This persisted repair path still
+  requires native acceptance after deployment; it was inspected, not executed.
+- Saved cursor envelopes now use versioned, kind-specific Pydantic models.
+  Existing valid version-one tokens remain byte-compatible; unknown legacy
+  extras remain tolerated. Missing metadata, boolean/nonnumeric positions,
+  wrong stream/kind and unsupported versions fail closed. Boolean/float versions
+  formerly accepted by Python equality are now deliberately rejected.
+- Next: Jira, GitHub, Intercom and
+  Notion native operation contracts. Provider/socket and curated-integration
+  final inventories, native QA and the full-platform acceptance gates remain.
+
+### Previous checkpoint — Zendesk writes and explicit SOR coverage
 
 The eleven registrations in `sor/runtime/catalog.py::get_sor_registry` are the
 scope authority. Operation tracing confirms these remaining SOR native-contract
@@ -32,9 +145,9 @@ gaps; a webhook model does not close its vendor's record operations:
 
 | Registration | Remaining native record-operation work |
 | --- | --- |
-| Jira Ticketing | Verification/discovery, reads/expansions and mutations in `ticketing/vendors/jira.py` still consume mapping-shaped native records |
+| Jira Ticketing | Discovery, directories and comments locally verified above; issue/relation/Sprint reads, mutations and saved cursor codecs remain |
 | GitHub Ticketing | REST record/mutation and GraphQL repository projections in `ticketing/vendors/github.py`; webhook management/ingress already typed |
-| Zendesk Support | Verification/discovery, cursor exports, event expansion and exact reads in `support/vendors/zendesk.py`; mutations now locally verified below |
+| Zendesk Support | Native reads/writes, saved cursors and metric identity fix locally verified above; deployment and live reconciliation acceptance remain |
 | Intercom Support | Discovery/search, conversation-part/attachment expansion and mutation wire objects in `support/vendors/intercom.py` |
 | Notion Knowledge | Page/property/block traversal, markdown/attachment envelopes and writes in `knowledge/vendors/notion.py` |
 

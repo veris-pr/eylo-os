@@ -276,10 +276,44 @@ validated pair, preserving [Zendesk's collision protection](https://developer.ze
 Ticket responses supply typed identity/revision evidence. Replies and private
 notes instead select exactly one matching [comment audit event](https://developer.zendesk.com/api-reference/ticketing/tickets/ticket_audits/)
 before producing their receipt; a successful HTTP status alone is insufficient.
-This mutation contract does not imply that all Zendesk sync envelopes are typed
-or that an uncertain external write can safely be retried.
+Zendesk verification, discovery, exact reads and all nine sync streams now parse
+native response models. Comment and attachment rows carry explicit parent
+identity rather than injected dictionary keys. User-role checks apply only to
+user records, not tickets, groups or brands. Pagination requests use Python
+field names and serialize Zendesk's native query keys at the HTTP boundary.
+The [incremental export contract](https://developer.zendesk.com/api-reference/ticketing/ticket-management/incremental_exports/)
+distinguishes cursor exports from time-based event exports; child offsets are
+retained when an event batch exceeds the requested page size. Known malformed
+fields fail validation, while unknown native status values remain available.
+These local contracts do not prove live vendor acceptance or make an uncertain
+external write safe to retry.
+
+Zendesk's saved cursor envelopes are versioned models; valid version-one
+checkpoints retain their encoding and stream binding. Its
+[ticket metrics](https://developer.zendesk.com/api-reference/ticketing/tickets/ticket_metrics/)
+can include reply time in both minutes and seconds. Existing minute identities
+retain `reply_time`; seconds use `reply_time_in_seconds`, preventing two units
+from overwriting the same record. Exact reads use the same identity vocabulary.
+After deployment, a complete metric reconciliation repairs the projection;
+updating code alone does not change previously synchronized rows.
 
 ## Source lifecycle
+
+Jira resolves the configured site from Atlassian's
+[accessible resources](https://developer.atlassian.com/cloud/jira/platform/oauth-2-3lo-apps/#3-1-get-the-cloudid-for-your-site)
+before gateway requests; zero or multiple exact origin matches refuse access.
+Site metadata, the viewer response and
+[discovered fields](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-fields/)
+use vendor-owned typed models. Unknown native custom-field types remain bounded
+JSON, while known types map to canonical field kinds. Discovery typing does not
+change configured scopes or imply complete Jira record-operation coverage.
+Project, status, user and label reads also parse native models before projection.
+Jira [comments](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-comments/)
+use the same typed record for exact reads and sync. Embedded issue comments can
+leave missing ranges; explicit parent identity follows each range into canonical
+projection without modifying the vendor response. Pagination fences reject
+changed offsets, shrinking totals and empty partial pages rather than silently
+skipping comments. These local checks do not establish live Jira acceptance.
 
 An organization configures a source in this order:
 

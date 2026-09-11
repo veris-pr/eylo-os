@@ -1,4 +1,4 @@
-"""Zendesk ticket mutation wire contracts; custom values remain source-owned JSON."""
+"""Zendesk native wire contracts; custom values remain source-owned JSON."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
+    FiniteFloat,
     model_validator,
 )
 
@@ -164,24 +165,24 @@ class ZendeskTagsRequest(ZendeskSafeUpdate):
     tags: list[str]
 
 
-class ZendeskMutationResponse(BaseModel):
-    """Consume identity evidence; other vendor response fields stay in the adapter."""
+class ZendeskResponse(BaseModel):
+    """Validate consumed native fields; tolerate unrelated vendor extensions."""
 
     model_config = ConfigDict(
         strict=True, frozen=True, extra="ignore", hide_input_in_errors=True
     )
 
 
-class ZendeskTicketResult(ZendeskMutationResponse):
+class ZendeskTicketResult(ZendeskResponse):
     id: ZendeskIdentifier
     updated_at: ZendeskTimestamp | None = None
 
 
-class ZendeskTicketResponse(ZendeskMutationResponse):
+class ZendeskTicketResponse(ZendeskResponse):
     ticket: ZendeskTicketResult
 
 
-class ZendeskAuditEvent(ZendeskMutationResponse):
+class ZendeskAuditEvent(ZendeskResponse):
     """Non-comment events remain valid; only exact comment evidence is selected."""
 
     type: str | None = None
@@ -189,9 +190,373 @@ class ZendeskAuditEvent(ZendeskMutationResponse):
     public: bool | None = None
 
 
-class ZendeskAudit(ZendeskMutationResponse):
+class ZendeskAudit(ZendeskResponse):
     events: list[ZendeskAuditEvent]
 
 
-class ZendeskCommentResponse(ZendeskMutationResponse):
+class ZendeskCommentResponse(ZendeskResponse):
     audit: ZendeskAudit
+
+
+ZENDESK_EXPORT_PAGE_SIZE = 1_000
+ZENDESK_LIST_PAGE_SIZE = 100
+ZENDESK_SYSTEM_ACTOR_ID = "-1"
+
+
+class ZendeskUserRole(StrEnum):
+    END_USER = "end-user"
+    AGENT = "agent"
+    ADMIN = "admin"
+
+
+class ZendeskSupportTypeScope(StrEnum):
+    ALL = "all"
+
+
+class ZendeskInclude(StrEnum):
+    COMMENT_EVENTS = "comment_events"
+
+
+class ZendeskSort(StrEnum):
+    CREATED_DESCENDING = "-created_at"
+
+
+class ZendeskRecord(ZendeskResponse):
+    """Record identity and optional native timestamps; wire spelling is preserved."""
+
+    id: ZendeskIdentifier
+    created_at: ZendeskTimestamp | None = None
+    updated_at: ZendeskTimestamp | None = None
+
+
+class ZendeskVia(ZendeskResponse):
+    channel: str | None = None
+
+
+class ZendeskCustomFieldValue(ZendeskResponse):
+    id: ZendeskIdentifier
+    value: SorJsonValue = Field(default=None, repr=False)
+
+
+class ZendeskTicket(ZendeskRecord):
+    """Read-side native states remain open; write-side choices are separately closed."""
+
+    subject: str | None = None
+    description: str | None = Field(default=None, repr=False)
+    requester_id: ZendeskIdentifier | None = None
+    assignee_id: ZendeskIdentifier | None = None
+    group_id: ZendeskIdentifier | None = None
+    brand_id: ZendeskIdentifier | None = None
+    status: str | None = None
+    priority: str | None = None
+    type: str | None = None
+    via: ZendeskVia | None = None
+    tags: list[str]
+    custom_fields: list[ZendeskCustomFieldValue] | None = Field(
+        default=None, repr=False
+    )
+    solved_at: ZendeskTimestamp | None = None
+    closed_at: ZendeskTimestamp | None = None
+
+
+class ZendeskPhoto(ZendeskResponse):
+    content_url: str | None = None
+
+
+class ZendeskUser(ZendeskRecord):
+    name: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    organization_id: ZendeskIdentifier | None = None
+    role: str | None = None
+    suspended: bool | None = None
+    active: bool | None = None
+    photo: ZendeskPhoto | None = None
+    user_fields: dict[str, SorJsonValue] | None = Field(default=None, repr=False)
+
+
+class ZendeskGroup(ZendeskRecord):
+    name: str | None = None
+    description: str | None = None
+    deleted: bool | None = None
+    url: str | None = None
+
+
+class ZendeskBrand(ZendeskRecord):
+    name: str | None = None
+    active: bool | None = None
+    url: str | None = None
+
+
+class ZendeskAttachment(ZendeskResponse):
+    id: ZendeskIdentifier
+    file_name: str | None = None
+    name: str | None = None
+    content_type: str | None = None
+    size: int | None = None
+    content_url: str | None = None
+
+
+class ZendeskTicketChildEvent(ZendeskResponse):
+    """Only comment events are expanded; other native event kinds remain valid."""
+
+    id: ZendeskIdentifier | None = None
+    type: str | None = None
+    event_type: str | None = None
+    created_at: ZendeskTimestamp | None = None
+    updated_at: ZendeskTimestamp | None = None
+    public: bool | None = None
+    author_id: ZendeskIdentifier | None = None
+    html_body: str | None = Field(default=None, repr=False)
+    plain_body: str | None = Field(default=None, repr=False)
+    body: str | None = Field(default=None, repr=False)
+    attachments: list[ZendeskAttachment] | None = None
+
+
+class ZendeskComment(ZendeskTicketChildEvent):
+    id: ZendeskIdentifier
+
+
+class ZendeskTicketEvent(ZendeskResponse):
+    ticket_id: ZendeskIdentifier
+    child_events: list[ZendeskTicketChildEvent] | None = None
+
+
+class ZendeskTag(ZendeskResponse):
+    name: str
+
+
+class ZendeskMetricBasis(StrEnum):
+    BUSINESS = "business"
+    CALENDAR = "calendar"
+
+
+class ZendeskMetricUnit(StrEnum):
+    MINUTES = "minutes"
+    SECONDS = "seconds"
+
+
+class ZendeskMetricName(StrEnum):
+    AGENT_WAIT_TIME = "agent_wait_time"
+    FIRST_RESOLUTION_TIME = "first_resolution_time"
+    FULL_RESOLUTION_TIME = "full_resolution_time"
+    ON_HOLD_TIME = "on_hold_time"
+    REPLY_TIME = "reply_time"
+    REPLY_TIME_IN_SECONDS = "reply_time_in_seconds"
+    REQUESTER_WAIT_TIME = "requester_wait_time"
+
+
+class ZendeskMetricMeasurement(ZendeskResponse):
+    business: int | FiniteFloat | str | None = None
+    calendar: int | FiniteFloat | str | None = None
+
+
+class ZendeskTicketMetric(ZendeskRecord):
+    ticket_id: ZendeskIdentifier
+    solved_at: ZendeskTimestamp | None = None
+    url: str | None = None
+    agent_wait_time_in_minutes: ZendeskMetricMeasurement | None = None
+    first_resolution_time_in_minutes: ZendeskMetricMeasurement | None = None
+    full_resolution_time_in_minutes: ZendeskMetricMeasurement | None = None
+    on_hold_time_in_minutes: ZendeskMetricMeasurement | None = None
+    reply_time_in_minutes: ZendeskMetricMeasurement | None = None
+    reply_time_in_seconds: ZendeskMetricMeasurement | None = None
+    requester_wait_time_in_minutes: ZendeskMetricMeasurement | None = None
+
+    def measurements(
+        self,
+    ) -> tuple[
+        tuple[ZendeskMetricName, ZendeskMetricUnit, ZendeskMetricMeasurement | None],
+        ...,
+    ]:
+        """Explicit native fields avoid a second dictionary-based schema."""
+        return (
+            (
+                ZendeskMetricName.AGENT_WAIT_TIME,
+                ZendeskMetricUnit.MINUTES,
+                self.agent_wait_time_in_minutes,
+            ),
+            (
+                ZendeskMetricName.FIRST_RESOLUTION_TIME,
+                ZendeskMetricUnit.MINUTES,
+                self.first_resolution_time_in_minutes,
+            ),
+            (
+                ZendeskMetricName.FULL_RESOLUTION_TIME,
+                ZendeskMetricUnit.MINUTES,
+                self.full_resolution_time_in_minutes,
+            ),
+            (
+                ZendeskMetricName.ON_HOLD_TIME,
+                ZendeskMetricUnit.MINUTES,
+                self.on_hold_time_in_minutes,
+            ),
+            (
+                ZendeskMetricName.REPLY_TIME,
+                ZendeskMetricUnit.MINUTES,
+                self.reply_time_in_minutes,
+            ),
+            (
+                ZendeskMetricName.REPLY_TIME_IN_SECONDS,
+                ZendeskMetricUnit.SECONDS,
+                self.reply_time_in_seconds,
+            ),
+            (
+                ZendeskMetricName.REQUESTER_WAIT_TIME,
+                ZendeskMetricUnit.MINUTES,
+                self.requester_wait_time_in_minutes,
+            ),
+        )
+
+
+class ZendeskCommentRow(ZendeskWriteInput):
+    """Parent identity comes from export/exact context, never hidden native keys."""
+
+    ticket_id: str
+    comment: ZendeskComment = Field(repr=False)
+
+
+class ZendeskAttachmentRow(ZendeskWriteInput):
+    ticket_id: str
+    comment_id: str
+    attachment: ZendeskAttachment
+
+
+class ZendeskMetricRow(ZendeskWriteInput):
+    source: ZendeskTicketMetric
+    metric: ZendeskMetricName
+    basis: ZendeskMetricBasis
+    unit: ZendeskMetricUnit
+    value: str
+
+
+class ZendeskTicketReadResponse(ZendeskResponse):
+    ticket: ZendeskTicket
+
+
+class ZendeskUserResponse(ZendeskResponse):
+    user: ZendeskUser
+
+
+class ZendeskGroupResponse(ZendeskResponse):
+    group: ZendeskGroup
+
+
+class ZendeskBrandResponse(ZendeskResponse):
+    brand: ZendeskBrand
+
+
+class ZendeskAttachmentResponse(ZendeskResponse):
+    attachment: ZendeskAttachment
+
+
+class ZendeskMetricResponse(ZendeskResponse):
+    ticket_metric: ZendeskTicketMetric | list[ZendeskTicketMetric]
+
+
+class ZendeskExportResponse(ZendeskResponse):
+    end_of_stream: bool
+    after_cursor: str | None = None
+
+
+class ZendeskTicketExport(ZendeskExportResponse):
+    tickets: list[ZendeskTicket]
+
+
+class ZendeskUserExport(ZendeskExportResponse):
+    users: list[ZendeskUser]
+
+
+class ZendeskEventExport(ZendeskResponse):
+    ticket_events: list[ZendeskTicketEvent]
+    end_time: int
+    end_of_stream: bool
+
+
+class ZendeskPageMeta(ZendeskResponse):
+    has_more: bool
+    after_cursor: str | None = None
+
+
+class ZendeskPage(ZendeskResponse):
+    meta: ZendeskPageMeta
+
+
+class ZendeskGroupsPage(ZendeskPage):
+    groups: list[ZendeskGroup]
+
+
+class ZendeskBrandsPage(ZendeskPage):
+    brands: list[ZendeskBrand]
+
+
+class ZendeskTagsPage(ZendeskPage):
+    tags: list[ZendeskTag | str]
+
+
+class ZendeskMetricsPage(ZendeskPage):
+    ticket_metrics: list[ZendeskTicketMetric]
+
+
+class ZendeskCommentsPage(ZendeskPage):
+    comments: list[ZendeskComment]
+
+
+class ZendeskFieldOption(ZendeskResponse):
+    value: str | None = None
+
+
+class ZendeskTicketField(ZendeskResponse):
+    id: ZendeskIdentifier
+    title: str | None = None
+    type: str | None = None
+    removable: bool | None = None
+    required: bool | None = None
+    agent_can_edit: bool | None = None
+    agent_description: str | None = None
+    description: str | None = None
+    custom_field_options: list[ZendeskFieldOption] | None = None
+
+
+class ZendeskTicketFieldsResponse(ZendeskResponse):
+    ticket_fields: list[ZendeskTicketField] | None = None
+    ticket_field: list[ZendeskTicketField] | None = None
+
+
+class ZendeskExportQuery(ZendeskWriteInput):
+    per_page: int = Field(ge=1, le=ZENDESK_EXPORT_PAGE_SIZE)
+    start_time: int | None = None
+    cursor: str | None = None
+    exclude_deleted: bool | None = None
+    support_type_scope: ZendeskSupportTypeScope | None = None
+
+    @model_validator(mode="after")
+    def export_position(self) -> Self:
+        if (self.start_time is None) == (self.cursor is None):
+            raise ValueError("Zendesk export requires exactly one position.")
+        return self
+
+
+class ZendeskEventQuery(ZendeskWriteInput):
+    include: ZendeskInclude
+    per_page: int = Field(ge=1, le=ZENDESK_EXPORT_PAGE_SIZE)
+    start_time: int
+    support_type_scope: ZendeskSupportTypeScope
+
+
+class ZendeskPageQuery(ZendeskWriteInput):
+    size: int = Field(serialization_alias="page[size]", ge=1, le=ZENDESK_LIST_PAGE_SIZE)
+    after: str | None = Field(default=None, serialization_alias="page[after]")
+    sort: ZendeskSort | None = None
+
+
+type ZendeskReadRecord = (
+    ZendeskTicket
+    | ZendeskUser
+    | ZendeskGroup
+    | ZendeskBrand
+    | ZendeskTag
+    | ZendeskCommentRow
+    | ZendeskAttachmentRow
+    | ZendeskMetricRow
+)

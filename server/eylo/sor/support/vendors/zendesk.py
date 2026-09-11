@@ -12,9 +12,10 @@ from decimal import Decimal, InvalidOperation
 from email.utils import parsedate_to_datetime
 from enum import StrEnum
 from http import HTTPMethod, HTTPStatus
+from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from eylo.modules.connections.domain import ConnectionAuthKind
 from eylo.sor.runtime.http import SorHttpTransport, SorJsonHttpClient, SorJsonResponse
@@ -103,10 +104,13 @@ from eylo.sor.support.vendors.zendesk_webhooks import (
 
 ZENDESK_API_VERSION = "ticketing-v2"
 ZENDESK_CURSOR_VERSION = 1
+ZENDESK_CURSOR_MAX_LENGTH = 8_192
+ZENDESK_NATIVE_CURSOR_MAX_LENGTH = 4_096
 ZENDESK_WEBHOOK_TOLERANCE = timedelta(minutes=5)
 ZENDESK_INITIAL_START_TIME = 1
 ZENDESK_COMMENT_PAGE_SIZE = 100
 ZENDESK_COMMENT_PAGE_LIMIT = 50
+ZENDESK_METRIC_EXPANSION_MAX = 14  # Seven native measurements, two calendar bases.
 
 READ_SCOPE = "read"
 WRITE_SCOPE = "write"
@@ -496,15 +500,6 @@ _STATUS_MAP = {
     "solved": SupportTicketState.RESOLVED,
     "closed": SupportTicketState.CLOSED,
 }
-_METRIC_FIELDS = (
-    "agent_wait_time_in_minutes",
-    "first_resolution_time_in_minutes",
-    "full_resolution_time_in_minutes",
-    "on_hold_time_in_minutes",
-    "reply_time_in_minutes",
-    "reply_time_in_seconds",
-    "requester_wait_time_in_minutes",
-)
 
 
 class _ExpandedCursor(BaseModel):
@@ -514,8 +509,10 @@ class _ExpandedCursor(BaseModel):
         frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
     )
 
-    vendor_cursor: str | None
-    offset: int
+    vendor_cursor: str | None = Field(
+        min_length=1, max_length=ZENDESK_NATIVE_CURSOR_MAX_LENGTH
+    )
+    offset: int = Field(ge=0)
 
 
 class _EventCursor(BaseModel):
@@ -525,8 +522,49 @@ class _EventCursor(BaseModel):
         frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
     )
 
-    start_time: int
-    offset: int
+    start_time: int = Field(ge=ZENDESK_INITIAL_START_TIME)
+    offset: int = Field(ge=0)
+
+
+class _CursorKind(StrEnum):
+    VENDOR = "vendor"
+    EXPANDED = "expanded"
+    EVENT = "event"
+
+
+class _CursorEnvelope(BaseModel):
+    """Stored version-one cursor metadata; unknown legacy extras are ignored."""
+
+    model_config = ConfigDict(
+        strict=True, frozen=True, extra="ignore", hide_input_in_errors=True
+    )
+
+    version: int = Field(
+        ge=ZENDESK_CURSOR_VERSION,
+        le=ZENDESK_CURSOR_VERSION,
+    )
+    stream: ZendeskStream
+
+
+class _VendorCursorEnvelope(_CursorEnvelope):
+    kind: Literal[_CursorKind.VENDOR]
+    vendor_cursor: str = Field(
+        min_length=1, max_length=ZENDESK_NATIVE_CURSOR_MAX_LENGTH
+    )
+
+
+class _ExpandedCursorEnvelope(_CursorEnvelope):
+    kind: Literal[_CursorKind.EXPANDED]
+    vendor_cursor: str | None = Field(
+        default=None, min_length=1, max_length=ZENDESK_NATIVE_CURSOR_MAX_LENGTH
+    )
+    offset: int = Field(ge=0)
+
+
+class _EventCursorEnvelope(_CursorEnvelope):
+    kind: Literal[_CursorKind.EVENT]
+    start_time: int = Field(ge=ZENDESK_INITIAL_START_TIME)
+    offset: int = Field(ge=0)
 
 
 class ZendeskSupportAdapter:
@@ -554,12 +592,13 @@ class ZendeskSupportAdapter:
 
     async def verify_connection(self) -> SorConnectionVerification:
         response = await self._client.request("/api/v2/users/me")
-        data = _object(_expect(response, operation="verify Zendesk account"))
-        viewer = _object(data.get("user"), field="Zendesk user")
+        viewer = _parse_response(
+            _expect(response, operation="verify Zendesk account"),
+            native.ZendeskUserResponse,
+        ).user
         return SorConnectionVerification(
-            account_external_id=_required_id(viewer.get("id"), field="Zendesk user ID"),
-            account_display_name=_optional_string(viewer.get("name"))
-            or "Zendesk account",
+            account_external_id=_required_id(viewer.id, field="Zendesk user ID"),
+            account_display_name=_optional_string(viewer.name) or "Zendesk account",
             granted_scopes=tuple(sorted(self._context.granted_scopes)),
             vendor_api_version=ZENDESK_API_VERSION,
         )
@@ -574,17 +613,23 @@ class ZendeskSupportAdapter:
         custom_fields: tuple[SorDiscoveredField, ...] = ()
         if ZendeskStream.TICKETS in self._context.selected_objects:
             response = await self._client.request("/api/v2/ticket_fields")
-            data = _object(_expect(response, operation="list Zendesk ticket fields"))
-            rows = _object_list(
-                data.get("ticket_fields") or data.get("ticket_field"),
-                field="Zendesk ticket fields",
+            data = _parse_response(
+                _expect(response, operation="list Zendesk ticket fields"),
+                native.ZendeskTicketFieldsResponse,
             )
+            rows = (
+                data.ticket_fields
+                if data.ticket_fields is not None
+                else data.ticket_field
+            )
+            if rows is None:
+                raise _invalid_response("Zendesk ticket fields must be a list.")
             custom_fields = tuple(
                 sorted(
                     (
                         _custom_ticket_field(row)
                         for row in rows
-                        if row.get("removable") is True
+                        if row.removable is True
                     ),
                     key=lambda item: (item.label.casefold(), item.key),
                 )
@@ -640,15 +685,18 @@ class ZendeskSupportAdapter:
         )
         record_id = _required_id(external_id, field="Zendesk record ID")
         if stream_key == ZendeskStream.TAGS:
-            return self._external_record(ZendeskStream.TAGS, {"name": record_id})
+            return self._external_record(
+                ZendeskStream.TAGS, native.ZendeskTag(name=record_id)
+            )
         if stream_key == ZendeskStream.COMMENTS:
             ticket_id, comment_id = _split_comment_id(record_id)
             row = await self._fetch_comment(
                 ticket_id=ticket_id,
                 comment_id=comment_id,
             )
-            row["_ticket_id"] = ticket_id
-            return self._external_record(stream_key, row)
+            return self._external_record(
+                stream_key, native.ZendeskCommentRow(ticket_id=ticket_id, comment=row)
+            )
         if stream_key == ZendeskStream.ATTACHMENTS:
             ticket_id, comment_id, attachment_id = _split_attachment_id(record_id)
             response = await self._client.request(
@@ -659,11 +707,16 @@ class ZendeskSupportAdapter:
                     vendor_object_key=stream_key,
                     external_id=record_id,
                 )
-            data = _object(_expect(response, operation="read Zendesk attachment"))
-            row = _object(data.get("attachment"), field="Zendesk attachment")
-            row["_ticket_id"] = ticket_id
-            row["_comment_id"] = comment_id
-            return self._external_record(stream_key, row)
+            attachment = _parse_response(
+                _expect(response, operation="read Zendesk attachment"),
+                native.ZendeskAttachmentResponse,
+            ).attachment
+            return self._external_record(
+                stream_key,
+                native.ZendeskAttachmentRow(
+                    ticket_id=ticket_id, comment_id=comment_id, attachment=attachment
+                ),
+            )
         if stream_key == ZendeskStream.TICKET_METRICS:
             metric_id, metric_name, basis = _split_metric_id(record_id)
             response = await self._client.request(
@@ -674,29 +727,30 @@ class ZendeskSupportAdapter:
                     vendor_object_key=stream_key,
                     external_id=record_id,
                 )
-            data = _object(_expect(response, operation="read Zendesk ticket metric"))
-            value = data.get("ticket_metric")
+            value = _parse_response(
+                _expect(response, operation="read Zendesk ticket metric"),
+                native.ZendeskMetricResponse,
+            ).ticket_metric
             if isinstance(value, list):
-                rows = _object_list(value, field="Zendesk ticket metric")
-                row = rows[0] if rows else None
+                row = value[0] if value else None
             else:
-                row = _object(value, field="Zendesk ticket metric")
+                row = value
             if row is None:
                 raise _invalid_response("Zendesk omitted the requested ticket metric.")
             for expanded in _expand_metric(row):
-                if expanded["_metric"] == metric_name and expanded["_basis"] == basis:
+                if expanded.metric == metric_name and expanded.basis == basis:
                     return self._external_record(stream_key, expanded)
             raise SorExternalRecordNotFound(
                 vendor_object_key=stream_key,
                 external_id=record_id,
             )
 
-        endpoint, response_key = {
-            ZendeskStream.TICKETS: (f"/api/v2/tickets/{_path_id(record_id)}", "ticket"),
-            ZendeskStream.CUSTOMERS: (f"/api/v2/users/{_path_id(record_id)}", "user"),
-            ZendeskStream.AGENTS: (f"/api/v2/users/{_path_id(record_id)}", "user"),
-            ZendeskStream.GROUPS: (f"/api/v2/groups/{_path_id(record_id)}", "group"),
-            ZendeskStream.BRANDS: (f"/api/v2/brands/{_path_id(record_id)}", "brand"),
+        endpoint = {
+            ZendeskStream.TICKETS: f"/api/v2/tickets/{_path_id(record_id)}",
+            ZendeskStream.CUSTOMERS: f"/api/v2/users/{_path_id(record_id)}",
+            ZendeskStream.AGENTS: f"/api/v2/users/{_path_id(record_id)}",
+            ZendeskStream.GROUPS: f"/api/v2/groups/{_path_id(record_id)}",
+            ZendeskStream.BRANDS: f"/api/v2/brands/{_path_id(record_id)}",
         }[stream_key]
         response = await self._client.request(endpoint)
         if response.status_code in {HTTPStatus.NOT_FOUND, HTTPStatus.GONE}:
@@ -704,9 +758,11 @@ class ZendeskSupportAdapter:
                 vendor_object_key=stream_key,
                 external_id=record_id,
             )
-        data = _object(_expect(response, operation="read Zendesk record"))
-        row = _object(data.get(response_key), field="Zendesk record")
-        _require_user_role(stream_key, row)
+        row = _parse_exact_record(
+            _expect(response, operation="read Zendesk record"), stream_key
+        )
+        if isinstance(row, native.ZendeskUser):
+            _require_user_role(stream_key, row)
         return self._external_record(stream_key, row)
 
     async def fetch_deleted(
@@ -1138,13 +1194,13 @@ class ZendeskSupportAdapter:
             return await self._read_cursor_export(
                 stream_key=stream_key,
                 cursor=cursor,
-                limit=min(limit, 1_000),
+                limit=min(limit, native.ZENDESK_EXPORT_PAGE_SIZE),
             )
         if stream_key in {ZendeskStream.CUSTOMERS, ZendeskStream.AGENTS}:
             return await self._read_cursor_export(
                 stream_key=stream_key,
                 cursor=cursor,
-                limit=min(limit, 1_000),
+                limit=min(limit, native.ZENDESK_EXPORT_PAGE_SIZE),
             )
         if stream_key in {ZendeskStream.COMMENTS, ZendeskStream.ATTACHMENTS}:
             return await self._read_event_stream(
@@ -1171,36 +1227,45 @@ class ZendeskSupportAdapter:
             if stream_key == ZendeskStream.TICKETS
             else "/api/v2/incremental/users/cursor"
         )
-        query: dict[str, object] = {"per_page": limit}
-        if vendor_cursor is None:
-            query["start_time"] = ZENDESK_INITIAL_START_TIME
-        else:
-            query["cursor"] = vendor_cursor
+        query = (
+            native.ZendeskExportQuery(
+                per_page=limit, start_time=ZENDESK_INITIAL_START_TIME
+            )
+            if vendor_cursor is None
+            else native.ZendeskExportQuery(per_page=limit, cursor=vendor_cursor)
+        )
         if stream_key == ZendeskStream.TICKETS:
-            query["exclude_deleted"] = True
-            query["support_type_scope"] = "all"
-        response = await self._client.request(path, query=query)
-        data = _object(_expect(response, operation=f"export Zendesk {stream_key}"))
-        response_rows = _object_list(
-            data.get(
-                ZendeskStream.TICKETS
-                if stream_key == ZendeskStream.TICKETS
-                else "users"
-            ),
-            field=f"Zendesk {stream_key}",
+            query = native.ZendeskExportQuery.model_validate(
+                {
+                    **query.model_dump(exclude_unset=True),
+                    "exclude_deleted": True,
+                    "support_type_scope": native.ZendeskSupportTypeScope.ALL,
+                }
+            )
+        response = await self._client.request(
+            path, query=query.model_dump(mode="json", exclude_unset=True)
+        )
+        value = _expect(response, operation=f"export Zendesk {stream_key}")
+        data = (
+            _parse_response(value, native.ZendeskTicketExport)
+            if stream_key == ZendeskStream.TICKETS
+            else _parse_response(value, native.ZendeskUserExport)
+        )
+        response_rows: Sequence[native.ZendeskTicket | native.ZendeskUser] = (
+            data.tickets if isinstance(data, native.ZendeskTicketExport) else data.users
         )
         if len(response_rows) > limit:
             raise _invalid_response(
                 f"Zendesk returned more {stream_key} than the requested page limit."
             )
-        rows = response_rows
-        if stream_key in {ZendeskStream.CUSTOMERS, ZendeskStream.AGENTS}:
-            rows = [row for row in rows if _user_matches_stream(stream_key, row)]
-        end_of_stream = _required_boolean(
-            data.get("end_of_stream"),
-            field=f"Zendesk {stream_key} end_of_stream",
-        )
-        raw_after_cursor = data.get("after_cursor")
+        rows = [
+            row
+            for row in response_rows
+            if not isinstance(row, native.ZendeskUser)
+            or _user_matches_stream(stream_key, row)
+        ]
+        end_of_stream = data.end_of_stream
+        raw_after_cursor = data.after_cursor
         if (
             raw_after_cursor is None
             and end_of_stream
@@ -1232,30 +1297,24 @@ class ZendeskSupportAdapter:
         checkpoint = _decode_event_cursor(cursor, stream_key=stream_key)
         response = await self._client.request(
             "/api/v2/incremental/ticket_events",
-            query={
-                "include": "comment_events",
-                "per_page": min(max(limit, 1), 1_000),
-                "start_time": checkpoint.start_time,
-                "support_type_scope": "all",
-            },
+            query=native.ZendeskEventQuery(
+                include=native.ZendeskInclude.COMMENT_EVENTS,
+                per_page=min(max(limit, 1), native.ZENDESK_EXPORT_PAGE_SIZE),
+                start_time=checkpoint.start_time,
+                support_type_scope=native.ZendeskSupportTypeScope.ALL,
+            ).model_dump(mode="json"),
         )
-        data = _object(
-            _expect(response, operation="export Zendesk ticket comment events")
+        data = _parse_response(
+            _expect(response, operation="export Zendesk ticket comment events"),
+            native.ZendeskEventExport,
         )
-        events = _object_list(data.get("ticket_events"), field="Zendesk ticket events")
-        expanded = _expand_event_records(events, stream_key=stream_key)
+        expanded = _expand_event_records(data.ticket_events, stream_key=stream_key)
         if checkpoint.offset > len(expanded):
             raise _invalid_response("Zendesk event cursor exceeds its source page.")
         records = expanded[checkpoint.offset : checkpoint.offset + limit]
         consumed = checkpoint.offset + len(records)
-        end_time = _required_integer(
-            data.get("end_time"),
-            field="Zendesk ticket event end_time",
-        )
-        end_of_stream = _required_boolean(
-            data.get("end_of_stream"),
-            field="Zendesk ticket event end_of_stream",
-        )
+        end_time = data.end_time
+        end_of_stream = data.end_of_stream
         if consumed < len(expanded):
             next_checkpoint = _EventCursor(
                 start_time=checkpoint.start_time,
@@ -1284,38 +1343,35 @@ class ZendeskSupportAdapter:
         limit: int,
     ) -> SorRecordPage:
         checkpoint = _decode_expanded_cursor(cursor, stream_key=stream_key)
-        vendor_limit = min(limit, 100)
+        vendor_limit = min(limit, native.ZENDESK_LIST_PAGE_SIZE)
         if stream_key == ZendeskStream.TICKET_METRICS:
-            vendor_limit = max(1, min(100, limit // 14))
-        endpoint, response_key = {
-            ZendeskStream.GROUPS: ("/api/v2/groups", ZendeskStream.GROUPS),
-            ZendeskStream.BRANDS: ("/api/v2/brands", ZendeskStream.BRANDS),
-            ZendeskStream.TAGS: ("/api/v2/tags", ZendeskStream.TAGS),
-            ZendeskStream.TICKET_METRICS: (
-                "/api/v2/ticket_metrics",
-                ZendeskStream.TICKET_METRICS,
-            ),
+            vendor_limit = max(
+                1,
+                min(
+                    native.ZENDESK_LIST_PAGE_SIZE, limit // ZENDESK_METRIC_EXPANSION_MAX
+                ),
+            )
+        endpoint = {
+            ZendeskStream.GROUPS: "/api/v2/groups",
+            ZendeskStream.BRANDS: "/api/v2/brands",
+            ZendeskStream.TAGS: "/api/v2/tags",
+            ZendeskStream.TICKET_METRICS: "/api/v2/ticket_metrics",
         }[stream_key]
-        query: dict[str, object] = {"page[size]": vendor_limit}
-        if checkpoint.vendor_cursor is not None:
-            query["page[after]"] = checkpoint.vendor_cursor
-        response = await self._client.request(endpoint, query=query)
-        data = _object(_expect(response, operation=f"list Zendesk {stream_key}"))
-        raw = data.get(response_key)
-        if stream_key == ZendeskStream.TAGS:
-            rows = _tag_rows(raw)
-        else:
-            rows = _object_list(raw, field=f"Zendesk {stream_key}")
-        expanded = (
-            [item for row in rows for item in _expand_metric(row)]
-            if stream_key == ZendeskStream.TICKET_METRICS
-            else rows
+        query = native.ZendeskPageQuery(
+            size=vendor_limit, after=checkpoint.vendor_cursor
+        )
+        response = await self._client.request(
+            endpoint,
+            query=query.model_dump(mode="json", by_alias=True, exclude_none=True),
+        )
+        expanded, meta = _parse_reconcile_records(
+            _expect(response, operation=f"list Zendesk {stream_key}"), stream_key
         )
         if checkpoint.offset > len(expanded):
             raise _invalid_response("Zendesk reconcile cursor exceeds its source page.")
         selected = expanded[checkpoint.offset : checkpoint.offset + limit]
         consumed = checkpoint.offset + len(selected)
-        vendor_has_more, next_vendor_cursor = _cursor_page(data)
+        vendor_has_more, next_vendor_cursor = _cursor_page(meta)
         if consumed < len(expanded):
             next_checkpoint = _ExpandedCursor(
                 vendor_cursor=checkpoint.vendor_cursor,
@@ -1348,38 +1404,37 @@ class ZendeskSupportAdapter:
         *,
         ticket_id: str,
         comment_id: str,
-    ) -> dict[str, object]:
+    ) -> native.ZendeskComment:
         """Find one comment through Zendesk's list-only ticket comment API."""
         after_cursor: str | None = None
         for _page_number in range(ZENDESK_COMMENT_PAGE_LIMIT):
-            query: dict[str, object] = {
-                "page[size]": ZENDESK_COMMENT_PAGE_SIZE,
-                "sort": "-created_at",
-            }
-            if after_cursor is not None:
-                query["page[after]"] = after_cursor
+            query = native.ZendeskPageQuery(
+                size=ZENDESK_COMMENT_PAGE_SIZE,
+                sort=native.ZendeskSort.CREATED_DESCENDING,
+                after=after_cursor,
+            )
             response = await self._client.request(
                 f"/api/v2/tickets/{_path_id(ticket_id)}/comments",
-                query=query,
+                query=query.model_dump(mode="json", by_alias=True, exclude_none=True),
             )
             if response.status_code in {HTTPStatus.NOT_FOUND, HTTPStatus.GONE}:
                 break
-            data = _object(_expect(response, operation="list Zendesk comments"))
-            rows = _object_list(
-                data.get(ZendeskStream.COMMENTS), field="Zendesk comments"
+            data = _parse_response(
+                _expect(response, operation="list Zendesk comments"),
+                native.ZendeskCommentsPage,
             )
+            rows = data.comments
             match = next(
                 (
-                    dict(row)
+                    row
                     for row in rows
-                    if _required_id(row.get("id"), field="Zendesk comment ID")
-                    == comment_id
+                    if _required_id(row.id, field="Zendesk comment ID") == comment_id
                 ),
                 None,
             )
             if match is not None:
                 return match
-            has_more, next_cursor = _cursor_page(data)
+            has_more, next_cursor = _cursor_page(data.meta)
             if not has_more:
                 break
             if next_cursor is None or next_cursor == after_cursor:
@@ -1393,69 +1448,59 @@ class ZendeskSupportAdapter:
     def _external_record(
         self,
         stream_key: str,
-        row: Mapping[str, object],
+        row: native.ZendeskReadRecord,
     ) -> SorExternalRecord:
-        if stream_key == ZendeskStream.TICKETS:
-            record_id = _required_id(row.get("id"), field="Zendesk ticket ID")
-            updated_at = _optional_datetime(row.get("updated_at"))
-            status = _optional_string(row.get("status"))
-            via = row.get("via")
-            channel = (
-                _optional_string(via.get("channel"))
-                if isinstance(via, Mapping)
-                else None
-            )
+        if isinstance(row, native.ZendeskTicket):
+            record_id = _required_id(row.id, field="Zendesk ticket ID")
+            updated_at = _optional_datetime(row.updated_at)
+            status = _optional_string(row.status)
+            channel = _optional_string(row.via.channel) if row.via else None
             payload: dict[str, object] = {
-                "subject": row.get("subject"),
-                "normalized_description": row.get("description"),
-                "requester_external_id": _optional_id(row.get("requester_id")),
-                "assignee_external_id": _optional_id(row.get("assignee_id")),
-                "group_external_id": _optional_id(row.get("group_id")),
-                "inbox_external_id": _optional_id(row.get("brand_id")),
+                "subject": row.subject,
+                "normalized_description": row.description,
+                "requester_external_id": _optional_id(row.requester_id),
+                "assignee_external_id": _optional_id(row.assignee_id),
+                "group_external_id": _optional_id(row.group_id),
+                "inbox_external_id": _optional_id(row.brand_id),
                 "native_status": status,
                 "normalized_status": _STATUS_MAP.get(status or ""),
-                "priority": row.get("priority"),
-                "category": row.get("type"),
+                "priority": row.priority,
+                "category": row.type,
                 "channel": channel,
-                "tag_external_ids": _string_list(
-                    row.get(ZendeskStream.TAGS), field="Zendesk ticket tags"
-                ),
+                "tag_external_ids": row.tags,
                 "first_response_at": None,
-                "resolved_at": row.get("solved_at"),
-                "closed_at": row.get("closed_at"),
+                "resolved_at": row.solved_at,
+                "closed_at": row.closed_at,
                 "sla_state": None,
             }
-            payload.update(_custom_field_values(row.get("custom_fields")))
+            payload.update(_custom_field_values(row.custom_fields))
             return SorExternalRecord(
                 vendor_object_key=stream_key,
                 external_id=record_id,
                 payload=payload,
-                source_created_at=_optional_datetime(row.get("created_at")),
+                source_created_at=_optional_datetime(row.created_at),
                 source_updated_at=updated_at,
                 source_revision=_revision(updated_at),
                 source_url=f"{self._origin}/agent/tickets/{record_id}",
             )
-        if stream_key in {ZendeskStream.CUSTOMERS, ZendeskStream.AGENTS}:
-            record_id = _required_id(row.get("id"), field="Zendesk user ID")
-            updated_at = _optional_datetime(row.get("updated_at"))
-            photo = row.get("photo")
-            avatar_url = (
-                _safe_source_url(photo.get("content_url"))
-                if isinstance(photo, Mapping)
-                else None
-            )
-            role = _optional_string(row.get("role"))
-            suspended = row.get("suspended") is True
+        if isinstance(row, native.ZendeskUser):
+            record_id = _required_id(row.id, field="Zendesk user ID")
+            updated_at = _optional_datetime(row.updated_at)
+            avatar_url = _safe_source_url(row.photo.content_url) if row.photo else None
+            role = _optional_string(row.role)
+            suspended = row.suspended is True
             payload = {
-                "name": row.get("name"),
-                "primary_email": row.get("email"),
-                "primary_phone": row.get("phone"),
-                "company_external_id": _optional_id(row.get("organization_id")),
-                "active": row.get("active") is not False and not suspended,
-                "assignable": role in {"agent", "admin"} and not suspended,
+                "name": row.name,
+                "primary_email": row.email,
+                "primary_phone": row.phone,
+                "company_external_id": _optional_id(row.organization_id),
+                "active": row.active is not False and not suspended,
+                "assignable": role
+                in {native.ZendeskUserRole.AGENT, native.ZendeskUserRole.ADMIN}
+                and not suspended,
                 "avatar_url": avatar_url,
             }
-            user_fields = row.get("user_fields")
+            user_fields = row.user_fields
             if isinstance(user_fields, Mapping):
                 payload.update(
                     {
@@ -1468,142 +1513,139 @@ class ZendeskSupportAdapter:
                 vendor_object_key=stream_key,
                 external_id=record_id,
                 payload=payload,
-                source_created_at=_optional_datetime(row.get("created_at")),
+                source_created_at=_optional_datetime(row.created_at),
                 source_updated_at=updated_at,
                 source_revision=_revision(updated_at),
                 source_url=f"{self._origin}/agent/users/{record_id}/tickets",
             )
-        if stream_key == ZendeskStream.GROUPS:
-            record_id = _required_id(row.get("id"), field="Zendesk group ID")
-            updated_at = _optional_datetime(row.get("updated_at"))
+        if isinstance(row, native.ZendeskGroup):
+            record_id = _required_id(row.id, field="Zendesk group ID")
+            updated_at = _optional_datetime(row.updated_at)
             return SorExternalRecord(
                 vendor_object_key=stream_key,
                 external_id=record_id,
                 payload={
-                    "name": row.get("name"),
-                    "description": row.get("description"),
-                    "active": row.get("deleted") is not True,
+                    "name": row.name,
+                    "description": row.description,
+                    "active": row.deleted is not True,
                 },
-                source_created_at=_optional_datetime(row.get("created_at")),
+                source_created_at=_optional_datetime(row.created_at),
                 source_updated_at=updated_at,
                 source_revision=_revision(updated_at),
-                source_url=_safe_source_url(row.get("url")),
+                source_url=_safe_source_url(row.url),
             )
-        if stream_key == ZendeskStream.BRANDS:
-            record_id = _required_id(row.get("id"), field="Zendesk brand ID")
+        if isinstance(row, native.ZendeskBrand):
+            record_id = _required_id(row.id, field="Zendesk brand ID")
             return SorExternalRecord(
                 vendor_object_key=stream_key,
                 external_id=record_id,
                 payload={
-                    "name": row.get("name"),
+                    "name": row.name,
                     "kind": "brand",
-                    "active": row.get("active"),
+                    "active": row.active,
                 },
-                source_created_at=_optional_datetime(row.get("created_at")),
-                source_updated_at=_optional_datetime(row.get("updated_at")),
-                source_revision=_revision(_optional_datetime(row.get("updated_at"))),
-                source_url=_safe_source_url(row.get("url")),
+                source_created_at=_optional_datetime(row.created_at),
+                source_updated_at=_optional_datetime(row.updated_at),
+                source_revision=_revision(_optional_datetime(row.updated_at)),
+                source_url=_safe_source_url(row.url),
             )
-        if stream_key == ZendeskStream.COMMENTS:
-            ticket_id = _required_id(
-                row.get("_ticket_id") or row.get("ticket_id"),
-                field="Zendesk comment ticket ID",
-            )
-            comment_id = _required_id(row.get("id"), field="Zendesk comment ID")
+        if isinstance(row, native.ZendeskCommentRow):
+            ticket_id = row.ticket_id
+            comment = row.comment
+            comment_id = _required_id(comment.id, field="Zendesk comment ID")
             created_at = _required_datetime(
-                row.get("created_at"),
+                comment.created_at,
                 field="Zendesk comment creation time",
             )
             attachment_ids = tuple(
                 _attachment_external_id(ticket_id, comment_id, attachment)
-                for attachment in _object_list(
-                    row.get(ZendeskStream.ATTACHMENTS) or [],
-                    field="Zendesk comment attachments",
-                )
+                for attachment in comment.attachments or []
             )
-            source_body = row.get("html_body") or row.get("body")
-            author_external_id = _optional_id(row.get("author_id"))
+            source_body = comment.html_body or comment.body
+            author_external_id = _optional_id(comment.author_id)
             return SorExternalRecord(
                 vendor_object_key=stream_key,
                 external_id=_comment_external_id(ticket_id, comment_id),
                 payload={
                     "ticket_external_id": ticket_id,
-                    "visibility": "PUBLIC" if row.get("public") is True else "PRIVATE",
+                    "visibility": SupportMessageVisibility.PUBLIC
+                    if comment.public is True
+                    else SupportMessageVisibility.PRIVATE,
                     # Zendesk reserves -1 for its system actor, including
                     # automation actions. All person direction remains unknown
                     # until it can be resolved from canonical Support records.
                     # https://developer.zendesk.com/api-reference/ticketing/tickets/activity_stream/#json-format
                     "direction": (
-                        "SYSTEM" if author_external_id == "-1" else "UNKNOWN"
+                        SupportMessageDirection.SYSTEM
+                        if author_external_id == native.ZENDESK_SYSTEM_ACTOR_ID
+                        else SupportMessageDirection.UNKNOWN
                     ),
                     "author_external_id": author_external_id,
-                    "normalized_text": row.get("plain_body") or row.get("body"),
+                    "normalized_text": comment.plain_body or comment.body,
                     "source_body": _json_value(source_body),
-                    "body_format": "html" if row.get("html_body") else "text",
+                    "body_format": "html" if comment.html_body else "text",
                     "attachment_external_ids": attachment_ids,
                     "created_at": created_at,
-                    "updated_at": row.get("updated_at"),
+                    "updated_at": comment.updated_at,
                 },
                 source_created_at=created_at,
-                source_updated_at=_optional_datetime(row.get("updated_at")),
+                source_updated_at=_optional_datetime(comment.updated_at),
                 source_revision=_revision(
-                    _optional_datetime(row.get("updated_at")) or created_at
+                    _optional_datetime(comment.updated_at) or created_at
                 ),
                 source_url=f"{self._origin}/agent/tickets/{ticket_id}",
             )
-        if stream_key == ZendeskStream.TAGS:
-            name = _required_string(row.get("name"), field="Zendesk tag name")
+        if isinstance(row, native.ZendeskTag):
+            name = _required_string(row.name, field="Zendesk tag name")
             return SorExternalRecord(
                 vendor_object_key=stream_key,
                 external_id=name,
                 payload={"name": name},
             )
-        if stream_key == ZendeskStream.TICKET_METRICS:
-            metric_id = _required_id(row.get("id"), field="Zendesk ticket metric ID")
-            metric = _required_string(row.get("_metric"), field="Zendesk metric name")
-            basis = _required_string(row.get("_basis"), field="Zendesk metric basis")
-            updated_at = _optional_datetime(row.get("updated_at"))
+        if isinstance(row, native.ZendeskMetricRow):
+            source = row.source
+            metric_id = _required_id(source.id, field="Zendesk ticket metric ID")
+            metric = row.metric
+            basis = row.basis
+            updated_at = _optional_datetime(source.updated_at)
             return SorExternalRecord(
                 vendor_object_key=stream_key,
                 external_id=_metric_external_id(metric_id, metric, basis),
                 payload={
                     "ticket_external_id": _required_id(
-                        row.get("ticket_id"),
+                        source.ticket_id,
                         field="Zendesk metric ticket ID",
                     ),
                     "metric": f"{metric}:{basis}",
-                    "value": row.get("_value"),
-                    "unit": row.get("_unit"),
+                    "value": row.value,
+                    "unit": row.unit,
                     "native_state": None,
                     "normalized_state": None,
                     "target_at": None,
-                    "achieved_at": row.get("solved_at"),
+                    "achieved_at": source.solved_at,
                     "breached_at": None,
                 },
-                source_created_at=_optional_datetime(row.get("created_at")),
+                source_created_at=_optional_datetime(source.created_at),
                 source_updated_at=updated_at,
                 source_revision=_revision(updated_at),
-                source_url=_safe_source_url(row.get("url")),
+                source_url=_safe_source_url(source.url),
             )
-        ticket_id = _required_id(
-            row.get("_ticket_id"), field="Zendesk attachment ticket ID"
-        )
-        comment_id = _required_id(
-            row.get("_comment_id"), field="Zendesk attachment comment ID"
-        )
-        attachment_id = _required_id(row.get("id"), field="Zendesk attachment ID")
+        ticket_id = row.ticket_id
+        comment_id = row.comment_id
+        attachment = row.attachment
+        attachment_id = _required_id(attachment.id, field="Zendesk attachment ID")
         return SorExternalRecord(
             vendor_object_key=stream_key,
             external_id=_attachment_id(ticket_id, comment_id, attachment_id),
             payload={
                 "ticket_external_id": ticket_id,
                 "message_external_id": _comment_external_id(ticket_id, comment_id),
-                "name": row.get("file_name") or row.get("name"),
-                "content_type": row.get("content_type"),
-                "size_bytes": row.get("size"),
-                "source_url": _safe_source_url(row.get("content_url")),
+                "name": attachment.file_name or attachment.name,
+                "content_type": attachment.content_type,
+                "size_bytes": attachment.size,
+                "source_url": _safe_source_url(attachment.content_url),
             },
-            source_url=_safe_source_url(row.get("content_url")),
+            source_url=_safe_source_url(attachment.content_url),
         )
 
     async def _open_ticket(self, command: SorCommandRequest) -> SorCommandResult:
@@ -1638,7 +1680,7 @@ class ZendeskSupportAdapter:
             command=command,
             operation="open a Zendesk ticket",
         )
-        ticket = _parse_mutation_response(
+        ticket = _parse_response(
             _expect(response, operation="open a Zendesk ticket"),
             native.ZendeskTicketResponse,
         ).ticket
@@ -1662,7 +1704,7 @@ class ZendeskSupportAdapter:
             command=command,
             operation="update a Zendesk ticket",
         )
-        ticket = _parse_mutation_response(
+        ticket = _parse_response(
             _expect(response, operation="update a Zendesk ticket"),
             native.ZendeskTicketResponse,
         ).ticket
@@ -1697,7 +1739,7 @@ class ZendeskSupportAdapter:
             command=command,
             operation="assign a Zendesk ticket",
         )
-        ticket = _parse_mutation_response(
+        ticket = _parse_response(
             _expect(response, operation="assign a Zendesk ticket"),
             native.ZendeskTicketResponse,
         ).ticket
@@ -1732,7 +1774,7 @@ class ZendeskSupportAdapter:
                 else "add a Zendesk private note"
             ),
         )
-        audit = _parse_mutation_response(
+        audit = _parse_response(
             _expect(response, operation="add a Zendesk comment"),
             native.ZendeskCommentResponse,
         ).audit
@@ -1776,7 +1818,7 @@ class ZendeskSupportAdapter:
             command=command,
             operation="close a Zendesk ticket",
         )
-        ticket = _parse_mutation_response(
+        ticket = _parse_response(
             _expect(response, operation="close a Zendesk ticket"),
             native.ZendeskTicketResponse,
         ).ticket
@@ -1970,27 +2012,25 @@ def _require_stream(stream_key: str, *, selected: Sequence[str]) -> ZendeskStrea
     return ZendeskStream(stream_key)
 
 
-def _custom_ticket_field(row: Mapping[str, object]) -> SorDiscoveredField:
-    field_id = _required_id(row.get("id"), field="Zendesk ticket field ID")
-    options = row.get("custom_field_options")
+def _custom_ticket_field(row: native.ZendeskTicketField) -> SorDiscoveredField:
+    field_id = _required_id(row.id, field="Zendesk ticket field ID")
+    options = row.custom_field_options
     choices: tuple[str, ...] = ()
     if isinstance(options, list):
         choices = tuple(
             value
             for item in options
-            if isinstance(item, Mapping)
-            if (value := _optional_string(item.get("value"))) is not None
+            if (value := _optional_string(item.value)) is not None
         )
     return SorDiscoveredField(
         key=f"custom_field_{field_id}",
-        label=_optional_string(row.get("title")) or f"Custom field {field_id}",
-        data_type=_zendesk_field_type(row.get("type")),
-        nullable=row.get("required") is not True,
-        writable=row.get("agent_can_edit") is True,
+        label=_optional_string(row.title) or f"Custom field {field_id}",
+        data_type=_zendesk_field_type(row.type),
+        nullable=row.required is not True,
+        writable=row.agent_can_edit is True,
         choices=choices,
         description=(
-            _optional_string(row.get("agent_description"))
-            or _optional_string(row.get("description"))
+            _optional_string(row.agent_description) or _optional_string(row.description)
         ),
         group="Zendesk custom fields",
     )
@@ -2011,116 +2051,79 @@ def _zendesk_field_type(value: object) -> SorFieldDataType:
     }.get(_optional_string(value) or "", SorFieldDataType.JSON)
 
 
-def _custom_field_values(value: object) -> dict[str, object]:
+def _custom_field_values(
+    value: Sequence[native.ZendeskCustomFieldValue] | None,
+) -> dict[str, object]:
     values: dict[str, object] = {}
-    for item in _object_list(value or [], field="Zendesk custom fields"):
-        field_id = _required_id(item.get("id"), field="Zendesk custom field ID")
-        values[f"custom_field_{field_id}"] = _json_value(item.get("value"))
+    for item in value or []:
+        field_id = _required_id(item.id, field="Zendesk custom field ID")
+        values[f"custom_field_{field_id}"] = item.value
     return values
-
-
-def _tag_rows(value: object) -> list[dict[str, object]]:
-    if not isinstance(value, list):
-        raise _invalid_response("Zendesk tags must be a list.")
-    rows: list[dict[str, object]] = []
-    for item in value:
-        if isinstance(item, str):
-            rows.append({"name": item})
-        elif isinstance(item, Mapping):
-            row = _object(item, field="Zendesk tag")
-            _required_string(row.get("name"), field="Zendesk tag name")
-            rows.append(row)
-        else:
-            raise _invalid_response("Zendesk tag entry is invalid.")
-    return rows
 
 
 def _encode_vendor_cursor(*, stream_key: str, vendor_cursor: str) -> str:
     return _encode_cursor(
-        {
-            "version": ZENDESK_CURSOR_VERSION,
-            "kind": "vendor",
-            "stream": stream_key,
-            "vendor_cursor": vendor_cursor,
-        }
+        _VendorCursorEnvelope(
+            version=ZENDESK_CURSOR_VERSION,
+            kind=_CursorKind.VENDOR,
+            stream=ZendeskStream(stream_key),
+            vendor_cursor=vendor_cursor,
+        )
     )
 
 
 def _decode_vendor_cursor(cursor: str | None, *, stream_key: str) -> str | None:
     if cursor is None:
         return None
-    payload = _decode_cursor(cursor, stream_key=stream_key, kind="vendor")
-    value = payload.get("vendor_cursor")
-    if not isinstance(value, str) or not value or len(value) > 4_096:
-        raise _invalid_cursor("Zendesk vendor cursor is invalid.")
-    return value
+    return _decode_cursor(
+        cursor, stream_key=stream_key, model=_VendorCursorEnvelope
+    ).vendor_cursor
 
 
 def _encode_expanded_cursor(cursor: _ExpandedCursor, *, stream_key: str) -> str:
     return _encode_cursor(
-        {
-            "version": ZENDESK_CURSOR_VERSION,
-            "kind": "expanded",
-            "stream": stream_key,
-            "vendor_cursor": cursor.vendor_cursor,
-            "offset": cursor.offset,
-        }
+        _ExpandedCursorEnvelope(
+            version=ZENDESK_CURSOR_VERSION,
+            kind=_CursorKind.EXPANDED,
+            stream=ZendeskStream(stream_key),
+            vendor_cursor=cursor.vendor_cursor,
+            offset=cursor.offset,
+        )
     )
 
 
-def _decode_expanded_cursor(
-    cursor: str | None,
-    *,
-    stream_key: str,
-) -> _ExpandedCursor:
+def _decode_expanded_cursor(cursor: str | None, *, stream_key: str) -> _ExpandedCursor:
     if cursor is None:
         return _ExpandedCursor(vendor_cursor=None, offset=0)
-    payload = _decode_cursor(cursor, stream_key=stream_key, kind="expanded")
-    vendor_cursor = payload.get("vendor_cursor")
-    offset = payload.get("offset")
-    if vendor_cursor is not None and (
-        not isinstance(vendor_cursor, str)
-        or not vendor_cursor
-        or len(vendor_cursor) > 4_096
-    ):
-        raise _invalid_cursor("Zendesk page cursor is invalid.")
-    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
-        raise _invalid_cursor("Zendesk page offset is invalid.")
-    return _ExpandedCursor(vendor_cursor=vendor_cursor, offset=offset)
+    parsed = _decode_cursor(
+        cursor, stream_key=stream_key, model=_ExpandedCursorEnvelope
+    )
+    return _ExpandedCursor(vendor_cursor=parsed.vendor_cursor, offset=parsed.offset)
 
 
 def _encode_event_cursor(cursor: _EventCursor, *, stream_key: str) -> str:
     return _encode_cursor(
-        {
-            "version": ZENDESK_CURSOR_VERSION,
-            "kind": "event",
-            "stream": stream_key,
-            "start_time": cursor.start_time,
-            "offset": cursor.offset,
-        }
+        _EventCursorEnvelope(
+            version=ZENDESK_CURSOR_VERSION,
+            kind=_CursorKind.EVENT,
+            stream=ZendeskStream(stream_key),
+            start_time=cursor.start_time,
+            offset=cursor.offset,
+        )
     )
 
 
 def _decode_event_cursor(cursor: str | None, *, stream_key: str) -> _EventCursor:
     if cursor is None:
         return _EventCursor(start_time=ZENDESK_INITIAL_START_TIME, offset=0)
-    payload = _decode_cursor(cursor, stream_key=stream_key, kind="event")
-    start_time = payload.get("start_time")
-    offset = payload.get("offset")
-    if (
-        isinstance(start_time, bool)
-        or not isinstance(start_time, int)
-        or start_time < 1
-    ):
-        raise _invalid_cursor("Zendesk event start time is invalid.")
-    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
-        raise _invalid_cursor("Zendesk event offset is invalid.")
-    return _EventCursor(start_time=start_time, offset=offset)
+    parsed = _decode_cursor(cursor, stream_key=stream_key, model=_EventCursorEnvelope)
+    return _EventCursor(start_time=parsed.start_time, offset=parsed.offset)
 
 
-def _encode_cursor(payload: Mapping[str, object]) -> str:
+def _encode_cursor(payload: _CursorEnvelope) -> str:
+    # Keep byte-for-byte stable encoding for saved version-one checkpoints.
     raw = json.dumps(
-        payload,
+        payload.model_dump(mode="json"),
         ensure_ascii=True,
         allow_nan=False,
         separators=(",", ":"),
@@ -2129,117 +2132,107 @@ def _encode_cursor(payload: Mapping[str, object]) -> str:
     return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
 
-def _decode_cursor(cursor: str, *, stream_key: str, kind: str) -> dict[str, object]:
-    if not cursor or len(cursor) > 8_192:
+def _decode_cursor[CursorT: _CursorEnvelope](
+    cursor: str, *, stream_key: str, model: type[CursorT]
+) -> CursorT:
+    if not cursor or len(cursor) > ZENDESK_CURSOR_MAX_LENGTH:
         raise _invalid_cursor("Zendesk cursor is invalid.")
     try:
         padding = "=" * (-len(cursor) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(cursor + padding))
-    except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raw = base64.urlsafe_b64decode(cursor + padding)
+        parsed = model.model_validate_json(raw)
+    except (ValueError, UnicodeDecodeError) as error:
         raise _invalid_cursor("Zendesk cursor is invalid.") from error
-    if not isinstance(payload, dict) or any(
-        not isinstance(key, str) for key in payload
-    ):
-        raise _invalid_cursor("Zendesk cursor payload is invalid.")
-    if (
-        payload.get("version") != ZENDESK_CURSOR_VERSION
-        or payload.get("kind") != kind
-        or payload.get("stream") != stream_key
-    ):
+    if parsed.stream != stream_key:
         raise _invalid_cursor("Zendesk cursor does not match this stream.")
-    return payload
+    return parsed
 
 
-def _cursor_page(data: Mapping[str, object]) -> tuple[bool, str | None]:
-    meta = _object(data.get("meta"), field="Zendesk pagination metadata")
-    has_more = _required_boolean(
-        meta.get("has_more"),
-        field="Zendesk pagination has_more",
-    )
-    cursor = _optional_string(meta.get("after_cursor"))
-    return has_more, cursor
+def _cursor_page(meta: native.ZendeskPageMeta) -> tuple[bool, str | None]:
+    return meta.has_more, _optional_string(meta.after_cursor)
 
 
 def _expand_event_records(
-    events: Sequence[Mapping[str, object]],
+    events: Sequence[native.ZendeskTicketEvent],
     *,
     stream_key: str,
-) -> list[dict[str, object]]:
-    records: list[dict[str, object]] = []
+) -> list[native.ZendeskCommentRow | native.ZendeskAttachmentRow]:
+    records: list[native.ZendeskCommentRow | native.ZendeskAttachmentRow] = []
     for event in events:
         ticket_id = _required_id(
-            event.get("ticket_id"),
+            event.ticket_id,
             field="Zendesk ticket event ticket ID",
         )
-        children = _object_list(
-            event.get("child_events") or [],
-            field="Zendesk ticket child events",
-        )
+        children = event.child_events or []
         for child in children:
-            event_type = _optional_string(child.get("event_type")) or _optional_string(
-                child.get("type")
+            event_type = _optional_string(child.event_type) or _optional_string(
+                child.type
             )
-            if event_type != "Comment":
+            if event_type != native.ZendeskAuditEventKind.COMMENT:
                 continue
-            comment = dict(child)
-            comment["_ticket_id"] = ticket_id
+            comment = _parse_response(
+                child.model_dump(exclude_unset=True), native.ZendeskComment
+            )
             if stream_key == ZendeskStream.COMMENTS:
-                records.append(comment)
+                records.append(
+                    native.ZendeskCommentRow(ticket_id=ticket_id, comment=comment)
+                )
                 continue
             comment_id = _required_id(
-                child.get("id"),
+                child.id,
                 field="Zendesk comment ID",
             )
-            for attachment in _object_list(
-                child.get(ZendeskStream.ATTACHMENTS) or [],
-                field="Zendesk comment attachments",
-            ):
-                row = dict(attachment)
-                row["_ticket_id"] = ticket_id
-                row["_comment_id"] = comment_id
-                records.append(row)
+            for attachment in child.attachments or []:
+                records.append(
+                    native.ZendeskAttachmentRow(
+                        ticket_id=ticket_id,
+                        comment_id=comment_id,
+                        attachment=attachment,
+                    )
+                )
     return records
 
 
-def _expand_metric(row: Mapping[str, object]) -> list[dict[str, object]]:
-    expanded: list[dict[str, object]] = []
-    for metric in _METRIC_FIELDS:
-        value = row.get(metric)
-        if not isinstance(value, Mapping):
+def _expand_metric(row: native.ZendeskTicketMetric) -> list[native.ZendeskMetricRow]:
+    expanded: list[native.ZendeskMetricRow] = []
+    for metric, unit, value in row.measurements():
+        if value is None:
             continue
-        unit = "seconds" if metric.endswith("_in_seconds") else "minutes"
-        for basis in ("business", "calendar"):
-            measurement = value.get(basis)
+        for basis, measurement in (
+            (native.ZendeskMetricBasis.BUSINESS, value.business),
+            (native.ZendeskMetricBasis.CALENDAR, value.calendar),
+        ):
             if measurement is None:
                 continue
             decimal_value = _optional_decimal(measurement)
             if decimal_value is None:
                 continue
-            item = dict(row)
-            item["_metric"] = metric.removesuffix("_in_minutes").removesuffix(
-                "_in_seconds"
+            expanded.append(
+                native.ZendeskMetricRow(
+                    source=row,
+                    metric=metric,
+                    basis=basis,
+                    value=str(decimal_value),
+                    unit=unit,
+                )
             )
-            item["_basis"] = basis
-            item["_value"] = str(decimal_value)
-            item["_unit"] = unit
-            expanded.append(item)
     return expanded
 
 
-def _user_matches_stream(stream_key: str, row: Mapping[str, object]) -> bool:
-    role = _optional_string(row.get("role"))
+def _user_matches_stream(stream_key: str, row: native.ZendeskUser) -> bool:
+    role = _optional_string(row.role)
     return (
-        role == "end-user"
+        role == native.ZendeskUserRole.END_USER
         if stream_key == ZendeskStream.CUSTOMERS
-        else role in {"agent", "admin"}
+        else role in {native.ZendeskUserRole.AGENT, native.ZendeskUserRole.ADMIN}
     )
 
 
-def _require_user_role(stream_key: str, row: Mapping[str, object]) -> None:
+def _require_user_role(stream_key: str, row: native.ZendeskUser) -> None:
     if not _user_matches_stream(stream_key, row):
         raise SorExternalRecordNotFound(
             vendor_object_key=stream_key,
-            external_id=_required_id(row.get("id"), field="Zendesk user ID"),
+            external_id=_required_id(row.id, field="Zendesk user ID"),
             reason="Zendesk user does not belong to this canonical role stream",
         )
 
@@ -2364,10 +2357,10 @@ def _attachment_id(ticket_id: str, comment_id: str, attachment_id: str) -> str:
 def _attachment_external_id(
     ticket_id: str,
     comment_id: str,
-    attachment: Mapping[str, object],
+    attachment: native.ZendeskAttachment,
 ) -> str:
     attachment_id = _required_id(
-        attachment.get("id"),
+        attachment.id,
         field="Zendesk attachment ID",
     )
     return _attachment_id(ticket_id, comment_id, attachment_id)
@@ -2380,23 +2373,28 @@ def _split_attachment_id(value: str) -> tuple[str, str, str]:
     return _path_id(parts[0]), _path_id(parts[1]), _path_id(parts[2])
 
 
-def _metric_external_id(metric_id: str, metric: str, basis: str) -> str:
+def _metric_external_id(
+    metric_id: str, metric: native.ZendeskMetricName, basis: native.ZendeskMetricBasis
+) -> str:
+    """Keep legacy minute IDs; the native seconds name prevents unit collisions."""
     return f"{metric_id}:{metric}:{basis}"
 
 
-def _split_metric_id(value: str) -> tuple[str, str, str]:
+def _split_metric_id(
+    value: str,
+) -> tuple[str, native.ZendeskMetricName, native.ZendeskMetricBasis]:
     parts = value.split(":")
     if (
         len(parts) != 3
-        or parts[1]
-        not in {
-            item.removesuffix("_in_minutes").removesuffix("_in_seconds")
-            for item in _METRIC_FIELDS
-        }
-        or parts[2] not in {"business", "calendar"}
+        or parts[1] not in native.ZendeskMetricName
+        or parts[2] not in native.ZendeskMetricBasis
     ):
         raise _invalid_command("Zendesk metric identity is invalid.")
-    return _path_id(parts[0]), parts[1], parts[2]
+    return (
+        _path_id(parts[0]),
+        native.ZendeskMetricName(parts[1]),
+        native.ZendeskMetricBasis(parts[2]),
+    )
 
 
 def _path_id(value: object) -> str:
@@ -2491,13 +2489,50 @@ def _parse_write[InputT: native.ZendeskWriteInput](
         raise _invalid_command("Zendesk native write fields are invalid.") from error
 
 
-def _parse_mutation_response[ResultT: native.ZendeskMutationResponse](
+def _parse_response[ResultT: native.ZendeskResponse](
     value: object, model: type[ResultT]
 ) -> ResultT:
     try:
         return model.model_validate(value)
     except ValidationError as error:
-        raise _invalid_response("Zendesk mutation response is invalid.") from error
+        raise _invalid_response("Zendesk response is invalid.") from error
+
+
+def _parse_exact_record(value: object, stream_key: str) -> native.ZendeskReadRecord:
+    if stream_key == ZendeskStream.TICKETS:
+        return _parse_response(value, native.ZendeskTicketReadResponse).ticket
+    if stream_key in {ZendeskStream.CUSTOMERS, ZendeskStream.AGENTS}:
+        return _parse_response(value, native.ZendeskUserResponse).user
+    if stream_key == ZendeskStream.GROUPS:
+        return _parse_response(value, native.ZendeskGroupResponse).group
+    if stream_key == ZendeskStream.BRANDS:
+        return _parse_response(value, native.ZendeskBrandResponse).brand
+    raise _invalid_command("Zendesk exact-read stream is unsupported.")
+
+
+def _parse_reconcile_records(
+    value: object, stream_key: str
+) -> tuple[Sequence[native.ZendeskReadRecord], native.ZendeskPageMeta]:
+    if stream_key == ZendeskStream.GROUPS:
+        groups = _parse_response(value, native.ZendeskGroupsPage)
+        return groups.groups, groups.meta
+    if stream_key == ZendeskStream.BRANDS:
+        brands = _parse_response(value, native.ZendeskBrandsPage)
+        return brands.brands, brands.meta
+    if stream_key == ZendeskStream.TAGS:
+        tags = _parse_response(value, native.ZendeskTagsPage)
+        return [
+            native.ZendeskTag(name=row) if isinstance(row, str) else row
+            for row in tags.tags
+        ], tags.meta
+    if stream_key == ZendeskStream.TICKET_METRICS:
+        metrics = _parse_response(value, native.ZendeskMetricsPage)
+        return [
+            expanded
+            for row in metrics.ticket_metrics
+            for expanded in _expand_metric(row)
+        ], metrics.meta
+    raise _invalid_command("Zendesk reconciliation stream is unsupported.")
 
 
 def _revision(value: datetime | None) -> str | None:
@@ -2578,18 +2613,6 @@ def _expect(response: SorJsonResponse, *, operation: str) -> object:
         f"Zendesk refused the request to {operation}.",
         recovery=SorRecoveryPolicy.TERMINAL,
     )
-
-
-def _object(value: object, *, field: str = "Zendesk response") -> dict[str, object]:
-    if not isinstance(value, Mapping) or any(not isinstance(key, str) for key in value):
-        raise _invalid_response(f"{field} must be an object.")
-    return dict(value)
-
-
-def _object_list(value: object, *, field: str) -> list[dict[str, object]]:
-    if not isinstance(value, list):
-        raise _invalid_response(f"{field} must be a list.")
-    return [_object(item, field=field) for item in value]
 
 
 def _string_list(value: object, *, field: str) -> list[str]:

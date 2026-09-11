@@ -86,6 +86,7 @@ from eylo.sor.ticketing.contracts import (
     TicketingWorkflowState,
     TicketingWorkflowStatePayload,
 )
+from eylo.sor.ticketing.vendors import jira_wire as native
 from eylo.sor.ticketing.vendors.jira_webhooks import (
     JIRA_WEBHOOK_DELIVERY_HEADER,
     JIRA_WEBHOOK_FUTURE_TOLERANCE,
@@ -605,10 +606,10 @@ class JiraTicketingAdapter:
     async def verify_connection(self) -> SorConnectionVerification:
         cloud_id, site_name = await self._resolve_site()
         response = await self._jira_request("/myself")
-        viewer = _object(
-            _expect(response, operation="verify Jira account"), field="Jira user"
+        viewer = native.parse_response(
+            _expect(response, operation="verify Jira account"), native.JiraViewer
         )
-        display = _optional_string(viewer.get("displayName"))
+        display = _optional_string(viewer.displayName)
         return SorConnectionVerification(
             account_external_id=cloud_id,
             account_display_name=site_name or display or "Jira Cloud site",
@@ -626,16 +627,13 @@ class JiraTicketingAdapter:
         custom_fields: tuple[SorDiscoveredField, ...] = ()
         if JiraStream.ISSUES in self._context.selected_objects:
             response = await self._jira_request("/field")
-            rows = _object_list(
-                _expect(response, operation="list Jira fields"), field="Jira fields"
-            )
+            rows = native.parse_response(
+                _expect(response, operation="list Jira fields"),
+                native.JiraCollection[native.JiraField],
+            ).root
             custom_fields = tuple(
                 sorted(
-                    (
-                        _jira_custom_field(row)
-                        for row in rows
-                        if row.get("custom") is True
-                    ),
+                    (_jira_custom_field(row) for row in rows if row.custom is True),
                     key=lambda field: (field.label.casefold(), field.key),
                 )
             )
@@ -689,7 +687,7 @@ class JiraTicketingAdapter:
         )
         record_id = _required_id(external_id, field="Jira record ID")
         if stream_key == JiraStream.LABELS:
-            return self._external_record(JiraStream.LABELS, {"name": record_id})
+            return self._external_directory_record(native.JiraLabel(name=record_id))
         if stream_key == JiraStream.ISSUES:
             response = await self._jira_request(
                 f"/issue/{_path_segment(record_id)}",
@@ -720,12 +718,25 @@ class JiraTicketingAdapter:
                 vendor_object_key=stream_key,
                 external_id=record_id,
             )
-        row = _object(
-            _expect(response, operation="read Jira record"), field="Jira record"
-        )
+        value = _expect(response, operation="read Jira record")
+        if stream_key == JiraStream.PROJECTS:
+            return self._external_directory_record(
+                native.parse_response(value, native.JiraProject)
+            )
+        if stream_key == JiraStream.WORKFLOW_STATES:
+            return self._external_directory_record(
+                native.parse_response(value, native.JiraStatus)
+            )
+        if stream_key == JiraStream.USERS:
+            return self._external_directory_record(
+                native.parse_response(value, native.JiraUser)
+            )
         if stream_key == JiraStream.COMMENTS:
             issue_id, _comment_id = _split_comment_external_id(record_id)
-            row["_issue_external_id"] = issue_id
+            return self._external_comment(
+                native.parse_response(value, native.JiraComment), issue_id=issue_id
+            )
+        row = _object(value, field="Jira record")
         return self._external_record(stream_key, row)
 
     async def fetch_deleted(
@@ -1128,14 +1139,12 @@ class JiraTicketingAdapter:
         if self._cloud_id is not None:
             return self._cloud_id, self._site_name
         response = await self._client.request("/oauth/token/accessible-resources")
-        rows = _object_list(
+        rows = native.parse_response(
             _expect(response, operation="list accessible Jira sites"),
-            field="Atlassian accessible resources",
-        )
+            native.JiraCollection[native.JiraSite],
+        ).root
         matches = [
-            row
-            for row in rows
-            if _normalized_origin(row.get("url")) == self._site_origin
+            row for row in rows if _normalized_origin(row.url) == self._site_origin
         ]
         if len(matches) != 1:
             raise SorVendorOperationError(
@@ -1144,8 +1153,8 @@ class JiraTicketingAdapter:
                 recovery=SorRecoveryPolicy.REAUTH_REQUIRED,
             )
         site = matches[0]
-        self._cloud_id = _required_id(site.get("id"), field="Jira cloud ID")
-        self._site_name = _optional_string(site.get("name"))
+        self._cloud_id = _required_id(site.id, field="Jira cloud ID")
+        self._site_name = _optional_string(site.name)
         return self._cloud_id, self._site_name
 
     async def _jira_request(
@@ -1185,22 +1194,24 @@ class JiraTicketingAdapter:
             return self._project_pages[offset]
         response = await self._jira_request(
             "/project/search",
-            query={"startAt": offset, "maxResults": 1, "orderBy": "key"},
+            query=native.JiraPageQuery(
+                startAt=offset, maxResults=1, orderBy=native.JiraOrderBy.KEY
+            ).model_dump(mode="json", exclude_none=True),
         )
-        data = _object(
+        data = native.parse_response(
             _expect(response, operation="list Jira projects"),
-            field="Jira projects",
+            native.JiraPage[native.JiraProjectIdentity],
         )
-        rows = _object_list(data.get("values"), field="Jira projects")
+        rows = data.values
         if len(rows) > 1:
             raise _invalid_response("Jira returned too many projects.")
-        is_last = _required_boolean(data.get("isLast"), field="Jira projects isLast")
+        is_last = data.isLast
         if not rows:
             if not is_last:
                 raise _invalid_response("Jira returned an empty partial project page.")
             self._project_pages[offset] = None
             return None
-        project_id = _required_id(rows[0].get("id"), field="Jira project ID")
+        project_id = _required_id(rows[0].id, field="Jira project ID")
         if re.fullmatch(r"[0-9]+", project_id) is None:
             raise _invalid_response("Jira returned an invalid project ID.")
         page = (project_id, is_last)
@@ -1226,9 +1237,9 @@ class JiraTicketingAdapter:
         if stream_key == JiraStream.COMMENTS:
             return await self._read_comment_page(
                 cursor=cursor,
-                limit=min(limit, 200),
+                limit=min(limit, native.JIRA_COMMENT_PAGE_SIZE),
             )
-        page_limit = min(limit, 100)
+        page_limit = min(limit, native.JIRA_READ_PAGE_SIZE)
         if stream_key == JiraStream.ISSUES:
             return await self._read_issues(cursor=cursor, limit=page_limit)
         if stream_key == JiraStream.ISSUE_RELATIONS:
@@ -1239,72 +1250,66 @@ class JiraTicketingAdapter:
         if stream_key == JiraStream.SPRINTS:
             return await self._read_sprints(cursor=cursor, limit=page_limit)
         offset = _decode_offset_cursor(cursor, stream_key=stream_key)
-        rows: list[dict[str, object]]
+        query = native.JiraPageQuery(startAt=offset, maxResults=page_limit)
+        rows: Sequence[native.JiraDirectoryRecord]
         if stream_key == JiraStream.PROJECTS:
+            query = native.JiraPageQuery(
+                startAt=offset, maxResults=page_limit, orderBy=native.JiraOrderBy.KEY
+            )
             response = await self._jira_request(
                 "/project/search",
-                query={"startAt": offset, "maxResults": page_limit, "orderBy": "key"},
+                query=query.model_dump(mode="json", exclude_none=True),
             )
-            data = _object(
-                _expect(response, operation="list Jira projects"), field="Jira projects"
+            data = native.parse_response(
+                _expect(response, operation="list Jira projects"),
+                native.JiraPage[native.JiraProject],
             )
-            rows = _object_list(data.get("values"), field="Jira projects")
-            has_more = not _required_boolean(
-                data.get("isLast"), field="Jira projects isLast"
-            )
+            rows = data.values
+            has_more = not data.isLast
         elif stream_key == JiraStream.WORKFLOW_STATES:
             response = await self._jira_request("/status")
             all_rows = sorted(
-                _object_list(
+                native.parse_response(
                     _expect(response, operation="list Jira statuses"),
-                    field="Jira statuses",
-                ),
+                    native.JiraCollection[native.JiraStatus],
+                ).root,
                 key=lambda row: (
-                    _required_string(
-                        row.get("name"),
-                        field="Jira status name",
-                    ).casefold(),
-                    _required_id(row.get("id"), field="Jira status ID"),
+                    _required_string(row.name, field="Jira status name").casefold(),
+                    _required_id(row.id, field="Jira status ID"),
                 ),
             )
             rows = all_rows[offset : offset + page_limit]
             has_more = offset + len(rows) < len(all_rows)
         elif stream_key == JiraStream.USERS:
             response = await self._jira_request(
-                "/users",
-                query={"startAt": offset, "maxResults": page_limit},
+                "/users", query=query.model_dump(mode="json", exclude_none=True)
             )
-            rows = _object_list(
-                _expect(response, operation="list Jira users"), field="Jira users"
-            )
+            rows = native.parse_response(
+                _expect(response, operation="list Jira users"),
+                native.JiraCollection[native.JiraUser],
+            ).root
             has_more = len(rows) == page_limit
         else:
             response = await self._jira_request(
-                "/label",
-                query={"startAt": offset, "maxResults": page_limit},
+                "/label", query=query.model_dump(mode="json", exclude_none=True)
             )
-            data = _object(
-                _expect(response, operation="list Jira labels"), field="Jira labels"
+            labels = native.parse_response(
+                _expect(response, operation="list Jira labels"), native.JiraLabelPage
             )
-            labels = _string_list(data.get("values"), field="Jira labels")
-            rows = [{"name": label} for label in labels]
-            has_more = not _required_boolean(
-                data.get("isLast"), field="Jira labels isLast"
-            )
+            rows = [native.JiraLabel(name=label) for label in labels.values]
+            has_more = not labels.isLast
         if len(rows) > page_limit:
             raise _invalid_response(
                 "Jira returned more rows than the requested page limit."
             )
         return SorRecordPage(
             records=tuple(
-                self._external_record(stream_key, row, position=offset + index)
+                self._external_directory_record(row, position=offset + index)
                 for index, row in enumerate(rows)
             ),
-            next_cursor=(
-                _encode_offset_cursor(offset + len(rows), stream_key=stream_key)
-                if has_more
-                else None
-            ),
+            next_cursor=_encode_offset_cursor(offset + len(rows), stream_key=stream_key)
+            if has_more
+            else None,
             has_more=has_more,
         )
 
@@ -1495,37 +1500,30 @@ class JiraTicketingAdapter:
                     limit // JIRA_EMBEDDED_COMMENT_LIMIT,
                 ),
             )
-            payload: dict[str, object] = {
-                "fields": ["comment"],
-                "fieldsByKeys": True,
-                "jql": _issue_scan_jql(project_id),
-                "maxResults": issue_limit,
-            }
-            if checkpoint.next_issue_token is not None:
-                payload["nextPageToken"] = checkpoint.next_issue_token
+            payload = native.JiraSearchRequest(
+                fields=["comment"],
+                fieldsByKeys=True,
+                jql=_issue_scan_jql(project_id),
+                maxResults=issue_limit,
+                nextPageToken=checkpoint.next_issue_token,
+            )
             response = await self._jira_request(
                 "/search/jql",
                 method="POST",
-                payload=payload,
+                payload=payload.model_dump(mode="json", exclude_none=True),
                 retry_transport_failures=True,
             )
-            data = _object(
+            data = native.parse_response(
                 _expect(response, operation="scan Jira issue comments"),
-                field="Jira issue-comment scan",
+                native.JiraSearchPage[native.JiraCommentIssue],
             )
-            issues = _object_list(
-                data.get(JiraStream.ISSUES),
-                field="Jira issue-comment scan",
-            )
+            issues = data.issues
             if len(issues) > issue_limit:
                 raise _invalid_response(
                     "Jira returned too many issues for a comment scan."
                 )
-            issue_page_is_last = _required_boolean(
-                data.get("isLast"),
-                field="Jira issue-comment scan isLast",
-            )
-            following = _optional_string(data.get("nextPageToken"))
+            issue_page_is_last = data.isLast
+            following = _optional_string(data.nextPageToken)
             if not issue_page_is_last and following is None:
                 raise _invalid_response(
                     "Jira omitted the next issue-comment page token."
@@ -1540,32 +1538,18 @@ class JiraTicketingAdapter:
             pending_item_offsets: list[int] = []
             pending_item_stops: list[int] = []
             for issue in issues:
-                issue_id = _required_id(issue.get("id"), field="Jira issue ID")
-                fields = _object(issue.get("fields"), field="Jira issue fields")
-                comment_page = _object(
-                    fields.get("comment"),
-                    field="Jira embedded comments",
-                )
-                rows = _object_list(
-                    comment_page.get(JiraStream.COMMENTS),
-                    field="Jira embedded comments",
-                )
-                start_at = _required_nonnegative_integer(
-                    comment_page.get("startAt"),
-                    field="Jira embedded comment startAt",
-                )
-                total = _required_nonnegative_integer(
-                    comment_page.get("total"),
-                    field="Jira embedded comment total",
-                )
+                issue_id = _required_id(issue.id, field="Jira issue ID")
+                comment_page = issue.fields.comment
+                rows = comment_page.comments
+                start_at = comment_page.startAt
+                total = comment_page.total
                 embedded_end = start_at + len(rows)
                 if embedded_end > total:
                     raise _invalid_response(
                         "Jira embedded comments exceed their declared total."
                     )
                 for row in rows:
-                    row["_issue_external_id"] = issue_id
-                    records.append(self._external_record(JiraStream.COMMENTS, row))
+                    records.append(self._external_comment(row, issue_id=issue_id))
                 if start_at > 0:
                     pending_issue_ids.append(issue_id)
                     pending_item_offsets.append(0)
@@ -1651,7 +1635,7 @@ class JiraTicketingAdapter:
             strict=True,
         ):
             records.extend(
-                self._external_record(JiraStream.COMMENTS, row) for row in rows
+                self._external_comment(row, issue_id=issue_id) for row in rows
             )
             if has_more:
                 pending_issue_ids.append(issue_id)
@@ -1694,34 +1678,30 @@ class JiraTicketingAdapter:
         offset: int,
         stop: int,
         limit: int,
-    ) -> tuple[list[dict[str, object]], bool]:
+    ) -> tuple[list[native.JiraComment], bool]:
         page_limit = min(limit, stop - offset)
         response = await self._jira_request(
             f"/issue/{_path_segment(issue_id)}/comment",
-            query={"startAt": offset, "maxResults": page_limit, "orderBy": "created"},
+            query=native.JiraCommentQuery(
+                startAt=offset,
+                maxResults=page_limit,
+                orderBy=native.JiraOrderBy.CREATED,
+            ).model_dump(mode="json"),
         )
-        data = _object(
+        data = native.parse_response(
             _expect(response, operation="list Jira issue comments"),
-            field="Jira comments",
+            native.JiraCommentPage,
         )
-        rows = _object_list(data.get(JiraStream.COMMENTS), field="Jira comments")
+        rows = data.comments
         if len(rows) > page_limit:
             raise _invalid_response("Jira returned too many issue comments.")
-        start_at = _required_nonnegative_integer(
-            data.get("startAt"),
-            field="Jira comment startAt",
-        )
-        total = _required_nonnegative_integer(
-            data.get("total"),
-            field="Jira comment total",
-        )
+        start_at = data.startAt
+        total = data.total
         if start_at != offset or total < stop:
             raise _invalid_response("Jira comment pagination changed during the scan.")
         has_more = offset + len(rows) < stop
         if has_more and not rows:
             raise _invalid_response("Jira returned an empty partial comment page.")
-        for row in rows:
-            row["_issue_external_id"] = issue_id
         return rows, has_more
 
     async def _read_sprints(self, *, cursor: str | None, limit: int) -> SorRecordPage:
@@ -1909,75 +1889,58 @@ class JiraTicketingAdapter:
         }
         return tuple(sorted(_ISSUE_API_FIELDS | custom))
 
-    def _external_record(
-        self,
-        stream_key: str,
-        row: Mapping[str, object],
-        *,
-        position: int | None = None,
+    def _external_directory_record(
+        self, row: native.JiraDirectoryRecord, *, position: int | None = None
     ) -> SorExternalRecord:
-        if stream_key == JiraStream.ISSUES:
-            return self._external_issue(row)
-        if stream_key == JiraStream.PROJECTS:
-            record_id = _required_id(row.get("id"), field="Jira project ID")
-            key = _optional_string(row.get("key"))
+        if isinstance(row, native.JiraProject):
+            record_id = _required_id(row.id, field="Jira project ID")
+            key = _optional_string(row.key)
             return SorExternalRecord(
-                vendor_object_key=stream_key,
+                vendor_object_key=JiraStream.PROJECTS,
                 external_id=record_id,
                 payload={
                     "key": key,
-                    "name": _required_string(
-                        row.get("name"), field="Jira project name"
-                    ),
-                    "description": _adf_text(row.get("description")),
+                    "name": _required_string(row.name, field="Jira project name"),
+                    "description": _adf_text(row.description),
                 },
                 source_url=f"{self._site_origin}/browse/{key}" if key else None,
             )
-        if stream_key == JiraStream.WORKFLOW_STATES:
-            record_id = _required_id(row.get("id"), field="Jira status ID")
-            category = _optional_object(row.get("statusCategory"))
-            native = _optional_string(category.get("key")) or _optional_string(
-                category.get("name")
+        if isinstance(row, native.JiraStatus):
+            category = row.statusCategory
+            native_category = (
+                (_optional_string(category.key) or _optional_string(category.name))
+                if category
+                else None
             )
             return SorExternalRecord(
-                vendor_object_key=stream_key,
-                external_id=record_id,
+                vendor_object_key=JiraStream.WORKFLOW_STATES,
+                external_id=_required_id(row.id, field="Jira status ID"),
                 payload={
-                    "name": _required_string(row.get("name"), field="Jira status name"),
-                    "native_category": native,
-                    "normalized_category": _normalized_jira_status(native),
+                    "name": _required_string(row.name, field="Jira status name"),
+                    "native_category": native_category,
+                    "normalized_category": _normalized_jira_status(native_category),
                     "order": position,
                 },
             )
-        if stream_key == JiraStream.USERS:
-            record_id = _required_id(row.get("accountId"), field="Jira account ID")
-            display_name = _required_string(
-                row.get("displayName"), field="Jira display name"
-            )
-            avatars = _optional_object(row.get("avatarUrls"))
+        if isinstance(row, native.JiraUser):
+            display_name = _required_string(row.displayName, field="Jira display name")
             return SorExternalRecord(
-                vendor_object_key=stream_key,
-                external_id=record_id,
+                vendor_object_key=JiraStream.USERS,
+                external_id=_required_id(row.accountId, field="Jira account ID"),
                 payload={
                     "name": display_name,
                     "display_name": display_name,
-                    "primary_email": _optional_string(row.get("emailAddress")),
-                    "active": _required_boolean(
-                        row.get("active"), field="Jira user active"
-                    ),
+                    "primary_email": _optional_string(row.emailAddress),
+                    "active": row.active,
                     "assignable": None,
-                    "avatar_url": _optional_string(avatars.get("48x48")),
+                    "avatar_url": _optional_string(row.avatarUrls.large)
+                    if row.avatarUrls
+                    else None,
                 },
             )
-        if stream_key == JiraStream.SPRINTS:
-            return self._external_sprint(row)
-        if stream_key == JiraStream.COMMENTS:
-            return self._external_comment(row)
-        if stream_key == JiraStream.ISSUE_RELATIONS:
-            return self._external_relation(row)
-        label = _required_string(row.get("name"), field="Jira label")
+        label = _required_string(row.name, field="Jira label")
         return SorExternalRecord(
-            vendor_object_key=stream_key,
+            vendor_object_key=JiraStream.LABELS,
             external_id=label,
             payload={
                 "name": label,
@@ -1988,6 +1951,17 @@ class JiraTicketingAdapter:
                 "is_group": False,
             },
         )
+
+    def _external_record(
+        self, stream_key: str, row: Mapping[str, object]
+    ) -> SorExternalRecord:
+        if stream_key == JiraStream.ISSUES:
+            return self._external_issue(row)
+        if stream_key == JiraStream.SPRINTS:
+            return self._external_sprint(row)
+        if stream_key == JiraStream.ISSUE_RELATIONS:
+            return self._external_relation(row)
+        raise _invalid_response("Jira returned an unsupported record stream.")
 
     def _external_issue(self, row: Mapping[str, object]) -> SorExternalRecord:
         record_id = _required_id(row.get("id"), field="Jira issue ID")
@@ -2075,25 +2049,25 @@ class JiraTicketingAdapter:
             ),
         )
 
-    def _external_comment(self, row: Mapping[str, object]) -> SorExternalRecord:
-        comment_id = _required_id(row.get("id"), field="Jira comment ID")
-        issue_id = _required_id(
-            row.get("_issue_external_id"),
-            field="Jira comment issue ID",
-        )
-        body = row.get("body")
+    def _external_comment(
+        self, row: native.JiraComment, *, issue_id: str
+    ) -> SorExternalRecord:
+        comment_id = _required_id(row.id, field="Jira comment ID")
+        issue_id = _required_id(issue_id, field="Jira comment issue ID")
+        body = row.body
         created_at = _required_datetime(
-            row.get("created"),
+            row.created,
             field="Jira comment creation time",
         )
-        updated_at = _optional_datetime(row.get("updated")) or created_at
-        author = _optional_object(row.get("author"))
+        updated_at = _optional_datetime(row.updated) or created_at
         return SorExternalRecord(
             vendor_object_key=JiraStream.COMMENTS,
             external_id=_comment_external_id(issue_id, comment_id),
             payload={
                 "issue_external_id": issue_id,
-                "author_external_id": _optional_id(author.get("accountId")),
+                "author_external_id": _optional_id(row.author.accountId)
+                if row.author
+                else None,
                 "normalized_text": (
                     _adf_text(body) or "[Jira comment has no plain-text content]"
                 ),
@@ -2527,31 +2501,35 @@ def create_jira_adapter(context: SorAdapterContext) -> JiraTicketingAdapter:
     return JiraTicketingAdapter(context)
 
 
-def _jira_custom_field(row: Mapping[str, object]) -> SorDiscoveredField:
-    key = _required_id(row.get("id"), field="Jira custom field ID")
+def _jira_custom_field(row: native.JiraField) -> SorDiscoveredField:
+    key = _required_id(row.id, field="Jira custom field ID")
     if not key.startswith("customfield_"):
         raise _invalid_response("Jira returned an invalid custom field ID.")
-    schema = _optional_object(row.get("schema"))
-    vendor_type = _optional_string(schema.get("custom"))
+    schema = row.field_schema
+    vendor_type = _optional_string(schema.custom) if schema else None
+    data_types: dict[str, SorFieldDataType] = {
+        native.JiraFieldType.ARRAY: SorFieldDataType.STRING_ARRAY,
+        native.JiraFieldType.DATE: SorFieldDataType.DATE,
+        native.JiraFieldType.DATETIME: SorFieldDataType.TIMESTAMP,
+        native.JiraFieldType.NUMBER: SorFieldDataType.DECIMAL,
+        native.JiraFieldType.OPTION: SorFieldDataType.TEXT,
+        native.JiraFieldType.STRING: SorFieldDataType.TEXT,
+        native.JiraFieldType.USER: SorFieldDataType.REFERENCE,
+    }
     data_type = (
         SorFieldDataType.REFERENCE
         if vendor_type == JIRA_SPRINT_FIELD_TYPE
-        else {
-            "array": SorFieldDataType.STRING_ARRAY,
-            "date": SorFieldDataType.DATE,
-            "datetime": SorFieldDataType.TIMESTAMP,
-            "number": SorFieldDataType.DECIMAL,
-            "option": SorFieldDataType.TEXT,
-            "string": SorFieldDataType.TEXT,
-            "user": SorFieldDataType.REFERENCE,
-        }.get(_optional_string(schema.get("type")) or "", SorFieldDataType.BOUNDED_JSON)
+        else data_types.get(
+            (_optional_string(schema.type) if schema else None) or "",
+            SorFieldDataType.BOUNDED_JSON,
+        )
     )
     return _field(
         key,
-        _required_string(row.get("name"), field="Jira custom field name"),
+        _required_string(row.name, field="Jira custom field name"),
         data_type,
         writable=True,
-        description=_optional_string(row.get("description")),
+        description=_optional_string(row.description),
         group="Jira custom fields",
         vendor_type=vendor_type,
     )
