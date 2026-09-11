@@ -16,7 +16,14 @@ from html.parser import HTMLParser
 from http import HTTPMethod, HTTPStatus
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+)
 
 from eylo.modules.connections.domain import ConnectionAuthKind
 from eylo.sor.crm.contracts import (
@@ -165,13 +172,27 @@ _ASSOCIATION_FIELDS = {
 }
 _MAX_ASSOCIATIONS_PER_RECORD = 10_000
 _MAX_ASSOCIATION_PAGES = 100
-_WEBHOOK_STREAMS = {
-    "company": HubSpotStream.COMPANIES,
-    "contact": HubSpotStream.CONTACTS,
-    "deal": HubSpotStream.DEALS,
-    "0-1": HubSpotStream.CONTACTS,
-    "0-2": HubSpotStream.COMPANIES,
-    "0-3": HubSpotStream.DEALS,
+
+
+class HubSpotWebhookObjectType(StrEnum):
+    """Native v3 webhook object names and generic object type identifiers."""
+
+    COMPANY = "company"
+    CONTACT = "contact"
+    DEAL = "deal"
+    CONTACT_ID = "0-1"
+    COMPANY_ID = "0-2"
+    DEAL_ID = "0-3"
+    GENERIC = "object"
+
+
+_WEBHOOK_STREAMS: Mapping[str, HubSpotStream] = {
+    HubSpotWebhookObjectType.COMPANY: HubSpotStream.COMPANIES,
+    HubSpotWebhookObjectType.CONTACT: HubSpotStream.CONTACTS,
+    HubSpotWebhookObjectType.DEAL: HubSpotStream.DEALS,
+    HubSpotWebhookObjectType.CONTACT_ID: HubSpotStream.CONTACTS,
+    HubSpotWebhookObjectType.COMPANY_ID: HubSpotStream.COMPANIES,
+    HubSpotWebhookObjectType.DEAL_ID: HubSpotStream.DEALS,
 }
 _WEBHOOK_MAX_EVENTS = 100
 _WEBHOOK_MAX_AGE_MILLISECONDS = 300_000
@@ -343,6 +364,73 @@ class HubSpotAppWebhookDelivery(BaseModel):
 
     organization_external_id: str
     signals: tuple[SorWebhookSignal, ...]
+
+
+class HubSpotWebhookHeader(BaseModel):
+    """Batch routing metadata; unsupported objects need no record projection."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="ignore", hide_input_in_errors=True
+    )
+
+    portal_id: str = Field(alias="portalId")
+    subscription_type: str | None = Field(default=None, alias="subscriptionType")
+    event_type: str | None = Field(default=None, alias="eventType")
+
+    @field_validator("portal_id", mode="before")
+    @classmethod
+    def validate_portal(cls, value: object) -> str:
+        return _webhook_id(value, field="portalId")
+
+    @field_validator("subscription_type", "event_type", mode="before")
+    @classmethod
+    def normalize_event_name(cls, value: object) -> str | None:
+        return _optional_string(value)
+
+    @property
+    def kind(self) -> str:
+        return _hubspot_webhook_event_type(self.subscription_type, self.event_type)
+
+
+class HubSpotGenericWebhookHeader(HubSpotWebhookHeader):
+    """Generic object events must identify the native CRM object type."""
+
+    object_type_id: str = Field(alias="objectTypeId")
+
+    @field_validator("object_type_id", mode="before")
+    @classmethod
+    def validate_object_type(cls, value: object) -> str:
+        return _webhook_id(value, field="objectTypeId")
+
+
+class HubSpotWebhookRecord(BaseModel):
+    """Identity/time for a routed record; objectId takes precedence even if null."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="ignore", hide_input_in_errors=True
+    )
+
+    object_id: str = Field(
+        validation_alias=AliasChoices("objectId", "fromObjectId"),
+        serialization_alias="objectId",
+    )
+    occurred_at_ms: int = Field(alias="occurredAt")
+
+    @field_validator("object_id", mode="before")
+    @classmethod
+    def validate_identity(cls, value: object) -> str:
+        return _webhook_id(value, field="objectId")
+
+    @field_validator("occurred_at_ms")
+    @classmethod
+    def validate_occurrence(cls, value: int) -> int:
+        _webhook_datetime(value)
+        return value
+
+    @property
+    def occurred_at(self) -> datetime:
+        """Convert the native millisecond timestamp only at signal projection."""
+        return _webhook_datetime(self.occurred_at_ms)
 
 
 class HubSpotCrmAdapter:
@@ -989,23 +1077,29 @@ def parse_hubspot_app_webhook(*, body: bytes) -> HubSpotAppWebhookDelivery:
     for raw in payload:
         if not isinstance(raw, Mapping) or not all(isinstance(key, str) for key in raw):
             raise SorWebhookPayloadError("HubSpot webhook event is invalid.")
-        portal_ids.add(_webhook_id(raw.get("portalId"), field="portalId"))
-        event_type = _hubspot_webhook_event_type(raw)
-        object_type = event_type.split(".", 1)[0]
-        if object_type == "object":
-            object_type = _webhook_id(raw.get("objectTypeId"), field="objectTypeId")
-        stream_key = _WEBHOOK_STREAMS.get(object_type)
-        if stream_key is None:
-            continue
-        external_id = _webhook_id(
-            raw.get("objectId", raw.get("fromObjectId")),
-            field="objectId",
-        )
+        try:
+            event = HubSpotWebhookHeader.model_validate(raw)
+            portal_ids.add(event.portal_id)
+            event_type = event.kind
+            object_type = event_type.split(".", 1)[0]
+            if object_type == HubSpotWebhookObjectType.GENERIC:
+                object_type = HubSpotGenericWebhookHeader.model_validate(
+                    raw
+                ).object_type_id
+            stream_key = _WEBHOOK_STREAMS.get(object_type)
+            if stream_key is None:
+                continue
+            record = HubSpotWebhookRecord.model_validate(raw)
+        except ValidationError as error:
+            raise SorWebhookPayloadError(
+                "HubSpot webhook metadata is invalid."
+            ) from error
+        external_id = record.object_id
         signal = _HubSpotWebhookSignal(
             event_type=event_type,
             vendor_object_key=stream_key,
             external_id=external_id,
-            occurred_at=_webhook_datetime(raw.get("occurredAt")),
+            occurred_at=record.occurred_at,
         )
         key = (stream_key, external_id)
         previous = signals.get(key)
@@ -1056,9 +1150,9 @@ def _decode_signature_uri(value: str) -> str:
     )
 
 
-def _hubspot_webhook_event_type(event: Mapping[str, object]) -> str:
-    subscription_type = _optional_string(event.get("subscriptionType"))
-    event_type = _optional_string(event.get("eventType"))
+def _hubspot_webhook_event_type(
+    subscription_type: str | None, event_type: str | None
+) -> str:
     if subscription_type is not None and event_type is not None:
         if subscription_type != event_type:
             raise SorWebhookPayloadError("HubSpot webhook event types disagree.")

@@ -14,7 +14,7 @@ from enum import StrEnum
 from http import HTTPStatus
 from urllib.parse import quote, quote_from_bytes, unquote_to_bytes, urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from eylo.modules.connections.domain import ConnectionAuthKind
 from eylo.sor.knowledge.contracts import (
@@ -271,18 +271,98 @@ class NotionAppWebhookDelivery(BaseModel):
     signal: SorWebhookSignal
 
 
+_NOTION_WEBHOOK_TOKEN_MAX_BYTES = 4096
+_NOTION_SIGNATURE_HEADER = "x-notion-signature"
+_NOTION_SIGNATURE_PREFIX = "sha256="
+
+
+class NotionWebhookEntityType(StrEnum):
+    """Native entity routing names; unknown kinds still produce a broad hint."""
+
+    PAGE = "page"
+    DATA_SOURCE = "data_source"
+    DATABASE = "database"
+    BLOCK = "block"
+
+
+class NotionWebhookModel(BaseModel):
+    """Consumed metadata only; page content and author data are not retained."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="ignore", hide_input_in_errors=True
+    )
+
+
+class NotionWebhookChallenge(NotionWebhookModel):
+    """Unsigned initial challenge, never an authenticated change event."""
+
+    verification_token: str = Field(repr=False, exclude=True)
+
+    @field_validator("verification_token")
+    @classmethod
+    def bound_token(cls, value: str) -> str:
+        if not 1 <= len(value.encode("utf-8")) <= _NOTION_WEBHOOK_TOKEN_MAX_BYTES:
+            raise ValueError("Notion verification token size is invalid.")
+        return value
+
+
+class NotionWebhookEntity(NotionWebhookModel):
+    """Native page/database/block identity before platform stream translation."""
+
+    id: str
+    type: str
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def normalize_id(cls, value: object) -> str:
+        return _notion_id(value, field="webhook entity ID")
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def validate_type(cls, value: object) -> str:
+        return _required_string(value, field="webhook entity type")
+
+
+class NotionWebhookPayload(NotionWebhookModel):
+    """Workspace authority and event metadata; malformed optional dates stay absent."""
+
+    workspace_id: str
+    type: str
+    entity: NotionWebhookEntity
+    id: str | None = None
+    timestamp: datetime | None = None
+
+    @field_validator("workspace_id", mode="before")
+    @classmethod
+    def normalize_workspace(cls, value: object) -> str:
+        return _notion_id(value, field="webhook workspace ID")
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def validate_type(cls, value: object) -> str:
+        return _required_string(value, field="webhook event type")
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def normalize_delivery(cls, value: object) -> str | None:
+        return _optional_string(value)
+
+    @field_validator("timestamp", mode="before")
+    @classmethod
+    def normalize_time(cls, value: object) -> datetime | None:
+        return _optional_datetime(value)
+
+
 def notion_verification_token(*, body: bytes) -> str | None:
     """Return Notion's initial endpoint challenge without accepting an event."""
     try:
         payload = json.loads(body)
     except (UnicodeDecodeError, json.JSONDecodeError):
         return None
-    if not isinstance(payload, Mapping):
+    try:
+        return NotionWebhookChallenge.model_validate(payload).verification_token
+    except ValidationError:
         return None
-    token = payload.get("verification_token")
-    if not isinstance(token, str) or not 1 <= len(token.encode("utf-8")) <= 4096:
-        return None
-    return token
 
 
 def verify_notion_app_webhook(
@@ -292,11 +372,11 @@ def verify_notion_app_webhook(
     verification_token: str,
 ) -> None:
     """Authenticate one Notion delivery against the saved verification token."""
-    signature = _header(headers, "x-notion-signature")
-    if signature is None or not signature.startswith("sha256="):
+    signature = _header(headers, _NOTION_SIGNATURE_HEADER)
+    if signature is None or not signature.startswith(_NOTION_SIGNATURE_PREFIX):
         raise SorWebhookVerificationError("Notion webhook signature is missing.")
     expected = (
-        "sha256="
+        _NOTION_SIGNATURE_PREFIX
         + hmac.new(
             verification_token.encode("utf-8"),
             body,
@@ -316,38 +396,27 @@ def parse_notion_app_webhook(*, body: bytes) -> NotionAppWebhookDelivery:
             "Notion webhook body is not valid JSON."
         ) from error
     try:
-        data = _object(payload, field="Notion webhook")
-        event_type = _required_string(data.get("type"), field="webhook event type")
-        workspace_id = _notion_id(
-            data.get("workspace_id"),
-            field="webhook workspace ID",
-        )
-        entity = _object(data.get("entity"), field="Notion webhook entity")
-        entity_type = _required_string(
-            entity.get("type"),
-            field="webhook entity type",
-        )
-        entity_id = _notion_id(
-            entity.get("id"),
-            field="webhook entity ID",
-        )
-        stream_key = {
-            "page": NotionStream.PAGES,
-            "data_source": NotionStream.DATA_SOURCES,
-            "database": NotionStream.DATA_SOURCES,
-            "block": NotionStream.BLOCKS,
-        }.get(entity_type)
+        event = NotionWebhookPayload.model_validate(payload)
+        streams: Mapping[str, NotionStream] = {
+            NotionWebhookEntityType.PAGE: NotionStream.PAGES,
+            NotionWebhookEntityType.DATA_SOURCE: NotionStream.DATA_SOURCES,
+            NotionWebhookEntityType.DATABASE: NotionStream.DATA_SOURCES,
+            NotionWebhookEntityType.BLOCK: NotionStream.BLOCKS,
+        }
+        stream_key = streams.get(event.entity.type)
         signal = SorWebhookSignal(
-            delivery_id=_optional_string(data.get("id")),
-            event_type=event_type,
+            delivery_id=event.id,
+            event_type=event.type,
             vendor_object_key=stream_key,
-            external_id=entity_id if stream_key is not None else None,
-            occurred_at=_optional_datetime(data.get("timestamp")),
+            external_id=event.entity.id if stream_key is not None else None,
+            occurred_at=event.timestamp,
         )
     except SorVendorOperationError as error:
         raise SorWebhookPayloadError(str(error)) from error
+    except ValidationError as error:
+        raise SorWebhookPayloadError("Notion webhook metadata is invalid.") from error
     return NotionAppWebhookDelivery(
-        organization_external_id=workspace_id,
+        organization_external_id=event.workspace_id,
         signal=signal,
     )
 

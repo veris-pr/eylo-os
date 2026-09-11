@@ -14,7 +14,13 @@ from html.parser import HTMLParser
 from http import HTTPStatus
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from eylo.modules.connections.domain import ConnectionAuthKind
 from eylo.sor.runtime.http import SorHttpTransport, SorJsonHttpClient, SorJsonResponse
@@ -327,6 +333,119 @@ class IntercomAppWebhookDelivery(BaseModel):
     signal: SorWebhookSignal
 
 
+_INTERCOM_SIGNATURE_HEADER = "x-hub-signature"
+_INTERCOM_SIGNATURE_PREFIX = "sha1="
+
+
+class IntercomWebhookTopicPrefix(StrEnum):
+    """Native routing families; the complete topic remains open vendor data."""
+
+    CONTACT = "contact."
+    USER = "user."
+    CONVERSATION = "conversation."
+
+
+class IntercomWebhookItemType(StrEnum):
+    """Item kind used when conversation notifications carry the conversation itself."""
+
+    CONVERSATION = "conversation"
+
+
+class IntercomWebhookModel(BaseModel):
+    """Retain only consumed webhook metadata, never customer message content."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="ignore", hide_input_in_errors=True
+    )
+
+
+class IntercomWebhookItem(IntercomWebhookModel):
+    """Optional native identity; absent identity requests the existing broad sync."""
+
+    id: str | None = None
+    type: str | None = None
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def normalize_id(cls, value: object) -> str | None:
+        return _optional_id(value)
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def normalize_type(cls, value: object) -> str | None:
+        return _optional_string(value)
+
+
+class IntercomWebhookConversationItem(IntercomWebhookItem):
+    """Direct conversation identity precedes the optional nested conversation."""
+
+    conversation_id: str | None = None
+    conversation: IntercomWebhookItem | None = None
+
+    @field_validator("conversation_id", mode="before")
+    @classmethod
+    def normalize_conversation_id(cls, value: object) -> str | None:
+        return _optional_id(value)
+
+    @model_validator(mode="before")
+    @classmethod
+    def select_identity_source(cls, value: object) -> object:
+        # A direct ID makes the nested vendor object irrelevant. Preserve that
+        # precedence rather than newly rejecting unrelated nested fields.
+        if (
+            isinstance(value, Mapping)
+            and _optional_id(value.get("conversation_id")) is not None
+        ):
+            return {**value, "conversation": None}
+        return value
+
+
+class IntercomWebhookData[Item: IntercomWebhookItem](IntercomWebhookModel):
+    """Optional item envelope for the already-selected notification family."""
+
+    item: Item | None = None
+
+
+class IntercomWebhookHeader(IntercomWebhookModel):
+    """Account and topic authority independent of the vendor item's shape."""
+
+    topic: str
+    app_id: str
+    id: str | None = None
+    created_at: datetime | None = None
+
+    @field_validator("topic", mode="before")
+    @classmethod
+    def validate_topic(cls, value: object) -> str:
+        return _required_string(value, field="Intercom webhook topic")
+
+    @field_validator("app_id", mode="before")
+    @classmethod
+    def validate_workspace(cls, value: object) -> str:
+        return _required_id(value, field="Intercom webhook workspace ID")
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def normalize_delivery(cls, value: object) -> str | None:
+        return _optional_id(value)
+
+    @field_validator("created_at", mode="before")
+    @classmethod
+    def normalize_time(cls, value: object) -> datetime | None:
+        return _optional_datetime(value)
+
+
+class IntercomWebhookPayload[Item: IntercomWebhookItem](IntercomWebhookHeader):
+    """A topic-selected typed item, with the existing absent-envelope behavior."""
+
+    data: IntercomWebhookData[Item] | None = None
+
+    @field_validator("data", mode="before")
+    @classmethod
+    def normalize_envelope(cls, value: object) -> object:
+        return value if isinstance(value, (Mapping, IntercomWebhookData)) else None
+
+
 def verify_intercom_app_webhook(
     *,
     headers: Mapping[str, str],
@@ -334,11 +453,11 @@ def verify_intercom_app_webhook(
     client_secret: str,
 ) -> None:
     """Authenticate one Intercom app delivery against its raw request bytes."""
-    signature = _header(headers, "x-hub-signature")
-    if signature is None or not signature.startswith("sha1="):
+    signature = _header(headers, _INTERCOM_SIGNATURE_HEADER)
+    if signature is None or not signature.startswith(_INTERCOM_SIGNATURE_PREFIX):
         raise SorWebhookVerificationError("Intercom webhook signature is missing.")
     expected = (
-        "sha1="
+        _INTERCOM_SIGNATURE_PREFIX
         + hmac.new(
             client_secret.encode("utf-8"),
             body,
@@ -358,30 +477,28 @@ def parse_intercom_app_webhook(*, body: bytes) -> IntercomAppWebhookDelivery:
             "Intercom webhook body is not valid JSON."
         ) from error
     try:
-        data = _object(payload, field="Intercom webhook")
-        topic = _required_string(data.get("topic"), field="Intercom webhook topic")
-        workspace_id = _required_id(
-            data.get("app_id"),
-            field="Intercom webhook workspace ID",
-        )
-        envelope = data.get("data")
-        item = (
-            _object(envelope.get("item"), field="Intercom webhook item")
-            if isinstance(envelope, Mapping) and envelope.get("item") is not None
-            else {}
-        )
-        object_key, external_id = _webhook_identity(topic, item)
+        header = IntercomWebhookHeader.model_validate(payload)
+        if header.topic.casefold().startswith(IntercomWebhookTopicPrefix.CONVERSATION):
+            event = IntercomWebhookPayload[
+                IntercomWebhookConversationItem
+            ].model_validate(payload)
+        else:
+            event = IntercomWebhookPayload[IntercomWebhookItem].model_validate(payload)
+        item = event.data.item if event.data is not None else None
+        object_key, external_id = _webhook_identity(event.topic, item)
         signal = SorWebhookSignal(
-            delivery_id=_optional_id(data.get("id")),
-            event_type=topic,
+            delivery_id=event.id,
+            event_type=event.topic,
             vendor_object_key=object_key,
             external_id=external_id,
-            occurred_at=_optional_datetime(data.get("created_at")),
+            occurred_at=event.created_at,
         )
     except SorVendorOperationError as error:
         raise SorWebhookPayloadError(str(error)) from error
+    except ValidationError as error:
+        raise SorWebhookPayloadError("Intercom webhook metadata is invalid.") from error
     return IntercomAppWebhookDelivery(
-        organization_external_id=workspace_id,
+        organization_external_id=event.app_id,
         signal=signal,
     )
 
@@ -2101,18 +2218,21 @@ def _latest_message_part(
 
 def _webhook_identity(
     topic: str,
-    item: Mapping[str, object],
-) -> tuple[str | None, str | None]:
+    item: IntercomWebhookItem | None,
+) -> tuple[IntercomStream | None, str | None]:
     lowered = topic.casefold()
-    if lowered.startswith("contact.") or lowered.startswith("user."):
-        return IntercomStream.CONTACTS, _optional_id(item.get("id"))
-    if lowered.startswith("conversation."):
-        direct = _optional_id(item.get("conversation_id"))
-        if direct is None:
-            conversation = _optional_object(item.get("conversation"))
-            direct = _optional_id(conversation.get("id"))
-        if direct is None and _optional_string(item.get("type")) == "conversation":
-            direct = _optional_id(item.get("id"))
+    if lowered.startswith(
+        (IntercomWebhookTopicPrefix.CONTACT, IntercomWebhookTopicPrefix.USER)
+    ):
+        return IntercomStream.CONTACTS, item.id if item is not None else None
+    if lowered.startswith(IntercomWebhookTopicPrefix.CONVERSATION):
+        direct = None
+        if isinstance(item, IntercomWebhookConversationItem):
+            direct = item.conversation_id
+            if direct is None and item.conversation is not None:
+                direct = item.conversation.id
+            if direct is None and item.type == IntercomWebhookItemType.CONVERSATION:
+                direct = item.id
         return IntercomStream.CONVERSATIONS, direct
     return None, None
 
