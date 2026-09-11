@@ -11,7 +11,7 @@ import re
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
-from http import HTTPStatus
+from http import HTTPMethod, HTTPStatus
 from urllib.parse import quote, unquote, urlparse
 
 from pydantic import BaseModel, ConfigDict
@@ -78,6 +78,26 @@ from eylo.sor.ticketing.contracts import (
     TicketingWorkflowState,
     TicketingWorkflowStatePayload,
 )
+from eylo.sor.ticketing.vendors.github_webhooks import (
+    GITHUB_WEBHOOK_DELIVERY_HEADER,
+    GITHUB_WEBHOOK_EVENT_HEADER,
+    GITHUB_WEBHOOK_FIRST_PAGE,
+    GITHUB_WEBHOOK_HEADER_MAX_LENGTH,
+    GITHUB_WEBHOOK_NO_ACTION,
+    GITHUB_WEBHOOK_PAGE_SIZE,
+    GITHUB_WEBHOOK_RECOVERY_MAX_PAGES,
+    GITHUB_WEBHOOK_SIGNATURE_HEADER,
+    GitHubWebhookConfig,
+    GitHubWebhookCreateRequest,
+    GitHubWebhookDelivery,
+    GitHubWebhookEvent,
+    GitHubWebhookList,
+    GitHubWebhookListQuery,
+    GitHubWebhookRecord,
+    GitHubWebhookWire,
+    parse_github_webhook_body,
+    parse_github_webhook_response,
+)
 
 GITHUB_ORIGIN = "https://api.github.com"
 GITHUB_API_VERSION = "2026-03-10"
@@ -98,11 +118,11 @@ class GitHubStream(StrEnum):
 
 
 _WEBHOOK_EVENTS = (
-    TicketingToolName.COMMENT,
-    GitHubStream.ISSUES,
-    "label",
-    "milestone",
-    "repository",
+    GitHubWebhookEvent.ISSUE_COMMENT,
+    GitHubWebhookEvent.ISSUES,
+    GitHubWebhookEvent.LABEL,
+    GitHubWebhookEvent.MILESTONE,
+    GitHubWebhookEvent.REPOSITORY,
 )
 _WEBHOOK_ID_VERSION = 1
 
@@ -595,24 +615,17 @@ class GitHubTicketingAdapter:
             if existing is None:
                 response = await self._client.request(
                     f"/repos/{_repository_path(repository)}/hooks",
-                    method="POST",
-                    payload={
-                        "name": "web",
-                        "active": True,
-                        "events": list(_WEBHOOK_EVENTS),
-                        "config": {
-                            "url": callback_url,
-                            "content_type": "json",
-                            "insecure_ssl": "0",
-                            "secret": secret,
-                        },
-                    },
+                    method=HTTPMethod.POST,
+                    payload=GitHubWebhookCreateRequest(
+                        events=_WEBHOOK_EVENTS,
+                        config=GitHubWebhookConfig(url=callback_url, secret=secret),
+                    ).to_vendor_payload(),
                 )
-                row = _object(
+                row = parse_github_webhook_response(
                     _expect(response, operation="create GitHub repository webhook"),
-                    field="GitHub webhook",
+                    GitHubWebhookRecord,
                 )
-                existing = _required_integer(row.get("id"), field="webhook ID")
+                existing = _required_integer(row.id, field="webhook ID")
             hooks.append((repository, existing))
         return SorWebhookSubscription(external_id=_encode_webhook_ids(hooks))
 
@@ -627,7 +640,7 @@ class GitHubTicketingAdapter:
         for repository, hook_id in _decode_webhook_ids(subscription.external_id):
             response = await self._client.request(
                 f"/repos/{_repository_path(repository)}/hooks/{hook_id}",
-                method="DELETE",
+                method=HTTPMethod.DELETE,
             )
             if response.status_code not in {
                 HTTPStatus.NO_CONTENT,
@@ -644,31 +657,41 @@ class GitHubTicketingAdapter:
         repository: str,
         callback_url: str,
     ) -> int | None:
-        """Recover only an exact Eylo callback after an interrupted registration."""
-        response = await self._client.request(
-            f"/repos/{_repository_path(repository)}/hooks",
-            query={"per_page": 100},
-        )
-        rows = _object_list(
-            _expect(response, operation="list GitHub repository webhooks"),
-            field="GitHub webhooks",
-        )
+        """Finish bounded repository recovery before declaring a registration absent."""
         exact: list[int] = []
         expected_events = frozenset(_WEBHOOK_EVENTS)
-        for row in rows:
-            config = _optional_object(row.get("config"))
-            if _optional_string(config.get("url")) != callback_url:
-                continue
-            events = frozenset(_string_tuple(row.get("events")))
-            if events == expected_events and row.get("active") is True:
-                exact.append(_required_integer(row.get("id"), field="webhook ID"))
-        if len(exact) > 1:
-            raise SorVendorOperationError(
-                SorVendorErrorCode.VENDOR_WEBHOOK_AMBIGUOUS,
-                "GitHub returned multiple active hooks for the exact Eylo callback.",
-                recovery=SorRecoveryPolicy.TERMINAL,
+        for page in range(
+            GITHUB_WEBHOOK_FIRST_PAGE,
+            GITHUB_WEBHOOK_FIRST_PAGE + GITHUB_WEBHOOK_RECOVERY_MAX_PAGES,
+        ):
+            response = await self._client.request(
+                f"/repos/{_repository_path(repository)}/hooks",
+                query=GitHubWebhookListQuery(page=page).model_dump(mode="json"),
             )
-        return exact[0] if exact else None
+            rows = parse_github_webhook_response(
+                _expect(response, operation="list GitHub repository webhooks"),
+                GitHubWebhookList,
+            ).root
+            for row in rows:
+                config = row.config
+                if config is None or _optional_string(config.url) != callback_url:
+                    continue
+                events = frozenset(_string_tuple(row.events))
+                if events == expected_events and row.active is True:
+                    exact.append(_required_integer(row.id, field="webhook ID"))
+            if len(exact) > 1:
+                raise SorVendorOperationError(
+                    SorVendorErrorCode.VENDOR_WEBHOOK_AMBIGUOUS,
+                    "GitHub returned multiple active hooks for the exact Eylo callback.",
+                    recovery=SorRecoveryPolicy.TERMINAL,
+                )
+            # Explicit page numbers keep remote pagination URLs out of the request
+            # target. A full page requires another read, including at the limit.
+            if len(rows) < GITHUB_WEBHOOK_PAGE_SIZE:
+                return exact[0] if exact else None
+        raise _invalid_response(
+            "GitHub webhook recovery exceeded the bounded page limit."
+        )
 
     async def verify_webhook(
         self,
@@ -681,7 +704,7 @@ class GitHubTicketingAdapter:
             raise SorWebhookVerificationError(
                 "GitHub webhook signing secret is not configured."
             )
-        signature = _header(headers, "x-hub-signature-256")
+        signature = _header(headers, GITHUB_WEBHOOK_SIGNATURE_HEADER)
         if signature is None or not re.fullmatch(r"sha256=[0-9a-fA-F]{64}", signature):
             raise SorWebhookVerificationError("GitHub webhook signature is invalid.")
         expected = (
@@ -694,7 +717,9 @@ class GitHubTicketingAdapter:
         )
         if not hmac.compare_digest(signature.lower(), expected):
             raise SorWebhookVerificationError("GitHub webhook signature is invalid.")
-        _webhook_body(body, verification=True)
+        parse_github_webhook_body(
+            body, GitHubWebhookWire, error_type=SorWebhookVerificationError
+        )
 
     async def parse_webhook_signal(
         self,
@@ -702,12 +727,17 @@ class GitHubTicketingAdapter:
         headers: Mapping[str, str],
         body: bytes,
     ) -> tuple[SorWebhookSignal, ...]:
-        payload = _webhook_body(body, verification=False)
-        event_name = _required_header(headers, "x-github-event", "event")
-        delivery_id = _required_header(headers, "x-github-delivery", "delivery ID")
-        action = _optional_string(payload.get("action")) or "received"
-        repository_row = _optional_object(payload.get("repository"))
-        repository = _optional_string(repository_row.get("full_name"))
+        payload = parse_github_webhook_body(body, GitHubWebhookDelivery)
+        event_name = _required_header(headers, GITHUB_WEBHOOK_EVENT_HEADER, "event")
+        delivery_id = _required_header(
+            headers, GITHUB_WEBHOOK_DELIVERY_HEADER, "delivery ID"
+        )
+        action = _optional_string(payload.action) or GITHUB_WEBHOOK_NO_ACTION
+        repository = (
+            _optional_string(payload.repository.full_name)
+            if payload.repository is not None
+            else None
+        )
         configured_repository = self._optional_configured_repository(repository)
 
         stream_key: str | None = None
@@ -1918,77 +1948,71 @@ def _issue_number_from_url(value: object, repository: str) -> int:
 
 def _webhook_record_identity(
     event_name: str,
-    payload: Mapping[str, object],
+    payload: GitHubWebhookDelivery,
     *,
     repository: str,
 ) -> tuple[str | None, str | None, datetime | None]:
-    if event_name == GitHubStream.ISSUES:
-        row = _object(payload.get("issue"), field="GitHub webhook issue")
-        if "pull_request" in row:
+    if event_name == GitHubWebhookEvent.ISSUES:
+        row = payload.issue
+        if row is None:
+            raise _invalid_response("GitHub webhook issue is invalid.")
+        if row.is_pull_request:
             return None, None, None
         return (
             GitHubStream.ISSUES,
             _issue_external_id(
                 repository,
-                _required_integer(row.get("number"), field="GitHub issue number"),
+                _required_integer(row.number, field="GitHub issue number"),
             ),
-            _optional_datetime(row.get("updated_at")),
+            _optional_datetime(row.updated_at),
         )
-    if event_name == TicketingToolName.COMMENT:
-        issue = _object(payload.get("issue"), field="GitHub webhook issue")
-        if "pull_request" in issue:
+    if event_name == GitHubWebhookEvent.ISSUE_COMMENT:
+        issue = payload.issue
+        if issue is None:
+            raise _invalid_response("GitHub webhook issue is invalid.")
+        if issue.is_pull_request:
             return None, None, None
-        comment = _object(payload.get("comment"), field="GitHub webhook comment")
+        comment = payload.comment
+        if comment is None:
+            raise _invalid_response("GitHub webhook comment is invalid.")
         return (
             GitHubStream.COMMENTS,
             _comment_external_id(
                 repository,
-                _required_integer(comment.get("id"), field="GitHub comment ID"),
+                _required_integer(comment.id, field="GitHub comment ID"),
             ),
-            _optional_datetime(comment.get("updated_at")),
+            _optional_datetime(comment.updated_at),
         )
-    if event_name == "label":
-        row = _object(payload.get("label"), field="GitHub webhook label")
+    if event_name == GitHubWebhookEvent.LABEL:
+        label = payload.label
+        if label is None:
+            raise _invalid_response("GitHub webhook label is invalid.")
         return (
             GitHubStream.LABELS,
             _label_external_id(
                 repository,
-                _required_string(row.get("name"), field="GitHub label name"),
+                _required_string(label.name, field="GitHub label name"),
             ),
             None,
         )
-    if event_name == "milestone":
-        row = _object(payload.get("milestone"), field="GitHub webhook milestone")
+    if event_name == GitHubWebhookEvent.MILESTONE:
+        milestone = payload.milestone
+        if milestone is None:
+            raise _invalid_response("GitHub webhook milestone is invalid.")
         return (
             GitHubStream.MILESTONES,
             _milestone_external_id(
                 repository,
                 _required_integer(
-                    row.get("number"),
+                    milestone.number,
                     field="GitHub milestone number",
                 ),
             ),
-            _optional_datetime(row.get("updated_at")),
+            _optional_datetime(milestone.updated_at),
         )
-    if event_name == "repository":
+    if event_name == GitHubWebhookEvent.REPOSITORY:
         return GitHubStream.REPOSITORIES, repository, None
     return None, None, None
-
-
-def _webhook_body(body: bytes, *, verification: bool) -> Mapping[str, object]:
-    try:
-        value = json.loads(body)
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
-        exception = (
-            SorWebhookVerificationError if verification else SorWebhookPayloadError
-        )
-        raise exception("GitHub webhook payload is invalid.") from error
-    if not isinstance(value, Mapping) or not all(isinstance(key, str) for key in value):
-        exception = (
-            SorWebhookVerificationError if verification else SorWebhookPayloadError
-        )
-        raise exception("GitHub webhook payload is invalid.")
-    return value
 
 
 def _header(headers: Mapping[str, str], name: str) -> str | None:
@@ -2005,7 +2029,12 @@ def _header(headers: Mapping[str, str], name: str) -> str | None:
 
 def _required_header(headers: Mapping[str, str], name: str, label: str) -> str:
     value = _header(headers, name)
-    if value is None or len(value) > 512 or "\r" in value or "\n" in value:
+    if (
+        value is None
+        or len(value) > GITHUB_WEBHOOK_HEADER_MAX_LENGTH
+        or "\r" in value
+        or "\n" in value
+    ):
         raise SorWebhookPayloadError(f"GitHub webhook {label} is invalid.")
     return value
 

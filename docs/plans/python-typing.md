@@ -11,21 +11,24 @@ are superseded by the newest deployment record.
 | --- | --- | --- |
 | Static backend contracts | Lint passes; Pyrefly has zero errors and two existing redundant-cast warnings | Static success does not prove native input shapes |
 | SOR vendor wire coverage | HubSpot, Salesforce and Confluence wire contracts deployed; Confluence native list/exact reads and fresh seven-stream sync passed; Salesforce passed 164 function assertions | Salesforce is not configured in QA; remaining registered vendor boundaries still need operation-level coverage |
+| App-webhook ingress contracts | Four-vendor batch deployed on image `84b315c2fb99`; 597 contract checks, 28 substituted ingress scenarios and Linear signature/routing checks passed inside the image | Fresh native deliveries remain open; HubSpot raw payloads expired, no Intercom/Notion receipts in QA |
+| Managed webhook contracts | Jira/GitHub/Zendesk request/response models deployed on image `d190e5e81c29`; 131/48/90 operation cases and nine GitHub pagination regressions passed locally and inside the network-isolated image | Native Jira/Zendesk require reauthorization, GitHub SOR is not configured; inbound contracts for these three are separate remaining work |
 | CLI typing | CLI-owned Pydantic contracts, independent environment synchronized; explicit CLI typing passes; 102 function checks, 332 live-catalog action parity checks and authenticated collection reads passed | Not proof that every API action or vendor execution succeeds |
 | Stored provider compatibility | 25 saved configs inspected; 13 ready voice receipts restored; native Speechmatics connection/cleanup passed | Native conversations across configured providers |
 | Published voice bindings | Public CLI aggregate resolves both existing realtime and decomposed QA agents at revision 1 | Both have no storage binding; recording upload is not covered |
 | Scheduler filing and stranded recovery | Original one-shot recovered once, ran real `issue_search`/`issue_get`, completed/achieved and released capacity | Worker-crash and waiting/resume cases remain separate |
-| Widget and console | Both development servers return HTTP 200; earlier widget inventory/conversation list loaded | Latest browser inventory call also timed out; fresh browser conversation not submitted |
+| Widget and console | Widget opened and sent one fresh read-only message on image `d190e5e81c29`; public console API confirms both SOR tools and final answer completed without tool errors | Browser observation timed out after submission and on recheck; visual response and console rendering remain unverified |
 | Durable execution | Saved contexts/results, isolated replay, and one native scheduled tool-bearing result validated | Background/objective execution, cancellation, crash/restart and waiting/resume |
 | Sandbox | Typed workspace/checkpoint/tool paths validated with substituted dependencies | Native configured sandbox execution/cleanup |
-| Final handoff | HEAD advanced independently to `fd97a670`, including sync/webhook receipts and HubSpot/Salesforce/Confluence wire contracts; latest QA documentation remains uncommitted; no migrations or provider data reset | Complete remaining contracts, milestone review, final QA matrix |
+| Final handoff | HEAD remains `21ed7c43`; managed-webhook models, final HubSpot constants and documentation remain uncommitted; no migrations or provider data reset | Complete remaining contracts and final QA matrix; this batch's consolidated review is recorded below |
 
 The current deployed checkpoint includes the scheduler correction, telephony,
 HTTP, PCM audio, collection/internal values, timeline/erasure, SOR tool-receipt
 and event/periodic contracts, plus the shared SOR catalog/mapping/projection and
 SOR HTTP response batch, remaining SOR values, typed work lifecycle,
-sync/webhook receipts and HubSpot/Salesforce/Confluence wire contracts, on image
-`sha256:54c56c7da7a6f08ca8131d83a74024a3d276f8a29c04079300bd54b204493f6c`.
+sync/webhook receipts, HubSpot/Salesforce/Confluence wire contracts, the four
+app-webhook metadata contracts and Jira/GitHub/Zendesk management contracts, on image
+`sha256:d190e5e81c29963b89788e8cdaaee6344e0fb60c1229a82ed40cdc7b8993e4ec`.
 API, durable worker, ordinary worker and scheduler were recreated on that image;
 all four are running and API health passed. The 383 transport and 189 call-tool
 checks passed inside the new image before recreation. Console lint/type/build and widget SDK plus
@@ -37,6 +40,66 @@ DB and Redis container identities were rechecked after deployment and remain
 `615b91925226` and `c07c38389f13`. The native QA schedule remains revision 1,
 with no duplicate or manually rearmed occurrence. Its failed claim was recovered
 by the normal stranded-schedule scan at 23:05 UTC on 2026-09-10.
+
+### Managed webhook checkpoint — 2026-09-11, deployed
+
+- Contract: adapter-owned Pydantic request/response values for Jira REST v3,
+  GitHub REST `2026-03-10` and Zendesk Webhooks API. Event enums retain exact native
+  spellings. No scopes, source configs, public schemas, dependencies or migrations
+  changed. Source claims, configuration fences and secret encryption remain in
+  their existing service/runtime owners.
+- Review, in order: DDD ownership (native models stay inside vendor adapters);
+  architecture fit (no second registration authority); data flow (claim commit →
+  bounded HTTP → validated subscription → fenced DB completion); plan adherence
+  (wire conversion, not OAuth redesign); clean code/security/performance (explicit
+  secret serialization, finite response fields, bounded recovery).
+- Confirmed pre-existing defect exposed in review: GitHub recovery treated the
+  first 100 hooks as the complete collection. A local page-two fixture returned
+  `None`, which permits a conflicting creation attempt. Recovery now traverses
+  numbered pages on the pinned repository endpoint, checks duplicates across
+  pages, and refuses incomplete results after ten pages. Full boundary/error
+  cases passed, including no POST after an incomplete/error response.
+- Function evidence: 131 Jira, 48 GitHub and 90 Zendesk operation cases use actual
+  adapters, contexts and HTTP builders with substituted transport. Nine additional
+  GitHub pagination cases passed. Immutable pre-change event tuples independently
+  match the new enum values; the request comparison normalizes only GitHub's
+  documented omitted-page versus explicit `page=1` equivalence. Secret exclusion,
+  frozen assignment and alias-aware JSON restoration passed. No real vendor
+  mutations or DB writes occurred in these probes.
+- Deliberate compatibility tightening: all consumed response fields validate
+  before cleanup. Malformed metadata in unrelated rows now fails rather than
+  being ignored; malformed registration IDs can classify as response-invalid
+  before a simultaneous vendor-error list. Both remain terminal failures. Unknown
+  unconsumed fields are ignored. No full malformed-input parity is claimed.
+- Backend/CLI lint, backend typing (zero errors, two existing redundant-cast
+  warnings), documentation validation and diff checks passed. This
+  checkpoint does not cover the three vendors' inbound webhook body contracts,
+  native registration, DB concurrency or crash recovery.
+
+The same operation and pagination probes passed inside the built image with
+networking disabled and production modules loaded from the image, not mounted
+working-tree source. All four app services were recreated on `d190e5e81c29`.
+API health and worker startup passed. Environment hashes match before/after;
+DB and Redis remain the exact containers listed above. No schema, dependency,
+provider configuration or credential reset occurred. A seven-minute log scan
+across API and all workers found zero error/traceback markers. Authenticated
+source listing still reports Confluence/HubSpot/Linear active and Jira/Zendesk
+requiring reauthorization; no native registration was attempted for those sources.
+
+Browser inventory and the existing widget conversation list became accessible.
+One read-only request was submitted through the widget to `QA SOR Audit Agent` in
+conversation `01a08a9f-bfbc-7ae0-b5bd-6f5ca21ecd2c`. Browser observation then timed
+out; the message was not resent. Public conversation API checked all 57 messages
+(`hasMore=false`) and found exactly one marker
+`QA_MANAGED_WEBHOOK_DEPLOY_20260911`. User message
+`01a08f99-07b3-76c0-ad29-1495f085fde8`, two tool calls (`issue_get__687b367e` and
+`docs_get__ea268df3`), both results and final assistant message
+`01a08f99-41ee-7752-8dfe-a4245c153ff2` are all completed. Both result error flags
+are false. The final answer reports VER-50 completed and the Confluence document
+at version 4. This proves widget submission → configured LLM → canonical SOR
+tools → persisted messages/public console projection. It is not a live vendor
+mutation or final visual-rendering proof; browser response/console observation
+remains blocked by the automation timeout.
 
 ### Confluence wire checkpoint — 2026-09-11, deployed; native reads passed
 
@@ -102,7 +165,7 @@ metadata. No content was logged or stored. Git HEAD advanced independently durin
 QA; the agent did not create that commit. Only subsequent evidence edits remained
 dirty at that observation.
 
-### Linear webhook contract checkpoint — 2026-09-11, locally verified
+### Linear webhook contract checkpoint — 2026-09-11, deployed
 
 Added vendor-owned webhook metadata models in `sor/shared/linear_webhooks.py`.
 The Ticketing adapter's existing public verification/parsing functions remain
@@ -141,9 +204,65 @@ Verification:
 - Full backend typing passes with zero errors and the same two existing
   redundant-cast warnings. Full backend/CLI lint passes. No probe files added.
 
-This checkpoint is not yet deployed. Continue the remaining vendor boundary
+This checkpoint is deployed with the app-webhook batch below. Continue the remaining vendor boundary
 inventory, then include it in the next verified runtime deployment. Full-platform
 acceptance, native voice/widget and durable lifecycle QA remain open.
+
+### Remaining app-webhook metadata — 2026-09-11, deployed
+
+HubSpot, Intercom and Notion now validate consumed webhook payloads into their own
+frozen Pydantic models before signal projection. No shared vendor payload schema
+was imposed: HubSpot validates routing headers before supported-record fields;
+Intercom selects item shape by topic; Notion separates initial challenges from
+signed events. Known object names, topic families and signature headers/prefixes
+use vendor-owned enums/constants. Unknown event kinds keep their existing behavior.
+
+Verification completed against immutable pre-change functions at `39adccdc`:
+
+- HubSpot: 313 checks for supported/unsupported object families, mixed accounts,
+  bounded batches, duplicate ordering, equal timestamps, generic object type IDs,
+  association identity fallback, null versus missing fields, v3 URI signing and
+  five-minute timestamp boundaries.
+- Intercom: 159 checks for contact/user/conversation/unknown topics, direct and
+  nested conversation identity precedence, absent envelopes, malformed consumed
+  fields, numeric/string IDs, optional dates and raw-body signature verification.
+- Notion: 125 checks for page/database/data-source/block/unknown entity kinds,
+  workspace identity, optional dates, malformed metadata, byte-bounded challenge
+  tokens and raw-body signature verification. Challenge tokens remain excluded
+  from generic snapshots.
+- Tested valid inputs retain identical normalized JSON results. Refusals retain
+  exception categories; Pydantic structural failures use a safe vendor-specific
+  metadata summary. Frozen model and alias-aware JSON restoration checks pass.
+  A probe caught and corrected HubSpot timestamp serialization before deployment:
+  its wire model now retains milliseconds and exposes datetime at projection.
+- 28 actual ingress-function scenarios use real parsers, authority/ORM models and
+  signal serialization with substituted persistence/dispatch. They cover selected
+  sources, unknown events, duplicate delivery, workspace mismatches before/after
+  resolution, secret-revision races, failed commit, failed dispatch and the Notion
+  challenge branch. This is not concurrent DB or worker-crash acceptance.
+- Native read-only inspection found two HubSpot receipts with expired raw bodies,
+  and no Intercom/Notion receipts. No native-payload comparison or fresh delivery
+  is claimed for this batch. No vendor mutations or receipt replays occurred.
+
+Full backend typing has zero errors and the same two redundant-cast warnings;
+backend/CLI lint passes. Current temporary probes are outside the repository.
+No API schema, provider scopes, source settings, DB migrations or UI changed.
+This batch and Linear were deployed together on image `84b315c2fb99`.
+The 597 contract checks and 28 ingress-function scenarios passed inside the built
+image with networking disabled, plus Linear raw-signature, tamper-refusal and
+issue-routing checks. Persistence and dispatch remain substituted in these probes;
+they do not establish native delivery or concurrent DB acceptance.
+
+Only API, durable worker, ordinary worker and scheduler were recreated. All four
+use the new image and are running; API health passed. Their full environment
+digests match the prior containers. PostgreSQL and Redis retain their original
+container identities. No migration, dependency, volume or provider config changed.
+The startup log scan found zero error/traceback/validation markers across all four
+app services. Authenticated public CLI source reads returned the existing five
+sources: Confluence, HubSpot and Linear active; Jira and Zendesk still requiring
+reauthorization. Fresh native webhook acceptance and full-platform scope remain
+open. The disposable image-probe packaging error and expired CLI login were
+resolved before these acceptance checks; neither required a product-code change.
 
 ### Contract checkpoint deployment — 2026-09-11 01:53 UTC
 

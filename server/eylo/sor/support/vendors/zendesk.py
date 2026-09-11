@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from email.utils import parsedate_to_datetime
 from enum import StrEnum
-from http import HTTPStatus
+from http import HTTPMethod, HTTPStatus
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict
@@ -79,6 +79,26 @@ from eylo.sor.support.contracts import (
     SupportTicketState,
     SupportToolName,
 )
+from eylo.sor.support.vendors.zendesk_webhooks import (
+    ZENDESK_WEBHOOK_DELIVERY_HEADER,
+    ZENDESK_WEBHOOK_SIGNATURE_HEADER,
+    ZENDESK_WEBHOOK_TICKET_SUBJECT_PREFIX,
+    ZENDESK_WEBHOOK_TIMESTAMP_HEADER,
+    ZENDESK_WEBHOOK_UNSPECIFIED_EVENT,
+    ZendeskWebhookCreateRequest,
+    ZendeskWebhookCreateResponse,
+    ZendeskWebhookDelivery,
+    ZendeskWebhookDetails,
+    ZendeskWebhookEvent,
+    ZendeskWebhookListQuery,
+    ZendeskWebhookListResponse,
+    ZendeskWebhookRequestFormat,
+    ZendeskWebhookSigningAlgorithm,
+    ZendeskWebhookSigningResponse,
+    ZendeskWebhookStatus,
+    parse_zendesk_webhook_body,
+    parse_zendesk_webhook_response,
+)
 
 ZENDESK_API_VERSION = "ticketing-v2"
 ZENDESK_CURSOR_VERSION = 1
@@ -86,54 +106,53 @@ ZENDESK_WEBHOOK_TOLERANCE = timedelta(minutes=5)
 ZENDESK_INITIAL_START_TIME = 1
 ZENDESK_COMMENT_PAGE_SIZE = 100
 ZENDESK_COMMENT_PAGE_LIMIT = 50
-ZENDESK_WEBHOOK_PAGE_SIZE = 100
 
 READ_SCOPE = "read"
 WRITE_SCOPE = "write"
 
 _TICKET_WEBHOOK_EVENTS = (
-    "zen:event-type:ticket.agent_assignment_changed",
-    "zen:event-type:ticket.brand_changed",
-    "zen:event-type:ticket.created",
-    "zen:event-type:ticket.custom_field_changed",
-    "zen:event-type:ticket.custom_status_changed",
-    "zen:event-type:ticket.description_changed",
-    "zen:event-type:ticket.external_id_changed",
-    "zen:event-type:ticket.form_changed",
-    "zen:event-type:ticket.group_assignment_changed",
-    "zen:event-type:ticket.marked_as_spam",
-    "zen:event-type:ticket.merged",
-    "zen:event-type:ticket.organization_changed",
-    "zen:event-type:ticket.permanently_deleted",
-    "zen:event-type:ticket.priority_changed",
-    "zen:event-type:ticket.problem_link_changed",
-    "zen:event-type:ticket.requester_changed",
-    "zen:event-type:ticket.soft_deleted",
-    "zen:event-type:ticket.status_changed",
-    "zen:event-type:ticket.subject_changed",
-    "zen:event-type:ticket.submitter_changed",
-    "zen:event-type:ticket.tags_changed",
-    "zen:event-type:ticket.task_due_at_changed",
-    "zen:event-type:ticket.type_changed",
-    "zen:event-type:ticket.undeleted",
+    ZendeskWebhookEvent.AGENT_ASSIGNMENT_CHANGED,
+    ZendeskWebhookEvent.BRAND_CHANGED,
+    ZendeskWebhookEvent.CREATED,
+    ZendeskWebhookEvent.CUSTOM_FIELD_CHANGED,
+    ZendeskWebhookEvent.CUSTOM_STATUS_CHANGED,
+    ZendeskWebhookEvent.DESCRIPTION_CHANGED,
+    ZendeskWebhookEvent.EXTERNAL_ID_CHANGED,
+    ZendeskWebhookEvent.FORM_CHANGED,
+    ZendeskWebhookEvent.GROUP_ASSIGNMENT_CHANGED,
+    ZendeskWebhookEvent.MARKED_AS_SPAM,
+    ZendeskWebhookEvent.MERGED,
+    ZendeskWebhookEvent.ORGANIZATION_CHANGED,
+    ZendeskWebhookEvent.PERMANENTLY_DELETED,
+    ZendeskWebhookEvent.PRIORITY_CHANGED,
+    ZendeskWebhookEvent.PROBLEM_LINK_CHANGED,
+    ZendeskWebhookEvent.REQUESTER_CHANGED,
+    ZendeskWebhookEvent.SOFT_DELETED,
+    ZendeskWebhookEvent.STATUS_CHANGED,
+    ZendeskWebhookEvent.SUBJECT_CHANGED,
+    ZendeskWebhookEvent.SUBMITTER_CHANGED,
+    ZendeskWebhookEvent.TAGS_CHANGED,
+    ZendeskWebhookEvent.TASK_DUE_AT_CHANGED,
+    ZendeskWebhookEvent.TYPE_CHANGED,
+    ZendeskWebhookEvent.UNDELETED,
 )
 _COMMENT_WEBHOOK_EVENTS = (
-    "zen:event-type:ticket.comment_added",
-    "zen:event-type:ticket.comment_made_private",
-    "zen:event-type:ticket.comment_redacted",
+    ZendeskWebhookEvent.COMMENT_ADDED,
+    ZendeskWebhookEvent.COMMENT_MADE_PRIVATE,
+    ZendeskWebhookEvent.COMMENT_REDACTED,
 )
 _ATTACHMENT_WEBHOOK_EVENTS = (
-    "zen:event-type:ticket.attachment_linked_to_comment",
-    "zen:event-type:ticket.attachment_redacted_from_comment",
+    ZendeskWebhookEvent.ATTACHMENT_LINKED_TO_COMMENT,
+    ZendeskWebhookEvent.ATTACHMENT_REDACTED_FROM_COMMENT,
 )
 _METRIC_WEBHOOK_EVENTS = (
-    "zen:event-type:ticket.agent_assignment_changed",
-    "zen:event-type:ticket.comment_added",
-    "zen:event-type:ticket.group_assignment_changed",
-    "zen:event-type:ticket.next_sla_breach_changed",
-    "zen:event-type:ticket.schedule_changed",
-    "zen:event-type:ticket.sla_policy_changed",
-    "zen:event-type:ticket.status_changed",
+    ZendeskWebhookEvent.AGENT_ASSIGNMENT_CHANGED,
+    ZendeskWebhookEvent.COMMENT_ADDED,
+    ZendeskWebhookEvent.GROUP_ASSIGNMENT_CHANGED,
+    ZendeskWebhookEvent.NEXT_SLA_BREACH_CHANGED,
+    ZendeskWebhookEvent.SCHEDULE_CHANGED,
+    ZendeskWebhookEvent.SLA_POLICY_CHANGED,
+    ZendeskWebhookEvent.STATUS_CHANGED,
 )
 
 
@@ -714,62 +733,64 @@ class ZendeskSupportAdapter:
             return existing
         response = await self._client.request(
             "/api/v2/webhooks",
-            method="POST",
-            payload={
-                "webhook": {
-                    "endpoint": callback_url,
-                    "http_method": "POST",
-                    "name": _webhook_name(self._context.source_id),
-                    "request_format": "json",
-                    "status": "active",
-                    "subscriptions": list(events),
-                }
-            },
+            method=HTTPMethod.POST,
+            payload=ZendeskWebhookCreateRequest(
+                webhook=ZendeskWebhookDetails(
+                    endpoint=callback_url,
+                    name=_webhook_name(self._context.source_id),
+                    subscriptions=events,
+                ),
+            ).model_dump(mode="json"),
         )
-        data = _object(_expect(response, operation="register Zendesk webhook"))
-        webhook = _object(data.get("webhook"), field="Zendesk webhook")
-        webhook_id = _required_id(webhook.get("id"), field="Zendesk webhook ID")
+        data = parse_zendesk_webhook_response(
+            _expect(response, operation="register Zendesk webhook"),
+            ZendeskWebhookCreateResponse,
+        )
+        webhook_id = _required_id(data.webhook.id, field="Zendesk webhook ID")
         return await self._webhook_subscription(webhook_id)
 
     async def _recover_webhook(
         self,
         *,
         callback_url: str,
-        events: tuple[str, ...],
+        events: tuple[ZendeskWebhookEvent, ...],
     ) -> SorWebhookSubscription | None:
         """Recover one exact source webhook after a post-vendor crash."""
         name = _webhook_name(self._context.source_id)
         response = await self._client.request(
             "/api/v2/webhooks",
-            query={
-                "filter[name_contains]": name,
-                "page[size]": ZENDESK_WEBHOOK_PAGE_SIZE,
-            },
+            query=ZendeskWebhookListQuery(name_contains=name).model_dump(
+                mode="json",
+                by_alias=True,
+            ),
         )
-        data = _object(_expect(response, operation="list Zendesk webhooks"))
-        meta = _object(data.get("meta"), field="Zendesk webhook pagination")
-        if meta.get("has_more") is True:
+        data = parse_zendesk_webhook_response(
+            _expect(response, operation="list Zendesk webhooks"),
+            ZendeskWebhookListResponse,
+        )
+        if data.meta.has_more is True:
             raise _invalid_response(
                 "Zendesk webhook recovery exceeded one bounded page."
             )
         expected_events = frozenset(events)
         exact_ids: list[str] = []
         stale_ids: list[str] = []
-        for webhook in _object_list(data.get("webhooks"), field="Zendesk webhooks"):
-            if _optional_string(webhook.get("name")) != name:
+        for webhook in data.webhooks:
+            if _optional_string(webhook.name) != name:
                 continue
-            webhook_id = _required_id(webhook.get("id"), field="Zendesk webhook ID")
+            webhook_id = _required_id(webhook.id, field="Zendesk webhook ID")
             subscriptions = frozenset(
                 _string_list(
-                    webhook.get("subscriptions"),
+                    webhook.subscriptions,
                     field="Zendesk webhook subscriptions",
                 )
             )
             if (
-                _optional_string(webhook.get("endpoint")) == callback_url
-                and _optional_string(webhook.get("http_method")) == "POST"
-                and _optional_string(webhook.get("request_format")) == "json"
-                and _optional_string(webhook.get("status")) == "active"
+                _optional_string(webhook.endpoint) == callback_url
+                and _optional_string(webhook.http_method) == HTTPMethod.POST
+                and _optional_string(webhook.request_format)
+                == ZendeskWebhookRequestFormat.JSON
+                and _optional_string(webhook.status) == ZendeskWebhookStatus.ACTIVE
                 and subscriptions == expected_events
             ):
                 exact_ids.append(webhook_id)
@@ -791,25 +812,23 @@ class ZendeskSupportAdapter:
         response = await self._client.request(
             f"/api/v2/webhooks/{_webhook_path_id(webhook_id)}/signing_secret"
         )
-        data = _object(
-            _expect(response, operation="read Zendesk webhook signing secret")
+        data = parse_zendesk_webhook_response(
+            _expect(response, operation="read Zendesk webhook signing secret"),
+            ZendeskWebhookSigningResponse,
         )
-        signing = _object(
-            data.get("signing_secret"),
-            field="Zendesk webhook signing secret",
-        )
+        signing = data.signing_secret
         algorithm = _required_string(
-            signing.get("algorithm"),
+            signing.algorithm,
             field="Zendesk webhook signing algorithm",
         )
-        if algorithm.upper() != "SHA256":
+        if algorithm.upper() != ZendeskWebhookSigningAlgorithm.SHA256:
             raise _invalid_response(
                 "Zendesk returned an unsupported webhook signing algorithm."
             )
         return SorWebhookSubscription(
             external_id=webhook_id,
             signing_secret=_required_string(
-                signing.get("secret"),
+                signing.secret,
                 field="Zendesk webhook signing secret",
             ),
         )
@@ -827,7 +846,7 @@ class ZendeskSupportAdapter:
         for webhook_id in webhook_ids:
             response = await self._client.request(
                 f"/api/v2/webhooks/{_webhook_path_id(webhook_id)}",
-                method="DELETE",
+                method=HTTPMethod.DELETE,
             )
             if response.status_code == HTTPStatus.NOT_FOUND:
                 continue
@@ -844,10 +863,10 @@ class ZendeskSupportAdapter:
             raise SorCapabilityUnavailable(
                 "Zendesk webhook verification requires the source signing secret."
             )
-        signature = _header(headers, "x-zendesk-webhook-signature")
+        signature = _header(headers, ZENDESK_WEBHOOK_SIGNATURE_HEADER)
         timestamp_text = _header(
             headers,
-            "x-zendesk-webhook-signature-timestamp",
+            ZENDESK_WEBHOOK_TIMESTAMP_HEADER,
         )
         if signature is None or timestamp_text is None:
             raise SorVendorOperationError(
@@ -883,21 +902,12 @@ class ZendeskSupportAdapter:
         headers: Mapping[str, str],
         body: bytes,
     ) -> tuple[SorWebhookSignal, ...]:
-        try:
-            payload = json.loads(body)
-        except (UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise SorVendorOperationError(
-                SorVendorErrorCode.VENDOR_WEBHOOK_INVALID,
-                "Zendesk webhook body is not valid JSON.",
-                recovery=SorRecoveryPolicy.TERMINAL,
-            ) from error
-        data = _object(payload, field="Zendesk webhook")
-        subject = _optional_string(data.get("subject"))
+        data = parse_zendesk_webhook_body(body)
+        subject = _optional_string(data.subject)
         ticket_id = _ticket_id_from_subject(subject)
         if ticket_id is None:
-            detail = data.get("detail")
-            if isinstance(detail, Mapping):
-                ticket_id = _optional_id(detail.get("id"))
+            if data.detail is not None:
+                ticket_id = _optional_id(data.detail.id)
         if ticket_id is None:
             return ()
         return _webhook_signals(
@@ -2210,9 +2220,9 @@ def _webhook_path_id(value: object) -> str:
     return webhook_id
 
 
-def _webhook_events(selected_objects: Sequence[str]) -> tuple[str, ...]:
+def _webhook_events(selected_objects: Sequence[str]) -> tuple[ZendeskWebhookEvent, ...]:
     selected = frozenset(selected_objects)
-    events: list[str] = []
+    events: list[ZendeskWebhookEvent] = []
     if ZendeskStream.TICKETS in selected:
         events.extend(_TICKET_WEBHOOK_EVENTS)
         events.extend(_COMMENT_WEBHOOK_EVENTS)
@@ -2222,7 +2232,7 @@ def _webhook_events(selected_objects: Sequence[str]) -> tuple[str, ...]:
     if ZendeskStream.ATTACHMENTS in selected:
         events.extend(_ATTACHMENT_WEBHOOK_EVENTS)
     if ZendeskStream.TAGS in selected:
-        events.append("zen:event-type:ticket.tags_changed")
+        events.append(ZendeskWebhookEvent.TAGS_CHANGED)
     if ZendeskStream.TICKET_METRICS in selected:
         events.extend(_METRIC_WEBHOOK_EVENTS)
     return tuple(dict.fromkeys(events))
@@ -2230,27 +2240,24 @@ def _webhook_events(selected_objects: Sequence[str]) -> tuple[str, ...]:
 
 def _webhook_signals(
     *,
-    data: Mapping[str, object],
+    data: ZendeskWebhookDelivery,
     headers: Mapping[str, str],
     selected_objects: Sequence[str],
     ticket_id: str,
 ) -> tuple[SorWebhookSignal, ...]:
     """Translate one Zendesk ticket event into bounded selected-stream hints."""
     selected = frozenset(selected_objects)
-    event_type = _optional_string(data.get("type")) or "zendesk.ticket.changed"
+    event_type = _optional_string(data.type) or ZENDESK_WEBHOOK_UNSPECIFIED_EVENT
     delivery_id = _header(
-        headers, "x-zendesk-webhook-invocation-id"
-    ) or _optional_string(data.get("id"))
-    occurred_at = _optional_datetime(data.get("time"))
+        headers, ZENDESK_WEBHOOK_DELIVERY_HEADER
+    ) or _optional_string(data.id)
+    occurred_at = _optional_datetime(data.time)
     hints: list[tuple[str | None, str | None]] = []
     if ZendeskStream.TICKETS in selected:
         hints.append((ZendeskStream.TICKETS, ticket_id))
 
-    event = data.get("event")
-    event_data = event if isinstance(event, Mapping) else {}
-    comment = event_data.get("comment")
-    comment_data = comment if isinstance(comment, Mapping) else {}
-    comment_id = _optional_id(comment_data.get("id"))
+    comment = data.event.comment if data.event is not None else None
+    comment_id = _optional_id(comment.id) if comment is not None else None
     if event_type in _COMMENT_WEBHOOK_EVENTS and ZendeskStream.COMMENTS in selected:
         hints.append(
             (
@@ -2261,9 +2268,8 @@ def _webhook_signals(
             )
         )
 
-    attachment = comment_data.get("attachment")
-    attachment_data = attachment if isinstance(attachment, Mapping) else {}
-    attachment_id = _optional_id(attachment_data.get("id"))
+    attachment = comment.attachment if comment is not None else None
+    attachment_id = _optional_id(attachment.id) if attachment is not None else None
     if (
         event_type in _ATTACHMENT_WEBHOOK_EVENTS
         and ZendeskStream.ATTACHMENTS in selected
@@ -2280,7 +2286,7 @@ def _webhook_signals(
         )
 
     if (
-        event_type == "zen:event-type:ticket.tags_changed"
+        event_type == ZendeskWebhookEvent.TAGS_CHANGED
         and ZendeskStream.TAGS in selected
     ):
         hints.append((None, None))
@@ -2366,7 +2372,7 @@ def _required_target(command: SorCommandRequest) -> str:
 
 
 def _ticket_id_from_subject(value: str | None) -> str | None:
-    prefix = "zen:ticket:"
+    prefix = ZENDESK_WEBHOOK_TICKET_SUBJECT_PREFIX
     if value is None or not value.startswith(prefix):
         return None
     ticket_id = value.removeprefix(prefix)

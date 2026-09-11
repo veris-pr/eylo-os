@@ -164,6 +164,24 @@ vendor's required timestamp in a frozen Pydantic hint while deduplicating, then
 translates to the shared signal contract. Other vendors are not forced to supply
 a timestamp merely because HubSpot requires one.
 
+HubSpot's native batch header and routed record identity are validated separately:
+unsupported object events still contribute to the account check without requiring
+fields used only by supported records. Native millisecond timestamps survive
+serialization; a datetime is exposed at signal projection. Batch deduplication
+still keeps the latest event per object, retaining the first event on equal times.
+This preserves the existing [v3 delivery contract](https://developers.hubspot.com/docs/api-reference/legacy/webhooks/guide),
+not a migration to the separate journal API.
+
+Intercom validates [notification metadata](https://developers.intercom.com/docs/references/webhooks/webhook-models)
+and selects the item contract by topic. Direct conversation identity precedes a
+nested conversation and then a conversation-typed item; contact notifications do
+not inherit conversation-field requirements. Notion has separate
+[challenge and signed-event contracts](https://developers.notion.com/reference/webhooks):
+challenge tokens are excluded from generic snapshots, while change events carry
+typed workspace/entity identities and optional timestamps. These vendor models
+discard unconsumed message, document and actor fields; encrypted raw-body retention
+continues under the existing webhook service policy.
+
 Linear authenticates the raw request body before validating its timestamp and
 routing metadata with vendor-owned Pydantic models. The existing one-minute
 replay window and optional timestamp-header agreement follow
@@ -475,6 +493,27 @@ extended. Jira uses this path for its dynamic subscription; GitHub uses the
 same three-phase boundary for one hook per selected repository. Confluence 3LO
 cannot; its adapter truthfully remains polling plus reconciliation until an
 installed Atlassian app delivery contract exists.
+
+Jira, GitHub and Zendesk own their webhook-management wire models beside their
+adapters. Registration, list, renewal and signing-secret responses become typed
+values before recovery decisions; outbound models serialize only at the HTTP
+boundary. Known event names belong to vendor enums, not canonical tool names.
+Unknown response properties are ignored. Malformed consumed metadata is rejected
+before cleanup, including malformed rows that otherwise would have been skipped.
+This is stricter than the former dictionary access; it does not change source
+authority, scopes or the subscription state machine.
+
+GitHub recovery reads numbered pages on the selected repository path, up to ten
+pages of 100 hooks. A full last allowed page is incomplete, never evidence that
+the callback is absent; no registration follows that failure. Duplicate exact
+matches are refused even when they span pages. Jira and Zendesk retain their
+single-page completeness checks. See the native
+[GitHub list contract](https://docs.github.com/en/rest/repos/webhooks?apiVersion=2026-03-10),
+[Jira webhook contract](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-webhooks/)
+and [Zendesk webhook contract](https://developer.zendesk.com/api-reference/webhooks/webhooks-api/webhooks/).
+Signing secrets are excluded from ordinary model dumps and representations;
+GitHub has an explicit outbound serializer, while Zendesk secrets pass directly
+to the existing encrypted source-storage path.
 
 ## Revocation and durable recovery
 

@@ -186,6 +186,13 @@ class HubSpotWebhookObjectType(StrEnum):
     GENERIC = "object"
 
 
+class HubSpotWebhookHeaderName(StrEnum):
+    """Native headers for the v3 raw-body authentication contract."""
+
+    SIGNATURE = "x-hubspot-signature-v3"
+    TIMESTAMP = "x-hubspot-request-timestamp"
+
+
 _WEBHOOK_STREAMS: Mapping[str, HubSpotStream] = {
     HubSpotWebhookObjectType.COMPANY: HubSpotStream.COMPANIES,
     HubSpotWebhookObjectType.CONTACT: HubSpotStream.CONTACTS,
@@ -196,6 +203,9 @@ _WEBHOOK_STREAMS: Mapping[str, HubSpotStream] = {
 }
 _WEBHOOK_MAX_EVENTS = 100
 _WEBHOOK_MAX_AGE_MILLISECONDS = 300_000
+_WEBHOOK_MILLISECONDS_PER_SECOND = 1_000
+_WEBHOOK_EVENT_TYPE_MAX_CHARS = 128
+_WEBHOOK_ID_MAX_CHARS = 512
 _SIGNATURE_URI_DECODES = {
     "%3A": ":",
     "%2F": "/",
@@ -1016,8 +1026,8 @@ def verify_hubspot_app_webhook(
     now: datetime | None = None,
 ) -> None:
     """Authenticate one HubSpot v3 delivery against its exact public URI."""
-    signature = _header(headers, "x-hubspot-signature-v3")
-    timestamp = _header(headers, "x-hubspot-request-timestamp")
+    signature = _header(headers, HubSpotWebhookHeaderName.SIGNATURE)
+    timestamp = _header(headers, HubSpotWebhookHeaderName.TIMESTAMP)
     if signature is None or timestamp is None:
         raise SorWebhookVerificationError("HubSpot webhook signature is missing.")
     try:
@@ -1027,7 +1037,8 @@ def verify_hubspot_app_webhook(
             "HubSpot webhook timestamp is invalid."
         ) from error
     current_milliseconds = int(
-        (now or datetime.now(timezone.utc)).astimezone(timezone.utc).timestamp() * 1000
+        (now or datetime.now(timezone.utc)).astimezone(timezone.utc).timestamp()
+        * _WEBHOOK_MILLISECONDS_PER_SECOND
     )
     if (
         timestamp_milliseconds <= 0
@@ -1131,7 +1142,7 @@ def _credential(credentials: Mapping[str, object], key: str) -> str:
     return value.strip()
 
 
-def _header(headers: Mapping[str, str], name: str) -> str | None:
+def _header(headers: Mapping[str, str], name: HubSpotWebhookHeaderName) -> str | None:
     expected = name.casefold()
     for key, value in headers.items():
         if key.casefold() == expected:
@@ -1157,7 +1168,11 @@ def _hubspot_webhook_event_type(
         if subscription_type != event_type:
             raise SorWebhookPayloadError("HubSpot webhook event types disagree.")
     value = subscription_type or event_type
-    if value is None or value.count(".") != 1 or len(value) > 128:
+    if (
+        value is None
+        or value.count(".") != 1
+        or len(value) > _WEBHOOK_EVENT_TYPE_MAX_CHARS
+    ):
         raise SorWebhookPayloadError("HubSpot webhook event type is invalid.")
     return value
 
@@ -1166,7 +1181,7 @@ def _webhook_id(value: object, *, field: str) -> str:
     if isinstance(value, bool) or not isinstance(value, (str, int)):
         raise SorWebhookPayloadError(f"HubSpot webhook {field} is invalid.")
     normalized = str(value).strip()
-    if not 1 <= len(normalized) <= 512 or any(
+    if not 1 <= len(normalized) <= _WEBHOOK_ID_MAX_CHARS or any(
         character in normalized for character in "/?#"
     ):
         raise SorWebhookPayloadError(f"HubSpot webhook {field} is invalid.")
@@ -1177,7 +1192,9 @@ def _webhook_datetime(value: object) -> datetime:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise SorWebhookPayloadError("HubSpot webhook occurredAt is invalid.")
     try:
-        return datetime.fromtimestamp(value / 1000, tz=timezone.utc)
+        return datetime.fromtimestamp(
+            value / _WEBHOOK_MILLISECONDS_PER_SECOND, tz=timezone.utc
+        )
     except (OverflowError, OSError, ValueError) as error:
         raise SorWebhookPayloadError(
             "HubSpot webhook occurredAt is invalid."
