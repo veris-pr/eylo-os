@@ -12,26 +12,31 @@ are superseded by the newest deployment record.
 | Static backend contracts | Lint passes; Pyrefly has zero errors and two existing redundant-cast warnings | Static success does not prove native input shapes |
 | SOR vendor wire coverage | HubSpot, Salesforce and Confluence wire contracts deployed; Confluence native list/exact reads and fresh seven-stream sync passed; Salesforce passed 164 function assertions | Salesforce is not configured in QA; remaining registered vendor boundaries still need operation-level coverage |
 | App-webhook ingress contracts | Four-vendor batch deployed on image `84b315c2fb99`; 597 contract checks, 28 substituted ingress scenarios and Linear signature/routing checks passed inside the image | Fresh native deliveries remain open; HubSpot raw payloads expired, no Intercom/Notion receipts in QA |
-| Managed webhook contracts | Jira/GitHub/Zendesk request/response models deployed on image `d190e5e81c29`; 131/48/90 operation cases and nine GitHub pagination regressions passed locally and inside the network-isolated image | Native Jira/Zendesk require reauthorization, GitHub SOR is not configured; inbound contracts for these three are separate remaining work |
+| Managed webhook contracts | Management and inbound models deployed on image `337cfa41cd61`; 559 inbound adapter comparisons and 24 substituted ingress scenarios passed locally and inside the image | Fresh native deliveries and registration remain open. Post-deployment API confirms Jira/Zendesk require reauthorization; GitHub SOR is not configured |
+| Webhook receipt codec | Ingestion and replay share the stored-signal model; deployed with 44 compatibility comparisons and read-only validation of all 89 available QA receipts | Real concurrent inserts and worker crash/replay remain separate acceptance gates |
 | CLI typing | CLI-owned Pydantic contracts, independent environment synchronized; explicit CLI typing passes; 102 function checks, 332 live-catalog action parity checks and authenticated collection reads passed | Not proof that every API action or vendor execution succeeds |
 | Stored provider compatibility | 25 saved configs inspected; 13 ready voice receipts restored; native Speechmatics connection/cleanup passed | Native conversations across configured providers |
 | Published voice bindings | Public CLI aggregate resolves both existing realtime and decomposed QA agents at revision 1 | Both have no storage binding; recording upload is not covered |
 | Scheduler filing and stranded recovery | Original one-shot recovered once, ran real `issue_search`/`issue_get`, completed/achieved and released capacity | Worker-crash and waiting/resume cases remain separate |
 | Widget and console | Widget opened and sent one fresh read-only message on image `d190e5e81c29`; public console API confirms both SOR tools and final answer completed without tool errors | Browser observation timed out after submission and on recheck; visual response and console rendering remain unverified |
-| Durable execution | Saved contexts/results, isolated replay, and one native scheduled tool-bearing result validated | Background/objective execution, cancellation, crash/restart and waiting/resume |
+| Durable execution | Native scheduled execution plus direct background-objective memory recall and input wait/resume passed; persisted tool-result readback verified | Cancellation, worker crash/restart and broader tool-bearing replay |
+| Direct-objective memory | Fixed conversation-only context assumption; native recall returns four agent-owned facts and releases capacity | Direct-objective writes need run-based provenance; current mutation contract requires a real conversation/message |
 | Sandbox | Typed workspace/checkpoint/tool paths validated with substituted dependencies | Native configured sandbox execution/cleanup |
-| Final handoff | HEAD remains `21ed7c43`; managed-webhook models, final HubSpot constants and documentation remain uncommitted; no migrations or provider data reset | Complete remaining contracts and final QA matrix; this batch's consolidated review is recorded below |
+| Final handoff | Checkout is `13b51691`; receipt and direct-objective recall changes are deployed but remain uncommitted. No migration or provider reset was performed by this run | Complete remaining contracts, native QA and the full acceptance matrix |
 
 The current deployed checkpoint includes the scheduler correction, telephony,
 HTTP, PCM audio, collection/internal values, timeline/erasure, SOR tool-receipt
 and event/periodic contracts, plus the shared SOR catalog/mapping/projection and
 SOR HTTP response batch, remaining SOR values, typed work lifecycle,
 sync/webhook receipts, HubSpot/Salesforce/Confluence wire contracts, the four
-app-webhook metadata contracts and Jira/GitHub/Zendesk management contracts, on image
-`sha256:d190e5e81c29963b89788e8cdaaee6344e0fb60c1229a82ed40cdc7b8993e4ec`.
+app-webhook metadata contracts and Jira/GitHub/Zendesk management plus inbound
+contracts, the shared receipt codec and direct-objective memory recall fix, on image
+`sha256:e2a68b4185113eb3a592e62d3e5ed9bca343fb5f8f7517c56f4b5825b4d5737e`.
 API, durable worker, ordinary worker and scheduler were recreated on that image;
-all four are running and API health passed. The 383 transport and 189 call-tool
-checks passed inside the new image before recreation. Console lint/type/build and widget SDK plus
+all four are running and API health passed. The 559 inbound comparisons and 24
+ingress scenarios passed in the receipt checkpoint image `510b1def00b8`; the
+objective-context regression passed inside the final image before recreation. Earlier checkpoints
+passed 383 transport and 189 call-tool checks. Console lint/type/build and widget SDK plus
 Preact lint/type/build passed; console build retains its large-chunk warning.
 Documentation validation and `git diff --check` passed. Native schedule recovery
 subsequently passed as recorded below; browser interaction remains unverified.
@@ -40,6 +45,134 @@ DB and Redis container identities were rechecked after deployment and remain
 `615b91925226` and `c07c38389f13`. The native QA schedule remains revision 1,
 with no duplicate or manually rearmed occurrence. Its failed claim was recovered
 by the normal stranded-schedule scan at 23:05 UTC on 2026-09-10.
+
+### Native objective acceptance and memory fix — 2026-09-11, deployed
+
+Closed the pending receipt deployment first (`510b1def00b8`), then used the public
+CLI to run the existing `QA Background Memory Observer` at revision 1. No Agent,
+provider, source or credential was reconfigured.
+
+RCA: run `b0392f18-3377-4842-9e08-c80ef3bc567e` called `memory_recall`, which
+returned `success=false`. The memory application treated `AgentExecutionContext`
+as `ConversationContext`, tried to resolve a contact that does not exist for a
+direct objective, and raised `Memory User authority is inconsistent.` before
+provider resolution. The observation also mislabelled the run ID as a conversation
+ID. This defect existed in immutable `13b51691`; the receipt change did not cause it.
+
+The recall pipeline now accepts the explicit context union. Direct execution
+validates organization and Agent participant authority, then resolves only the
+Agent-owned scope. Conversation execution retains its existing three-scope and
+participant checks. Observation events require exactly one `conversation_id` or
+`agent_run_id`. Mutation provenance is unchanged: background writes without real
+conversation/message evidence remain an explicit incomplete capability.
+
+Verification:
+
+- Actual Pydantic context/model constructors reproduce the baseline failure.
+  Function probes cover direct Agent-only scope, all three conversation scopes,
+  nine invalid authority cases refused before provider access, pinned config
+  resolution, empty success, provider failure, and exact observation ownership.
+  They pass locally and inside the final network-isolated image; DB/provider
+  dependencies in these probes are substituted.
+- Native retest `9583a98d-b05c-4564-b6e6-9b1c6e7d4b5e` completed at 10:10:37 UTC.
+  Typed durable transcript readback confirms one `memory_recall`, `success=true`,
+  four facts all at Agent level, and no pending calls. Capacity was released.
+- Native wait/resume `6ac46f08-be7c-4e21-be4f-103ce2ab5612` requested input at
+  10:11:00 UTC and released capacity without calling recall. Public API response
+  to request `8143d7f5-7c2d-45ee-895c-d80dce56e400` at 10:13:19 UTC resumed the
+  same run; it completed/achieved at 10:13:26 UTC and released capacity again.
+  Typed transcript readback confirms correlated `request_objective_input`,
+  `memory_recall` (four Agent-level facts, `success=true`) and `complete_objective`
+  results, with no pending calls.
+  This is input wait/resume evidence, not worker-crash or cancellation evidence.
+- Full backend lint/type checks and docs validation passed; the two existing
+  redundant-cast warnings remain. A bounded durable-worker log sample covering
+  both native retests contained no warning/error/traceback matches.
+- Final API `868c8401c21d`, durable worker `3df91c25b4ad`, ordinary worker
+  `6c0b7807f4ba`, scheduler `df173660366e` all run `e2a68b418511`. Environment
+  hashes are unchanged. DB `615b91925226` and Redis `c07c38389f13` are unchanged.
+- Console and widget HTTP endpoints return 200. Browser inventory timed out
+  before any interaction; no new widget message or visual acceptance is claimed.
+
+Next acceptance work: cancellation and restart recovery; remaining native voice
+paths and visual widget/console inspection. Complete the remaining vendor-operation
+coverage audit and direct-work Memory provenance rather than treating this one
+successful recall as platform-wide completion.
+
+### Shared webhook receipt contract — 2026-09-11, deployed
+
+Moved the existing stored-signal model from runtime serialization to the shared
+SOR contract owner. Ingestion now uses it for normalized values, delivery-ID checks,
+receipt columns and fingerprints; worker replay uses the same definition. The ORM
+annotation is now `list[SorJsonValue]`, with unchanged explicit JSONB storage.
+Malformed-but-JSON signals remain available to terminal result reporting. No DDL,
+public API schema, source config or receipt payload migration was introduced.
+
+- 44 comparisons against immutable `13b51691` passed: normalized JSON bytes,
+  fingerprint digests, Unicode/escaping, UTC conversion, field/size errors,
+  compiled SQL insert parameters, duplicate/race/conflict outcomes and empty/body
+  rejection. Snapshot restoration and malformed-row terminal reporting passed.
+  Session/repository/crypto dependencies were substituted for insert checks;
+  this does not establish real DB concurrency or encryption correctness.
+- Reran 24 source-ingress and 28 app-ingress scenarios with typed values through
+  the substituted persistence boundary. Their vendor parser checks also passed.
+- A read-only ORM query in the running dev API inspected the QA org's 89 available
+  nondeleted receipts (limit 200). After releasing the read transaction, the new
+  codec reproduced every stored signal list and fingerprint exactly. No raw bodies,
+  credentials or receipt contents were printed, and no rows were written.
+- Backend lint and full type checking passed; two existing redundant-cast warnings
+  remain. This shared-codec change was deployed on `510b1def00b8` and is included
+  in the final image above. The read-only 89-receipt audit passed again after that
+  first deployment.
+
+### Managed webhook inbound checkpoint — 2026-09-11, deployed
+
+Jira, GitHub and Zendesk now parse consumed delivery metadata into native Pydantic
+models before creating platform signals. Authentication remains first and uses
+the original bytes. Known native event families/headers use vendor enums/constants;
+unknown event/action strings remain open. No scopes, source settings, DB models,
+migrations or subscription lifecycle behavior changed.
+
+- Jira: 120 comparisons against immutable `21ed7c43` adapter functions cover
+  issue/comment/sprint events, future event names, JWT refusal, subscription
+  matching, selected-stream filtering, ID limits and timestamp boundaries.
+- GitHub: 147 comparisons cover event routing, repository fences, pull-request
+  exclusion, required record metadata, original-body signatures and header limits.
+  Snapshot restoration explicitly preserves absent versus null `pull_request`.
+- Zendesk: 292 comparisons cover all 32 subscribed event names across selected
+  stream combinations, ticket/comment/attachment identities, broad hints, delivery
+  header precedence, HMAC rejection and replay-window boundaries.
+- Projection, frozen assignment and dump/restore checks passed. Deliberate
+  tightening is separately asserted: malformed declared fields are rejected even
+  when old routing ignored them, including Zendesk body IDs overridden by a header.
+  This is not a claim of identical behavior for all malformed inputs.
+- The actual `accept_sor_webhook` function, adapters and signal normalizer passed
+  24 scenarios: normal, duplicate, invalid signature, malformed metadata, revoked
+  endpoint, commit failure, dispatch failure and oversize body. DB resolution,
+  persistence and dispatch were substituted; assertions verify no transaction
+  spans adapter execution, adapter closure, and dispatch only after commit.
+  These checks do not prove real DB deduplication, concurrent delivery or workers.
+- Existing management probes remain green: 131 Jira, 48 GitHub, 90 Zendesk and
+  nine GitHub pagination cases. Backend lint and typing passed (zero type errors,
+  two existing redundant-cast warnings). No new native delivery or browser
+  acceptance is claimed for this inbound checkpoint.
+
+The same 559 inbound comparisons and 24 ingress scenarios passed in a disposable
+network-isolated container importing production modules from image `337cfa41cd61`.
+The four app services were then recreated: API `10d6b4c1f0c4`, durable worker
+`a6e7f98f8fb7`, ordinary worker `c4262871bba7`, scheduler `806db15ad7b6`.
+All run the exact image above; API health passed. Their environment hashes match
+the previous deployment, and DB/Redis retain container IDs `615b91925226` and
+`c07c38389f13`. A startup log scan (`--since 3m`, limited by each new container's
+age) found no error/traceback markers. No database reset or schema change occurred.
+
+Post-deployment CLI authentication initially returned 401. The existing QA login
+was renewed through the normal CLI auth action using the private credential file;
+the authenticated org remains `019ffce5-de0b-7ce1-b699-b36a694a94ef`. Source listing
+then succeeded: Confluence/HubSpot/Linear active, Jira/Zendesk requiring
+reauthorization. The source-list response uses `items`; an initial disposable
+summary probe incorrectly assumed `data` and was corrected after inspecting the
+actual response keys. Neither probe changed product data.
 
 ### Managed webhook checkpoint — 2026-09-11, deployed
 

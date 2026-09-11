@@ -25,7 +25,6 @@ from eylo.sor.shared.contracts import (
     SorSourcePayload,
     SorSyncRunKind,
     SorWebhookReceiptState,
-    SorWebhookSignal,
     SorWorkState,
 )
 from eylo.sor.shared.json_values import SorJsonValue, SorJsonValueError, to_json_value
@@ -126,31 +125,6 @@ class SorWebhookWorkReceipt(BaseModel):
     state: SorWebhookReceiptState
     signals: list[SorJsonValue] = Field(repr=False)
     terminal: bool
-
-
-class SorStoredWebhookSignal(BaseModel):
-    """Exact stored signal fields; execution consumes the canonical signal object."""
-
-    model_config = ConfigDict(
-        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
-    )
-
-    delivery_id: str | None = Field(min_length=1)
-    event_type: str = Field(min_length=1)
-    vendor_object_key: str | None = Field(min_length=1)
-    external_id: str | None = Field(min_length=1)
-    occurred_at: str | None
-
-    def to_signal(self) -> SorWebhookSignal:
-        return SorWebhookSignal(
-            delivery_id=self.delivery_id,
-            event_type=self.event_type,
-            vendor_object_key=self.vendor_object_key,
-            external_id=self.external_id,
-            occurred_at=datetime.fromisoformat(self.occurred_at)
-            if self.occurred_at is not None
-            else None,
-        )
 
 
 def _aware_timestamp(value: str) -> str:

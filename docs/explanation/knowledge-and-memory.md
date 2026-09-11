@@ -36,6 +36,18 @@ broaden the lookup scope. All three use the same operation validation and exact
 source references. A valid no-change decision is not proof that a requested fact
 was saved; inspect returned changes and recall when verifying a write.
 
+Direct objectives run without a persisted conversation or contact. Their recall
+tool reads only the executing Agent's own memories, using its published provider
+binding. The pipeline validates the execution organization's and Agent
+participant's identities before resolving providers. It does not reinterpret a
+member ID as a contact or an AgentRun ID as a conversation. Recall observation
+events carry exactly one real execution owner: `conversation_id` or `agent_run_id`.
+
+Direct-objective memory writes are not covered by that read path. The current
+agent-tool mutation provenance requires a real conversation and source message;
+supporting writes from non-conversation work needs explicit run provenance rather
+than synthetic conversation records.
+
 ### Model and embedding boundaries
 
 Formation, reconciliation, and provider verification share a keyword-only

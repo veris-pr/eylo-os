@@ -12,6 +12,7 @@ from eylo.common.contracts.memory import MemoryError, MemoryLevel
 from eylo.modules.conversations.schemas.conversations import ConversationContext
 from eylo.modules.provider_configs.errors import NotConfiguredError
 from eylo.modules.tools.services.executors.system_tools import logger
+from eylo.pipelines.agent_execution_context import PlatformExecutionContext
 from eylo.pipelines.memory.application import (
     forget_context_fact,
     recall_context_memory,
@@ -30,13 +31,14 @@ _NO_CONTEXT = {"success": False, "message": "No conversation in context."}
 
 async def memory_recall(
     query: str,
-    ctx: ConversationContext | None = None,
+    ctx: PlatformExecutionContext | None = None,
 ) -> dict[str, Any]:
     """Recall relevant Agent, User, and Conversation memories.
 
     Use this when prior learned facts could help answer or act now. Results are
     globally ranked across all three levels. Keep each returned `id` and
     `level` together if you later need to refresh or forget that exact fact.
+    Direct objectives without a conversation recall only this Agent's memories.
 
     Args:
         query (str): What to recall, written as a natural-language question.

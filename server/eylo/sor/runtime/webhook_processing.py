@@ -19,7 +19,6 @@ from eylo.sor.runtime.adapters import (
 from eylo.sor.runtime.projection import project_source_record
 from eylo.sor.runtime.registry import SorRegistry
 from eylo.sor.runtime.serialization import (
-    SorStoredWebhookSignal,
     SorWebhookTaskParams,
     SorWebhookWorkReceipt,
     decode_external_record,
@@ -61,6 +60,7 @@ from eylo.sor.shared.services import (
     SorProjectionService,
 )
 from eylo.sor.shared.sync_services import SorSyncRunService
+from eylo.sor.shared.webhook_contracts import SorStoredWebhookSignal
 
 logger = logging.getLogger(__name__)
 

@@ -167,7 +167,8 @@ class MemoryReindexLifecycleEvent(_MemoryEvent):
 
 class MemoryRecallObservedEvent(_MemoryEvent):
     agent_id: UUID
-    conversation_id: UUID
+    conversation_id: UUID | None = None
+    agent_run_id: UUID | None = None
     outcome: MemoryObservationOutcome
     requested_limit: int = Field(ge=1, le=100)
     candidate_count: BoundedCount
@@ -177,6 +178,13 @@ class MemoryRecallObservedEvent(_MemoryEvent):
     ranking_reason: SafeCode | None = None
     duration_ms: int = Field(ge=0, le=86_400_000)
     failure_code: SafeCode | None = None
+
+    @model_validator(mode="after")
+    def exact_execution_owner(self) -> "MemoryRecallObservedEvent":
+        """A durable run ID must never masquerade as a conversation DB identity."""
+        if (self.conversation_id is None) == (self.agent_run_id is None):
+            raise ValueError("Memory recall requires exactly one execution owner.")
+        return self
 
 
 MemoryPostCommitEvent = (

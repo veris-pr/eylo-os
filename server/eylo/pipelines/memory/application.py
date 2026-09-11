@@ -7,6 +7,7 @@ from time import monotonic
 from uuid import UUID
 
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.contracts.memory import (
     Memory,
@@ -48,6 +49,10 @@ from eylo.modules.memory.scope import (
 from eylo.modules.memory.service import record_recalled_memories
 from eylo.modules.provider_configs.constants import Capability
 from eylo.modules.provider_configs.errors import NotConfiguredError
+from eylo.pipelines.agent_execution_context import (
+    AgentExecutionContext,
+    PlatformExecutionContext,
+)
 from eylo.pipelines.memory.resolver import resolve_memory_adapter
 from eylo.pipelines.reranking import RerankingRuntime, resolve_reranker
 from eylo.pipelines.reranking.application import bounded_rerank
@@ -58,10 +63,10 @@ MAX_MEMORY_RERANK_CANDIDATES = 32
 
 
 async def recall_context_memory(
-    conversation_context,
+    conversation_context: PlatformExecutionContext,
     query: str,
     *,
-    db=None,
+    db: AsyncSession | None = None,
     limit: int,
 ) -> MemoryRecall:
     started_at = monotonic()
@@ -106,18 +111,14 @@ async def recall_context_memory(
 
 
 async def _recall_context_memory(
-    conversation_context,
+    conversation_context: PlatformExecutionContext,
     query: str,
     *,
-    db=None,
+    db: AsyncSession | None = None,
     limit: int,
 ) -> MemoryRecall:
     """Recall one globally ranked union of authorized memory levels."""
-    scopes = authorized_scopes_from_context(conversation_context)
-    if not scopes:
-        raise MemoryProviderError("Memory context is unavailable.")
-    conversation_id = _conversation_id(conversation_context)
-    _agent_actor(conversation_context, conversation_id)
+    scopes = _recall_scopes(conversation_context)
     normalized_query = require_memory_query(query)
     config_id, config_revision = memory_binding_from_context(conversation_context)
     adapter = await resolve_memory_adapter(
@@ -186,6 +187,34 @@ async def _recall_context_memory(
     except Exception as error:  # noqa: BLE001 - visibility cannot fail a reply
         logger.warning("Memory recall audit failed: %s", type(error).__name__)
     return MemoryRecall(memories=selected, conflicts=conflicts, ranking=ranking)
+
+
+def _recall_scopes(context: PlatformExecutionContext) -> tuple[MemoryScope, ...]:
+    """Direct work can read its Agent's memory, never invent Contact/Conversation owners."""
+    if isinstance(context, AgentExecutionContext):
+        agent = context.primary_agent
+        participant = context.agent_participant
+        if (
+            context.conversation.organization_id != agent.organization_id
+            or participant.agent_id != agent.id
+            or participant.entity_id != str(agent.id)
+            or participant.agent_revision is None
+            or participant.agent_revision < 1
+        ):
+            raise MemoryProviderError("Memory Agent authority is inconsistent.")
+        return (
+            MemoryScope(
+                organization_id=agent.organization_id,
+                level=MemoryLevel.AGENT,
+                owner_id=agent.id,
+            ),
+        )
+
+    scopes = authorized_scopes_from_context(context)
+    if not scopes:
+        raise MemoryProviderError("Memory context is unavailable.")
+    _agent_actor(context, context.conversation.id)
+    return scopes
 
 
 async def remember_context_fact(
@@ -312,7 +341,7 @@ def _recall_failure_code(error: Exception) -> str:
 
 def _publish_recall_observation(
     *,
-    conversation_context,
+    conversation_context: PlatformExecutionContext,
     limit: int,
     started_at: float,
     outcome: MemoryObservationOutcome,
@@ -322,11 +351,22 @@ def _publish_recall_observation(
 ) -> None:
     try:
         agent = conversation_context.primary_agent
+        if agent is None:
+            raise MemoryProviderError("Memory observation Agent is unavailable.")
         emit_memory_observation(
             MemoryRecallObservedEvent(
                 organization_id=agent.organization_id,
                 agent_id=agent.id,
-                conversation_id=_conversation_id(conversation_context),
+                conversation_id=(
+                    None
+                    if isinstance(conversation_context, AgentExecutionContext)
+                    else conversation_context.conversation.id
+                ),
+                agent_run_id=(
+                    conversation_context.conversation.id
+                    if isinstance(conversation_context, AgentExecutionContext)
+                    else None
+                ),
                 outcome=outcome,
                 requested_limit=limit,
                 candidate_count=ranking.candidate_count,

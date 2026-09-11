@@ -79,7 +79,7 @@ class GitHubWebhookIssue(GitHubWebhookWire):
             "updated_at": self.updated_at,
         }
         if self.is_pull_request:
-            result["pull_request"] = None
+            result["pull_request"] = {} if self.pull_request is not None else None
         return result
 
 

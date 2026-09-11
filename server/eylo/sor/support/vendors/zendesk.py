@@ -2248,9 +2248,9 @@ def _webhook_signals(
     """Translate one Zendesk ticket event into bounded selected-stream hints."""
     selected = frozenset(selected_objects)
     event_type = _optional_string(data.type) or ZENDESK_WEBHOOK_UNSPECIFIED_EVENT
-    delivery_id = _header(
-        headers, ZENDESK_WEBHOOK_DELIVERY_HEADER
-    ) or _optional_string(data.id)
+    delivery_id = _header(headers, ZENDESK_WEBHOOK_DELIVERY_HEADER) or _optional_string(
+        data.id
+    )
     occurred_at = _optional_datetime(data.time)
     hints: list[tuple[str | None, str | None]] = []
     if ZendeskStream.TICKETS in selected:

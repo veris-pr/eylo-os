@@ -40,6 +40,13 @@ from .secrets import (
     encrypt_source_webhook_signing_secret,
 )
 from .services import SorConfigurationError, SorConflictError, SorNotFoundError
+from .webhook_contracts import (
+    SOR_WEBHOOK_EVENT_TYPE_MAX_LENGTH,
+    SOR_WEBHOOK_IDENTIFIER_MAX_LENGTH,
+    SOR_WEBHOOK_OBJECT_KEY_MAX_LENGTH,
+    SOR_WEBHOOK_SIGNAL_SET_MAX_BYTES,
+    SorStoredWebhookSignal,
+)
 
 SOR_WEBHOOK_MAX_BODY_BYTES = 1_048_576
 SOR_WEBHOOK_RAW_RETENTION_HOURS = 24
@@ -709,9 +716,9 @@ class SorWebhookService:
             raise SorConfigurationError("SOR webhook body is too large.")
         normalized = _normalize_signals(signals)
         delivery_ids = {
-            signal["delivery_id"]
+            signal.delivery_id
             for signal in normalized
-            if signal["delivery_id"] is not None
+            if signal.delivery_id is not None
         }
         if len(delivery_ids) > 1:
             raise SorConfigurationError(
@@ -758,18 +765,18 @@ class SorWebhookService:
                 source_id=source.id,
                 vendor_delivery_id=delivery_id,
                 fingerprint=fingerprint,
-                event_type=(first["event_type"] if len(normalized) == 1 else "batch"),
-                vendor_object_key=first["vendor_object_key"],
-                vendor_external_id=first["external_id"],
+                event_type=(first.event_type if len(normalized) == 1 else "batch"),
+                vendor_object_key=first.vendor_object_key,
+                vendor_external_id=first.external_id,
                 vendor_event_at=(
-                    datetime.fromisoformat(first["occurred_at"])
-                    if first["occurred_at"] is not None
+                    datetime.fromisoformat(first.occurred_at)
+                    if first.occurred_at is not None
                     else None
                 ),
                 payload_hash=payload_hash,
                 signature_verified=True,
                 replay_detected=False,
-                signals=normalized,
+                signals=[signal.model_dump(mode="json") for signal in normalized],
                 state=SorWebhookReceiptState.PENDING,
                 encrypted_raw_body=encrypted_body,
                 raw_body_expires_at=received_at
@@ -858,20 +865,28 @@ class SorWebhookService:
 
 def _normalize_signals(
     signals: Sequence[SorWebhookSignal],
-) -> list[dict[str, str | None]]:
-    normalized: list[dict[str, str | None]] = []
+) -> tuple[SorStoredWebhookSignal, ...]:
+    normalized: list[SorStoredWebhookSignal] = []
     for signal in signals:
         event_type = signal.event_type.strip()
-        if not 1 <= len(event_type) <= 256:
+        if not 1 <= len(event_type) <= SOR_WEBHOOK_EVENT_TYPE_MAX_LENGTH:
             raise SorConfigurationError("Webhook event type is invalid.")
-        if signal.delivery_id is not None and not 1 <= len(signal.delivery_id) <= 512:
+        if (
+            signal.delivery_id is not None
+            and not 1 <= len(signal.delivery_id) <= SOR_WEBHOOK_IDENTIFIER_MAX_LENGTH
+        ):
             raise SorConfigurationError("Webhook delivery ID is invalid.")
         if (
             signal.vendor_object_key is not None
-            and not 1 <= len(signal.vendor_object_key) <= 160
+            and not 1
+            <= len(signal.vendor_object_key)
+            <= SOR_WEBHOOK_OBJECT_KEY_MAX_LENGTH
         ):
             raise SorConfigurationError("Webhook object key is invalid.")
-        if signal.external_id is not None and not 1 <= len(signal.external_id) <= 512:
+        if (
+            signal.external_id is not None
+            and not 1 <= len(signal.external_id) <= SOR_WEBHOOK_IDENTIFIER_MAX_LENGTH
+        ):
             raise SorConfigurationError("Webhook external ID is invalid.")
         occurred_at = signal.occurred_at
         if occurred_at is not None:
@@ -881,22 +896,22 @@ def _normalize_signals(
                 )
             occurred_at = occurred_at.astimezone(timezone.utc)
         normalized.append(
-            {
-                "delivery_id": signal.delivery_id,
-                "event_type": event_type,
-                "vendor_object_key": signal.vendor_object_key,
-                "external_id": signal.external_id,
-                "occurred_at": occurred_at.isoformat() if occurred_at else None,
-            }
+            SorStoredWebhookSignal(
+                delivery_id=signal.delivery_id,
+                event_type=event_type,
+                vendor_object_key=signal.vendor_object_key,
+                external_id=signal.external_id,
+                occurred_at=occurred_at.isoformat() if occurred_at else None,
+            )
         )
     encoded = json.dumps(
-        normalized,
+        [signal.model_dump(mode="json") for signal in normalized],
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
-    if len(encoded) > 262_144:
+    if len(encoded) > SOR_WEBHOOK_SIGNAL_SET_MAX_BYTES:
         raise SorConfigurationError("Webhook signal set is too large.")
-    return normalized
+    return tuple(normalized)
 
 
 def _subscription_state(value: str | None) -> SorWebhookSubscriptionState | None:
@@ -914,13 +929,13 @@ def _fingerprint(
     *,
     source_id: UUID,
     payload_hash: str,
-    signals: list[dict[str, str | None]],
+    signals: Sequence[SorStoredWebhookSignal],
 ) -> str:
     encoded = json.dumps(
         {
             "source_id": str(source_id),
             "payload_hash": payload_hash,
-            "signals": signals,
+            "signals": [signal.model_dump(mode="json") for signal in signals],
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -932,9 +947,11 @@ def _require_same_delivery(
     existing: SorWebhookReceiptModel,
     *,
     payload_hash: str,
-    signals: list[dict[str, str | None]],
+    signals: Sequence[SorStoredWebhookSignal],
 ) -> None:
-    if existing.payload_hash != payload_hash or existing.signals != signals:
+    if existing.payload_hash != payload_hash or existing.signals != [
+        signal.model_dump(mode="json") for signal in signals
+    ]:
         raise SorConflictError("Webhook delivery ID was reused for different content.")
 
 

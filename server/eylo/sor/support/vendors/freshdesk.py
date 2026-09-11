@@ -12,8 +12,9 @@ from html.parser import HTMLParser
 from http import HTTPStatus
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
+from eylo.common.http_egress import HttpMethod
 from eylo.modules.connections.domain import ConnectionAuthKind
 from eylo.sor.runtime.http import SorHttpTransport, SorJsonHttpClient, SorJsonResponse
 from eylo.sor.shared.contracts import (
@@ -75,6 +76,20 @@ from eylo.sor.support.contracts import (
     SupportTicketState,
     SupportToolName,
 )
+from eylo.sor.support.vendors.freshdesk_contracts import (
+    FreshdeskMutationInput,
+    FreshdeskMutationRecord,
+    FreshdeskNoteInput,
+    FreshdeskReplyInput,
+    FreshdeskTagAction,
+    FreshdeskTicketCreate,
+    FreshdeskTicketPriorityCode,
+    FreshdeskTicketStatusCode,
+    FreshdeskTicketTags,
+    FreshdeskTicketUpdate,
+    FreshdeskTicketWriteField,
+    FreshdeskWriteInput,
+)
 
 FRESHDESK_API_VERSION = "v2"
 FRESHDESK_CURSOR_VERSION = 1
@@ -84,24 +99,6 @@ FRESHDESK_MAX_PAGES = 300
 FRESHDESK_EXPANSION_TICKET_PAGE = 10
 FRESHDESK_MAX_CONVERSATION_PAGES = 5
 FRESHDESK_MAX_EMPTY_EXPANSIONS = 30
-
-
-class FreshdeskTicketStatusCode(IntEnum):
-    """Freshdesk's documented numeric ticket status codes."""
-
-    OPEN = 2
-    PENDING = 3
-    RESOLVED = 4
-    CLOSED = 5
-
-
-class FreshdeskTicketPriorityCode(IntEnum):
-    """Freshdesk's documented numeric ticket priority codes."""
-
-    LOW = 1
-    MEDIUM = 2
-    HIGH = 3
-    URGENT = 4
 
 
 class FreshdeskTicketSourceCode(IntEnum):
@@ -818,7 +815,11 @@ class FreshdeskSupportAdapter:
         return await self._change_tag(
             ticket_id,
             command,
-            add=command.tool_name == SupportToolName.ADD_TAG,
+            action=(
+                FreshdeskTagAction.ADD
+                if command.tool_name == SupportToolName.ADD_TAG
+                else FreshdeskTagAction.REMOVE
+            ),
         )
 
     def normalize_ticket(
@@ -1629,26 +1630,20 @@ class FreshdeskSupportAdapter:
         if not isinstance(command.payload, SupportMappedFieldsCommandPayload):
             raise _invalid_command("Freshdesk ticket fields payload is invalid.")
         fields = self._ticket_write_values(command.payload.fields)
-        for required in (
-            "subject",
-            "description",
-            "requester_id",
-            "status",
-            "priority",
-        ):
-            if required not in fields:
-                raise _invalid_command(
-                    "Opening a Freshdesk ticket requires mapped subject, description, "
-                    "requester_external_id, native_status, and priority values."
-                )
+        payload = _parse_write(
+            fields.model_dump(exclude_unset=True), FreshdeskTicketCreate
+        )
         response = await self._mutation_request(
             "/api/v2/tickets",
-            method="POST",
-            payload=fields,
+            method=HttpMethod.POST,
+            payload=payload,
             command=command,
             operation="open a Freshdesk ticket",
         )
-        ticket = _object(_expect(response, operation="open a Freshdesk ticket"))
+        ticket = _parse_mutation_record(
+            _expect(response, operation="open a Freshdesk ticket"),
+            FreshdeskMutationRecord,
+        )
         return self._ticket_result(ticket, response=response)
 
     async def _update_ticket(
@@ -1659,19 +1654,18 @@ class FreshdeskSupportAdapter:
         if not isinstance(command.payload, SupportMappedFieldsCommandPayload):
             raise _invalid_command("Freshdesk ticket fields payload is invalid.")
         fields = self._ticket_write_values(command.payload.fields)
-        if not fields:
-            raise _invalid_command(
-                "Updating a Freshdesk ticket requires mapped fields."
-            )
         await self._require_revision(ticket_id, command.expected_source_revision)
         response = await self._mutation_request(
             f"/api/v2/tickets/{ticket_id}",
-            method="PUT",
+            method=HttpMethod.PUT,
             payload=fields,
             command=command,
             operation="update a Freshdesk ticket",
         )
-        ticket = _object(_expect(response, operation="update a Freshdesk ticket"))
+        ticket = _parse_mutation_record(
+            _expect(response, operation="update a Freshdesk ticket"),
+            FreshdeskMutationRecord,
+        )
         return self._ticket_result(ticket, response=response)
 
     async def _assign_ticket(
@@ -1681,26 +1675,29 @@ class FreshdeskSupportAdapter:
     ) -> SorCommandResult:
         if not isinstance(command.payload, SupportAssignCommandPayload):
             raise _invalid_command("Freshdesk assignment payload is invalid.")
-        payload: dict[str, object] = {}
+        assignment: dict[str, int] = {}
         if command.payload.assignee_external_id is not None:
-            payload["responder_id"] = _numeric_id(
+            assignment[FreshdeskTicketWriteField.RESPONDER_ID] = _numeric_id(
                 command.payload.assignee_external_id,
                 field="Freshdesk assignee ID",
             )
         if command.payload.group_external_id is not None:
-            payload["group_id"] = _numeric_id(
+            assignment[FreshdeskTicketWriteField.GROUP_ID] = _numeric_id(
                 command.payload.group_external_id,
                 field="Freshdesk group ID",
             )
         await self._require_revision(ticket_id, command.expected_source_revision)
         response = await self._mutation_request(
             f"/api/v2/tickets/{ticket_id}",
-            method="PUT",
-            payload=payload,
+            method=HttpMethod.PUT,
+            payload=_parse_write(assignment, FreshdeskTicketUpdate),
             command=command,
             operation="assign a Freshdesk ticket",
         )
-        ticket = _object(_expect(response, operation="assign a Freshdesk ticket"))
+        ticket = _parse_mutation_record(
+            _expect(response, operation="assign a Freshdesk ticket"),
+            FreshdeskMutationRecord,
+        )
         return self._ticket_result(ticket, response=response)
 
     async def _add_conversation(
@@ -1717,15 +1714,12 @@ class FreshdeskSupportAdapter:
         response = await self._mutation_request(
             f"/api/v2/tickets/{ticket_id}/"
             f"{'reply' if visibility is SupportMessageVisibility.PUBLIC else 'notes'}",
-            method="POST",
-            payload={
-                "body": text,
-                **(
-                    {}
-                    if visibility is SupportMessageVisibility.PUBLIC
-                    else {"private": True}
-                ),
-            },
+            method=HttpMethod.POST,
+            payload=(
+                FreshdeskReplyInput(body=text)
+                if visibility is SupportMessageVisibility.PUBLIC
+                else FreshdeskNoteInput(body=text, private=True)
+            ),
             command=command,
             operation=(
                 "reply to a Freshdesk customer"
@@ -1733,19 +1727,15 @@ class FreshdeskSupportAdapter:
                 else "add a Freshdesk private note"
             ),
         )
-        conversation = _object(
-            _expect(response, operation="create a Freshdesk conversation")
-        )
-        conversation_id = _required_id(
-            conversation.get("id"), field="Freshdesk conversation ID"
+        conversation = _parse_mutation_record(
+            _expect(response, operation="create a Freshdesk conversation"),
+            FreshdeskMutationRecord,
         )
         return SorCommandResult(
             vendor_object_key=FreshdeskStream.CONVERSATIONS,
-            external_id=_conversation_id(ticket_id, conversation_id),
+            external_id=_conversation_id(ticket_id, conversation.id),
             external_request_id=_request_id(response),
-            source_revision=_revision(
-                _optional_datetime(conversation.get("updated_at"))
-            ),
+            source_revision=_revision(conversation.updated_at),
             source_url=f"{self._origin}/a/tickets/{ticket_id}",
             response={
                 "status": "accepted",
@@ -1767,17 +1757,23 @@ class FreshdeskSupportAdapter:
                 "Closing a Freshdesk ticket requires native_status: resolved or closed."
             )
         status = _status_code(command.payload.native_status)
-        if status not in {4, 5}:
+        if status not in {
+            FreshdeskTicketStatusCode.RESOLVED,
+            FreshdeskTicketStatusCode.CLOSED,
+        }:
             raise _invalid_command("Freshdesk close status must be resolved or closed.")
         await self._require_revision(ticket_id, command.expected_source_revision)
         response = await self._mutation_request(
             f"/api/v2/tickets/{ticket_id}",
-            method="PUT",
-            payload={"status": status},
+            method=HttpMethod.PUT,
+            payload=FreshdeskTicketUpdate(status=status),
             command=command,
             operation="close a Freshdesk ticket",
         )
-        ticket = _object(_expect(response, operation="close a Freshdesk ticket"))
+        ticket = _parse_mutation_record(
+            _expect(response, operation="close a Freshdesk ticket"),
+            FreshdeskMutationRecord,
+        )
         return self._ticket_result(ticket, response=response)
 
     async def _change_tag(
@@ -1785,31 +1781,36 @@ class FreshdeskSupportAdapter:
         ticket_id: str,
         command: SorCommandRequest,
         *,
-        add: bool,
+        action: FreshdeskTagAction,
     ) -> SorCommandResult:
         if not isinstance(command.payload, SupportTagCommandPayload):
             raise _invalid_command("Freshdesk tag payload is invalid.")
         tag = command.payload.tag_external_id
-        ticket = await self._ticket(ticket_id)
-        self._assert_revision(ticket, command.expected_source_revision)
-        tags = _string_list(
-            ticket.get(FreshdeskStream.TAGS) or [], field="Freshdesk ticket tags"
+        ticket = _parse_mutation_record(
+            await self._ticket(ticket_id), FreshdeskTicketTags
         )
-        if add and tag not in tags:
+        self._assert_revision(ticket, command.expected_source_revision)
+        tags = list(ticket.tags or [])
+        if action is FreshdeskTagAction.ADD and tag not in tags:
             tags.append(tag)
-        if not add:
+        if action is FreshdeskTagAction.REMOVE:
             tags = [value for value in tags if value != tag]
         response = await self._mutation_request(
             f"/api/v2/tickets/{ticket_id}",
-            method="PUT",
-            payload={FreshdeskStream.TAGS: tags},
+            method=HttpMethod.PUT,
+            payload=FreshdeskTicketUpdate(tags=tags),
             command=command,
             operation="change a Freshdesk ticket tag",
         )
-        updated = _object(_expect(response, operation="change a Freshdesk ticket tag"))
+        updated = _parse_mutation_record(
+            _expect(response, operation="change a Freshdesk ticket tag"),
+            FreshdeskMutationRecord,
+        )
         return self._ticket_result(updated, response=response)
 
-    def _ticket_write_values(self, payload: Mapping[str, object]) -> dict[str, object]:
+    def _ticket_write_values(
+        self, payload: Mapping[str, object]
+    ) -> FreshdeskTicketUpdate:
         writable = {
             field.agent_key: field.vendor_field_key
             for field in self._context.fields
@@ -1827,18 +1828,18 @@ class FreshdeskSupportAdapter:
                 recovery=SorRecoveryPolicy.TERMINAL,
             )
         result: dict[str, object] = {}
-        custom_fields: dict[str, object] = {}
+        custom_fields: dict[str, SorJsonValue] = {}
         mapping = {
-            "subject": "subject",
-            "normalized_description": "description",
-            "requester_external_id": "requester_id",
-            "assignee_external_id": "responder_id",
-            "group_external_id": "group_id",
-            "inbox_external_id": "email_config_id",
-            "native_status": "status",
-            "priority": "priority",
-            "category": "type",
-            "tag_external_ids": FreshdeskStream.TAGS,
+            "subject": FreshdeskTicketWriteField.SUBJECT,
+            "normalized_description": FreshdeskTicketWriteField.DESCRIPTION,
+            "requester_external_id": FreshdeskTicketWriteField.REQUESTER_ID,
+            "assignee_external_id": FreshdeskTicketWriteField.RESPONDER_ID,
+            "group_external_id": FreshdeskTicketWriteField.GROUP_ID,
+            "inbox_external_id": FreshdeskTicketWriteField.EMAIL_CONFIG_ID,
+            "native_status": FreshdeskTicketWriteField.STATUS,
+            "priority": FreshdeskTicketWriteField.PRIORITY,
+            "category": FreshdeskTicketWriteField.TYPE,
+            "tag_external_ids": FreshdeskTicketWriteField.TAGS,
         }
         for agent_key, value in payload.items():
             vendor_key = writable[agent_key]
@@ -1855,37 +1856,42 @@ class FreshdeskSupportAdapter:
                     recovery=SorRecoveryPolicy.TERMINAL,
                 )
             if source_key in {
-                "requester_id",
-                "responder_id",
-                "group_id",
-                "email_config_id",
+                FreshdeskTicketWriteField.REQUESTER_ID,
+                FreshdeskTicketWriteField.RESPONDER_ID,
+                FreshdeskTicketWriteField.GROUP_ID,
+                FreshdeskTicketWriteField.EMAIL_CONFIG_ID,
             }:
                 result[source_key] = _numeric_id(value, field=f"Freshdesk {source_key}")
-            elif source_key == "status":
+            elif source_key is FreshdeskTicketWriteField.STATUS:
                 result[source_key] = _status_code(value)
-            elif source_key == "priority":
+            elif source_key is FreshdeskTicketWriteField.PRIORITY:
                 result[source_key] = _priority_code(value)
-            elif source_key == FreshdeskStream.TAGS:
+            elif source_key is FreshdeskTicketWriteField.TAGS:
                 result[source_key] = _string_list(value, field="Freshdesk tags")
             else:
                 result[source_key] = value
         if custom_fields:
-            result["custom_fields"] = custom_fields
-        return result
+            result[FreshdeskTicketWriteField.CUSTOM_FIELDS] = custom_fields
+        return _parse_write(result, FreshdeskTicketUpdate)
 
     async def _require_revision(self, ticket_id: str, revision: str | None) -> None:
         if revision is None:
             return
-        self._assert_revision(await self._ticket(ticket_id), revision)
+        ticket = _parse_mutation_record(
+            await self._ticket(ticket_id), FreshdeskMutationRecord
+        )
+        self._assert_revision(ticket, revision)
 
     @staticmethod
-    def _assert_revision(ticket: Mapping[str, object], revision: str | None) -> None:
+    def _assert_revision(
+        ticket: FreshdeskMutationRecord, revision: str | None
+    ) -> None:
         if revision is None:
             return
         expected = _required_datetime(revision, field="Freshdesk expected revision")
-        current = _required_datetime(
-            ticket.get("updated_at"), field="Freshdesk ticket revision"
-        )
+        current = ticket.updated_at
+        if current is None:
+            raise _invalid_response("Freshdesk ticket revision is invalid.")
         if current != expected:
             raise SorCommandRevisionConflict(
                 "Freshdesk ticket changed after the Agent selected it."
@@ -1895,8 +1901,8 @@ class FreshdeskSupportAdapter:
         self,
         path: str,
         *,
-        method: str,
-        payload: object,
+        method: HttpMethod,
+        payload: FreshdeskWriteInput,
         command: SorCommandRequest,
         operation: str,
     ) -> SorJsonResponse:
@@ -1904,7 +1910,7 @@ class FreshdeskSupportAdapter:
             response = await self._client.request(
                 path,
                 method=method,
-                payload=payload,
+                payload=payload.model_dump(mode="json", exclude_unset=True),
                 idempotency_key=command.idempotency_key,
             )
             if response.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR:
@@ -1925,20 +1931,37 @@ class FreshdeskSupportAdapter:
 
     def _ticket_result(
         self,
-        ticket: Mapping[str, object],
+        ticket: FreshdeskMutationRecord,
         *,
         response: SorJsonResponse,
     ) -> SorCommandResult:
-        ticket_id = _required_id(ticket.get("id"), field="Freshdesk ticket ID")
-        updated_at = _optional_datetime(ticket.get("updated_at"))
+        ticket_id = ticket.id
         return SorCommandResult(
             vendor_object_key=FreshdeskStream.TICKETS,
             external_id=ticket_id,
             external_request_id=_request_id(response),
-            source_revision=_revision(updated_at),
+            source_revision=_revision(ticket.updated_at),
             source_url=f"{self._origin}/a/tickets/{ticket_id}",
             response={"status": "accepted"},
         )
+
+
+def _parse_write[InputT: FreshdeskMutationInput](
+    value: object, model: type[InputT]
+) -> InputT:
+    try:
+        return model.model_validate(value)
+    except ValidationError as error:
+        raise _invalid_command("Freshdesk mutation fields are invalid.") from error
+
+
+def _parse_mutation_record[RecordT: FreshdeskMutationRecord](
+    value: object, model: type[RecordT]
+) -> RecordT:
+    try:
+        return model.model_validate(value)
+    except ValidationError as error:
+        raise _invalid_response("Freshdesk mutation record is invalid.") from error
 
 
 def create_freshdesk_adapter(context: SorAdapterContext) -> FreshdeskSupportAdapter:

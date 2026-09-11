@@ -515,6 +515,34 @@ Signing secrets are excluded from ordinary model dumps and representations;
 GitHub has an explicit outbound serializer, while Zendesk secrets pass directly
 to the existing encrypted source-storage path.
 
+Incoming Jira, GitHub and Zendesk deliveries also use vendor-owned routing models.
+The adapters authenticate the original request before parsing event metadata;
+they then emit the existing platform `SorWebhookSignal`. Source/subscription
+matching, selected streams and receipt persistence remain platform/adapter policy,
+not fields trusted from the request. Unknown event names stay open; unconsumed
+issue bodies, customer details and attachment content are excluded from the
+metadata models. Declared metadata with an invalid type is rejected even when
+the former dictionary path would have skipped it.
+
+Jira keeps its subscription-match IDs and millisecond timestamp handling.
+GitHub keeps repository fences and the distinction between an absent
+`pull_request` field and an explicitly null field, including after model
+serialization. Zendesk preserves ticket/comment/attachment hints and broad sync
+hints when an event lacks an exact child identity. These shapes follow the native
+[Jira delivery format](https://developer.atlassian.com/cloud/jira/platform/webhooks/#format-of-the-webhook-data-sent-by-jira),
+[GitHub event payloads](https://docs.github.com/en/webhooks/webhook-events-and-payloads)
+and [Zendesk ticket events](https://developer.zendesk.com/api-reference/webhooks/event-types/ticket-events/).
+
+Ingestion and replay share
+[`SorStoredWebhookSignal`](../../server/eylo/sor/shared/webhook_contracts.py).
+Ingestion keeps typed values through delivery-ID checks, fingerprinting and receipt
+construction; JSON dictionaries exist only at hashing/storage boundaries. The
+stored timestamp remains ISO text with the existing UTC offset representation so
+fingerprints do not change. The worker validates the same model before converting
+it into a live signal. Receipt ORM data remains JSON, rather than eagerly becoming
+typed signals: a malformed stored row must still be reportable as failed without
+breaking the worker's terminal-result serialization.
+
 ## Revocation and durable recovery
 
 Onboarding results, sync-generation plans and locked page contexts use frozen

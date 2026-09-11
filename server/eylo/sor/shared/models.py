@@ -28,6 +28,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from eylo.common.models import EyloBaseModel, EyloOrganizationModel
 from eylo.modules.connections.domain import ConnectionAuthKind
+from eylo.sor.shared.json_values import SorJsonValue
 
 from .contracts import (
     SorChangeStrategy,
@@ -1679,7 +1680,7 @@ class SorWebhookReceiptModel(EyloOrganizationModel):
     replay_detected: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
-    signals: Mapped[list] = mapped_column(
+    signals: Mapped[list[SorJsonValue]] = mapped_column(
         JSONB,
         nullable=False,
         default=list,
