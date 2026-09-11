@@ -47,6 +47,18 @@ from eylo.sor.shared.contracts import (
 )
 from eylo.sor.shared.json_values import SorJsonValue, require_json_value
 from eylo.sor.shared.linear import linear_graphql_data
+from eylo.sor.shared.linear_webhooks import (
+    LINEAR_DOCUMENT_STREAM,
+    LINEAR_MILLISECONDS_PER_SECOND,
+    LINEAR_SIGNATURE_HEX_LENGTH,
+    LINEAR_WEBHOOK_ID_MAX_LENGTH,
+    LINEAR_WEBHOOK_REPLAY_WINDOW_MS,
+    LinearWebhookEntity,
+    LinearWebhookHeader,
+    LinearWebhookPayload,
+    LinearWebhookTimestamp,
+    parse_linear_webhook_model,
+)
 from eylo.sor.ticketing.contracts import (
     TicketingAssignCommandPayload,
     TicketingComment,
@@ -228,15 +240,15 @@ _MUTATION_RESULT_STREAMS = {
     TicketingToolName.LINK: LinearTicketingStream.ISSUE_RELATIONS,
 }
 _FULL_RECONCILE_STREAMS = frozenset({LinearTicketingStream.ISSUE_RELATIONS})
-_WEBHOOK_STREAMS = {
-    "Issue": LinearTicketingStream.ISSUES,
-    "Comment": LinearTicketingStream.COMMENTS,
-    "Project": LinearTicketingStream.PROJECTS,
-    "IssueRelation": LinearTicketingStream.ISSUE_RELATIONS,
-    "IssueLabel": LinearTicketingStream.ISSUE_LABELS,
-    "Cycle": LinearTicketingStream.CYCLES,
-    "User": LinearTicketingStream.USERS,
-    "Document": "documents",
+_WEBHOOK_STREAMS: Mapping[str, str] = {
+    LinearWebhookEntity.ISSUE: LinearTicketingStream.ISSUES,
+    LinearWebhookEntity.COMMENT: LinearTicketingStream.COMMENTS,
+    LinearWebhookEntity.PROJECT: LinearTicketingStream.PROJECTS,
+    LinearWebhookEntity.ISSUE_RELATION: LinearTicketingStream.ISSUE_RELATIONS,
+    LinearWebhookEntity.ISSUE_LABEL: LinearTicketingStream.ISSUE_LABELS,
+    LinearWebhookEntity.CYCLE: LinearTicketingStream.CYCLES,
+    LinearWebhookEntity.USER: LinearTicketingStream.USERS,
+    LinearWebhookEntity.DOCUMENT: LINEAR_DOCUMENT_STREAM,
 }
 
 
@@ -1785,7 +1797,7 @@ def _page_variables(
     )
 
 
-def _header(headers: Mapping[str, str], name: str) -> str | None:
+def _header(headers: Mapping[str, str], name: LinearWebhookHeader) -> str | None:
     expected = name.lower()
     for key, value in headers.items():
         if key.lower() == expected:
@@ -1801,8 +1813,8 @@ def verify_linear_app_webhook(
     signing_secret: str,
 ) -> None:
     """Authenticate one raw Linear delivery before parsing or persistence."""
-    signature = _header(headers, "linear-signature")
-    if signature is None or len(signature) != 64:
+    signature = _header(headers, LinearWebhookHeader.SIGNATURE)
+    if signature is None or len(signature) != LINEAR_SIGNATURE_HEX_LENGTH:
         raise SorWebhookVerificationError("Linear webhook signature is invalid.")
     try:
         bytes.fromhex(signature)
@@ -1818,14 +1830,16 @@ def verify_linear_app_webhook(
     if not hmac.compare_digest(signature.lower(), expected):
         raise SorWebhookVerificationError("Linear webhook signature is invalid.")
 
-    payload = _linear_webhook_body(body, verification=True)
-    timestamp = payload.get("webhookTimestamp")
-    if isinstance(timestamp, bool) or not isinstance(timestamp, int):
-        raise SorWebhookVerificationError("Linear webhook timestamp is invalid.")
-    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-    if abs(now_ms - timestamp) > 60_000:
+    payload = parse_linear_webhook_model(
+        body, LinearWebhookTimestamp, error_type=SorWebhookVerificationError
+    )
+    timestamp = payload.webhook_timestamp
+    now_ms = int(
+        datetime.now(timezone.utc).timestamp() * LINEAR_MILLISECONDS_PER_SECOND
+    )
+    if abs(now_ms - timestamp) > LINEAR_WEBHOOK_REPLAY_WINDOW_MS:
         raise SorWebhookVerificationError("Linear webhook timestamp is stale.")
-    header_timestamp = _header(headers, "linear-timestamp")
+    header_timestamp = _header(headers, LinearWebhookHeader.TIMESTAMP)
     if header_timestamp is not None and header_timestamp != str(timestamp):
         raise SorWebhookVerificationError("Linear webhook timestamps disagree.")
 
@@ -1836,96 +1850,26 @@ def parse_linear_app_webhook(
     body: bytes,
 ) -> LinearAppWebhookDelivery:
     """Normalize one Linear app event without assigning it to a source."""
-    payload = _linear_webhook_body(body, verification=False)
-    delivery_id = _header(headers, "linear-delivery")
-    if delivery_id is None or not 1 <= len(delivery_id) <= 512:
-        raise SorWebhookPayloadError("Linear webhook delivery ID is invalid.")
-    organization_id = _webhook_string(
-        payload.get("organizationId"),
-        field="organizationId",
+    payload = parse_linear_webhook_model(
+        body, LinearWebhookPayload, error_type=SorWebhookPayloadError
     )
-    action = _webhook_string(payload.get("action"), field="action")
-    event_name = _webhook_string(payload.get("type"), field="type")
-    data = payload.get("data")
-    if data is None:
-        record: Mapping[str, object] = {}
-    elif isinstance(data, Mapping) and all(isinstance(key, str) for key in data):
-        record = data
-    else:
-        raise SorWebhookPayloadError("Linear webhook data is invalid.")
-
-    stream_key = _WEBHOOK_STREAMS.get(event_name)
-    external_id = _webhook_optional_id(record.get("id"))
+    delivery_id = _header(headers, LinearWebhookHeader.DELIVERY)
+    if delivery_id is None or not 1 <= len(delivery_id) <= LINEAR_WEBHOOK_ID_MAX_LENGTH:
+        raise SorWebhookPayloadError("Linear webhook delivery ID is invalid.")
+    stream_key = _WEBHOOK_STREAMS.get(payload.type)
+    external_id = payload.data.id if payload.data is not None else None
     if stream_key is not None and external_id is None:
         raise SorWebhookPayloadError("Linear webhook record identity is missing.")
     return LinearAppWebhookDelivery(
-        organization_external_id=organization_id,
+        organization_external_id=payload.organization_id,
         signal=SorWebhookSignal(
             delivery_id=delivery_id,
-            event_type=f"{event_name}.{action}",
+            event_type=f"{payload.type}.{payload.action}",
             vendor_object_key=stream_key,
             external_id=external_id,
-            occurred_at=_webhook_datetime(payload),
+            occurred_at=payload.occurred_at,
         ),
     )
-
-
-def _linear_webhook_body(
-    body: bytes,
-    *,
-    verification: bool,
-) -> dict[str, object]:
-    error_type = SorWebhookVerificationError if verification else SorWebhookPayloadError
-    try:
-        value = json.loads(body.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise error_type("Linear webhook body is not valid JSON.") from error
-    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
-        raise error_type("Linear webhook body must be an object.")
-    return value
-
-
-def _webhook_string(value: object, *, field: str) -> str:
-    if not isinstance(value, str):
-        raise SorWebhookPayloadError(f"Linear webhook {field} is invalid.")
-    normalized = value.strip()
-    if not 1 <= len(normalized) <= 256:
-        raise SorWebhookPayloadError(f"Linear webhook {field} is invalid.")
-    return normalized
-
-
-def _webhook_optional_id(value: object) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise SorWebhookPayloadError("Linear webhook record identity is invalid.")
-    normalized = value.strip()
-    if not 1 <= len(normalized) <= 512:
-        raise SorWebhookPayloadError("Linear webhook record identity is invalid.")
-    return normalized
-
-
-def _webhook_datetime(payload: Mapping[str, object]) -> datetime:
-    value = payload.get("createdAt")
-    if isinstance(value, str):
-        try:
-            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError as error:
-            raise SorWebhookPayloadError(
-                "Linear webhook creation time is invalid."
-            ) from error
-        if parsed.tzinfo is None or parsed.utcoffset() is None:
-            raise SorWebhookPayloadError(
-                "Linear webhook creation time must include a timezone."
-            )
-        return parsed.astimezone(timezone.utc)
-    timestamp = payload.get("webhookTimestamp")
-    if isinstance(timestamp, bool) or not isinstance(timestamp, int):
-        raise SorWebhookPayloadError("Linear webhook timestamp is invalid.")
-    try:
-        return datetime.fromtimestamp(timestamp / 1000, tz=timezone.utc)
-    except (OverflowError, OSError, ValueError) as error:
-        raise SorWebhookPayloadError("Linear webhook timestamp is invalid.") from error
 
 
 def _connection_nodes(value: object, *, field: str) -> list[dict[str, object]]:

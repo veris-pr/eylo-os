@@ -164,6 +164,16 @@ vendor's required timestamp in a frozen Pydantic hint while deduplicating, then
 translates to the shared signal contract. Other vendors are not forced to supply
 a timestamp merely because HubSpot requires one.
 
+Linear authenticates the raw request body before validating its timestamp and
+routing metadata with vendor-owned Pydantic models. The existing one-minute
+replay window and optional timestamp-header agreement follow
+[Linear's webhook contract](https://linear.app/developers/webhooks).
+Recognized entity/header names use native enums; unknown event and action names
+remain open so unrelated vendor events retain their existing routing behavior.
+Only identity and event metadata enter these models, not actor or document
+content. The runtime still owns workspace checks, source selection, receipt
+deduplication and post-commit dispatch. Raw-body retention is unchanged.
+
 Salesforce similarly validates fixed CRM tool names, but its custom-object and
 custom-field names remain dynamic source data. Confluence validates its fixed
 stream vocabulary before discovery and nested reads. Its page-update mode and

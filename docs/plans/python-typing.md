@@ -10,7 +10,7 @@ are superseded by the newest deployment record.
 | Gate | Current evidence | Remaining acceptance |
 | --- | --- | --- |
 | Static backend contracts | Lint passes; Pyrefly has zero errors and two existing redundant-cast warnings | Static success does not prove native input shapes |
-| SOR vendor wire coverage | HubSpot, Salesforce and Confluence wire contracts deployed; Confluence native list/exact reads passed for all seven selected streams; Salesforce passed 164 function assertions | Salesforce is not configured in QA; Confluence full-sync completion and remaining registered vendor boundaries still need operation-level coverage |
+| SOR vendor wire coverage | HubSpot, Salesforce and Confluence wire contracts deployed; Confluence native list/exact reads and fresh seven-stream sync passed; Salesforce passed 164 function assertions | Salesforce is not configured in QA; remaining registered vendor boundaries still need operation-level coverage |
 | CLI typing | CLI-owned Pydantic contracts, independent environment synchronized; explicit CLI typing passes; 102 function checks, 332 live-catalog action parity checks and authenticated collection reads passed | Not proof that every API action or vendor execution succeeds |
 | Stored provider compatibility | 25 saved configs inspected; 13 ready voice receipts restored; native Speechmatics connection/cleanup passed | Native conversations across configured providers |
 | Published voice bindings | Public CLI aggregate resolves both existing realtime and decomposed QA agents at revision 1 | Both have no storage binding; recording upload is not covered |
@@ -18,7 +18,7 @@ are superseded by the newest deployment record.
 | Widget and console | Both development servers return HTTP 200; earlier widget inventory/conversation list loaded | Latest browser inventory call also timed out; fresh browser conversation not submitted |
 | Durable execution | Saved contexts/results, isolated replay, and one native scheduled tool-bearing result validated | Background/objective execution, cancellation, crash/restart and waiting/resume |
 | Sandbox | Typed workspace/checkpoint/tool paths validated with substituted dependencies | Native configured sandbox execution/cleanup |
-| Final handoff | Current HEAD `9f6e64b0` includes earlier implementation; sync/webhook receipts and HubSpot/Salesforce/Confluence wire contracts remain uncommitted; no migrations or provider data reset | Complete remaining contracts, milestone review, final QA matrix |
+| Final handoff | HEAD advanced independently to `fd97a670`, including sync/webhook receipts and HubSpot/Salesforce/Confluence wire contracts; latest QA documentation remains uncommitted; no migrations or provider data reset | Complete remaining contracts, milestone review, final QA matrix |
 
 The current deployed checkpoint includes the scheduler correction, telephony,
 HTTP, PCM audio, collection/internal values, timeline/erasure, SOR tool-receipt
@@ -80,10 +80,70 @@ Public operations API found an existing generation
 `01a08ef1-b41d-7671-a238-2eb30e1333d5`, started at 05:30 UTC on the older image.
 It was observed rather than duplicated. Five streams had already succeeded;
 unfinished run `01a08ef1-b41e-7b11-b685-d4c59b5a72b9` resumed after restart on
-attempt 2 and advanced from 306 to 329 unchanged records. No records were rejected;
-relationship health reported zero pending. Full generation completion remains
-unverified, and pre-restart completed streams are not claimed as new-image sync
-proof. Native attachment bytes and document mutation remain unexercised.
+attempt 2 and completed at 05:42:54 UTC with 511 unchanged records. The generation
+succeeded: 6/6 streams, 3,772 unchanged records, zero rejected records and zero
+pending relationships. This proves recovery of the interrupted stream; pre-restart
+completed streams are not claimed as new-image sync proof. A fresh full generation
+on the new image subsequently succeeded: generation
+`01a08efe-daa3-7da1-9815-a4e3d3026d77` completed at 05:54:37 UTC with seven of
+seven streams successful, each on attempt 1, 6,704 unchanged records and zero
+rejected records. The public operations API reports 8,956 resolved relationships,
+zero pending and two tombstoned. No duplicate generation was filed. Native
+document mutations remain unexercised.
+
+Post-deployment public document query/detail/audit checks passed for two existing
+Confluence documents. Both exposed a body block, current revision and resolved
+author/space, with one and two properties respectively. Content was not logged.
+This checks the console's API projection, not browser rendering.
+
+Two small native attachments were subsequently downloaded through the deployed
+adapter. Their byte lengths (18,250 and 17,506) and media types matched typed vendor
+metadata. No content was logged or stored. Git HEAD advanced independently during
+QA; the agent did not create that commit. Only subsequent evidence edits remained
+dirty at that observation.
+
+### Linear webhook contract checkpoint — 2026-09-11, locally verified
+
+Added vendor-owned webhook metadata models in `sor/shared/linear_webhooks.py`.
+The Ticketing adapter's existing public verification/parsing functions remain
+the runtime entrypoints. Known header/entity names and byte/time limits now have
+named contracts; raw dictionary field extraction ends at JSON/model validation.
+Unknown event/action names remain open. Native record fields outside identity,
+including actor and document content, are ignored by the metadata model.
+
+Authentication still precedes parsing, using raw-body HMAC and the existing
+one-minute timestamp window. Workspace binding, secret-revision recheck, selected
+source routing, receipt storage and post-commit dispatch are unchanged. Invalid
+metadata retains verification versus payload exception classes; field-specific
+validation failures now use the safe summary `Linear webhook metadata is invalid.`
+No permission, registration, schema, dependency or source-setting changes.
+
+Verification:
+
+- 242 parser/verification checks passed against the pre-change implementation:
+  all eight routed entities, create/update/remove and unknown actions, unsupported
+  events, whitespace/length limits, missing/null/malformed data, date precedence,
+  integer-only timestamps, exact replay boundaries, header disagreement, bad
+  signatures, signature-before-JSON behavior and frozen alias-aware restoration.
+  Accepted payloads produce identical normalized signals; invalid inputs retain
+  the same exception category. These are function checks, not vendor delivery QA.
+- 25 actual ingress-function scenarios passed using real authority/ORM/signal
+  models and substituted DB/service persistence and worker dispatch. Checks cover
+  source selection, unsupported-event routing, duplicates, pre/post-resolution
+  workspace refusal, secret-revision race, commit failure and dispatch failure.
+  Verification runs outside a transaction; dispatch only follows successful
+  commit. This does not prove concurrent PostgreSQL deduplication or crash recovery.
+- Read-only native inspection found 15 Linear receipts. One retained encrypted
+  raw payload matched both the old/new parser and its persisted normalized signal;
+  the other 14 raw bodies had expired. No content was logged, events replayed,
+  vendor mutations sent or source data changed. Historical payload parsing does
+  not establish fresh signature validation or live webhook delivery.
+- Full backend typing passes with zero errors and the same two existing
+  redundant-cast warnings. Full backend/CLI lint passes. No probe files added.
+
+This checkpoint is not yet deployed. Continue the remaining vendor boundary
+inventory, then include it in the next verified runtime deployment. Full-platform
+acceptance, native voice/widget and durable lifecycle QA remain open.
 
 ### Contract checkpoint deployment — 2026-09-11 01:53 UTC
 
