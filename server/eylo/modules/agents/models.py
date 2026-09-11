@@ -408,7 +408,7 @@ class AgentsModel(EyloOrganizationModel):
     )
 
     @validates("name")
-    def validate_name(self, key, name):
+    def validate_name(self, key: str, name: str) -> str:
         """Validate and generate a slug for the agent name."""
         return validate_name_and_generate_slug(self, key, name)
 
@@ -979,7 +979,7 @@ class AgentSwarmModel(EyloOrganizationModel):
     )
 
     @validates("name")
-    def validate_name(self, key, name):
+    def validate_name(self, key: str, name: str) -> str:
         """Validate the name and keep the stable draft slug synchronized."""
         return validate_name_and_generate_slug(self, key, name)
 

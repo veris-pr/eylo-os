@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pydantic import JsonValue
+
 from eylo.modules.integrations_v2.domain.enums import ToolEffect
 
 from ...contracts import VendorToolContext, VendorToolError
@@ -84,7 +86,7 @@ from .write_contracts import (
     input_model=SearchInput,
     effect=ToolEffect.READ,
 )
-async def search(payload: SearchInput, ctx: VendorToolContext) -> dict[str, object]:
+async def search(payload: SearchInput, ctx: VendorToolContext) -> dict[str, JsonValue]:
     body = SearchRequest(
         query=payload.query,
         filter=SearchFilter(value=payload.only) if payload.only is not None else None,
@@ -147,7 +149,7 @@ async def search(payload: SearchInput, ctx: VendorToolContext) -> dict[str, obje
 )
 async def read_page(
     payload: ReadPageInput, ctx: VendorToolContext
-) -> dict[str, object]:
+) -> dict[str, JsonValue]:
     page = parse_response(await ctx.read(f"/pages/{payload.page_id}"), METADATA)
     if page.id != payload.page_id or page.object != SearchKind.PAGE:
         raise VendorToolError(
@@ -218,7 +220,7 @@ async def read_page(
 )
 async def create_page(
     payload: CreatePageInput, ctx: VendorToolContext
-) -> dict[str, object]:
+) -> dict[str, JsonValue]:
     parent = (
         DatabaseParent(database_id=payload.parent_id)
         if payload.selected_parent == ParentKind.DATABASE
@@ -268,7 +270,7 @@ async def create_page(
 )
 async def append_to_page(
     payload: AppendToPageInput, ctx: VendorToolContext
-) -> dict[str, object]:
+) -> dict[str, JsonValue]:
     body = AppendRequest(children=paragraphs(payload.text))
     response = await ctx.mutate(
         f"/blocks/{payload.page_id}/children",
@@ -321,7 +323,7 @@ async def append_to_page(
 )
 async def query_database(
     payload: QueryDatabaseInput, ctx: VendorToolContext
-) -> dict[str, object]:
+) -> dict[str, JsonValue]:
     condition = None
     if payload.property_name is not None:
         schema = parse_response(

@@ -169,7 +169,7 @@ class ToolModel(EyloOrganizationModel):
     )
 
     @validates("name")
-    def validate_name(self, key, name):
+    def validate_name(self, key: str, name: str) -> str:
         return validate_name_and_generate_slug(self, key, name)
 
 

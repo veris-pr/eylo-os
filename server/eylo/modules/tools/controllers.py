@@ -204,7 +204,7 @@ class ToolController:
         return {"status": "success", "message": "Tool withdrawn successfully"}
 
 
-async def _ready_capabilities(organization_id) -> set:
+async def _ready_capabilities(organization_id: UUID) -> set[Capability]:
     from eylo.common.database import get_transaction
     from eylo.modules.provider_configs.capabilities import ready_capabilities
 

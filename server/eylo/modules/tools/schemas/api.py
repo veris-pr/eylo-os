@@ -1,7 +1,7 @@
 """Data contracts for the `tools` domain."""
 
 from datetime import datetime
-from typing import Annotated, Any, Optional
+from typing import Annotated, Any, Optional, Self
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -65,7 +65,7 @@ class ToolCreateRequestSchema(ToolDefinitionFields, EyloBaseApiSchema):
 
     @field_validator("llm_config", mode="before")
     @classmethod
-    def validate_llm_config(cls, v):
+    def validate_llm_config(cls, v: object) -> object:
         """Accept empty create input before replacing it with the registered schema."""
         if v is None or v == {}:
             return PlatformToolApiSchema(
@@ -80,7 +80,7 @@ class ToolCreateRequestSchema(ToolDefinitionFields, EyloBaseApiSchema):
         return v
 
     @model_validator(mode="after")
-    def validate_config_tool_kind(self):
+    def validate_config_tool_kind(self) -> Self:
         config = get_local_tool_config(self.name)
         self.llm_config = PlatformToolApiSchema.model_validate(
             config.model_dump(by_alias=True, exclude_none=True)
@@ -119,7 +119,7 @@ class ToolUpdateRequestSchema(ToolUpdateFields, EyloBaseApiSchema):
 
     @field_validator("llm_config", mode="before")
     @classmethod
-    def validate_llm_config(cls, v):
+    def validate_llm_config(cls, v: object) -> object:
         """An explicitly empty patch schema retains the existing null semantics."""
         if v is None or v == {}:
             return None
@@ -149,7 +149,7 @@ class ToolResponseSchema(
 
     @field_validator("llm_config", mode="before")
     @classmethod
-    def validate_llm_config(cls, value):
+    def validate_llm_config(cls, value: object) -> object:
         if isinstance(value, PlatformTool):
             value = value.model_dump(by_alias=True, exclude_none=True)
         if isinstance(value, dict):

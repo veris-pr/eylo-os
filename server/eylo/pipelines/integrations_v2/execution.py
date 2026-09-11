@@ -12,7 +12,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from contextlib import nullcontext
 from datetime import UTC, datetime
-from types import MappingProxyType
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -20,12 +19,9 @@ from pydantic import (
     AwareDatetime,
     BaseModel,
     ConfigDict,
-    Field,
     JsonValue,
     TypeAdapter,
     ValidationError,
-    field_serializer,
-    field_validator,
 )
 
 from eylo.common.database import current_transaction, start_transaction
@@ -33,6 +29,7 @@ from eylo.events.py_events.emitter import emit_ephemeral
 from eylo.events.schema.py_events.base import AuthRequiredEvent
 from eylo.modules.integrations_v2.domain.enums import ToolEffect
 from eylo.modules.integrations_v2.domain.errors import (
+    IntegrationErrorCode,
     IntegrationsV2Error,
     ToolApprovalRequiredError,
 )
@@ -46,6 +43,14 @@ from .contracts import VendorToolContext, VendorToolError
 from .http_client import DurableMutationOwner, GuardedVendorClient, VendorTransport
 from .registry import CuratedRegistry, load_vendors
 from .resolution import resolve_vendor_auth
+from .results import (
+    CuratedExecutionErrorCode,
+    CuratedFailureAction,
+    CuratedResultContent,
+    CuratedResultMetadata,
+    CuratedToolExecutionOutcome,
+    error_outcome,
+)
 
 if TYPE_CHECKING:
     from eylo.pipelines.agent_execution_context import PlatformExecutionContext
@@ -76,33 +81,6 @@ async def _invocation_started_at(
     return CuratedInvocationStamp.model_validate_json(snapshot, strict=True).started_at
 
 
-class CuratedToolExecutionOutcome(BaseModel):
-    """Safe content and metadata consumed by the conversation adapter."""
-
-    model_config = ConfigDict(
-        frozen=True,
-        strict=True,
-        extra="forbid",
-        allow_inf_nan=False,
-        hide_input_in_errors=True,
-    )
-
-    content: dict[str, JsonValue] = Field(repr=False)
-    is_error: bool
-    metadata: Mapping[str, JsonValue]
-
-    @field_validator("metadata", mode="after")
-    @classmethod
-    def freeze_metadata(cls, value: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
-        return MappingProxyType(dict(value))
-
-    @field_serializer("metadata")
-    def serialize_metadata(
-        self, value: Mapping[str, JsonValue]
-    ) -> dict[str, JsonValue]:
-        return dict(value)
-
-
 async def execute_curated_tool(
     *,
     tool_id: UUID,
@@ -130,19 +108,19 @@ async def execute_curated_tool(
             service=service,
         )
     except ToolApprovalRequiredError as error:
-        return _error_outcome(error.code, approval_required=True)
+        return error_outcome(error.code, action=CuratedFailureAction.APPROVE)
     except IntegrationsV2Error as error:
-        return _error_outcome(error.code)
+        return error_outcome(error.code)
 
     spec = registry.tool(grant.wire_id)
     if spec is None:
-        return _error_outcome("tool_binding_unavailable")
+        return error_outcome(CuratedExecutionErrorCode.BINDING_UNAVAILABLE)
 
     try:
         arguments = _ARGUMENTS.validate_python(dict(tool_input), strict=True)
         payload = spec.input_model.model_validate(arguments)
     except (TypeError, ValueError):
-        return _error_outcome("tool_input_invalid")
+        return error_outcome(CuratedExecutionErrorCode.INPUT_INVALID)
 
     contact_id = _primary_contact_id(conversation_context)
     try:
@@ -154,7 +132,7 @@ async def execute_curated_tool(
             connections=service,
         )
     except IntegrationsV2Error as error:
-        auth_required = error.code == "auth_required"
+        auth_required = error.code == IntegrationErrorCode.AUTH_REQUIRED
         if auth_required and contact_id is not None:
             emit_ephemeral(
                 AuthRequiredEvent(
@@ -172,9 +150,13 @@ async def execute_curated_tool(
                     ),
                 )
             )
-        return _error_outcome(
+        return error_outcome(
             error.code,
-            auth_required=auth_required,
+            action=(
+                CuratedFailureAction.CONNECT
+                if auth_required
+                else CuratedFailureAction.NONE
+            ),
             vendor=grant.vendor,
         )
 
@@ -185,7 +167,9 @@ async def execute_curated_tool(
                 durable_context, tool_use_message_id
             )
         except ValidationError:
-            return _error_outcome("tool_invocation_invalid", vendor=grant.vendor)
+            return error_outcome(
+                CuratedExecutionErrorCode.INVOCATION_INVALID, vendor=grant.vendor
+            )
 
     client = GuardedVendorClient(
         base_url=resolved.base_url,
@@ -211,21 +195,22 @@ async def execute_curated_tool(
     try:
         raw_result = await spec.handler(payload, context)
     except VendorToolError as error:
-        return _error_outcome(error.code, vendor=grant.vendor)
+        return error_outcome(error.code, vendor=grant.vendor)
     try:
         result = _RESULT.validate_python(raw_result, strict=True)
     except ValidationError:
-        return _error_outcome("tool_result_invalid", vendor=grant.vendor)
+        return error_outcome(
+            CuratedExecutionErrorCode.RESULT_INVALID, vendor=grant.vendor
+        )
 
     return CuratedToolExecutionOutcome(
-        content={"kind": "curated_result", "data": result},
+        content=CuratedResultContent(data=result),
         is_error=False,
-        metadata={
-            "curated_execution": True,
-            "vendor": grant.vendor,
-            "wire_id": grant.wire_id,
-            "effect": spec.effect.value,
-        },
+        metadata=CuratedResultMetadata(
+            vendor=grant.vendor,
+            wire_id=grant.wire_id,
+            effect=spec.effect,
+        ),
     )
 
 
@@ -260,29 +245,6 @@ def _primary_contact_id(conversation_context: PlatformExecutionContext) -> UUID 
 def resolved_vendor_name(registry: CuratedRegistry, vendor: str) -> str:
     spec = registry.vendor(vendor)
     return spec.display_name if spec is not None else vendor
-
-
-def _error_outcome(
-    code: str,
-    *,
-    auth_required: bool = False,
-    approval_required: bool = False,
-    vendor: str | None = None,
-) -> CuratedToolExecutionOutcome:
-    kind = "auth_required" if auth_required else "curated_error"
-    metadata: dict[str, JsonValue] = {
-        "curated_execution": True,
-        "auth_required": auth_required,
-        "approval_required": approval_required,
-        "error_code": code,
-    }
-    if vendor is not None:
-        metadata["vendor"] = vendor
-    return CuratedToolExecutionOutcome(
-        content={"kind": kind, "error": code},
-        is_error=True,
-        metadata=metadata,
-    )
 
 
 __all__ = [

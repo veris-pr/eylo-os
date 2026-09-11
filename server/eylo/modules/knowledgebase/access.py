@@ -12,7 +12,10 @@ difference between scoping and decoration.
 
 from __future__ import annotations
 
+from uuid import UUID
+
 from eylo.common.contracts.knowledgebase import KnowledgeAccess, KnowledgeScope
+from eylo.modules.knowledgebase.models import KnowledgebaseGrantModel
 
 
 class KnowledgeAccessError(Exception):
@@ -20,10 +23,10 @@ class KnowledgeAccessError(Exception):
 
 
 def readable_scopes(
-    grant,
+    grant: KnowledgebaseGrantModel,
     *,
     requested: list[KnowledgeScope] | None = None,
-    conversation_id=None,
+    conversation_id: UUID | None = None,
 ) -> dict[KnowledgeScope, str]:
     """The one granted KB scope that is active in the current context.
 
@@ -37,18 +40,17 @@ def readable_scopes(
     if requested is not None and scope not in requested:
         return {}
     if scope is KnowledgeScope.CONVERSATION and (
-        conversation_id is None
-        or str(knowledgebase.scope_id) != str(conversation_id)
+        conversation_id is None or str(knowledgebase.scope_id) != str(conversation_id)
     ):
         return {}
     return {scope: knowledgebase.scope_id}
 
 
 def assert_writable(
-    grants: list,
-    knowledgebase_id,
+    grants: list[KnowledgebaseGrantModel],
+    knowledgebase_id: UUID,
     *,
-    conversation_id=None,
+    conversation_id: UUID | None = None,
 ) -> None:
     """Raise unless this agent may write to this knowledgebase.
 
@@ -68,9 +70,7 @@ def assert_writable(
     # operator did grant, and the message would say "no grant" while the grant
     # sits in the table.
     target = str(knowledgebase_id)
-    grant = next(
-        (g for g in grants if str(g.knowledgebase_id) == target), None
-    )
+    grant = next((g for g in grants if str(g.knowledgebase_id) == target), None)
     if grant is None:
         raise KnowledgeAccessError(
             f"This agent has no grant for knowledgebase {knowledgebase_id}."
@@ -82,9 +82,7 @@ def assert_writable(
     named = getattr(grant.knowledgebase, "name", None) or knowledgebase_id
 
     if not grant.knowledgebase.writable:
-        raise KnowledgeAccessError(
-            f"Knowledgebase '{named}' does not accept writes."
-        )
+        raise KnowledgeAccessError(f"Knowledgebase '{named}' does not accept writes.")
     if grant.access is not KnowledgeAccess.READ_WRITE:
         raise KnowledgeAccessError(
             f"This agent has read-only access to knowledgebase '{named}'. "

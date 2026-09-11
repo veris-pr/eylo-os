@@ -5,33 +5,35 @@ from __future__ import annotations
 from uuid import UUID
 
 from eylo.common.contracts.memory import MemoryError, MemoryLevel, MemoryScope
+from eylo.modules.agents.schemas.indb import AgentInDb
+from eylo.modules.conversations.schemas.conversations import ConversationContext
 
 
-def scope_from_context(conversation_context, agent=None) -> MemoryScope | None:
+def scope_from_context(
+    conversation_context: ConversationContext | None, agent: AgentInDb | None = None
+) -> MemoryScope | None:
     """Resolve the Conversation scope used by automatic formation."""
     return scope_for_level(conversation_context, MemoryLevel.CONVERSATION, agent=agent)
 
 
 def scope_for_level(
-    conversation_context,
+    conversation_context: ConversationContext | None,
     level: MemoryLevel,
     *,
-    agent=None,
+    agent: AgentInDb | None = None,
 ) -> MemoryScope | None:
     """Derive one exact owner from trusted runtime context, never model input."""
-    if conversation_context is None:
+    if not isinstance(conversation_context, ConversationContext):
         return None
 
-    conversation = getattr(conversation_context, "conversation", None)
-    selected_agent = agent or getattr(conversation_context, "primary_agent", None)
-    if conversation is None or selected_agent is None:
+    conversation = conversation_context.conversation
+    selected_agent = agent or conversation_context.primary_agent
+    if selected_agent is None:
         return None
 
-    conversation_id = _uuid(getattr(conversation, "id", None))
-    conversation_organization_id = getattr(conversation, "organization_id", None)
-    agent_organization_id = getattr(selected_agent, "organization_id", None)
-    if conversation_id is None or conversation_organization_id is None:
-        return None
+    conversation_id = conversation.id
+    conversation_organization_id = conversation.organization_id
+    agent_organization_id = selected_agent.organization_id
     if agent_organization_id != conversation_organization_id:
         raise MemoryError("Memory conversation authority is inconsistent.")
 
@@ -53,7 +55,9 @@ def scope_for_level(
     )
 
 
-def authorized_scopes_from_context(conversation_context, agent=None) -> tuple[MemoryScope, ...]:
+def authorized_scopes_from_context(
+    conversation_context: ConversationContext | None, agent: AgentInDb | None = None
+) -> tuple[MemoryScope, ...]:
     """Return every exact scope the active Agent may recall, widest last."""
     scopes = []
     for level in (
@@ -68,42 +72,43 @@ def authorized_scopes_from_context(conversation_context, agent=None) -> tuple[Me
     return tuple(scopes)
 
 
-def _agent_owner(conversation_context, selected_agent, conversation_id: UUID) -> UUID:
+def _agent_owner(
+    conversation_context: ConversationContext,
+    selected_agent: AgentInDb,
+    conversation_id: UUID,
+) -> UUID:
     participant = conversation_context.get_primary_agent()
-    selected_agent_id = _uuid(getattr(selected_agent, "id", None))
+    selected_agent_id = selected_agent.id
     if (
         participant is None
-        or selected_agent_id is None
-        or _uuid(getattr(participant, "conversation_id", None)) != conversation_id
-        or _uuid(getattr(participant, "agent_id", None)) != selected_agent_id
-        or getattr(participant, "agent_revision", None) is None
+        or participant.conversation_id != conversation_id
+        or participant.agent_id != selected_agent_id
+        or participant.agent_revision is None
     ):
         raise MemoryError("Memory Agent authority is inconsistent.")
     return selected_agent_id
 
 
 def _user_owner(
-    conversation_context,
+    conversation_context: ConversationContext,
     organization_id: UUID,
     conversation_id: UUID,
 ) -> UUID:
-    contact = getattr(conversation_context, "primary_contact", None)
+    contact = conversation_context.primary_contact
     participant = conversation_context.get_primary_contact()
-    contact_id = _uuid(getattr(contact, "id", None))
-    participant_entity_id = _uuid(getattr(participant, "entity_id", None))
+    participant_entity_id = _uuid(participant.entity_id) if participant else None
     if (
         contact is None
         or participant is None
-        or contact_id is None
-        or _uuid(getattr(contact, "organization_id", None)) != organization_id
-        or _uuid(getattr(participant, "conversation_id", None)) != conversation_id
-        or participant_entity_id != contact_id
+        or contact.organization_id != organization_id
+        or participant.conversation_id != conversation_id
+        or participant_entity_id != contact.id
     ):
         raise MemoryError("Memory User authority is inconsistent.")
-    return contact_id
+    return contact.id
 
 
-def _uuid(value) -> UUID | None:
+def _uuid(value: str) -> UUID | None:
     if value is None:
         return None
     try:

@@ -3,6 +3,8 @@
 import logging
 from typing import Optional
 
+from pydantic import JsonValue
+
 from eylo.common.database import get_transaction
 from eylo.modules.agents.hooks.types import (
     PRE_LOOP_ITERATION,
@@ -64,7 +66,7 @@ class RequestStatusHooks(RunHooks):
         context: HookContext,
         agent: AgentInDb,
         tool: ToolInDb,
-        tool_input: dict,
+        tool_input: dict[str, JsonValue],
         tool_use_message: MessageInDb | None = None,
     ) -> None:
         """Set AWAITING_TOOL_RESULTS when tools begin executing.

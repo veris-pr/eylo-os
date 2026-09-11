@@ -73,6 +73,20 @@ class TicketingToolName(StrEnum):
     REMOVE_LABEL = "issue_remove_label"
 
 
+class TicketingIssueWriteField(StrEnum):
+    """Canonical issue fields translated at a vendor's mapped-write boundary."""
+
+    TITLE = "title"
+    DESCRIPTION = "normalized_description"
+    ISSUE_TYPE = "issue_type"
+    PRIORITY = "priority"
+    PROJECT = "project_external_id"
+    ESTIMATE = "estimate"
+    LABELS = "label_external_ids"
+    PARENT = "parent_external_id"
+    DUE_DATE = "due_date"
+
+
 class TicketingIssue(SorCanonicalRecord):
     external_id: str
     key: str | None
@@ -211,9 +225,7 @@ class TicketingLabelCommandPayload(SorCommandPayload):
     label_external_id: str = Field(min_length=1, max_length=320)
 
 
-TICKETING_COMMAND_PAYLOAD_TYPES: Mapping[
-    TicketingToolName, type[SorCommandPayload]
-] = {
+TICKETING_COMMAND_PAYLOAD_TYPES: Mapping[TicketingToolName, type[SorCommandPayload]] = {
     TicketingToolName.CREATE: TicketingMappedFieldsCommandPayload,
     TicketingToolName.UPDATE: TicketingMappedFieldsCommandPayload,
     TicketingToolName.TRANSITION: TicketingTransitionCommandPayload,

@@ -10,8 +10,7 @@ import datetime
 import json
 import logging
 from collections.abc import AsyncGenerator, AsyncIterator
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Any, Callable, Generic
+from typing import TYPE_CHECKING, Annotated, Callable, Generic
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import arrow
@@ -727,9 +726,11 @@ class FrameworkConversationRunner:
             return
 
     @staticmethod
-    async def _enqueue_memory_formation(conversation_context) -> None:
+    async def _enqueue_memory_formation(
+        conversation_context: ConversationContext,
+    ) -> None:
         """Queue learning only after the complete exchange is durable."""
-        primary_agent = getattr(conversation_context, "primary_agent", None)
+        primary_agent = conversation_context.primary_agent
         if primary_agent is None:
             return
         from eylo.pipelines.memory.formation import enqueue_from_context
@@ -1109,7 +1110,7 @@ class FrameworkConversationHooks(RunHooks):
         self._agent_started = False
         self._events = AgentLifecycleEmitter()
 
-    async def on_run_end(self, context, result) -> None:
+    async def on_run_end(self, context: RunContext, result: RunResult) -> None:
         """Enqueue the agent's attached background agents.
 
         Once per run, after the loop has finished, so nothing here is on the
@@ -1118,7 +1119,7 @@ class FrameworkConversationHooks(RunHooks):
         conversation_context = self.current_context
         # `primary_agent` is the agent record; `get_primary_agent()` returns the
         # participant. Attachments hang off the agent, so it is the former.
-        primary_agent = getattr(conversation_context, "primary_agent", None)
+        primary_agent = conversation_context.primary_agent
         if primary_agent is None:
             return
 
@@ -1128,7 +1129,7 @@ class FrameworkConversationHooks(RunHooks):
             request_id=self._local_context.request_id,
         )
 
-    async def on_agent_start(self, context, agent: AgentSpec) -> None:
+    async def on_agent_start(self, context: RunContext, agent: AgentSpec) -> None:
         if self._agent_started:
             return
         self._agent_started = True
@@ -1139,7 +1140,7 @@ class FrameworkConversationHooks(RunHooks):
             message_id=self._user_message.id,
         )
 
-    async def on_llm_start(self, context, run_input: RunInput) -> None:
+    async def on_llm_start(self, context: RunContext, run_input: RunInput) -> None:
         from eylo.pipelines.llm.streaming_tts import (
             prepare_voice_sessions_for_inference,
         )
@@ -1157,7 +1158,7 @@ class FrameworkConversationHooks(RunHooks):
             message_id=self._user_message.id,
         )
 
-    async def on_tool_start(self, context, call: ToolCall) -> None:
+    async def on_tool_start(self, context: RunContext, call: ToolCall) -> None:
         self._events.emit(
             AgentRunToolEvent,
             context=self.current_context,
@@ -1175,7 +1176,7 @@ class FrameworkConversationHooks(RunHooks):
 
     async def on_tool_end(
         self,
-        context,
+        context: RunContext,
         call: ToolCall,
         result: ToolResult,
     ) -> None:
@@ -1198,7 +1199,7 @@ class FrameworkConversationHooks(RunHooks):
 
     async def on_handoff(
         self,
-        context,
+        context: RunContext,
         from_agent: AgentSpec,
         to_agent: AgentSpec,
     ) -> None:
@@ -1215,7 +1216,7 @@ class FrameworkConversationHooks(RunHooks):
         self,
         *,
         event_type: str,
-        payload: dict,
+        payload: dict[str, JsonValue],
         subject_type: str,
     ) -> None:
         user_session_id = self._user_message.user_session_id

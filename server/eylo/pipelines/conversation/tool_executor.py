@@ -42,6 +42,11 @@ from eylo.pipelines.email.tool_execution import (
     execute_agent_email_tool,
 )
 from eylo.pipelines.integrations_v2.execution import execute_curated_tool
+from eylo.pipelines.integrations_v2.results import (
+    CuratedErrorContent,
+    CuratedExecutionErrorCode,
+    CuratedInvocationMetadata,
+)
 from eylo.pipelines.mcp.tool_execution import execute_mcp_tool
 from eylo.pipelines.sandbox.tool_execution import (
     SANDBOX_TOOL_SLUGS,
@@ -326,12 +331,11 @@ class PlatformToolExecutor:
             if state is None:
                 return ToolResult(
                     tool_call_id=call.id,
-                    content={
-                        "kind": "curated_error",
-                        "error": "durable_execution_required",
-                    },
+                    content=CuratedErrorContent(
+                        error=CuratedExecutionErrorCode.DURABLE_EXECUTION_REQUIRED,
+                    ).model_dump(mode="json"),
                     is_error=True,
-                    metadata={"curated_execution": True},
+                    metadata=CuratedInvocationMetadata().model_dump(mode="json"),
                 )
             tool_use_message_id, durable_context = state
             outcome = await execute_curated_tool(
@@ -343,9 +347,9 @@ class PlatformToolExecutor:
             )
             return ToolResult(
                 tool_call_id=call.id,
-                content=outcome.content,
+                content=outcome.content.model_dump(mode="json"),
                 is_error=outcome.is_error,
-                metadata=dict(outcome.metadata),
+                metadata=outcome.metadata.model_dump(mode="json", exclude_none=True),
             )
         if requested_tool.kind is ToolKind.MCP:
             try:

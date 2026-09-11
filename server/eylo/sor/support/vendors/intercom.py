@@ -11,12 +11,13 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from enum import StrEnum
 from html.parser import HTMLParser
-from http import HTTPStatus
+from http import HTTPMethod, HTTPStatus
 from urllib.parse import urlsplit
 
 from pydantic import (
     BaseModel,
     ConfigDict,
+    Field,
     ValidationError,
     field_validator,
     model_validator,
@@ -87,12 +88,16 @@ from eylo.sor.support.contracts import (
     SupportTicketState,
     SupportToolName,
 )
+from eylo.sor.support.vendors import intercom_wire as native
 
 INTERCOM_API_VERSION = "2.16"
 INTERCOM_CURSOR_VERSION = 1
 INTERCOM_OVERLAP_SECONDS = 60
 INTERCOM_MAX_PARTS = 500
 INTERCOM_MAX_EMPTY_EXPANSIONS = 50
+INTERCOM_CURSOR_LIMIT = 4_096
+INTERCOM_CONTINUATION_LIMIT = 2_048
+INTERCOM_CUSTOM_ATTRIBUTE_PREFIX = "custom_attribute:"
 
 READ_USERS = "read_users"
 READ_CONVERSATIONS = "read_conversations"
@@ -613,10 +618,19 @@ _SCHEMA_FIELDS = {
         _field("source_url", "Download URL", SorFieldDataType.LINK),
     ),
 }
-_STATUS_MAP = {
-    "open": SupportTicketState.OPEN,
-    "closed": SupportTicketState.CLOSED,
-    "snoozed": SupportTicketState.PENDING,
+_STATUS_MAP: dict[str, SupportTicketState] = {
+    native.ConversationState.OPEN: SupportTicketState.OPEN,
+    native.ConversationState.CLOSED: SupportTicketState.CLOSED,
+    native.ConversationState.SNOOZED: SupportTicketState.PENDING,
+}
+_ATTRIBUTE_TYPES: dict[str, SorFieldDataType] = {
+    native.AttributeType.BOOLEAN: SorFieldDataType.BOOLEAN,
+    native.AttributeType.DATE: SorFieldDataType.TIMESTAMP,
+    native.AttributeType.DATETIME: SorFieldDataType.TIMESTAMP,
+    native.AttributeType.FLOAT: SorFieldDataType.DECIMAL,
+    native.AttributeType.INTEGER: SorFieldDataType.INTEGER,
+    native.AttributeType.LIST: SorFieldDataType.BOUNDED_JSON,
+    native.AttributeType.OBJECT: SorFieldDataType.BOUNDED_JSON,
 }
 
 
@@ -627,10 +641,155 @@ class _SearchCursor(BaseModel):
         frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
     )
 
-    watermark: int = 0
+    watermark: int = Field(default=0, ge=0)
     starting_after: str | None = None
-    max_seen: int = 0
-    item_offset: int = 0
+    max_seen: int = Field(default=0, ge=0)
+    item_offset: int = Field(default=0, ge=0)
+
+
+class _SearchCursorEnvelope(_SearchCursor):
+    """Stored version-1 cursor requires every field and a nondecreasing watermark."""
+
+    v: int = Field(ge=INTERCOM_CURSOR_VERSION, le=INTERCOM_CURSOR_VERSION)
+    stream: str
+    watermark: int = Field(ge=0)
+    starting_after: str | None
+    max_seen: int = Field(ge=0)
+    item_offset: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_position(self) -> "_SearchCursorEnvelope":
+        if self.max_seen < self.watermark:
+            raise ValueError("Intercom max_seen precedes the watermark.")
+        if self.starting_after is not None and not (
+            1 <= len(self.starting_after) <= INTERCOM_CONTINUATION_LIMIT
+        ):
+            raise ValueError("Intercom continuation length is invalid.")
+        return self
+
+
+class _OffsetCursorEnvelope(BaseModel):
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    v: int = Field(ge=INTERCOM_CURSOR_VERSION, le=INTERCOM_CURSOR_VERSION)
+    stream: str
+    offset: int = Field(ge=0)
+
+
+class _TicketWriteField(StrEnum):
+    SUBJECT = "subject"
+    REQUESTER = "requester_external_id"
+    DESCRIPTION = "normalized_description"
+
+
+class _TicketWrite(BaseModel):
+    """Separate opening-message inputs from an Intercom update body."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+    requester_id: str | None
+    description: str | None = Field(repr=False)
+    update: native.UpdateConversation
+
+
+class _IdentitySegment(StrEnum):
+    SOURCE = "source"
+    POSITION = "position"
+
+
+class _MessageIdentity(BaseModel):
+    """A native message ID, or the singleton opening source when it has no ID."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+    conversation_id: str
+    message_id: str | None
+
+    def to_external_id(self) -> str:
+        conversation_id = _identity_segment(self.conversation_id)
+        if self.message_id is None:
+            return f"{conversation_id}::{_IdentitySegment.SOURCE}"
+        return f"{conversation_id}:{_identity_segment(self.message_id)}"
+
+
+class _AttachmentIdentity(BaseModel):
+    """Native attachment identity or an explicitly positional current-snapshot slot."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+    message: _MessageIdentity
+    attachment_id: str | None = None
+    position: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def require_one_identity(self) -> _AttachmentIdentity:
+        if (self.attachment_id is None) == (self.position is None):
+            raise ValueError("An attachment requires either a native ID or a position.")
+        return self
+
+    def to_external_id(self) -> str:
+        message_id = self.message.to_external_id()
+        if self.attachment_id is not None:
+            return f"{message_id}:{_identity_segment(self.attachment_id)}"
+        return f"{message_id}::{_IdentitySegment.POSITION}:{self.position}"
+
+
+class _ExpandedAttachment(BaseModel):
+    """Parent identity belongs to the adapter, never injected into native fields."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+    conversation_id: str
+    message_id: str | None
+    position: int = Field(ge=0)
+    attachment: native.Attachment
+
+    def source_snapshot(self) -> dict[str, object]:
+        return {
+            **self.attachment.model_dump(mode="json", exclude_unset=True),
+            "_conversation_id": self.conversation_id,
+            "_message_id": self.message_id,
+        }
+
+
+class _ExpandedMessage(BaseModel):
+    """One retained message with explicit parent and effective source timestamps."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+    conversation_id: str
+    message_id: str | None
+    part_type: native.MessageType
+    message: native.Message = Field(repr=False)
+    created_at: native.Timestamp | None
+    updated_at: native.Timestamp | None
+    attachments: tuple[_ExpandedAttachment, ...]
+
+    def source_snapshot(self) -> dict[str, object]:
+        snapshot = self.message.model_dump(mode="json", exclude_unset=True)
+        if isinstance(self.message, native.ConversationSource):
+            snapshot.update(created_at=self.created_at, updated_at=self.updated_at)
+        return {
+            **snapshot,
+            "_conversation_id": self.conversation_id,
+            "_part_type": self.part_type.value,
+            IntercomStream.ATTACHMENTS: [
+                item.source_snapshot() for item in self.attachments
+            ],
+        }
+
+
+type _SourceRecord = (
+    native.Conversation
+    | native.Contact
+    | native.Admin
+    | native.Team
+    | native.Tag
+    | _ExpandedMessage
+    | _ExpandedAttachment
+)
 
 
 class IntercomSupportAdapter:
@@ -652,15 +811,17 @@ class IntercomSupportAdapter:
             origin=self._origin,
             authorization=f"Bearer {_credential(context.credentials, 'access_token')}",
             transport=transport,
-            response_body_limit=8_388_608,
+            response_body_limit=native.RESPONSE_BODY_LIMIT,
             default_headers={"Intercom-Version": INTERCOM_API_VERSION},
         )
         self._acting_admin_id: str | None = None
 
     async def verify_connection(self) -> SorConnectionVerification:
         viewer = await self._current_admin()
-        app = _object(viewer.get("app"), field="Intercom workspace")
-        region = _required_string(app.get("region"), field="Intercom region").upper()
+        app = viewer.app
+        if app is None:
+            raise _invalid_response("Intercom workspace is missing.")
+        region = _required_string(app.region, field="Intercom region").upper()
         expected_region = _ORIGIN_REGIONS[self._origin][1]
         if region != expected_region:
             raise SorVendorOperationError(
@@ -670,10 +831,9 @@ class IntercomSupportAdapter:
             )
         return SorConnectionVerification(
             account_external_id=_required_id(
-                app.get("id_code"), field="Intercom workspace ID"
+                app.id_code, field="Intercom workspace ID"
             ),
-            account_display_name=_optional_string(app.get("name"))
-            or "Intercom workspace",
+            account_display_name=_optional_string(app.name) or "Intercom workspace",
             granted_scopes=tuple(sorted(self._context.granted_scopes)),
             vendor_api_version=INTERCOM_API_VERSION,
         )
@@ -689,20 +849,24 @@ class IntercomSupportAdapter:
         conversation_attributes: tuple[SorDiscoveredField, ...] = ()
         if IntercomStream.CONTACTS in self._context.selected_objects:
             response = await self._client.request(
-                "/data_attributes", query={"model": "contact"}
+                "/data_attributes", query=native.AttributeQuery().to_wire()
             )
-            data = _object(_expect(response, operation="list Intercom contact fields"))
+            data = native.parse_response(
+                _expect(response, operation="list Intercom contact fields"),
+                native.AttributeList,
+            )
             contact_attributes = _attribute_fields(
-                _object_list(data.get("data"), field="Intercom contact fields"),
+                data.data,
                 writable=False,
             )
         if IntercomStream.CONVERSATIONS in self._context.selected_objects:
             response = await self._client.request("/conversations/attributes")
-            data = _object(
-                _expect(response, operation="list Intercom conversation fields")
+            data = native.parse_response(
+                _expect(response, operation="list Intercom conversation fields"),
+                native.AttributeList,
             )
             conversation_attributes = _attribute_fields(
-                _object_list(data.get("data"), field="Intercom conversation fields"),
+                data.data,
                 writable=True,
             )
 
@@ -772,7 +936,10 @@ class IntercomSupportAdapter:
                 )
             return self._external_record(
                 stream_key,
-                _object(_expect(response, operation="read Intercom contact")),
+                native.parse_response(
+                    _expect(response, operation="read Intercom contact"),
+                    native.Contact,
+                ),
             )
         if stream_key in {
             IntercomStream.ADMINS,
@@ -781,7 +948,7 @@ class IntercomSupportAdapter:
         }:
             rows = await self._reconcile_rows(stream_key)
             row = next(
-                (item for item in rows if _optional_id(item.get("id")) == record_id),
+                (item for item in rows if _optional_id(item.id) == record_id),
                 None,
             )
             if row is None:
@@ -791,7 +958,7 @@ class IntercomSupportAdapter:
                 )
             return self._external_record(stream_key, row)
         if stream_key == IntercomStream.CONVERSATION_PARTS:
-            conversation_id, part_id = _split_expanded_id(record_id)
+            conversation_id = _decode_message_identity(record_id).conversation_id
             conversation = await self._conversation(conversation_id)
             _require_complete_parts(conversation)
             row = next(
@@ -803,9 +970,9 @@ class IntercomSupportAdapter:
                 None,
             )
         else:
-            conversation_id, _message_id, _attachment_id = _split_attachment_id(
+            conversation_id = _decode_attachment_identity(
                 record_id
-            )
+            ).message.conversation_id
             conversation = await self._conversation(conversation_id)
             _require_complete_parts(conversation)
             row = next(
@@ -904,7 +1071,11 @@ class IntercomSupportAdapter:
         return await self._change_tag(
             conversation_id,
             command,
-            add=command.tool_name == SupportToolName.ADD_TAG,
+            action=(
+                native.TagAction.ADD
+                if command.tool_name == SupportToolName.ADD_TAG
+                else native.TagAction.REMOVE
+            ),
         )
 
     def normalize_ticket(
@@ -1069,7 +1240,7 @@ class IntercomSupportAdapter:
             return await self._read_search_page(
                 stream_key=stream_key,
                 cursor=cursor,
-                limit=min(limit, 150),
+                limit=min(limit, native.SEARCH_PAGE_LIMIT),
             )
         if stream_key in {
             IntercomStream.CONVERSATION_PARTS,
@@ -1078,7 +1249,7 @@ class IntercomSupportAdapter:
             return await self._read_expanded_page(
                 stream_key=stream_key,
                 cursor=cursor,
-                limit=min(limit, 500),
+                limit=min(limit, native.EXPANDED_PAGE_LIMIT),
             )
         return await self._read_reconcile_page(
             stream_key=stream_key,
@@ -1149,9 +1320,7 @@ class IntercomSupportAdapter:
                     ),
                     has_more=False,
                 )
-            conversation_id = _required_id(
-                rows[0].get("id"), field="Intercom conversation ID"
-            )
+            conversation_id = _required_id(rows[0].id, field="Intercom conversation ID")
             conversation = await self._conversation(conversation_id)
             _require_complete_parts(conversation)
             expanded = (
@@ -1224,44 +1393,38 @@ class IntercomSupportAdapter:
         stream_key: str,
         state: _SearchCursor,
         limit: int,
-    ) -> tuple[list[dict[str, object]], str | None, int]:
-        lower_bound = max(0, state.watermark - INTERCOM_OVERLAP_SECONDS)
-        pagination: dict[str, object] = {"per_page": limit}
-        if state.starting_after is not None:
-            pagination["starting_after"] = state.starting_after
+    ) -> tuple[list[native.Contact] | list[native.Conversation], str | None, int]:
+        request = native.SearchRequest(
+            query=native.SearchFilter(
+                value=max(0, state.watermark - INTERCOM_OVERLAP_SECONDS)
+            ),
+            pagination=native.SearchPagination(
+                per_page=limit, starting_after=state.starting_after
+            ),
+        )
         response = await self._client.request(
             "/contacts/search"
             if stream_key == IntercomStream.CONTACTS
             else "/conversations/search",
-            method="POST",
-            payload={
-                "query": {
-                    "field": "updated_at",
-                    "operator": ">",
-                    "value": lower_bound,
-                },
-                "pagination": pagination,
-                "sort": {"field": "updated_at", "order": "ascending"},
-            },
+            method=HTTPMethod.POST,
+            payload=request.model_dump(mode="json", exclude_none=True),
         )
-        data = _object(_expect(response, operation=f"search Intercom {stream_key}"))
-        rows = _object_list(
-            data.get(
-                "data"
-                if stream_key == IntercomStream.CONTACTS
-                else IntercomStream.CONVERSATIONS
-            ),
-            field=f"Intercom {stream_key}",
-        )
+        data = _expect(response, operation=f"search Intercom {stream_key}")
+        if stream_key == IntercomStream.CONTACTS:
+            page = native.parse_response(data, native.ContactPage)
+            rows = page.data
+        else:
+            page = native.parse_response(data, native.ConversationPage)
+            rows = page.conversations
         if len(rows) > limit:
             raise _invalid_response(
                 f"Intercom returned more {stream_key} than requested."
             )
         max_seen = max(
             [state.max_seen, state.watermark]
-            + [_optional_epoch(row.get("updated_at")) or 0 for row in rows]
+            + [_optional_epoch(row.updated_at) or 0 for row in rows]
         )
-        return rows, _next_starting_after(data), max_seen
+        return rows, _next_starting_after(page.pages), max_seen
 
     async def _read_reconcile_page(
         self,
@@ -1273,7 +1436,7 @@ class IntercomSupportAdapter:
         offset = _decode_offset_cursor(cursor, stream_key=stream_key)
         rows = sorted(
             await self._reconcile_rows(stream_key),
-            key=lambda row: _required_id(row.get("id"), field="Intercom record ID"),
+            key=lambda row: _required_id(row.id, field="Intercom record ID"),
         )
         selected = rows[offset : offset + limit]
         next_offset = offset + len(selected)
@@ -1290,39 +1453,45 @@ class IntercomSupportAdapter:
 
     async def _reconcile_rows(
         self, stream_key: IntercomStream
-    ) -> list[dict[str, object]]:
-        endpoint, response_key = {
-            IntercomStream.ADMINS: ("/admins", IntercomStream.ADMINS),
-            IntercomStream.TEAMS: ("/teams", IntercomStream.TEAMS),
-            IntercomStream.TAGS: ("/tags", "data"),
-        }[stream_key]
-        response = await self._client.request(
-            endpoint,
-            query={"display_avatar": True}
-            if stream_key == IntercomStream.ADMINS
-            else None,
-        )
-        data = _object(_expect(response, operation=f"list Intercom {stream_key}"))
-        return _object_list(data.get(response_key), field=f"Intercom {stream_key}")
+    ) -> list[native.Admin] | list[native.Team] | list[native.Tag]:
+        if stream_key == IntercomStream.ADMINS:
+            response = await self._client.request(
+                "/admins", query=native.AdminQuery().to_wire()
+            )
+            return native.parse_response(
+                _expect(response, operation="list Intercom admins"), native.AdminList
+            ).admins
+        if stream_key == IntercomStream.TEAMS:
+            response = await self._client.request("/teams")
+            return native.parse_response(
+                _expect(response, operation="list Intercom teams"), native.TeamList
+            ).teams
+        response = await self._client.request("/tags")
+        return native.parse_response(
+            _expect(response, operation="list Intercom tags"), native.TagList
+        ).data
 
-    async def _conversation(self, conversation_id: str) -> dict[str, object]:
+    async def _conversation(self, conversation_id: str) -> native.Conversation:
         response = await self._client.request(
             f"/conversations/{_path_id(conversation_id)}",
-            query={"display_as": "plaintext"},
+            query=native.ConversationQuery().to_wire(),
         )
         if response.status_code in {HTTPStatus.NOT_FOUND, HTTPStatus.GONE}:
             raise SorExternalRecordNotFound(
                 vendor_object_key=IntercomStream.CONVERSATIONS,
                 external_id=conversation_id,
             )
-        return _object(_expect(response, operation="read Intercom conversation"))
-
-    async def _current_admin(self) -> dict[str, object]:
-        response = await self._client.request("/me")
-        viewer = _object(_expect(response, operation="identify Intercom admin"))
-        self._acting_admin_id = _required_id(
-            viewer.get("id"), field="Intercom admin ID"
+        return native.parse_response(
+            _expect(response, operation="read Intercom conversation"),
+            native.Conversation,
         )
+
+    async def _current_admin(self) -> native.Viewer:
+        response = await self._client.request("/me")
+        viewer = native.parse_response(
+            _expect(response, operation="identify Intercom admin"), native.Viewer
+        )
+        self._acting_admin_id = _required_id(viewer.id, field="Intercom admin ID")
         return viewer
 
     async def _admin_id(self) -> str:
@@ -1335,177 +1504,150 @@ class IntercomSupportAdapter:
     def _external_record(
         self,
         stream_key: str,
-        row: Mapping[str, object],
+        row: _SourceRecord,
     ) -> SorExternalRecord:
-        if stream_key == IntercomStream.CONVERSATIONS:
-            record_id = _required_id(row.get("id"), field="Intercom conversation ID")
-            source = _optional_object(row.get("source"))
-            statistics = _optional_object(row.get("statistics"))
-            sla = _optional_object(row.get("sla_applied"))
-            state = _optional_string(row.get("state"))
-            contacts = _nested_object_list(
-                row.get(IntercomStream.CONTACTS),
-                IntercomStream.CONTACTS,
-                field="Intercom conversation contacts",
-            )
-            tags = _nested_object_list(
-                row.get(IntercomStream.TAGS),
-                IntercomStream.TAGS,
-                field="Intercom conversation tags",
-            )
-            updated_epoch = _optional_epoch(row.get("updated_at"))
+        if isinstance(row, native.Conversation):
+            source = row.source or native.ConversationSource()
+            statistics = row.statistics or native.Statistics()
+            contacts = row.contacts.contacts or [] if row.contacts else []
+            tags = row.tags.tags or [] if row.tags else []
+            state = _optional_string(row.state)
+            updated_epoch = _optional_epoch(row.updated_at)
             payload: dict[str, object] = {
-                "subject": row.get("title") or source.get("subject"),
-                "normalized_description": _plain_text(source.get("body")),
+                "subject": row.title or source.subject,
+                "normalized_description": _plain_text(source.body),
                 "requester_external_id": (
-                    _optional_id(contacts[0].get("id")) if contacts else None
+                    _optional_id(contacts[0].id) if contacts else None
                 ),
-                "assignee_external_id": _optional_id(row.get("admin_assignee_id")),
-                "group_external_id": _optional_id(row.get("team_assignee_id")),
+                "assignee_external_id": _optional_id(row.admin_assignee_id),
+                "group_external_id": _optional_id(row.team_assignee_id),
                 "native_status": state,
                 "normalized_status": _STATUS_MAP.get(state or ""),
-                "priority": row.get("priority"),
-                "category": source.get("type"),
-                "channel": source.get("delivered_as"),
+                "priority": row.priority,
+                "category": source.type,
+                "channel": source.delivered_as,
                 "tag_external_ids": [
                     tag_id
                     for item in tags
-                    if (tag_id := _optional_id(item.get("id"))) is not None
+                    if (tag_id := _optional_id(item.id)) is not None
                 ],
                 "first_response_at": _optional_datetime(
-                    statistics.get("first_admin_reply_at")
+                    statistics.first_admin_reply_at
                 ),
                 "resolved_at": (
-                    _optional_datetime(statistics.get("last_close_at"))
-                    if state == "closed"
+                    _optional_datetime(statistics.last_close_at)
+                    if state == native.ConversationState.CLOSED
                     else None
                 ),
                 "closed_at": (
-                    _optional_datetime(statistics.get("last_close_at"))
-                    if state == "closed"
+                    _optional_datetime(statistics.last_close_at)
+                    if state == native.ConversationState.CLOSED
                     else None
                 ),
-                "sla_state": sla.get("sla_status"),
+                "sla_state": row.sla_applied.sla_status if row.sla_applied else None,
             }
-            payload.update(_custom_attribute_values(row.get("custom_attributes")))
+            payload.update(_custom_attribute_values(row.custom_attributes))
             return SorExternalRecord(
                 vendor_object_key=stream_key,
-                external_id=record_id,
+                external_id=_required_id(row.id, field="Intercom conversation ID"),
                 payload=payload,
-                source_created_at=_optional_datetime(row.get("created_at")),
+                source_created_at=_optional_datetime(row.created_at),
                 source_updated_at=_epoch_datetime(updated_epoch),
                 source_revision=_epoch_revision(updated_epoch),
             )
-        if stream_key == IntercomStream.CONTACTS:
-            record_id = _required_id(row.get("id"), field="Intercom contact ID")
-            companies = _nested_object_list(
-                row.get("companies"),
-                "data",
-                field="Intercom contact companies",
-            )
-            updated_epoch = _optional_epoch(row.get("updated_at"))
+        if isinstance(row, native.Contact):
+            companies = row.companies.data or [] if row.companies else []
+            updated_epoch = _optional_epoch(row.updated_at)
             payload = {
-                "name": row.get("name"),
-                "primary_email": row.get("email"),
-                "primary_phone": row.get("phone"),
+                "name": row.name,
+                "primary_email": row.email,
+                "primary_phone": row.phone,
                 "company_external_id": (
-                    _optional_id(companies[0].get("id")) if companies else None
+                    _optional_id(companies[0].id) if companies else None
                 ),
                 "active": None,
             }
-            payload.update(_custom_attribute_values(row.get("custom_attributes")))
+            payload.update(_custom_attribute_values(row.custom_attributes))
             return SorExternalRecord(
                 vendor_object_key=stream_key,
-                external_id=record_id,
+                external_id=_required_id(row.id, field="Intercom contact ID"),
                 payload=payload,
-                source_created_at=_optional_datetime(row.get("created_at")),
+                source_created_at=_optional_datetime(row.created_at),
                 source_updated_at=_epoch_datetime(updated_epoch),
                 source_revision=_epoch_revision(updated_epoch),
             )
-        if stream_key == IntercomStream.ADMINS:
-            avatar = _optional_object(row.get("avatar"))
+        if isinstance(row, native.Admin):
             return SorExternalRecord(
                 vendor_object_key=stream_key,
-                external_id=_required_id(row.get("id"), field="Intercom admin ID"),
+                external_id=_required_id(row.id, field="Intercom admin ID"),
                 payload={
-                    "name": row.get("name"),
-                    "primary_email": row.get("email"),
+                    "name": row.name,
+                    "primary_email": row.email,
                     "active": True,
-                    "assignable": row.get("has_inbox_seat"),
-                    "avatar_url": _safe_source_url(avatar.get("image_url")),
+                    "assignable": row.has_inbox_seat,
+                    "avatar_url": _safe_source_url(
+                        row.avatar.image_url if row.avatar else None
+                    ),
                 },
             )
-        if stream_key == IntercomStream.TEAMS:
+        if isinstance(row, native.Team):
             return SorExternalRecord(
                 vendor_object_key=stream_key,
-                external_id=_required_id(row.get("id"), field="Intercom team ID"),
-                payload={"name": row.get("name"), "description": None, "active": True},
+                external_id=_required_id(row.id, field="Intercom team ID"),
+                payload={"name": row.name, "description": None, "active": True},
             )
-        if stream_key == IntercomStream.TAGS:
+        if isinstance(row, native.Tag):
             return SorExternalRecord(
                 vendor_object_key=stream_key,
-                external_id=_required_id(row.get("id"), field="Intercom tag ID"),
-                payload={"name": row.get("name")},
+                external_id=_required_id(row.id, field="Intercom tag ID"),
+                payload={"name": row.name},
             )
-        if stream_key == IntercomStream.CONVERSATION_PARTS:
-            conversation_id = _required_id(
-                row.get("_conversation_id"), field="Intercom conversation ID"
-            )
-            message_id = _required_id(row.get("id"), field="Intercom message ID")
-            author = _optional_object(row.get("author"))
-            part_type = _required_string(
-                row.get("_part_type"), field="Intercom message type"
-            )
+        if isinstance(row, _ExpandedMessage):
+            author = row.message.author or native.Author()
             created_at = _required_datetime(
-                row.get("created_at"), field="Intercom message creation time"
+                row.created_at, field="Intercom message creation time"
             )
-            attachments = _object_list(
-                row.get(IntercomStream.ATTACHMENTS) or [],
-                field="Intercom message attachments",
-            )
-            attachment_ids = [
-                _attachment_external_id(conversation_id, item) for item in attachments
-            ]
             return SorExternalRecord(
                 vendor_object_key=stream_key,
-                external_id=_expanded_id(conversation_id, message_id),
+                external_id=_expanded_id(row.conversation_id, row.message_id),
                 payload={
-                    "ticket_external_id": conversation_id,
-                    "visibility": "PRIVATE" if part_type == "note" else "PUBLIC",
-                    "direction": _message_direction(author.get("type")),
-                    "author_external_id": _optional_id(author.get("id")),
+                    "ticket_external_id": row.conversation_id,
+                    "visibility": (
+                        SupportMessageVisibility.PRIVATE
+                        if row.part_type == native.MessageType.NOTE
+                        else SupportMessageVisibility.PUBLIC
+                    ),
+                    "direction": _message_direction(author.type),
+                    "author_external_id": _optional_id(author.id),
                     "normalized_text": _message_text(row),
-                    "source_body": dict(row),
+                    "source_body": row.source_snapshot(),
                     "body_format": "text/plain",
-                    "attachment_external_ids": attachment_ids,
+                    "attachment_external_ids": [
+                        _attachment_external_id(row.conversation_id, item)
+                        for item in row.attachments
+                    ],
                     "created_at": created_at,
-                    "updated_at": _optional_datetime(row.get("updated_at")),
+                    "updated_at": _optional_datetime(row.updated_at),
                 },
                 source_created_at=created_at,
-                source_updated_at=_optional_datetime(row.get("updated_at")),
-                source_revision=_epoch_revision(_optional_epoch(row.get("updated_at"))),
+                source_updated_at=_optional_datetime(row.updated_at),
+                source_revision=_epoch_revision(_optional_epoch(row.updated_at)),
             )
-        conversation_id = _required_id(
-            row.get("_conversation_id"), field="Intercom conversation ID"
-        )
-        message_id = _required_id(row.get("_message_id"), field="Intercom message ID")
-        attachment_id = _required_id(row.get("id"), field="Intercom attachment ID")
+        attachment = row.attachment
         return SorExternalRecord(
             vendor_object_key=stream_key,
-            external_id=_attachment_id(
-                conversation_id,
-                message_id,
-                attachment_id,
-            ),
+            external_id=_attachment_external_id(row.conversation_id, row),
             payload={
-                "ticket_external_id": conversation_id,
-                "message_external_id": _expanded_id(conversation_id, message_id),
-                "name": row.get("name"),
-                "content_type": row.get("content_type"),
-                "size_bytes": row.get("filesize") or row.get("size"),
-                "source_url": _safe_source_url(row.get("url")),
+                "ticket_external_id": row.conversation_id,
+                "message_external_id": _expanded_id(
+                    row.conversation_id, row.message_id
+                ),
+                "name": attachment.name,
+                "content_type": attachment.content_type,
+                "size_bytes": attachment.filesize or attachment.size,
+                "source_url": _safe_source_url(attachment.url),
             },
-            source_url=_safe_source_url(row.get("url")),
+            source_url=_safe_source_url(attachment.url),
         )
 
     async def _open_conversation(
@@ -1519,34 +1661,35 @@ class IntercomSupportAdapter:
         if not isinstance(command.payload, SupportMappedFieldsCommandPayload):
             raise _invalid_command("Intercom conversation fields payload is invalid.")
         values = self._ticket_write_values(command.payload.fields)
-        requester_id = values.pop("_requester_external_id", None)
-        body = values.pop("_normalized_description", None)
-        if not isinstance(requester_id, str) or not requester_id:
+        if values.requester_id is None:
             raise _invalid_command(
                 "Opening an Intercom conversation requires requester_external_id."
             )
-        if not isinstance(body, str) or not body.strip():
+        if values.description is None:
             raise _invalid_command(
                 "Opening an Intercom conversation requires normalized_description."
             )
         response = await self._mutation_request(
             "/conversations",
-            method="POST",
-            payload={
-                "from": {"type": "contact", "id": requester_id},
-                "body": body.strip(),
-            },
+            method=HTTPMethod.POST,
+            payload=native.OpenConversation(
+                sender=native.ContactSender(id=values.requester_id),
+                body=values.description,
+            ),
             operation="open an Intercom conversation",
         )
-        message = _object(_expect(response, operation="open an Intercom conversation"))
-        conversation_id = _required_id(
-            message.get("conversation_id"), field="Intercom conversation ID"
+        message = native.parse_response(
+            _expect(response, operation="open an Intercom conversation"),
+            native.OpenResult,
         )
-        if values:
+        conversation_id = _required_id(
+            message.conversation_id, field="Intercom conversation ID"
+        )
+        if values.update.model_fields_set:
             await self._mutation_request(
                 f"/conversations/{_path_id(conversation_id)}",
-                method="PUT",
-                payload=values,
+                method=HTTPMethod.PUT,
+                payload=values.update,
                 operation="finish an Intercom conversation",
             )
         return SorCommandResult(
@@ -1565,23 +1708,21 @@ class IntercomSupportAdapter:
         if not isinstance(command.payload, SupportMappedFieldsCommandPayload):
             raise _invalid_command("Intercom conversation fields payload is invalid.")
         values = self._ticket_write_values(command.payload.fields)
-        unsupported = {key for key in values if key.startswith("_")}
-        if unsupported:
+        if values.requester_id is not None or values.description is not None:
             raise _invalid_command(
                 "Intercom cannot update a conversation requester or opening message."
             )
-        if not values:
+        if not values.update.model_fields_set:
             raise _invalid_command(
                 "Updating an Intercom conversation requires mapped fields."
             )
         response = await self._mutation_request(
             f"/conversations/{_path_id(conversation_id)}",
-            method="PUT",
-            payload=values,
+            method=HTTPMethod.PUT,
+            payload=values.update,
             operation="update an Intercom conversation",
         )
-        data = _object(_expect(response, operation="update an Intercom conversation"))
-        return self._conversation_result(data, response=response)
+        return self._conversation_result(response)
 
     async def _assign_conversation(
         self,
@@ -1592,34 +1733,31 @@ class IntercomSupportAdapter:
             raise _invalid_command("Intercom assignment payload is invalid.")
         admin_id = await self._admin_id()
         response: SorJsonResponse | None = None
-        data: dict[str, object] | None = None
         for raw_assignee_id, assignee_type in (
-            (command.payload.group_external_id, "team"),
-            (command.payload.assignee_external_id, "admin"),
+            (command.payload.group_external_id, native.ActorType.TEAM),
+            (command.payload.assignee_external_id, native.ActorType.ADMIN),
         ):
             if raw_assignee_id is None:
                 continue
             assignee_id = _required_id(
-                raw_assignee_id,
-                field=f"Intercom {assignee_type} assignee ID",
+                raw_assignee_id, field=f"Intercom {assignee_type} assignee ID"
             )
             response = await self._mutation_request(
                 f"/conversations/{_path_id(conversation_id)}/parts",
-                method="POST",
-                payload={
-                    "message_type": "assignment",
-                    "type": assignee_type,
-                    "admin_id": admin_id,
-                    "assignee_id": assignee_id,
-                },
+                method=HTTPMethod.POST,
+                payload=native.AssignConversation(
+                    type=assignee_type, admin_id=admin_id, assignee_id=assignee_id
+                ),
                 operation="assign an Intercom conversation",
             )
-            data = _object(
-                _expect(response, operation="assign an Intercom conversation")
+            # Refuse malformed first acknowledgements before a possible second write.
+            native.parse_response(
+                _expect(response, operation="assign an Intercom conversation"),
+                native.ConversationResult,
             )
-        if response is None or data is None:
+        if response is None:
             raise _invalid_command("Intercom assignment contains no assignee.")
-        return self._conversation_result(data, response=response)
+        return self._conversation_result(response)
 
     async def _reply(
         self,
@@ -1630,42 +1768,36 @@ class IntercomSupportAdapter:
     ) -> SorCommandResult:
         if not isinstance(command.payload, SupportMessageCommandPayload):
             raise _invalid_command("Intercom message payload is invalid.")
-        text = command.payload.normalized_text
         response = await self._mutation_request(
             f"/conversations/{_path_id(conversation_id)}/reply",
-            method="POST",
-            payload={
-                "type": "admin",
-                "admin_id": await self._admin_id(),
-                "message_type": (
-                    "comment"
+            method=HTTPMethod.POST,
+            payload=native.Reply(
+                admin_id=await self._admin_id(),
+                message_type=(
+                    native.MessageType.COMMENT
                     if visibility is SupportMessageVisibility.PUBLIC
-                    else "note"
+                    else native.MessageType.NOTE
                 ),
-                "body": text,
-            },
+                body=command.payload.normalized_text,
+            ),
             operation=(
                 "reply to an Intercom conversation"
                 if visibility is SupportMessageVisibility.PUBLIC
                 else "add an Intercom private note"
             ),
         )
-        conversation = _object(
-            _expect(response, operation="write an Intercom conversation message")
+        conversation = native.parse_response(
+            _expect(response, operation="write an Intercom conversation message"),
+            native.ReplyResult,
         )
         part = _latest_message_part(conversation, visibility=visibility)
-        part_id = _required_id(part.get("id"), field="Intercom message ID")
+        part_id = _required_id(part.id, field="Intercom message ID")
         return SorCommandResult(
             vendor_object_key=IntercomStream.CONVERSATION_PARTS,
             external_id=_expanded_id(conversation_id, part_id),
             external_request_id=_request_id(response),
-            source_revision=_epoch_revision(
-                _optional_epoch(conversation.get("updated_at"))
-            ),
-            response={
-                "status": "accepted",
-                "visibility": visibility.value,
-            },
+            source_revision=_epoch_revision(_optional_epoch(conversation.updated_at)),
+            response={"status": "accepted", "visibility": visibility.value},
         )
 
     async def _close_conversation(
@@ -1678,50 +1810,45 @@ class IntercomSupportAdapter:
             or command.payload.native_status is not None
         ):
             raise _invalid_command("Intercom close payload is invalid.")
-        payload: dict[str, object] = {
-            "message_type": "close",
-            "type": "admin",
-            "admin_id": await self._admin_id(),
-        }
+        request = native.CloseConversation(admin_id=await self._admin_id())
         if command.payload.normalized_text is not None:
-            payload["body"] = command.payload.normalized_text
+            request = native.CloseConversation(
+                admin_id=request.admin_id, body=command.payload.normalized_text
+            )
         response = await self._mutation_request(
             f"/conversations/{_path_id(conversation_id)}/parts",
-            method="POST",
-            payload=payload,
+            method=HTTPMethod.POST,
+            payload=request,
             operation="close an Intercom conversation",
         )
-        data = _object(_expect(response, operation="close an Intercom conversation"))
-        return self._conversation_result(data, response=response)
+        return self._conversation_result(response)
 
     async def _change_tag(
         self,
         conversation_id: str,
         command: SorCommandRequest,
         *,
-        add: bool,
+        action: native.TagAction,
     ) -> SorCommandResult:
         if not isinstance(command.payload, SupportTagCommandPayload):
             raise _invalid_command("Intercom tag payload is invalid.")
-        tag_id = _required_id(
-            command.payload.tag_external_id,
-            field="Intercom tag ID",
-        )
+        tag_id = _required_id(command.payload.tag_external_id, field="Intercom tag ID")
         path = f"/conversations/{_path_id(conversation_id)}/tags"
-        if not add:
+        if action is native.TagAction.REMOVE:
             path = f"{path}/{_path_id(tag_id)}"
+        admin_id = await self._admin_id()
         response = await self._mutation_request(
             path,
-            method="POST" if add else "DELETE",
-            payload={
-                "id": tag_id,
-                "admin_id": await self._admin_id(),
-            }
-            if add
-            else {"admin_id": await self._admin_id()},
+            method=HTTPMethod.POST
+            if action is native.TagAction.ADD
+            else HTTPMethod.DELETE,
+            payload=(
+                native.TagMutation(id=tag_id, admin_id=admin_id)
+                if action is native.TagAction.ADD
+                else native.TagMutation(admin_id=admin_id)
+            ),
             operation="change an Intercom conversation tag",
         )
-        _expect(response, operation="change an Intercom conversation tag")
         return SorCommandResult(
             vendor_object_key=IntercomStream.CONVERSATIONS,
             external_id=conversation_id,
@@ -1729,10 +1856,7 @@ class IntercomSupportAdapter:
             response={"status": "accepted"},
         )
 
-    def _ticket_write_values(
-        self,
-        payload: Mapping[str, object],
-    ) -> dict[str, object]:
+    def _ticket_write_values(self, payload: Mapping[str, object]) -> _TicketWrite:
         writable = {
             field.agent_key: field.vendor_field_key
             for field in self._context.fields
@@ -1752,19 +1876,17 @@ class IntercomSupportAdapter:
             )
         values: dict[str, object] = {}
         custom: dict[str, object] = {}
+        requester_id: str | None = None
+        description: str | None = None
         for agent_key, value in payload.items():
             vendor_key = writable[agent_key]
-            if vendor_key == "subject":
+            if vendor_key == _TicketWriteField.SUBJECT:
                 values["title"] = value
-            elif vendor_key == "requester_external_id":
-                values["_requester_external_id"] = _required_id(
-                    value, field="Intercom requester ID"
-                )
-            elif vendor_key == "normalized_description":
-                values["_normalized_description"] = _required_string(
-                    value, field="Intercom opening message"
-                )
-            elif vendor_key.startswith("custom_attribute:"):
+            elif vendor_key == _TicketWriteField.REQUESTER:
+                requester_id = _required_id(value, field="Intercom requester ID")
+            elif vendor_key == _TicketWriteField.DESCRIPTION:
+                description = _required_string(value, field="Intercom opening message")
+            elif vendor_key.startswith(INTERCOM_CUSTOM_ATTRIBUTE_PREFIX):
                 custom[_custom_attribute_name(vendor_key)] = value
             else:
                 raise SorVendorOperationError(
@@ -1774,21 +1896,23 @@ class IntercomSupportAdapter:
                 )
         if custom:
             values["custom_attributes"] = custom
-        return values
+        return _TicketWrite(
+            requester_id=requester_id,
+            description=description,
+            update=native.parse_request(values, native.UpdateConversation),
+        )
 
     async def _mutation_request(
         self,
         path: str,
         *,
-        method: str,
-        payload: object,
+        method: HTTPMethod,
+        payload: native.IntercomRequest,
         operation: str,
     ) -> SorJsonResponse:
         try:
             response = await self._client.request(
-                path,
-                method=method,
-                payload=payload,
+                path, method=method, payload=payload.to_wire()
             )
             _expect(response, operation=operation)
             return response
@@ -1805,21 +1929,16 @@ class IntercomSupportAdapter:
                 ) from error
             raise
 
-    def _conversation_result(
-        self,
-        conversation: Mapping[str, object],
-        *,
-        response: SorJsonResponse,
-    ) -> SorCommandResult:
-        conversation_id = _required_id(
-            conversation.get("id"), field="Intercom conversation ID"
+    def _conversation_result(self, response: SorJsonResponse) -> SorCommandResult:
+        conversation = native.parse_response(
+            _expect(response, operation="read Intercom mutation acknowledgement"),
+            native.ConversationResult,
         )
-        updated_epoch = _optional_epoch(conversation.get("updated_at"))
         return SorCommandResult(
             vendor_object_key=IntercomStream.CONVERSATIONS,
-            external_id=conversation_id,
+            external_id=_required_id(conversation.id, field="Intercom conversation ID"),
             external_request_id=_request_id(response),
-            source_revision=_epoch_revision(updated_epoch),
+            source_revision=_epoch_revision(_optional_epoch(conversation.updated_at)),
             response={"status": "accepted"},
         )
 
@@ -1870,34 +1989,26 @@ def _require_stream(stream_key: str, *, selected: Sequence[str]) -> IntercomStre
 
 
 def _attribute_fields(
-    attributes: Sequence[Mapping[str, object]],
+    attributes: Sequence[native.Attribute],
     *,
     writable: bool,
 ) -> tuple[SorDiscoveredField, ...]:
     result: list[SorDiscoveredField] = []
     for attribute in attributes:
         name = _required_string(
-            attribute.get("name") or attribute.get("full_name"),
+            attribute.name or attribute.full_name,
             field="Intercom attribute name",
         )
         native_type = (
-            _optional_string(attribute.get("data_type")) or "string"
+            _optional_string(attribute.data_type) or native.AttributeType.STRING
         ).casefold()
         result.append(
             _field(
                 _custom_attribute_key(name),
-                _optional_string(attribute.get("label")) or name,
-                {
-                    "boolean": SorFieldDataType.BOOLEAN,
-                    "date": SorFieldDataType.TIMESTAMP,
-                    "datetime": SorFieldDataType.TIMESTAMP,
-                    "float": SorFieldDataType.DECIMAL,
-                    "integer": SorFieldDataType.INTEGER,
-                    "list": SorFieldDataType.BOUNDED_JSON,
-                    "object": SorFieldDataType.BOUNDED_JSON,
-                }.get(native_type, SorFieldDataType.TEXT),
+                _optional_string(attribute.label) or name,
+                _ATTRIBUTE_TYPES.get(native_type, SorFieldDataType.TEXT),
                 writable=writable,
-                description=_optional_string(attribute.get("description")),
+                description=_optional_string(attribute.description),
             )
         )
     return tuple(sorted(result, key=lambda item: item.key))
@@ -1905,11 +2016,11 @@ def _attribute_fields(
 
 def _custom_attribute_key(name: str) -> str:
     encoded = base64.urlsafe_b64encode(name.encode()).decode().rstrip("=")
-    return f"custom_attribute:{encoded}"
+    return f"{INTERCOM_CUSTOM_ATTRIBUTE_PREFIX}{encoded}"
 
 
 def _custom_attribute_name(key: str) -> str:
-    prefix = "custom_attribute:"
+    prefix = INTERCOM_CUSTOM_ATTRIBUTE_PREFIX
     if not key.startswith(prefix):
         raise _invalid_command("Intercom custom attribute identity is invalid.")
     encoded = key[len(prefix) :]
@@ -1928,10 +2039,11 @@ def _custom_attribute_name(key: str) -> str:
     return decoded
 
 
-def _custom_attribute_values(value: object) -> dict[str, object]:
-    attributes = _optional_object(value)
-    result: dict[str, object] = {}
-    for name, item in attributes.items():
+def _custom_attribute_values(
+    value: Mapping[str, SorJsonValue] | None,
+) -> dict[str, SorJsonValue]:
+    result: dict[str, SorJsonValue] = {}
+    for name, item in (value or {}).items():
         if not name:
             raise _invalid_response("Intercom custom attribute name is empty.")
         result[_custom_attribute_key(name)] = item
@@ -1940,104 +2052,65 @@ def _custom_attribute_values(value: object) -> dict[str, object]:
 
 def _encode_search_cursor(state: _SearchCursor, *, stream_key: str) -> str:
     return _encode_cursor(
-        {
-            "v": INTERCOM_CURSOR_VERSION,
-            "stream": stream_key,
-            "watermark": state.watermark,
-            "starting_after": state.starting_after,
-            "max_seen": state.max_seen,
-            "item_offset": state.item_offset,
-        }
+        _SearchCursorEnvelope(
+            v=INTERCOM_CURSOR_VERSION,
+            stream=stream_key,
+            watermark=state.watermark,
+            starting_after=state.starting_after,
+            max_seen=state.max_seen,
+            item_offset=state.item_offset,
+        )
     )
 
 
 def _decode_search_cursor(value: str | None, *, stream_key: str) -> _SearchCursor:
     if value is None:
         return _SearchCursor()
-    data = _decode_cursor(value)
-    if set(data) != {
-        "v",
-        "stream",
-        "watermark",
-        "starting_after",
-        "max_seen",
-        "item_offset",
-    }:
-        raise _invalid_cursor()
-    watermark = data.get("watermark")
-    max_seen = data.get("max_seen")
-    item_offset = data.get("item_offset")
-    starting_after = data.get("starting_after")
-    if (
-        data.get("v") != INTERCOM_CURSOR_VERSION
-        or data.get("stream") != stream_key
-        or not isinstance(watermark, int)
-        or isinstance(watermark, bool)
-        or watermark < 0
-        or not isinstance(max_seen, int)
-        or isinstance(max_seen, bool)
-        or max_seen < watermark
-        or not isinstance(item_offset, int)
-        or isinstance(item_offset, bool)
-        or item_offset < 0
-        or (
-            starting_after is not None
-            and (
-                not isinstance(starting_after, str)
-                or not 1 <= len(starting_after) <= 2_048
-            )
-        )
-    ):
+    data = _decode_cursor(value, _SearchCursorEnvelope)
+    if data.stream != stream_key:
         raise _invalid_cursor()
     return _SearchCursor(
-        watermark=watermark,
-        starting_after=starting_after,
-        max_seen=max_seen,
-        item_offset=item_offset,
+        watermark=data.watermark,
+        starting_after=data.starting_after,
+        max_seen=data.max_seen,
+        item_offset=data.item_offset,
     )
 
 
 def _encode_offset_cursor(offset: int, *, stream_key: str) -> str:
     return _encode_cursor(
-        {"v": INTERCOM_CURSOR_VERSION, "stream": stream_key, "offset": offset}
+        _OffsetCursorEnvelope(
+            v=INTERCOM_CURSOR_VERSION, stream=stream_key, offset=offset
+        )
     )
 
 
 def _decode_offset_cursor(value: str | None, *, stream_key: str) -> int:
     if value is None:
         return 0
-    data = _decode_cursor(value)
-    offset = data.get("offset")
-    if (
-        set(data) != {"v", "stream", "offset"}
-        or data.get("v") != INTERCOM_CURSOR_VERSION
-        or data.get("stream") != stream_key
-        or not isinstance(offset, int)
-        or isinstance(offset, bool)
-        or offset < 0
-    ):
+    data = _decode_cursor(value, _OffsetCursorEnvelope)
+    if data.stream != stream_key:
         raise _invalid_cursor()
-    return offset
+    return data.offset
 
 
-def _encode_cursor(data: Mapping[str, object]) -> str:
-    raw = json.dumps(data, separators=(",", ":"), sort_keys=True).encode()
+def _encode_cursor(data: _SearchCursorEnvelope | _OffsetCursorEnvelope) -> str:
+    raw = json.dumps(
+        data.model_dump(mode="json"), separators=(",", ":"), sort_keys=True
+    ).encode()
     return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
 
-def _decode_cursor(value: str) -> dict[str, object]:
-    if not value or len(value) > 4_096:
+def _decode_cursor[T: BaseModel](value: str, model: type[T]) -> T:
+    if not value or len(value) > INTERCOM_CURSOR_LIMIT:
         raise _invalid_cursor()
     try:
         raw = base64.b64decode(
-            value + "=" * (-len(value) % 4),
-            altchars=b"-_",
-            validate=True,
+            value + "=" * (-len(value) % 4), altchars=b"-_", validate=True
         )
-        decoded = json.loads(raw)
-    except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as error:
+        return model.model_validate_json(raw)
+    except (UnicodeDecodeError, ValueError) as error:
         raise _invalid_cursor() from error
-    return _object(decoded, field="Intercom cursor")
 
 
 def _invalid_cursor() -> SorVendorOperationError:
@@ -2048,137 +2121,124 @@ def _invalid_cursor() -> SorVendorOperationError:
     )
 
 
-def _next_starting_after(data: Mapping[str, object]) -> str | None:
-    pages = data.get("pages")
-    if pages is None:
+def _next_starting_after(pages: native.Pages | None) -> str | None:
+    if pages is None or pages.next is None:
         return None
-    page_data = _object(pages, field="Intercom pagination")
-    next_page = page_data.get("next")
-    if next_page is None:
-        return None
-    if isinstance(next_page, Mapping):
-        return _required_string(
-            next_page.get("starting_after"),
-            field="Intercom next cursor",
-        )
-    if isinstance(next_page, str):
-        parsed = urlsplit(next_page)
-        if not parsed.query:
-            return _required_string(next_page, field="Intercom next cursor")
-        for pair in parsed.query.split("&"):
-            name, separator, raw_value = pair.partition("=")
-            if separator and name == "starting_after":
-                from urllib.parse import unquote
+    next_page = pages.next
+    if isinstance(next_page, native.NextPage):
+        return _required_string(next_page.starting_after, field="Intercom next cursor")
+    parsed = urlsplit(next_page)
+    if not parsed.query:
+        return _required_string(next_page, field="Intercom next cursor")
+    for pair in parsed.query.split("&"):
+        name, separator, raw_value = pair.partition("=")
+        if separator and name == "starting_after":
+            from urllib.parse import unquote
 
-                return _required_string(
-                    unquote(raw_value), field="Intercom next cursor"
-                )
+            return _required_string(unquote(raw_value), field="Intercom next cursor")
     raise _invalid_response("Intercom returned an invalid next cursor.")
 
 
-def _message_rows(conversation: Mapping[str, object]) -> list[dict[str, object]]:
-    conversation_id = _required_id(
-        conversation.get("id"), field="Intercom conversation ID"
-    )
-    result: list[dict[str, object]] = []
-    source = _optional_object(conversation.get("source"))
-    if _has_message_content(source):
-        opening = dict(source)
-        opening["_conversation_id"] = conversation_id
-        opening["_part_type"] = "comment"
-        opening["created_at"] = source.get("created_at") or conversation.get(
-            "created_at"
+def _message_rows(conversation: native.Conversation) -> list[_ExpandedMessage]:
+    conversation_id = _required_id(conversation.id, field="Intercom conversation ID")
+    result: list[_ExpandedMessage] = []
+    source = conversation.source
+    if source is not None and _has_message_content(source):
+        result.append(
+            _expanded_message(
+                source,
+                conversation_id=conversation_id,
+                part_type=native.MessageType.COMMENT,
+                created_at=source.created_at or conversation.created_at,
+                updated_at=conversation.updated_at,
+            )
         )
-        opening["updated_at"] = conversation.get("updated_at")
-        opening[IntercomStream.ATTACHMENTS] = _annotated_attachments(
-            opening.get(IntercomStream.ATTACHMENTS),
-            conversation_id=conversation_id,
-            message_id=_required_id(opening.get("id"), field="Intercom message ID"),
-        )
-        result.append(opening)
-    parts = _optional_object(conversation.get(IntercomStream.CONVERSATION_PARTS))
-    for raw_part in _object_list(
-        parts.get(IntercomStream.CONVERSATION_PARTS) or [],
-        field="Intercom conversation parts",
-    ):
-        part_type = _optional_string(raw_part.get("part_type"))
-        if part_type not in {"comment", "note"} or not _has_message_content(raw_part):
+    parts = conversation.conversation_parts
+    for header in parts.conversation_parts or [] if parts else []:
+        part_type = _optional_string(header.part_type)
+        if part_type not in {native.MessageType.COMMENT, native.MessageType.NOTE}:
             continue
-        part = dict(raw_part)
-        part["_conversation_id"] = conversation_id
-        part["_part_type"] = part_type
-        part[IntercomStream.ATTACHMENTS] = _annotated_attachments(
-            part.get(IntercomStream.ATTACHMENTS),
-            conversation_id=conversation_id,
-            message_id=_required_id(part.get("id"), field="Intercom message ID"),
+        part = native.parse_response(
+            header.model_dump(mode="json", exclude_unset=True), native.MessagePart
         )
-        result.append(part)
+        if not _has_message_content(part):
+            continue
+        result.append(
+            _expanded_message(
+                part,
+                conversation_id=conversation_id,
+                part_type=native.MessageType(part_type),
+                created_at=part.created_at,
+                updated_at=part.updated_at,
+            )
+        )
     return sorted(
         result,
-        key=lambda item: (
-            _optional_epoch(item.get("created_at")) or 0,
-            _required_id(item.get("id"), field="Intercom message ID"),
+        key=lambda item: (_optional_epoch(item.created_at) or 0, item.message_id or ""),
+    )
+
+
+def _expanded_message(
+    message: native.Message,
+    *,
+    conversation_id: str,
+    part_type: native.MessageType,
+    created_at: native.Timestamp | None,
+    updated_at: native.Timestamp | None,
+) -> _ExpandedMessage:
+    message_id = (
+        None
+        if isinstance(message, native.ConversationSource) and message.id is None
+        else _required_id(message.id, field="Intercom message ID")
+    )
+    return _ExpandedMessage(
+        conversation_id=conversation_id,
+        message_id=message_id,
+        part_type=part_type,
+        message=message,
+        created_at=created_at,
+        updated_at=updated_at,
+        attachments=tuple(
+            _ExpandedAttachment(
+                conversation_id=conversation_id,
+                message_id=message_id,
+                position=position,
+                attachment=item,
+            )
+            for position, item in enumerate(message.attachments or [])
         ),
     )
 
 
-def _has_message_content(row: Mapping[str, object]) -> bool:
-    if _plain_text(row.get("body")):
-        return True
-    attachments = row.get(IntercomStream.ATTACHMENTS)
-    return isinstance(attachments, list) and bool(attachments)
+def _has_message_content(message: native.Message) -> bool:
+    return bool(_plain_text(message.body) or message.attachments)
 
 
-def _message_text(row: Mapping[str, object]) -> str:
-    body = _plain_text(row.get("body"))
+def _message_text(row: _ExpandedMessage) -> str:
+    body = _plain_text(row.message.body)
     if body:
         return body
-    attachments = _object_list(
-        row.get(IntercomStream.ATTACHMENTS) or [],
-        field="Intercom message attachments",
-    )
     names = [
-        _optional_string(item.get("name")) or "unnamed file" for item in attachments
+        _optional_string(item.attachment.name) or "unnamed file"
+        for item in row.attachments
     ]
     if names:
         return "\n".join(f"[Attachment: {name}]" for name in names)
     raise _invalid_response("Intercom message has no readable content.")
 
 
-def _attachment_rows(conversation: Mapping[str, object]) -> list[dict[str, object]]:
-    result: list[dict[str, object]] = []
-    for message in _message_rows(conversation):
-        result.extend(
-            _object_list(
-                message.get(IntercomStream.ATTACHMENTS) or [],
-                field="Intercom message attachments",
-            )
-        )
-    return result
+def _attachment_rows(conversation: native.Conversation) -> list[_ExpandedAttachment]:
+    return [
+        attachment
+        for message in _message_rows(conversation)
+        for attachment in message.attachments
+    ]
 
 
-def _annotated_attachments(
-    value: object,
-    *,
-    conversation_id: str,
-    message_id: str,
-) -> list[dict[str, object]]:
-    result: list[dict[str, object]] = []
-    for raw in _object_list(value or [], field="Intercom message attachments"):
-        item = dict(raw)
-        item["_conversation_id"] = conversation_id
-        item["_message_id"] = message_id
-        result.append(item)
-    return result
-
-
-def _require_complete_parts(conversation: Mapping[str, object]) -> None:
-    parts = _optional_object(conversation.get(IntercomStream.CONVERSATION_PARTS))
-    rows = _object_list(
-        parts.get(IntercomStream.CONVERSATION_PARTS) or [],
-        field="Intercom conversation parts",
-    )
-    total = _optional_integer(parts.get("total_count"))
+def _require_complete_parts(conversation: native.Conversation) -> None:
+    parts = conversation.conversation_parts
+    rows = parts.conversation_parts or [] if parts else []
+    total = parts.total_count if parts else None
     if total is not None and total < len(rows):
         raise _invalid_response(
             "Intercom conversation part count is smaller than its returned data."
@@ -2200,19 +2260,21 @@ def _require_complete_parts(conversation: Mapping[str, object]) -> None:
 
 
 def _latest_message_part(
-    conversation: Mapping[str, object],
+    conversation: native.ReplyResult,
     *,
     visibility: SupportMessageVisibility,
-) -> dict[str, object]:
-    expected = "comment" if visibility is SupportMessageVisibility.PUBLIC else "note"
-    parts = _optional_object(conversation.get(IntercomStream.CONVERSATION_PARTS))
-    rows = _object_list(
-        parts.get(IntercomStream.CONVERSATION_PARTS) or [],
-        field="Intercom conversation parts",
+) -> native.Reference:
+    expected = (
+        native.MessageType.COMMENT
+        if visibility is SupportMessageVisibility.PUBLIC
+        else native.MessageType.NOTE
     )
-    for part in reversed(rows):
-        if _optional_string(part.get("part_type")) == expected:
-            return part
+    parts = conversation.conversation_parts
+    for part in reversed(parts.conversation_parts or [] if parts else []):
+        if _optional_string(part.part_type) == expected:
+            return native.parse_response(
+                part.model_dump(mode="json", exclude_unset=True), native.Reference
+            )
     raise _invalid_response("Intercom omitted the written conversation message.")
 
 
@@ -2237,59 +2299,99 @@ def _webhook_identity(
     return None, None
 
 
-def _expanded_id(conversation_id: str, message_id: str) -> str:
-    return f"{conversation_id}:{message_id}"
+def _identity_segment(value: str) -> str:
+    normalized = _required_id(value, field="Intercom identity segment")
+    if ":" in normalized:
+        raise _invalid_response("Intercom returned an ambiguous identity segment.")
+    return normalized
 
 
-def _message_external_id(
-    conversation_id: str,
-    row: Mapping[str, object],
-) -> str:
-    return _expanded_id(
-        conversation_id,
-        _required_id(row.get("id"), field="Intercom message ID"),
-    )
+def _expanded_id(conversation_id: str, message_id: str | None) -> str:
+    value = _MessageIdentity(
+        conversation_id=conversation_id,
+        message_id=message_id,
+    ).to_external_id()
+    return _required_id(value, field="Intercom message identity")
 
 
-def _split_expanded_id(value: str) -> tuple[str, str]:
-    conversation_id, separator, message_id = value.partition(":")
-    if not separator or not conversation_id or not message_id or ":" in message_id:
-        raise _invalid_command("Intercom message identity is invalid.")
-    return conversation_id, message_id
+def _message_external_id(conversation_id: str, row: _ExpandedMessage) -> str:
+    return _expanded_id(conversation_id, row.message_id)
 
 
-def _attachment_id(
-    conversation_id: str,
-    message_id: str,
-    attachment_id: str,
-) -> str:
-    return f"{conversation_id}:{message_id}:{attachment_id}"
-
-
-def _attachment_external_id(
-    conversation_id: str,
-    row: Mapping[str, object],
-) -> str:
-    return _attachment_id(
-        conversation_id,
-        _required_id(row.get("_message_id"), field="Intercom message ID"),
-        _required_id(row.get("id"), field="Intercom attachment ID"),
-    )
-
-
-def _split_attachment_id(value: str) -> tuple[str, str, str]:
+def _decode_message_identity(value: str) -> _MessageIdentity:
     parts = value.split(":")
-    if len(parts) != 3 or any(not part for part in parts):
+    if len(parts) == 2 and all(parts):
+        identity = _MessageIdentity(conversation_id=parts[0], message_id=parts[1])
+    elif (
+        len(parts) == 3
+        and parts[0]
+        and not parts[1]
+        and parts[2] == _IdentitySegment.SOURCE
+    ):
+        identity = _MessageIdentity(conversation_id=parts[0], message_id=None)
+    else:
+        raise _invalid_command("Intercom message identity is invalid.")
+    if identity.to_external_id() != value:
+        raise _invalid_command("Intercom message identity is invalid.")
+    return identity
+
+
+def _attachment_external_id(conversation_id: str, row: _ExpandedAttachment) -> str:
+    message = _MessageIdentity(
+        conversation_id=conversation_id, message_id=row.message_id
+    )
+    identity = (
+        _AttachmentIdentity(message=message, position=row.position)
+        if row.attachment.id is None
+        else _AttachmentIdentity(
+            message=message,
+            attachment_id=_required_id(
+                row.attachment.id, field="Intercom attachment ID"
+            ),
+        )
+    )
+    return _required_id(identity.to_external_id(), field="Intercom attachment identity")
+
+
+def _decode_attachment_identity(value: str) -> _AttachmentIdentity:
+    message_value, separator, position = value.rpartition(
+        f"::{_IdentitySegment.POSITION}:"
+    )
+    if separator:
+        if not position.isascii() or not position.isdigit():
+            raise _invalid_command("Intercom attachment identity is invalid.")
+        identity = _AttachmentIdentity(
+            message=_decode_message_identity(message_value),
+            position=int(position),
+        )
+    else:
+        message_value, separator, attachment_id = value.rpartition(":")
+        if not separator or not attachment_id:
+            raise _invalid_command("Intercom attachment identity is invalid.")
+        identity = _AttachmentIdentity(
+            message=_decode_message_identity(message_value),
+            attachment_id=attachment_id,
+        )
+    if identity.to_external_id() != value:
         raise _invalid_command("Intercom attachment identity is invalid.")
-    return parts[0], parts[1], parts[2]
+    return identity
 
 
-def _message_direction(value: object) -> str | None:
+def _message_direction(value: str | None) -> SupportMessageDirection | None:
     author_type = _optional_string(value)
-    if author_type in {"contact", "lead", "user", "visitor"}:
-        return "INBOUND"
-    if author_type in {"admin", "bot", "team"}:
-        return "OUTBOUND"
+    if author_type in {
+        native.ActorType.CONTACT,
+        native.ActorType.LEAD,
+        native.ActorType.USER,
+        native.ActorType.VISITOR,
+    }:
+        return SupportMessageDirection.INBOUND
+    if author_type in {
+        native.ActorType.ADMIN,
+        native.ActorType.BOT,
+        native.ActorType.TEAM,
+    }:
+        return SupportMessageDirection.OUTBOUND
     return None
 
 
@@ -2384,34 +2486,6 @@ def _expect(response: SorJsonResponse, *, operation: str) -> object:
     )
 
 
-def _object(value: object, *, field: str = "Intercom response") -> dict[str, object]:
-    if not isinstance(value, Mapping) or any(not isinstance(key, str) for key in value):
-        raise _invalid_response(f"{field} must be an object.")
-    return dict(value)
-
-
-def _optional_object(value: object) -> dict[str, object]:
-    if value is None:
-        return {}
-    return _object(value)
-
-
-def _object_list(value: object, *, field: str) -> list[dict[str, object]]:
-    if not isinstance(value, list):
-        raise _invalid_response(f"{field} must be a list.")
-    return [_object(item, field=field) for item in value]
-
-
-def _nested_object_list(
-    value: object,
-    key: str,
-    *,
-    field: str,
-) -> list[dict[str, object]]:
-    container = _optional_object(value)
-    return _object_list(container.get(key) or [], field=field)
-
-
 def _required_string(value: object, *, field: str) -> str:
     result = _optional_string(value)
     if result is None:
@@ -2450,14 +2524,6 @@ def _path_id(value: str) -> str:
     }:
         raise _invalid_command("Intercom path identity is invalid.")
     return normalized
-
-
-def _optional_boolean(value: object) -> bool | None:
-    return value if isinstance(value, bool) else None
-
-
-def _optional_integer(value: object) -> int | None:
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _optional_epoch(value: object) -> int | None:

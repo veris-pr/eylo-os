@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from uuid import UUID
+
 from eylo.modules.agents.exceptions import AgentError
 from eylo.modules.agents.implementations import is_registered, known_slugs
 from eylo.modules.agents.models import AgentKind
@@ -15,7 +17,7 @@ class UnknownImplementationError(AgentError):
     """An `implementation` slug that no first-party code answers to."""
 
 
-def assert_can_join_swarm(kind: AgentKind, agent_id) -> None:
+def assert_can_join_swarm(kind: AgentKind, agent_id: UUID) -> None:
     """Swarms are how handoffs are configured, so this closes both directions."""
     if kind is AgentKind.BACKGROUND:
         raise InvalidAgentKindError(
@@ -26,9 +28,7 @@ def assert_can_join_swarm(kind: AgentKind, agent_id) -> None:
         )
 
 
-def assert_implementation_is_valid(
-    kind: AgentKind, implementation: str | None
-) -> None:
+def assert_implementation_is_valid(kind: AgentKind, implementation: str | None) -> None:
     """Reject an implementation slug at write time rather than at dispatch.
 
     A typo that survives to dispatch becomes a background agent that silently
@@ -57,7 +57,7 @@ def assert_implementation_is_valid(
         )
 
 
-def assert_can_have_background_agents(kind: AgentKind, agent_id) -> None:
+def assert_can_have_background_agents(kind: AgentKind, agent_id: UUID) -> None:
     """No chaining: a background agent may not own attachments of its own."""
     if kind is AgentKind.BACKGROUND:
         raise InvalidAgentKindError(
@@ -67,7 +67,7 @@ def assert_can_have_background_agents(kind: AgentKind, agent_id) -> None:
         )
 
 
-def assert_is_background(kind: AgentKind, agent_id) -> None:
+def assert_is_background(kind: AgentKind, agent_id: UUID) -> None:
     """The attachment target must actually be a background agent."""
     if kind is not AgentKind.BACKGROUND:
         raise InvalidAgentKindError(
@@ -76,7 +76,7 @@ def assert_is_background(kind: AgentKind, agent_id) -> None:
         )
 
 
-def assert_is_conversational(kind: AgentKind, agent_id) -> None:
+def assert_is_conversational(kind: AgentKind, agent_id: UUID) -> None:
     """The attachment owner must be the side that actually completes runs."""
     if kind is not AgentKind.CONVERSATIONAL:
         raise InvalidAgentKindError(
@@ -89,11 +89,11 @@ def assert_is_conversational(kind: AgentKind, agent_id) -> None:
 def assert_attachment_is_valid(
     *,
     owner_kind: AgentKind,
-    owner_id,
-    owner_organization_id,
+    owner_id: UUID,
+    owner_organization_id: UUID,
     target_kind: AgentKind,
-    target_id,
-    target_organization_id,
+    target_id: UUID,
+    target_organization_id: UUID,
 ) -> None:
     """All four attachment invariants, checked together.
 

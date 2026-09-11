@@ -5,15 +5,24 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from http import HTTPMethod, HTTPStatus
+from typing import Annotated, Literal
 
 import jwt
 from jwt.exceptions import PyJWTError
-from pydantic import BaseModel, ConfigDict
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    PlainSerializer,
+    ValidationError,
+    field_validator,
+)
 
 from eylo.modules.connections.domain import ConnectionAuthKind
 from eylo.sor.runtime.http import SorHttpTransport, SorJsonHttpClient, SorJsonResponse
@@ -69,6 +78,7 @@ from eylo.sor.ticketing.contracts import (
     TicketingIssue,
     TicketingIssuePayload,
     TicketingIssueRelation,
+    TicketingIssueWriteField,
     TicketingLabel,
     TicketingLabelCommandPayload,
     TicketingLabelPayload,
@@ -121,6 +131,7 @@ JIRA_COMMENT_ISSUE_BATCH_SIZE = 10
 JIRA_RELATION_ISSUE_BATCH_SIZE = 20
 JIRA_SPRINT_ISSUE_BATCH_SIZE = 100
 JIRA_SPRINT_SCAN_LIMIT = 25
+JIRA_CURSOR_TOKEN_LIMIT = 4_096
 JIRA_SPRINT_FIELD_TYPE = "com.pyxis.greenhopper.jira:gh-sprint"
 
 READ_WORK_SCOPE = "read:jira-work"
@@ -500,6 +511,78 @@ _NORMALIZED_TO_JIRA_FIELD = {
 }
 
 
+def _cursor_timestamp(value: object) -> datetime:
+    if isinstance(value, datetime):
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("A cursor timestamp must include a timezone.")
+        return value
+    parsed = _optional_datetime(value)
+    if parsed is None:
+        raise ValueError("A cursor timestamp must include a timezone.")
+    return parsed
+
+
+def _cursor_timestamp_text(value: datetime) -> str:
+    return value.isoformat()
+
+
+def _cursor_token(value: object) -> str | None:
+    if value is not None and not isinstance(value, str):
+        raise ValueError("A cursor continuation token must be text or null.")
+    return _optional_string(value)
+
+
+_CursorTimestamp = Annotated[
+    datetime,
+    BeforeValidator(_cursor_timestamp),
+    PlainSerializer(_cursor_timestamp_text, return_type=str),
+]
+_CursorToken = Annotated[
+    Annotated[str, Field(max_length=JIRA_CURSOR_TOKEN_LIMIT)] | None,
+    BeforeValidator(_cursor_token),
+]
+
+
+class _CursorHeader(BaseModel):
+    """Route persisted versions without interpreting obsolete position fields."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="ignore", hide_input_in_errors=True
+    )
+
+    stream: JiraStream
+    v: int
+
+
+class _LegacyIssueCursorEnvelope(_CursorHeader):
+    """Only the old watermark survives a restart; other v1 fields are discarded."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    floor: _CursorTimestamp | None
+    high: SorJsonValue
+    next_token: SorJsonValue
+    started_at: SorJsonValue
+
+
+class _LegacySprintCursorEnvelope(_CursorHeader):
+    """Old board positions are never reused for the issue-driven Sprint scan."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    board_id: SorJsonValue
+    board_is_last: SorJsonValue
+    board_offset: SorJsonValue
+    project_external_id: SorJsonValue
+    sprint_offset: SorJsonValue
+
+
+class _OffsetCursorEnvelope(_CursorHeader):
+    model_config = ConfigDict(extra="forbid")
+
+    offset: int = Field(ge=0)
+
+
 class _IssueCursor(BaseModel):
     """Jira issue-search position owned by the vendor cursor codec."""
 
@@ -508,7 +591,7 @@ class _IssueCursor(BaseModel):
     )
 
     floor: datetime | None
-    project_offset: int
+    project_offset: int = Field(ge=0)
     next_token: str | None
     high: datetime | None
     started_at: datetime
@@ -522,7 +605,7 @@ class _CommentCursor(BaseModel):
         frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
     )
 
-    project_offset: int
+    project_offset: int = Field(ge=0)
     next_issue_token: str | None
     issue_ids: tuple[str, ...]
     item_offsets: tuple[int, ...]
@@ -538,7 +621,7 @@ class _RelationCursor(BaseModel):
         frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
     )
 
-    project_offset: int
+    project_offset: int = Field(ge=0)
     next_issue_token: str | None
 
 
@@ -550,12 +633,68 @@ class _SprintCursor(BaseModel):
     )
 
     floor: datetime | None
-    project_offset: int
+    project_offset: int = Field(ge=0)
     next_issue_token: str | None
-    item_offset: int
+    item_offset: int = Field(ge=0)
     high: datetime | None
     started_at: datetime
     completed: bool
+
+
+class _IssueCursorEnvelope(_IssueCursor):
+    stream: Literal[JiraStream.ISSUES]
+    v: int = Field(ge=JIRA_ISSUE_CURSOR_VERSION, le=JIRA_ISSUE_CURSOR_VERSION)
+    floor: _CursorTimestamp | None
+    high: _CursorTimestamp | None
+    started_at: _CursorTimestamp
+    next_token: _CursorToken
+
+
+class _CommentCursorEnvelope(_CommentCursor):
+    stream: Literal[JiraStream.COMMENTS]
+    v: int = Field(ge=JIRA_COMMENT_CURSOR_VERSION, le=JIRA_COMMENT_CURSOR_VERSION)
+    next_issue_token: _CursorToken
+
+    @field_validator("issue_ids", mode="before")
+    @classmethod
+    def normalize_issue_ids(cls, value: object) -> tuple[str, ...]:
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("Comment cursor issue IDs must be a sequence.")
+        try:
+            return tuple(
+                _required_id(item, field="Jira child cursor issue ID") for item in value
+            )
+        except SorVendorOperationError as error:
+            raise ValueError("Comment cursor contains an invalid issue ID.") from error
+
+
+class _RelationCursorEnvelope(_RelationCursor):
+    stream: Literal[JiraStream.ISSUE_RELATIONS]
+    v: int = Field(ge=JIRA_RELATION_CURSOR_VERSION, le=JIRA_RELATION_CURSOR_VERSION)
+    next_issue_token: _CursorToken
+
+
+class _SprintCursorEnvelope(_SprintCursor):
+    stream: Literal[JiraStream.SPRINTS]
+    v: int = Field(ge=JIRA_SPRINT_CURSOR_VERSION, le=JIRA_SPRINT_CURSOR_VERSION)
+    floor: _CursorTimestamp | None
+    high: _CursorTimestamp | None
+    started_at: _CursorTimestamp
+    next_issue_token: _CursorToken
+
+
+def _parse_cursor[T: BaseModel](value: str, model: type[T], *, stream: str) -> T:
+    try:
+        return model.model_validate_json(value)
+    except ValidationError as error:
+        raise _invalid_cursor(stream) from error
+
+
+def _encode_cursor(envelope: BaseModel) -> str:
+    """Retain sorted keys, ASCII escaping and timestamp spelling of stored cursors."""
+    return json.dumps(
+        envelope.model_dump(mode="json"), separators=(",", ":"), sort_keys=True
+    )
 
 
 class _JiraIssueLinkSnapshot(BaseModel):
@@ -2097,7 +2236,11 @@ class JiraTicketingAdapter:
                 "Creating a Jira issue cannot target an existing issue."
             )
         issue_fields = _mapped_issue_fields(command)
-        required = {"title", "project_external_id", "issue_type"}
+        required = {
+            TicketingIssueWriteField.TITLE,
+            TicketingIssueWriteField.PROJECT,
+            TicketingIssueWriteField.ISSUE_TYPE,
+        }
         if not required.issubset(issue_fields):
             raise _invalid_command(
                 "Creating a Jira issue requires title, project_external_id, and issue_type."
@@ -2422,17 +2565,7 @@ class JiraTicketingAdapter:
             for field in self._context.fields
             if field.vendor_object_key == JiraStream.ISSUES and field.writable
         }
-        allowed = set(writable) | {
-            "title",
-            "normalized_description",
-            "issue_type",
-            "priority",
-            "project_external_id",
-            "estimate",
-            "label_external_ids",
-            "parent_external_id",
-            "due_date",
-        }
+        allowed = set(writable) | set(TicketingIssueWriteField)
         unknown = set(payload) - allowed
         if unknown:
             raise SorVendorOperationError(
@@ -2441,47 +2574,80 @@ class JiraTicketingAdapter:
                 recovery=SorRecoveryPolicy.TERMINAL,
             )
         result: dict[str, object] = {}
-        mappings = {
-            "title": ("summary", _required_command_string),
-            "normalized_description": ("description", _adf_document_or_none),
-            "issue_type": (
-                "issuetype",
-                lambda value: {"name": _required_command_string(value)},
+        mappings: Mapping[
+            TicketingIssueWriteField,
+            tuple[
+                native.JiraIssueWriteField,
+                Callable[[object], SorJsonValue | native.JiraRequest],
+            ],
+        ] = {
+            TicketingIssueWriteField.TITLE: (
+                native.JiraIssueWriteField.SUMMARY,
+                _required_command_string,
             ),
-            "priority": (
-                "priority",
+            TicketingIssueWriteField.DESCRIPTION: (
+                native.JiraIssueWriteField.DESCRIPTION,
+                _adf_document_or_none,
+            ),
+            TicketingIssueWriteField.ISSUE_TYPE: (
+                native.JiraIssueWriteField.ISSUE_TYPE,
+                lambda value: native.JiraNameInput(
+                    name=_required_command_string(value)
+                ),
+            ),
+            TicketingIssueWriteField.PRIORITY: (
+                native.JiraIssueWriteField.PRIORITY,
                 lambda value: None
                 if value is None
-                else {"name": _required_command_string(value)},
+                else native.JiraNameInput(name=_required_command_string(value)),
             ),
-            "project_external_id": (
-                "project",
-                lambda value: {"id": _required_command_string(value)},
+            TicketingIssueWriteField.PROJECT: (
+                native.JiraIssueWriteField.PROJECT,
+                lambda value: native.JiraIdInput(id=_required_command_string(value)),
             ),
-            "estimate": ("timeoriginalestimate", _optional_positive_integer),
-            "label_external_ids": (JiraStream.LABELS, _command_string_list),
-            "parent_external_id": (
-                "parent",
+            TicketingIssueWriteField.ESTIMATE: (
+                native.JiraIssueWriteField.ESTIMATE,
+                _optional_positive_integer,
+            ),
+            TicketingIssueWriteField.LABELS: (
+                native.JiraIssueWriteField.LABELS,
+                _command_string_list,
+            ),
+            TicketingIssueWriteField.PARENT: (
+                native.JiraIssueWriteField.PARENT,
                 lambda value: None
                 if value is None
-                else {"id": _required_command_string(value)},
+                else native.JiraIdInput(id=_required_command_string(value)),
             ),
-            "due_date": ("duedate", _optional_command_string),
+            TicketingIssueWriteField.DUE_DATE: (
+                native.JiraIssueWriteField.DUE_DATE,
+                _optional_command_string,
+            ),
         }
         for key, value in payload.items():
-            if key in mappings:
-                target, transform = mappings[key]
-                transformed = transform(value)
-                result[target] = (
-                    transformed.model_dump(mode="json")
-                    if isinstance(transformed, native.JiraAdfDocument)
-                    else transformed
-                )
+            try:
+                canonical_key = TicketingIssueWriteField(key)
+            except ValueError:
+                result[writable[key]] = value
                 continue
-            vendor_key = writable[key]
-            result[vendor_key] = value
+            target, transform = mappings[canonical_key]
+            try:
+                transformed = transform(value)
+            except ValidationError as error:
+                raise _invalid_command(
+                    "The Jira request contains invalid field values."
+                ) from error
+            result[target] = (
+                transformed.model_dump(mode="json")
+                if isinstance(transformed, native.JiraRequest)
+                else transformed
+            )
         if operation is SorMutationOperation.CREATE:
-            for field in ("summary", "project", "issuetype"):
+            for field in (
+                native.JiraIssueWriteField.SUMMARY,
+                native.JiraIssueWriteField.PROJECT,
+                native.JiraIssueWriteField.ISSUE_TYPE,
+            ):
                 if field not in result:
                     raise _invalid_command(
                         "Creating a Jira issue requires title, project_external_id, and issue_type."
@@ -2710,93 +2876,61 @@ def _decode_issue_cursor(value: str | None) -> _IssueCursor:
             started_at=now,
             completed=False,
         )
-    try:
-        payload = json.loads(value)
-    except (TypeError, ValueError, json.JSONDecodeError) as error:
-        raise _invalid_cursor("issue") from error
-    if not isinstance(payload, dict) or payload.get("stream") != JiraStream.ISSUES:
+    header = _parse_cursor(value, _CursorHeader, stream=JiraStream.ISSUES)
+    if header.stream is not JiraStream.ISSUES:
         raise _invalid_cursor("issue")
-    if payload.get("v") == JIRA_CURSOR_VERSION and set(payload) == {
-        "floor",
-        "high",
-        "next_token",
-        "started_at",
-        "stream",
-        "v",
-    }:
-        floor = _optional_datetime(payload.get("floor"))
+    if header.v == JIRA_CURSOR_VERSION:
+        legacy = _parse_cursor(
+            value, _LegacyIssueCursorEnvelope, stream=JiraStream.ISSUES
+        )
         return _IssueCursor(
-            floor=floor,
+            floor=legacy.floor,
             project_offset=0,
             next_token=None,
             high=None,
             started_at=now,
             completed=False,
         )
-    if payload.get("v") != JIRA_ISSUE_CURSOR_VERSION or set(payload) != {
-        "completed",
-        "floor",
-        "high",
-        "next_token",
-        "project_offset",
-        "started_at",
-        "stream",
-        "v",
-    }:
-        raise _invalid_cursor("issue")
-    floor = _optional_datetime(payload.get("floor"))
-    high = _optional_datetime(payload.get("high"))
-    next_token = _optional_string(payload.get("next_token"))
-    started_at = _optional_datetime(payload.get("started_at"))
-    project_offset = payload.get("project_offset")
-    completed = payload.get("completed")
-    if (
-        started_at is None
-        or not isinstance(completed, bool)
-        or isinstance(project_offset, bool)
-        or not isinstance(project_offset, int)
-        or project_offset < 0
-        or next_token is not None
-        and len(next_token) > 4_096
-    ):
-        raise _invalid_cursor("issue")
-    if completed:
-        if project_offset != 0 or next_token is not None or high is not None:
+    saved = _parse_cursor(value, _IssueCursorEnvelope, stream=JiraStream.ISSUES)
+    if saved.completed:
+        if (
+            saved.project_offset != 0
+            or saved.next_token is not None
+            or saved.high is not None
+        ):
             raise _invalid_cursor("issue")
         return _IssueCursor(
-            floor=floor,
+            floor=saved.floor,
             project_offset=0,
             next_token=None,
             high=None,
             started_at=now,
             completed=False,
         )
-    if next_token is not None and high is None:
+    if saved.next_token is not None and saved.high is None:
         raise _invalid_cursor("issue")
     return _IssueCursor(
-        floor=floor,
-        project_offset=project_offset,
-        next_token=next_token,
-        high=high,
-        started_at=started_at,
+        floor=saved.floor,
+        project_offset=saved.project_offset,
+        next_token=saved.next_token,
+        high=saved.high,
+        started_at=saved.started_at,
         completed=False,
     )
 
 
 def _encode_issue_cursor(cursor: _IssueCursor) -> str:
-    return json.dumps(
-        {
-            "completed": cursor.completed,
-            "floor": _datetime_value(cursor.floor),
-            "high": _datetime_value(cursor.high),
-            "next_token": cursor.next_token,
-            "project_offset": cursor.project_offset,
-            "started_at": _datetime_value(cursor.started_at),
-            "stream": JiraStream.ISSUES,
-            "v": JIRA_ISSUE_CURSOR_VERSION,
-        },
-        separators=(",", ":"),
-        sort_keys=True,
+    return _encode_cursor(
+        _IssueCursorEnvelope(
+            completed=cursor.completed,
+            floor=cursor.floor,
+            high=cursor.high,
+            next_token=cursor.next_token,
+            project_offset=cursor.project_offset,
+            started_at=cursor.started_at,
+            stream=JiraStream.ISSUES,
+            v=JIRA_ISSUE_CURSOR_VERSION,
+        )
     )
 
 
@@ -2822,28 +2956,17 @@ def _completed_issue_cursor(
 def _decode_offset_cursor(value: str | None, *, stream_key: str) -> int:
     if value is None:
         return 0
-    try:
-        payload = json.loads(value)
-    except (TypeError, ValueError, json.JSONDecodeError) as error:
-        raise _invalid_cursor(stream_key) from error
-    if (
-        not isinstance(payload, dict)
-        or set(payload) != {"offset", "stream", "v"}
-        or payload.get("v") != JIRA_CURSOR_VERSION
-        or payload.get("stream") != stream_key
-    ):
+    saved = _parse_cursor(value, _OffsetCursorEnvelope, stream=stream_key)
+    if saved.v != JIRA_CURSOR_VERSION or saved.stream != stream_key:
         raise _invalid_cursor(stream_key)
-    offset = payload.get("offset")
-    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
-        raise _invalid_cursor(stream_key)
-    return offset
+    return saved.offset
 
 
 def _encode_offset_cursor(offset: int, *, stream_key: str) -> str:
-    return json.dumps(
-        {"offset": offset, "stream": stream_key, "v": JIRA_CURSOR_VERSION},
-        separators=(",", ":"),
-        sort_keys=True,
+    return _encode_cursor(
+        _OffsetCursorEnvelope(
+            offset=offset, stream=JiraStream(stream_key), v=JIRA_CURSOR_VERSION
+        )
     )
 
 
@@ -2860,70 +2983,30 @@ def _decode_comment_cursor(value: str | None) -> _CommentCursor:
     )
     if value is None:
         return initial
-    try:
-        payload = json.loads(value)
-    except (TypeError, ValueError, json.JSONDecodeError) as error:
-        raise _invalid_cursor(stream_key) from error
-    if not isinstance(payload, dict) or payload.get("stream") != stream_key:
+    header = _parse_cursor(value, _CursorHeader, stream=stream_key)
+    if header.stream != stream_key:
         raise _invalid_cursor(stream_key)
-    if payload.get("v") in {
+    if header.v in {
         JIRA_CURSOR_VERSION,
         JIRA_ISSUE_CURSOR_VERSION,
         JIRA_NESTED_CURSOR_VERSION,
     }:
         return initial
-    if payload.get("v") != JIRA_COMMENT_CURSOR_VERSION or set(payload) != {
-        "current_project_is_last",
-        "issue_ids",
-        "issue_page_is_last",
-        "item_offsets",
-        "item_stops",
-        "next_issue_token",
-        "project_offset",
-        "stream",
-        "v",
-    }:
-        raise _invalid_cursor(stream_key)
-    next_issue_token = _optional_string(payload.get("next_issue_token"))
-    raw_issue_ids = payload.get("issue_ids")
-    raw_item_offsets = payload.get("item_offsets")
-    raw_item_stops = payload.get("item_stops")
-    issue_page_is_last = payload.get("issue_page_is_last")
-    project_is_last = payload.get("current_project_is_last")
-    project_offset = payload.get("project_offset")
+    saved = _parse_cursor(value, _CommentCursorEnvelope, stream=stream_key)
+    next_issue_token = saved.next_issue_token
+    issue_ids = saved.issue_ids
+    item_offsets = saved.item_offsets
+    item_stops = saved.item_stops
+    issue_page_is_last = saved.issue_page_is_last
+    project_is_last = saved.current_project_is_last
     if (
-        not isinstance(raw_issue_ids, list)
-        or not isinstance(raw_item_offsets, list)
-        or not isinstance(raw_item_stops, list)
-        or len(raw_issue_ids) != len(raw_item_offsets)
-        or len(raw_issue_ids) != len(raw_item_stops)
-        or len(raw_issue_ids) > 2 * JIRA_COMMENT_ISSUE_BATCH_SIZE
-        or not isinstance(issue_page_is_last, bool)
-        or not isinstance(project_is_last, bool)
-        or isinstance(project_offset, bool)
-        or not isinstance(project_offset, int)
-        or project_offset < 0
-        or next_issue_token is not None
-        and len(next_issue_token) > 4_096
+        len(issue_ids) != len(item_offsets)
+        or len(issue_ids) != len(item_stops)
+        or len(issue_ids) > 2 * JIRA_COMMENT_ISSUE_BATCH_SIZE
+        or any(offset < 0 for offset in item_offsets)
+        or any(stop <= 0 for stop in item_stops)
     ):
         raise _invalid_cursor(stream_key)
-    try:
-        issue_ids = tuple(
-            _required_id(issue_id, field="Jira child cursor issue ID")
-            for issue_id in raw_issue_ids
-        )
-    except SorVendorOperationError as error:
-        raise _invalid_cursor(stream_key) from error
-    if any(
-        isinstance(offset, bool) or not isinstance(offset, int) or offset < 0
-        for offset in raw_item_offsets
-    ) or any(
-        isinstance(stop, bool) or not isinstance(stop, int) or stop <= 0
-        for stop in raw_item_stops
-    ):
-        raise _invalid_cursor(stream_key)
-    item_offsets = tuple(raw_item_offsets)
-    item_stops = tuple(raw_item_stops)
     ranges = tuple(zip(issue_ids, item_offsets, item_stops, strict=True))
     if any(offset >= stop for _issue_id, offset, stop in ranges):
         raise _invalid_cursor(stream_key)
@@ -2937,7 +3020,7 @@ def _decode_comment_cursor(value: str | None) -> _CommentCursor:
     elif not issue_page_is_last and next_issue_token is None:
         raise _invalid_cursor(stream_key)
     return _CommentCursor(
-        project_offset=project_offset,
+        project_offset=saved.project_offset,
         next_issue_token=next_issue_token,
         issue_ids=issue_ids,
         item_offsets=item_offsets,
@@ -2948,20 +3031,18 @@ def _decode_comment_cursor(value: str | None) -> _CommentCursor:
 
 
 def _encode_comment_cursor(cursor: _CommentCursor) -> str:
-    return json.dumps(
-        {
-            "current_project_is_last": cursor.current_project_is_last,
-            "issue_ids": cursor.issue_ids,
-            "issue_page_is_last": cursor.issue_page_is_last,
-            "item_offsets": cursor.item_offsets,
-            "item_stops": cursor.item_stops,
-            "next_issue_token": cursor.next_issue_token,
-            "project_offset": cursor.project_offset,
-            "stream": JiraStream.COMMENTS,
-            "v": JIRA_COMMENT_CURSOR_VERSION,
-        },
-        separators=(",", ":"),
-        sort_keys=True,
+    return _encode_cursor(
+        _CommentCursorEnvelope(
+            current_project_is_last=cursor.current_project_is_last,
+            issue_ids=cursor.issue_ids,
+            issue_page_is_last=cursor.issue_page_is_last,
+            item_offsets=cursor.item_offsets,
+            item_stops=cursor.item_stops,
+            next_issue_token=cursor.next_issue_token,
+            project_offset=cursor.project_offset,
+            stream=JiraStream.COMMENTS,
+            v=JIRA_COMMENT_CURSOR_VERSION,
+        )
     )
 
 
@@ -2989,54 +3070,32 @@ def _decode_relation_cursor(value: str | None) -> _RelationCursor:
     initial = _RelationCursor(project_offset=0, next_issue_token=None)
     if value is None:
         return initial
-    try:
-        payload = json.loads(value)
-    except (TypeError, ValueError, json.JSONDecodeError) as error:
-        raise _invalid_cursor(JiraStream.ISSUE_RELATIONS) from error
-    if (
-        not isinstance(payload, dict)
-        or payload.get("stream") != JiraStream.ISSUE_RELATIONS
-    ):
+    header = _parse_cursor(value, _CursorHeader, stream=JiraStream.ISSUE_RELATIONS)
+    if header.stream is not JiraStream.ISSUE_RELATIONS:
         raise _invalid_cursor(JiraStream.ISSUE_RELATIONS)
-    if payload.get("v") in {
+    if header.v in {
         JIRA_CURSOR_VERSION,
         JIRA_ISSUE_CURSOR_VERSION,
         JIRA_NESTED_CURSOR_VERSION,
     }:
         return initial
-    if payload.get("v") != JIRA_RELATION_CURSOR_VERSION or set(payload) != {
-        "next_issue_token",
-        "project_offset",
-        "stream",
-        "v",
-    }:
-        raise _invalid_cursor(JiraStream.ISSUE_RELATIONS)
-    next_issue_token = _optional_string(payload.get("next_issue_token"))
-    project_offset = payload.get("project_offset")
-    if (
-        isinstance(project_offset, bool)
-        or not isinstance(project_offset, int)
-        or project_offset < 0
-        or next_issue_token is not None
-        and len(next_issue_token) > 4_096
-    ):
-        raise _invalid_cursor(JiraStream.ISSUE_RELATIONS)
+    saved = _parse_cursor(
+        value, _RelationCursorEnvelope, stream=JiraStream.ISSUE_RELATIONS
+    )
     return _RelationCursor(
-        project_offset=project_offset,
-        next_issue_token=next_issue_token,
+        project_offset=saved.project_offset,
+        next_issue_token=saved.next_issue_token,
     )
 
 
 def _encode_relation_cursor(cursor: _RelationCursor) -> str:
-    return json.dumps(
-        {
-            "next_issue_token": cursor.next_issue_token,
-            "project_offset": cursor.project_offset,
-            "stream": JiraStream.ISSUE_RELATIONS,
-            "v": JIRA_RELATION_CURSOR_VERSION,
-        },
-        separators=(",", ":"),
-        sort_keys=True,
+    return _encode_cursor(
+        _RelationCursorEnvelope(
+            next_issue_token=cursor.next_issue_token,
+            project_offset=cursor.project_offset,
+            stream=JiraStream.ISSUE_RELATIONS,
+            v=JIRA_RELATION_CURSOR_VERSION,
+        )
     )
 
 
@@ -3090,25 +3149,11 @@ def _decode_sprint_cursor(value: str | None) -> _SprintCursor:
             started_at=now,
             completed=False,
         )
-    try:
-        payload = json.loads(value)
-    except (TypeError, ValueError, json.JSONDecodeError) as error:
-        raise _invalid_cursor(JiraStream.SPRINTS) from error
-    if (
-        isinstance(payload, dict)
-        and payload.get("stream") == JiraStream.SPRINTS
-        and payload.get("v") == JIRA_CURSOR_VERSION
-        and set(payload)
-        == {
-            "board_id",
-            "board_is_last",
-            "board_offset",
-            "project_external_id",
-            "sprint_offset",
-            "stream",
-            "v",
-        }
-    ):
+    header = _parse_cursor(value, _CursorHeader, stream=JiraStream.SPRINTS)
+    if header.stream is not JiraStream.SPRINTS:
+        raise _invalid_cursor(JiraStream.SPRINTS)
+    if header.v == JIRA_CURSOR_VERSION:
+        _parse_cursor(value, _LegacySprintCursorEnvelope, stream=JiraStream.SPRINTS)
         # V1 enumerated boards. Restarting is safe because projection is idempotent.
         return _SprintCursor(
             floor=None,
@@ -3119,54 +3164,17 @@ def _decode_sprint_cursor(value: str | None) -> _SprintCursor:
             started_at=now,
             completed=False,
         )
-    if (
-        not isinstance(payload, dict)
-        or set(payload)
-        != {
-            "completed",
-            "floor",
-            "high",
-            "item_offset",
-            "next_issue_token",
-            "project_offset",
-            "started_at",
-            "stream",
-            "v",
-        }
-        or payload.get("stream") != JiraStream.SPRINTS
-        or payload.get("v") != JIRA_SPRINT_CURSOR_VERSION
-    ):
-        raise _invalid_cursor(JiraStream.SPRINTS)
-    floor = _optional_datetime(payload.get("floor"))
-    high = _optional_datetime(payload.get("high"))
-    started_at = _optional_datetime(payload.get("started_at"))
-    next_issue_token = _optional_string(payload.get("next_issue_token"))
-    project_offset = payload.get("project_offset")
-    item_offset = payload.get("item_offset")
-    completed = payload.get("completed")
-    if (
-        started_at is None
-        or not isinstance(completed, bool)
-        or isinstance(project_offset, bool)
-        or not isinstance(project_offset, int)
-        or project_offset < 0
-        or isinstance(item_offset, bool)
-        or not isinstance(item_offset, int)
-        or item_offset < 0
-        or next_issue_token is not None
-        and len(next_issue_token) > 4_096
-    ):
-        raise _invalid_cursor(JiraStream.SPRINTS)
-    if completed:
+    saved = _parse_cursor(value, _SprintCursorEnvelope, stream=JiraStream.SPRINTS)
+    if saved.completed:
         if (
-            project_offset != 0
-            or next_issue_token is not None
-            or item_offset != 0
-            or high is not None
+            saved.project_offset != 0
+            or saved.next_issue_token is not None
+            or saved.item_offset != 0
+            or saved.high is not None
         ):
             raise _invalid_cursor(JiraStream.SPRINTS)
         return _SprintCursor(
-            floor=floor,
+            floor=saved.floor,
             project_offset=0,
             next_issue_token=None,
             item_offset=0,
@@ -3174,34 +3182,32 @@ def _decode_sprint_cursor(value: str | None) -> _SprintCursor:
             started_at=now,
             completed=False,
         )
-    if next_issue_token is not None and high is None:
+    if saved.next_issue_token is not None and saved.high is None:
         raise _invalid_cursor(JiraStream.SPRINTS)
     return _SprintCursor(
-        floor=floor,
-        project_offset=project_offset,
-        next_issue_token=next_issue_token,
-        item_offset=item_offset,
-        high=high,
-        started_at=started_at,
+        floor=saved.floor,
+        project_offset=saved.project_offset,
+        next_issue_token=saved.next_issue_token,
+        item_offset=saved.item_offset,
+        high=saved.high,
+        started_at=saved.started_at,
         completed=False,
     )
 
 
 def _encode_sprint_cursor(cursor: _SprintCursor) -> str:
-    return json.dumps(
-        {
-            "completed": cursor.completed,
-            "floor": _datetime_value(cursor.floor),
-            "high": _datetime_value(cursor.high),
-            "item_offset": cursor.item_offset,
-            "next_issue_token": cursor.next_issue_token,
-            "project_offset": cursor.project_offset,
-            "started_at": _datetime_value(cursor.started_at),
-            "stream": JiraStream.SPRINTS,
-            "v": JIRA_SPRINT_CURSOR_VERSION,
-        },
-        separators=(",", ":"),
-        sort_keys=True,
+    return _encode_cursor(
+        _SprintCursorEnvelope(
+            completed=cursor.completed,
+            floor=cursor.floor,
+            high=cursor.high,
+            item_offset=cursor.item_offset,
+            next_issue_token=cursor.next_issue_token,
+            project_offset=cursor.project_offset,
+            started_at=cursor.started_at,
+            stream=JiraStream.SPRINTS,
+            v=JIRA_SPRINT_CURSOR_VERSION,
+        )
     )
 
 
@@ -3664,10 +3670,6 @@ def _json_value(value: object) -> SorJsonValue:
         raise _invalid_response(
             "Jira source content is not JSON-compatible."
         ) from error
-
-
-def _datetime_value(value: datetime | None) -> str | None:
-    return value.isoformat() if value is not None else None
 
 
 def _webhook_events(selected_objects: tuple[str, ...]) -> tuple[JiraWebhookEvent, ...]:

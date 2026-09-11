@@ -36,6 +36,8 @@ from eylo.events.schema.py_events.memory import (
     MemoryObservationOutcome,
     MemoryRecallObservedEvent,
 )
+from eylo.modules.conversations.schemas.conversations import ConversationContext
+from eylo.modules.conversations.schemas.participants import ParticipantInDb
 from eylo.modules.memory.conflicts import MemoryConflictReader
 from eylo.modules.memory.events import (
     emit_direct_memory_change,
@@ -218,11 +220,11 @@ def _recall_scopes(context: PlatformExecutionContext) -> tuple[MemoryScope, ...]
 
 
 async def remember_context_fact(
-    conversation_context,
+    conversation_context: ConversationContext,
     fact: str,
     *,
     level: MemoryLevel,
-    db=None,
+    db: AsyncSession | None = None,
 ) -> list[MemoryOperation]:
     """Apply one deliberate fact to an exact context-derived level."""
     scope = scope_for_level(conversation_context, level)
@@ -263,12 +265,12 @@ async def remember_context_fact(
 
 
 async def refresh_context_fact(
-    conversation_context,
+    conversation_context: ConversationContext,
     memory_id: UUID,
     fact: str,
     *,
     level: MemoryLevel,
-    db=None,
+    db: AsyncSession | None = None,
 ) -> Memory:
     """Refresh one active fact inside its exact derived level."""
     normalized = require_memory_fact(fact)
@@ -299,11 +301,11 @@ async def refresh_context_fact(
 
 
 async def forget_context_fact(
-    conversation_context,
+    conversation_context: ConversationContext,
     memory_id: UUID,
     *,
     level: MemoryLevel,
-    db=None,
+    db: AsyncSession | None = None,
 ) -> bool:
     """Expire one active fact inside its exact derived level."""
     scope = _required_scope(conversation_context, level)
@@ -385,42 +387,36 @@ def _publish_recall_observation(
         )
 
 
-def memory_binding_from_context(conversation_context) -> tuple[UUID, int]:
+def memory_binding_from_context(
+    conversation_context: PlatformExecutionContext,
+) -> tuple[UUID, int]:
     """Return the exact published agent binding used by this conversation turn."""
-    agent = getattr(conversation_context, "primary_agent", None)
-    config_id = getattr(agent, "memory_provider_config_id", None)
-    revision = getattr(agent, "memory_provider_config_revision", None)
+    agent = conversation_context.primary_agent
+    config_id = agent.memory_provider_config_id if agent is not None else None
+    revision = agent.memory_provider_config_revision if agent is not None else None
     if config_id is None or revision is None:
         raise NotConfiguredError(
             capability=Capability.MEMORY,
             missing=["published_agent_binding"],
             configure_via="/api/agents",
         )
-    return UUID(str(config_id)), int(revision)
+    return config_id, revision
 
 
 def _reranking_binding_from_context(
-    conversation_context,
+    conversation_context: PlatformExecutionContext,
 ) -> tuple[UUID, int | None] | None:
-    agent = getattr(conversation_context, "primary_agent", None)
-    config_id = getattr(agent, "reranking_provider_config_id", None)
-    if config_id is None:
+    agent = conversation_context.primary_agent
+    if agent is None or agent.reranking_provider_config_id is None:
         return None
-    revision = getattr(agent, "reranking_provider_config_revision", None)
-    try:
-        normalized_revision = int(revision) if revision is not None else None
-    except (TypeError, ValueError):
-        normalized_revision = None
-    if normalized_revision is not None and normalized_revision < 1:
-        normalized_revision = None
-    return UUID(str(config_id)), normalized_revision
+    return agent.reranking_provider_config_id, agent.reranking_provider_config_revision
 
 
 async def _resolve_requested_reranker(
     organization_id: UUID,
     binding: tuple[UUID, int | None] | None,
     *,
-    db,
+    db: AsyncSession | None,
 ) -> tuple[RerankingRuntime | None, RankingReason | None]:
     if binding is None:
         return None, None
@@ -481,7 +477,7 @@ def _unavailable_ranking(
 
 
 def _required_scope(
-    conversation_context,
+    conversation_context: ConversationContext,
     level: MemoryLevel,
 ) -> MemoryScope:
     scope = scope_for_level(conversation_context, level)
@@ -490,22 +486,20 @@ def _required_scope(
     return scope
 
 
-def _conversation_id(conversation_context) -> UUID:
-    conversation = getattr(conversation_context, "conversation", None)
-    conversation_id = getattr(conversation, "id", None)
-    if conversation_id is None:
+def _conversation_id(conversation_context: ConversationContext) -> UUID:
+    if not isinstance(conversation_context, ConversationContext):
         raise MemoryProviderError("Memory source conversation is unavailable.")
-    return UUID(str(conversation_id))
+    return conversation_context.conversation.id
 
 
-def _direct_agent_provenance(conversation_context) -> MemoryProvenance:
+def _direct_agent_provenance(
+    conversation_context: ConversationContext,
+) -> MemoryProvenance:
     conversation_id = _conversation_id(conversation_context)
     return MemoryProvenance(
         origin=MemoryOrigin.AGENT_TOOL,
         source_conversation_id=conversation_id,
-        source_messages=(
-            _latest_user_source(conversation_context, conversation_id),
-        ),
+        source_messages=(_latest_user_source(conversation_context, conversation_id),),
         actor=_agent_actor(conversation_context, conversation_id),
         formation_job_id=None,
         extraction=None,
@@ -513,18 +507,20 @@ def _direct_agent_provenance(conversation_context) -> MemoryProvenance:
 
 
 def _latest_user_source(
-    conversation_context,
+    conversation_context: ConversationContext,
     conversation_id: UUID,
 ) -> MemorySourceReference:
     participants = _participants_by_id(conversation_context, conversation_id)
     messages = sorted(
-        getattr(conversation_context, "messages", None) or [],
+        conversation_context.messages or [],
         key=lambda message: (message.created_at, str(message.id)),
         reverse=True,
     )
     for message in messages:
         if message.kind != MessageKind.USER:
             continue
+        if message.conversation_id != conversation_id:
+            raise MemoryProviderError("Memory source conversation is inconsistent.")
         participant = participants.get(message.sender_participant_id)
         if participant is None:
             raise MemoryProviderError("Memory source participant is unavailable.")
@@ -532,9 +528,11 @@ def _latest_user_source(
     raise MemoryProviderError("Memory source message is unavailable.")
 
 
-def _agent_actor(conversation_context, conversation_id: UUID) -> MemoryActor:
+def _agent_actor(
+    conversation_context: ConversationContext, conversation_id: UUID
+) -> MemoryActor:
     participant = conversation_context.get_primary_agent()
-    agent = getattr(conversation_context, "primary_agent", None)
+    agent = conversation_context.primary_agent
     if (
         participant is None
         or agent is None
@@ -552,17 +550,18 @@ def _agent_actor(conversation_context, conversation_id: UUID) -> MemoryActor:
 
 
 def _participants_by_id(
-    conversation_context, conversation_id: UUID
-) -> dict[UUID, object]:
-    participants = getattr(conversation_context, "participants", None) or []
+    conversation_context: ConversationContext, conversation_id: UUID
+) -> dict[UUID, ParticipantInDb]:
     return {
         participant.id: participant
-        for participant in participants
+        for participant in conversation_context.participants
         if participant.conversation_id == conversation_id
     }
 
 
-def _source_reference(message_id: UUID, participant) -> MemorySourceReference:
+def _source_reference(
+    message_id: UUID, participant: ParticipantInDb
+) -> MemorySourceReference:
     return MemorySourceReference(
         message_id=message_id,
         participant_id=participant.id,

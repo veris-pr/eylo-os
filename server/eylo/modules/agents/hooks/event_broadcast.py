@@ -2,6 +2,8 @@
 
 import logging
 
+from pydantic import JsonValue
+
 from eylo.events.py_events.agent_lifecycle import AgentLifecycleEmitter
 from eylo.events.schema.py_events.base import (
     AgentLifecycleOutcome,
@@ -77,7 +79,7 @@ class EventBroadcastHooks(RunHooks):
         context: HookContext,
         agent: AgentInDb,
         tool: ToolInDb,
-        tool_input: dict,
+        tool_input: dict[str, JsonValue],
         tool_use_message: MessageInDb | None = None,
     ) -> None:
         """Emit AgentRunToolEvent."""

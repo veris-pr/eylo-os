@@ -24,7 +24,11 @@ from eylo.modules.knowledgebase.extraction import (
     extract_text,
     is_supported,
 )
-from eylo.modules.knowledgebase.jobs import MAX_STORAGE_OBJECT_BYTES
+from eylo.modules.knowledgebase.jobs import (
+    MAX_STORAGE_OBJECT_BYTES,
+    IngestionState,
+    KnowledgeIngestionJobModel,
+)
 from eylo.modules.knowledgebase.schemas import (
     WidgetKnowledgeIngestionRead,
     WidgetKnowledgeUploadCapabilityRead,
@@ -41,6 +45,7 @@ from eylo.modules.user_sessions.domain import UserSessionError
 from eylo.modules.user_sessions.events import file_user_session_fact
 from eylo.modules.user_sessions.service import UserSessionService
 from eylo.pipelines.knowledgebase.conversation_files import (
+    ConversationFileUploadAuthority,
     ConversationFileUploadsNotAllowed,
     ensure_conversation_file_knowledgebase,
     resolve_conversation_file_upload_authority,
@@ -49,9 +54,7 @@ from eylo.pipelines.knowledgebase.conversation_files import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
-    prefix=(
-        "/widget/{organization_id}/conversations/{conversation_id}/knowledgebases"
-    ),
+    prefix=("/widget/{organization_id}/conversations/{conversation_id}/knowledgebases"),
     tags=["Widget"],
 )
 
@@ -61,16 +64,14 @@ def _authorize_context(
     conversation_id: UUID,
     current_contact: CurrentContactSchema,
 ) -> None:
-    if (
-        str(organization_id) != str(current_contact.organization_id)
-    ):
+    if str(organization_id) != str(current_contact.organization_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
 
 async def _file_upload_authority(
     current_contact: CurrentContactSchema,
     conversation_id: UUID,
-):
+) -> ConversationFileUploadAuthority:
     return await resolve_conversation_file_upload_authority(
         organization_id=current_contact.organization_id,
         contact_id=current_contact.contact_id,
@@ -189,9 +190,7 @@ async def upload_widget_knowledge_file(
         raise HTTPException(status_code=400, detail=str(error)) from error
 
     digest = hashlib.sha256(raw).hexdigest()
-    source_uri = (
-        f"eylo://conversations/{conversation_id}/uploads/{digest}"
-    )
+    source_uri = f"eylo://conversations/{conversation_id}/uploads/{digest}"
 
     async with start_transaction() as db_session:
         try:
@@ -355,7 +354,9 @@ async def _read_bounded_file(request: Request) -> bytes:
             if parsed_length > MAX_STORAGE_OBJECT_BYTES:
                 raise _file_too_large()
         except ValueError as error:
-            raise HTTPException(status_code=400, detail="Content-Length is invalid.") from error
+            raise HTTPException(
+                status_code=400, detail="Content-Length is invalid."
+            ) from error
 
     raw = bytearray()
     async for block in request.stream():
@@ -380,7 +381,7 @@ def _decode_filename(encoded_filename: str) -> str:
 
 
 def _is_contact_upload(
-    job,
+    job: KnowledgeIngestionJobModel,
     current_contact: CurrentContactSchema,
     conversation_id: UUID,
 ) -> bool:
@@ -393,12 +394,14 @@ def _is_contact_upload(
     )
 
 
-def _widget_ingestion_read(job) -> WidgetKnowledgeIngestionRead:
-    state = job.state.value if hasattr(job.state, "value") else str(job.state)
+def _widget_ingestion_read(
+    job: KnowledgeIngestionJobModel,
+) -> WidgetKnowledgeIngestionRead:
+    state = job.state
     safe_error = None
-    if state == "failed":
+    if state is IngestionState.FAILED:
         safe_error = "This file could not be indexed."
-    elif state == "cancelled":
+    elif state is IngestionState.CANCELLED:
         safe_error = "This file upload was cancelled."
     return WidgetKnowledgeIngestionRead(
         id=job.id,

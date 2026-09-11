@@ -1,6 +1,6 @@
 """Typed corpus screening outcomes and their bounded persisted summary."""
 
-from pydantic import BaseModel, ConfigDict, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
 
 from eylo.common.contracts.storage_objects import StoredObject
 
@@ -16,6 +16,29 @@ class SkippedCorpusObject(BaseModel):
 
     key: str
     reason: str
+
+
+class CorpusSkipCount(BaseModel):
+    """Event projection of stored counts; retain historical integer conversion."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore", hide_input_in_errors=True)
+
+    total: int = 0
+
+    @field_validator("total", mode="before")
+    @classmethod
+    def parse_total(cls, value: object) -> int:
+        if not isinstance(value, (str, int, float)):
+            raise ValueError("Corpus skipped total must be numeric.")
+        return int(value)
+
+
+class CorpusSkipSummary(CorpusSkipCount):
+    """Bounded details persisted alongside the full skipped-object count."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    entries: list[SkippedCorpusObject] = Field(max_length=MAX_CORPUS_SKIP_DETAILS)
 
 
 class CorpusScreening(BaseModel):
@@ -34,10 +57,7 @@ class CorpusScreening(BaseModel):
     def skipped_summary(self) -> dict[str, JsonValue] | None:
         if not self.skipped:
             return None
-        return {
-            "entries": [
-                entry.model_dump(mode="json")
-                for entry in self.skipped[:MAX_CORPUS_SKIP_DETAILS]
-            ],
-            "total": len(self.skipped),
-        }
+        return CorpusSkipSummary(
+            entries=list(self.skipped[:MAX_CORPUS_SKIP_DETAILS]),
+            total=len(self.skipped),
+        ).model_dump(mode="json")

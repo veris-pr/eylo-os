@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from pydantic import ValidationError
@@ -14,6 +14,7 @@ from eylo.common.contracts.conversation import HANDOFF_TOOL_PREFIX
 from eylo.common.database import start_transaction
 from eylo.events.py_events.agent_lifecycle import AgentLifecycleEmitter
 from eylo.events.schema.py_events.base import (
+    AgentLifecycleEvent,
     AgentLifecycleOutcome,
     AgentProcessingEvent,
     AgentResponseCompleteEvent,
@@ -111,13 +112,13 @@ class LiveVoiceLifecycleHooks(RunHooks):
     def current_context(self) -> ConversationContext:
         return self._local_context.conversation_context
 
-    async def on_agent_start(self, context, agent: AgentSpec) -> None:
+    async def on_agent_start(self, context: RunContext, agent: AgentSpec) -> None:
         if self._started:
             return
         self._started = True
         self._emit(AgentProcessingEvent)
 
-    async def on_llm_start(self, context, run_input: RunInput) -> None:
+    async def on_llm_start(self, context: RunContext, run_input: RunInput) -> None:
         conversation = self.current_context.conversation
         await prepare_voice_sessions_for_inference(
             conversation_id=conversation.id,
@@ -126,18 +127,18 @@ class LiveVoiceLifecycleHooks(RunHooks):
         )
         self._emit(AgentRunInferenceEvent)
 
-    async def on_tool_start(self, context, call: ToolCall) -> None:
+    async def on_tool_start(self, context: RunContext, call: ToolCall) -> None:
         self._emit(AgentRunToolEvent)
 
     async def on_tool_end(
         self,
-        context,
+        context: RunContext,
         call: ToolCall,
         result: ToolResult,
     ) -> None:
         self._emit(AgentToolResponseEvent)
 
-    async def on_run_end(self, context, result: RunResult) -> None:
+    async def on_run_end(self, context: RunContext, result: RunResult) -> None:
         successful = result.status in {
             RunStatus.COMPLETED,
             RunStatus.WAITING_FOR_INPUT,
@@ -149,7 +150,7 @@ class LiveVoiceLifecycleHooks(RunHooks):
             else AgentLifecycleOutcome.FAILED
         )
 
-    async def on_error(self, context, error: Exception) -> None:
+    async def on_error(self, context: RunContext, error: Exception) -> None:
         await self.finish(AgentLifecycleOutcome.FAILED)
 
     async def finish(self, outcome: AgentLifecycleOutcome) -> None:
@@ -176,7 +177,7 @@ class LiveVoiceLifecycleHooks(RunHooks):
                 outcome=outcome,
             )
 
-    def _emit(self, event_type) -> None:
+    def _emit(self, event_type: type[AgentLifecycleEvent]) -> None:
         self._events.emit(
             event_type,
             context=self.current_context,

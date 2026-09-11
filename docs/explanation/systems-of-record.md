@@ -66,6 +66,15 @@ aliases and body construction; current-version and page-parent policy remain in
 the adapter. Content properties retain finite JSON values. Storage markup still
 passes through the existing loss-aware renderer and size limits, rather than a
 second document representation introduced by the wire contracts.
+Notion similarly validates native operation models before source projection.
+Page, Markdown and block snapshots preserve unknown fields, explicit nulls and
+omissions so typing does not rewrite content hashes or custom properties. Block
+discriminators select typed text/file content without discarding the original
+block; unsupported kinds remain visible in source data. Property-item pagination
+and recursive traversal use typed envelopes and bounded saved positions. Native
+[Markdown operations](https://developers.notion.com/reference/update-page-markdown)
+keep title replacement, content replacement, append and comments as distinct
+requests, with responses validated before an accepted command receipt is returned.
 Runtime-discovered fields remain a dynamic mapping; native vendor schemas stay
 inside their adapters. Raw payloads are excluded from generic runtime snapshots
 and representations. Persistence uses an explicit encoder, not `model_dump()` on
@@ -299,6 +308,42 @@ updating code alone does not change previously synchronized rows.
 
 ## Source lifecycle
 
+Intercom's v2.16 adapter parses native requests and responses before source-field
+mapping. Conversation expansion carries parent IDs in typed adapter values while
+retaining the source message snapshot separately. Search watermarks and offsets
+use versioned contracts; updates distinguish omitted fields from explicit clears.
+The [conversation retrieval limit](https://developers.intercom.com/docs/references/rest-api/api.intercom.io/conversations/retrieveconversation)
+still refuses truncated part histories. Native
+[attachment objects](https://developers.intercom.com/docs/references/rest-api/api.intercom.io/models/part_attachment)
+need not contain an ID, and the opening conversation source can have a null ID.
+The adapter preserves native IDs when supplied. Otherwise it identifies the
+singleton opening source within its conversation and each attachment by its
+position within the message. These are current-snapshot slots, not permanent
+file identities: replacing or reordering files updates a slot. Expiring download
+URLs never determine identity. List, continuation, exact reads and relationship
+projection use the same identifiers; source snapshots retain the original fields.
+
+This does not add deletion reconciliation. Intercom's incremental child streams
+can retain projected rows when a source message or attachment disappears. Full
+reconciliation tombstones missing rows, but the current incremental stream does
+not report parent-scoped removals. That cleanup requires a separate complete-parent
+snapshot contract; it must not infer deletion from a partial or failed fetch.
+
+GitHub account verification parses the native viewer response, then checks the
+explicit repository list in one GraphQL request. Generated repository aliases
+map to typed [repository metadata](https://docs.github.com/en/graphql/reference/repos);
+each returned identity must match its configured repository. Sync projects these
+fields into the source payload for mapping, not directly into a canonical entity.
+Comment sync batches distinct issue numbers through `issueOrPullRequest` and
+validates the [Issue/PullRequest union](https://docs.github.com/en/graphql/reference/issues)
+before excluding pull-request comments. Missing classifications fail the page;
+they are not treated as issues. GraphQL errors are classified before consuming
+partial data. Unknown error types retain the generic failure outcome.
+REST records and mutation bodies also use native models; update serialization
+distinguishes omitted fields from explicit clears. Comment identity is classified
+before validating retained bodies, so an excluded PR comment cannot fail the issue
+page. Versioned cursor and webhook-identity models preserve valid saved encodings.
+
 Jira resolves the configured site from Atlassian's
 [accessible resources](https://developer.atlassian.com/cloud/jira/platform/oauth-2-3lo-apps/#3-1-get-the-cloudid-for-your-site)
 before gateway requests; zero or multiple exact origin matches refuse access.
@@ -339,6 +384,21 @@ Omitted update fields remain absent; explicit nulls retain their clearing meanin
 Custom mapped fields stay validated JSON at the adapter boundary. Generated
 plain-text ADF has a narrow typed contract; it does not constrain arbitrary ADF
 received from Jira. Transition selection still checks reachability before writing.
+
+Jira's saved sync positions use versioned, vendor-owned models. Current issue,
+comment, relation, Sprint and directory cursors retain their stored field names
+and versions. Supported legacy positions keep their existing restart behavior;
+obsolete board positions are not treated as issue-search positions. Invalid
+timestamps, non-text continuation tokens and non-integer versions fail as
+`VENDOR_CURSOR_INVALID`, rather than silently discarding a watermark or token.
+Supplied timezone-aware timestamps retain their offset on encoding; saved JSON
+timestamps normalize to UTC on decoding. This needs no database migration.
+
+Canonical writable issue fields belong to the ticketing contract; Jira-native
+field names and request models belong to its adapter. Configured custom-field
+names remain dynamic. Nested native request validation failures become
+`VENDOR_COMMAND_INVALID` before any HTTP request, just like final request
+validation failures.
 
 An organization configures a source in this order:
 

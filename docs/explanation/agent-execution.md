@@ -75,6 +75,25 @@ primary Agent's voice configuration still applies throughout swarm handoffs.
 9. Ephemeral events project live changes to connected widget sessions.
 10. The run reaches a terminal outcome or yields on durable input/approval.
 
+Conversation and decomposed-voice lifecycle callbacks receive the framework's
+`RunContext`; the realtime hook path retains its platform `HookContext`. That
+mutable Pydantic carrier preserves live conversation/message identity and keeps
+their content out of snapshots. The shared lifecycle emitter constructs explicit
+event fields from a typed request/run correlation value. One request retains its
+run ID, timestamp and increasing sequence; a new request resets the sequence.
+Only contact identities and correlation metadata reach the widget event, not the
+conversation body. These types do not change hook failure isolation or resource
+cleanup ownership.
+
+Curated execution keeps its result content and metadata in typed platform
+projections until `PlatformToolExecutor` serializes them for the framework.
+Success, authorization requests and errors have explicit content kinds; the
+validator refuses contradictory error flags, codes or metadata. Only vendor
+result data remains dynamic finite JSON. Connection and approval actions use an
+internal enum while preserving the existing wire predicates consumed by clients.
+Result validation never retries the handler: an invalid result can follow an
+already accepted external mutation.
+
 Message, scheduled and objective filing results use frozen Pydantic values with
 an exact run ID and an intrinsic created-versus-existing predicate. The message
 filing result retains the live validated message for its caller, but excludes

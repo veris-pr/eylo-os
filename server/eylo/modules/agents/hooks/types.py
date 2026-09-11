@@ -7,6 +7,8 @@ import time
 from typing import Optional
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, PrivateAttr
+
 from eylo.common.contracts.llm_response import LLMResponse
 from eylo.modules.agents.schemas.indb import AgentInDb
 from eylo.modules.conversations.schemas.conversations import ConversationContext
@@ -18,28 +20,20 @@ logger = logging.getLogger(__name__)
 PRE_LOOP_ITERATION = -1
 
 
-class HookContext:
-    """Read-only context available to all hook callbacks.
+class HookContext(BaseModel):
+    """Loop-owned mutable hook state, retaining live conversation/message identity.
 
-    Provides information about the current state of the agent run
-    without giving hooks mutable access to the loop's internals.
-
-    Attributes:
-        conversation_context: Full conversation state (messages, participants, agent, tools).
-        request_id: UUID of the current user request being processed.
-        user_message: The user message that triggered this agent run.
-        iteration: Current ReAct loop iteration (1-based). -1 before loop starts.
-        elapsed_seconds: Wall-clock seconds since the run started.
-
+    Hooks observe this state; only the loop updates the context and iteration.
+    Snapshots contain correlation metadata, never conversation or message content.
     """
 
-    __slots__ = (
-        "conversation_context",
-        "request_id",
-        "user_message",
-        "_start_time",
-        "iteration",
-    )
+    model_config = ConfigDict(extra="forbid")
+
+    conversation_context: ConversationContext = Field(exclude=True, repr=False)
+    request_id: UUID
+    user_message: MessageInDb = Field(exclude=True, repr=False)
+    iteration: int = PRE_LOOP_ITERATION
+    _start_time: float = PrivateAttr(default_factory=time.monotonic)
 
     def __init__(
         self,
@@ -47,11 +41,11 @@ class HookContext:
         request_id: UUID,
         user_message: MessageInDb,
     ) -> None:
-        self.conversation_context = conversation_context
-        self.request_id = request_id
-        self.user_message = user_message
-        self._start_time = time.monotonic()
-        self.iteration: int = PRE_LOOP_ITERATION
+        super().__init__(
+            conversation_context=conversation_context,
+            request_id=request_id,
+            user_message=user_message,
+        )
 
     @property
     def elapsed_seconds(self) -> float:
@@ -158,7 +152,7 @@ class RunHooks:
         context: HookContext,
         agent: AgentInDb,
         tool: ToolInDb,
-        tool_input: dict,
+        tool_input: dict[str, JsonValue],
         tool_use_message: MessageInDb | None = None,
     ) -> None:
         """Called immediately before a tool is invoked.
@@ -339,7 +333,7 @@ class AgentHooks:
         context: HookContext,
         agent: AgentInDb,
         tool: ToolInDb,
-        tool_input: dict,
+        tool_input: dict[str, JsonValue],
         tool_use_message: MessageInDb | None = None,
     ) -> None:
         """Called immediately before this agent invokes a tool.

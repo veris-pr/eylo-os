@@ -10,9 +10,9 @@ are superseded by the newest deployment record.
 | Gate | Current evidence | Remaining acceptance |
 | --- | --- | --- |
 | Static backend contracts | Lint passes; Pyrefly has zero errors and two existing redundant-cast warnings | Static success does not prove native input shapes |
-| SOR vendor wire coverage | HubSpot, Salesforce and Confluence wire contracts deployed; Confluence native list/exact reads and fresh seven-stream sync passed; Salesforce passed 164 function assertions | Salesforce is not configured in QA; remaining registered vendor boundaries still need operation-level coverage |
+| SOR vendor wire coverage | Latest Jira, GitHub, Intercom and Notion operation contracts deployed on `6f6dec0fd1f6`, in addition to earlier vendor batches; native Intercom reconciliation completed all seven streams without rejects | Final operation inventory remains open. Intercom has four pending relationships and a parent-child removal reconciliation limitation; no native attachment data was available |
 | App-webhook ingress contracts | Four-vendor batch deployed on image `84b315c2fb99`; 597 contract checks, 28 substituted ingress scenarios and Linear signature/routing checks passed inside the image | Fresh native deliveries remain open; HubSpot raw payloads expired, no Intercom/Notion receipts in QA |
-| Managed webhook contracts | Management and inbound models deployed on image `337cfa41cd61`; 559 inbound adapter comparisons and 24 substituted ingress scenarios passed locally and inside the image | Fresh native deliveries and registration remain open. Post-deployment API confirms Jira/Zendesk require reauthorization; GitHub SOR is not configured |
+| Managed webhook contracts | Management and inbound models deployed; 559 inbound adapter comparisons and 24 substituted ingress scenarios passed locally and inside the image | Fresh native deliveries and registration remain open. Latest API check shows Jira active, Zendesk still requires reauthorization; GitHub SOR is not configured |
 | Webhook receipt codec | Ingestion and replay share the stored-signal model; deployed with 44 compatibility comparisons and read-only validation of all 89 available QA receipts | Real concurrent inserts and worker crash/replay remain separate acceptance gates |
 | CLI typing | CLI-owned Pydantic contracts, independent environment synchronized; explicit CLI typing passes; 102 function checks, 332 live-catalog action parity checks and authenticated collection reads passed | Not proof that every API action or vendor execution succeeds |
 | Stored provider compatibility | 25 saved configs inspected; 13 ready voice receipts restored; native Speechmatics connection/cleanup passed | Native conversations across configured providers |
@@ -22,7 +22,330 @@ are superseded by the newest deployment record.
 | Durable execution | Native schedule, direct recall, input wait/resume, waiting-run cancellation and controlled worker restart while waiting passed; persisted tool-result readback verified | In-flight cancellation, forced worker crash, concurrent execution and broader tool-bearing replay |
 | Direct-objective memory | Fixed conversation-only context assumption; native recall returns four agent-owned facts and releases capacity | Direct-objective writes need run-based provenance; current mutation contract requires a real conversation/message |
 | Sandbox | Typed workspace/checkpoint/tool paths validated with substituted dependencies | Native configured sandbox execution/cleanup |
-| Final handoff | Checkout advanced independently to `a69f2880`; earlier Freshdesk/Zendesk and Jira directory/comment work is included. Jira issue/link/Sprint and remaining mutation contracts are locally verified, uncommitted and not deployed. No migration or provider reset was performed by this run | Complete remaining contracts, native QA and the full acceptance matrix |
+| Final handoff | Four app services run image `755a03bf3e35`, including Memory result/extraction/publication contracts and earlier changes. Native recall/completion and capacity release passed on this image. Latest source work remains uncommitted. DB, Redis, provider configs and Alembic `eylo0012` were preserved | Complete remaining contracts, native QA and the full acceptance matrix |
+
+### Memory result, extraction and publication contracts — 2026-09-11, deployed
+
+The four Memory system tools now build explicit result models before their
+existing JSON return boundary. Twenty-one baseline response comparisons pass,
+including omitted failure ranking, explicit nulls, all operation kinds and
+private-field exclusion. Cancellation and unexpected failures propagate; eight
+inconsistent result constructions are rejected. Tool inputs and LLM-visible
+docstrings are unchanged. A missing `updated_at` in the temporary conflict fixture
+was corrected against the real schema before any application branch ran.
+
+Extraction evidence now has typed fact/message fields, and its planning/parser
+inputs use the existing `MemoryResult` rather than `Any`. Fifty-five prompt/parser
+comparisons preserve byte-level prompt content and refusal behavior. The actual
+pgvector planning function retains exact source/target IDs, its bounded search
+and single completion call, and cancellation propagation. No DB/vendor calls
+were made by these function probes.
+
+Nine previously untyped Memory function signatures now use the concrete owned
+ORM jobs/index, `MemoryOutcomeCounts`, `MessageInDb` and native `AsyncSession`.
+The integrity SQL expression also declares its boolean result type. Twenty-nine
+real-ORM event projections match baseline; all function bodies in those five
+files remain unchanged. Event-registration failure remains non-fatal, and session
+identity is retained. Full backend lint and Pyrefly pass (zero errors, two existing
+redundant-cast warnings). The earlier application/provenance probe passes again.
+Deployed to all four app services on image
+`755a03bf3e35facd17f9950a75bb0456c16dea48c870f002834aba85cf58fc76`.
+The probes pass inside that image as well. Native run
+`b9e95e44-c006-4b72-9da3-3e444b50f5bd` completed/achieved at
+`2026-09-11T17:22:24.696232Z`; persisted replay records successful `memory_recall`
+(four Agent-level memories) and `complete_objective`, with zero pending calls.
+Its reservation was released. The run was read-only: native Memory mutation and
+browser QA remain open. Exact environment parity passed before refresh;
+PostgreSQL/Redis were not recreated and Alembic remains `eylo0012`.
+
+The secondary whole-backend signature inventory still finds missing annotations
+outside Memory, concentrated in tool/Agent hooks, Knowledge publishers, voice and
+conversation orchestration, DB/session constructors and scheduler/deletion helpers.
+Follow their existing producer/consumer flows next. This inventory is not an
+operation-coverage proof; dynamic vendor/customer JSON and SDK-owned types are not
+automatically defects. Direct-objective Memory writes and Intercom child-removal
+reconciliation are functional gaps, not typing-only substitutions.
+
+### Memory application context boundary — 2026-09-11, deployed
+
+Memory scope derivation, deliberate mutation/provenance helpers and formation now
+use the existing `ConversationContext`, `AgentInDb`, `ParticipantInDb` and
+`AsyncSession` types. Shared binding readers accept `PlatformExecutionContext`.
+Removed duck-typed attribute lookups and redundant conversions of already-typed
+UUIDs/revisions. The four system-tool result boundaries now declare `JsonValue`
+instead of `Any`; agent-facing payloads and tool documentation are unchanged.
+
+Conversation-only scope derivation now refuses a direct execution context rather
+than allowing its run ID to become a conversation owner. This is a boundary
+refusal, not implementation of run-based memory-write provenance. Direct recall
+continues to derive only the executing Agent's scope.
+
+A function regression also reproduced a pre-existing provenance mismatch:
+`_latest_user_source` accepted a message from another conversation if its sender
+matched a current participant. It now rejects that inconsistent conversation ID
+before provider access. No externally exploitable tenant path was established.
+
+The real-model function probe compares baseline and current scope/mutation calls
+for all three levels, 21 invalid scope cases, exact provider bindings and source
+provenance, nine direct-write refusals before effects, and formation's queue,
+skip and non-fatal failure paths. The foreign-message regression failed before
+the guard and passes after it. Providers, DB and event sinks were substituted;
+native write acceptance remains open.
+
+Focused review, in repository order: domain ownership stays in Memory and
+cross-domain orchestration stays in the pipeline; no socket-to-module imports or
+framework dependencies were added. Source-to-provider arguments and event outputs
+retain baseline parity for valid contexts. The slice follows the existing typed
+context plan without adding run provenance or changing storage. Direct attribute
+access makes required fields explicit; no extra DB queries, provider calls,
+transactions or retries were added.
+
+Deployed to all four app services on image
+`867b77ca1cdf2a59d521beabb0fc215ed76605790fcab4af3503c916791d706d`.
+API health and unchanged Alembic `eylo0012` confirmed. Exact environment parity
+passed before refresh; PostgreSQL and Redis were not recreated. The Memory,
+Intercom, Notion and curated-result probes also pass inside this image.
+
+Native run `82292f56-2362-4704-b513-ea452a275a84` used the existing published QA
+Memory agent (revision 1). It completed/achieved at
+`2026-09-11T16:49:06.945557Z` and released its reservation. Typed durable replay
+shows successful `memory_recall` (four Agent-level facts) and `complete_objective`,
+with zero pending tool calls. No memory content or external service was mutated.
+This verifies native recall, not conversation-write or background-write support.
+
+### Current deployment and remaining return contracts — 2026-09-11
+
+At this earlier checkpoint, API, durable worker, ordinary worker and scheduler ran
+image `6f6dec0fd1f6bfc4a24919015cfcee52c2f7be25eb688c263fedd72100f90d94`.
+The Memory checkpoint above records its successor.
+The Intercom (944 checks), Notion operation and curated-result execution probes
+passed inside this image using recorded transports; these are not live vendor
+mutation proofs.
+
+Native Intercom reconciliation `01a09143-d7c3-7ef2-99c6-c57162dba371` completed all
+seven streams on their first attempt, with zero rejected records. Public API
+readback contains two tickets, four messages, five customers and two agents.
+No attachments are present, so native attachment identity acceptance is still
+open. Relationship health reports four pending and six resolved relationships.
+The ticket audit exposes all four messages; two have resolved agent names and
+two customer-authored messages have no resolved name. All five customer rows
+also have empty names. This does not yet establish a mapping defect or explain
+the four pending relationships; do not fabricate names or mark that gate passed.
+
+The 15 remaining `dict[str, object]` return annotations in the Shopify, Notion and
+Stripe curated handlers are now `dict[str, JsonValue]`. Their existing typed
+result models still serialize at the same JSON boundary. Function AST comparison
+against `a2559f80` proves no body/decorator/input changes, and the loaded registry
+retains all 29 vendors, 148 tools and callable identities. The actual curated
+execution/native-parser/framework-readback probe passes again. Backend Ruff and
+Pyrefly pass (zero errors, two existing redundant-cast warnings).
+
+These annotation-only edits are included in the newer Memory deployment above.
+Browser control again timed out before returning
+a usable surface, so widget/console visual acceptance remains unverified.
+
+### Curated result handoff and coverage reconciliation — 2026-09-11, local
+
+The current registry still contains 29 vendors and 148 tool declarations. The
+operation-oriented AST inventory locates native parser/transport seams in every
+vendor family; existing local models must not be treated as missing and rewritten.
+This is a location inventory, not proof of every native operation. Fifteen return
+annotations in the Shopify, Notion and Stripe curated tools used
+`dict[str, object]`; the newer checkpoint above records their verified narrowing. The
+heterogeneous callable registry still deliberately erases types only between its
+registered input validator and returned-JSON validator, as recorded in its earlier
+checkpoint. There is no new runtime catalog or capability restriction.
+
+The shared result-to-agent handoff did still erase known envelope fields into
+dictionaries. `integrations_v2/results.py` now owns frozen content and metadata
+models, content-kind/action/error enums, and cross-field consistency validation.
+`execute_curated_tool` constructs those values; `PlatformToolExecutor` alone
+serializes their existing JSON shape, including omission of an absent vendor.
+The pre-dispatch durable-context refusal retains its minimal metadata. Credential
+resolution and its consumer share the domain-owned authorization error enum.
+Vendor error codes and result data stay at their existing extensible boundaries.
+
+The actual execution function, actual Calendly account parser over recorded HTTP,
+typed conversation/grant/context values and framework JSON readback pass baseline
+comparison against `a2559f80`. Checks include success, input/policy/auth refusals,
+missing bindings, invalid native responses, invalid invocation stamps, finite-JSON
+validation and malformed envelope rejection. An invalid mutation result invokes
+the handler once, never retries it. Auth event routing is unchanged. The probe
+initially compared framework metadata objects to dictionaries; comparison now
+uses the framework's stored JSON representation. No DB/vendor effects were used.
+
+Current static checks pass (zero Pyrefly errors, two existing redundant-cast
+warnings; backend Ruff passes). This handoff and the GitHub/Intercom/Notion batch
+are deployed in the newer checkpoint above; live acceptance is only claimed for
+the paths explicitly recorded there. The full goal remains open.
+
+### Notion operation contracts — 2026-09-11, local
+
+All six streams and four mutation tools now consume vendor-owned models in
+`notion_wire.py`: workspace verification, search/list envelopes, page metadata,
+Markdown, recursive blocks, properties and property-item pages, files, users,
+create/title/content/append/comment requests and mutation acknowledgements.
+Fixed choices use native enums; custom property names and unknown source fields
+remain finite JSON at the deliberate snapshot/mapping boundary. Raw snapshots,
+explicit nulls/omissions and document hashes are preserved. Search traversal uses
+an identity-only page contract when content is fetched separately.
+
+Member/tree cursor envelopes now validate versions, stream binding, positions,
+IDs and traversal limits. Valid version-1 encodings remain byte-compatible.
+Boolean/float versions are rejected rather than passing integer equality. HTTP
+methods and native page/scan limits use their owning enums/constants.
+
+The actual adapter over recorded HTTP passes all selected stream/tool paths,
+full snapshot/hash comparisons against `a2559f80`, property pagination, nested
+traversal and resume, file metadata, null/omit behavior, source conflicts, HTTP
+failures, cancellation and malformed-cursor checks. The milestone review covered
+ownership, architectural fit, data flow, scope alignment, readability, security
+and bounded I/O. It reproduced and fixed two refactor defects: full-page
+validation wrongly applied to ID-only scans, and a depth-limit constraint leaking
+`ValidationError` during child-frame construction. Both regression paths pass.
+No new HTTP fan-out, dependencies, schemas, scopes or DB changes were introduced.
+Full backend lint, formatting and documentation validation pass. Pyrefly reports
+zero errors and the two existing redundant-cast warnings in `agent_reads.py`.
+
+Local contract coverage is complete for this operation set, not platform-wide
+acceptance. This batch is not deployed and has no native Notion QA. Next: reconcile
+remaining provider/integration operation coverage, then deploy and finish
+native/runtime/browser acceptance. Intercom's identity checkpoint is recorded below.
+
+### Intercom operation contracts — 2026-09-11, local
+
+Vendor-owned `intercom_wire.py` now validates discovery, workspace verification,
+contacts, conversations, directories, search requests/pages, mutation requests
+and acknowledgements. All seven registered streams and eight mutation tools use
+these models. Parent conversation/message identities live in explicit adapter
+values; native fields are not modified to carry internal relationship keys.
+The existing source-body snapshot is preserved at its deliberate JSON boundary.
+Custom fields remain mapping-owned JSON; unknown native state/type strings retain
+the existing fallback rather than introducing a new product policy.
+
+Version-1 search and offset cursors are typed, including stream binding, required
+fields, nonnegative offsets and nondecreasing watermarks. Valid saved encodings
+are unchanged; boolean/float versions no longer pass integer equality checks.
+Update serialization preserves explicit nulls versus omitted fields. Tag actions,
+native actors/message types and generated search vocabulary use enums. HTTP/page
+limits are named at their owner. Superseded dictionary parsing helpers were removed.
+
+894 recorded-transport function checks pass against immutable `a2559f80`: all
+streams/tools, exact reads, full source-payload parity, attachment-only text,
+expansion continuation, the 500-part fence, custom mappings, clear/omit behavior,
+HTTP failures, cancellation and saved cursors. The probe initially compared an
+error enum to its uppercase name; the assertion now uses the actual enum member.
+Backend lint passes; Pyrefly reports zero errors and two pre-existing cast warnings.
+No native vendor/DB effects or deployment occurred in this checkpoint.
+
+Milestone review covered DDD ownership, architectural fit, data flow, plan
+alignment, readability, trust boundaries and bounded requests. It also exposed
+a pre-existing defect: the documented v2.16
+[Part attachment](https://developers.intercom.com/docs/references/rest-api/api.intercom.io/models/part_attachment)
+has no `id`, while the baseline adapter requires one to construct canonical
+attachment identity. The opening source can also have a null ID. Both documented
+shapes failed the baseline before the identity remediation.
+
+The remediation preserves native IDs and uses typed, source-scoped snapshot
+identities only when absent: the conversation's singleton opening source and
+attachment position within its message. No vendor ID is fabricated inside a raw
+snapshot. Signed URL rotation preserves slot identity; duplicate filenames remain
+distinct. These slots are not permanent file identities when contents reorder.
+The extended adapter probe now passes 944 checks, including native ID-less shapes,
+continuation, exact fetch, missing-slot refusal, source-snapshot preservation,
+canonical normalization/validation and shared relationship-intent projection.
+The latter import needed dummy process-local settings; no DB or vendor was used.
+
+Separate reconciliation limitation: these child streams use `UPDATED_AT`, while
+missing-row tombstoning in `SorSyncWorkflow` requires `FULL_RECONCILE`. Removal of
+a previously projected child can therefore leave a stale row. Correcting that
+requires a complete-parent snapshot/removal contract, not deletion inferred from
+an incomplete fetch. This identity change does not claim to fix that behavior.
+
+Notion operation contracts are now covered by the newer local checkpoint above.
+Remaining provider/integration inventory, Intercom child-removal reconciliation,
+native QA, memory-write provenance, runtime recovery and browser gates remain open. This does not replace
+the full platform-wide objective with completed local checks.
+
+### GitHub operation contracts — 2026-09-11, local
+
+Native viewer, repository metadata, generated GraphQL requests, error envelopes
+and issue/PR classifications now use vendor-owned models in `github_wire.py`.
+Only generated alias keys remain dynamic. Repository allowlisting, configured
+identity spelling, selected fields, batched HTTP requests, pagination and the
+issue-only comment filter are unchanged. GraphQL errors are classified before
+operation data, including partial results; unknown error types retain the generic
+failure outcome. Malformed known native field types are refused explicitly.
+
+During implementation, typing caught an attempted canonical `TicketingProjectPayload`
+at the source-record boundary. That was corrected: typed native repository data
+becomes source fields for the configured mapping, not an already-normalized
+canonical entity. No domain boundary or public API was weakened to pass typing.
+
+REST records and list queries, all seven mutation tools, version-2 sync cursors
+and version-1 saved webhook identities now also have explicit contracts. Mutation
+serialization preserves omitted fields versus explicit null/empty clears. Source
+mapping remains the normalization boundary; wire models do not own domain policy.
+
+The recorded-HTTP probes against immutable `a2559f80` pass: 216 GraphQL checks,
+all registered REST record kinds, seven mutation tools, cursor compatibility,
+malformed input, error outcomes and cancellation. A probe caught full comment
+validation happening before PR exclusion; identity is now classified first and
+only retained issue comments require valid bodies. Query comparisons ignore
+parameter order, not names, values or duplicates. An existing limitation remains:
+labels containing an encoded slash are refused by the shared HTTP path guard in
+both the baseline and current adapter.
+
+No native vendor/DB effects or deployment occurred. GitHub SOR is not configured
+in the existing QA organization. Native acceptance remains open; the next
+implementation work is Intercom and Notion, followed by the final operation
+inventory and runtime/browser acceptance gates.
+
+### Jira saved cursors and mapping vocabulary — 2026-09-11, deployed
+
+Current and supported legacy cursor envelopes now validate as vendor-owned
+Pydantic models. Stored versions, stream binding, continuation positions,
+comment-range fences and legacy restart semantics remain unchanged. Invalid
+timestamp values, non-text tokens and boolean/float versions now fail explicitly
+instead of being treated as missing values or integer versions. Canonical writable
+field names live in `TicketingIssueWriteField`; Jira-native names live in
+`JiraIssueWriteField`. Discovered custom mappings remain validated dynamic JSON.
+
+The focused milestone review checked DDD ownership, architecture fit, read/write
+and cursor data flow, plan alignment, and readability. It found and resolved:
+
+- A nullable token constraint initially applied length validation to `None`.
+  The length constraint now belongs only to the string branch.
+- Cursor validation normalized supplied Python timestamps during encoding,
+  changing their offset spelling. Encoding now preserves an aware timestamp;
+  decoding stored strings still normalizes to UTC. A baseline comparison failed
+  before the fix and passes afterward.
+- Constructing nested ID request models moved validation ahead of the final
+  error wrapper. Oversized project/parent IDs escaped as `ValidationError`.
+  The translation boundary now returns `VENDOR_COMMAND_INVALID` before HTTP.
+  The actual adapter command path reproduced the failure before the fix.
+
+Verification: 558 cursor checks against `a2559f80` and 1,421 recorded-HTTP adapter
+checks passed, covering saved formats, continuation, malformed input, requests,
+results and cancellation. Full backend lint passes; typing has zero errors and
+two existing redundant-cast warnings. Documentation and formatting checks pass.
+These are contract checks, not native vendor acceptance.
+
+Image `sha256:fafaa86adb01e8378b381d8024678b36db9af139d839b25670262c54a3963713`
+now runs the API, durable worker, ordinary worker and scheduler. Both complete
+Jira probes also pass inside that image. Environment values were compared in
+memory before recreation; PostgreSQL and Redis container identities remain
+`615b91925226` and `c07c38389f13`. The API is healthy and Alembic remains
+`eylo0012 (head)`. No source/provider data was reset and no vendor write was made.
+Authenticated public API checks still show Jira/Zendesk `REAUTH_REQUIRED`,
+Confluence/HubSpot/Linear `ACTIVE`, and the published background QA agent.
+This supersedes older deployment labels below, not their acceptance limits.
+
+Next: GitHub, Intercom and Notion operation contracts; resume native Jira and
+Zendesk acceptance when the existing sources are reauthorized. Final provider/integration
+inventory, direct-objective memory-write provenance and broad runtime/browser
+acceptance remain open. Do not reopen completed local Jira cursor work solely
+because the older historical checkpoints below call it pending.
 
 ### Jira Sprint and mutation contracts — 2026-09-11, local
 

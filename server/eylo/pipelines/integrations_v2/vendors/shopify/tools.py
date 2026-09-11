@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import NoReturn
 
+from pydantic import JsonValue
+
 from eylo.modules.integrations_v2.domain.enums import ToolEffect
 
 from ...contracts import VendorToolContext, VendorToolError
@@ -82,7 +84,7 @@ from .write_contracts import (
 )
 async def find_customer(
     payload: FindCustomerInput, ctx: VendorToolContext
-) -> dict[str, object]:
+) -> dict[str, JsonValue]:
     terms = []
     if payload.email is not None:
         terms.append(f"{SearchField.EMAIL}:{search_phrase(payload.email)}")
@@ -135,7 +137,7 @@ async def find_customer(
 )
 async def list_orders(
     payload: ListOrdersInput, ctx: VendorToolContext
-) -> dict[str, object]:
+) -> dict[str, JsonValue]:
     identity = (
         customer_id(payload.customer_id) if payload.customer_id is not None else None
     )
@@ -235,7 +237,7 @@ async def list_orders(
 )
 async def get_order(
     payload: GetOrderInput, ctx: VendorToolContext
-) -> dict[str, object]:
+) -> dict[str, JsonValue]:
     identity = order_id(payload.order_id)
     body = GraphQLRequest(
         query=ORDER_DETAIL,
@@ -325,7 +327,7 @@ async def get_order(
 )
 async def check_product_stock(
     payload: CheckProductStockInput, ctx: VendorToolContext
-) -> dict[str, object]:
+) -> dict[str, JsonValue]:
     if payload.product_id is not None:
         identity = product_id(payload.product_id)
         body = GraphQLRequest(
@@ -463,7 +465,7 @@ def _stock_view(product: Product, currency: str, previous: str | None) -> Produc
 )
 async def tag_order(
     payload: TagOrderInput, ctx: VendorToolContext
-) -> dict[str, object]:
+) -> dict[str, JsonValue]:
     identity = order_id(payload.order_id)
     requested_tags = list(dict.fromkeys(payload.add_tags or []))
     body = GraphQLRequest(

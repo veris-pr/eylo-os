@@ -8,8 +8,15 @@ response without matching on message text.
 from __future__ import annotations
 
 import re
+from enum import StrEnum
 
 _ERROR_CODE = re.compile(r"^[a-z][a-z0-9_.-]*$")
+
+
+class IntegrationErrorCode(StrEnum):
+    """Shared domain outcomes on which execution orchestration branches."""
+
+    AUTH_REQUIRED = "auth_required"
 
 
 class IntegrationsV2Error(Exception):
@@ -64,6 +71,7 @@ __all__ = [
     "CredentialUnavailableError",
     "IntegrationAlreadyInstalledError",
     "IntegrationsV2Error",
+    "IntegrationErrorCode",
     "ToolApprovalRequiredError",
     "ToolBindingUnavailableError",
     "ToolExecutionBlockedError",

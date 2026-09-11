@@ -6,6 +6,7 @@ import logging
 
 from eylo.modules.agents.hooks.types import HookContext, RunHooks
 from eylo.modules.agents.schemas.indb import AgentInDb
+from eylo.modules.conversations.schemas.messages import MessageInDb
 from eylo.pipelines.memory.formation import enqueue_from_context
 
 logger = logging.getLogger(__name__)
@@ -25,7 +26,7 @@ class MemoryHooks(RunHooks):
     """
 
     async def on_agent_end(
-        self, context: HookContext, agent: AgentInDb, output
+        self, context: HookContext, agent: AgentInDb, output: MessageInDb
     ) -> None:
         """Queue durable memory formation without extracting inside the hook."""
         messages = context.conversation_context.filter_messages()

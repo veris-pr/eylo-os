@@ -21,6 +21,7 @@ from eylo.modules.connections.schemas.external import ExternalConnectionInDb
 from eylo.modules.integrations_v2.domain.enums import VendorAuthKind
 from eylo.modules.integrations_v2.domain.errors import (
     CredentialUnavailableError,
+    IntegrationErrorCode,
     VendorNotFoundError,
 )
 from eylo.modules.integrations_v2.schemas.indb import ToolExecutionGrant
@@ -109,12 +110,12 @@ async def resolve_vendor_auth(
     )
     if connection is None:
         raise CredentialUnavailableError(
-            "auth_required",
+            IntegrationErrorCode.AUTH_REQUIRED,
             f"No active connection authorizes '{grant.vendor}' for this caller.",
         )
     if _expires_within(connection.credentials_expires_at, request_budget_seconds):
         raise CredentialUnavailableError(
-            "auth_required",
+            IntegrationErrorCode.AUTH_REQUIRED,
             f"The '{grant.vendor}' credential expires inside the request budget.",
         )
     if (
@@ -124,7 +125,7 @@ async def resolve_vendor_auth(
         or connection.instance_origin != grant.instance_url
     ):
         raise CredentialUnavailableError(
-            "auth_required",
+            IntegrationErrorCode.AUTH_REQUIRED,
             f"The stored '{grant.vendor}' authorization no longer matches its install.",
         )
     granted_scopes = set(connection.granted_scopes)
@@ -134,12 +135,12 @@ async def resolve_vendor_auth(
         granted_scopes
     ):
         raise CredentialUnavailableError(
-            "auth_required",
+            IntegrationErrorCode.AUTH_REQUIRED,
             f"The '{grant.vendor}' authorization requires additional scopes.",
         )
     if connection.credentials is None:
         raise CredentialUnavailableError(
-            "auth_required",
+            IntegrationErrorCode.AUTH_REQUIRED,
             f"The '{grant.vendor}' credential is unavailable.",
         )
     credentials = decrypt_connection_credentials(
@@ -160,7 +161,8 @@ async def resolve_vendor_auth(
             )
         except CuratedOAuthError:
             raise CredentialUnavailableError(
-                "auth_required", "Reconnect the configured Atlassian site."
+                IntegrationErrorCode.AUTH_REQUIRED,
+                "Reconnect the configured Atlassian site.",
             ) from None
         base_url = binding.gateway_url(_path)
         origin, _path = parse_https_target(base_url)

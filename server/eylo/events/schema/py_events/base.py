@@ -15,7 +15,7 @@ from eylo.modules.conversations.schemas.participants import ParticipantInDb
 class BaseEvent(BaseModel):
     @field_validator("*", mode="before")
     @classmethod
-    def normalize_uuid_fields(cls, value):
+    def normalize_uuid_fields(cls, value: object) -> object:
         return normalize_uuid_like(value)
 
 

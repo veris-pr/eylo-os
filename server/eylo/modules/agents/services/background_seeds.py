@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.modules.agents.implementations import BACKGROUND_IMPLEMENTATIONS
 from eylo.modules.agents.models import AgentKind
+
+if TYPE_CHECKING:
+    from eylo.modules.agents.schemas.indb import AgentInDb
+    from eylo.modules.agents.services.indb import AgentService
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +23,10 @@ logger = logging.getLogger(__name__)
 # code, which is what `implementation` means, and storing a second copy the
 # runtime ignores would be a config field that does nothing.
 SEEDED_BACKGROUND_AGENTS: dict[str, tuple[str, str]] = {
-    "title_generator": ("Title Generator", BACKGROUND_IMPLEMENTATIONS["title_generator"]),
+    "title_generator": (
+        "Title Generator",
+        BACKGROUND_IMPLEMENTATIONS["title_generator"],
+    ),
     "summary_generator": (
         "Summary Generator",
         BACKGROUND_IMPLEMENTATIONS["summary_generator"],
@@ -66,6 +73,8 @@ async def seed_background_agents(
     return created
 
 
-async def _find_by_slug(service, organization_id: UUID, slug: str):
+async def _find_by_slug(
+    service: AgentService, organization_id: UUID, slug: str
+) -> AgentInDb | None:
     """Idempotency check. `None` is the ordinary answer on a first seed."""
     return await service.get_by_slug(slug=slug, organization_id=organization_id)

@@ -12,6 +12,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from eylo.common.contracts.embedding import EmbeddingSpace
 from eylo.common.database import get_transaction, start_transaction
 from eylo.modules.auth.constants import APP_TAG
 from eylo.modules.auth.schemas import CurrentUserSchema
@@ -228,7 +229,9 @@ async def get_knowledgebase_reindex_status(
     )
 
 
-def _embedding_space_read(space) -> KnowledgeEmbeddingSpaceRead | None:
+def _embedding_space_read(
+    space: EmbeddingSpace | None,
+) -> KnowledgeEmbeddingSpaceRead | None:
     if space is None:
         return None
     return KnowledgeEmbeddingSpaceRead(

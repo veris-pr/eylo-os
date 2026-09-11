@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable
 from typing import Callable, Optional
+
+from pydantic import JsonValue
 
 from eylo.common.contracts.llm_response import LLMResponse
 from eylo.modules.agents.hooks.types import (
@@ -55,7 +58,7 @@ class HookRunner:
             )
             return None
 
-    async def _safe_call(self, hook_name: str, coro) -> None:
+    async def _safe_call(self, hook_name: str, coro: Awaitable[None]) -> None:
         """Call a hook coroutine with error isolation."""
         try:
             await coro
@@ -162,7 +165,7 @@ class HookRunner:
         context: HookContext,
         agent: AgentInDb,
         tool: ToolInDb,
-        tool_input: dict,
+        tool_input: dict[str, JsonValue],
         tool_use_message: MessageInDb | None = None,
     ) -> None:
         for hook in self._run_hooks:

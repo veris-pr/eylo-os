@@ -376,6 +376,18 @@ class JiraNameInput(JiraRequest):
     name: str
 
 
+class JiraIssueWriteField(StrEnum):
+    SUMMARY = "summary"
+    DESCRIPTION = "description"
+    ISSUE_TYPE = "issuetype"
+    PRIORITY = "priority"
+    PROJECT = "project"
+    ESTIMATE = "timeoriginalestimate"
+    LABELS = "labels"
+    PARENT = "parent"
+    DUE_DATE = "duedate"
+
+
 class JiraWriteFields(JiraCustomFields):
     """Omitted fields stay omitted; explicit null clears an existing value."""
 

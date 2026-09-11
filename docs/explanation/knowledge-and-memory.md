@@ -15,6 +15,15 @@ A conversation knowledgebase is created lazily from the conversation ID when
 the Agent permits file uploads. The contact never selects an internal
 destination.
 
+Grant checks and lifecycle publishers consume their owning ORM models. A read
+still evaluates one grant at a time, and conversation grants require the exact
+active conversation. Widget upload receipts expose the canonical ingestion enum
+and safe failure text, never raw provider errors. Corpus screening persists a
+typed summary with at most 50 rejection details and the full skipped count;
+event publication reads a separate count projection so historical detail fields
+cannot break observation. Invalid observation data remains non-fatal to the
+canonical transaction.
+
 ## Memory is experience-owned
 
 Memory stores compact facts learned during use. Ownership is typed:
@@ -48,6 +57,18 @@ agent-tool mutation provenance requires a real conversation and source message;
 supporting writes from non-conversation work needs explicit run provenance rather
 than synthetic conversation records.
 
+The Memory application accepts the platform's typed execution contexts rather
+than duck-typed objects. Conversation scope derivation and formation accept only
+`ConversationContext`; direct recall handles `AgentExecutionContext` explicitly.
+Deliberate writes validate the source message's conversation and participant
+before resolving a provider, so a mismatched message cannot become provenance.
+Provider IDs and revisions come directly from the validated published Agent.
+
+Agent-facing Memory results have explicit projection models. They expose facts,
+levels, scores, conflicts and outcomes without serializing private provenance or
+provider metadata. JSON conversion happens at the system-tool return boundary;
+unavailable recall remains distinct from a successful empty result.
+
 ### Model and embedding boundaries
 
 Formation, reconciliation, and provider verification share a keyword-only
@@ -58,6 +79,14 @@ Native SDK requests/responses remain inside the LLM adapter. Usage is metered
 before completion text is accepted; unexpected tool calls and empty text are
 refused. Formation/reconciliation parsers separately validate the proposed
 operations and resolve model-supplied indices to platform-owned identities.
+
+Extraction prompt evidence is a typed, socket-owned projection of related
+`MemoryResult` values and `MemoryInputMessage` values. Only local indices, roles
+and content reach the model; persistent identities remain outside the prompt.
+The response parser validates untrusted JSON before producing `MemoryOperation`
+objects with exact source references. Memory lifecycle publishers accept their
+own concrete job/index models, preserving post-commit publication and best-effort
+observation behavior.
 
 Document and query embedders have distinct typed call signatures. The memory
 socket also receives a factory for fresh native async DB sessions. Verification

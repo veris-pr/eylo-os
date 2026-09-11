@@ -46,7 +46,7 @@ class ToolModelSchema(ToolHeaderFields, EyloBaseOrganizationModelSchema):
 
     @field_validator("llm_config", mode="before")
     @classmethod
-    def validate_llm_config(cls, v):
+    def validate_llm_config(cls, v: object) -> object:
         """Convert dict to PlatformTool automatically.
 
         This ensures database values (dicts) are always converted to
@@ -75,7 +75,7 @@ class ToolCreateSchema(ToolDefinitionFields):
 
     @field_validator("llm_config", mode="before")
     @classmethod
-    def validate_llm_config(cls, v):
+    def validate_llm_config(cls, v: object) -> object:
         """Convert dict to PlatformTool automatically."""
         if v is None or v == {}:
             return PlatformTool(
@@ -112,7 +112,7 @@ class ToolUpdateSchema(ToolUpdateFields):
 
     @field_validator("llm_config", mode="before")
     @classmethod
-    def validate_llm_config(cls, v):
+    def validate_llm_config(cls, v: object) -> object:
         """Convert dict to PlatformTool automatically."""
         if v is None or v == {}:
             return None

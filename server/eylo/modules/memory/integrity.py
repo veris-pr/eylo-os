@@ -5,7 +5,9 @@ from __future__ import annotations
 from uuid import UUID
 
 from sqlalchemy import and_, exists, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
+from sqlalchemy.sql.elements import ColumnElement
 
 from eylo.common.contracts.memory_reconciliation import (
     MemoryIntegrityState,
@@ -24,11 +26,11 @@ _PRECEDENCE = {
 class MemoryIntegrityProjector:
     """Project revision-fenced relationships onto current fact revisions."""
 
-    def __init__(self, session) -> None:
+    def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
     @staticmethod
-    def filter_expression(states: list[MemoryIntegrityState]):
+    def filter_expression(states: list[MemoryIntegrityState]) -> ColumnElement[bool]:
         """Return SQL equivalent to the backend integrity precedence."""
         requested = set(states)
         peer = aliased(MemoryModel)

@@ -17,6 +17,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import ValidationError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.contracts.knowledgebase import KnowledgeDocument, KnowledgeScope
 from eylo.common.database import get_transaction, start_transaction
@@ -24,6 +25,7 @@ from eylo.modules.auth.constants import APP_TAG
 from eylo.modules.auth.schemas import CurrentUserSchema
 from eylo.modules.auth.services.auth_service import get_current_user
 from eylo.modules.knowledgebase.jobs import IngestionState
+from eylo.modules.knowledgebase.models import KnowledgebaseModel
 from eylo.modules.knowledgebase.schemas import (
     CorpusImportRead,
     CorpusImportRequest,
@@ -58,10 +60,10 @@ def _authorize(organization_id: UUID, current_user: CurrentUserSchema) -> None:
 
 
 async def _require_knowledgebase(
-    session,
+    session: AsyncSession,
     knowledgebase_id: UUID,
     organization_id: UUID,
-):
+) -> KnowledgebaseModel:
     try:
         return await KnowledgebaseService(session).get(
             knowledgebase_id,

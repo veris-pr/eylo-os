@@ -581,7 +581,9 @@ def _is_permanent(error: Exception) -> bool:
     )
 
 
-def _matches_job_scope(fact: MemoryModel, job) -> bool:
+def _matches_job_scope(
+    fact: MemoryModel, job: MemoryReconciliationJobModel
+) -> bool:
     level = MemoryLevel(job.scope_level)
     owner_id = {
         MemoryLevel.AGENT: fact.agent_id,

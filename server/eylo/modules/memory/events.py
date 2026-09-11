@@ -9,6 +9,7 @@ from eylo.common.contracts.memory import (
     MemoryLevel,
     MemoryOperation,
     MemoryOrigin,
+    MemoryOutcomeCounts,
     MemoryScope,
 )
 from eylo.common.database import register_ephemeral_event_post_txn
@@ -26,6 +27,12 @@ from eylo.events.schema.py_events.memory import (
     MemoryReindexLifecycleEvent,
     MemoryReindexTransition,
     MemoryWorkTransition,
+)
+from eylo.modules.memory.models import (
+    MemoryFormationJobModel,
+    MemoryIndexModel,
+    MemoryReconciliationJobModel,
+    MemoryReindexJobModel,
 )
 
 logger = logging.getLogger(__name__)
@@ -109,10 +116,10 @@ def emit_direct_memory_change(
 
 
 def register_formation_lifecycle(
-    job,
+    job: MemoryFormationJobModel,
     transition: MemoryWorkTransition,
     *,
-    outcomes=None,
+    outcomes: MemoryOutcomeCounts | None = None,
     failure_code: str | None = None,
 ) -> bool:
     def build() -> MemoryFormationLifecycleEvent:
@@ -148,7 +155,7 @@ def register_formation_lifecycle(
 
 
 def register_formation_fact_changes(
-    job,
+    job: MemoryFormationJobModel,
     operations: Sequence[MemoryOperation],
 ) -> bool:
     try:
@@ -174,7 +181,7 @@ def register_formation_fact_changes(
 
 
 def register_reconciliation_lifecycle(
-    job,
+    job: MemoryReconciliationJobModel,
     transition: MemoryReconciliationTransition,
     *,
     failure_code: str | None = None,
@@ -204,7 +211,7 @@ def register_reconciliation_lifecycle(
 
 
 def register_reconciliation_expirations(
-    job,
+    job: MemoryReconciliationJobModel,
     memory_ids: Iterable[UUID],
 ) -> bool:
     try:
@@ -233,10 +240,10 @@ def register_reconciliation_expirations(
 
 
 def register_reindex_lifecycle(
-    index,
+    index: MemoryIndexModel,
     transition: MemoryReindexTransition,
     *,
-    job=None,
+    job: MemoryReindexJobModel | None = None,
     source_embedding_space_id: str | None = None,
     target_embedding_space_id: str | None = None,
     failure_code: str | None = None,

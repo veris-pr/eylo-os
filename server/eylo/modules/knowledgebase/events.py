@@ -21,6 +21,13 @@ from eylo.events.schema.py_events.knowledgebase import (
     KnowledgebaseLifecycleEvent,
     KnowledgebaseTransition,
 )
+from eylo.modules.knowledgebase.corpus import CorpusSkipCount
+from eylo.modules.knowledgebase.jobs import (
+    KnowledgeCorpusImportModel,
+    KnowledgeIngestionJobModel,
+    KnowledgeReindexJobModel,
+)
+from eylo.modules.knowledgebase.reindex import KnowledgeReindexState
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +86,7 @@ def emit_knowledge_observation(event: KnowledgeQueryObservedEvent) -> bool:
 
 
 def register_ingestion_lifecycle(
-    job,
+    job: KnowledgeIngestionJobModel,
     transition: KnowledgeWorkTransition,
     *,
     failure_code: str | None = None,
@@ -102,7 +109,7 @@ def register_ingestion_lifecycle(
 
 
 def register_corpus_lifecycle(
-    record,
+    record: KnowledgeCorpusImportModel,
     transition: KnowledgeWorkTransition,
     *,
     failure_code: str | None = None,
@@ -119,17 +126,17 @@ def register_corpus_lifecycle(
             attempts=record.attempts,
             discovered_count=record.discovered_count,
             queued_count=record.queued_count,
-            skipped_count=int((record.skipped or {}).get("total", 0)),
+            skipped_count=CorpusSkipCount.model_validate(record.skipped or {}).total,
             failure_code=failure_code,
         ),
     )
 
 
 def register_reindex_lifecycle(
-    job,
+    job: KnowledgeReindexJobModel,
     transition: KnowledgeReindexTransition,
     *,
-    index_state,
+    index_state: KnowledgeReindexState,
     failure_code: str | None = None,
 ) -> bool:
     """Project one committed reindex-row transition into a local event."""

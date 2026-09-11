@@ -14,10 +14,9 @@ from __future__ import annotations
 
 import html
 import json
-from typing import Any
 from uuid import UUID
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from eylo.sockets.memory.schemas import (
     MEMORY_MAX_EXCHANGE_BYTES,
@@ -28,7 +27,9 @@ from eylo.sockets.memory.schemas import (
     MemoryEvent,
     MemoryInputMessage,
     MemoryLevel,
+    MemoryMessageRole,
     MemoryOperation,
+    MemoryResult,
     MemorySourceReference,
 )
 
@@ -36,6 +37,31 @@ from eylo.sockets.memory.schemas import (
 # a contradiction, few enough that the prompt stays small on every turn.
 RELATED_LIMIT = 10
 EXTRACTION_PROMPT_REVISION = "memory-extraction-v3"
+
+
+class _ExtractionValue(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, strict=True, hide_input_in_errors=True
+    )
+
+
+class ExtractionFact(_ExtractionValue):
+    id: int
+    content: str = Field(repr=False)
+
+
+class ExtractionMessage(_ExtractionValue):
+    id: int
+    role: MemoryMessageRole
+    content: str = Field(repr=False)
+
+
+class ExtractionEvidence(_ExtractionValue):
+    """Prompt-only local indices; persistent identities never enter model evidence."""
+
+    known_facts: list[ExtractionFact]
+    new_exchange: list[ExtractionMessage]
+
 
 _OPERATION_RULES = """\
 Return ONLY a JSON object of this shape:
@@ -122,7 +148,9 @@ def extraction_system_prompt(level: MemoryLevel) -> str:
 EXTRACTION_SYSTEM_PROMPT = extraction_system_prompt(MemoryLevel.USER)
 
 
-def build_prompt(messages: list[MemoryInputMessage], related: list[Any]) -> str:
+def build_prompt(
+    messages: list[MemoryInputMessage], related: list[MemoryResult]
+) -> str:
     """The user half of the extraction call.
 
     Existing memories are numbered rather than given their UUIDs. mem0 does the
@@ -139,18 +167,20 @@ def build_prompt(messages: list[MemoryInputMessage], related: list[Any]) -> str:
     if len(related) > RELATED_LIMIT:
         raise MemoryError("Related memory count exceeds its limit.")
 
-    payload = {
-        "known_facts": [
-            {"id": index, "content": memory.content}
+    payload = ExtractionEvidence(
+        known_facts=[
+            ExtractionFact(id=index, content=memory.content)
             for index, memory in enumerate(related)
         ],
-        "new_exchange": [
-            {"id": index, "role": message.role.value, "content": message.content}
+        new_exchange=[
+            ExtractionMessage(id=index, role=message.role, content=message.content)
             for index, message in enumerate(messages)
         ],
-    }
+    )
     serialized = html.escape(
-        json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        json.dumps(
+            payload.model_dump(mode="json"), ensure_ascii=False, separators=(",", ":")
+        )
     )
     return (
         '<memory-extraction-data trust="untrusted">'
@@ -185,7 +215,7 @@ def _json_document(raw: str) -> str:
 
 def parse_operations(
     raw: str,
-    related: list[Any],
+    related: list[MemoryResult],
     messages: list[MemoryInputMessage],
 ) -> list[MemoryOperation]:
     """Validate the complete extractor response before returning any operation."""
@@ -194,7 +224,7 @@ def parse_operations(
     if len(raw.encode("utf-8")) > MEMORY_MAX_EXTRACTOR_RESPONSE_BYTES:
         raise MemoryError("Memory extractor response exceeds its byte limit.")
     try:
-        payload = json.loads(_json_document(raw))
+        payload: object = json.loads(_json_document(raw))
     except json.JSONDecodeError:
         raise MemoryError("Memory extractor returned invalid JSON.") from None
     if not isinstance(payload, dict) or set(payload) != {"operations"}:
@@ -263,7 +293,7 @@ def parse_operations(
 
 
 def _source_references(
-    raw_sources: Any,
+    raw_sources: object,
     messages: list[MemoryInputMessage],
 ) -> tuple[MemorySourceReference, ...]:
     if not isinstance(raw_sources, list):

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from pydantic import JsonValue
+
 from eylo.modules.integrations_v2.domain.enums import ToolEffect
 
 from ...contracts import VendorToolContext, VendorToolError
@@ -22,7 +24,7 @@ from .definition import vendor
 )
 async def find_customer(
     payload: s.FindCustomerInput, ctx: VendorToolContext
-) -> dict[str, object]:
+) -> dict[str, JsonValue]:
     page = await _customers(ctx, payload.email, payload.limit, payload.starting_after)
     cursor = s.next_cursor(
         page, [item.id for item in page.data], payload.starting_after, payload.limit
@@ -57,7 +59,7 @@ async def find_customer(
 )
 async def list_payments(
     payload: s.ListPaymentsInput, ctx: VendorToolContext
-) -> dict[str, object]:
+) -> dict[str, JsonValue]:
     customer = await _resolve_customer(payload, ctx)
     if customer.id is None:
         return s.PaymentsView(
@@ -100,7 +102,7 @@ async def list_payments(
 )
 async def list_invoices(
     payload: s.ListInvoicesInput, ctx: VendorToolContext
-) -> dict[str, object]:
+) -> dict[str, JsonValue]:
     customer = await _resolve_customer(payload, ctx)
     if customer.id is None:
         return s.InvoicesView(
@@ -157,7 +159,7 @@ async def list_invoices(
 )
 async def list_subscriptions(
     payload: s.ListSubscriptionsInput, ctx: VendorToolContext
-) -> dict[str, object]:
+) -> dict[str, JsonValue]:
     customer = await _resolve_customer(payload, ctx)
     if customer.id is None:
         return s.SubscriptionsView(
@@ -261,7 +263,7 @@ async def list_subscriptions(
 )
 async def get_payment(
     payload: s.GetPaymentInput, ctx: VendorToolContext
-) -> dict[str, object]:
+) -> dict[str, JsonValue]:
     charge: s.Charge | None
     if payload.payment_id.startswith("pi_"):
         payment = s.parse_response(

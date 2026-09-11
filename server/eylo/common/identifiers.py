@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any
 from uuid import UUID
 
 
-def is_uuid_utils_uuid(value: Any) -> bool:
+def is_uuid_utils_uuid(value: object) -> bool:
     """Return True when value is a uuid_utils UUID instance."""
     return (
         value.__class__.__module__ == "uuid_utils"
@@ -14,7 +13,7 @@ def is_uuid_utils_uuid(value: Any) -> bool:
     )
 
 
-def normalize_uuid_like(value: Any) -> Any:
+def normalize_uuid_like(value: object) -> object:
     """Convert uuid_utils UUID values to stdlib UUID while preserving UUIDv7 value."""
     if isinstance(value, UUID):
         return value
