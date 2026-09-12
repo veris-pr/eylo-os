@@ -2,7 +2,9 @@
 
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, JsonValue
+from pydantic import BaseModel, ConfigDict
+
+from eylo.common.contracts.json_values import JsonObject
 
 
 class _EmbeddingRecord(BaseModel):
@@ -34,7 +36,7 @@ class EmbeddingRecord(_EmbeddingRecord):
     embedding_endpoint: str | None
     embedding_model: str | None
     embedding_dimensions: int | None
-    embedding_semantic_options: dict[str, JsonValue] | None
+    embedding_semantic_options: JsonObject | None
     embedding_space_id: str | None
 
 
@@ -47,7 +49,7 @@ class TargetEmbeddingRecord(_EmbeddingRecord):
     target_embedding_endpoint: str | None
     target_embedding_model: str | None
     target_embedding_dimensions: int | None
-    target_embedding_semantic_options: dict[str, JsonValue] | None
+    target_embedding_semantic_options: JsonObject | None
     target_embedding_space_id: str | None
 
 
@@ -60,5 +62,5 @@ class SourceEmbeddingRecord(_EmbeddingRecord):
     source_embedding_endpoint: str | None
     source_embedding_model: str | None
     source_embedding_dimensions: int | None
-    source_embedding_semantic_options: dict[str, JsonValue] | None
+    source_embedding_semantic_options: JsonObject | None
     source_embedding_space_id: str | None

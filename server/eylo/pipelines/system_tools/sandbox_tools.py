@@ -1,13 +1,20 @@
 """Agent-facing sandbox tools that require a durable Agent run."""
 
-from typing import Any
+from pydantic import JsonValue
 
 from eylo.modules.conversations.schemas.conversations import ConversationContext
+from eylo.pipelines.sandbox.tool_contracts import (
+    SandboxExecToolFailure,
+    SandboxReadToolFailure,
+    SandboxToolFailure,
+    SandboxToolFailureCode,
+)
 
 # Long enough for a real program, short enough that a wedged command does not
 # hold a conversation. An agent needing longer wants an objective, not a turn.
 DEFAULT_TIMEOUT = 60
 MAX_TIMEOUT = 300
+_NOT_EXECUTED_EXIT_CODE = -1
 
 _DURABLE_REQUIRED = (
     "Sandbox tools execute only through a durable AgentRun. Start or offload "
@@ -19,7 +26,7 @@ async def sandbox_exec(
     command: str,
     timeout_seconds: int = DEFAULT_TIMEOUT,
     ctx: ConversationContext | None = None,
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     """Run a shell command in your workspace and get its output.
 
     The workspace is an isolated filesystem that persists between commands, so
@@ -42,20 +49,19 @@ async def sandbox_exec(
 
     """
     del command, timeout_seconds, ctx
-    return {
-        "success": False,
-        "error": "durable_agent_run_required",
-        "exit_code": -1,
-        "stdout": "",
-        "stderr": "",
-        "timed_out": False,
-        "message": _DURABLE_REQUIRED,
-    }
+    return SandboxExecToolFailure(
+        error=SandboxToolFailureCode.DURABLE_RUN_REQUIRED,
+        exit_code=_NOT_EXECUTED_EXIT_CODE,
+        stdout="",
+        stderr="",
+        timed_out=False,
+        message=_DURABLE_REQUIRED,
+    ).model_dump(mode="json")
 
 
 async def sandbox_write(
     path: str, content: str, ctx: ConversationContext | None = None
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     """Write a file into your workspace, creating or replacing it.
 
     Use this to put a program or data where a command can reach it.
@@ -67,16 +73,15 @@ async def sandbox_write(
 
     """
     del path, content, ctx
-    return {
-        "success": False,
-        "error": "durable_agent_run_required",
-        "message": _DURABLE_REQUIRED,
-    }
+    return SandboxToolFailure(
+        error=SandboxToolFailureCode.DURABLE_RUN_REQUIRED,
+        message=_DURABLE_REQUIRED,
+    ).model_dump(mode="json")
 
 
 async def sandbox_read(
     path: str, ctx: ConversationContext | None = None
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     """Read a file from your workspace.
 
     Args:
@@ -84,9 +89,8 @@ async def sandbox_read(
 
     """
     del path, ctx
-    return {
-        "success": False,
-        "error": "durable_agent_run_required",
-        "content": "",
-        "message": _DURABLE_REQUIRED,
-    }
+    return SandboxReadToolFailure(
+        error=SandboxToolFailureCode.DURABLE_RUN_REQUIRED,
+        content="",
+        message=_DURABLE_REQUIRED,
+    ).model_dump(mode="json")

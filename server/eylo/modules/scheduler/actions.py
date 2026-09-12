@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from datetime import datetime
 from enum import StrEnum
+from typing import Protocol, runtime_checkable
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.json_schema import SkipJsonSchema
+
+from eylo.common.contracts.json_values import JsonObject
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +42,13 @@ class ActionContext(BaseModel):
     misfired_count: int = 0
 
 
-ActionHandler = Callable[..., Awaitable[dict]]
+@runtime_checkable
+class ActionHandler(Protocol):
+    """Actions consume JSON plus keyword-only run authority and return JSON."""
+
+    async def __call__(
+        self, payload: JsonObject, *, context: ActionContext
+    ) -> JsonObject: ...
 
 
 class AgentSchedulingAccess(StrEnum):
@@ -52,7 +61,9 @@ class AgentSchedulingAccess(StrEnum):
 class ActionSpec(BaseModel):
     """A handler, and which of its payload keys the platform owns."""
 
-    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", arbitrary_types_allowed=True
+    )
 
     name: str
     handler: SkipJsonSchema[ActionHandler] = Field(exclude=True, repr=False)
@@ -140,7 +151,9 @@ def action_spec(name: str) -> ActionSpec | None:
     return _HANDLERS.get(name)
 
 
-async def dispatch(action: str, payload: dict, *, context: ActionContext) -> dict:
+async def dispatch(
+    action: str, payload: JsonObject, *, context: ActionContext
+) -> JsonObject:
     """Run the handler for `action`.
 
     Raises `UnknownAction` when nothing is registered, naming what was asked

@@ -27,16 +27,14 @@ from eylo.modules.sandbox.models import (
     SandboxSessionModel,
     SandboxWorkspaceCheckpointModel,
 )
+from eylo.modules.sandbox.policy import SandboxWorkspacePolicy
 from eylo.modules.sandbox_configs.catalog import SandboxProviders
 from eylo.modules.sandbox_configs.domain import ResolvedSandbox
 from eylo.pipelines.sandbox.resolver import (
     resolve_pinned_sandbox_adapter,
     resolve_sandbox_adapter,
 )
-from eylo.pipelines.sandbox.workspace_contracts import (
-    SandboxWorkspacePolicy,
-    WorkspaceExport,
-)
+from eylo.pipelines.sandbox.workspace_contracts import WorkspaceExport
 from eylo.sockets.sandbox.base import SandboxVendorAdapter
 
 logger = logging.getLogger(__name__)

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from eylo.common.contracts.json_values import JsonObject
 
 
 class MisfirePolicy(StrEnum):
@@ -78,6 +79,6 @@ class ScheduleSpec(BaseModel):
     key: str = Field(description="Stable id, unique per organization.")
     recurrence: Recurrence
     action: str
-    payload: dict[str, Any] = Field(default_factory=dict)
+    payload: JsonObject = Field(default_factory=dict)
     misfire_policy: MisfirePolicy = MisfirePolicy.COALESCE
     enabled: bool = True

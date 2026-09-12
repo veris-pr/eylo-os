@@ -1,10 +1,12 @@
 """Registered scheduling system tools."""
 
-from typing import Any, Protocol
+from typing import Protocol
 from uuid import uuid4
 
 import arrow
+from pydantic import JsonValue
 
+from eylo.common.contracts.json_values import JsonObject
 from eylo.common.contracts.scheduler import InvalidRecurrence, Recurrence
 from eylo.modules.agents.schemas.indb import AgentInDb
 from eylo.modules.conversations.constants import CONVERSATION_SCHEDULE_CONTEXT_KEY
@@ -35,10 +37,10 @@ async def schedule_create(
     starts_at: str,
     rule: str | None = None,
     timezone: str | None = None,
-    payload: dict | None = None,
+    payload: JsonObject | None = None,
     name: str | None = None,
     ctx: AgentScheduleContext | None = None,
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     """Schedule something to happen later, once or on a repeating rule.
 
     Use this for anything the user wants at a future time — a reminder, a
@@ -165,7 +167,7 @@ async def schedule_create(
     }
 
 
-async def schedule_list(ctx: AgentScheduleContext | None = None) -> dict[str, Any]:
+async def schedule_list(ctx: AgentScheduleContext | None = None) -> dict[str, JsonValue]:
     """List the schedules you have created, and when each next runs.
 
     Only your own. Schedules an operator set up are not yours to see or change.
@@ -203,7 +205,7 @@ async def schedule_list(ctx: AgentScheduleContext | None = None) -> dict[str, An
 
 async def schedule_cancel(
     schedule_id: str, ctx: AgentScheduleContext | None = None
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     """Cancel a schedule you created, so it stops running.
 
     Args:

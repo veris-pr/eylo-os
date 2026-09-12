@@ -87,7 +87,6 @@ from eylo.modules.agent_runs.service import (
     pause_agent_run_in_transaction,
 )
 from eylo.modules.agent_runs.waits import AgentApprovalWaitState, AgentRunWaitState
-from eylo.modules.agents.services.runner.message_store import ErrorMessages
 from eylo.modules.conversations.schemas.conversations import ConversationContext
 from eylo.modules.conversations.schemas.message_content import (
     AssistantMessageContent,
@@ -107,6 +106,7 @@ from eylo.modules.conversations.schemas.messages import (
     MessageCreate,
     MessageInDb,
     MessageKind,
+    MessageMeta,
     MessageUpdate,
     RequestStatus,
 )
@@ -133,6 +133,7 @@ from eylo.pipelines.conversation.background_dispatch import (
     dispatch_background_agents,
 )
 from eylo.pipelines.conversation.context import ConversationContextService
+from eylo.pipelines.conversation.response_text import ErrorMessages
 from eylo.pipelines.llm.runtime import (
     LLMInferenceMode,
     to_llm_inference_mode,
@@ -424,7 +425,7 @@ class FrameworkConversationRunner:
         expected_agent_id: UUID | None = None,
         expected_agent_revision: int | None = None,
         durable_context: DurableStepContext | None = None,
-    ):
+    ) -> RunResult:
         """Execute and persist one framework-backed conversation turn."""
         if agent_run_id is not None and (
             expected_agent_id is None or expected_agent_revision is None
@@ -467,7 +468,7 @@ class FrameworkConversationRunner:
         expected_agent_id: UUID,
         expected_agent_revision: int,
         durable_context: DurableStepContext,
-    ):
+    ) -> RunResult:
         """Continue one answered tool interruption on the same product run."""
         config = RunConfig.model_validate(config)
         conversation = await self._conversation_service.get_(conversation_id)
@@ -592,7 +593,7 @@ class FrameworkConversationRunner:
         agent_run_id: UUID | None,
         last_message_id: UUID,
         durable_context: DurableStepContext | None,
-    ):
+    ) -> RunResult:
         from eylo.common.contracts.tool_availability import ToolRuntimeFact
         from eylo.pipelines.system_tools.availability import (
             refresh_context_tool_availability,
@@ -1258,9 +1259,9 @@ class FrameworkConversationHooks(RunHooks):
         return self._local_context.conversation_context
 
 
-def _terminal_message_meta(result: RunResult, agent: AgentSpec) -> dict[str, object]:
+def _terminal_message_meta(result: RunResult, agent: AgentSpec) -> MessageMeta:
     result = RunResult.model_validate(result)
-    return FrameworkTerminalMessageMeta(
+    metadata = FrameworkTerminalMessageMeta(
         run_id=result.run_id,
         status=result.status,
         model=(
@@ -1272,7 +1273,8 @@ def _terminal_message_meta(result: RunResult, agent: AgentSpec) -> dict[str, obj
         error=result.error_message is not None,
         run_metadata=result.metadata,
         llm_response=_terminal_replay_response(result),
-    ).model_dump(mode="json")
+    )
+    return MessageMeta.model_validate(metadata.model_dump(mode="json"))
 
 
 def _terminal_replay_response(result: RunResult) -> ModelResponse | None:
@@ -1297,9 +1299,9 @@ def _primary_agent_message_create(
     *,
     kind: MessageKind,
     content_kind: MessageContentKind,
-    content: object,
+    content: MessageContentType,
     external_id: str,
-    meta: dict,
+    meta: MessageMeta,
     created_at: datetime.datetime,
     parent_message_id: UUID,
     request_id: UUID | None,
@@ -1388,7 +1390,9 @@ def _resume_result_message(
     for message in reversed(context.messages or []):
         if message.agent_run_id != run_id or message.kind != MessageKind.TOOL_RESULT:
             continue
-        metadata = _message_meta_dict(message.meta).get("metadata")
+        if message.meta is None:
+            continue
+        metadata = message.meta.get("metadata")
         if isinstance(metadata, dict) and metadata.get("resume_request_id") == str(
             request_id
         ):
@@ -1399,7 +1403,9 @@ def _resume_result_message(
 def _is_pause_projection(message: MessageInDb, *, run_id: UUID) -> bool:
     if message.agent_run_id != run_id:
         return False
-    meta = _message_meta_dict(message.meta)
+    meta = message.meta
+    if meta is None:
+        return False
     if message.kind == MessageKind.ASSISTANT:
         return meta.get("status") in {
             RunStatus.WAITING_FOR_INPUT.value,
@@ -1409,12 +1415,6 @@ def _is_pause_projection(message: MessageInDb, *, run_id: UUID) -> bool:
         return False
     metadata = meta.get("metadata")
     return isinstance(metadata, dict) and metadata.get("tool_execution_paused") is True
-
-
-def _message_meta_dict(meta: object) -> dict:
-    if isinstance(meta, BaseModel):
-        return meta.model_dump(mode="json")
-    return dict(meta) if isinstance(meta, dict) else {}
 
 
 async def _consume_stream_chunk(
@@ -1633,15 +1633,18 @@ def _model_block_stop_index(
 def _framework_message_meta(
     response: ModelResponse,
     response_block_index: int | None,
-) -> JsonObject:
-    return ModelResponseProvenance(
+) -> MessageMeta:
+    metadata = ModelResponseProvenance(
         model_response=response,
         response_block_index=response_block_index,
-    ).model_dump(mode="json")
+    )
+    return MessageMeta.model_validate(metadata.model_dump(mode="json"))
 
 
-def _tool_result_meta(result: ToolResult) -> JsonObject:
-    return ToolResultProvenance.from_result(result).model_dump(mode="json")
+def _tool_result_meta(result: ToolResult) -> MessageMeta:
+    return MessageMeta.model_validate(
+        ToolResultProvenance.from_result(result).model_dump(mode="json")
+    )
 
 
 def _tool_result_sender_participant_id(

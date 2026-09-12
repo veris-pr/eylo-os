@@ -21,8 +21,10 @@ from pydantic import JsonValue
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
+from eylo.common.contracts.json_values import JsonObject
 from eylo.common.contracts.scheduler import InvalidRecurrence, Recurrence
 from eylo.common.database import async_session_factory, start_transaction
+from eylo.common.revisions import RevisionAvailability
 from eylo.modules.agent_runs.absurd import spawn_agent_run
 from eylo.modules.agent_runs.domain import (
     AgentRunLifecycle,
@@ -54,7 +56,7 @@ def _adapter() -> PostgresSchedulerStore:
     return PostgresSchedulerStore(async_session_factory)
 
 
-async def dispatch_due_schedules() -> dict:
+async def dispatch_due_schedules() -> dict[str, int]:
     """Turn every arrived occurrence into a run. Executes nothing."""
     now = arrow.utcnow().datetime
     adapter = _adapter()
@@ -105,7 +107,10 @@ async def _dispatch_one(
                 ScheduleRevisionModel.revision == schedule_revision,
             )
         )
-        if definition is None or definition.availability != "published":
+        if (
+            definition is None
+            or definition.availability != RevisionAvailability.PUBLISHED.value
+        ):
             await adapter.mark_stalled(
                 schedule_id,
                 schedule_revision,
@@ -252,16 +257,16 @@ def _integrity_constraint_name(error: IntegrityError) -> str | None:
     return None
 
 
-async def recover_stranded_schedules() -> dict:
+async def recover_stranded_schedules() -> dict[str, int]:
     """Recover schedules claimed before their occurrence transaction committed."""
     # A worker that claimed a schedule and died before creating its run left
     # `next_at` NULL, so that schedule is invisible to every future poll — a
     # recurring job that stops forever with nothing anywhere saying so.
     adapter = _adapter()
     restored = 0
-    claimed_before = arrow.utcnow().shift(
-        minutes=-STRANDED_CLAIM_RECOVERY_DELAY_MINUTES
-    ).datetime
+    claimed_before = (
+        arrow.utcnow().shift(minutes=-STRANDED_CLAIM_RECOVERY_DELAY_MINUTES).datetime
+    )
     for schedule_id, schedule_revision in await adapter.stranded(
         claimed_before=claimed_before
     ):
@@ -274,7 +279,8 @@ async def recover_stranded_schedules() -> dict:
                     ScheduleRevisionModel.organization_id == schedule.organization_id,
                     ScheduleRevisionModel.schedule_id == schedule.id,
                     ScheduleRevisionModel.revision == schedule_revision,
-                    ScheduleRevisionModel.availability == "published",
+                    ScheduleRevisionModel.availability
+                    == RevisionAvailability.PUBLISHED.value,
                 )
             )
             if definition is None:
@@ -298,7 +304,7 @@ async def recover_stranded_schedules() -> dict:
     }
 
 
-def _schedule_goal(action: str, payload: dict) -> str:
+def _schedule_goal(action: str, payload: JsonObject) -> str:
     encoded_payload = json.dumps(
         payload,
         ensure_ascii=False,

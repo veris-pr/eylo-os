@@ -13,6 +13,7 @@ from eylo.common.config import settings
 from eylo.common.contracts.tool_availability import ToolRuntimeFact
 from eylo.common.database import get_transaction, start_transaction
 from eylo.common.revisions import RevisionAvailability
+from eylo.framework.agents.agent import AgentSpec
 from eylo.framework.agents.config import RunConfig, RunPromptCaching, RunStreaming
 from eylo.framework.agents.context import RunContext, RunInput, RunMessage
 from eylo.framework.agents.hooks import RunCallbacks
@@ -23,7 +24,7 @@ from eylo.framework.agents.interruptions import (
 from eylo.framework.agents.model import Model, ModelResponse
 from eylo.framework.agents.result import RunResult, RunStatus
 from eylo.framework.agents.runner import FrameworkRunner
-from eylo.framework.agents.tool import ToolCall, ToolResult
+from eylo.framework.agents.tool import ToolCall, ToolExecutor, ToolResult, ToolSpec
 from eylo.modules.agent_runs.domain import (
     AgentApprovalDecision,
     AgentInputRequestKind,
@@ -112,7 +113,7 @@ class ScheduledFrameworkRunner:
             [PlatformRunState[AgentExecutionContext], RunConfig], Model
         ]
         | None = None,
-        tool_executor=None,
+        tool_executor: ToolExecutor | None = None,
     ) -> None:
         self._model_factory = model_factory
         self._tool_executor = tool_executor or PlatformToolExecutor()
@@ -238,7 +239,7 @@ class ScheduledFrameworkRunner:
         claim: AgentRunExecutionClaim,
         wait: AgentRunWaitState,
         run_input: RunInput,
-        agent,
+        agent: AgentSpec,
         execution_context: AgentExecutionContext,
         config: RunConfig,
         workflow_context: AgentRunWorkflowContext,
@@ -445,7 +446,11 @@ async def _build_execution_context(
     )
 
 
-def _initial_run_input(claim, execution_context, tools) -> RunInput:
+def _initial_run_input(
+    claim: AgentRunExecutionClaim,
+    execution_context: AgentExecutionContext,
+    tools: tuple[ToolSpec, ...],
+) -> RunInput:
     return RunInput(
         instructions=execution_context.system_prompt,
         messages=(

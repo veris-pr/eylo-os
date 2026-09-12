@@ -124,6 +124,13 @@ canonical tool result from the transcript. A malformed receipt or missing
 transcript result refuses continuation; cancellation before a completed write
 does not produce a receipt. These contracts do not add another retry authority.
 
+Conversation transcript writes belong to the typed framework-runner callbacks;
+there is no parallel legacy `MessageStore` implementation. Terminal fallback
+text lives with conversation orchestration and is shared with realtime widget
+failure handling. Realtime tool arguments retain their finite JSON contract
+from vendor events through validation and dispatch; cancellation still propagates
+to the owner of the live call.
+
 Sandbox actions and tool results have separate typed contracts. Durable receipts
 identify the exact private workspace checkpoint by revision and digest; replay
 requires both to match before restoring the canonical tool result. Raw command
@@ -136,6 +143,11 @@ The storage boundary preserves the existing flat policy JSON; session limits and
 checkpoint comparisons use named fields internally. A current grant ceiling is
 resolved at acquisition rather than trusted from an older checkpoint. Invalid
 stored export policy follows compute cleanup without attempting an export.
+The sandbox module owns the policy shared by runtime execution and session reads.
+Operator responses validate that policy, then serialize its existing flat shape
+through a named response model so generated clients retain typed fields. Session
+responses omit the vendor container identity. Non-durable sandbox tool entrypoints
+return typed refusal envelopes; they do not execute commands outside AgentRun.
 Step intents and execution evidence are action-specific typed values. Their JSON
 projections retain hashes, byte counts and outcome facts without command/file
 bodies; optional facts remain absent unless the action actually establishes them.
@@ -171,13 +183,30 @@ definitions carry `PlatformTool` and `MCPToolExecutorConfig` objects until the
 explicit persistence boundary. Dynamic JSON Schema and arguments remain JSON
 values, not arbitrary Python objects.
 
-Resolved MCP settings and discovery targets use frozen Pydantic models. Existing
-validated egress objects and live ORM references retain identity rather than
-being copied into reconstructed resources. Decrypted headers and ORM rows are
-excluded from generic snapshots. Remote result text is available through explicit
-result/content access, not generic snapshots. Adapter protocol failures and
-pipeline execution failures have separate owning enums with stable wire values.
-These contracts do not add retry authority or alter transaction/session ownership.
+MCP management responses are explicit allowlists for server metadata, discovered
+tool facts and revision revocation status. Authentication is a named mode; only
+header names are exposed, never encrypted or resolved values. Lifecycle, effect
+and execution mode use their owning domain enums. Public UUID fields normalize
+the platform's UUID library representation before Pydantic validation; responses
+retain the existing UUID text and timestamp offset formats.
+
+Resolved MCP settings and discovery targets use frozen Pydantic models. Discovery
+holds no ORM row across vendor I/O: a short transaction snapshots source identity,
+header state, published-revision availability and the last discovery timestamp.
+The transaction closes before the socket runs. A second transaction locks and
+revalidates the source before atomically publishing tools and projecting detached
+response models. Concurrent edits, withdrawal, revocation or another completed
+discovery invalidate the snapshot and return `409`; retry requires a fresh
+discovery. Vendor failure, cancellation and failed publication preserve the
+previous catalog. Explicit rediscovery started after withdrawal still retains
+the existing ability to publish a new revision.
+
+Validated egress objects retain identity; decrypted headers remain excluded from
+generic snapshots. Remote result text is available through explicit result/content
+access, not generic snapshots. Adapter protocol failures and pipeline execution
+failures have separate owning enums with stable wire values. These contracts
+do not add retry authority. The discovery pipeline owns both transactions and
+refuses invocation inside a caller-owned transaction.
 
 The socket validates native request/reply envelopes separately from published
 tool definitions. It retains MCP 2025-06-18: typed initialization, tool listing,

@@ -8,8 +8,10 @@ outbound ledger entry and never creates a second paid call.
 from __future__ import annotations
 
 import logging
-from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict, StrictStr
+
+from eylo.common.contracts.json_values import JsonObject
 from eylo.common.outbound import OutboundAttemptState
 from eylo.modules.scheduler.actions import (
     ActionContext,
@@ -18,17 +20,27 @@ from eylo.modules.scheduler.actions import (
 )
 
 logger = logging.getLogger(__name__)
+TELEPHONY_PLACE_CALL_ACTION = "telephony.place_call"
+
+
+class ScheduledCallPayload(BaseModel):
+    """Typed call inputs; the original JSON retains additional call provenance."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore", hide_input_in_errors=True)
+
+    to_number: StrictStr | None = None
+    initial_message: StrictStr | None = None
 
 
 @schedulable(
-    "telephony.place_call",
+    TELEPHONY_PLACE_CALL_ACTION,
     # Operator-and-campaign only. An agent that could schedule outbound calls
     # could be talked into scheduling them, and this one spends money and rings
     # a real person — `schedule_call` remains the agent's route, and it goes
     # through the same handler with the same checks.
     agent_access=AgentSchedulingAccess.OPERATOR_ONLY,
 )
-async def place_call(payload: dict, *, context: ActionContext) -> dict:
+async def place_call(payload: JsonObject, *, context: ActionContext) -> JsonObject:
     """Initiate one outbound call.
 
     The run row owns execution recovery; the outbound ledger owns the charged
@@ -36,7 +48,8 @@ async def place_call(payload: dict, *, context: ActionContext) -> dict:
     """
     from eylo.pipelines.telephony.call_control import VoiceService
 
-    to_number = str(payload.get("to_number") or "").strip()
+    value = ScheduledCallPayload.model_validate(payload)
+    to_number = (value.to_number or "").strip()
     agent_id = context.agent_id
     agent_revision = context.agent_revision
 
@@ -51,10 +64,10 @@ async def place_call(payload: dict, *, context: ActionContext) -> dict:
     result = await VoiceService().initiate_outbound_call(
         call_id=context.run_id,
         to_number=to_number,
-        agent_id=UUID(str(agent_id)),
+        agent_id=agent_id,
         agent_revision=agent_revision,
         organization_id=context.organization_id,
-        initial_message=payload.get("initial_message"),
+        initial_message=value.initial_message,
         context={
             **payload,
             "schedule_id": str(context.schedule_id),

@@ -17,12 +17,14 @@ Key Differences from Twilio/Plivo:
 import json
 import logging
 import time
+from http import HTTPStatus
 from typing import Any, Dict, Optional
 from uuid import uuid4
 
 import aiohttp
 import jwt
 from fastapi import HTTPException, WebSocket
+from pydantic import ValidationError
 
 from eylo.common.contracts.speech_runtime import (
     SpeechTransportEncoding,
@@ -42,9 +44,12 @@ from eylo.sockets.telephony.base import (
     BaseTelephonyService,
     CallMetadata,
     CarrierAudioFormat,
-    CarrierMediaEvent,
+    CarrierDtmfMessage,
+    CarrierIgnoredMessage,
+    CarrierStartMessage,
     InboundMediaMessage,
     OutboundMediaMessage,
+    ParsedCarrierMessage,
     TelephonyConfig,
     TelephonyControlAccepted,
     TelephonyControlFailureCode,
@@ -59,6 +64,25 @@ from eylo.sockets.telephony.base import (
     classify_control_failure,
 )
 from eylo.sockets.telephony.config import VonageSettings
+from eylo.sockets.telephony.vonage.contracts import (
+    CALLS_URL,
+    CREATE_OPERATION,
+    REQUEST_TIMEOUT_SECONDS,
+    VOICE_ORIGIN,
+    ConnectAction,
+    CreateCallRequest,
+    CreateCallResponse,
+    CreateFailureCode,
+    DtmfRequest,
+    HangupRequest,
+    MediaContentType,
+    NccoDestination,
+    PhoneEndpoint,
+    TransferRequest,
+    WebSocketEndpoint,
+)
+from eylo.sockets.telephony.vonage.stream_contracts import ClearCommand, StreamMessage
+from eylo.sockets.telephony.vonage.stream_contracts import Event as StreamEvent
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +90,7 @@ logger = logging.getLogger(__name__)
 VONAGE_SAMPLING_RATE = 16000  # 16kHz
 VONAGE_AUDIO_ENCODING = AudioEncoding.LINEAR16
 VONAGE_CHUNK_SIZE = 640  # 20ms at 16kHz with 16-bit samples (640 bytes)
-VONAGE_CONTENT_TYPE = "audio/l16;rate=16000"
+VONAGE_CONTENT_TYPE = MediaContentType.PCM16_16KHZ.value
 PCM_SILENCE_BYTE = b"\x00"
 
 
@@ -92,121 +116,34 @@ class _VonageApplicationClient:
 
 
 class VonageMessageParser(TelephonyMessageParser):
-    """Parser for Vonage binary audio protocol.
+    """Separate binary PCM from typed JSON controls without granting routing authority."""
 
-    Unlike Twilio/Plivo which use JSON events, Vonage streams raw binary
-    LINEAR16 audio over WebSocket. This parser handles the binary protocol.
+    def __init__(self) -> None:
+        self._metadata: CallMetadata | None = None
 
-    WebSocket Protocol:
-    - First message: JSON start message (optional, server-sent)
-    - Subsequent messages: Raw LINEAR16 audio bytes
-    - No JSON events for media/stop/checkpoint
-    """
-
-    def __init__(self):
-        """Initialize parser."""
-        self._call_started = False
-        self._metadata: Optional[CallMetadata] = None
-
-    def parse_message(self, raw_message: str) -> Dict[str, Any]:
-        """Parse message from Vonage WebSocket.
-
-        Vonage can send JSON for initial handshake, but most messages
-        are binary audio. This method handles JSON when present.
-
-        Args:
-            raw_message: Raw message (JSON or binary indicator)
-
-        Returns:
-            Parsed message dictionary
-
-        """
-        try:
-            return json.loads(raw_message)
-        except (json.JSONDecodeError, TypeError):
-            # Not JSON - probably binary audio frame indicator
-            return {"event": "binary_audio"}
+    def parse_message(self, raw_message: str | bytes) -> ParsedCarrierMessage:
+        if isinstance(raw_message, bytes):
+            return self.parse_binary_message(raw_message)
+        message = StreamMessage.model_validate_json(raw_message)
+        if message.event in {
+            StreamEvent.DTMF,
+            StreamEvent.LEGACY_DTMF,
+            StreamEvent.LEGACY_INPUT,
+        }:
+            digits = message.keypad_digits
+            if digits:
+                return CarrierDtmfMessage(digits=digits)
+        if message.event == StreamEvent.LEGACY_START and self._metadata is not None:
+            return CarrierStartMessage(metadata=self._metadata)
+        return CarrierIgnoredMessage()
 
     def parse_binary_message(self, raw_bytes: bytes) -> InboundMediaMessage:
-        """Parse binary audio message from Vonage.
+        """Keep native PCM bytes and their resource identity without JSON conversion."""
+        return InboundMediaMessage(payload=raw_bytes, timestamp="", track="inbound")
 
-        Args:
-            raw_bytes: Raw LINEAR16 audio bytes
-
-        Returns:
-            InboundMediaMessage with LINEAR16 payload
-
-        """
-        return InboundMediaMessage(
-            event=CarrierMediaEvent.MEDIA,
-            payload=raw_bytes,
-            timestamp="",  # Vonage doesn't include timestamps in binary frames
-            track="inbound",
-        )
-
-    def get_event_type(self, message: Dict[str, Any]) -> str:
-        """Extract event type from message.
-
-        Args:
-            message: Parsed message dictionary
-
-        Returns:
-            Event type string
-
-        """
-        return message.get("event", "")
-
-    def extract_media(self, message: Dict[str, Any]) -> Optional[InboundMediaMessage]:
-        """Extract media from binary audio.
-
-        For Vonage, media extraction is handled by parse_binary_message
-        since audio comes as raw WebSocket binary frames.
-
-        Args:
-            message: Parsed message dictionary
-
-        Returns:
-            None (use parse_binary_message for binary frames)
-
-        """
-        # Binary audio is handled separately via parse_binary_message
-        return None
-
-    def extract_dtmf(self, message: Dict[str, Any]) -> Optional[str]:
-        """Extract Vonage inbound DTMF digits from JSON control messages."""
-        if message.get("event") not in {"dtmf", "input"}:
-            return None
-        digits = message.get("digits") or message.get("dtmf")
-        if isinstance(digits, dict):
-            digits = digits.get("digits") or digits.get("digit")
-        return str(digits) if digits else None
-
-    async def extract_metadata(self, message: Dict[str, Any]) -> Optional[CallMetadata]:
-        """Extract call metadata.
-
-        Vonage doesn't send explicit start events in WebSocket.
-        Metadata comes from the HTTP webhook (answer_url).
-
-        Args:
-            message: Parsed message dictionary
-
-        Returns:
-            CallMetadata if available, None otherwise
-
-        """
-        # Vonage metadata comes from HTTP webhook, not WebSocket
-        # WebSocket connection is established after answer_url returns NCCO
-        return self._metadata
-
-    def set_metadata(self, metadata: CallMetadata):
-        """Set call metadata from HTTP webhook.
-
-        Args:
-            metadata: Call metadata from answer_url webhook
-
-        """
+    def set_metadata(self, metadata: CallMetadata) -> None:
+        """Accept only the caller's already resolved metadata, never JSON overrides."""
         self._metadata = metadata
-        self._call_started = True
 
 
 class VonageService(BaseTelephonyService):
@@ -302,52 +239,31 @@ class VonageService(BaseTelephonyService):
             raise
 
     async def send_clear(self, stream_sid: str) -> bool:
-        """Send clear signal to Vonage.
-
-        Note: Vonage WebSocket protocol does not support a standard 'clear' event
-        like Twilio/Plivo. This is a no-op for now.
-
-        Args:
-            stream_sid: Stream identifier
-
-        """
-        # Vonage doesn't have a direct equivalent in its binary WebSocket protocol
-        # We might need to use the REST API to stop/restart media if strictly necessary,
-        # but for now we'll just log it.
-        logger.debug("Vonage 'send_clear' not supported via WebSocket - skipping")
-        return False
+        """Request buffered playback cancellation on this call's WebSocket."""
+        if not self.websocket:
+            raise RuntimeError("Telephony WebSocket is not connected.")
+        await self.websocket.send_text(ClearCommand().model_dump_json())
+        return True
 
     def build_ncco_response(
         self,
         ws_url: str,
         custom_params: Dict[str, Any],
     ) -> str:
-        """Build NCCO (Nexmo Call Control Object) response for Vonage.
+        """Serialize the same typed stream instruction used by outbound calls."""
+        return json.dumps(
+            [
+                action.model_dump(mode="json", by_alias=True)
+                for action in self._stream_ncco(ws_url, custom_params)
+            ]
+        )
 
-        NCCO is a JSON array of actions that control the call.
-        For WebSocket streaming, we use the "connect" action.
-
-        Example NCCO:
-        [
-            {
-                "action": "connect",
-                "endpoint": [{
-                    "type": "websocket",
-                    "uri": "wss://example.com/socket",
-                    "content-type": "audio/l16;rate=16000",
-                    "headers": {}
-                }]
-            }
-        ]
-
-        Args:
-            ws_url: WebSocket URL for audio streaming
-            custom_params: Custom parameters (encoded in URL or headers)
-
-        Returns:
-            NCCO JSON string
-
-        """
+    def _stream_ncco(
+        self,
+        ws_url: str,
+        custom_params: Dict[str, Any],
+    ) -> list[ConnectAction]:
+        """Preserve encoded routing parameters without interpreting platform identity."""
         # Build WebSocket endpoint
         final_url = ws_url
         if custom_params:
@@ -358,22 +274,7 @@ class VonageService(BaseTelephonyService):
             separator = "&" if "?" in ws_url else "?"
             final_url = f"{ws_url}{separator}{query_params}"
 
-        # Build NCCO
-        ncco = [
-            {
-                "action": "connect",
-                "endpoint": [
-                    {
-                        "type": "websocket",
-                        "uri": final_url,
-                        "content-type": VONAGE_CONTENT_TYPE,
-                        "headers": {},
-                    }
-                ],
-            }
-        ]
-
-        return json.dumps(ncco)
+        return [ConnectAction(endpoint=[WebSocketEndpoint(uri=final_url)])]
 
     def build_twiml_response(
         self,
@@ -419,57 +320,63 @@ class VonageService(BaseTelephonyService):
         """
         del authorization  # Vonage Voice API exposes no client idempotency slot.
         if not self.client:
-            return OutboundSendTerminal(failure_code="call_create_not_configured")
+            return OutboundSendTerminal(failure_code=CreateFailureCode.NOT_CONFIGURED)
 
         try:
-            # Build NCCO for WebSocket streaming
-            ncco_str = self.build_ncco_response(ws_url, custom_params)
-            ncco = json.loads(ncco_str)
-
-            # Build call request
-            call_data = {
-                "to": [{"type": "phone", "number": to_number}],
-                "from": {"type": "phone", "number": from_number},
-                "ncco": ncco,
-            }
-
-            # Add event URL if provided
-            if status_callback_url:
-                call_data["event_url"] = [status_callback_url]
+            request = CreateCallRequest(
+                to=[PhoneEndpoint(number=to_number)],
+                from_endpoint=PhoneEndpoint(number=from_number),
+                ncco=self._stream_ncco(ws_url, custom_params),
+                event_url=[status_callback_url] if status_callback_url else None,
+            )
 
             # Make REST API call using aiohttp (async)
             jwt_token = self.client.generate_application_jwt()
 
-            timeout = aiohttp.ClientTimeout(total=20)
+            timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(
-                    "https://api.nexmo.com/v1/calls",
-                    json=call_data,
+                    CALLS_URL,
+                    json=request.model_dump(
+                        mode="json", by_alias=True, exclude_none=True
+                    ),
                     headers={"Authorization": f"Bearer {jwt_token}"},
                 ) as response:
                     if not response.ok:
                         await response.read()
-                        if response.status == 429:
+                        if response.status == HTTPStatus.TOO_MANY_REQUESTS:
                             return OutboundSendRetryable(
-                                failure_code="call_create_rejected",
+                                failure_code=CreateFailureCode.REJECTED,
                                 status_code=response.status,
                             )
-                        if 400 <= response.status < 500 and response.status != 408:
+                        if (
+                            HTTPStatus.BAD_REQUEST
+                            <= response.status
+                            < HTTPStatus.INTERNAL_SERVER_ERROR
+                            and response.status != HTTPStatus.REQUEST_TIMEOUT
+                        ):
                             return OutboundSendTerminal(
-                                failure_code="call_create_rejected",
+                                failure_code=CreateFailureCode.REJECTED,
                                 status_code=response.status,
                             )
                         return OutboundSendUnknown(
-                            failure_code="call_create_unconfirmed",
+                            failure_code=CreateFailureCode.UNCONFIRMED,
                             status_code=response.status,
                         )
 
-                    response_data = await response.json()
-
-                    vonage_uuid = str(response_data.get("uuid") or "").strip()
-                    if response_data.get("status") != "started" or not vonage_uuid:
+                    try:
+                        response_data = CreateCallResponse.model_validate(
+                            await response.json()
+                        )
+                    except ValidationError:
                         return OutboundSendUnknown(
-                            failure_code="call_create_response_invalid",
+                            failure_code=CreateFailureCode.RESPONSE_INVALID,
+                            status_code=response.status,
+                        )
+                    vonage_uuid = response_data.uuid.strip()
+                    if not vonage_uuid:
+                        return OutboundSendUnknown(
+                            failure_code=CreateFailureCode.RESPONSE_INVALID,
                             status_code=response.status,
                         )
                     logger.info("Initiated Vonage call")
@@ -480,7 +387,7 @@ class VonageService(BaseTelephonyService):
 
         except Exception:  # noqa: BLE001 - transport ambiguity forbids resend
             logger.warning("Vonage call initiation outcome is unconfirmed")
-            return OutboundSendUnknown(failure_code="call_create_unconfirmed")
+            return OutboundSendUnknown(failure_code=CreateFailureCode.UNCONFIRMED)
 
     async def end_call(self, call_sid: str) -> TelephonyControlResult:
         """End an active Vonage call.
@@ -501,11 +408,11 @@ class VonageService(BaseTelephonyService):
         try:
             jwt_token = self.client.generate_application_jwt()
 
-            timeout = aiohttp.ClientTimeout(total=20)
+            timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.put(
-                    f"https://api.nexmo.com/v1/calls/{call_sid}",
-                    json={"action": "hangup"},
+                    f"{CALLS_URL}/{call_sid}",
+                    json=HangupRequest().model_dump(mode="json"),
                     headers={"Authorization": f"Bearer {jwt_token}"},
                 ) as response:
                     if not response.ok:
@@ -544,12 +451,7 @@ class VonageService(BaseTelephonyService):
             Response data from Vonage API
 
         """
-        ncco = [
-            {
-                "action": "connect",
-                "endpoint": [{"type": "phone", "number": to_number}],
-            }
-        ]
+        ncco = [ConnectAction(endpoint=[PhoneEndpoint(number=to_number)])]
         return await self.update_call(call_sid, ncco)
 
     async def send_dtmf(
@@ -576,11 +478,11 @@ class VonageService(BaseTelephonyService):
         try:
             jwt_token = self.client.generate_application_jwt()
 
-            timeout = aiohttp.ClientTimeout(total=20)
+            timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.put(
-                    f"https://api.nexmo.com/v1/calls/{call_sid}/dtmf",
-                    json={"digits": digits},
+                    f"{CALLS_URL}/{call_sid}/dtmf",
+                    json=DtmfRequest(digits=digits).model_dump(mode="json"),
                     headers={"Authorization": f"Bearer {jwt_token}"},
                 ) as response:
                     if not response.ok:
@@ -605,7 +507,7 @@ class VonageService(BaseTelephonyService):
     async def update_call(
         self,
         call_uuid: str,
-        ncco: list,
+        ncco: list[ConnectAction],
     ) -> TelephonyControlResult:
         """Update an active call with new NCCO actions.
 
@@ -628,14 +530,13 @@ class VonageService(BaseTelephonyService):
         try:
             jwt_token = self.client.generate_application_jwt()
 
-            timeout = aiohttp.ClientTimeout(total=20)
+            timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.put(
-                    f"https://api.nexmo.com/v1/calls/{call_uuid}",
-                    json={
-                        "action": "transfer",
-                        "destination": {"type": "ncco", "ncco": ncco},
-                    },
+                    f"{CALLS_URL}/{call_uuid}",
+                    json=TransferRequest(
+                        destination=NccoDestination(ncco=ncco),
+                    ).model_dump(mode="json", by_alias=True),
                     headers={"Authorization": f"Bearer {jwt_token}"},
                 ) as response:
                     if not response.ok:
@@ -697,9 +598,9 @@ class VonageService(BaseTelephonyService):
 
     def outbound_call_profile(self) -> TelephonyOperationProfile:
         return TelephonyOperationProfile(
-            provider_operation="telephony.vonage.call.create",
+            provider_operation=CREATE_OPERATION,
             transport_kind=OutboundTransportKind.HTTP,
-            destination_origin="https://api.nexmo.com",
+            destination_origin=VOICE_ORIGIN,
             capabilities=TelephonyOperationCapabilities(
                 provider_idempotency=TelephonyOperationSupport.UNSUPPORTED,
                 reconciliation=TelephonyOperationSupport.UNSUPPORTED,

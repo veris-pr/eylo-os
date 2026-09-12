@@ -6,6 +6,25 @@ from typing import Literal
 APP_DB_PREFIX = "telephony_"
 APP_TAG = "Telephony"
 OUTBOUND_CALL_REJECTED = "provider_rejected"
+OUTBOUND_CALL_OPERATION = "telephony.call.create"
+CALL_IDEMPOTENCY_KEY_MAX_LENGTH = 255
+NUMBER_PURCHASE_OPERATION = "telephony.number.purchase"
+NUMBER_PURCHASE_IDEMPOTENCY_KEY_MAX_LENGTH = 255
+NUMBER_PURCHASE_RETRY_AFTER_SECONDS = 5
+
+
+class CallControlStatus(StrEnum):
+    """A submitted control is accepted, not proof of the call's final state."""
+
+    ACCEPTED = "accepted"
+
+
+class CallControlFailureCode(StrEnum):
+    """Platform control refusals, distinct from carrier-native failure codes."""
+
+    UNSUPPORTED = "UNSUPPORTED"
+    REJECTED = "REJECTED"
+    UNKNOWN = "UNKNOWN"
 
 
 class CallInitiationMarker(StrEnum):

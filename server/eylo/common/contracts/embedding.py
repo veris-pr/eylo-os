@@ -25,6 +25,7 @@ from eylo.common.contracts.embedding_records import (
     SourceEmbeddingRecord,
     TargetEmbeddingRecord,
 )
+from eylo.common.contracts.json_values import JsonObject
 
 type DocumentEmbedder = Callable[[list[str]], Awaitable[list[list[float]]]]
 type QueryEmbedder = Callable[[str], Awaitable[list[float]]]
@@ -113,7 +114,7 @@ class EmbeddingSpace(BaseModel):
     endpoint: str = Field(min_length=1)
     model: str = Field(min_length=1)
     dimensions: int = Field(gt=0)
-    semantic_options: dict[str, JsonValue] = Field(default_factory=dict)
+    semantic_options: JsonObject = Field(default_factory=dict)
 
     @property
     def id(self) -> str:

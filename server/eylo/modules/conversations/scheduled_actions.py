@@ -8,9 +8,12 @@ scheduler. The scheduler never learns what a conversation is.
 from __future__ import annotations
 
 import logging
+from uuid import UUID
 
 import arrow
+from pydantic import BaseModel, ConfigDict, StrictStr
 
+from eylo.common.contracts.json_values import JsonObject
 from eylo.common.database import get_transaction, start_transaction
 from eylo.modules.conversations.constants import (
     CONVERSATION_REENGAGE_ACTION,
@@ -35,6 +38,15 @@ from eylo.modules.scheduler.actions import (
 logger = logging.getLogger(__name__)
 
 
+class ReengagePayload(BaseModel):
+    """Conversation-owned action fields; unrelated schedule metadata is ignored."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore", hide_input_in_errors=True)
+
+    conversation_id: UUID | None = None
+    message: StrictStr | None = None
+
+
 @schedulable(
     CONVERSATION_REENGAGE_ACTION,
     # The platform fills this from the conversation the agent is in. An agent
@@ -42,10 +54,11 @@ logger = logging.getLogger(__name__)
     context_keys=(CONVERSATION_SCHEDULE_CONTEXT_KEY,),
     agent_access=AgentSchedulingAccess.AGENT_ALLOWED,
 )
-async def reengage(payload: dict, *, context: ActionContext) -> dict:
+async def reengage(payload: JsonObject, *, context: ActionContext) -> JsonObject:
     """Restart a conversation by posting a message as if the contact sent it."""
-    conversation_id = payload.get("conversation_id")
-    message = (payload.get("message") or "").strip()
+    value = ReengagePayload.model_validate(payload)
+    conversation_id = value.conversation_id
+    message = (value.message or "").strip()
 
     if not conversation_id:
         # Terminal by nature: a payload missing this will miss it on every
@@ -90,11 +103,12 @@ async def reengage(payload: dict, *, context: ActionContext) -> dict:
         logger.info(
             "Re-engaged conversation %s late; %d earlier occurrence(s) were "
             "coalesced into this one.",
-            conversation_id, context.misfired_count,
+            conversation_id,
+            context.misfired_count,
         )
 
     return {
         "conversation_id": str(conversation_id),
-        "message_id": str(getattr(created, "id", "")) or None,
+        "message_id": str(created.id),
         "late_by_occurrences": context.misfired_count,
     }

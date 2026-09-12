@@ -289,7 +289,9 @@ class ConversationParticipantService(
             for_update=True,
         )
 
-    async def get_contact_participant_from_conversation(self, conversation_id: UUID):
+    async def get_contact_participant_from_conversation(
+        self, conversation_id: UUID
+    ) -> list[ParticipantInDb]:
         _filters = [
             self.repository.model.conversation_id == conversation_id,
             self.repository.model.entity_kind == ParticipantKind.CONTACT,

@@ -19,8 +19,9 @@ from eylo.sockets.telephony.base import (
     CarrierMediaFailureCode,
     CarrierMediaResult,
     CarrierMediaStatus,
-    InboundMediaMessage,
+    CarrierStartMessage,
     OutboundMediaMessage,
+    ParsedCarrierMessage,
     TelephonyConfig,
     TelephonyControlResult,
     TelephonyMessageParser,
@@ -125,76 +126,16 @@ class TelephonyRealtime:
         """
         return bool(self._telephony_service and self._telephony_service.is_connected)
 
-    async def handle_message(
-        self, raw_message: str | bytes
-    ) -> Optional[InboundMediaMessage]:
-        """Handle incoming message from telephony provider.
-
-        Args:
-            raw_message: Raw message (str for JSON providers, bytes for binary providers)
-
-        Returns:
-            InboundMediaMessage if this is a media message, None otherwise
-
-        """
+    async def handle_message(self, raw_message: str | bytes) -> ParsedCarrierMessage:
+        """Decode once; start metadata remains untrusted until pipeline resolution."""
         try:
-            # For binary messages (Vonage), handle differently
-            if isinstance(raw_message, bytes):
-                # Vonage binary protocol - parse as binary audio
-                from eylo.sockets.telephony.vonage.service import VonageMessageParser
-
-                if isinstance(self._parser, VonageMessageParser):
-                    return self._parser.parse_binary_message(raw_message)
-                else:
-                    logger.warning(
-                        "Received binary message but parser doesn't support binary"
-                    )
-                    return None
-
-            # Parse the message (JSON for Twilio/Plivo)
-            # Type narrowing: if we reach here, raw_message is str
-            assert isinstance(raw_message, str), (
-                "Expected string message for JSON parser"
-            )
-
             message = self._parser.parse_message(raw_message)
-            event_type = self._parser.get_event_type(message)
-
-            if event_type != "media":
-                logger.debug(f"[TELEPHONY] Received event: {event_type}")
-
-            # Extract call metadata from start event
-            if event_type == "start":
-                self._call_metadata = await self._parser.extract_metadata(message)
-                if self._call_metadata:
-                    logger.info(
-                        {
-                            "message": "Call metadata extracted",
-                            "call_sid": self._call_metadata.call_sid,
-                            "organization_id": str(self._call_metadata.organization_id),
-                            "agent_id": str(self._call_metadata.agent_id),
-                        }
-                    )
-                return None
-
-            # Extract media data
-            if event_type == "media":
-                media_message = self._parser.extract_media(message)
-
-                return media_message
-
-            return None
-
+            if isinstance(message, CarrierStartMessage):
+                self._call_metadata = message.metadata
+            return message
         except Exception:
             logger.error("Telephony message handling failed.")
-            raise  # Throw so the outer loop can disconnect
-
-    def extract_dtmf(self, raw_message: str | bytes) -> str | None:
-        """Extract inbound DTMF digits from a raw provider control message."""
-        if isinstance(raw_message, bytes):
-            return None
-        message = self._parser.parse_message(raw_message)
-        return self._parser.extract_dtmf(message)
+            raise
 
     async def send_audio(
         self,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Literal
 from uuid import UUID
 
@@ -23,7 +24,12 @@ from eylo.modules.telephony.lifecycle import (
     record_call_status,
     record_opener_delivery,
 )
-from eylo.modules.telephony.schemas import CallStatus, TelephonyCallInDb
+from eylo.modules.telephony.provider_config_domain import ResolvedTelephony
+from eylo.modules.telephony.schemas import (
+    CallStatus,
+    PhoneNumberInDb,
+    TelephonyCallInDb,
+)
 from eylo.modules.telephony.services import PhoneNumberService
 from eylo.modules.telephony.webhook_security import (
     is_ip_allowlisted,
@@ -52,6 +58,7 @@ from eylo.pipelines.telephony.sessions import (
     CallSessionMetadata,
     CallSessionState,
 )
+from eylo.pipelines.telephony.stream_routing import MediaStreamRouting, RoutingQueryKey
 from eylo.pipelines.telephony.voice import (
     VoicePipelineBundle,
     apply_voice_bundle_to_session,
@@ -71,6 +78,8 @@ from eylo.pipelines.websocket.singleton import S_ws_manager
 from eylo.sockets.telephony.base import (
     CallEndedReason,
     CallMetadata,
+    CarrierDtmfMessage,
+    InboundMediaMessage,
     StreamTokenRequirement,
     TelephonyCallDirection,
 )
@@ -371,43 +380,33 @@ async def _rollback_start_event(
 
 def _enrich_metadata_from_query_params(metadata: CallMetadata, ws: WebSocket) -> None:
     """Fill provider-omitted outbound fields; the signature authenticates them."""
-    uuid_fields = {
-        "organization_id": "org_id",
-        "call_id": "call_id",
-        "agent_id": "agent_id",
-        "provider_config_id": "provider_config_id",
-    }
-    for attribute, query_key in uuid_fields.items():
-        if getattr(metadata, attribute) is None and (
-            value := ws.query_params.get(query_key)
-        ):
-            setattr(metadata, attribute, UUID(value))
-            metadata.stream_token_requirement = StreamTokenRequirement.REQUIRED
-    value = ws.query_params.get("agent_revision")
-    if metadata.agent_revision is None and value:
-        metadata.agent_revision = int(value)
+    routing = MediaStreamRouting.model_validate(dict(ws.query_params))
+    if _has_query_metadata(ws):
         metadata.stream_token_requirement = StreamTokenRequirement.REQUIRED
-    value = ws.query_params.get("provider_config_revision")
-    if metadata.provider_config_revision is None and value:
-        metadata.provider_config_revision = int(value)
-        metadata.stream_token_requirement = StreamTokenRequirement.REQUIRED
-    value = ws.query_params.get("direction")
-    if metadata.direction is TelephonyCallDirection.INBOUND and value:
-        metadata.direction = TelephonyCallDirection(value.upper())
-        metadata.stream_token_requirement = StreamTokenRequirement.REQUIRED
-    value = ws.query_params.get("initial_message")
-    if not metadata.initial_message and value:
-        metadata.initial_message = value
-        metadata.stream_token_requirement = StreamTokenRequirement.REQUIRED
-    value = ws.query_params.get("stream_token")
-    if not metadata.media_stream_token and value:
-        metadata.media_stream_token = value
+    if metadata.organization_id is None:
+        metadata.organization_id = routing.organization_id
+    if metadata.call_id is None:
+        metadata.call_id = routing.call_id
+    if metadata.agent_id is None:
+        metadata.agent_id = routing.agent_id
+    if metadata.agent_revision is None:
+        metadata.agent_revision = routing.agent_revision
+    if metadata.provider_config_id is None:
+        metadata.provider_config_id = routing.provider_config_id
+    if metadata.provider_config_revision is None:
+        metadata.provider_config_revision = routing.provider_config_revision
+    if metadata.direction is TelephonyCallDirection.INBOUND and routing.direction:
+        metadata.direction = routing.direction
+    if not metadata.initial_message and routing.initial_message:
+        metadata.initial_message = routing.initial_message
+    if not metadata.media_stream_token and routing.stream_token:
+        metadata.media_stream_token = routing.stream_token
 
 
 async def _enrich_inbound_metadata_from_phone_number(
     metadata: CallMetadata,
     provider: str,
-    lookup=None,
+    lookup: Callable[[str], Awaitable[PhoneNumberInDb | None]] | None = None,
 ) -> None:
     """Resolve inbound routing only from an organization-owned number row."""
     if not metadata.to_number:
@@ -429,7 +428,9 @@ async def _enrich_inbound_metadata_from_phone_number(
     metadata.provider_config_revision = phone_number.provider_config_revision
 
 
-async def _resolve_metadata_authority(metadata: CallMetadata, provider: str):
+async def _resolve_metadata_authority(
+    metadata: CallMetadata, provider: str
+) -> ResolvedTelephony:
     if metadata.organization_id is None or metadata.provider_config_id is None:
         raise ValueError("Media stream is missing telephony config authority.")
     async with start_transaction(ro=True) as db:
@@ -452,19 +453,7 @@ async def _resolve_metadata_authority(metadata: CallMetadata, provider: str):
 
 
 def _has_query_metadata(ws: WebSocket) -> bool:
-    return any(
-        key in ws.query_params
-        for key in (
-            "org_id",
-            "call_id",
-            "agent_id",
-            "agent_revision",
-            "provider_config_id",
-            "provider_config_revision",
-            "direction",
-            "initial_message",
-        )
-    )
+    return any(key.value in ws.query_params for key in RoutingQueryKey)
 
 
 def _is_media_stream_metadata_authorized(
@@ -567,14 +556,19 @@ async def _resolve_call_agent(
     return executable
 
 
-async def _receive_provider_message(ws: WebSocket, provider: str) -> str | bytes:
-    if provider != "vonage":
+async def _receive_provider_message(
+    ws: WebSocket, provider: SocketTelephonyProvider
+) -> str | bytes:
+    """Narrow ASGI frame values; only Vonage transports binary PCM directly."""
+    if provider is not SocketTelephonyProvider.VONAGE:
         return await ws.receive_text()
     message = await ws.receive()
-    if message.get("bytes") is not None:
-        return message["bytes"]
-    if message.get("text") is not None:
-        return message["text"]
+    payload = message.get("bytes")
+    if isinstance(payload, bytes):
+        return payload
+    text = message.get("text")
+    if isinstance(text, str):
+        return text
     raise WebSocketDisconnect
 
 
@@ -617,18 +611,15 @@ async def generic_media_ws(
         while True:
             if sess is not None:
                 _raise_failed_runtime_task(sess)
-            raw = await _receive_provider_message(ws, provider)
-            if sess is not None:
-                digits = telephony_manager.extract_dtmf(raw)
-                if digits:
-                    await handle_inbound_dtmf(
-                        sess=sess,
-                        collector=dtmf_collector,
-                        digits=digits,
-                    )
-                    continue
-
-            media_message = await telephony_manager.handle_message(raw)
+            raw = await _receive_provider_message(ws, telephony_manager.provider)
+            carrier_message = await telephony_manager.handle_message(raw)
+            if sess is not None and isinstance(carrier_message, CarrierDtmfMessage):
+                await handle_inbound_dtmf(
+                    sess=sess,
+                    collector=dtmf_collector,
+                    digits=carrier_message.digits,
+                )
+                continue
             if telephony_manager.call_metadata is not None and sess is None:
                 metadata = telephony_manager.call_metadata
                 _enrich_metadata_from_query_params(metadata, ws)
@@ -671,10 +662,10 @@ async def generic_media_ws(
                     termination_key="#",
                     timeout_ms=5000,
                 )
-            elif media_message is not None and sess is not None:
+            elif isinstance(carrier_message, InboundMediaMessage) and sess is not None:
                 await handle_media_packet(
                     sess=sess,
-                    media_message=media_message,
+                    media_message=carrier_message,
                     provider=provider,
                 )
     except WebSocketDisconnect:

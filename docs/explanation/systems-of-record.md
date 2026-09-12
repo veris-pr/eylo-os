@@ -135,6 +135,17 @@ successful command result requires a succeeded receipt. The conversation tool
 executor explicitly serializes content and metadata into the framework contract;
 the private outcome snapshot excludes tool content.
 
+Read results also retain `SorAgentViewResponse` through the executor instead of
+converting the authorized projection to a dictionary for internal shaping.
+Knowledge owns the search/get content modes and content-window models in
+`sor/knowledge/read_contracts.py`. Search excerpts and get windows omit raw source
+bodies, retain custom fields and provenance, and leave the original projection
+unchanged. Related collections omit source bodies too. Only records with normalized
+text receive window metadata; other read tools retain their existing response
+shape. The result envelope validates finite JSON in primary and related record
+values before the framework serializer runs. This changes neither grants nor the
+operator API, persisted records, document input limits or database schema.
+
 Adapter configuration and discovery values use typed Pydantic contracts too.
 Decrypted credentials and source settings are copied, validated as finite JSON
 and sealed at the top level before factory invocation. Credentials and webhook
@@ -322,6 +333,14 @@ position within the message. These are current-snapshot slots, not permanent
 file identities: replacing or reordering files updates a slot. Expiring download
 URLs never determine identity. List, continuation, exact reads and relationship
 projection use the same identifiers; source snapshots retain the original fields.
+
+Intercom's [v2.16 unassigned identity change](https://developers.intercom.com/docs/references/changelog)
+returns zero instead of null for an unassigned conversation admin or team.
+The vendor wire contract preserves that response, but source-field projection
+converts the named unassigned sentinel to null. Zero is not a canonical Agent or
+queue identity and must not create a relationship-repair job. Real identities and
+explicit outbound unassignment requests are unchanged. Run source reconciliation
+after deploying this correction to repair previously projected zero identities.
 
 This does not add deletion reconciliation. Intercom's incremental child streams
 can retain projected rows when a source message or attachment disappears. Full

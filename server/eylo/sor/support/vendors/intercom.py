@@ -1519,8 +1519,8 @@ class IntercomSupportAdapter:
                 "requester_external_id": (
                     _optional_id(contacts[0].id) if contacts else None
                 ),
-                "assignee_external_id": _optional_id(row.admin_assignee_id),
-                "group_external_id": _optional_id(row.team_assignee_id),
+                "assignee_external_id": _optional_assignee_id(row.admin_assignee_id),
+                "group_external_id": _optional_assignee_id(row.team_assignee_id),
                 "native_status": state,
                 "normalized_status": _STATUS_MAP.get(state or ""),
                 "priority": row.priority,
@@ -2514,6 +2514,14 @@ def _optional_id(value: object) -> str | None:
     if not 1 <= len(text) <= 320 or any(character in text for character in "\r\n"):
         return None
     return text
+
+
+def _optional_assignee_id(value: native.Identifier | None) -> str | None:
+    """Keep Intercom's unassigned sentinel out of canonical relationship targets."""
+    identity = _optional_id(value)
+    if identity == str(native.AssignmentSentinel.UNASSIGNED):
+        return None
+    return identity
 
 
 def _path_id(value: str) -> str:

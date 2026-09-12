@@ -3,7 +3,7 @@
 import re
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional, Self
+from typing import List, Literal, Optional, Self
 from uuid import UUID
 
 from pydantic import (
@@ -11,11 +11,17 @@ from pydantic import (
     ConfigDict,
     Field,
     SkipValidation,
+    StrictStr,
     field_validator,
     model_validator,
 )
 
-from eylo.common.outbound import OutboundAttemptState
+from eylo.common.contracts.json_values import JsonObject
+from eylo.common.outbound import (
+    OUTBOUND_STATUS_CODE_MAX,
+    OUTBOUND_STATUS_CODE_MIN,
+    OutboundAttemptState,
+)
 from eylo.common.schemas import (
     EyloBaseApiSchema,
     EyloBaseOrganizationModelSchema,
@@ -26,6 +32,7 @@ from eylo.common.schemas import (
     PaginatedResponseSchema,
 )
 from eylo.modules.telephony.constants import (
+    CallControlStatus,
     CallOpenerDeliveryStatus,
     CallTransferStatus,
 )
@@ -63,6 +70,54 @@ class CallStatus(str, Enum):
     NO_ANSWER = "no-answer"
     FAILED = "failed"
     CANCELED = "canceled"
+
+
+class OutboundCallRequest(BaseModel):
+    """Operator call input; organization and call identity come from auth/header."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore", hide_input_in_errors=True)
+
+    to_number: StrictStr = Field(min_length=1)
+    agent_id: UUID
+    initial_message: StrictStr | None = None
+    context: JsonObject | None = Field(default=None, repr=False)
+
+    @field_validator("context")
+    @classmethod
+    def validate_origin_links(cls, value: JsonObject | None) -> JsonObject | None:
+        """Check known links without rewriting original idempotency input."""
+        OutboundCallOrigin.model_validate(value or {})
+        return value
+
+
+class OutboundCallOrigin(BaseModel):
+    """Campaign links parsed separately from the unchanged request fingerprint."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore", hide_input_in_errors=True)
+
+    campaign_id: UUID | None = None
+    campaign_contact_id: UUID | None = None
+    campaign_attempt_id: UUID | None = None
+
+    @field_validator(
+        "campaign_id", "campaign_contact_id", "campaign_attempt_id", mode="before"
+    )
+    @classmethod
+    def empty_link_is_absent(cls, value: object) -> object:
+        """Preserve empty-string compatibility; all other values must be UUIDs."""
+        return None if value == "" else value
+
+
+class CallControlAcceptedResult(BaseModel):
+    """Platform projection after the carrier accepts a live control."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    status: Literal[CallControlStatus.ACCEPTED] = CallControlStatus.ACCEPTED
+    operation: TelephonyOperation
+    provider_status: int | None = Field(
+        default=None, ge=OUTBOUND_STATUS_CODE_MIN, le=OUTBOUND_STATUS_CODE_MAX
+    )
 
 
 class OutboundCallResult(BaseModel):

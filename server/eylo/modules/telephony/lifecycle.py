@@ -26,6 +26,7 @@ from eylo.modules.telephony.constants import (
     CallTransferOutcome,
     CallTransferStatus,
 )
+from eylo.modules.telephony.models import TelephonyCallModel
 from eylo.modules.telephony.provider_config_domain import TelephonyProvider
 from eylo.modules.telephony.repositories import TelephonyCallRepository
 from eylo.modules.telephony.schemas import (
@@ -190,8 +191,10 @@ async def apply_outbound_call_outcome(
         call = await repository.get_by_id_for_update(call_id, organization_id)
         if call is None:
             raise CallLifecycleNotFound
-        provider_was_bound = provider_reference is not None and (
-            call.call_sid == provider_reference
+        provider_was_bound = (
+            call.provider_status == CallInitiationMarker.ACCEPTED.value
+            if provider_reference is None
+            else call.call_sid == provider_reference
         )
         if provider_reference is not None:
             bound = await repository.get_by_call_sid_for_update(provider_reference)
@@ -273,7 +276,7 @@ async def apply_outbound_call_outcome(
 
 def _outbound_outcome_already_projected(
     *,
-    call: Any,
+    call: TelephonyCallModel,
     state: OutboundAttemptState,
     failure_code: str | None,
     provider_was_bound: bool,

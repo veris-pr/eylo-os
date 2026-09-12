@@ -210,7 +210,140 @@ Silence checks such as “Are you still there?” are policy speech, not normal
 Agent content. They must not be inserted into canonical model history as if the
 Agent independently chose them.
 
+## Carrier stream contracts
+
+Each carrier adapter validates its consumed WebSocket fields and returns a typed
+start, media, keypad or ignored event. The manager decodes each frame once; the
+pipeline owns routing enrichment, authorization, config resolution and session
+creation. A parsed start is not authenticated authority. Media received before
+session initialization is not delivered to the voice pipeline.
+
+Twilio, Plivo and Exotel carry base64 audio in JSON. Vonage carries binary PCM
+separately from JSON controls. Carrier timestamp and sequence representations are
+preserved rather than coerced into one invented vendor format. Unknown controls
+remain ignored; malformed consumed fields fail validation and enter the existing
+teardown path. The ASGI transport helper narrows native frame values before they
+reach a parser.
+
+Outbound media and clear commands also use carrier-owned models. Serialization
+aliases supply native field names without changing Python constructor names.
+Plivo emits numeric `sampleRate`; Vonage sends the documented `action: clear`
+command instead of treating interruption as unsupported. A successful clear write
+means transport acceptance, not a received playback acknowledgement. Outbound wire
+serialization deliberately includes audio; these command objects are not audit
+snapshots and must not be logged.
+
+Exotel's existing sender still derives sequence and timestamp values from wall
+clock time. The typed command preserves that representation; monotonic ordinals,
+relative timestamps and chunk sizing require separate protocol validation.
+
+See [Twilio Media Streams](https://www.twilio.com/docs/voice/media-streams/websocket-messages),
+[Plivo Audio Streaming](https://www.plivo.com/docs/voice-agents/audio-streaming/concepts/audio-streaming-reference),
+[Exotel Stream/Voicebot applets](https://support.exotel.com/support/solutions/articles/3000108630-working-with-the-stream-and-voicebot-applet)
+and [Vonage WebSockets](https://developer.vonage.com/en/voice/voice-api/concepts/websockets).
+Vonage's native `websocket:dtmf` spelling is recognized alongside existing legacy
+keypad variants. Its native connection-handshake metadata initialization remains
+an unresolved integration gap; parser coverage alone does not establish native
+Vonage call readiness.
+
+Exotel packed custom routing remains explicit compatibility: the adapter handles
+direct fields, HTML-escaped JSON keys and packed `CustomField` values without
+logging tokens, phone numbers or caller content. Caller-selected routing still
+requires the existing pipeline token checks, including when a recognized routing
+field was supplied empty or null. New start/media/keypad snapshots exclude raw
+metadata, audio and digits.
+
+The pipeline decodes query routing into `MediaStreamRouting`; telephony owns the
+separate signed `MediaStreamClaims` body. Query shape validation grants no access.
+Recognized routing keys require a token even when their values are empty, and
+existing carrier metadata is not overwritten by query values. All supplied known
+query fields are validated, including fields that would otherwise be shadowed by
+carrier metadata. Malformed IDs, revisions and directions are refused.
+
+Claims preserve the existing canonical JSON bytes used for signing: provider names
+are lowercase, direction is uppercase and revisions are integers. Authentication
+still checks the signature before validating the body and comparing call, org,
+agent and config identities. Malformed bodies and non-ASCII signatures return an
+invalid-token result. Claim serialization includes caller text for signature
+binding and must not be used as a log snapshot.
+
 ## Call termination
+
+The outbound-call HTTP route declares its request and result schemas. Organization
+authority comes from the authenticated member; an organization field in the body
+does not select another tenant. The bounded idempotency header still determines
+the stable call ID. Malformed body fields now receive request-validation errors
+before resolution or carrier I/O, rather than generic runtime failures.
+
+Call orchestration parses campaign links into a typed origin value while retaining
+the original JSON context for request fingerprinting. Empty optional links remain
+absent; valid request fingerprints, stream parameters and callback URLs are
+unchanged. Carrier control outcomes become a module-owned accepted-result model
+or the existing explicit unsupported/rejected/unknown errors. Module and socket
+provider enums remain separate: comparisons use the enum owned by the value being
+examined, and the config pipeline translates at the boundary.
+
+Exotel v1 connect-call forms and consumed responses use carrier-owned models.
+The form keeps the customer in `From`, the configured ExoPhone in `CallerId`, and
+the applet in `Url`; optional packed metadata is not interpreted as platform
+routing by the REST adapter. Only a textual call identity establishes acceptance.
+Malformed successful responses remain unconfirmed and cannot trigger an automatic
+resend. This follows Exotel's
+[connect-to-flow contract](https://docs.exotel.com/exotel-agentstream/connect-voice-ai-with-flow-api).
+Flat `CallSid`/`sid` parsing remains explicit legacy compatibility, not a claim
+that these variants are documented by the current connect API.
+
+Vonage owns separate typed phone/WebSocket endpoints, connect NCCO instructions,
+call creation and control requests. Bootstrap and outbound creation share the same
+NCCO builder rather than serializing and reparsing intermediate dictionaries.
+Only a `started` response with a textual, nonblank identity establishes acceptance;
+unknown or malformed responses do not. Hangup, transfer and DTMF retain their
+status-based outcome classification and cancellation cleanup. The models cover
+the NCCO actions Eylo produces, not all vendor actions. See the
+[Voice v1 REST contract](https://developer.vonage.com/en/api/voice) and
+[NCCO endpoint reference](https://developer.vonage.com/en/voice/voice-api/ncco-reference).
+
+Twilio call creation and control use typed native forms. Creation requires a
+textual, nonblank `sid`; malformed responses remain unconfirmed. See the
+[Call resource](https://www.twilio.com/docs/voice/api/call-resource).
+
+Plivo call creation sends one bounded async HTTP request rather than using the
+SDK's implicit voice-request retries. Its `request_uuid` identifies acceptance,
+not the active call: the outbound receipt can retain that request ID, while
+`TelephonyCall.call_sid` stays unset until an authenticated callback supplies the
+actual call UUID. If the callback arrives first, its committed success receipt is
+preserved; a late create response cannot overwrite it. This follows the
+[Plivo Calls API](https://www.plivo.com/docs/voice/api/calls). SDK-based end/DTMF
+operations are separate from this create path.
+
+Existing Plivo attempts pinned to the previous SDK transport are not silently
+rewritten or resent after this change. Reusing their identity with the new HTTP
+transport raises the existing outbound-spec conflict. Old malformed receipt IDs
+are not assumed to be valid call UUIDs. Operators must reconcile such historical
+attempts before considering a new call; retrying blindly can duplicate a call.
+
+Twilio number search uses vendor-owned request/response models before projecting
+into the public available-number schema. The console's existing 30-result cap is
+preserved; it is not Twilio's API maximum. Provisioning parses the top-level
+IncomingPhoneNumber identity instead of recursively finding arbitrary nested
+keys. Invalid identities or a returned number differing from the requested number
+remain unconfirmed, without automatic resend. See the
+[available-number contract](https://www.twilio.com/docs/phone-numbers/api/availablephonenumberlocal-resource)
+and [provisioning resource](https://www.twilio.com/docs/phone-numbers/api/incomingphonenumber-resource).
+
+Plivo, Vonage and Exotel available-number responses are also parsed into their
+own carrier models before the pipeline builds the public projection. Canonical
+mobile searches translate to Plivo `mobile`, Vonage `mobile-lvn` and Exotel
+`Mobile`; vendor spellings do not enter the module's number-type enum.
+Plivo provisioning requires a fulfilled single-number result matching the request;
+pending or malformed responses remain unconfirmed. Vonage requires an explicit
+textual success code, not an empty response. Its old `0` compatibility code is
+retained separately from the documented `200`. See the
+[Plivo PhoneNumber API](https://www.plivo.com/docs/numbers/phone-numbers),
+[Vonage Numbers API](https://developer.vonage.com/en/api/numbers) and
+[Exotel available-number API](https://developer.exotel.com/docs/exophones/api-reference/available-numbers).
+This typed search coverage does not establish Exotel purchase-response coverage;
+that operation still uses the existing compatibility parser.
 
 Outbound telephony preparation compares an immutable call-intent projection
 under the existing transaction lock before creating a row. Replaying the same

@@ -13,7 +13,9 @@ than on a worker remembering what it already did.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
+from pydantic import JsonValue
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
@@ -112,13 +114,15 @@ class ScheduleModel(EyloOrganizationModel):
     # sockets/scheduler/recurrence.py.
     rule: Mapped[str | None] = mapped_column(Text, nullable=True)
     timezone: Mapped[str] = mapped_column(String(64), nullable=False)
-    starts_at = mapped_column(DateTime(timezone=True), nullable=False)
-    ends_at = mapped_column(DateTime(timezone=True), nullable=True)
+    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ends_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # What to do. The scheduler never interprets either — that is what lets a
     # module add a schedulable capability without the scheduler learning it.
     action: Mapped[str] = mapped_column(String(128), nullable=False)
-    payload: Mapped[dict] = mapped_column(
+    payload: Mapped[dict[str, JsonValue]] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
 
@@ -142,8 +146,12 @@ class ScheduleModel(EyloOrganizationModel):
     # and stored here so the due query is an index scan rather than a rule
     # evaluation per row. NULL means retired: exhausted by COUNT, past UNTIL,
     # past `ends_at`, or a one-shot that has fired.
-    next_at = mapped_column(DateTime(timezone=True), nullable=True, index=True)
-    last_fired_at = mapped_column(DateTime(timezone=True), nullable=True)
+    next_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    last_fired_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # Set when a schedule runs out of future — exhausted by COUNT, past UNTIL,
     # past `ends_at`, or a one-shot that has fired.
@@ -154,7 +162,9 @@ class ScheduleModel(EyloOrganizationModel):
     # column the sweeper cannot tell "this recurring job stopped forever with no
     # error anywhere" from "this one is legitimately over", and would either
     # resurrect finished schedules or abandon stranded ones.
-    retired_at = mapped_column(DateTime(timezone=True), nullable=True)
+    retired_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # Why a schedule stopped producing runs, when it stopped for a reason. A
     # schedule whose action was removed in a deploy keeps this and stays
@@ -228,10 +238,12 @@ class ScheduleRevisionModel(EyloOrganizationModel):
     name: Mapped[str] = mapped_column(String(256), nullable=False)
     rule: Mapped[str | None] = mapped_column(Text, nullable=True)
     timezone: Mapped[str] = mapped_column(String(64), nullable=False)
-    starts_at = mapped_column(DateTime(timezone=True), nullable=False)
-    ends_at = mapped_column(DateTime(timezone=True), nullable=True)
+    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ends_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     action: Mapped[str] = mapped_column(String(128), nullable=False)
-    payload: Mapped[dict] = mapped_column(
+    payload: Mapped[dict[str, JsonValue]] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
     misfire_policy: Mapped[MisfirePolicy] = mapped_column(
@@ -254,18 +266,22 @@ class ScheduleRevisionModel(EyloOrganizationModel):
         default=RevisionAvailability.PUBLISHED.value,
         server_default=RevisionAvailability.PUBLISHED.value,
     )
-    published_at = mapped_column(
+    published_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
     published_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), nullable=True
     )
-    revoked_at = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     revoked_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), nullable=True
     )
     revocation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    cancellation_requested_at = mapped_column(DateTime(timezone=True), nullable=True)
+    cancellation_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class ScheduleRunModel(EyloOrganizationModel):
@@ -333,7 +349,9 @@ class ScheduleRunModel(EyloOrganizationModel):
 
     # The occurrence this run is for, in UTC. Part of the uniqueness key, so it
     # is the occurrence's identity rather than a timestamp for display.
-    scheduled_for = mapped_column(DateTime(timezone=True), nullable=False)
+    scheduled_for: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
 
     # Snapshotted from the schedule at creation, not read through the foreign
     # key at execution. A schedule edited between a run being created and
@@ -341,7 +359,7 @@ class ScheduleRunModel(EyloOrganizationModel):
     # who fixes a payload expects the fix to apply to the *next* run, and a run
     # that did something other than what it recorded is unauditable.
     action: Mapped[str] = mapped_column(String(128), nullable=False)
-    payload: Mapped[dict] = mapped_column(
+    payload: Mapped[dict[str, JsonValue]] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
 

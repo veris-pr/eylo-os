@@ -20,7 +20,9 @@ from eylo.modules.auth.services.auth_service import get_current_user
 from eylo.modules.scheduler.actions import registered_actions
 from eylo.modules.scheduler.discovery import register_scheduled_actions
 from eylo.modules.scheduler.domain import ScheduleConflictError
+from eylo.modules.scheduler.models import ScheduleModel
 from eylo.modules.scheduler.schemas import (
+    ScheduleActionsRead,
     ScheduleCreate,
     ScheduleRead,
     ScheduleRevisionRevoke,
@@ -54,11 +56,11 @@ def _authorize(organization_id: UUID, current_user: CurrentUserSchema) -> None:
 # ---------------------------------------------------------------------------
 
 
-@router.get("/actions")
+@router.get("/actions", response_model=ScheduleActionsRead)
 async def list_actions(
     organization_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> ScheduleActionsRead:
     """Every action a schedule can name.
 
     Exposed because the alternative is an operator guessing, and a guess
@@ -66,14 +68,14 @@ async def list_actions(
     """
     _authorize(organization_id, current_user)
     register_scheduled_actions()
-    return {"actions": list(registered_actions())}
+    return ScheduleActionsRead(actions=list(registered_actions()))
 
 
 @router.get("", response_model=list[ScheduleRead])
 async def list_all(
     organization_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> list[ScheduleModel]:
     _authorize(organization_id, current_user)
     return await list_schedules(organization_id=organization_id)
 
@@ -83,7 +85,7 @@ async def create(
     organization_id: UUID,
     request: ScheduleCreate,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> ScheduleModel:
     """Define a schedule. Refuses anything that could not run."""
     _authorize(organization_id, current_user)
     try:
@@ -118,7 +120,7 @@ async def update(
     schedule_id: UUID,
     request: ScheduleUpdate,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> ScheduleModel:
     """Append one explicit immutable definition revision."""
     _authorize(organization_id, current_user)
     try:
@@ -155,7 +157,7 @@ async def read_one(
     organization_id: UUID,
     schedule_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> ScheduleModel:
     _authorize(organization_id, current_user)
     try:
         return await get_schedule(schedule_id, organization_id=organization_id)
@@ -168,7 +170,7 @@ async def read_runs(
     organization_id: UUID,
     schedule_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> list[ScheduleRunRead]:
     """What this schedule has actually done, newest first."""
     _authorize(organization_id, current_user)
     try:
@@ -207,7 +209,7 @@ async def cancel(
     organization_id: UUID,
     schedule_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> None:
     """Retire a schedule. Runs it already produced keep their history."""
     _authorize(organization_id, current_user)
     try:

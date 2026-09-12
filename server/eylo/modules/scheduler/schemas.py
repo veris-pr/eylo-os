@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from eylo.common.contracts.json_values import JsonObject
 from eylo.common.contracts.scheduler import MisfirePolicy
+from eylo.common.revisions import DefinitionLifecycle
 from eylo.modules.agent_runs.domain import AgentRunLifecycle, AgentRunOutcome
 
 
@@ -26,7 +27,7 @@ class ScheduleDefinitionRequest(BaseModel):
 
     name: str = Field(min_length=1, max_length=256)
     action: str = Field(min_length=1, max_length=128)
-    payload: dict[str, Any] = Field(default_factory=dict)
+    payload: JsonObject = Field(default_factory=dict)
     agent_id: uuid.UUID = Field(
         description=(
             "Agent whose current published revision is pinned by this explicit "
@@ -38,7 +39,9 @@ class ScheduleDefinitionRequest(BaseModel):
     timezone: str = Field(
         description="IANA name, e.g. 'Europe/Berlin'. Occurrences are computed in it."
     )
-    starts_at: datetime = Field(description="The anchor. Also the wall-clock time each occurrence lands on.")
+    starts_at: datetime = Field(
+        description="The anchor. Also the wall-clock time each occurrence lands on."
+    )
     rule: str | None = Field(
         default=None,
         description=(
@@ -71,6 +74,14 @@ class ScheduleRevisionRevoke(BaseModel):
     reason: str = Field(min_length=1, max_length=2000)
 
 
+class ScheduleActionsRead(BaseModel):
+    """Registered action names without exposing live handlers or contexts."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    actions: list[str]
+
+
 class ScheduleRead(BaseModel):
     model_config = ConfigDict(from_attributes=True, extra="forbid")
 
@@ -78,7 +89,7 @@ class ScheduleRead(BaseModel):
     key: str
     name: str
     action: str
-    payload: dict[str, Any]
+    payload: JsonObject
     rule: str | None
     timezone: str
     starts_at: datetime
@@ -86,7 +97,7 @@ class ScheduleRead(BaseModel):
     misfire_policy: MisfirePolicy
     enabled: bool
     published_revision: int
-    lifecycle: str
+    lifecycle: DefinitionLifecycle
     agent_id: uuid.UUID
     agent_revision: int
     next_at: datetime | None
@@ -114,5 +125,5 @@ class ScheduleRunRead(BaseModel):
     misfired_count: int
     started_at: datetime | None
     finished_at: datetime | None
-    result: dict[str, Any] | None
+    result: JsonObject | None
     failure_summary: str | None

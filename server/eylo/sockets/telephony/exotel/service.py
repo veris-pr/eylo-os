@@ -1,19 +1,16 @@
-"""Exotel telephony service implementation (stub).
-
-This module provides a stub implementation for Exotel telephony service.
-Complete implementation to be added when Exotel integration is needed.
-"""
+"""Exotel call creation/control and carrier media translation."""
 
 import base64
-import html
 import json
 import logging
 import time
+from http import HTTPStatus
 from typing import Any, Dict, Optional
 from uuid import UUID
 
 import aiohttp
 from fastapi import HTTPException, WebSocket
+from pydantic import ValidationError
 
 from eylo.common.contracts.phone_numbers import PhoneNumberNormalizationService
 from eylo.common.contracts.speech_runtime import (
@@ -35,9 +32,12 @@ from eylo.sockets.telephony.base import (
     BaseTelephonyService,
     CallMetadata,
     CarrierAudioFormat,
-    CarrierMediaEvent,
+    CarrierDtmfMessage,
+    CarrierIgnoredMessage,
+    CarrierStartMessage,
     InboundMediaMessage,
     OutboundMediaMessage,
+    ParsedCarrierMessage,
     StreamTokenRequirement,
     TelephonyConfig,
     TelephonyControlAccepted,
@@ -54,213 +54,96 @@ from eylo.sockets.telephony.base import (
     classify_control_failure,
 )
 from eylo.sockets.telephony.config import ExotelSettings
+from eylo.sockets.telephony.exotel.contracts import (
+    CONNECT_OPERATION,
+    CONNECT_TIMEOUT_SECONDS,
+    ConnectFailureCode,
+    ConnectParameters,
+    ConnectRequest,
+    ConnectResponse,
+)
+from eylo.sockets.telephony.exotel.stream_contracts import (
+    ClearCommand,
+    MediaCommand,
+    OutboundAudio,
+    StreamMessage,
+    unpack_routing,
+)
+from eylo.sockets.telephony.exotel.stream_contracts import Event as StreamEvent
+from eylo.sockets.telephony.exotel.stream_contracts import Start as StreamStart
 
 logger = logging.getLogger(__name__)
+MILLISECONDS_PER_SECOND = 1000
 
 
 class ExotelMessageParser(TelephonyMessageParser):
-    """Parser for Exotel-specific message formats."""
+    """Normalize Exotel frames without logging raw media or routing secrets."""
 
-    def parse_message(self, raw_message: str) -> Dict[str, Any]:
-        """Parse raw message from Exotel.
-
-        Args:
-            raw_message: Raw message from Exotel WebSocket
-
-        Returns:
-            Parsed message dictionary
-
-        """
-        return json.loads(raw_message)
-
-    def get_event_type(self, message: Dict[str, Any]) -> str:
-        """Extract event type from Exotel message.
-
-        Args:
-            message: Parsed message dictionary
-
-        Returns:
-            Event type string
-
-        """
-        event = message.get("event", "unknown")
-        return event
-
-    def extract_media(self, message: Dict[str, Any]) -> Optional[InboundMediaMessage]:
-        """Extract media data from Exotel message.
-
-        Args:
-            message: Parsed message dictionary
-
-        Returns:
-            InboundMediaMessage if this is a media event, None otherwise
-
-        """
-        if message.get("event") != "media":
-            return None
-
-        media_data = message.get("media", {})
-        payload_b64 = media_data.get("payload", "")
-
-        if not payload_b64:
-            return None
-
-        # Decode base64 to raw audio bytes (Linear16 PCM)
-        payload = base64.b64decode(payload_b64)
-        timestamp = media_data.get("timestamp", "")
-        track = media_data.get("track", "inbound")
-        sequence_number = message.get(
-            "sequence_number", media_data.get("sequence_number", 0)
-        )
-
-        return InboundMediaMessage(
-            event=CarrierMediaEvent.MEDIA,
-            payload=payload,
-            timestamp=timestamp,
-            track=track,
-            sequence_number=sequence_number,
-        )
-
-    def extract_dtmf(self, message: Dict[str, Any]) -> Optional[str]:
-        """Extract Exotel inbound DTMF digits."""
-        if message.get("event") not in {"dtmf", "digits"}:
-            return None
-        data = message.get("dtmf") or message.get("digits") or message
-        if isinstance(data, dict):
-            digits = data.get("digit") or data.get("digits")
-        else:
-            digits = data
-        return str(digits) if digits else None
-
-    async def extract_metadata(self, message: Dict[str, Any]) -> Optional[CallMetadata]:
-        """Extract call metadata from Exotel message.
-
-        Args:
-            message: Parsed message dictionary
-
-        Returns:
-            CallMetadata if this is a start event, None otherwise
-
-        """
-        if message.get("event") != "start":
-            return None
-
-        logger.debug("Extracting metadata from Exotel message: %s", message)
-
-        start_data = message.get("start", {})
-        call_sid = start_data.get("call_sid", "")
-        stream_sid = message.get("stream_sid", "")
-        from_number = start_data.get("from", "")
-        to_number = start_data.get("to", "")
-        raw_custom_params = start_data.get("custom_parameters", {}) or {}
-        custom_params = dict(raw_custom_params)
-
-        logger.debug("Extracted custom parameters: %s", raw_custom_params)
-
-        # Handle cases where Exotel puts the CustomField JSON in the key (often HTML-escaped)
-        for k, v in raw_custom_params.items():
-            if isinstance(k, str):
-                key_unescaped = html.unescape(k)
-                if key_unescaped.startswith("{") and key_unescaped.endswith("}"):
-                    try:
-                        decoded = json.loads(key_unescaped)
-                        if isinstance(decoded, dict):
-                            custom_params.update(decoded)
-                            logger.debug(
-                                "Merged CustomField from key payload: %s", decoded
-                            )
-                    except json.JSONDecodeError:
-                        logger.error("Failed to decode CustomField from key: %s", k)
-
-        # Exotel Passthru can return CustomField either as:
-        # - custom_parameters["CustomField"] = "<json>"
-        # - custom_parameters["<json>"] = "" (observed)
-        # Simplified: we now expect minimal CustomField (activity_id, flow_type).
-        custom_field_str = raw_custom_params.get(
-            "CustomField"
-        ) or raw_custom_params.get("customfield")
-        if isinstance(custom_field_str, str):
-            try:
-                decoded = json.loads(html.unescape(custom_field_str))
-                if isinstance(decoded, dict):
-                    custom_params.update(decoded)
-            except json.JSONDecodeError:
-                logger.error("Failed to decode Exotel CustomField value")
-
-        org_id = custom_params.get("org_id") or custom_params.get("OrgId")
-        agent_id = custom_params.get("agent_id") or custom_params.get("AgentId")
-        custom_routing_present = any(
-            key in custom_params
-            for key in (
-                "org_id",
-                "OrgId",
-                "agent_id",
-                "AgentId",
-                "InitialMessage",
-                "initial_message",
-                "Direction",
-                "direction",
+    def parse_message(self, raw_message: str | bytes) -> ParsedCarrierMessage:
+        if isinstance(raw_message, bytes):
+            return CarrierIgnoredMessage()
+        message = StreamMessage.model_validate_json(raw_message)
+        if message.event == StreamEvent.START:
+            return CarrierStartMessage(metadata=self._metadata(message))
+        if (
+            message.event == StreamEvent.MEDIA
+            and message.media
+            and message.media.payload
+        ):
+            media = message.media
+            return InboundMediaMessage(
+                payload=base64.b64decode(media.payload),
+                timestamp=media.timestamp,
+                track=media.track,
+                sequence_number=(
+                    message.sequence_number
+                    if message.sequence_number is not None
+                    else media.sequence_number
+                ),
             )
-        )
-        direction = (
-            custom_params.get("direction")
-            or custom_params.get("Direction")
-            or "INBOUND"
-        )
-        initial_message = custom_params.get("InitialMessage") or custom_params.get(
-            "initial_message"
-        )
-        media_stream_token = custom_params.get("StreamToken") or custom_params.get(
-            "stream_token"
-        )
+        if message.event in {StreamEvent.DTMF, StreamEvent.LEGACY_DIGITS}:
+            digits = message.keypad_digits
+            if digits:
+                return CarrierDtmfMessage(digits=digits)
+        return CarrierIgnoredMessage()
 
-        conversation_id: UUID | None = None
-
-        logger.debug(
-            "[EXOTEL:SERVICE] start.custom_parameters merged=%s org_id=%s agent_id=%s",
-            custom_params,
-            org_id,
-            agent_id,
-        )
-
-        if not from_number or not to_number:
+    def _metadata(self, message: StreamMessage) -> CallMetadata:
+        start = message.start or StreamStart()
+        custom = unpack_routing(start.custom_parameters or {})
+        if not start.from_number or not start.to_number:
             raise ValueError("From and To numbers are required")
-
-        phone_norm_service = PhoneNumberNormalizationService()
-        from_result = phone_norm_service.parse_to_e164(from_number)
-        to_result = phone_norm_service.parse_to_e164(to_number)
+        normalizer = PhoneNumberNormalizationService()
+        from_result = normalizer.parse_to_e164(start.from_number)
+        to_result = normalizer.parse_to_e164(start.to_number)
         if not from_result.success or not to_result.success:
             raise ValueError("From and To numbers must be valid phone numbers")
-
-        from_number = from_result.e164
-        to_number = to_result.e164
-        if not from_number or not to_number:
+        if not from_result.e164 or not to_result.e164:
             raise ValueError("Phone number normalization returned no E.164 value")
-
-        if initial_message is None:
-            initial_message = "Hello"
-
+        organization_id = custom.org_id or custom.alternate_org_id
+        agent_id = custom.agent_id or custom.alternate_agent_id
+        initial_message = custom.initial_message or custom.alternate_initial_message
         return CallMetadata(
-            call_sid=call_sid,
-            stream_sid=stream_sid,
-            from_number=from_number,
-            to_number=to_number,
-            organization_id=UUID(org_id) if org_id else None,
+            call_sid=start.call_sid,
+            stream_sid=message.stream_sid,
+            from_number=from_result.e164,
+            to_number=to_result.e164,
+            organization_id=UUID(organization_id) if organization_id else None,
             agent_id=UUID(agent_id) if agent_id else None,
-            conversation_id=conversation_id,
-            direction=CallMetadata.normalize_direction(direction),
-            initial_message=initial_message,
-            media_stream_token=media_stream_token,
+            direction=CallMetadata.normalize_direction(
+                custom.direction or custom.alternate_direction or "INBOUND"
+            ),
+            initial_message=initial_message if initial_message is not None else "Hello",
+            media_stream_token=custom.stream_token or custom.alternate_stream_token,
             stream_token_requirement=(
                 StreamTokenRequirement.REQUIRED
-                if custom_routing_present
+                if custom.requires_stream_token
                 else StreamTokenRequirement.NOT_REQUIRED
             ),
         )
 
 
 class ExotelService(BaseTelephonyService):
-    """Exotel telephony service implementation (stub)."""
+    """Own Exotel's carrier connections without platform routing policy."""
 
     def __init__(
         self, config: TelephonyConfig, websocket: Optional[WebSocket] = None
@@ -305,19 +188,17 @@ class ExotelService(BaseTelephonyService):
         # Convert raw bytes to base64
         payload_b64 = base64.b64encode(message.payload).decode("utf-8")
 
-        # Construct JSON message
-        msg = {
-            "event": "media",
-            "sequence_number": str(int(time.time())),
-            "stream_sid": message.stream_sid,
-            "media": {
-                "payload": payload_b64,
-                "timestamp": str(int(time.time() * 1000)),
-            },
-        }
+        command = MediaCommand(
+            sequence_number=str(int(time.time())),
+            stream_sid=message.stream_sid,
+            media=OutboundAudio(
+                payload=payload_b64,
+                timestamp=str(int(time.time() * MILLISECONDS_PER_SECOND)),
+            ),
+        )
 
         try:
-            await self.websocket.send_text(json.dumps(msg))
+            await self.websocket.send_text(command.model_dump_json())
         except Exception:
             logger.warning("Exotel media write failed.")
             raise
@@ -326,10 +207,10 @@ class ExotelService(BaseTelephonyService):
         if not self.websocket:
             raise RuntimeError("Telephony WebSocket is not connected.")
 
-        msg = {"event": "clear", "stream_sid": stream_sid}
+        command = ClearCommand(stream_sid=stream_sid)
 
         try:
-            await self.websocket.send_text(json.dumps(msg))
+            await self.websocket.send_text(command.model_dump_json())
             return True
         except Exception:
             logger.warning("Exotel clear write failed.")
@@ -365,19 +246,7 @@ class ExotelService(BaseTelephonyService):
         authorization: OutboundSendAuthorization,
         status_callback_url: Optional[str] = None,
     ) -> OutboundSendOutcome:
-        """Make outbound call connecting to an Applet.
-
-        Args:
-            to_number: Destination phone number
-            from_number: Source phone number
-            ws_url: WebSocket URL for media streaming
-            custom_params: Custom parameters
-            status_callback_url: URL for call status updates
-
-        Returns:
-            Response data from Exotel API
-
-        """
+        """Start the configured applet once; an ambiguous response never permits resend."""
         del authorization, ws_url  # Exotel exposes no client idempotency slot.
 
         api_key = self.settings.api_key
@@ -392,12 +261,6 @@ class ExotelService(BaseTelephonyService):
         applet_url = f"http://my.exotel.com/{account_sid}/exoml/start_voice/{app_id}"
         # Exotel requires Url to be an HTTP applet.
         flow_url = applet_url
-        custom_field_value: Optional[str] = None
-        if custom_params:
-            # Prefer pre-packed CustomField if caller provided one.
-            custom_field_value = custom_params.get("CustomField") or custom_params.get(
-                "custom_field_value"
-            )
 
         # 3. Call Exotel REST API
         subdomain = self.settings.api_host
@@ -407,55 +270,56 @@ class ExotelService(BaseTelephonyService):
         from_formatted = phone_norm_service.format_for_exotel(from_number)
         to_formatted = to_number  # E.164 accepted for customer leg
 
-        timeout = aiohttp.ClientTimeout(total=20)
+        timeout = aiohttp.ClientTimeout(total=CONNECT_TIMEOUT_SECONDS)
         try:
+            parameters = ConnectParameters.model_validate(custom_params)
+            request = ConnectRequest(
+                from_number=to_formatted,
+                caller_id=from_formatted,
+                url=flow_url,
+                custom_field=parameters.packed_custom_field,
+                status_callback=status_callback_url or None,
+            )
             async with aiohttp.ClientSession(
                 auth=aiohttp.BasicAuth(api_key, api_token),
                 timeout=timeout,
             ) as session:
-                data = {
-                    # Exotel expects:
-                    # - From: the customer/destination number
-                    # - CallerId: your Exotel number / agent number
-                    "From": to_formatted,
-                    "CallerId": from_formatted,
-                    "Url": flow_url,
-                    "CallType": "trans",
-                    "TimeLimit": 15 * 60,
-                }
-                if custom_field_value:
-                    data["CustomField"] = custom_field_value
-                if status_callback_url:
-                    data["StatusCallback"] = status_callback_url
-
-                async with session.post(url, data=data) as resp:
+                async with session.post(
+                    url,
+                    data=request.model_dump(
+                        mode="json", by_alias=True, exclude_none=True
+                    ),
+                ) as resp:
                     text = await resp.text()
-                    if resp.status >= 400:
-                        if resp.status == 429:
+                    if resp.status >= HTTPStatus.BAD_REQUEST:
+                        if resp.status == HTTPStatus.TOO_MANY_REQUESTS:
                             return OutboundSendRetryable(
-                                failure_code="call_create_rejected",
+                                failure_code=ConnectFailureCode.REJECTED,
                                 status_code=resp.status,
                             )
-                        if resp.status < 500 and resp.status != 408:
+                        if (
+                            resp.status < HTTPStatus.INTERNAL_SERVER_ERROR
+                            and resp.status != HTTPStatus.REQUEST_TIMEOUT
+                        ):
                             return OutboundSendTerminal(
-                                failure_code="call_create_rejected",
+                                failure_code=ConnectFailureCode.REJECTED,
                                 status_code=resp.status,
                             )
                         return OutboundSendUnknown(
-                            failure_code="call_create_unconfirmed",
+                            failure_code=ConnectFailureCode.UNCONFIRMED,
                             status_code=resp.status,
                         )
-                    payload = json.loads(text) if text else {}
-                    call = payload.get("Call") if isinstance(payload, dict) else None
-                    call_sid = str(
-                        (call or {}).get("Sid")
-                        or payload.get("CallSid")
-                        or payload.get("sid")
-                        or ""
-                    ).strip()
+                    try:
+                        response = ConnectResponse.model_validate_json(text or "{}")
+                    except ValidationError:
+                        return OutboundSendUnknown(
+                            failure_code=ConnectFailureCode.RESPONSE_INVALID,
+                            status_code=resp.status,
+                        )
+                    call_sid = response.provider_reference
                     if not call_sid:
                         return OutboundSendUnknown(
-                            failure_code="call_create_response_invalid",
+                            failure_code=ConnectFailureCode.RESPONSE_INVALID,
                             status_code=resp.status,
                         )
                     logger.info("Initiated Exotel call")
@@ -465,7 +329,7 @@ class ExotelService(BaseTelephonyService):
                     )
         except Exception:  # noqa: BLE001 - transport ambiguity forbids resend
             logger.warning("Exotel call initiation outcome is unconfirmed")
-            return OutboundSendUnknown(failure_code="call_create_unconfirmed")
+            return OutboundSendUnknown(failure_code=ConnectFailureCode.UNCONFIRMED)
 
     def create_message_parser(self) -> TelephonyMessageParser:
         """Create a message parser for Exotel.
@@ -580,7 +444,7 @@ class ExotelService(BaseTelephonyService):
     def outbound_call_profile(self) -> TelephonyOperationProfile:
         host = self.settings.api_host
         return TelephonyOperationProfile(
-            provider_operation="telephony.exotel.call.create",
+            provider_operation=CONNECT_OPERATION,
             transport_kind=OutboundTransportKind.HTTP,
             destination_origin=f"https://{host}",
             capabilities=TelephonyOperationCapabilities(

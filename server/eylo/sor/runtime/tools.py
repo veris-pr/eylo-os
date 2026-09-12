@@ -12,6 +12,7 @@ from pydantic.json_schema import SkipJsonSchema
 
 from eylo.common.contracts.tool_metadata import ToolFunctionMetadata, set_tool_metadata
 from eylo.sor.knowledge.contracts import KnowledgeToolName
+from eylo.sor.knowledge.read_contracts import KNOWLEDGE_CONTENT_DEFAULT_CHARS
 from eylo.sor.runtime.catalog import get_sor_registry
 from eylo.sor.runtime.command_payloads import command_payload_type
 from eylo.sor.shared.contracts import (
@@ -96,7 +97,7 @@ class SorDocumentGetInput(SorReadSelectionInput):
         description="Character offset into the normalized current document content.",
     )
     content_limit_chars: int = Field(
-        default=20_000,
+        default=KNOWLEDGE_CONTENT_DEFAULT_CHARS,
         ge=1,
         le=50_000,
         description=(

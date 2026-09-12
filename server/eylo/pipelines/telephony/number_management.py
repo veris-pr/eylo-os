@@ -2,7 +2,6 @@
 
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from fastapi import HTTPException
@@ -14,7 +13,14 @@ from eylo.common.outbound import (
     OutboundAttemptSpec,
     OutboundAttemptState,
     OutboundOwnerKind,
+    OutboundSendAuthorization,
+    OutboundSendOutcome,
     fingerprint_outbound_input,
+)
+from eylo.modules.telephony.constants import (
+    NUMBER_PURCHASE_IDEMPOTENCY_KEY_MAX_LENGTH,
+    NUMBER_PURCHASE_OPERATION,
+    NUMBER_PURCHASE_RETRY_AFTER_SECONDS,
 )
 from eylo.modules.telephony.provider_config_domain import (
     ResolvedTelephony,
@@ -26,7 +32,9 @@ from eylo.modules.telephony.schemas import (
     AvailableNumbersResponseSchema,
     NumberPurchaseRequest,
     NumberSearchParams,
+    NumberType,
     PhoneNumberApiResponseSchema,
+    PhoneNumberInDb,
     TelephonyProviderType,
 )
 from eylo.modules.telephony.services import (
@@ -48,26 +56,52 @@ from eylo.sockets.telephony.config import (
     TwilioSettings,
     VonageSettings,
 )
+from eylo.sockets.telephony.exotel.number_contracts import (
+    NumberType as ExotelNumberType,
+)
 from eylo.sockets.telephony.number_clients import (
     ExotelNumberClient,
     PlivoNumberClient,
     VonageNumberClient,
 )
 from eylo.sockets.telephony.number_purchase import NumberPurchaseClient
+from eylo.sockets.telephony.plivo.number_contracts import NumberType as PlivoNumberType
+from eylo.sockets.telephony.twilio.number_contracts import (
+    NumberType as TwilioNumberType,
+)
+from eylo.sockets.telephony.vonage.number_contracts import (
+    NumberType as VonageNumberType,
+)
 
 logger = logging.getLogger(__name__)
+
+_PLIVO_NUMBER_TYPES = {
+    NumberType.LOCAL: PlivoNumberType.LOCAL,
+    NumberType.TOLL_FREE: PlivoNumberType.TOLL_FREE,
+    NumberType.MOBILE: PlivoNumberType.MOBILE,
+}
+_VONAGE_NUMBER_TYPES = {
+    NumberType.LOCAL: VonageNumberType.LANDLINE,
+    NumberType.TOLL_FREE: VonageNumberType.TOLL_FREE,
+    NumberType.MOBILE: VonageNumberType.MOBILE,
+}
+_EXOTEL_NUMBER_TYPES = {
+    NumberType.LOCAL: ExotelNumberType.LANDLINE,
+    NumberType.TOLL_FREE: ExotelNumberType.TOLL_FREE,
+    NumberType.MOBILE: ExotelNumberType.MOBILE,
+}
 
 
 class _InlineDurableContext:
     """DB-fenced send for an HTTP request with a stable purchase identity."""
 
-    async def step(
+    async def step[Result](
         self,
         *,
         key: str,
         version: int,
-        operation: Callable[[], Awaitable[Any]],
-    ) -> Any:
+        operation: Callable[[], Awaitable[Result]],
+    ) -> Result:
         del key, version
         return await operation()
 
@@ -141,7 +175,7 @@ class NumberManagementController:
                 organization_id=organization_id,
                 owner_kind=OutboundOwnerKind.PHONE_NUMBER,
                 owner_id=phone_number_id,
-                operation_key="telephony.number.purchase",
+                operation_key=NUMBER_PURCHASE_OPERATION,
             ),
             provider_operation=profile.provider_operation,
             transport_kind=profile.transport_kind,
@@ -159,7 +193,7 @@ class NumberManagementController:
             ),
         )
 
-        async def send(authorization):
+        async def send(authorization: OutboundSendAuthorization) -> OutboundSendOutcome:
             return await client.purchase_number(
                 request.phone_number,
                 authorization=authorization,
@@ -179,7 +213,7 @@ class NumberManagementController:
             raise HTTPException(
                 status_code=503,
                 detail="Carrier asked Eylo to retry this purchase.",
-                headers={"Retry-After": "5"},
+                headers={"Retry-After": str(NUMBER_PURCHASE_RETRY_AFTER_SECONDS)},
             ) from error
         except OutboundAttemptConflict as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
@@ -271,7 +305,7 @@ class NumberManagementController:
         phone_number_id: UUID,
         organization_id: UUID,
         receipt: OutboundExecutionReceipt,
-    ):
+    ) -> PhoneNumberInDb:
         async with start_transaction() as db:
             return await PhoneNumberService(db=db).apply_provisioning_outcome(
                 phone_number_id=phone_number_id,
@@ -284,7 +318,10 @@ class NumberManagementController:
     @staticmethod
     def purchase_identity(*, organization_id: UUID, idempotency_key: str) -> UUID:
         normalized_key = idempotency_key.strip()
-        if not normalized_key or len(normalized_key) > 255:
+        if (
+            not normalized_key
+            or len(normalized_key) > NUMBER_PURCHASE_IDEMPOTENCY_KEY_MAX_LENGTH
+        ):
             raise HTTPException(
                 status_code=400,
                 detail="A bounded Idempotency-Key header is required.",
@@ -308,20 +345,20 @@ class NumberManagementController:
         )
         raw = await client.search_available_numbers(
             country=params.country,
-            number_type=params.number_type.value,
+            number_type=TwilioNumberType(params.number_type.value),
             area_code=params.area_code,
             contains=params.contains,
             limit=params.limit,
         )
         numbers = [
             AvailableNumberSchema(
-                phone_number=n.get("phone_number", ""),
-                friendly_name=n.get("friendly_name", ""),
-                locality=n.get("locality"),
-                region=n.get("region"),
-                country=n.get("iso_country"),
+                phone_number=n.phone_number,
+                friendly_name=n.friendly_name,
+                locality=n.locality,
+                region=n.region,
+                country=n.iso_country,
                 capabilities={
-                    k: v for k, v in (n.get("capabilities") or {}).items() if v is True
+                    k: v for k, v in (n.capabilities or {}).items() if v is True
                 },
             )
             for n in raw
@@ -344,22 +381,18 @@ class NumberManagementController:
         )
         raw = await client.search_available_numbers(
             country=params.country,
-            number_type=params.number_type.value,
+            number_type=_PLIVO_NUMBER_TYPES[params.number_type],
             pattern=params.area_code or params.contains,
             limit=params.limit,
         )
         numbers = [
             AvailableNumberSchema(
-                phone_number=f"+{n.get('number', '')}",
-                friendly_name=n.get("number", ""),
-                locality=n.get("city"),
-                region=n.get("region"),
-                country=n.get("country"),
-                capabilities={
-                    cap: True
-                    for cap in ["voice", "sms", "mms"]
-                    if n.get(cap) == "enabled" or n.get(f"{cap}_enabled") is True
-                },
+                phone_number=f"+{n.number}",
+                friendly_name=n.number,
+                locality=n.city,
+                region=n.region,
+                country=n.country,
+                capabilities=n.enabled_capabilities,
             )
             for n in raw
         ]
@@ -381,18 +414,18 @@ class NumberManagementController:
         )
         raw = await client.search_available_numbers(
             country=params.country,
-            number_type=params.number_type.value,
+            number_type=_VONAGE_NUMBER_TYPES[params.number_type],
             pattern=params.area_code or params.contains,
             limit=params.limit,
         )
         numbers = [
             AvailableNumberSchema(
-                phone_number=f"+{n.get('msisdn', '')}",
-                friendly_name=n.get("msisdn", ""),
+                phone_number=f"+{n.msisdn}",
+                friendly_name=n.msisdn,
                 locality=None,
                 region=None,
-                country=n.get("country"),
-                capabilities={feat.lower(): True for feat in (n.get("features") or [])},
+                country=n.country,
+                capabilities=n.enabled_capabilities,
             )
             for n in raw
         ]
@@ -416,22 +449,18 @@ class NumberManagementController:
         )
         raw = await client.search_available_numbers(
             country=params.country,
-            number_type=params.number_type.value,
+            number_type=_EXOTEL_NUMBER_TYPES[params.number_type],
             pattern=params.area_code or params.contains,
             limit=params.limit,
         )
         numbers = [
             AvailableNumberSchema(
-                phone_number=n.get("phone_number", ""),
-                friendly_name=n.get("friendly_name", ""),
+                phone_number=n.phone_number,
+                friendly_name=n.friendly_name,
                 locality=None,
-                region=n.get("region"),
-                country=n.get("country"),
-                capabilities={
-                    name: enabled
-                    for name, enabled in (n.get("capabilities") or {}).items()
-                    if enabled is True
-                },
+                region=n.region,
+                country=n.country,
+                capabilities=n.enabled_capabilities,
             )
             for n in raw
         ]

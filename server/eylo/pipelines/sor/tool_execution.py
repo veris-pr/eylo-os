@@ -27,6 +27,7 @@ from eylo.pipelines.sor.tool_contracts import (
     SorToolMetadata,
 )
 from eylo.sor.knowledge.agent_reads import shape_knowledge_tool_response
+from eylo.sor.knowledge.read_contracts import KNOWLEDGE_CONTENT_DEFAULT_CHARS
 from eylo.sor.runtime.agent_reads import SorAgentReadError, read_agent_view
 from eylo.sor.runtime.authority import (
     AuthorizedSorSource,
@@ -121,16 +122,17 @@ async def execute_sor_read_tool(
             content_limit_chars=(
                 command.content_limit_chars
                 if isinstance(command, SorDocumentGetInput)
-                else 20_000
+                else KNOWLEDGE_CONTENT_DEFAULT_CHARS
             ),
         )
         if profile is SorProfile.KNOWLEDGE
-        else projection.model_dump(mode="json")
+        else projection
     )
     if "describe" in tool_name:
-        data["items"] = []
-        data["next_cursor"] = None
-        data["has_more"] = False
+        data = data.model_copy()
+        data.items = ()
+        data.next_cursor = None
+        data.has_more = False
     return SorToolExecutionOutcome(
         content=SorReadToolResult(data=data),
         metadata=SorToolMetadata(

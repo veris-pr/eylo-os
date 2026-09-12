@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from uuid import UUID
+
 from eylo.common.contracts.sandbox import SandboxError
+from eylo.modules.sandbox.models import SandboxGrantModel
 
 
 class SandboxAccessError(SandboxError):
     """An agent asked to do something its grant does not permit."""
 
 
-def find_grant(grants: list, agent_id):
+def find_grant(
+    grants: Sequence[SandboxGrantModel], agent_id: UUID
+) -> SandboxGrantModel | None:
     """This agent's grant, or None.
 
     Compared as strings. This codebase produces `uuid_utils.UUID` from
@@ -22,7 +28,7 @@ def find_grant(grants: list, agent_id):
     return next((g for g in grants if str(g.agent_id) == target), None)
 
 
-def assert_can_run(grants: list, agent_id) -> None:
+def assert_can_run(grants: Sequence[SandboxGrantModel], agent_id: UUID) -> None:
     """Raise unless this agent may execute code at all.
 
     Raises rather than returning False. A silently skipped execution is the
@@ -38,7 +44,12 @@ def assert_can_run(grants: list, agent_id) -> None:
         )
 
 
-def session_limit(grants: list, agent_id, *, organization_limit: int) -> int:
+def session_limit(
+    grants: Sequence[SandboxGrantModel],
+    agent_id: UUID,
+    *,
+    organization_limit: int,
+) -> int:
     """How many workspaces this agent may hold.
 
     Narrowed by the grant, never widened. An agent granted more than its

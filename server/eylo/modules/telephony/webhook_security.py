@@ -10,7 +10,12 @@ import json
 import logging
 import time
 
+from pydantic import ValidationError
+
 from eylo.common.config import settings
+from eylo.modules.telephony.provider_config_domain import TelephonyProvider
+from eylo.modules.telephony.schemas import CallDirection
+from eylo.modules.telephony.stream_claims import MediaStreamClaims
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +40,7 @@ def is_ip_allowlisted(ip: str | None) -> bool:
 
 
 def _compare_digest(expected: str, actual: str | None) -> bool:
-    if not expected or not actual:
+    if not expected or not actual or not expected.isascii() or not actual.isascii():
         return False
     return hmac.compare_digest(expected.strip(), actual.strip())
 
@@ -67,20 +72,22 @@ def create_media_stream_token(
     initial_message: str | None = None,
 ) -> str:
     """Create a signed token binding a provider media stream to call metadata."""
-    payload = {
-        "provider": provider.lower(),
-        "call_id": call_id,
-        "organization_id": organization_id,
-        "agent_id": agent_id,
-        "agent_revision": agent_revision,
-        "provider_config_id": provider_config_id,
-        "provider_config_revision": provider_config_revision,
-        "direction": direction.upper(),
-        "call_sid": call_sid or "",
-        "initial_message": initial_message or "",
-        "exp": int(time.time()) + _MEDIA_STREAM_TOKEN_TTL_SECONDS,
-    }
-    payload_bytes = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    claims = MediaStreamClaims(
+        provider=TelephonyProvider(provider.lower()),
+        call_id=call_id,
+        organization_id=organization_id,
+        agent_id=agent_id,
+        agent_revision=agent_revision,
+        provider_config_id=provider_config_id,
+        provider_config_revision=provider_config_revision,
+        direction=CallDirection(direction.lower()),
+        call_sid=call_sid or "",
+        initial_message=initial_message or "",
+        exp=int(time.time()) + _MEDIA_STREAM_TOKEN_TTL_SECONDS,
+    )
+    payload_bytes = json.dumps(
+        claims.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+    ).encode()
     encoded_payload = _base64url_encode(payload_bytes)
     signature = _base64url_encode(
         hmac.new(
@@ -119,30 +126,28 @@ def verify_media_stream_token(
         )
         if not _compare_digest(expected_signature, signature):
             return False
-        payload = json.loads(payload_bytes)
-    except (ValueError, json.JSONDecodeError):
+        claims = MediaStreamClaims.model_validate_json(payload_bytes)
+        expected_provider = TelephonyProvider(provider.lower())
+        expected_direction = CallDirection(direction.lower())
+    except (ValueError, ValidationError):
         return False
 
-    if int(payload.get("exp", 0)) < int(time.time()):
+    if claims.exp < int(time.time()):
         return False
 
-    required_fields = {
-        "provider": provider.lower(),
-        "call_id": call_id or "",
-        "organization_id": organization_id or "",
-        "agent_id": agent_id or "",
-        "agent_revision": str(agent_revision or ""),
-        "provider_config_id": provider_config_id or "",
-        "provider_config_revision": str(provider_config_revision or ""),
-        "direction": direction.upper(),
-    }
-    if not all(
-        str(payload.get(key, "")) == str(value)
-        for key, value in required_fields.items()
+    if (
+        claims.provider is not expected_provider
+        or claims.direction is not expected_direction
+        or claims.call_id != (call_id or "")
+        or claims.organization_id != (organization_id or "")
+        or claims.agent_id != (agent_id or "")
+        or claims.agent_revision != agent_revision
+        or claims.provider_config_id != (provider_config_id or "")
+        or claims.provider_config_revision != provider_config_revision
     ):
         return False
-    if payload.get("call_sid") and str(payload.get("call_sid")) != (call_sid or ""):
+    if claims.call_sid and claims.call_sid != (call_sid or ""):
         return False
-    if str(payload.get("initial_message", "")) != (initial_message or ""):
+    if claims.initial_message != (initial_message or ""):
         return False
     return True

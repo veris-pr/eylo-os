@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
+from pydantic import JsonValue
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
@@ -75,13 +76,11 @@ class MCPServerModel(EyloOrganizationModel):
 
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     slug: Mapped[str] = mapped_column(String(128), nullable=False)
-    config: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    config: Mapped[dict[str, JsonValue]] = mapped_column(JSONB, nullable=False)
     discovered_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    discovered_tool_count: Mapped[int | None] = mapped_column(
-        Integer, nullable=True
-    )
+    discovered_tool_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     lifecycle: Mapped[str] = mapped_column(
         String(16),
         nullable=False,
@@ -157,7 +156,7 @@ class MCPServerRevisionModel(EyloOrganizationModel):
     revision: Mapped[int] = mapped_column(Integer, nullable=False)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     slug: Mapped[str] = mapped_column(String(128), nullable=False)
-    config: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    config: Mapped[dict[str, JsonValue]] = mapped_column(JSONB, nullable=False)
     availability: Mapped[str] = mapped_column(
         String(16),
         nullable=False,

@@ -234,7 +234,7 @@ class KnowledgeIngestionJobModel(EyloOrganizationModel, AbsurdBoundWorkMixin):
     )
     title: Mapped[str | None] = mapped_column(String(512), nullable=True)
     source_uri: Mapped[str | None] = mapped_column(Text, nullable=True)
-    meta: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    meta: Mapped[dict[str, JsonValue] | None] = mapped_column(JSONB, nullable=True)
 
     # There is no chunk_count column. Only the Postgres vendors chunk in a way
     # this module could count, and a column that is meaningful for two vendors

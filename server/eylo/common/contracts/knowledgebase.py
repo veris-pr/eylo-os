@@ -6,7 +6,9 @@ import hashlib
 import uuid
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat
+
+from eylo.common.contracts.json_values import JsonObject
 
 
 class KnowledgeScope(StrEnum):
@@ -77,7 +79,7 @@ class KnowledgeDocument(BaseModel):
     scope_id: str
     title: str | None = None
     source_uri: str | None = None
-    metadata: dict[str, JsonValue] = Field(default_factory=dict, repr=False)
+    metadata: JsonObject = Field(default_factory=dict, repr=False)
 
     @property
     def identity(self) -> str:
@@ -138,7 +140,7 @@ class KnowledgeResult(BaseModel):
     scope_id: str
     title: str | None = None
     source_uri: str | None = None
-    metadata: dict[str, JsonValue] = Field(default_factory=dict, repr=False)
+    metadata: JsonObject = Field(default_factory=dict, repr=False)
 
 
 class KnowledgebaseCapabilities(BaseModel):

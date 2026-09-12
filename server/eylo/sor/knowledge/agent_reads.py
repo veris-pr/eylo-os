@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
-from typing import Any
+from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, InstanceOf
 from pydantic.json_schema import SkipJsonSchema
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from eylo.sor.knowledge.contracts import KnowledgeEntityKind, KnowledgeToolName
 from eylo.sor.shared.contracts import SorProfile
-from eylo.sor.shared.models import SorRecordModel
-from eylo.sor.shared.schemas import SorAgentViewResponse
+from eylo.sor.shared.models import SorProfileRecordModel, SorRecordModel
+from eylo.sor.shared.schemas import SorAgentRecordResponse, SorAgentViewResponse
 
 from .models import (
     KnowledgeAttachmentModel,
@@ -21,6 +22,15 @@ from .models import (
     KnowledgeDocumentModel,
     KnowledgePropertyModel,
     KnowledgeVersionModel,
+)
+from .read_contracts import (
+    KNOWLEDGE_CONTENT_DEFAULT_CHARS,
+    KNOWLEDGE_NORMALIZED_TEXT_FIELD,
+    KNOWLEDGE_SOURCE_BODY_FIELD,
+    KnowledgeContentMode,
+    KnowledgeContentWindow,
+    KnowledgeWindowRecordResponse,
+    KnowledgeWindowViewResponse,
 )
 
 KNOWLEDGE_AGENT_RELATED_RECORD_LIMIT = 100
@@ -62,83 +72,94 @@ def shape_knowledge_tool_response(
     tool_name: str,
     search: str,
     content_offset: int = 0,
-    content_limit_chars: int = 20_000,
-) -> dict[str, Any]:
+    content_limit_chars: int = KNOWLEDGE_CONTENT_DEFAULT_CHARS,
+) -> KnowledgeWindowViewResponse | SorAgentViewResponse:
     """Remove raw vendor bodies and bound model-facing document content."""
-    data = projection.model_dump(mode="json")
+    data = projection.model_copy()
     _remove_source_bodies(data)
     if tool_name == KnowledgeToolName.SEARCH:
-        for item in data["items"]:
-            _apply_search_excerpt(item, search=search)
-        data["content_mode"] = "search_excerpt"
-    elif tool_name == KnowledgeToolName.GET:
-        for item in data["items"]:
-            _apply_content_window(
-                item,
-                offset=content_offset,
-                limit=content_limit_chars,
-            )
-        data["content_mode"] = "current_content_window"
+        return KnowledgeWindowViewResponse.from_view(
+            data,
+            items=tuple(
+                _apply_search_excerpt(item, search=search) for item in data.items
+            ),
+            mode=KnowledgeContentMode.SEARCH_EXCERPT,
+        )
+    if tool_name == KnowledgeToolName.GET:
+        return KnowledgeWindowViewResponse.from_view(
+            data,
+            items=tuple(
+                _apply_content_window(
+                    item, offset=content_offset, limit=content_limit_chars
+                )
+                for item in data.items
+            ),
+            mode=KnowledgeContentMode.CURRENT_CONTENT_WINDOW,
+        )
     return data
 
 
-def _remove_source_bodies(data: dict[str, Any]) -> None:
-    data["fields"] = [
-        field for field in data.get("fields", ()) if field.get("key") != "source_body"
-    ]
-    for item in data.get("items", ()):
-        _remove_source_body(item)
-    for collection in data.get("related", ()):
-        collection["fields"] = [
+def _remove_source_bodies(data: SorAgentViewResponse) -> None:
+    data.fields = tuple(
+        field for field in data.fields if field.key != KNOWLEDGE_SOURCE_BODY_FIELD
+    )
+    data.items = tuple(_remove_source_body(item) for item in data.items)
+    data.related = tuple(collection.model_copy() for collection in data.related)
+    for collection in data.related:
+        collection.fields = tuple(
             field
-            for field in collection.get("fields", ())
-            if field.get("key") != "source_body"
-        ]
-        for item in collection.get("items", ()):
-            _remove_source_body(item)
+            for field in collection.fields
+            if field.key != KNOWLEDGE_SOURCE_BODY_FIELD
+        )
+        collection.items = tuple(_remove_source_body(item) for item in collection.items)
 
 
-def _remove_source_body(item: dict[str, Any]) -> None:
-    values = item.get("values")
-    if isinstance(values, dict):
-        values.pop("source_body", None)
-
-
-def _apply_search_excerpt(item: dict[str, Any], *, search: str) -> None:
-    values = item.get("values")
-    if not isinstance(values, dict):
-        return
-    content = values.get("normalized_text")
-    if not isinstance(content, str):
-        return
-    excerpt, start, end = _content_excerpt(content, search=search)
-    values["normalized_text"] = excerpt
-    item["content_window"] = {
-        "offset": start,
-        "end": end,
-        "total_chars": len(content),
-        "has_more": end < len(content),
-        "next_offset": end if end < len(content) else None,
+def _remove_source_body(item: SorAgentRecordResponse) -> SorAgentRecordResponse:
+    result = item.model_copy()
+    result.values = {
+        key: value
+        for key, value in item.values.items()
+        if key != KNOWLEDGE_SOURCE_BODY_FIELD
     }
+    return result
 
 
-def _apply_content_window(item: dict[str, Any], *, offset: int, limit: int) -> None:
-    values = item.get("values")
-    if not isinstance(values, dict):
-        return
-    content = values.get("normalized_text")
+def _apply_search_excerpt(
+    item: SorAgentRecordResponse, *, search: str
+) -> KnowledgeWindowRecordResponse | SorAgentRecordResponse:
+    content = item.values.get(KNOWLEDGE_NORMALIZED_TEXT_FIELD)
     if not isinstance(content, str):
-        return
+        return item
+    excerpt, start, end = _content_excerpt(content, search=search)
+    item.values[KNOWLEDGE_NORMALIZED_TEXT_FIELD] = excerpt
+    return _with_content_window(item, start=start, end=end, total_chars=len(content))
+
+
+def _apply_content_window(
+    item: SorAgentRecordResponse, *, offset: int, limit: int
+) -> KnowledgeWindowRecordResponse | SorAgentRecordResponse:
+    content = item.values.get(KNOWLEDGE_NORMALIZED_TEXT_FIELD)
+    if not isinstance(content, str):
+        return item
     start = min(offset, len(content))
     end = min(start + limit, len(content))
-    values["normalized_text"] = content[start:end]
-    item["content_window"] = {
-        "offset": start,
-        "end": end,
-        "total_chars": len(content),
-        "has_more": end < len(content),
-        "next_offset": end if end < len(content) else None,
-    }
+    item.values[KNOWLEDGE_NORMALIZED_TEXT_FIELD] = content[start:end]
+    return _with_content_window(item, start=start, end=end, total_chars=len(content))
+
+
+def _with_content_window(
+    item: SorAgentRecordResponse, *, start: int, end: int, total_chars: int
+) -> KnowledgeWindowRecordResponse:
+    return KnowledgeWindowRecordResponse.from_record(
+        item,
+        KnowledgeContentWindow(
+            offset=start,
+            end=end,
+            total_chars=total_chars,
+            has_more=end < total_chars,
+            next_offset=end if end < total_chars else None,
+        ),
+    )
 
 
 def _content_excerpt(content: str, *, search: str) -> tuple[str, int, int]:
@@ -172,13 +193,17 @@ async def read_knowledge_related_records(
 ) -> tuple[KnowledgeAgentRelatedRecords, ...]:
     """Read one explicit, source-local document relation with a global bound."""
     readers = {
-        "attachment": _document_attachments,
-        "block": _document_blocks,
-        "document": _document_children,
-        "property": _document_properties,
-        "version": _document_versions,
+        KnowledgeEntityKind.ATTACHMENT: _document_attachments,
+        KnowledgeEntityKind.BLOCK: _document_blocks,
+        KnowledgeEntityKind.DOCUMENT: _document_children,
+        KnowledgeEntityKind.PROPERTY: _document_properties,
+        KnowledgeEntityKind.VERSION: _document_versions,
     }
-    read_one = readers.get(entity)
+    try:
+        selected_entity = KnowledgeEntityKind(entity)
+    except ValueError:
+        return ()
+    read_one = readers.get(selected_entity)
     if read_one is None:
         return ()
 
@@ -227,7 +252,7 @@ async def _document_blocks(
         organization_id=organization_id,
         parent=parent,
         model=KnowledgeBlockModel,
-        entity="block",
+        entity=KnowledgeEntityKind.BLOCK,
         relation=KnowledgeBlockModel.document_external_id == parent.vendor_external_id,
         order_by=(KnowledgeBlockModel.position.asc(), SorRecordModel.id.asc()),
         limit=limit,
@@ -246,7 +271,7 @@ async def _document_properties(
         organization_id=organization_id,
         parent=parent,
         model=KnowledgePropertyModel,
-        entity="property",
+        entity=KnowledgeEntityKind.PROPERTY,
         relation=(
             KnowledgePropertyModel.document_external_id == parent.vendor_external_id
         ),
@@ -267,7 +292,7 @@ async def _document_attachments(
         organization_id=organization_id,
         parent=parent,
         model=KnowledgeAttachmentModel,
-        entity="attachment",
+        entity=KnowledgeEntityKind.ATTACHMENT,
         relation=(
             KnowledgeAttachmentModel.document_external_id == parent.vendor_external_id
         ),
@@ -288,7 +313,7 @@ async def _document_children(
         organization_id=organization_id,
         parent=parent,
         model=KnowledgeDocumentModel,
-        entity="document",
+        entity=KnowledgeEntityKind.DOCUMENT,
         relation=(
             KnowledgeDocumentModel.parent_external_id == parent.vendor_external_id
         ),
@@ -309,7 +334,7 @@ async def _document_versions(
         organization_id=organization_id,
         parent=parent,
         model=KnowledgeVersionModel,
-        entity="version",
+        entity=KnowledgeEntityKind.VERSION,
         relation=(
             KnowledgeVersionModel.document_external_id == parent.vendor_external_id
         ),
@@ -326,10 +351,16 @@ async def _related_rows(
     *,
     organization_id: UUID,
     parent: SorRecordModel,
-    model,
-    entity: str,
-    relation,
-    order_by: tuple,
+    model: type[SorProfileRecordModel],
+    entity: KnowledgeEntityKind,
+    relation: ColumnElement[bool],
+    order_by: tuple[
+        ColumnElement[int]
+        | ColumnElement[str]
+        | ColumnElement[UUID]
+        | ColumnElement[datetime],
+        ...,
+    ],
     limit: int,
 ) -> list[SorRecordModel]:
     return list(

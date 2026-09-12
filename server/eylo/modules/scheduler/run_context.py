@@ -1,18 +1,11 @@
 """Immutable schedule-occurrence context used at AgentRun filing and readback."""
 
-import json
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import (
-    AwareDatetime,
-    BaseModel,
-    ConfigDict,
-    Field,
-    JsonValue,
-    field_serializer,
-    field_validator,
-)
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_serializer
+
+from eylo.common.contracts.json_values import JsonObject
 
 
 class ScheduleRunContext(BaseModel):
@@ -31,15 +24,8 @@ class ScheduleRunContext(BaseModel):
     schedule_run_id: UUID
     scheduled_for: AwareDatetime
     action: str
-    payload: dict[str, JsonValue] = Field(repr=False)
+    payload: JsonObject = Field(repr=False)
     misfired_count: int = Field(ge=0)
-
-    @field_validator("payload")
-    @classmethod
-    def validate_payload_json(cls, value: dict[str, JsonValue]) -> dict[str, JsonValue]:
-        """JsonValue validates structure; separately refuse non-finite numbers."""
-        json.dumps(value, allow_nan=False)
-        return value
 
     @field_serializer("scheduled_for", when_used="json")
     def serialize_scheduled_for(self, value: datetime) -> str:

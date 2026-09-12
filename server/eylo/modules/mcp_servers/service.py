@@ -5,11 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, InstanceOf, JsonValue, TypeAdapter
-from pydantic.json_schema import SkipJsonSchema
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,6 +16,7 @@ from eylo.common.contracts.provider_config import ProviderConfigError
 from eylo.common.revisions import (
     DefinitionHeaderState,
     DefinitionLifecycle,
+    DefinitionRevisionError,
     PublishedRevisionState,
     RevisionAvailability,
 )
@@ -27,6 +27,7 @@ from eylo.modules.mcp_servers.config import (
     resolve_mcp_server_config,
 )
 from eylo.modules.mcp_servers.models import MCPServerModel, MCPServerRevisionModel
+from eylo.modules.mcp_servers.schemas import MCPServerAuthMode, MCPServerRead
 from eylo.modules.provider_configs.crypto import SecretCipherError
 from eylo.modules.tools.models import ToolExecutionMode, ToolKind, ToolModel
 from eylo.modules.tools.schemas.executors.mcp import (
@@ -46,6 +47,7 @@ MAX_SCHEMA_DEPTH = 8
 MAX_SCHEMA_NODES = 2048
 MAX_SCHEMA_CONTAINER_ITEMS = 256
 MAX_SCHEMA_STRING_LENGTH = 8192
+_DISCOVERY_TIMESTAMP_RESOLUTION = timedelta(microseconds=1)
 _ROOT_SCHEMA_KEYS = frozenset(
     {
         "additionalProperties",
@@ -110,14 +112,30 @@ class MCPToolDefinition(BaseModel):
     execution_mode: ToolExecutionMode
 
 
+class MCPDiscoveryConflictError(DefinitionRevisionError):
+    """Discovery cannot publish over a newer source or discovery state."""
+
+
+class MCPDiscoveryVersion(BaseModel):
+    """Source state that must remain unchanged while remote discovery runs."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+    header: DefinitionHeaderState
+    discovered_at: datetime | None
+    published_availability: RevisionAvailability | None
+
+
 class MCPDiscoveryTarget(BaseModel):
-    """Locked server revision and its execution-only decrypted config."""
+    """Detached source identity and execution-only decrypted configuration."""
 
     model_config = ConfigDict(
         frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
     )
 
-    server: SkipJsonSchema[InstanceOf[MCPServerModel]] = Field(repr=False, exclude=True)
+    organization_id: UUID
+    server_id: UUID
+    version: MCPDiscoveryVersion
     config: ResolvedMCPServerConfig = Field(repr=False, exclude=True)
 
 
@@ -177,7 +195,7 @@ class MCPServerService:
         organization_id: UUID,
         server_id: UUID,
     ) -> MCPDiscoveryTarget:
-        """Lock and resolve the exact server revision discovery will contact."""
+        """Snapshot under a short source lock; the caller closes it before I/O."""
         server = await self._get(organization_id, server_id, for_update=True)
         config_revision = (
             (server.published_revision or 0) + 1
@@ -195,7 +213,12 @@ class MCPServerService:
             )
         except (ProviderConfigError, SecretCipherError, ValueError):
             raise MCPServerError("MCP server configuration is unavailable.") from None
-        return MCPDiscoveryTarget(server=server, config=config)
+        return MCPDiscoveryTarget(
+            organization_id=UUID(str(server.organization_id)),
+            server_id=UUID(str(server.id)),
+            version=await self._discovery_version(server),
+            config=config,
+        )
 
     async def synchronize_discovery(
         self,
@@ -205,11 +228,15 @@ class MCPServerService:
         actor_id: UUID,
         discovered: list[MCPDiscoveredTool],
     ) -> list[ToolModel]:
-        """Atomically apply one complete successful `tools/list` result."""
-        server = target.server
-        if server.organization_id != organization_id:
+        """Revalidate under a new source lock, then apply the complete result."""
+        if target.organization_id != organization_id:
             raise MCPServerError("MCP discovery target does not match the request.")
-        server_id = UUID(str(server.id))
+        server_id = target.server_id
+        server = await self._get(organization_id, server_id, for_update=True)
+        if await self._discovery_version(server) != target.version:
+            raise MCPDiscoveryConflictError(
+                "MCP server changed during discovery. Retry discovery."
+            )
         definitions = _validate_definition_set(server, discovered)
 
         if server.lifecycle == DefinitionLifecycle.WITHDRAWN.value:
@@ -322,10 +349,36 @@ class MCPServerService:
                     tool_id=UUID(str(row.id)),
                 )
 
-        server.discovered_at = datetime.now(timezone.utc)
+        discovered_at = datetime.now(timezone.utc)
+        # This timestamp also fences concurrent discoveries; clock regression or
+        # equal clock ticks must not make a completed discovery invisible.
+        if server.discovered_at is not None and discovered_at <= server.discovered_at:
+            discovered_at = server.discovered_at + _DISCOVERY_TIMESTAMP_RESOLUTION
+        server.discovered_at = discovered_at
         server.discovered_tool_count = len(definitions)
         await self._db.flush()
         return synchronized
+
+    async def _discovery_version(self, server: MCPServerModel) -> MCPDiscoveryVersion:
+        """Read availability while the caller holds the source lock used by revoke."""
+        availability = None
+        if server.published_revision is not None:
+            row = await self._db.scalar(
+                select(MCPServerRevisionModel).where(
+                    MCPServerRevisionModel.organization_id == server.organization_id,
+                    MCPServerRevisionModel.server_id == server.id,
+                    MCPServerRevisionModel.revision == server.published_revision,
+                    MCPServerRevisionModel.deleted.is_(False),
+                )
+            )
+            if row is None:
+                raise MCPServerNotFoundError("MCP server revision not found.")
+            availability = RevisionAvailability(row.availability)
+        return MCPDiscoveryVersion(
+            header=_header_state(server),
+            discovered_at=server.discovered_at,
+            published_availability=availability,
+        )
 
     async def update(
         self,
@@ -824,28 +877,27 @@ def _apply_header_state(
     server.draft_dirty = state.draft_dirty
 
 
-def redacted_server(server: MCPServerModel) -> dict[str, JsonValue]:
+def redacted_server(server: MCPServerModel) -> MCPServerRead:
+    """Project only operator-visible fields without decrypting header secrets."""
     config = parse_mcp_server_config(server.config)
-    return {
-        "id": str(server.id),
-        "name": server.name,
-        "slug": server.slug,
-        "url": config.url,
-        "transport": config.transport,
-        "protocol_version": config.protocol_version,
-        "auth_mode": "headers" if config.header_names else "none",
-        "header_names": list(config.header_names),
-        "lifecycle": server.lifecycle,
-        "published_revision": server.published_revision,
-        "draft_version": server.draft_version,
-        "draft_dirty": server.draft_dirty,
-        "discovered_at": (
-            server.discovered_at.isoformat()
-            if server.discovered_at is not None
-            else None
+    return MCPServerRead(
+        id=server.id,
+        name=server.name,
+        slug=server.slug,
+        url=config.url,
+        transport=config.transport,
+        protocol_version=config.protocol_version,
+        auth_mode=(
+            MCPServerAuthMode.HEADERS if config.header_names else MCPServerAuthMode.NONE
         ),
-        "discovered_tool_count": server.discovered_tool_count,
-    }
+        header_names=list(config.header_names),
+        lifecycle=DefinitionLifecycle(server.lifecycle),
+        published_revision=server.published_revision,
+        draft_version=server.draft_version,
+        draft_dirty=server.draft_dirty,
+        discovered_at=server.discovered_at,
+        discovered_tool_count=server.discovered_tool_count,
+    )
 
 
 __all__ = [

@@ -3,14 +3,18 @@
 import base64
 import logging
 import re
+from http import HTTPStatus
 from xml.sax.saxutils import escape as xml_escape
 
 import httpx
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 from eylo.common.outbound import (
+    OUTBOUND_PROVIDER_REFERENCE_MAX_LENGTH,
     OutboundSendAuthorization,
     OutboundSendOutcome,
+    OutboundSendSucceeded,
     OutboundSendUnknown,
 )
 from eylo.sockets.telephony.base import (
@@ -24,12 +28,30 @@ from eylo.sockets.telephony.base import (
 )
 from eylo.sockets.telephony.number_purchase import (
     classify_number_purchase_status,
-    decode_number_purchase_response,
     number_purchase_profile,
-    number_purchase_success,
     number_purchase_transport_unknown,
 )
 from eylo.sockets.telephony.twilio.endpoint import twilio_account_url
+from eylo.sockets.telephony.twilio.number_contracts import (
+    NUMBER_PURCHASE_TIMEOUT_SECONDS,
+    NUMBER_SEARCH_DEFAULT_LIMIT,
+    NUMBER_SEARCH_MAX_LIMIT,
+    NUMBER_SEARCH_TIMEOUT_SECONDS,
+    AvailableNumber,
+    AvailableNumbersResponse,
+    NumberFailureCode,
+    NumberPurchaseRequest,
+    NumberSearchRequest,
+    NumberType,
+    PurchasedNumber,
+)
+from eylo.sockets.telephony.twilio.rest_contracts import (
+    CALL_TIMEOUT_SECONDS,
+    CreateCallRequest,
+    CreatedCall,
+    EndCallRequest,
+    TwimlUpdateRequest,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +69,7 @@ class TwilioRestClient:
         self,
         account_sid: str,
         auth_token: str,
-    ):
+    ) -> None:
         self.account_sid = account_sid
         self.auth_token = auth_token
         self.base_url = twilio_account_url(self.account_sid)
@@ -60,36 +82,21 @@ class TwilioRestClient:
 
     async def create_call(
         self, to_number: str, from_number: str, twiml: str, status_callback_url: str
-    ) -> dict:
-        """Initiates an outbound call using the Twilio API.
+    ) -> CreatedCall:
+        """Send once and validate the consumed response before returning to orchestration."""
+        request = CreateCallRequest(
+            to=to_number,
+            from_number=from_number,
+            twiml=twiml,
+            status_callback=status_callback_url,
+        )
 
-        Args:
-            to_number: The phone number to call.
-            from_number: The Twilio phone number to call from.
-            twiml: The TwiML to execute upon call connection.
-            status_callback_url: The URL for call status webhooks.
-
-        Returns:
-            The JSON response from the Twilio API.
-
-        Raises:
-            HTTPException: If the API call to Twilio fails.
-
-        """
-        form_data = {
-            "To": to_number,
-            "From": from_number,
-            "Twiml": twiml,
-            "StatusCallback": status_callback_url,
-            "StatusCallbackMethod": "POST",
-        }
-
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=CALL_TIMEOUT_SECONDS) as client:
             url = f"{self.base_url}/Calls.json"
             try:
                 resp = await client.post(
                     url,
-                    data=form_data,
+                    data=request.model_dump(mode="json", by_alias=True),
                     headers={
                         "Authorization": self._auth_header,
                         "Content-Type": "application/x-www-form-urlencoded",
@@ -106,7 +113,7 @@ class TwilioRestClient:
                         f"Twilio call creation failed (status {resp.status_code}). Check provider credentials and account status.",
                     )
 
-                return resp.json()
+                return CreatedCall.model_validate_json(resp.content)
             except httpx.RequestError:
                 logger.warning("Twilio call creation transport failed")
                 raise HTTPException(
@@ -127,12 +134,12 @@ class TwilioRestClient:
             HTTPException: If the API call to Twilio fails.
 
         """
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=CALL_TIMEOUT_SECONDS) as client:
             url = f"{self.base_url}/Calls/{call_sid}.json"
             try:
                 resp = await client.post(
                     url,
-                    data={"Status": "completed"},
+                    data=EndCallRequest().model_dump(mode="json", by_alias=True),
                     headers={
                         "Authorization": self._auth_header,
                         "Content-Type": "application/x-www-form-urlencoded",
@@ -172,12 +179,14 @@ class TwilioRestClient:
   <Dial>{xml_escape(to_number)}</Dial>
 </Response>"""
 
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=CALL_TIMEOUT_SECONDS) as client:
             url = f"{self.base_url}/Calls/{call_sid}.json"
             try:
                 resp = await client.post(
                     url,
-                    data={"Twiml": twiml},
+                    data=TwimlUpdateRequest(twiml=twiml).model_dump(
+                        mode="json", by_alias=True
+                    ),
                     headers={
                         "Authorization": self._auth_header,
                         "Content-Type": "application/x-www-form-urlencoded",
@@ -219,12 +228,14 @@ class TwilioRestClient:
   <Play digits="{xml_escape(digits)}"/>
 </Response>"""
 
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=CALL_TIMEOUT_SECONDS) as client:
             url = f"{self.base_url}/Calls/{call_sid}.json"
             try:
                 resp = await client.post(
                     url,
-                    data={"Twiml": twiml},
+                    data=TwimlUpdateRequest(twiml=twiml).model_dump(
+                        mode="json", by_alias=True
+                    ),
                     headers={
                         "Authorization": self._auth_header,
                         "Content-Type": "application/x-www-form-urlencoded",
@@ -247,11 +258,11 @@ class TwilioRestClient:
     async def search_available_numbers(
         self,
         country: str,
-        number_type: str = "Local",
+        number_type: NumberType = NumberType.LOCAL,
         area_code: str | None = None,
         contains: str | None = None,
-        limit: int = 20,
-    ) -> list[dict]:
+        limit: int = NUMBER_SEARCH_DEFAULT_LIMIT,
+    ) -> list[AvailableNumber]:
         """Search for available phone numbers to purchase.
 
         Args:
@@ -265,19 +276,21 @@ class TwilioRestClient:
             List of available number dicts from Twilio.
 
         """
-        params: dict[str, str | int] = {"PageSize": min(limit, 30)}
-        if area_code:
-            params["AreaCode"] = area_code
-        if contains:
-            params["Contains"] = contains
+        request = NumberSearchRequest(
+            page_size=min(limit, NUMBER_SEARCH_MAX_LIMIT),
+            area_code=area_code or None,
+            contains=contains or None,
+        )
 
         url = f"{self.base_url}/AvailablePhoneNumbers/{country}/{number_type}.json"
 
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=NUMBER_SEARCH_TIMEOUT_SECONDS) as client:
             try:
                 resp = await client.get(
                     url,
-                    params=params,
+                    params=request.model_dump(
+                        mode="json", by_alias=True, exclude_none=True
+                    ),
                     headers={"Authorization": self._auth_header},
                 )
 
@@ -290,8 +303,16 @@ class TwilioRestClient:
                         f"Twilio search failed (status {resp.status_code}). Check provider credentials and account status.",
                     )
 
-                data = resp.json()
-                return data.get("available_phone_numbers", [])
+                try:
+                    response = AvailableNumbersResponse.model_validate_json(
+                        resp.content
+                    )
+                except ValidationError:
+                    raise HTTPException(
+                        HTTPStatus.BAD_GATEWAY,
+                        "Twilio returned an invalid available-number response.",
+                    ) from None
+                return response.available_phone_numbers
             except httpx.RequestError:
                 logger.warning("Twilio number search transport failed")
                 raise HTTPException(
@@ -319,12 +340,13 @@ class TwilioRestClient:
 
         """
         del authorization, country
-        async with httpx.AsyncClient(timeout=20) as client:
+        request = NumberPurchaseRequest(phone_number=phone_number)
+        async with httpx.AsyncClient(timeout=NUMBER_PURCHASE_TIMEOUT_SECONDS) as client:
             url = f"{self.base_url}/IncomingPhoneNumbers.json"
             try:
                 resp = await client.post(
                     url,
-                    data={"PhoneNumber": phone_number},
+                    data=request.model_dump(mode="json", by_alias=True),
                     headers={
                         "Authorization": self._auth_header,
                         "Content-Type": "application/x-www-form-urlencoded",
@@ -333,17 +355,30 @@ class TwilioRestClient:
 
                 if resp.status_code >= 300:
                     return classify_number_purchase_status(resp.status_code)
-                data = decode_number_purchase_response(resp)
-                if data is None:
+                try:
+                    purchased = PurchasedNumber.model_validate_json(resp.content)
+                except ValidationError:
                     return OutboundSendUnknown(
-                        failure_code="number_purchase_response_invalid",
+                        failure_code=NumberFailureCode.RESPONSE_INVALID,
                         status_code=resp.status_code,
                     )
-                return number_purchase_success(
-                    requested_number=phone_number,
-                    response_data=data,
+                if (
+                    purchased.phone_number is not None
+                    and purchased.phone_number != phone_number
+                ):
+                    return OutboundSendUnknown(
+                        failure_code=NumberFailureCode.IDENTITY_MISMATCH,
+                        status_code=resp.status_code,
+                    )
+                reference = purchased.sid.strip()
+                if len(reference) > OUTBOUND_PROVIDER_REFERENCE_MAX_LENGTH:
+                    return OutboundSendUnknown(
+                        failure_code=NumberFailureCode.RESPONSE_INVALID,
+                        status_code=resp.status_code,
+                    )
+                return OutboundSendSucceeded(
+                    provider_reference=reference,
                     status_code=resp.status_code,
-                    reference_keys=frozenset({"sid"}),
                 )
             except httpx.RequestError:
                 return number_purchase_transport_unknown("Twilio")

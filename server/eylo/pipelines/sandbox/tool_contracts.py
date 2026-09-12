@@ -154,6 +154,21 @@ class SandboxToolFailure(_SandboxToolValue):
     message: str
 
 
+class SandboxExecToolFailure(SandboxToolFailure):
+    """Command refusal retaining the existing model-facing output fields."""
+
+    exit_code: int
+    stdout: str = Field(repr=False)
+    stderr: str = Field(repr=False)
+    timed_out: bool
+
+
+class SandboxReadToolFailure(SandboxToolFailure):
+    """Read refusal without a file body."""
+
+    content: str = Field(repr=False)
+
+
 class SandboxCompletedReceipt(_SandboxToolValue):
     """Reference to the exact privately stored output/workspace pair."""
 

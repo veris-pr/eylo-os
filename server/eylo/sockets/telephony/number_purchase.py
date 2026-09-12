@@ -1,6 +1,7 @@
 """Shared safe result contract for charged carrier number purchases."""
 
 import logging
+from enum import StrEnum
 from typing import Protocol
 
 import httpx
@@ -20,6 +21,14 @@ from eylo.sockets.telephony.base import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class NumberPurchaseFailureCode(StrEnum):
+    RESPONSE_INVALID = "number_purchase_response_invalid"
+    IDENTITY_MISMATCH = "number_purchase_identity_mismatch"
+    COUNTRY_REQUIRED = "number_purchase_country_required"
+    REJECTED = "number_purchase_rejected"
+    UNCONFIRMED = "number_purchase_unconfirmed"
 
 
 class NumberPurchaseClient(Protocol):

@@ -24,6 +24,14 @@ event publication reads a separate count projection so historical detail fields
 cannot break observation. Invalid observation data remains non-fatal to the
 canonical transaction.
 
+Knowledge metadata and embedding semantic options remain extensible JSON objects,
+not vendor-specific platform schemas. Their shared contract accepts nested JSON
+values with string keys and finite numbers, validating both Python and JSON
+inputs. It refuses Python objects and non-finite numbers instead of coercing or
+silently changing them. Valid metadata, serialized embedding records and vector
+space hashes are unchanged. Corpus-import responses expose the same bounded,
+typed skip summary written by screening.
+
 ## Memory is experience-owned
 
 Memory stores compact facts learned during use. Ownership is typed:

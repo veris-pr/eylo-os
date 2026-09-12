@@ -7,11 +7,13 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from eylo.common.contracts.json_values import JsonObject
 from eylo.common.contracts.knowledgebase import (
     MAX_KNOWLEDGE_SOURCE_URI_CHARS,
     KnowledgeAccess,
     KnowledgeScope,
 )
+from eylo.modules.knowledgebase.corpus import CorpusSkipSummary
 from eylo.modules.knowledgebase.extraction import SUPPORTED_EXTENSIONS
 from eylo.modules.knowledgebase.jobs import (
     MAX_CONTENT_BYTES,
@@ -86,7 +88,7 @@ class KnowledgebaseRead(BaseModel):
     embedding_endpoint: str | None
     embedding_model: str | None
     embedding_dimensions: int | None
-    embedding_semantic_options: dict | None
+    embedding_semantic_options: JsonObject | None
     embedding_space_id: str | None
     reindex_state: KnowledgeReindexState
     target_embedding_provider_config_id: uuid.UUID | None
@@ -95,7 +97,7 @@ class KnowledgebaseRead(BaseModel):
     target_embedding_endpoint: str | None
     target_embedding_model: str | None
     target_embedding_dimensions: int | None
-    target_embedding_semantic_options: dict | None
+    target_embedding_semantic_options: JsonObject | None
     target_embedding_space_id: str | None
     reindex_last_error: str | None
     metadata: KnowledgebaseMetadata | None = Field(validation_alias="meta")
@@ -173,7 +175,7 @@ class IngestRequest(BaseModel):
             "becomes a new one."
         ),
     )
-    metadata: dict | None = None
+    metadata: JsonObject | None = None
 
 
 class CorpusImportRequest(BaseModel):
@@ -220,7 +222,7 @@ class CorpusImportRead(BaseModel):
     storage_provider: str
     discovered_count: int
     queued_count: int
-    skipped: dict | None
+    skipped: CorpusSkipSummary | None
     attempts: int
     started_at: datetime | None
     finished_at: datetime | None
@@ -248,7 +250,7 @@ class IngestionJobRead(BaseModel):
     embedding_provider: str | None
     embedding_model: str | None
     embedding_dimensions: int | None
-    embedding_semantic_options: dict | None
+    embedding_semantic_options: JsonObject | None
     embedding_space_id: str | None
     corpus_import_id: uuid.UUID | None
     attempts: int
@@ -272,7 +274,7 @@ class KnowledgeReindexJobRead(BaseModel):
     target_embedding_provider: str
     target_embedding_model: str
     target_embedding_dimensions: int
-    target_embedding_semantic_options: dict
+    target_embedding_semantic_options: JsonObject
     target_embedding_space_id: str
     source_chunk_count: int
     indexed_chunk_count: int

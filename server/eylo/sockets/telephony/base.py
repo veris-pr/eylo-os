@@ -131,6 +131,9 @@ class CallMetadata(_TelephonyValue):
 
 class CarrierMediaEvent(StrEnum):
     MEDIA = "media"
+    START = "start"
+    DTMF = "dtmf"
+    IGNORED = "ignored"
 
 
 class InboundMediaMessage(_TelephonyValue):
@@ -149,6 +152,32 @@ class OutboundMediaMessage(_TelephonyValue):
 
     payload: bytes = Field(repr=False, exclude=True)
     stream_sid: str
+
+
+class CarrierStartMessage(_TelephonyValue):
+    """Untrusted carrier metadata; the pipeline must resolve and authorize it."""
+
+    event: Literal[CarrierMediaEvent.START] = CarrierMediaEvent.START
+    metadata: CallMetadata = Field(repr=False, exclude=True)
+
+
+class CarrierDtmfMessage(_TelephonyValue):
+    event: Literal[CarrierMediaEvent.DTMF] = CarrierMediaEvent.DTMF
+    digits: str = Field(min_length=1, repr=False, exclude=True)
+
+
+class CarrierIgnoredMessage(_TelephonyValue):
+    """A control message the current media pipeline does not consume."""
+
+    event: Literal[CarrierMediaEvent.IGNORED] = CarrierMediaEvent.IGNORED
+
+
+type ParsedCarrierMessage = (
+    InboundMediaMessage
+    | CarrierStartMessage
+    | CarrierDtmfMessage
+    | CarrierIgnoredMessage
+)
 
 
 class CarrierMediaStatus(str, Enum):
@@ -314,26 +343,10 @@ def _provider_status_code(error: Exception) -> int | None:
 
 
 class TelephonyMessageParser(Protocol):
-    """Protocol for parsing provider-specific messages."""
+    """Decode once at the vendor boundary, never returning unvalidated mappings."""
 
-    def parse_message(self, raw_message: str) -> Dict[str, Any]:
-        """Parse raw message from provider."""
-        ...
-
-    def get_event_type(self, message: Dict[str, Any]) -> str:
-        """Extract event type from parsed message."""
-        ...
-
-    def extract_media(self, message: Dict[str, Any]) -> Optional[InboundMediaMessage]:
-        """Extract media data from message."""
-        ...
-
-    def extract_dtmf(self, message: Dict[str, Any]) -> Optional[str]:
-        """Extract inbound DTMF digits from message, when provider exposes them."""
-        ...
-
-    async def extract_metadata(self, message: Dict[str, Any]) -> Optional[CallMetadata]:
-        """Extract call metadata from start message."""
+    def parse_message(self, raw_message: str | bytes) -> ParsedCarrierMessage:
+        """Return a typed event without I/O or platform authorization effects."""
         ...
 
 

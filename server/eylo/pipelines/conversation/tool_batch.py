@@ -23,9 +23,6 @@ from eylo.common.contracts.llm_response import LLMContentType, LLMToolUseBlock
 from eylo.common.database import start_transaction
 from eylo.common.instrumentation import tool_span
 from eylo.modules.agents.schemas.indb import AgentInDb
-from eylo.modules.agents.services.runner.message_store import (
-    format_widget_render_fallback,
-)
 from eylo.modules.conversations.constants import HANDOFF_TOOL_PREFIX, WIDGET_TOOL_PREFIX
 from eylo.modules.conversations.schemas.conversations import ConversationContext
 from eylo.modules.conversations.schemas.messages import MessageInDb
@@ -35,6 +32,7 @@ from eylo.pipelines.conversation.handoff import (
     HandoffState,
     require_handoff_target,
 )
+from eylo.pipelines.conversation.response_text import format_widget_render_fallback
 from eylo.pipelines.conversation.tool_dispatch import (
     execute_handoff,
     execute_registered_tool,

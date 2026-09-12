@@ -8,10 +8,10 @@ leases expire and another process claims the conversation.
 """
 
 import datetime
-from typing import Any
 from uuid import UUID
 
 import arrow
+from redis.asyncio import Redis
 
 from eylo.common.redis import get_redis_client
 from eylo.modules.conversations.schemas.runtime_status import (
@@ -19,6 +19,12 @@ from eylo.modules.conversations.schemas.runtime_status import (
     ConversationRuntimePhase,
     ConversationRuntimeReleaseDecision,
     ConversationRuntimeStatus,
+)
+from eylo.modules.conversations.services.runtime_status_contracts import (
+    decode_claim_reply,
+    decode_drain_reply,
+    decode_ownership_reply,
+    decode_status_hash,
 )
 
 CONVERSATION_RUNTIME_STATUS_KEY_PREFIX = "eylo::conversations::runtime_status"
@@ -197,7 +203,7 @@ class ConversationRuntimeStatusService:
 
     def __init__(
         self,
-        redis_client: Any | None = None,
+        redis_client: Redis | None = None,
         lease_seconds: int = DEFAULT_CONVERSATION_RUNTIME_LEASE_SECONDS,
         stale_after_seconds: int = DEFAULT_CONVERSATION_RUNTIME_STALE_AFTER_SECONDS,
     ) -> None:
@@ -218,7 +224,7 @@ class ConversationRuntimeStatusService:
         """Claim the conversation if idle, otherwise mark it for another drain pass."""
         now = arrow.utcnow().datetime
         expires_at = _expires_at(now, self.lease_seconds)
-        result = await self.redis_client.eval(
+        result: object = await self.redis_client.eval(
             _CLAIM_OR_WAKE_SCRIPT,
             1,
             self._key(organization_id, conversation_id),
@@ -237,7 +243,7 @@ class ConversationRuntimeStatusService:
             str(self.stale_after_seconds),
             str(expires_at.timestamp()),
         )
-        return _decode_claim_result(result)
+        return decode_claim_reply(result)
 
     async def claim_or_wake(
         self,
@@ -273,7 +279,7 @@ class ConversationRuntimeStatusService:
         """Owner-checked update of the active request being processed."""
         now = arrow.utcnow().datetime
         expires_at = _expires_at(now, self.lease_seconds)
-        updated = await self.redis_client.eval(
+        updated: object = await self.redis_client.eval(
             _OWNER_UPDATE_SCRIPT,
             1,
             self._key(organization_id, conversation_id),
@@ -289,7 +295,7 @@ class ConversationRuntimeStatusService:
             str(now.timestamp()),
             str(expires_at.timestamp()),
         )
-        return bool(updated)
+        return decode_ownership_reply(updated)
 
     async def heartbeat(
         self,
@@ -301,7 +307,7 @@ class ConversationRuntimeStatusService:
         """Refresh the runtime lease if the caller still owns the conversation."""
         now = arrow.utcnow().datetime
         expires_at = _expires_at(now, self.lease_seconds)
-        updated = await self.redis_client.eval(
+        updated: object = await self.redis_client.eval(
             _HEARTBEAT_SCRIPT,
             1,
             self._key(organization_id, conversation_id),
@@ -312,7 +318,7 @@ class ConversationRuntimeStatusService:
             str(now.timestamp()),
             str(expires_at.timestamp()),
         )
-        return bool(updated)
+        return decode_ownership_reply(updated)
 
     async def release_or_continue(
         self,
@@ -324,7 +330,7 @@ class ConversationRuntimeStatusService:
         """Release when quiet, or continue draining when another event woke us."""
         now = arrow.utcnow().datetime
         expires_at = _expires_at(now, self.lease_seconds)
-        result = await self.redis_client.eval(
+        result: object = await self.redis_client.eval(
             _RELEASE_OR_CONTINUE_SCRIPT,
             1,
             self._key(organization_id, conversation_id),
@@ -336,11 +342,7 @@ class ConversationRuntimeStatusService:
             str(now.timestamp()),
             str(expires_at.timestamp()),
         )
-        if int(result) == 1:
-            return ConversationRuntimeReleaseDecision.CONTINUE
-        if int(result) == 0:
-            return ConversationRuntimeReleaseDecision.RELEASED
-        return ConversationRuntimeReleaseDecision.LOST
+        return decode_drain_reply(result)
 
     async def release(
         self,
@@ -350,13 +352,13 @@ class ConversationRuntimeStatusService:
         owner_token: str,
     ) -> bool:
         """Delete the runtime status if the caller still owns it."""
-        released = await self.redis_client.eval(
+        released: object = await self.redis_client.eval(
             _RELEASE_SCRIPT,
             1,
             self._key(organization_id, conversation_id),
             owner_token,
         )
-        return bool(released)
+        return decode_ownership_reply(released)
 
     async def get_status(
         self,
@@ -370,7 +372,7 @@ class ConversationRuntimeStatusService:
         )
         if not data:
             return None
-        return ConversationRuntimeStatus.model_validate(_decode_status_hash(data))
+        return decode_status_hash(data)
 
     @staticmethod
     def _key(organization_id: UUID, conversation_id: UUID) -> str:
@@ -389,56 +391,3 @@ def _expires_at(
 
 def _serialize_datetime(value: datetime.datetime) -> str:
     return value.isoformat()
-
-
-def _decode_status_hash(data: dict[Any, Any]) -> dict[str, Any]:
-    decoded: dict[str, Any] = {}
-    uuid_fields = {
-        "active_request_id",
-        "active_user_message_id",
-        "last_enqueued_request_id",
-        "last_enqueued_user_message_id",
-    }
-    for raw_key, raw_value in data.items():
-        key = _decode_redis_value(raw_key)
-        value = _decode_redis_value(raw_value)
-        if key in uuid_fields and not value:
-            decoded[key] = None
-            continue
-        if key == "wake_requested":
-            decoded[key] = value == "1" or value is True
-            continue
-        if key == "pending_count":
-            decoded[key] = int(value or 0)
-            continue
-        if key in {"heartbeat_epoch", "expires_epoch"}:
-            decoded[key] = float(value) if value else None
-            continue
-        decoded[key] = value
-    return decoded
-
-
-def _decode_claim_result(result: Any) -> ConversationRuntimeClaimResult:
-    values = list(result or [])
-    acquired = bool(int(_decode_redis_value(values[0]))) if values else False
-    stale_takeover = (
-        bool(int(_decode_redis_value(values[1]))) if len(values) > 1 else False
-    )
-    previous_active_request_id = (
-        _decode_redis_value(values[2]) if len(values) > 2 else None
-    )
-    previous_active_user_message_id = (
-        _decode_redis_value(values[3]) if len(values) > 3 else None
-    )
-    return ConversationRuntimeClaimResult(
-        acquired=acquired,
-        stale_takeover=stale_takeover,
-        previous_active_request_id=previous_active_request_id or None,
-        previous_active_user_message_id=previous_active_user_message_id or None,
-    )
-
-
-def _decode_redis_value(value: Any) -> Any:
-    if isinstance(value, bytes):
-        return value.decode()
-    return value

@@ -9,9 +9,15 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
 
-from pydantic import BaseModel, ConfigDict, StrictBool, StrictStr, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    JsonValue,
+    StrictBool,
+    StrictStr,
+    model_validator,
+)
 
 from eylo.common.contracts.conversation import WIDGET_TOOL_PREFIX
 from eylo.common.database import start_transaction
@@ -21,6 +27,7 @@ from eylo.framework.agents.tool import ToolCall
 from eylo.modules.conversations.schemas.conversations import ConversationContext
 from eylo.pipelines.agent_execution_context import PlatformRunState
 from eylo.pipelines.conversation.domain import agent_spec_from_context
+from eylo.pipelines.conversation.response_text import format_widget_render_fallback
 from eylo.pipelines.conversation.tool_batch import (
     ConversationToolBatchExecutor,
     HandoffResult,
@@ -80,7 +87,7 @@ class RealtimeToolDispatcher:
         self._widget_fallback_occurred: bool = False
 
     async def execute(
-        self, tool_call_id: str, tool_name: str, arguments: dict[str, Any]
+        self, tool_call_id: str, tool_name: str, arguments: dict[str, JsonValue]
     ) -> DispatchResult:
         """Execute a tool and return a structured result.
 
@@ -152,11 +159,7 @@ class RealtimeToolDispatcher:
 
         if is_widget_fallback:
             self._widget_fallback_occurred = True
-            result_value = (
-                "A widget could not be rendered. "
-                "Do not call another widget tool during this turn. "
-                "Reply to the user in normal plain text instead."
-            )
+            result_value = format_widget_render_fallback()
 
         return DispatchResult(
             result=(

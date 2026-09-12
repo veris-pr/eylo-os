@@ -4599,13 +4599,7 @@ export interface paths {
         put?: never;
         /**
          * Outbound Call
-         * @description Initiates an outbound call via the configured telephony provider.
-         *
-         *     This endpoint is used by the outbound_call system tool to trigger calls.
-         *     It expects a JSON body with:
-         *     - to_number: Target phone number
-         *     - agent_id: UUID of the agent
-         *     - initial_message: Optional first message
+         * @description File one idempotent outbound call under the authenticated organization.
          */
         post: operations["outbound_call_api_voice_outbound_post"];
         delete?: never;
@@ -7790,10 +7784,7 @@ export interface components {
             discovered_count: number;
             /** Queued Count */
             queued_count: number;
-            /** Skipped */
-            skipped: {
-                [key: string]: unknown;
-            } | null;
+            skipped: components["schemas"]["CorpusSkipSummary"] | null;
             /** Attempts */
             attempts: number;
             /** Started At */
@@ -7835,6 +7826,19 @@ export interface components {
              * @default
              */
             prefix: string;
+        };
+        /**
+         * CorpusSkipSummary
+         * @description Bounded details persisted alongside the full skipped-object count.
+         */
+        CorpusSkipSummary: {
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
+            /** Entries */
+            entries: components["schemas"]["SkippedCorpusObject"][];
         };
         /**
          * CuratedToolCatalogSchema
@@ -8485,10 +8489,7 @@ export interface components {
              * @description A durable address for this document. When set, it becomes the document's identity, so re-ingesting the same URI replaces the previous version instead of adding a second copy. Without it, identity falls back to the content itself and an edited document becomes a new one.
              */
             source_uri?: string | null;
-            /** Metadata */
-            metadata?: {
-                [key: string]: unknown;
-            } | null;
+            metadata?: components["schemas"]["JsonObject"] | null;
         };
         /** IngestionJobRead */
         IngestionJobRead: {
@@ -8532,10 +8533,7 @@ export interface components {
             embedding_model: string | null;
             /** Embedding Dimensions */
             embedding_dimensions: number | null;
-            /** Embedding Semantic Options */
-            embedding_semantic_options: {
-                [key: string]: unknown;
-            } | null;
+            embedding_semantic_options: components["schemas"]["JsonObject"] | null;
             /** Embedding Space Id */
             embedding_space_id: string | null;
             /** Corpus Import Id */
@@ -8678,6 +8676,9 @@ export interface components {
              * @description Invitee email address
              */
             email: string;
+        };
+        JsonObject: {
+            [key: string]: components["schemas"]["JsonValue"];
         };
         JsonValue: unknown;
         /**
@@ -8930,10 +8931,7 @@ export interface components {
             target_embedding_model: string;
             /** Target Embedding Dimensions */
             target_embedding_dimensions: number;
-            /** Target Embedding Semantic Options */
-            target_embedding_semantic_options: {
-                [key: string]: unknown;
-            };
+            target_embedding_semantic_options: components["schemas"]["JsonObject"];
             /** Target Embedding Space Id */
             target_embedding_space_id: string;
             /** Source Chunk Count */
@@ -9062,10 +9060,7 @@ export interface components {
             embedding_model: string | null;
             /** Embedding Dimensions */
             embedding_dimensions: number | null;
-            /** Embedding Semantic Options */
-            embedding_semantic_options: {
-                [key: string]: unknown;
-            } | null;
+            embedding_semantic_options: components["schemas"]["JsonObject"] | null;
             /** Embedding Space Id */
             embedding_space_id: string | null;
             reindex_state: components["schemas"]["KnowledgeReindexState"];
@@ -9081,10 +9076,7 @@ export interface components {
             target_embedding_model: string | null;
             /** Target Embedding Dimensions */
             target_embedding_dimensions: number | null;
-            /** Target Embedding Semantic Options */
-            target_embedding_semantic_options: {
-                [key: string]: unknown;
-            } | null;
+            target_embedding_semantic_options: components["schemas"]["JsonObject"] | null;
             /** Target Embedding Space Id */
             target_embedding_space_id: string | null;
             /** Reindex Last Error */
@@ -9254,6 +9246,46 @@ export interface components {
              */
             password: string;
         };
+        /**
+         * MCPDiscoveredToolRead
+         * @description Published tool facts reviewed before an explicit Agent assignment.
+         */
+        MCPDiscoveredToolRead: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Wire Id */
+            wire_id: string | null;
+            /** Slug */
+            slug: string;
+            /** Name */
+            name: string;
+            /** Description */
+            description: string | null;
+            effect: components["schemas"]["MCPToolEffect"];
+            execution_mode: components["schemas"]["eylo__modules__tools__models__ToolExecutionMode"];
+            lifecycle: components["schemas"]["DefinitionLifecycle"];
+            /** Published Revision */
+            published_revision: number | null;
+        };
+        /**
+         * MCPDiscoveryRead
+         * @description Complete bounded discovery outcome, not the remote server's raw payload.
+         */
+        MCPDiscoveryRead: {
+            /** Count */
+            count: number;
+            /** Tools */
+            tools: components["schemas"]["MCPDiscoveredToolRead"][];
+        };
+        /**
+         * MCPServerAuthMode
+         * @description Public indication of configured authentication, never its values.
+         * @enum {string}
+         */
+        MCPServerAuthMode: "none" | "headers";
         /** MCPServerCreate */
         MCPServerCreate: {
             /** Name */
@@ -9287,11 +9319,74 @@ export interface components {
                 [key: string]: string | null;
             } | null;
         };
+        /**
+         * MCPServerRead
+         * @description Allowlisted server metadata; neither encrypted nor resolved secrets escape.
+         */
+        MCPServerRead: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Name */
+            name: string;
+            /** Slug */
+            slug: string;
+            /** Url */
+            url: string;
+            /** Transport */
+            transport: string;
+            /** Protocol Version */
+            protocol_version: string;
+            auth_mode: components["schemas"]["MCPServerAuthMode"];
+            /** Header Names */
+            header_names: string[];
+            lifecycle: components["schemas"]["DefinitionLifecycle"];
+            /** Published Revision */
+            published_revision: number | null;
+            /** Draft Version */
+            draft_version: number;
+            /** Draft Dirty */
+            draft_dirty: boolean;
+            /** Discovered At */
+            discovered_at: string | null;
+            /** Discovered Tool Count */
+            discovered_tool_count: number | null;
+        };
+        /**
+         * MCPServerRevisionRead
+         * @description Exact revision revocation status without the private definition config.
+         */
+        MCPServerRevisionRead: {
+            /**
+             * Server Id
+             * Format: uuid
+             */
+            server_id: string;
+            /** Revision */
+            revision: number;
+            availability: components["schemas"]["RevisionAvailability"];
+            /** Revoked At */
+            revoked_at: string | null;
+            /** Revoked By */
+            revoked_by: string | null;
+            /** Revocation Reason */
+            revocation_reason: string | null;
+            /** Cancellation Requested At */
+            cancellation_requested_at: string | null;
+        };
         /** MCPServerRevoke */
         MCPServerRevoke: {
             /** Reason */
             reason: string;
         };
+        /**
+         * MCPToolEffect
+         * @description Server-declared effect semantics accepted by the MCP executor.
+         * @enum {string}
+         */
+        MCPToolEffect: "read_only" | "idempotent_mutation" | "unsupported";
         /** MemberApiResponseSchema */
         MemberApiResponseSchema: {
             /**
@@ -10194,6 +10289,64 @@ export interface components {
             description?: string | null;
             config?: components["schemas"]["VoiceConfig-Input"] | null;
         };
+        /**
+         * OutboundAttemptState
+         * @description Honest last-known state of one logical mutating external effect.
+         * @enum {string}
+         */
+        OutboundAttemptState: "prepared" | "in_flight" | "succeeded" | "retryable" | "terminal" | "unknown" | "cancelled";
+        /**
+         * OutboundCallRequest
+         * @description Operator call input; organization and call identity come from auth/header.
+         */
+        OutboundCallRequest: {
+            /** To Number */
+            to_number: string;
+            /**
+             * Agent Id
+             * Format: uuid
+             */
+            agent_id: string;
+            /** Initial Message */
+            initial_message?: string | null;
+            context?: components["schemas"]["JsonObject"] | null;
+        };
+        /**
+         * OutboundCallResult
+         * @description Committed initiation outcome, not the eventual status of the phone call.
+         *
+         *     Keep IDs and effect state typed until the caller's serialization boundary.
+         *     Retry requests propagate separately from the outbound execution authority.
+         */
+        OutboundCallResult: {
+            /**
+             * Call Id
+             * Format: uuid
+             */
+            call_id: string;
+            /** Call Sid */
+            call_sid: string | null;
+            status: components["schemas"]["OutboundAttemptState"];
+            /** Failure Code */
+            failure_code: string | null;
+            /**
+             * Outbound Attempt Id
+             * Format: uuid
+             */
+            outbound_attempt_id: string;
+            /** Agent Revision */
+            agent_revision: number;
+            provider: components["schemas"]["TelephonyProvider"];
+            /**
+             * Provider Config Id
+             * Format: uuid
+             */
+            provider_config_id: string;
+            /** Provider Config Revision */
+            provider_config_revision: number;
+            /** From Number */
+            from_number: string;
+        };
         /** ParticipantApiResponseSchema */
         ParticipantApiResponseSchema: {
             /**
@@ -11078,6 +11231,37 @@ export interface components {
             verifiedAt: string;
         };
         /**
+         * SandboxExecutionSettings
+         * @description Validated immutable Docker settings; all limits remain explicit.
+         */
+        SandboxExecutionSettings: {
+            /** Endpoint */
+            endpoint: string;
+            /** Image */
+            image: string;
+            /** Memory Mb */
+            memory_mb: number;
+            /** Cpu Cores */
+            cpu_cores: number;
+            /** Disk Mb */
+            disk_mb: number;
+            /** Pids */
+            pids: number;
+            /** Ttl Seconds */
+            ttl_seconds: number;
+            /** Command Timeout Seconds */
+            command_timeout_seconds: number;
+            /** Max Output Bytes */
+            max_output_bytes: number;
+            /** Max Sessions */
+            max_sessions: number;
+            /**
+             * Network
+             * @constant
+             */
+            network: false;
+        };
+        /**
          * SandboxGrantCreate
          * @description Bind an agent to one explicit ready no-egress sandbox config.
          */
@@ -11138,6 +11322,41 @@ export interface components {
              */
             created_at: string;
         };
+        /**
+         * SandboxPolicyRead
+         * @description Flat public policy projection; validation remains with workspace policy.
+         */
+        SandboxPolicyRead: {
+            /** Endpoint */
+            endpoint: string;
+            /** Image */
+            image: string;
+            /** Memory Mb */
+            memory_mb: number;
+            /** Cpu Cores */
+            cpu_cores: number;
+            /** Disk Mb */
+            disk_mb: number;
+            /** Pids */
+            pids: number;
+            /** Ttl Seconds */
+            ttl_seconds: number;
+            /** Command Timeout Seconds */
+            command_timeout_seconds: number;
+            /** Max Output Bytes */
+            max_output_bytes: number;
+            /** Max Sessions */
+            max_sessions: number;
+            /**
+             * Network
+             * @constant
+             */
+            network: false;
+            /** Verified Image Id */
+            verified_image_id: string;
+            /** Grant Max Sessions */
+            grant_max_sessions: number | null;
+        };
         /** SandboxSessionRead */
         SandboxSessionRead: {
             /**
@@ -11160,10 +11379,7 @@ export interface components {
             grant_id: string | null;
             /** Grant Revision */
             grant_revision: number | null;
-            /** Effective Policy */
-            effective_policy: {
-                [key: string]: unknown;
-            };
+            effective_policy: components["schemas"]["SandboxPolicyRead"];
             state: components["schemas"]["SandboxState"];
             /** Agent Id */
             agent_id: string | null;
@@ -11190,16 +11406,32 @@ export interface components {
          * @enum {string}
          */
         SandboxState: "starting" | "running" | "paused" | "stopped" | "destroyed";
+        /**
+         * SandboxWorkspacePolicy
+         * @description Pinned execution settings plus the currently authorized grant ceiling.
+         */
+        SandboxWorkspacePolicy: {
+            config: components["schemas"]["SandboxExecutionSettings"];
+            /** Verified Image Id */
+            verified_image_id: string;
+            /** Grant Max Sessions */
+            grant_max_sessions?: number | null;
+        };
+        /**
+         * ScheduleActionsRead
+         * @description Registered action names without exposing live handlers or contexts.
+         */
+        ScheduleActionsRead: {
+            /** Actions */
+            actions: string[];
+        };
         /** ScheduleCreate */
         ScheduleCreate: {
             /** Name */
             name: string;
             /** Action */
             action: string;
-            /** Payload */
-            payload?: {
-                [key: string]: unknown;
-            };
+            payload?: components["schemas"]["JsonObject"];
             /**
              * Agent Id
              * Format: uuid
@@ -11245,10 +11477,7 @@ export interface components {
             name: string;
             /** Action */
             action: string;
-            /** Payload */
-            payload: {
-                [key: string]: unknown;
-            };
+            payload: components["schemas"]["JsonObject"];
             /** Rule */
             rule: string | null;
             /** Timezone */
@@ -11265,8 +11494,7 @@ export interface components {
             enabled: boolean;
             /** Published Revision */
             published_revision: number;
-            /** Lifecycle */
-            lifecycle: string;
+            lifecycle: components["schemas"]["DefinitionLifecycle"];
             /**
              * Agent Id
              * Format: uuid
@@ -11329,10 +11557,7 @@ export interface components {
             started_at: string | null;
             /** Finished At */
             finished_at: string | null;
-            /** Result */
-            result: {
-                [key: string]: unknown;
-            } | null;
+            result: components["schemas"]["JsonObject"] | null;
             /** Failure Summary */
             failure_summary: string | null;
         };
@@ -11342,10 +11567,7 @@ export interface components {
             name: string;
             /** Action */
             action: string;
-            /** Payload */
-            payload?: {
-                [key: string]: unknown;
-            };
+            payload?: components["schemas"]["JsonObject"];
             /**
              * Agent Id
              * Format: uuid
@@ -11483,6 +11705,16 @@ export interface components {
              * @default 0
              */
             end_call_after_silence_ms: number;
+        };
+        /**
+         * SkippedCorpusObject
+         * @description Human-readable rejection detail; no downloaded content is retained.
+         */
+        SkippedCorpusObject: {
+            /** Key */
+            key: string;
+            /** Reason */
+            reason: string;
         };
         /** SorAdapterCapabilityResponse */
         SorAdapterCapabilityResponse: {
@@ -17047,7 +17279,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["MCPServerRead"][];
                 };
             };
             /** @description Validation Error */
@@ -17085,7 +17317,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["MCPServerRead"];
                 };
             };
             /** @description Validation Error */
@@ -17120,7 +17352,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["MCPDiscoveryRead"];
                 };
             };
             /** @description Validation Error */
@@ -17159,7 +17391,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["MCPServerRead"];
                 };
             };
             /** @description Validation Error */
@@ -17194,7 +17426,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["MCPServerRead"];
                 };
             };
             /** @description Validation Error */
@@ -17234,7 +17466,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["MCPServerRevisionRead"];
                 };
             };
             /** @description Validation Error */
@@ -18595,7 +18827,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ScheduleActionsRead"];
                 };
             };
             /** @description Validation Error */
@@ -27311,7 +27543,11 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OutboundCallRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -27319,7 +27555,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["OutboundCallResult"];
                 };
             };
             /** @description Validation Error */

@@ -188,7 +188,7 @@ async def grant_sandbox(
     organization_id: UUID,
     request: SandboxGrantCreate,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> SandboxGrantRead:
     """Let an agent run code.
 
     Configuring a sandbox for an organization does not grant it to every agent.
@@ -196,13 +196,14 @@ async def grant_sandbox(
     """
     _authorize(organization_id, current_user)
     try:
-        return await sessions.grant(
+        grant = await sessions.grant(
             organization_id=organization_id,
             agent_id=request.agent_id,
             sandbox_provider_config_id=request.sandbox_provider_config_id,
             access=request.access,
             max_sessions=request.max_sessions,
         )
+        return SandboxGrantRead.model_validate(grant)
     except SandboxError as error:
         raise HTTPException(status_code=400, detail=str(error))
 
@@ -211,10 +212,11 @@ async def grant_sandbox(
 async def list_sandbox_grants(
     organization_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> list[SandboxGrantRead]:
     """Which agents in this organization may run code, and with what reach."""
     _authorize(organization_id, current_user)
-    return await sessions.list_grants(organization_id=organization_id)
+    grants = await sessions.list_grants(organization_id=organization_id)
+    return [SandboxGrantRead.model_validate(grant) for grant in grants]
 
 
 @router.delete("/sandboxes/grants/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -222,7 +224,7 @@ async def revoke_sandbox(
     organization_id: UUID,
     agent_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> None:
     """Stop an agent running code.
 
     An action already executing may finish. Every later acquisition, including
@@ -250,16 +252,17 @@ async def list_sandboxes(
     organization_id: UUID,
     include_destroyed: bool = False,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> list[SandboxSessionRead]:
     """Workspaces this organization is holding.
 
     What an operator checks when they want to know what is running and what it
     is costing.
     """
     _authorize(organization_id, current_user)
-    return await sessions.list_sessions(
+    workspaces = await sessions.list_sessions(
         organization_id=organization_id, include_destroyed=include_destroyed
     )
+    return [SandboxSessionRead.model_validate(workspace) for workspace in workspaces]
 
 
 @router.get("/sandboxes/{session_id}", response_model=SandboxSessionRead)
@@ -267,12 +270,13 @@ async def read_sandbox(
     organization_id: UUID,
     session_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> SandboxSessionRead:
     _authorize(organization_id, current_user)
     try:
-        return await sessions.get_session(session_id, organization_id)
+        workspace = await sessions.get_session(session_id, organization_id)
     except SandboxError as error:
         raise HTTPException(status_code=404, detail=str(error))
+    return SandboxSessionRead.model_validate(workspace)
 
 
 @router.delete("/sandboxes/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -280,7 +284,7 @@ async def destroy_sandbox(
     organization_id: UUID,
     session_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> None:
     """Destroy a workspace now. **The kill switch.**
 
     This matters more than the usual delete endpoint: a sandbox is running

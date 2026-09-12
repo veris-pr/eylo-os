@@ -12,9 +12,10 @@ import logging
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from pydantic_core import to_jsonable_python
+from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import and_, select
 
+from eylo.common.contracts.json_values import JsonObject
 from eylo.common.contracts.scheduler import (
     InvalidRecurrence,
     MisfirePolicy,
@@ -43,6 +44,7 @@ from eylo.modules.scheduler.schemas import ScheduleRunRead
 logger = logging.getLogger(__name__)
 
 _MAX_SCHEDULE_PAYLOAD_BYTES = 12_000
+_SCHEDULE_PAYLOAD = TypeAdapter(JsonObject)
 
 
 def _adapter() -> PostgresSchedulerStore:
@@ -55,7 +57,7 @@ async def create_schedule(
     key: str,
     name: str,
     action: str,
-    payload: dict,
+    payload: JsonObject,
     recurrence: Recurrence,
     misfire_policy: MisfirePolicy = MisfirePolicy.COALESCE,
     agent_id: UUID,
@@ -100,7 +102,7 @@ async def update_schedule(
     expected_revision: int,
     name: str,
     action: str,
-    payload: dict,
+    payload: JsonObject,
     recurrence: Recurrence,
     misfire_policy: MisfirePolicy = MisfirePolicy.COALESCE,
     agent_id: UUID,
@@ -301,8 +303,7 @@ async def list_runs(
                 AgentRunModel,
                 and_(
                     AgentRunModel.origin_schedule_run_id == ScheduleRunModel.id,
-                    AgentRunModel.organization_id
-                    == ScheduleRunModel.organization_id,
+                    AgentRunModel.organization_id == ScheduleRunModel.organization_id,
                     AgentRunModel.deleted.is_(False),
                 ),
             )
@@ -338,7 +339,7 @@ async def list_runs(
 def _validate_definition(
     *,
     action: str,
-    payload: dict,
+    payload: JsonObject,
     recurrence: Recurrence,
 ) -> datetime:
     validate(recurrence)
@@ -348,9 +349,12 @@ def _validate_definition(
             f"No handler is registered for action '{action}'. "
             f"Available: {', '.join(registered_actions()) or 'none'}."
         )
-    normalized_payload = to_jsonable_python(payload)
-    if not isinstance(normalized_payload, dict):
-        raise InvalidRecurrence("A schedule payload must be a JSON object.")
+    try:
+        normalized_payload = _SCHEDULE_PAYLOAD.validate_python(payload)
+    except ValidationError:
+        raise InvalidRecurrence(
+            "A schedule payload must be a JSON object with finite values."
+        ) from None
     payload_size = len(
         json.dumps(
             normalized_payload,

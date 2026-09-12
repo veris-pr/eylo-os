@@ -7,6 +7,7 @@ from uuid import UUID
 
 from sqlalchemy import select
 
+from eylo.common.contracts.json_values import JsonObject
 from eylo.common.database import start_transaction
 from eylo.common.outbound import OutboundAttemptState
 from eylo.modules.telephony.constants import (
@@ -100,7 +101,7 @@ class VoiceChannelAdapter:
         rendered_message: Optional[str],
         attempt_id: UUID,
     ) -> ChannelDispatchResult:
-        meta = {
+        meta: JsonObject = {
             "kind": "outbound_call",
             "to_number": contact.contact_address,
             "initial_message": rendered_message,

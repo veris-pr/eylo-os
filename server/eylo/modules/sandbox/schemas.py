@@ -6,9 +6,16 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+)
 
 from eylo.common.contracts.sandbox import SandboxAccess, SandboxState
+from eylo.modules.sandbox.policy import SandboxWorkspacePolicy
 from eylo.modules.sandbox.run_context import OBJECTIVE_MAX_STEPS
 
 
@@ -35,6 +42,26 @@ class ObjectiveCreate(BaseModel):
     deadline: datetime
 
 
+class SandboxPolicyRead(BaseModel):
+    """Flat public policy projection; validation remains with workspace policy."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+    endpoint: str
+    image: str
+    memory_mb: int
+    cpu_cores: float
+    disk_mb: int
+    pids: int
+    ttl_seconds: int
+    command_timeout_seconds: int
+    max_output_bytes: int
+    max_sessions: int
+    network: Literal[False]
+    verified_image_id: str
+    grant_max_sessions: int | None
+
+
 class SandboxSessionRead(BaseModel):
     model_config = ConfigDict(from_attributes=True, extra="forbid")
 
@@ -45,7 +72,7 @@ class SandboxSessionRead(BaseModel):
     sandbox_provider_config_revision: int
     grant_id: uuid.UUID | None
     grant_revision: int | None
-    effective_policy: dict[str, object]
+    effective_policy: SandboxWorkspacePolicy
     state: SandboxState
     agent_id: uuid.UUID | None
     agent_run_id: uuid.UUID | None
@@ -56,6 +83,34 @@ class SandboxSessionRead(BaseModel):
     # Deliberately absent: `vendor_id`. It is the container id, and an operator
     # who has it can reach the workspace outside everything this module
     # enforces. The kill switch is a route here, not a docker command.
+
+    @field_validator("effective_policy", mode="before")
+    @classmethod
+    def decode_policy(cls, value: object) -> SandboxWorkspacePolicy:
+        """Read the persisted flat policy without importing runtime orchestration."""
+        if isinstance(value, SandboxWorkspacePolicy):
+            return value
+        return SandboxWorkspacePolicy.from_storage(value)
+
+    @field_serializer("effective_policy")
+    def encode_policy(self, value: SandboxWorkspacePolicy) -> SandboxPolicyRead:
+        """Preserve flat JSON and named fields in the generated API contract."""
+        config = value.config
+        return SandboxPolicyRead(
+            endpoint=config.endpoint,
+            image=config.image,
+            memory_mb=config.memory_mb,
+            cpu_cores=config.cpu_cores,
+            disk_mb=config.disk_mb,
+            pids=config.pids,
+            ttl_seconds=config.ttl_seconds,
+            command_timeout_seconds=config.command_timeout_seconds,
+            max_output_bytes=config.max_output_bytes,
+            max_sessions=config.max_sessions,
+            network=config.network,
+            verified_image_id=value.verified_image_id,
+            grant_max_sessions=value.grant_max_sessions,
+        )
 
 
 class SandboxGrantCreate(BaseModel):

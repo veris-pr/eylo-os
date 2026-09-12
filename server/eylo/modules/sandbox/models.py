@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
 from pydantic import JsonValue
 from sqlalchemy import (
@@ -91,7 +92,9 @@ class SandboxSessionModel(EyloOrganizationModel):
         index=True,
     )
     grant_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    effective_policy: Mapped[dict[str, JsonValue]] = mapped_column(JSONB, nullable=False)
+    effective_policy: Mapped[dict[str, JsonValue]] = mapped_column(
+        JSONB, nullable=False
+    )
 
     state: Mapped[SandboxState] = mapped_column(
         ENUM(
@@ -118,8 +121,12 @@ class SandboxSessionModel(EyloOrganizationModel):
     )
 
     workspace: Mapped[str] = mapped_column(String(256), nullable=False)
-    expires_at = mapped_column(DateTime(timezone=True), nullable=False, index=True)
-    last_used_at = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class SandboxWorkspaceCheckpointModel(EyloOrganizationModel):
@@ -202,14 +209,18 @@ class SandboxWorkspaceCheckpointModel(EyloOrganizationModel):
         index=True,
     )
     grant_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    effective_policy: Mapped[dict[str, JsonValue]] = mapped_column(JSONB, nullable=False)
+    effective_policy: Mapped[dict[str, JsonValue]] = mapped_column(
+        JSONB, nullable=False
+    )
     workspace_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     byte_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
     workspace_archive: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     # Canonical model-facing output for this action. Raw output stays beside the
     # private workspace checkpoint; it is never copied into AgentRun step/API
     # projections or Absurd checkpoints.
-    tool_result: Mapped[dict[str, JsonValue] | None] = mapped_column(JSONB, nullable=True)
+    tool_result: Mapped[dict[str, JsonValue] | None] = mapped_column(
+        JSONB, nullable=True
+    )
 
 
 class SandboxGrantModel(EyloOrganizationModel):

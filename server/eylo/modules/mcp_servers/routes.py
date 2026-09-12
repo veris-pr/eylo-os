@@ -23,13 +23,17 @@ from eylo.common.revisions import DefinitionRevisionError
 from eylo.modules.auth.constants import APP_TAG
 from eylo.modules.auth.schemas import CurrentUserSchema
 from eylo.modules.auth.services.auth_service import get_current_user
+from eylo.modules.mcp_servers.schemas import (
+    MCPDiscoveryRead,
+    MCPServerRead,
+    MCPServerRevisionRead,
+)
 from eylo.modules.mcp_servers.service import (
     MCPServerError,
     MCPServerNotFoundError,
     MCPServerService,
     redacted_server,
 )
-from eylo.modules.tools.schemas.executors.mcp import MCPToolExecutorConfig
 from eylo.pipelines.mcp.tools import discover_mcp_server
 
 router = APIRouter(prefix="/{organization_id}/mcp-servers", tags=[APP_TAG])
@@ -74,7 +78,7 @@ def _authorize(organization_id: UUID, current_user: CurrentUserSchema) -> None:
 async def list_mcp_servers(
     organization_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> list[MCPServerRead]:
     """Servers registered for this organization, with header values masked."""
     _authorize(organization_id, current_user)
     async with start_transaction(ro=True):
@@ -90,7 +94,7 @@ async def register_mcp_server(
     organization_id: UUID,
     request: MCPServerCreate,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> MCPServerRead:
     """Record a server. Does not contact it — see the discover endpoint."""
     _authorize(organization_id, current_user)
     async with start_transaction():
@@ -112,7 +116,7 @@ async def discover_mcp_tools(
     organization_id: UUID,
     server_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> MCPDiscoveryRead:
     """Ask the server what it offers and synchronize immutable tool revisions.
 
     A changed tool appends a revision. A missing tool is withdrawn from new
@@ -121,39 +125,18 @@ async def discover_mcp_tools(
     are written by the server, not by this platform.
     """
     _authorize(organization_id, current_user)
-    async with start_transaction():
-        service = MCPServerService(get_transaction())
-        try:
-            tools = await discover_mcp_server(
-                service=service,
-                organization_id=organization_id,
-                server_id=server_id,
-                actor_id=current_user.member_id,
-            )
-        except MCPServerNotFoundError as error:
-            raise HTTPException(status_code=404, detail=str(error)) from error
-        except MCPServerError as error:
-            raise HTTPException(status_code=400, detail=str(error)) from error
-
-        return {
-            "count": len(tools),
-            "tools": [
-                {
-                    "id": str(tool.id),
-                    "wire_id": tool.wire_id,
-                    "slug": tool.slug,
-                    "name": tool.name,
-                    "description": tool.description,
-                    "effect": MCPToolExecutorConfig.model_validate(
-                        tool.executor_config
-                    ).effect.value,
-                    "execution_mode": tool.execution_mode,
-                    "lifecycle": tool.lifecycle,
-                    "published_revision": tool.published_revision,
-                }
-                for tool in tools
-            ],
-        }
+    try:
+        return await discover_mcp_server(
+            organization_id=organization_id,
+            server_id=server_id,
+            actor_id=current_user.member_id,
+        )
+    except MCPServerNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except DefinitionRevisionError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except MCPServerError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 @router.patch("/{server_id}")
@@ -162,7 +145,7 @@ async def update_mcp_server(
     server_id: UUID,
     request: MCPServerPatch,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> MCPServerRead:
     """Patch endpoint metadata or encrypted header secrets, then rediscover."""
     _authorize(organization_id, current_user)
     async with start_transaction():
@@ -190,7 +173,7 @@ async def withdraw_mcp_server(
     organization_id: UUID,
     server_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> MCPServerRead:
     """Stop offering this server's tools for new Agent revisions."""
     _authorize(organization_id, current_user)
     async with start_transaction():
@@ -213,7 +196,7 @@ async def revoke_mcp_server_revision(
     revision: int,
     request: MCPServerRevoke,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> MCPServerRevisionRead:
     """Emergency-stop an exact server revision."""
     _authorize(organization_id, current_user)
     async with start_transaction():
@@ -229,12 +212,4 @@ async def revoke_mcp_server_revision(
             raise HTTPException(status_code=404) from error
         except DefinitionRevisionError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
-        return {
-            "server_id": str(row.server_id),
-            "revision": row.revision,
-            "availability": row.availability,
-            "revoked_at": row.revoked_at,
-            "revoked_by": str(row.revoked_by) if row.revoked_by else None,
-            "revocation_reason": row.revocation_reason,
-            "cancellation_requested_at": row.cancellation_requested_at,
-        }
+        return MCPServerRevisionRead.model_validate(row)

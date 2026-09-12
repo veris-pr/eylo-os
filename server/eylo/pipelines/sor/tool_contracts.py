@@ -6,9 +6,11 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from eylo.sor.knowledge.read_contracts import KnowledgeWindowViewResponse
 from eylo.sor.runtime.commands import SorCommandReceipt
 from eylo.sor.shared.contracts import SorCommandState, SorProfile, SorToolEffect
-from eylo.sor.shared.json_values import SorJsonValue
+from eylo.sor.shared.json_values import require_json_value
+from eylo.sor.shared.schemas import SorAgentViewResponse
 
 
 class SorToolResultKind(StrEnum):
@@ -41,7 +43,17 @@ class _SorToolValue(BaseModel):
 
 class SorReadToolResult(_SorToolValue):
     kind: Literal[SorToolResultKind.READ] = SorToolResultKind.READ
-    data: dict[str, SorJsonValue] = Field(repr=False)
+    data: KnowledgeWindowViewResponse | SorAgentViewResponse = Field(repr=False)
+
+    @model_validator(mode="after")
+    def validate_record_values(self) -> Self:
+        """Retain the finite-JSON boundary even for already-built mutable projections."""
+        collections = (self.data.items, *(group.items for group in self.data.related))
+        for records in collections:
+            for record in records:
+                require_json_value(record.values)
+                require_json_value(record.display_values)
+        return self
 
 
 class SorCommandToolResult(_SorToolValue):

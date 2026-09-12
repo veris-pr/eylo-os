@@ -11,7 +11,7 @@ WebSocket Message Format:
 - Start event: {"event": "start", "start": {"streamId": "...", "callId": "...", ...}}
 - Media event: {"event": "media", "media": {"payload": "base64_mulaw", "timestamp": "..."}}
 - Stop event: {"event": "stop"}
-- PlayAudio (outbound): {"event": "playAudio", "media": {"payload": "base64", "sampleRate": "8000", "contentType": "audio/x-mulaw"}}
+- PlayAudio (outbound): {"event": "playAudio", "media": {"payload": "base64", "sampleRate": 8000, "contentType": "audio/x-mulaw"}}
 - ClearAudio (interruption): {"event": "clearAudio", "streamId": "..."}
 - Checkpoint (mark): {"event": "checkpoint", "streamId": "...", "name": "..."}
 
@@ -20,11 +20,15 @@ Audio Format: μ-law @ 8kHz (same as Twilio)
 
 import asyncio
 import base64
+import binascii
 import json
 import logging
+from http import HTTPStatus
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
+import httpx
 from fastapi import WebSocket
+from pydantic import ValidationError
 
 from eylo.common.contracts.speech_runtime import (
     SpeechTransportEncoding,
@@ -33,6 +37,7 @@ from eylo.common.contracts.speech_runtime import (
 from eylo.common.outbound import (
     OutboundSendAuthorization,
     OutboundSendOutcome,
+    OutboundSendRetryable,
     OutboundSendSucceeded,
     OutboundSendTerminal,
     OutboundSendUnknown,
@@ -44,9 +49,12 @@ from eylo.sockets.telephony.base import (
     BaseTelephonyService,
     CallMetadata,
     CarrierAudioFormat,
-    CarrierMediaEvent,
+    CarrierDtmfMessage,
+    CarrierIgnoredMessage,
+    CarrierStartMessage,
     InboundMediaMessage,
     OutboundMediaMessage,
+    ParsedCarrierMessage,
     TelephonyConfig,
     TelephonyControlAccepted,
     TelephonyControlFailureCode,
@@ -60,9 +68,25 @@ from eylo.sockets.telephony.base import (
     TelephonyOperationSupport,
     TelephonyProvider,
     classify_control_failure,
-    classify_provider_failure,
 )
 from eylo.sockets.telephony.config import PlivoSettings
+from eylo.sockets.telephony.plivo.rest_contracts import (
+    CREATE_OPERATION,
+    CREATE_ORIGIN,
+    CREATE_TIMEOUT_SECONDS,
+    CallbackMethod,
+    CreateCallRequest,
+    CreateCallResponse,
+    CreateFailureCode,
+)
+from eylo.sockets.telephony.plivo.stream_contracts import (
+    ClearCommand,
+    MediaCommand,
+    OutboundAudio,
+    StreamMessage,
+)
+from eylo.sockets.telephony.plivo.stream_contracts import Event as StreamEvent
+from eylo.sockets.telephony.plivo.stream_contracts import Start as StreamStart
 
 if TYPE_CHECKING:
     from plivo.rest.client import Client
@@ -71,137 +95,43 @@ logger = logging.getLogger(__name__)
 
 
 class PlivoMessageParser(TelephonyMessageParser):
-    """Parser for Plivo-specific WebSocket message formats.
+    """Normalize Plivo JSON; retain the existing malformed-audio drop policy."""
 
-    Plivo WebSocket Protocol (based on production implementations):
-    - Start: {"event": "start", "start": {"streamId": "...", "callId": "...", ...}}
-    - Media: {"event": "media", "media": {"payload": "base64_mulaw", "timestamp": "..."}}
-    - Stop: {"event": "stop"}
-    - Checkpoint: {"event": "checkpoint", "name": "..."}
-
-    Audio: μ-law @ 8kHz (same as Twilio)
-    """
-
-    def parse_message(self, raw_message: str) -> Dict[str, Any]:
-        """Parse raw JSON message from Plivo WebSocket.
-
-        Args:
-            raw_message: Raw JSON string from Plivo WebSocket
-
-        Returns:
-            Parsed message dictionary
-
-        Example:
-            {"event": "media", "media": {"payload": "...", "timestamp": "..."}}
-
-        """
-        return json.loads(raw_message)
-
-    def get_event_type(self, message: Dict[str, Any]) -> str:
-        """Extract event type from Plivo message.
-
-        Args:
-            message: Parsed message dictionary
-
-        Returns:
-            Event type string ("start", "media", "stop", "checkpoint")
-
-        """
-        return message.get("event", "")
-
-    def extract_media(self, message: Dict[str, Any]) -> Optional[InboundMediaMessage]:
-        """Extract media data from Plivo media event.
-
-        Plivo media format (from bolna-ai):
-        {
-            "event": "media",
-            "media": {
-                "payload": "base64_encoded_mulaw_audio",
-                "timestamp": "1234567890"
-            }
-        }
-
-        Args:
-            message: Parsed message dictionary
-
-        Returns:
-            InboundMediaMessage if this is a media event, None otherwise
-
-        """
-        if message.get("event") != "media":
-            return None
-
-        media_data = message.get("media", {})
-        payload_b64 = media_data.get("payload", "")
-
-        if not payload_b64:
-            return None
-
-        try:
-            # Decode base64 to μ-law bytes
-            payload = base64.b64decode(payload_b64)
-        except Exception as error:
-            logger.error(
-                "Failed to decode Plivo audio payload error_type=%s",
-                type(error).__name__,
+    def parse_message(self, raw_message: str | bytes) -> ParsedCarrierMessage:
+        if isinstance(raw_message, bytes):
+            return CarrierIgnoredMessage()
+        message = StreamMessage.model_validate_json(raw_message)
+        if message.event == StreamEvent.START:
+            start = message.start or StreamStart()
+            return CarrierStartMessage(
+                metadata=CallMetadata(
+                    call_sid=start.call_id,
+                    stream_sid=start.stream_id,
+                    from_number=start.from_number,
+                    to_number=start.to_number,
+                )
             )
-            return None
-
-        return InboundMediaMessage(
-            event=CarrierMediaEvent.MEDIA,
-            payload=payload,
-            timestamp=media_data.get("timestamp", ""),
-            track=media_data.get("track", "inbound"),
-            sequence_number=message.get("sequenceNumber"),
-        )
-
-    def extract_dtmf(self, message: Dict[str, Any]) -> Optional[str]:
-        """Extract Plivo inbound DTMF digits."""
-        if message.get("event") not in {"dtmf", "digits"}:
-            return None
-        data = message.get("dtmf") or message.get("digits") or message
-        if isinstance(data, dict):
-            digits = data.get("digit") or data.get("digits")
-        else:
-            digits = data
-        return str(digits) if digits else None
-
-    async def extract_metadata(self, message: Dict[str, Any]) -> Optional[CallMetadata]:
-        """Extract call metadata from Plivo start event.
-
-        Plivo start format (from bolna-ai production code):
-        {
-            "event": "start",
-            "start": {
-                "streamId": "550e8400-...",
-                "callId": "78737f83-...",
-                "from": "+1234567890",
-                "to": "+0987654321"
-            }
-        }
-
-        Args:
-            message: Parsed message dictionary
-
-        Returns:
-            CallMetadata if this is a start event, None otherwise
-
-        """
-        if message.get("event") != "start":
-            return None
-
-        start_data = message.get("start", {})
-
-        # Plivo uses callId (not callUuid) and streamId
-        call_id = start_data.get("callId", "")
-        stream_id = start_data.get("streamId", "")
-
-        return CallMetadata(
-            call_sid=call_id,  # Plivo's callId maps to call_sid
-            stream_sid=stream_id,
-            from_number=start_data.get("from", ""),
-            to_number=start_data.get("to", ""),
-        )
+        if (
+            message.event == StreamEvent.MEDIA
+            and message.media
+            and message.media.payload
+        ):
+            try:
+                payload = base64.b64decode(message.media.payload)
+            except (ValueError, binascii.Error):
+                logger.warning("Plivo audio payload could not be decoded.")
+                return CarrierIgnoredMessage()
+            return InboundMediaMessage(
+                payload=payload,
+                timestamp=message.media.timestamp,
+                track=message.media.track,
+                sequence_number=message.sequence_number,
+            )
+        if message.event in {StreamEvent.DTMF, StreamEvent.LEGACY_DIGITS}:
+            digits = message.keypad_digits
+            if digits:
+                return CarrierDtmfMessage(digits=digits)
+        return CarrierIgnoredMessage()
 
 
 class PlivoService(BaseTelephonyService):
@@ -275,7 +205,7 @@ class PlivoService(BaseTelephonyService):
             "event": "playAudio",
             "media": {
                 "contentType": "audio/x-mulaw",
-                "sampleRate": "8000",
+                "sampleRate": 8000,
                 "payload": "base64_encoded_audio"
             }
         }
@@ -291,16 +221,10 @@ class PlivoService(BaseTelephonyService):
             # Encode to base64
             payload_b64 = base64.b64encode(message.payload).decode("utf-8")
 
-            plivo_message = {
-                "event": "playAudio",
-                "media": {
-                    "contentType": "audio/x-mulaw",
-                    "sampleRate": "8000",
-                    "payload": payload_b64,
-                },
-            }
-
-            await self.websocket.send_json(plivo_message)
+            command = MediaCommand(media=OutboundAudio(payload=payload_b64))
+            await self.websocket.send_json(
+                command.model_dump(mode="json", by_alias=True)
+            )
 
         except Exception:
             logger.warning("Plivo media write failed.")
@@ -387,20 +311,10 @@ class PlivoService(BaseTelephonyService):
         We point it to our /api/voice/plivo/answer callback which returns
         Plivo XML with a <Stream> element pointing to the ws_url.
 
-        Args:
-            to_number: Destination phone number (E.164 format)
-            from_number: Source phone number (Plivo number)
-            ws_url: WebSocket URL for streaming
-            custom_params: Custom parameters
-            status_callback_url: Optional callback URL for call events
-
-        Returns:
-            Response data from Plivo API containing call_uuid
-
+        The create response contains a request UUID. The actual call UUID arrives
+        through callbacks. Direct async HTTP avoids the SDK's implicit POST retries.
         """
         del authorization  # Plivo Calls API exposes no client idempotency slot.
-        if not self.client:
-            return OutboundSendTerminal(failure_code="call_create_not_configured")
 
         try:
             from urllib.parse import quote, urlparse
@@ -413,30 +327,66 @@ class PlivoService(BaseTelephonyService):
                 f"?ws_url={quote(ws_url, safe='')}"
             )
 
-            call_params = {
-                "from_": from_number,
-                "to_": to_number,
-                "answer_url": answer_url,
-                "answer_method": "GET",
-            }
-
-            if status_callback_url:
-                call_params["hangup_url"] = status_callback_url
-                call_params["hangup_method"] = "POST"
-
-            response = await asyncio.to_thread(self.client.calls.create, **call_params)
-
-            call_uuid = response[0] if isinstance(response, tuple) else response
-
-            call_uuid = str(call_uuid).strip()
-            if not call_uuid:
-                return OutboundSendUnknown(failure_code="call_create_response_invalid")
+            request = CreateCallRequest(
+                from_number=from_number,
+                to=to_number,
+                answer_url=answer_url,
+                hangup_url=status_callback_url or None,
+                hangup_method=CallbackMethod.POST if status_callback_url else None,
+            )
+            async with httpx.AsyncClient(
+                timeout=CREATE_TIMEOUT_SECONDS,
+                auth=httpx.BasicAuth(self.settings.auth_id, self.settings.auth_token),
+                follow_redirects=False,
+            ) as client:
+                response = await client.post(
+                    f"{CREATE_ORIGIN}/v1/Account/{quote(self.settings.auth_id, safe='')}/Call/",
+                    json=request.model_dump(
+                        mode="json", by_alias=True, exclude_none=True
+                    ),
+                )
+                if response.status_code == HTTPStatus.TOO_MANY_REQUESTS:
+                    return OutboundSendRetryable(
+                        failure_code=CreateFailureCode.REJECTED,
+                        status_code=response.status_code,
+                    )
+                if response.status_code >= HTTPStatus.MULTIPLE_CHOICES:
+                    if (
+                        HTTPStatus.BAD_REQUEST
+                        <= response.status_code
+                        < HTTPStatus.INTERNAL_SERVER_ERROR
+                        and response.status_code != HTTPStatus.REQUEST_TIMEOUT
+                    ):
+                        return OutboundSendTerminal(
+                            failure_code=CreateFailureCode.REJECTED,
+                            status_code=response.status_code,
+                        )
+                    return OutboundSendUnknown(
+                        failure_code=CreateFailureCode.UNCONFIRMED,
+                        status_code=response.status_code,
+                    )
+                try:
+                    accepted = CreateCallResponse.model_validate_json(response.content)
+                except ValidationError:
+                    return OutboundSendUnknown(
+                        failure_code=CreateFailureCode.RESPONSE_INVALID,
+                        status_code=response.status_code,
+                    )
+            request_uuid = accepted.request_uuid.strip()
+            if not request_uuid:
+                return OutboundSendUnknown(
+                    failure_code=CreateFailureCode.RESPONSE_INVALID,
+                    status_code=response.status_code,
+                )
             logger.info("Initiated Plivo call")
-            return OutboundSendSucceeded(provider_reference=call_uuid)
+            return OutboundSendSucceeded(
+                provider_reference=request_uuid,
+                status_code=response.status_code,
+            )
 
-        except Exception as error:  # noqa: BLE001 - adapter owns provider taxonomy
+        except Exception:  # noqa: BLE001 - transport ambiguity forbids resend
             logger.warning("Plivo call initiation failed")
-            return classify_provider_failure(error, operation="call_create")
+            return OutboundSendUnknown(failure_code=CreateFailureCode.UNCONFIRMED)
 
     def create_message_parser(self) -> TelephonyMessageParser:
         """Create a message parser for Plivo.
@@ -474,11 +424,10 @@ class PlivoService(BaseTelephonyService):
             raise RuntimeError("Telephony WebSocket is not connected.")
 
         try:
-            message = {
-                "event": "clearAudio",
-                "streamId": stream_sid,
-            }
-            await self.websocket.send_json(message)
+            command = ClearCommand(stream_id=stream_sid)
+            await self.websocket.send_json(
+                command.model_dump(mode="json", by_alias=True)
+            )
             logger.debug(f"Cleared Plivo stream: {stream_sid}")
 
         except Exception:
@@ -627,9 +576,9 @@ class PlivoService(BaseTelephonyService):
 
     def outbound_call_profile(self) -> TelephonyOperationProfile:
         return TelephonyOperationProfile(
-            provider_operation="telephony.plivo.call.create",
-            transport_kind=OutboundTransportKind.PROVIDER_SDK,
-            destination_origin="https://api.plivo.com",
+            provider_operation=CREATE_OPERATION,
+            transport_kind=OutboundTransportKind.HTTP,
+            destination_origin=CREATE_ORIGIN,
             capabilities=TelephonyOperationCapabilities(
                 provider_idempotency=TelephonyOperationSupport.UNSUPPORTED,
                 reconciliation=TelephonyOperationSupport.UNSUPPORTED,

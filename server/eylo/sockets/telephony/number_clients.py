@@ -6,24 +6,31 @@ with per-org credentials passed at construction time.
 
 import base64
 import logging
+from urllib.parse import quote
 
 import httpx
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 from eylo.common.outbound import (
     OutboundSendAuthorization,
     OutboundSendOutcome,
+    OutboundSendSucceeded,
     OutboundSendTerminal,
     OutboundSendUnknown,
 )
 from eylo.sockets.telephony.base import TelephonyOperationProfile
+from eylo.sockets.telephony.exotel import number_contracts as exotel_wire
 from eylo.sockets.telephony.number_purchase import (
+    NumberPurchaseFailureCode,
     classify_number_purchase_status,
     decode_number_purchase_response,
     number_purchase_profile,
     number_purchase_success,
     number_purchase_transport_unknown,
 )
+from eylo.sockets.telephony.plivo import number_contracts as plivo_wire
+from eylo.sockets.telephony.vonage import number_contracts as vonage_wire
 
 logger = logging.getLogger(__name__)
 
@@ -55,17 +62,19 @@ class PlivoNumberClient:
     def __init__(self, auth_id: str, auth_token: str) -> None:
         self.auth_id = auth_id
         self.auth_token = auth_token
-        self.base_url = f"https://api.plivo.com/v1/Account/{auth_id}"
+        self.base_url = (
+            f"{plivo_wire.NUMBER_ORIGIN}/v1/Account/{quote(auth_id, safe='')}"
+        )
         auth_str = f"{auth_id}:{auth_token}".encode()
         self._auth_header = f"Basic {base64.b64encode(auth_str).decode()}"
 
     async def search_available_numbers(
         self,
         country: str,
-        number_type: str = "local",
+        number_type: plivo_wire.NumberType = plivo_wire.NumberType.LOCAL,
         pattern: str | None = None,
-        limit: int = 20,
-    ) -> list[dict]:
+        limit: int = plivo_wire.SEARCH_LIMIT,
+    ) -> list[plivo_wire.AvailableNumber]:
         """Search available phone numbers on Plivo.
 
         Args:
@@ -75,35 +84,39 @@ class PlivoNumberClient:
             limit: Max results (1-20).
 
         """
-        type_map = {"Local": "local", "TollFree": "tollfree", "Mobile": "local"}
-        plivo_type = type_map.get(number_type, "local")
+        request = plivo_wire.SearchRequest(
+            country_iso=country.upper(),
+            type=number_type,
+            limit=min(limit, plivo_wire.SEARCH_LIMIT),
+            pattern=pattern or None,
+        )
 
-        params: dict[str, str | int] = {
-            "country_iso": country.upper(),
-            "type": plivo_type,
-            "limit": min(limit, 20),
-        }
-        if pattern:
-            params["pattern"] = pattern
-
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(
+            timeout=plivo_wire.SEARCH_TIMEOUT_SECONDS
+        ) as client:
             try:
                 resp = await client.get(
                     f"{self.base_url}/PhoneNumber/",
-                    params=params,
+                    params=request.model_dump(mode="json", exclude_none=True),
                     headers={"Authorization": self._auth_header},
                 )
                 if resp.status_code >= 300:
                     raise _provider_error("Plivo", "search", resp.status_code)
 
-                data = resp.json()
-                return data.get("objects", [])
+                try:
+                    return plivo_wire.SearchResponse.model_validate_json(
+                        resp.content
+                    ).objects
+                except ValidationError:
+                    raise HTTPException(
+                        502, "Plivo returned an invalid available-number response."
+                    ) from None
             except httpx.RequestError:
                 logger.warning("Plivo number search transport failed")
                 raise HTTPException(502, "Unable to reach Plivo. Please try again.")
 
     def purchase_profile(self) -> TelephonyOperationProfile:
-        return number_purchase_profile("plivo", "https://api.plivo.com")
+        return number_purchase_profile("plivo", plivo_wire.NUMBER_ORIGIN)
 
     async def purchase_number(
         self,
@@ -121,10 +134,12 @@ class PlivoNumberClient:
         del authorization, country
         number = phone_number.lstrip("+")
 
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with httpx.AsyncClient(
+            timeout=plivo_wire.PURCHASE_TIMEOUT_SECONDS
+        ) as client:
             try:
                 resp = await client.post(
-                    f"{self.base_url}/PhoneNumber/{number}/",
+                    f"{self.base_url}/PhoneNumber/{quote(number, safe='')}/",
                     headers={
                         "Authorization": self._auth_header,
                         "Content-Type": "application/json",
@@ -132,17 +147,23 @@ class PlivoNumberClient:
                 )
                 if resp.status_code >= 300:
                     return classify_number_purchase_status(resp.status_code)
-                data = decode_number_purchase_response(resp)
-                if data is None:
+                try:
+                    purchased = plivo_wire.ConfirmedPurchase.model_validate_json(
+                        resp.content
+                    )
+                except ValidationError:
                     return OutboundSendUnknown(
-                        failure_code="number_purchase_response_invalid",
+                        failure_code=NumberPurchaseFailureCode.RESPONSE_INVALID,
                         status_code=resp.status_code,
                     )
-                return number_purchase_success(
-                    requested_number=phone_number,
-                    response_data=data,
+                if purchased.numbers[0].number.lstrip("+") != number:
+                    return OutboundSendUnknown(
+                        failure_code=NumberPurchaseFailureCode.IDENTITY_MISMATCH,
+                        status_code=resp.status_code,
+                    )
+                return OutboundSendSucceeded(
+                    provider_reference=purchased.api_id.strip(),
                     status_code=resp.status_code,
-                    reference_keys=frozenset({"api_id", "id"}),
                 )
             except httpx.RequestError:
                 return number_purchase_transport_unknown("Plivo")
@@ -160,7 +181,7 @@ class VonageNumberClient:
 
     """
 
-    BASE_URL = "https://rest.nexmo.com"
+    BASE_URL = vonage_wire.NUMBER_ORIGIN
 
     def __init__(self, api_key: str, api_secret: str) -> None:
         self.api_key = api_key
@@ -169,10 +190,10 @@ class VonageNumberClient:
     async def search_available_numbers(
         self,
         country: str,
-        number_type: str = "mobile",
+        number_type: vonage_wire.NumberType = vonage_wire.NumberType.MOBILE,
         pattern: str | None = None,
-        limit: int = 20,
-    ) -> list[dict]:
+        limit: int = vonage_wire.SEARCH_DEFAULT_LIMIT,
+    ) -> list[vonage_wire.AvailableNumber]:
         """Search available phone numbers on Vonage.
 
         Args:
@@ -182,42 +203,41 @@ class VonageNumberClient:
             limit: Max results.
 
         """
-        type_map = {
-            "Local": "landline",
-            "TollFree": "landline-toll-free",
-            "Mobile": "mobile",
-        }
-        vonage_type = type_map.get(number_type, "mobile")
+        request = vonage_wire.SearchRequest(
+            api_key=self.api_key,
+            api_secret=self.api_secret,
+            country=country.upper(),
+            type=number_type,
+            size=min(limit, vonage_wire.SEARCH_MAX_LIMIT),
+            pattern=pattern or None,
+            search_pattern=vonage_wire.PatternMatch.CONTAINS if pattern else None,
+        )
 
-        params: dict[str, str | int] = {
-            "api_key": self.api_key,
-            "api_secret": self.api_secret,
-            "country": country.upper(),
-            "type": vonage_type,
-            "features": "VOICE",
-            "size": min(limit, 100),
-        }
-        if pattern:
-            params["pattern"] = pattern
-            params["search_pattern"] = 1  # "contains"
-
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(
+            timeout=vonage_wire.SEARCH_TIMEOUT_SECONDS
+        ) as client:
             try:
                 resp = await client.get(
                     f"{self.BASE_URL}/number/search",
-                    params=params,
+                    params=request.model_dump(mode="json", exclude_none=True),
                 )
                 if resp.status_code >= 300:
                     raise _provider_error("Vonage", "search", resp.status_code)
 
-                data = resp.json()
-                return data.get("numbers", [])
+                try:
+                    return vonage_wire.SearchResponse.model_validate_json(
+                        resp.content
+                    ).numbers
+                except ValidationError:
+                    raise HTTPException(
+                        502, "Vonage returned an invalid available-number response."
+                    ) from None
             except httpx.RequestError:
                 logger.warning("Vonage number search transport failed")
                 raise HTTPException(502, "Unable to reach Vonage. Please try again.")
 
     def purchase_profile(self) -> TelephonyOperationProfile:
-        return number_purchase_profile("vonage", "https://rest.nexmo.com")
+        return number_purchase_profile("vonage", vonage_wire.NUMBER_ORIGIN)
 
     async def purchase_number(
         self,
@@ -235,43 +255,48 @@ class VonageNumberClient:
         """
         del authorization
         if country is None:
-            return OutboundSendTerminal(failure_code="number_purchase_country_required")
+            return OutboundSendTerminal(
+                failure_code=NumberPurchaseFailureCode.COUNTRY_REQUIRED
+            )
         msisdn = phone_number.lstrip("+")
+        request = vonage_wire.PurchaseRequest(
+            api_key=self.api_key,
+            api_secret=self.api_secret,
+            country=country.upper(),
+            msisdn=msisdn,
+        )
 
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with httpx.AsyncClient(
+            timeout=vonage_wire.PURCHASE_TIMEOUT_SECONDS
+        ) as client:
             try:
                 resp = await client.post(
                     f"{self.BASE_URL}/number/buy",
-                    data={
-                        "api_key": self.api_key,
-                        "api_secret": self.api_secret,
-                        "country": country.upper(),
-                        "msisdn": msisdn,
-                    },
+                    data=request.model_dump(mode="json"),
                     headers={"Content-Type": "application/x-www-form-urlencoded"},
                 )
                 if resp.status_code >= 300:
                     return classify_number_purchase_status(resp.status_code)
-                data = decode_number_purchase_response(resp)
-                if data is None:
+                try:
+                    purchased = vonage_wire.PurchaseResponse.model_validate_json(
+                        resp.content
+                    )
+                except ValidationError:
                     return OutboundSendUnknown(
-                        failure_code="number_purchase_response_invalid",
+                        failure_code=NumberPurchaseFailureCode.RESPONSE_INVALID,
                         status_code=resp.status_code,
                     )
-                embedded_code = data.get("error-code")
-                if embedded_code is not None and str(embedded_code) not in {
-                    "0",
-                    "200",
+                if purchased.error_code not in {
+                    vonage_wire.PurchaseCode.SUCCESS,
+                    vonage_wire.PurchaseCode.LEGACY_SUCCESS,
                 }:
                     return OutboundSendTerminal(
-                        failure_code="number_purchase_rejected",
+                        failure_code=NumberPurchaseFailureCode.REJECTED,
                         status_code=resp.status_code,
                     )
-                return number_purchase_success(
-                    requested_number=phone_number,
-                    response_data=data,
+                return OutboundSendSucceeded(
+                    provider_reference=phone_number,
                     status_code=resp.status_code,
-                    reference_keys=frozenset({"transaction_id", "request_id"}),
                 )
             except httpx.RequestError:
                 return number_purchase_transport_unknown("Vonage")
@@ -309,11 +334,11 @@ class ExotelNumberClient:
     async def search_available_numbers(
         self,
         country: str,
-        number_type: str = "Local",
+        number_type: exotel_wire.NumberType = exotel_wire.NumberType.LANDLINE,
         region: str | None = None,
         pattern: str | None = None,
-        limit: int = 20,
-    ) -> list[dict]:
+        limit: int = exotel_wire.SEARCH_DEFAULT_LIMIT,
+    ) -> list[exotel_wire.AvailableNumber]:
         """Search available ExoPhones by country and provider number type.
 
         Args:
@@ -324,36 +349,33 @@ class ExotelNumberClient:
             limit: Maximum results returned to the caller.
 
         """
-        type_map = {
-            "Local": "Landline",
-            "TollFree": "TollFree",
-            "Mobile": "Mobile",
-        }
-        exotel_type = type_map.get(number_type, "Landline")
+        request = exotel_wire.SearchRequest(
+            region=region.upper() if region else None,
+            contains=pattern or None,
+        )
 
-        params: dict[str, str] = {}
-        if region:
-            params["InRegion"] = region.upper()
-        if pattern:
-            params["Contains"] = pattern
-
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(
+            timeout=exotel_wire.SEARCH_TIMEOUT_SECONDS
+        ) as client:
             try:
                 resp = await client.get(
                     f"{self.base_url}/AvailablePhoneNumbers/"
-                    f"{country.upper()}/{exotel_type}",
-                    params=params,
+                    f"{country.upper()}/{number_type}",
+                    params=request.model_dump(
+                        mode="json", by_alias=True, exclude_none=True
+                    ),
                     headers={"Authorization": self._auth_header},
                 )
                 if resp.status_code >= 300:
                     raise _provider_error("Exotel", "search", resp.status_code)
 
-                numbers = resp.json()
-                if not isinstance(numbers, list):
+                try:
+                    numbers = exotel_wire.AVAILABLE_NUMBERS.validate_json(resp.content)
+                except ValidationError:
                     raise HTTPException(
                         502,
                         "Exotel returned an invalid available-number response.",
-                    )
+                    ) from None
                 return numbers[:limit]
             except httpx.RequestError:
                 logger.warning("Exotel number search transport failed")

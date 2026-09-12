@@ -62,6 +62,23 @@ updates product state through the owning service.
 This makes DB rows explainable even if a queue delivery is duplicated or a
 worker restarts.
 
+Schedules carry finite JSON task inputs from request validation through immutable
+definition revisions and occurrence snapshots. These inputs remain extensible:
+the scheduler does not interpret vendor payloads or execute a registered action
+handler instead of the Agent. It files the exact Agent revision and occurrence;
+the Agent decides how to achieve the task using its allowed capabilities.
+Payload validation precedes persistence, retains the encoded-byte bound, and
+does not stringify arbitrary Python objects. Run readback uses the AgentRun's
+canonical result and lifecycle rather than a second scheduler execution state.
+
+The action catalog's callable contract is separate from scheduled-Agent execution.
+Its registered conversation and telephony handlers validate their own payload
+fields with Pydantic before starting a transaction or a provider effect. Unrelated
+metadata remains extensible; call provenance is retained, but exact Agent and run
+authority comes from the action context. Handler callables never enter snapshots.
+Non-conversation Agent runs persist model/tool exchanges in private replay history;
+an empty public step list does not mean no tools executed.
+
 Runtime configuration and task-registration values are frozen Pydantic contracts;
 connection strings and live handlers are excluded from generic snapshots. Eylo's
 typed cancellation policy keeps explicit null limits when passed to Absurd:

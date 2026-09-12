@@ -4,22 +4,28 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Any
 from urllib.parse import urlencode
 from uuid import UUID
 
 from fastapi import HTTPException
 
 from eylo.common.config import settings
+from eylo.common.contracts.json_values import JsonObject
 from eylo.common.database import start_transaction
 from eylo.common.outbound import (
     OutboundAttemptIdentity,
     OutboundAttemptSpec,
     OutboundAttemptState,
     OutboundOwnerKind,
+    OutboundSendAuthorization,
+    OutboundSendOutcome,
     fingerprint_outbound_input,
 )
 from eylo.common.utils.dict import to_json_str
+from eylo.modules.telephony.constants import (
+    OUTBOUND_CALL_OPERATION,
+    CallControlFailureCode,
+)
 from eylo.modules.telephony.lifecycle import (
     apply_outbound_call_outcome,
     bind_outbound_provider_call,
@@ -28,9 +34,14 @@ from eylo.modules.telephony.lifecycle import (
 from eylo.modules.telephony.provider_config_domain import (
     ResolvedTelephony,
     TelephonyOperation,
+    TelephonyProvider,
     supports_telephony_operation,
 )
-from eylo.modules.telephony.schemas import OutboundCallResult
+from eylo.modules.telephony.schemas import (
+    CallControlAcceptedResult,
+    OutboundCallOrigin,
+    OutboundCallResult,
+)
 from eylo.modules.telephony.services import PhoneNumberService, TelephonyCallService
 from eylo.modules.telephony.webhook_security import create_media_stream_token
 from eylo.modules.telephony.wiring import build_telephony_config_resolver
@@ -42,6 +53,7 @@ from eylo.pipelines.outbound.service import OutboundAttemptService
 from eylo.pipelines.telephony.config import build_telephony_runtime_config
 from eylo.sockets.telephony.base import (
     BaseTelephonyService,
+    TelephonyCallDirection,
     TelephonyControlAccepted,
     TelephonyControlRejected,
     TelephonyControlResult,
@@ -56,13 +68,13 @@ logger = logging.getLogger(__name__)
 class _InlineDurableContext:
     """DB-fenced send for callers already owned by another durable record."""
 
-    async def step(
+    async def step[T](
         self,
         *,
         key: str,
         version: int,
-        operation: Callable[[], Awaitable[Any]],
-    ) -> Any:
+        operation: Callable[[], Awaitable[T]],
+    ) -> T:
         del key, version
         return await operation()
 
@@ -79,10 +91,11 @@ class VoiceService:
         organization_id: UUID,
         agent_revision: int | None = None,
         initial_message: str | None = None,
-        context: dict[str, Any] | None = None,
+        context: JsonObject | None = None,
         durable_context: CommandStepContext | None = None,
     ) -> OutboundCallResult:
         """Place a new call through the config owned by the agent's number."""
+        origin = OutboundCallOrigin.model_validate(context or {})
         async with start_transaction(ro=True) as db:
             phone_number = await PhoneNumberService(db=db).get_by_outbound_agent_id(
                 str(agent_id),
@@ -140,9 +153,9 @@ class VoiceService:
             agent_id=agent_id,
             agent_revision=executable_agent.ref.revision,
             conversation_id=None,
-            campaign_id=_context_uuid(context, "campaign_id"),
-            campaign_contact_id=_context_uuid(context, "campaign_contact_id"),
-            campaign_attempt_id=_context_uuid(context, "campaign_attempt_id"),
+            campaign_id=origin.campaign_id,
+            campaign_contact_id=origin.campaign_contact_id,
+            campaign_attempt_id=origin.campaign_attempt_id,
         )
 
         server_domain = settings.SERVER_DOMAIN
@@ -157,7 +170,7 @@ class VoiceService:
             agent_revision=executable_agent.ref.revision,
             provider_config_id=str(resolved.provider_config_id),
             provider_config_revision=resolved.provider_config_revision,
-            direction="OUTBOUND",
+            direction=TelephonyCallDirection.OUTBOUND.value,
             initial_message=initial_message,
         )
         query = {
@@ -168,15 +181,15 @@ class VoiceService:
             "provider_config_id": str(resolved.provider_config_id),
             "provider_config_revision": str(resolved.provider_config_revision),
             "call_id": str(call_id),
-            "direction": "OUTBOUND",
+            "direction": TelephonyCallDirection.OUTBOUND.value,
             "stream_token": stream_token,
         }
         if initial_message:
             query["initial_message"] = initial_message
         ws_url = f"wss://{server_domain}/api/media/stream?{urlencode(query)}"
 
-        custom_params: dict[str, Any] = {
-            "Direction": "OUTBOUND",
+        custom_params: JsonObject = {
+            "Direction": TelephonyCallDirection.OUTBOUND.value,
             "agent_id": str(agent_id),
             "agent_revision": executable_agent.ref.revision,
             "org_id": str(resolved.organization_id),
@@ -185,7 +198,7 @@ class VoiceService:
             "call_id": str(call_id),
             "stream_token": stream_token,
         }
-        if resolved.provider.value == "exotel":
+        if resolved.provider is TelephonyProvider.EXOTEL:
             custom_params["CustomField"] = to_json_str(custom_params)
         if initial_message:
             custom_params["InitialMessage"] = initial_message
@@ -202,7 +215,7 @@ class VoiceService:
             organization_id=organization_id,
             owner_kind=OutboundOwnerKind.TELEPHONY_CALL,
             owner_id=call_id,
-            operation_key="telephony.call.create",
+            operation_key=OUTBOUND_CALL_OPERATION,
         )
         spec = OutboundAttemptSpec(
             identity=identity,
@@ -229,7 +242,7 @@ class VoiceService:
             f"{resolved.provider.value}/status?{urlencode({'call_id': str(call_id)})}"
         )
 
-        async def send(authorization):
+        async def send(authorization: OutboundSendAuthorization) -> OutboundSendOutcome:
             return await adapter.initiate_outbound_call(
                 to_number=to_number,
                 from_number=from_number,
@@ -244,16 +257,21 @@ class VoiceService:
             context=durable_context or _InlineDurableContext(),
             sender=send,
         )
-        await apply_outbound_call_outcome(
+        # Plivo accepts a request UUID, not the later CallUUID. Keep that receipt
+        # evidence without binding it as a live-call identity before the callback.
+        provider_call_sid = (
+            None if resolved.provider is TelephonyProvider.PLIVO else receipt.provider_reference
+        )
+        lifecycle = await apply_outbound_call_outcome(
             call_id=call_id,
             organization_id=organization_id,
             state=receipt.state,
-            provider_reference=receipt.provider_reference,
+            provider_reference=provider_call_sid,
             failure_code=receipt.failure_code,
         )
         return OutboundCallResult(
             call_id=call_id,
-            call_sid=receipt.provider_reference,
+            call_sid=lifecycle.update.call.call_sid if lifecycle.update.call else None,
             status=receipt.state,
             failure_code=receipt.failure_code,
             outbound_attempt_id=receipt.attempt_id,
@@ -280,7 +298,7 @@ class VoiceService:
         *,
         call_sid: str,
         organization_id: UUID,
-    ) -> dict[str, Any]:
+    ) -> CallControlAcceptedResult:
         resolved = await self._resolve_call_control(
             organization_id,
             call_sid,
@@ -295,7 +313,7 @@ class VoiceService:
         call_sid: str,
         to_number: str,
         organization_id: UUID,
-    ) -> dict[str, Any]:
+    ) -> CallControlAcceptedResult:
         resolved = await self._resolve_call_control(
             organization_id,
             call_sid,
@@ -313,7 +331,7 @@ class VoiceService:
         call_sid: str,
         digits: str,
         organization_id: UUID,
-    ) -> dict[str, Any]:
+    ) -> CallControlAcceptedResult:
         resolved = await self._resolve_call_control(
             organization_id,
             call_sid,
@@ -347,27 +365,35 @@ class VoiceService:
     def _require_accepted_control(
         result: TelephonyControlResult,
         operation: TelephonyOperation,
-    ) -> dict[str, Any]:
+    ) -> CallControlAcceptedResult:
         if isinstance(result, TelephonyControlAccepted):
-            return {
-                "status": "accepted",
-                "operation": operation.value,
-                "provider_status": result.status_code,
-            }
+            return CallControlAcceptedResult(
+                operation=operation,
+                provider_status=result.status_code,
+            )
         if isinstance(result, TelephonyControlUnsupported):
             raise HTTPException(
                 status_code=501,
-                detail={"code": "UNSUPPORTED", "operation": operation.value},
+                detail={
+                    "code": CallControlFailureCode.UNSUPPORTED.value,
+                    "operation": operation.value,
+                },
             )
         if isinstance(result, TelephonyControlRejected):
             raise HTTPException(
                 status_code=502,
-                detail={"code": "REJECTED", "operation": operation.value},
+                detail={
+                    "code": CallControlFailureCode.REJECTED.value,
+                    "operation": operation.value,
+                },
             )
         if isinstance(result, TelephonyControlUnknown):
             raise HTTPException(
                 status_code=409,
-                detail={"code": "UNKNOWN", "operation": operation.value},
+                detail={
+                    "code": CallControlFailureCode.UNKNOWN.value,
+                    "operation": operation.value,
+                },
             )
         raise TypeError("Carrier returned an invalid call-control result.")
 
@@ -387,18 +413,11 @@ class VoiceService:
         raise HTTPException(
             status_code=501,
             detail={
-                "code": "UNSUPPORTED",
+                "code": CallControlFailureCode.UNSUPPORTED.value,
                 "operation": operation.value,
                 "provider": resolved.provider.value,
             },
         )
-
-
-def _context_uuid(context: dict[str, Any] | None, key: str) -> UUID | None:
-    value = (context or {}).get(key)
-    if value is None or value == "":
-        return None
-    return UUID(str(value))
 
 
 async def reconcile_outbound_call_acceptance(
@@ -412,7 +431,7 @@ async def reconcile_outbound_call_acceptance(
         organization_id=organization_id,
         owner_kind=OutboundOwnerKind.TELEPHONY_CALL,
         owner_id=call_id,
-        operation_key="telephony.call.create",
+        operation_key=OUTBOUND_CALL_OPERATION,
     )
     async with start_transaction() as session:
         service = OutboundAttemptService(session)

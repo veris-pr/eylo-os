@@ -1,6 +1,6 @@
 """Consumed Intercom v2.16 wire shapes; canonical support policy stays in the adapter."""
 
-from enum import StrEnum
+from enum import IntEnum, StrEnum
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -18,6 +18,12 @@ RESPONSE_BODY_LIMIT = 8_388_608
 
 type Identifier = str | int
 type Timestamp = int | float | str
+
+
+class AssignmentSentinel(IntEnum):
+    """Intercom v2.16's absent conversation admin/team assignment identity."""
+
+    UNASSIGNED = 0
 
 
 class IntercomResponse(BaseModel):
