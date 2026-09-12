@@ -6,7 +6,14 @@ import logging
 from datetime import datetime, timezone
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    ValidationError,
+)
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -38,6 +45,7 @@ from eylo.modules.voice_transcripts.constants import (
     VoiceAudioTrackKind,
     VoiceCanonicalFailureCode,
     VoiceCanonicalState,
+    VoiceRedactionState,
     VoiceRuntimeMode,
     VoiceSegmentRole,
     VoiceSegmentSource,
@@ -49,7 +57,9 @@ from eylo.modules.voice_transcripts.schemas.indb import (
     VoiceSegmentCreate,
     VoiceSessionInDb,
 )
+from eylo.modules.voice_transcripts.segment_metadata import VoiceSegmentMetadata
 from eylo.modules.voice_transcripts.services.indb import VoiceTranscriptService
+from eylo.modules.voice_transcripts.session_metadata import CanonicalStorageRequest
 from eylo.pipelines.voice.live_buffer import (
     LiveVoiceBuffer,
     LiveVoiceBufferFailure,
@@ -233,16 +243,14 @@ def _storage_decision(
     session: VoiceSessionInDb,
     identity: LiveVoiceBufferIdentity,
 ) -> bool:
-    meta = session.meta
-    if (
-        not isinstance(meta, dict)
-        or "canonical_storage_requested" not in meta
-        or not isinstance(meta["canonical_storage_requested"], bool)
-    ):
+    try:
+        requested = CanonicalStorageRequest.model_validate(
+            session.meta or {}
+        ).canonical_storage_requested
+    except ValidationError as error:
         raise VoiceProjectionBuildError(
             VoiceCanonicalFailureCode.STORAGE_DECISION_UNAVAILABLE
-        )
-    requested = meta["canonical_storage_requested"]
+        ) from error
     if requested is not identity.canonical_storage_requested:
         raise VoiceProjectionBuildError(
             VoiceCanonicalFailureCode.STORAGE_DECISION_CONFLICT
@@ -598,16 +606,24 @@ def _segment_create(
         tool_input=tool_input,
         tool_output=tool_output,
         dtmf_digits=dtmf_digits,
-        redaction_state="redacted" if item.changed else "clean",
-        meta={
-            "source_sequence": item.sequence,
-            "redaction_version": VOICE_CANONICAL_REDACTION_VERSION,
-            **(
-                {"policy_source": item.policy_source.value}
-                if item.policy_source is not None
-                else {}
-            ),
-        },
+        redaction_state=(
+            VoiceRedactionState.REDACTED if item.changed else VoiceRedactionState.CLEAN
+        ),
+        meta=_segment_metadata(item),
+    )
+
+
+def _segment_metadata(item: _CanonicalItem) -> VoiceSegmentMetadata:
+    """Do not invent a null policy-source key for ordinary transcript items."""
+    if item.policy_source is None:
+        return VoiceSegmentMetadata(
+            source_sequence=item.sequence,
+            redaction_version=VOICE_CANONICAL_REDACTION_VERSION,
+        )
+    return VoiceSegmentMetadata(
+        source_sequence=item.sequence,
+        redaction_version=VOICE_CANONICAL_REDACTION_VERSION,
+        policy_source=item.policy_source,
     )
 
 

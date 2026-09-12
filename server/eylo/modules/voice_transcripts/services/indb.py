@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
 from uuid import UUID
 
 import arrow
@@ -24,6 +23,7 @@ from eylo.modules.conversations.services.messages import MessageService
 from eylo.modules.user_sessions.events import file_user_session_fact
 from eylo.modules.voice_transcripts.constants import (
     VoiceAudioTrackKind,
+    VoiceRedactionState,
     VoiceRuntimeMode,
     VoiceSegmentRole,
     VoiceSegmentSource,
@@ -43,6 +43,9 @@ from eylo.modules.voice_transcripts.schemas.indb import (
     VoiceSessionInDb,
     VoiceSessionUpdate,
 )
+from eylo.modules.voice_transcripts.segment_metadata import VoiceSegmentMetadata
+from eylo.modules.voice_transcripts.session_metadata import TranscriptStoragePolicy
+from eylo.modules.voice_transcripts.tool_projection import TranscriptToolFields
 
 
 class VoiceTranscriptService(EyloBaseService[VoiceSessionInDb, VoiceSessionModel]):
@@ -112,39 +115,36 @@ class VoiceTranscriptService(EyloBaseService[VoiceSessionInDb, VoiceSessionModel
 
     def _validate_idempotent_start(
         self,
-        existing: Any,
+        existing: VoiceSessionModel,
         requested: VoiceSessionCreate,
     ) -> VoiceSessionInDb:
         """Return an exact active duplicate; reject reuse or authority drift."""
         if VoiceSessionStatus(existing.status) is not VoiceSessionStatus.ACTIVE:
             raise ValueError("A completed voice runtime session cannot be reopened.")
 
-        authority_fields = (
-            "conversation_id",
-            "user_session_id",
-            "transport",
-            "agent_id",
-            "agent_revision",
-            "stt_vendor",
-            "stt_model",
-            "tts_vendor",
-            "tts_model",
-            "tts_voice",
-            "realtime_vendor",
-            "realtime_model",
-            "telephony_call_id",
-            "provider_call_id",
-            "telephony_provider",
-            "from_number",
-            "to_number",
-            "recording_enabled",
-            "recording_consent",
-            "audio_format",
-            "meta",
-        )
-        if any(
-            getattr(existing, field) != getattr(requested, field)
-            for field in authority_fields
+        if (
+            existing.conversation_id != requested.conversation_id
+            or existing.user_session_id != requested.user_session_id
+            or existing.transport != requested.transport
+            or existing.agent_id != requested.agent_id
+            or existing.agent_revision != requested.agent_revision
+            or existing.stt_vendor != requested.stt_vendor
+            or existing.stt_model != requested.stt_model
+            or existing.tts_vendor != requested.tts_vendor
+            or existing.tts_model != requested.tts_model
+            or existing.tts_voice != requested.tts_voice
+            or existing.realtime_vendor != requested.realtime_vendor
+            or existing.realtime_model != requested.realtime_model
+            or existing.telephony_call_id != requested.telephony_call_id
+            or existing.provider_call_id != requested.provider_call_id
+            or existing.telephony_provider != requested.telephony_provider
+            or existing.from_number != requested.from_number
+            or existing.to_number != requested.to_number
+            or existing.recording_enabled != requested.recording_enabled
+            or existing.recording_consent != requested.recording_consent
+            or existing.audio_format != requested.audio_format
+            or existing.meta
+            != (requested.meta.as_payload() if requested.meta is not None else None)
         ):
             raise ValueError(
                 "Voice runtime session identity conflicts with canonical authority."
@@ -221,7 +221,10 @@ class VoiceTranscriptService(EyloBaseService[VoiceSessionInDb, VoiceSessionModel
             or voice_session.conversation_id != data.conversation_id
         ):
             raise ValueError("Voice segment session authority is unavailable.")
-        data = self._apply_compliance(data, session_meta=voice_session.meta or {})
+        data = self._apply_compliance(
+            data,
+            policy=TranscriptStoragePolicy.model_validate(voice_session.meta or {}),
+        )
         entity = await self.segments.create(data)
         segment = VoiceSegmentInDb.model_validate(entity)
         await self.refresh_session_rollups(segment.voice_session_id)
@@ -250,7 +253,9 @@ class VoiceTranscriptService(EyloBaseService[VoiceSessionInDb, VoiceSessionModel
             or data.voice_session_id != voice_session.id
             or data.conversation_id != voice_session.conversation_id
             or (data.message_id is None and not is_system_speech)
-            or data.redaction_state not in {"clean", "redacted"}
+            or data.redaction_state not in {
+                VoiceRedactionState.CLEAN, VoiceRedactionState.REDACTED
+            }
         ):
             raise ValueError("Canonical voice segment authority is invalid.")
         existing = (
@@ -274,7 +279,7 @@ class VoiceTranscriptService(EyloBaseService[VoiceSessionInDb, VoiceSessionModel
         self,
         data: VoiceSegmentCreate,
         *,
-        session_meta: dict[str, Any],
+        policy: TranscriptStoragePolicy,
     ) -> VoiceSegmentCreate:
         """Drop payloads the agent's CompliancePlan forbids storing.
 
@@ -286,11 +291,11 @@ class VoiceTranscriptService(EyloBaseService[VoiceSessionInDb, VoiceSessionModel
         Stripping happens before the write. A segment persisted and redacted
         afterwards has still been persisted.
         """
-        if not session_meta.get("store_raw_vendor_payloads", False):
+        if not policy.store_raw_vendor_payloads:
             data = data.model_copy(update={"vendor_metadata": None})
-        if not session_meta.get("allow_sensitive_metadata", False):
+        if not policy.allow_sensitive_metadata:
             data = data.model_copy(update={"meta": None})
-        if session_meta.get("redact_pii_in_transcripts", False):
+        if policy.redact_pii_in_transcripts:
             data = self._redact_segment(data)
         return data
 
@@ -311,7 +316,10 @@ class VoiceTranscriptService(EyloBaseService[VoiceSessionInDb, VoiceSessionModel
         if changed:
             redacted["words"] = None
         return data.model_copy(
-            update=redacted | {"redaction_state": "redacted" if changed else "clean"}
+            update=redacted | {
+                "redaction_state": VoiceRedactionState.REDACTED
+                if changed else VoiceRedactionState.CLEAN
+            }
         )
 
     async def create_segment_from_canonical_message(
@@ -487,7 +495,7 @@ class VoiceTranscriptService(EyloBaseService[VoiceSessionInDb, VoiceSessionModel
         text = MessageService.get_message_content(message.content)
         started_at_ms = _duration_ms(session.started_at, message.created_at)
         duration_ms = message.meta.duration_ms if message.meta is not None else None
-        tool_name, tool_call_id, tool_input, tool_output = _extract_tool_fields(message)
+        tool = TranscriptToolFields.from_message(message)
         speech_outcome = (
             _speech_outcome(message) if role is VoiceSegmentRole.ASSISTANT else None
         )
@@ -508,11 +516,11 @@ class VoiceTranscriptService(EyloBaseService[VoiceSessionInDb, VoiceSessionModel
             started_at_ms=started_at_ms,
             duration_ms=duration_ms,
             audio_track=audio_track,
-            tool_name=tool_name,
-            tool_call_id=tool_call_id,
-            tool_input=tool_input,
-            tool_output=tool_output,
-            meta={"message_kind": message.kind.value},
+            tool_name=tool.name,
+            tool_call_id=tool.call_id,
+            tool_input=tool.input,
+            tool_output=tool.output,
+            meta=VoiceSegmentMetadata(message_kind=message.kind),
         )
 
 
@@ -576,47 +584,6 @@ def _duration_ms(start: datetime | None, end: datetime | None) -> int | None:
     if not start or not end:
         return None
     return max(int((end - start).total_seconds() * 1000), 0)
-
-
-def _extract_tool_fields(
-    message: MessageInDb,
-) -> tuple[str | None, str | None, dict[str, Any] | None, dict[str, Any] | None]:
-    content = message.content
-    if hasattr(content, "content"):
-        inner = content.content
-    elif isinstance(content, dict):
-        inner = content.get("content")
-    else:
-        inner = None
-
-    if message.kind == MessageKind.TOOL_USE:
-        item = inner if not isinstance(inner, list) else inner[0]
-        return (
-            _tool_attr(item, "name"),
-            _tool_attr(item, "id"),
-            _tool_attr(item, "input"),
-            None,
-        )
-    if message.kind == MessageKind.TOOL_RESULT:
-        item = inner[0] if isinstance(inner, list) and inner else inner
-        return (
-            _tool_attr(item, "name"),
-            _tool_attr(item, "tool_use_id"),
-            None,
-            {
-                "content": _tool_attr(item, "content"),
-                "is_error": _tool_attr(item, "is_error"),
-            },
-        )
-    return None, None, None, None
-
-
-def _tool_attr(item: Any, name: str) -> Any:
-    if item is None:
-        return None
-    if isinstance(item, dict):
-        return item.get(name)
-    return getattr(item, name, None)
 
 
 def now_utc() -> datetime:

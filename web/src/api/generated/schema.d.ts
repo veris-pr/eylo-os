@@ -4862,6 +4862,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/voice/plivo/answer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Plivo Answer
+         * @description Validate signature and our configured target without consuming the media claim.
+         */
+        get: operations["plivo_answer_api_voice_plivo_answer_get"];
+        put?: never;
+        /**
+         * Plivo Answer
+         * @description Validate signature and our configured target without consuming the media claim.
+         */
+        post: operations["plivo_answer_api_voice_plivo_answer_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sor/webhooks/{vendor_key}/apps/{endpoint_key}": {
         parameters: {
             query?: never;
@@ -15158,6 +15182,12 @@ export interface components {
             /** Created At */
             created_at: string;
         };
+        /**
+         * VoiceRedactionState
+         * @description Stored segment processing state; this is not a session lifecycle.
+         * @enum {string}
+         */
+        VoiceRedactionState: "none" | "clean" | "redacted";
         /** VoiceRuntimeCapabilities */
         VoiceRuntimeCapabilities: {
             /** Warnings */
@@ -15204,9 +15234,7 @@ export interface components {
             /** Confidence */
             confidence?: number | null;
             /** Words */
-            words?: {
-                [key: string]: unknown;
-            }[] | null;
+            words?: components["schemas"]["JsonObject"][] | null;
             /** Startedatms */
             startedAtMs?: number | null;
             /** Endedatms */
@@ -15218,18 +15246,11 @@ export interface components {
             toolName?: string | null;
             /** Toolcallid */
             toolCallId?: string | null;
-            /** Toolinput */
-            toolInput?: {
-                [key: string]: unknown;
-            } | null;
-            /** Tooloutput */
-            toolOutput?: {
-                [key: string]: unknown;
-            } | null;
+            toolInput?: components["schemas"]["JsonObject"] | null;
+            toolOutput?: components["schemas"]["JsonObject"] | null;
             /** Dtmfdigits */
             dtmfDigits?: string | null;
-            /** Redactionstate */
-            redactionState: string;
+            redactionState: components["schemas"]["VoiceRedactionState"];
             /** Sourcecreatedat */
             sourceCreatedAt?: string | null;
             /**
@@ -15370,14 +15391,8 @@ export interface components {
              * @default false
              */
             segmentsHasMore: boolean;
-            /** Metrics */
-            metrics?: {
-                [key: string]: unknown;
-            } | null;
-            /** Meta */
-            meta?: {
-                [key: string]: unknown;
-            } | null;
+            metrics?: components["schemas"]["JsonObject"] | null;
+            meta?: components["schemas"]["JsonObject"] | null;
         };
         /** VoiceSessionListResponse */
         VoiceSessionListResponse: {
@@ -27964,6 +27979,68 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    plivo_answer_api_voice_plivo_answer_get: {
+        parameters: {
+            query: {
+                ws_url: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/xml": string;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    plivo_answer_api_voice_plivo_answer_post: {
+        parameters: {
+            query: {
+                ws_url: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/xml": string;
                 };
             };
             /** @description Validation Error */

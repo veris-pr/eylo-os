@@ -9,11 +9,13 @@ Architecture:
 - This decouples service logic from WebSocket broadcasting
 """
 
-from enum import Enum
-from typing import Any
+from enum import Enum, StrEnum
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
+
+from eylo.common.contracts.json_values import JsonObject
+from eylo.common.contracts.voice import BrowserVoiceTerminationReason
 
 
 class WebRTCState(str, Enum):
@@ -50,19 +52,55 @@ class TTSState(str, Enum):
     ERROR = "error"
 
 
-class VoiceStateEvent(BaseModel):
-    """Base event for all voice service state changes."""
+class VoiceEventValue(BaseModel):
+    """Immutable observations; provider resources and raw failures cannot enter."""
 
-    state: WebRTCState | STTState | TTSState = Field(
-        ..., description="State identifier (enum converted to string on serialization)"
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", revalidate_instances="always",
+        hide_input_in_errors=True, allow_inf_nan=False,
     )
+
+
+class PeerConnectionState(StrEnum):
+    """Observed native peer states, distinct from Eylo lifecycle event names."""
+
+    NEW = "new"
+    CONNECTING = "connecting"
+    CONNECTED = "connected"
+    DISCONNECTED = "disconnected"
+    FAILED = "failed"
+    CLOSED = "closed"
+
+
+class IceGatheringState(StrEnum):
+    NEW = "new"
+    GATHERING = "gathering"
+    COMPLETE = "complete"
+
+
+class WebRTCPeerEventData(VoiceEventValue):
+    """Only the peer observations projected by the browser transport."""
+
+    state: PeerConnectionState | IceGatheringState | None = None
+    error: str | None = None
+    reason: BrowserVoiceTerminationReason | None = None
+    track_kind: str | None = None
+    track_id: str | None = None
+
+
+class VoiceServiceEventData(VoiceEventValue):
+    """Diagnostic exception class name, never a provider's raw error content."""
+
+    error_type: str | None = None
+
+
+class VoiceStateEvent(VoiceEventValue):
+    """Shared routing identity; each concrete event owns its state and data."""
+
     message: str = Field(..., description="Human-readable status message")
     session_id: str = Field(..., description="Session ID for WebSocket routing")
     organization_id: UUID = Field(
         ..., description="Organization ID for WebSocket routing"
-    )
-    data: dict[str, Any] = Field(
-        default_factory=dict, description="Additional event data"
     )
 
 
@@ -81,7 +119,12 @@ class WebRTCStateEvent(VoiceStateEvent):
     - track_removed: Media track removed from connection
     """
 
-    pass
+    state: WebRTCState
+    data: WebRTCPeerEventData = Field(default_factory=WebRTCPeerEventData)
+
+    @field_serializer("data")
+    def serialize_data(self, value: WebRTCPeerEventData) -> JsonObject:
+        return value.model_dump(mode="json", exclude_none=True)
 
 
 class STTStateEvent(VoiceStateEvent):
@@ -95,7 +138,13 @@ class STTStateEvent(VoiceStateEvent):
     - error: STT service error occurred
     """
 
-    vendor: str = Field(..., description="STT vendor name (e.g., 'deepgram')")
+    state: STTState
+    vendor: str = Field(..., description="Configured STT vendor identifier")
+    data: VoiceServiceEventData = Field(default_factory=VoiceServiceEventData)
+
+    @field_serializer("data")
+    def serialize_data(self, value: VoiceServiceEventData) -> JsonObject:
+        return value.model_dump(mode="json", exclude_none=True)
 
 
 class TTSStateEvent(VoiceStateEvent):
@@ -109,6 +158,10 @@ class TTSStateEvent(VoiceStateEvent):
     - error: TTS service error occurred
     """
 
-    vendor: str = Field(
-        ..., description="TTS vendor name (e.g., 'cartesia', 'elevenlabs')"
-    )
+    state: TTSState
+    vendor: str = Field(..., description="Configured TTS vendor identifier")
+    data: VoiceServiceEventData = Field(default_factory=VoiceServiceEventData)
+
+    @field_serializer("data")
+    def serialize_data(self, value: VoiceServiceEventData) -> JsonObject:
+        return value.model_dump(mode="json", exclude_none=True)

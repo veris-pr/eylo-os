@@ -6,7 +6,7 @@ enabling a pluggable architecture for different vendors (Twilio, Plivo, Exotel, 
 
 from abc import ABC, abstractmethod
 from enum import Enum, StrEnum
-from typing import Any, Dict, Literal, Optional, Protocol, Self, TypeAlias
+from typing import Literal, Optional, Protocol, Self, TypeAlias
 from uuid import UUID
 
 from fastapi import WebSocket
@@ -26,6 +26,7 @@ from eylo.common.outbound import (
 )
 from eylo.sockets.telephony.config import SettingsT, TelephonyVendorSettings
 from eylo.sockets.telephony.config import TelephonyProvider as TelephonyProvider
+from eylo.sockets.telephony.stream_parameters import StreamParameters
 
 
 class AudioEncoding(str, Enum):
@@ -400,7 +401,7 @@ class BaseTelephonyService(ABC):
     def build_twiml_response(
         self,
         ws_url: str,
-        custom_params: Dict[str, Any],
+        custom_params: StreamParameters,
     ) -> str:
         """Build provider-specific XML/response for call control.
 
@@ -425,7 +426,7 @@ class BaseTelephonyService(ABC):
         to_number: str,
         from_number: str,
         ws_url: str,
-        custom_params: Dict[str, Any],
+        custom_params: StreamParameters,
         authorization: OutboundSendAuthorization,
         status_callback_url: Optional[str] = None,
     ) -> OutboundSendOutcome:

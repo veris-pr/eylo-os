@@ -2,19 +2,36 @@
 
 from __future__ import annotations
 
+from json import JSONDecodeError
 from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
+from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import select
 
 from eylo.common.database import start_transaction
 from eylo.modules.telephony.models import TelephonyCallModel
+from eylo.modules.telephony.provider_config_domain import TelephonyProvider
 from eylo.modules.telephony.services import TelephonyCallService
-from eylo.modules.telephony.webhook_controller import WebhookController
 from eylo.modules.telephony.wiring import build_telephony_config_resolver
 from eylo.pipelines.telephony.call_control import (
     reconcile_outbound_call_acceptance,
+)
+from eylo.pipelines.telephony.status_callbacks import StatusCallbackHandler
+from eylo.sockets.telephony.exotel.status_contracts import ExotelCallbackIdentity
+from eylo.sockets.telephony.plivo.status_contracts import (
+    PlivoCallbackIdentity,
+    PlivoStatusCallback,
+)
+from eylo.sockets.telephony.status_contracts import CallbackIdentity, StatusCallback
+from eylo.sockets.telephony.twilio.status_contracts import (
+    TwilioCallbackIdentity,
+    TwilioStatusCallback,
+)
+from eylo.sockets.telephony.vonage.status_contracts import (
+    VonageCallbackIdentity,
+    VonageStatusCallback,
 )
 from eylo.sockets.telephony.webhook_signatures import verify_status_callback
 
@@ -23,27 +40,34 @@ router = APIRouter(
     tags=["Telephony Webhooks"],
 )
 
-_CALL_SID_FIELDS = {
-    "twilio": "CallSid",
-    "plivo": "CallUUID",
-    "vonage": "uuid",
-    "exotel": "CallSid",
+_IDENTITY_MODELS: dict[TelephonyProvider, type[CallbackIdentity]] = {
+    TelephonyProvider.TWILIO: TwilioCallbackIdentity,
+    TelephonyProvider.PLIVO: PlivoCallbackIdentity,
+    TelephonyProvider.VONAGE: VonageCallbackIdentity,
+    TelephonyProvider.EXOTEL: ExotelCallbackIdentity,
 }
+_JSON_OBJECT = TypeAdapter(dict[str, object])
 
 
 @router.post("/{provider}/status")
 async def status_callback(
-    provider: Literal["twilio", "plivo", "vonage", "exotel"],
+    provider: Literal[
+        TelephonyProvider.TWILIO,
+        TelephonyProvider.PLIVO,
+        TelephonyProvider.VONAGE,
+        TelephonyProvider.EXOTEL,
+    ],
     request: Request,
 ) -> Response:
     payload = await _payload(provider, request)
-    call_sid = str(payload.get(_CALL_SID_FIELDS[provider], "")).strip()
-    if not call_sid:
+    try:
+        call_sid = _IDENTITY_MODELS[provider].model_validate(payload).call_sid
+    except ValidationError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Provider call ID is required.",
-        )
-    if provider == "exotel":
+        ) from None
+    if provider is TelephonyProvider.EXOTEL:
         raise HTTPException(
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
             detail="Authenticated Exotel status callbacks are not supported.",
@@ -81,12 +105,12 @@ async def status_callback(
     provider_config = resolved.as_provider_config()
     public_url = (
         f"{provider_config.material.settings.webhook_base_url}"
-        f"/telephony/webhooks/{provider}/status"
+        f"/telephony/webhooks/{provider.value}/status"
     )
     if request.url.query:
         public_url = f"{public_url}?{request.url.query}"
     if not verify_status_callback(
-        provider=provider,
+        provider=provider.value,
         config=provider_config.settings_values(),
         secrets=provider_config.secret_values(),
         method=request.method,
@@ -96,6 +120,7 @@ async def status_callback(
     ):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
 
+    callback = _status(provider, payload)
     if call_id is not None:
         await reconcile_outbound_call_acceptance(
             call_id=call_id,
@@ -103,23 +128,42 @@ async def status_callback(
             provider_reference=call_sid,
         )
 
-    controller = WebhookController()
-    handlers = {
-        "twilio": controller.handle_twilio_status,
-        "plivo": controller.handle_plivo_status,
-        "vonage": controller.handle_vonage_status,
-    }
-    await handlers[provider](payload)
+    await StatusCallbackHandler().handle(callback, provider)
     return Response(status_code=status.HTTP_200_OK)
 
 
-async def _payload(provider: str, request: Request) -> dict:
-    if provider == "vonage":
-        value = await request.json()
-        if not isinstance(value, dict):
+async def _payload(provider: TelephonyProvider, request: Request) -> dict[str, object]:
+    """Preserve signed fields; reject invalid containers without echoing input."""
+    if provider is TelephonyProvider.VONAGE:
+        try:
+            value: object = await request.json()
+            return _JSON_OBJECT.validate_python(value, strict=True)
+        except (JSONDecodeError, UnicodeDecodeError, ValidationError):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Provider callback payload must be an object.",
+            ) from None
+    async with request.form() as form:
+        if any(not isinstance(value, str) for value in form.values()):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Provider callback fields must be text.",
             )
-        return value
-    return dict(await request.form())
+        return dict(form)
+
+
+def _status(provider: TelephonyProvider, payload: dict[str, object]) -> StatusCallback:
+    """Translate only supported, authenticated carrier observations."""
+    try:
+        if provider is TelephonyProvider.TWILIO:
+            return TwilioStatusCallback.model_validate(payload).to_status()
+        if provider is TelephonyProvider.PLIVO:
+            return PlivoStatusCallback.model_validate(payload).to_status()
+        if provider is TelephonyProvider.VONAGE:
+            return VonageStatusCallback.model_validate(payload).to_status()
+    except ValidationError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Provider callback status fields are invalid.",
+        ) from None
+    raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED)

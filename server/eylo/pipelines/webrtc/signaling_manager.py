@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 from aiortc import RTCIceCandidate
 
 from eylo.common.config import settings
+from eylo.common.contracts.json_values import JsonObject
 from eylo.common.contracts.voice import BrowserVoiceTerminationReason
 from eylo.common.contracts.websocket import WEBRTC_SIGNALING_VERSION
 from eylo.pipelines.webrtc.agent_peer import (
@@ -493,7 +494,7 @@ def _signal_envelope(
     data: WebRTCAnswer | WebRTCHangupNotice,
     *,
     request_id: str | None = None,
-) -> dict[str, object]:
+) -> JsonObject:
     return {
         "kind": kind,
         "request_id": request_id,

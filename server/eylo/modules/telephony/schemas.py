@@ -12,11 +12,13 @@ from pydantic import (
     Field,
     SkipValidation,
     StrictStr,
+    field_serializer,
     field_validator,
     model_validator,
 )
 
 from eylo.common.contracts.json_values import JsonObject
+from eylo.common.contracts.telephony import CallStatus as CallStatus
 from eylo.common.outbound import (
     OUTBOUND_STATUS_CODE_MAX,
     OUTBOUND_STATUS_CODE_MIN,
@@ -32,6 +34,7 @@ from eylo.common.schemas import (
     PaginatedResponseSchema,
 )
 from eylo.modules.telephony.constants import (
+    CallControlFailureCode,
     CallControlStatus,
     CallOpenerDeliveryStatus,
     CallTransferStatus,
@@ -40,6 +43,7 @@ from eylo.modules.telephony.provider_config_domain import (
     TelephonyOperation,
     TelephonyProvider,
 )
+from eylo.modules.telephony.transfer_metadata import CallTransferMetadata
 
 
 class PhoneNumberStatus(str, Enum):
@@ -59,17 +63,14 @@ class CallDirection(str, Enum):
     OUTBOUND = "outbound"
 
 
-class CallStatus(str, Enum):
-    """Status of a telephony call."""
+class CallControlErrorDetail(BaseModel):
+    """HTTP error projection shared by call-control producers and tool consumers."""
 
-    INITIATED = "initiated"
-    RINGING = "ringing"
-    IN_PROGRESS = "in-progress"
-    COMPLETED = "completed"
-    BUSY = "busy"
-    NO_ANSWER = "no-answer"
-    FAILED = "failed"
-    CANCELED = "canceled"
+    model_config = ConfigDict(frozen=True, extra="ignore", hide_input_in_errors=True)
+
+    code: CallControlFailureCode
+    operation: TelephonyOperation
+    provider: TelephonyProvider | None = None
 
 
 class OutboundCallRequest(BaseModel):
@@ -253,12 +254,18 @@ class TelephonyCallInDb(EyloOrganizationModelSchema):
     transfer_to: Optional[str] = None
     transfer_reason: Optional[str] = None
     transferred_at: Optional[datetime] = None
-    transfer_metadata: dict = Field(default_factory=dict)
+    transfer_metadata: CallTransferMetadata = Field(
+        default_factory=CallTransferMetadata
+    )
     cost_amount: Optional[float] = None
     cost_currency: Optional[str] = None
     latency_metrics: dict = Field(default_factory=dict)
     provider_metadata: dict = Field(default_factory=dict)
     analysis_metadata: dict = Field(default_factory=dict)
+
+    @field_serializer("transfer_metadata")
+    def serialize_transfer_metadata(self, value: CallTransferMetadata) -> JsonObject:
+        return value.as_payload()
 
     @model_validator(mode="after")
     def exact_agent_ref(self) -> Self:

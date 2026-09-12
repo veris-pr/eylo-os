@@ -29,6 +29,7 @@ from eylo.modules.voice_configs.domain import ResolvedSTT, ResolvedTTS
 from eylo.modules.voice_transcripts.constants import VoiceRuntimeMode
 from eylo.modules.voice_transcripts.schemas.indb import VoiceSessionCreate
 from eylo.modules.voice_transcripts.services.indb import VoiceTranscriptService
+from eylo.modules.voice_transcripts.session_metadata import VoiceSessionMetadata
 from eylo.pipelines.telephony.metrics import CallAudioMetrics, CarrierAudioMetrics
 from eylo.pipelines.telephony.sessions import CallSession, CallTerminationState
 from eylo.pipelines.voice.interaction_config import apply_voice_interaction_config
@@ -516,15 +517,13 @@ async def start_telephony_voice_session(
                 recording_enabled=sess.audio_recorder is not None,
                 audio_format="wav",
                 telephony_call_id=sess.call_id,
-                meta={
-                    "canonical_storage_requested": canonical_storage_requested,
-                    "store_raw_vendor_payloads": compliance.store_raw_vendor_payloads,
-                    "allow_sensitive_metadata": compliance.allow_sensitive_metadata,
-                    "redact_pii_in_transcripts": compliance.redact_pii_in_transcripts,
-                    "recording_consent_required": (
-                        compliance.recording_consent_required
-                    ),
-                },
+                meta=VoiceSessionMetadata(
+                    canonical_storage_requested=canonical_storage_requested,
+                    store_raw_vendor_payloads=compliance.store_raw_vendor_payloads,
+                    allow_sensitive_metadata=compliance.allow_sensitive_metadata,
+                    redact_pii_in_transcripts=compliance.redact_pii_in_transcripts,
+                    recording_consent_required=compliance.recording_consent_required,
+                ),
             )
         )
         if sess.call_id is not None:

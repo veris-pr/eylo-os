@@ -3,14 +3,18 @@
 import asyncio
 import logging
 import time
-from typing import Any, Callable
+from typing import Callable
 from uuid import UUID
 
 import arrow
 
 from eylo.common.contracts.voice import VoiceSpeechOutcome
 from eylo.events.py_events.emitter import emit_ephemeral
-from eylo.events.schema.py_events.voice import TTSState, TTSStateEvent
+from eylo.events.schema.py_events.voice import (
+    TTSState,
+    TTSStateEvent,
+    VoiceServiceEventData,
+)
 from eylo.pipelines.voice.audio_transport import StreamingAudioTranscoder
 from eylo.pipelines.voice.tts_payloads import (
     TTSFinalizeRequest,
@@ -206,7 +210,7 @@ class TTSRealtime:
                     vendor=self._tts_vendor,
                     session_id=self._session_id,
                     organization_id=self._organization_id,
-                    data={"error_type": error_type} if error_type is not None else {},
+                    data=VoiceServiceEventData(error_type=error_type),
                 )
             )
             logger.debug(f"Emitted TTS state event: {state.value}")

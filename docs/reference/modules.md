@@ -136,6 +136,40 @@ vendor work into these transactions or change post-commit durable dispatch.
 `voice_transcripts` records what happened. Keeping these separate prevents a
 vendor's native features from becoming platform policy.
 
+Provider readiness uses separate STT, TTS and WebRTC event contracts. Each owns
+its state enum and bounded observation fields; arbitrary dictionaries and live
+provider resources cannot enter these events. The WebSocket presentation keeps
+Eylo's `state` separate from the peer's `provider_state`, and realtime readiness
+retains its `runtime_mode`. Listener delivery remains best-effort and cancellation
+propagates. These ephemeral observations do not replace the call interaction
+state machine or create persisted transcript messages.
+
+Transcript tool projection consumes the canonical conversation content models
+through `TranscriptToolFields`, not dynamic attribute/dictionary lookups.
+Tool inputs and result envelopes are finite JSON; their raw values are excluded
+from diagnostic representations. This preserves the existing first-result
+projection and flat stored fields, including the null envelope for an empty
+tool-result message. Session retry checks compare explicit ORM fields against
+the requested identity and pinned config; a completed session cannot reopen.
+
+New session metadata writes use `VoiceSessionMetadata`: explicit policy
+predicates, canonical-storage intent and recording-failure observations, plus
+finite JSON extensions. Serialization preserves omitted fields and explicit
+nulls. Historical reads remain finite JSON; `TranscriptStoragePolicy` and
+`CanonicalStorageRequest` validate only the controls each operation owns.
+This lets post-call processing record the existing missing/invalid-decision
+failure instead of failing while loading unrelated session fields. Recording
+error annotations merge without revalidating unrelated historical controls.
+
+Segment provenance uses `VoiceSegmentMetadata` for message kind, source sequence,
+redaction version and voice-policy source. The shared voice-policy source enum
+lives in neutral contracts; the transcript domain does not import pipelines.
+Redaction states retain their existing `none`, `clean` and `redacted` wire values
+through `VoiceRedactionState`. Metrics, tool payloads, vendor context and word
+objects accept finite JSON, not arbitrary Python values. Word objects remain
+extensible historical data; this contract does not introduce word-timing capture.
+Repository writes revalidate copied or mutated payloads before persistence.
+
 ## Curated integrations
 
 `integrations_v2` owns installations, connections, OAuth state, installed-tool

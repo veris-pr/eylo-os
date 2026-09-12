@@ -19,6 +19,15 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from eylo.common.contracts.voice import BrowserVoiceTerminationReason
 from eylo.events.py_events.emitter import emit_ephemeral
+from eylo.events.schema.py_events.voice import (
+    IceGatheringState as IceGatheringState,
+)
+from eylo.events.schema.py_events.voice import (
+    PeerConnectionState as PeerConnectionState,
+)
+from eylo.events.schema.py_events.voice import (
+    WebRTCPeerEventData as WebRTCPeerEventData,
+)
 from eylo.events.schema.py_events.voice import WebRTCState, WebRTCStateEvent
 from eylo.pipelines.session_timeline import try_file_runtime_fact
 from eylo.pipelines.webrtc.media import IncomingAudioTrack, OutgoingAudioTrack
@@ -40,17 +49,6 @@ class SessionDescriptionType(StrEnum):
     ROLLBACK = "rollback"
 
 
-class PeerConnectionState(StrEnum):
-    """Native peer states, distinct from Eylo lifecycle event names."""
-
-    NEW = "new"
-    CONNECTING = "connecting"
-    CONNECTED = "connected"
-    DISCONNECTED = "disconnected"
-    FAILED = "failed"
-    CLOSED = "closed"
-
-
 class IceConnectionState(StrEnum):
     NEW = "new"
     CHECKING = "checking"
@@ -59,12 +57,6 @@ class IceConnectionState(StrEnum):
     DISCONNECTED = "disconnected"
     FAILED = "failed"
     CLOSED = "closed"
-
-
-class IceGatheringState(StrEnum):
-    NEW = "new"
-    GATHERING = "gathering"
-    COMPLETE = "complete"
 
 
 class PeerEvent(StrEnum):
@@ -80,17 +72,6 @@ class WebRTCOffer(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
     sdp: str = Field(min_length=1)
-
-
-class WebRTCPeerEventData(BaseModel):
-    """Bounded peer observations serialized into the existing event envelope."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-    state: PeerConnectionState | IceGatheringState | None = None
-    error: str | None = None
-    reason: BrowserVoiceTerminationReason | None = None
-    track_kind: str | None = None
-    track_id: str | None = None
 
 
 _PEER_TERMINATION_REASONS: Final = {
@@ -160,9 +141,7 @@ class AgentPeerClient:
                     message=message,
                     session_id=self._session_state.session_id,
                     organization_id=self._session_state.organization_id,
-                    data=data.model_dump(mode="json", exclude_none=True)
-                    if data
-                    else {},
+                    data=data if data is not None else WebRTCPeerEventData(),
                 )
             )
             logger.debug(f"Emitted WebRTC {state.value} event")

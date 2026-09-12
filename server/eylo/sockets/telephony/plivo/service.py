@@ -24,7 +24,7 @@ import binascii
 import json
 import logging
 from http import HTTPStatus
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Optional
 
 import httpx
 from fastapi import WebSocket
@@ -70,6 +70,7 @@ from eylo.sockets.telephony.base import (
     classify_control_failure,
 )
 from eylo.sockets.telephony.config import PlivoSettings
+from eylo.sockets.telephony.plivo.bootstrap import render_stream_xml
 from eylo.sockets.telephony.plivo.rest_contracts import (
     CREATE_OPERATION,
     CREATE_ORIGIN,
@@ -87,6 +88,7 @@ from eylo.sockets.telephony.plivo.stream_contracts import (
 )
 from eylo.sockets.telephony.plivo.stream_contracts import Event as StreamEvent
 from eylo.sockets.telephony.plivo.stream_contracts import Start as StreamStart
+from eylo.sockets.telephony.stream_parameters import StreamParameters
 
 if TYPE_CHECKING:
     from plivo.rest.client import Client
@@ -233,75 +235,17 @@ class PlivoService(BaseTelephonyService):
     def build_twiml_response(
         self,
         ws_url: str,
-        custom_params: Dict[str, Any],
+        custom_params: StreamParameters,
     ) -> str:
-        """Build Plivo XML response with Stream element.
-
-        Plivo XML format (from bolna-ai production):
-        <Response>
-            <Stream bidirectional="true" keepCallAlive="true">
-                wss://your-server.com/stream
-            </Stream>
-        </Response>
-
-        Args:
-            ws_url: WebSocket URL for streaming
-            custom_params: Custom parameters (can be encoded in URL)
-
-        Returns:
-            Plivo XML string
-
-        """
-        try:
-            from plivo import plivoxml
-
-            response = plivoxml.ResponseElement()
-
-            # Add custom parameters to URL if needed
-            final_url = ws_url
-            if custom_params:
-                # Encode params in URL query string
-                import urllib.parse
-
-                query_params = urllib.parse.urlencode(custom_params)
-                separator = "&" if "?" in ws_url else "?"
-                final_url = f"{ws_url}{separator}{query_params}"
-
-            # Configure Stream element (simplified from bolna-ai)
-            stream = plivoxml.StreamElement(
-                final_url,
-                bidirectional="true",
-                keepCallAlive="true",
-            )
-
-            response.add(stream)
-
-            return response.to_string()
-
-        except Exception as error:
-            logger.error(
-                "Failed to build Plivo XML error_type=%s",
-                type(error).__name__,
-            )
-            # Fallback to simple XML string
-            final_url = ws_url
-            if custom_params:
-                import urllib.parse
-
-                query_params = urllib.parse.urlencode(custom_params)
-                separator = "&" if "?" in ws_url else "?"
-                final_url = f"{ws_url}{separator}{query_params}"
-
-            return f"""<Response>
-    <Stream bidirectional="true" keepCallAlive="true">{final_url}</Stream>
-</Response>"""
+        """Build escaped XML with native SDK types; do not mask serialization errors."""
+        return render_stream_xml(ws_url, custom_params)
 
     async def initiate_outbound_call(
         self,
         to_number: str,
         from_number: str,
         ws_url: str,
-        custom_params: Dict[str, Any],
+        custom_params: StreamParameters,
         authorization: OutboundSendAuthorization,
         status_callback_url: Optional[str] = None,
     ) -> OutboundSendOutcome:
@@ -321,7 +265,7 @@ class PlivoService(BaseTelephonyService):
 
             # Derive HTTP answer_url from ws_url's domain
             parsed = urlparse(ws_url)
-            server_domain = parsed.hostname or ""
+            server_domain = parsed.netloc
             answer_url = (
                 f"https://{server_domain}/api/voice/plivo/answer"
                 f"?ws_url={quote(ws_url, safe='')}"

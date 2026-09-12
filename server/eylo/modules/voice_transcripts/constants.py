@@ -36,6 +36,14 @@ class VoiceSessionStatus(str, Enum):
     FAILED = "failed"
 
 
+class VoiceRedactionState(StrEnum):
+    """Stored segment processing state; this is not a session lifecycle."""
+
+    NONE = "none"
+    CLEAN = "clean"
+    REDACTED = "redacted"
+
+
 class VoiceCanonicalState(str, Enum):
     """Outcome of destructive post-call canonical history processing."""
 

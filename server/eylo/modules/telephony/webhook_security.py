@@ -97,6 +97,30 @@ def create_media_stream_token(
     return f"{encoded_payload}.{signature}"
 
 
+def authenticated_media_stream_claims(token: str | None) -> MediaStreamClaims | None:
+    """Decode only after signature verification; never expose unauthenticated claims."""
+    if not token or "." not in token:
+        return None
+    encoded_payload, signature = token.split(".", 1)
+    try:
+        payload_bytes = _base64url_decode(encoded_payload)
+        expected_signature = _base64url_encode(
+            hmac.new(
+                _media_stream_secret().encode(),
+                payload_bytes,
+                hashlib.sha256,
+            ).digest()
+        )
+        if not _compare_digest(expected_signature, signature):
+            return None
+        claims = MediaStreamClaims.model_validate_json(payload_bytes)
+    except (ValueError, ValidationError):
+        return None
+    if claims.exp < int(time.time()):
+        return None
+    return claims
+
+
 def verify_media_stream_token(
     token: str | None,
     *,
@@ -112,27 +136,13 @@ def verify_media_stream_token(
     initial_message: str | None = None,
 ) -> bool:
     """Verify a provider media stream token against extracted call metadata."""
-    if not token or "." not in token:
+    claims = authenticated_media_stream_claims(token)
+    if claims is None:
         return False
-    encoded_payload, signature = token.split(".", 1)
     try:
-        payload_bytes = _base64url_decode(encoded_payload)
-        expected_signature = _base64url_encode(
-            hmac.new(
-                _media_stream_secret().encode(),
-                payload_bytes,
-                hashlib.sha256,
-            ).digest()
-        )
-        if not _compare_digest(expected_signature, signature):
-            return False
-        claims = MediaStreamClaims.model_validate_json(payload_bytes)
         expected_provider = TelephonyProvider(provider.lower())
         expected_direction = CallDirection(direction.lower())
-    except (ValueError, ValidationError):
-        return False
-
-    if claims.exp < int(time.time()):
+    except ValueError:
         return False
 
     if (

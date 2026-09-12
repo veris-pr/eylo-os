@@ -3,6 +3,7 @@
 from eylo.audio.ops import is_silent
 from eylo.modules.session_context.schemas import SessionContext
 from eylo.pipelines.voice.browser import handle_audio_config as handle_audio_config
+from eylo.pipelines.websocket.audio_frame import WsBinaryAudioRequest
 from eylo.pipelines.websocket.handlers.error import handle_error
 from eylo.pipelines.websocket.schemas import (
     WsRequestEvent,
@@ -16,15 +17,15 @@ MIN_AUDIO_BYTES_PER_RATE = 0.01
 
 
 async def handle_audio_data(
-    event: WsRequestEvent, ctx: SessionContext
+    event: WsRequestEvent | WsBinaryAudioRequest, ctx: SessionContext
 ) -> WsResponse | None:
     """Route binary audio through the configured session; never infer a vendor."""
-    if not event.data:
-        return await handle_error(event=event, ctx=ctx, message="No audio data payload")
+    if not isinstance(event, WsBinaryAudioRequest):
+        message = "Expected binary data" if event.data else "No audio data payload"
+        return await handle_error(event=event, ctx=ctx, message=message)
 
-    audio_data = event.data.get("audio_data")
-
-    if not audio_data or not isinstance(audio_data, bytes):
+    audio_data = event.audio_data
+    if not audio_data:
         return await handle_error(
             event=event,
             ctx=ctx,

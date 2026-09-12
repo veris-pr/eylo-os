@@ -18,7 +18,7 @@ import json
 import logging
 import time
 from http import HTTPStatus
-from typing import Any, Dict, Optional
+from typing import Optional
 from uuid import uuid4
 
 import aiohttp
@@ -64,6 +64,7 @@ from eylo.sockets.telephony.base import (
     classify_control_failure,
 )
 from eylo.sockets.telephony.config import VonageSettings
+from eylo.sockets.telephony.stream_parameters import StreamParameters
 from eylo.sockets.telephony.vonage.contracts import (
     CALLS_URL,
     CREATE_OPERATION,
@@ -248,7 +249,7 @@ class VonageService(BaseTelephonyService):
     def build_ncco_response(
         self,
         ws_url: str,
-        custom_params: Dict[str, Any],
+        custom_params: StreamParameters,
     ) -> str:
         """Serialize the same typed stream instruction used by outbound calls."""
         return json.dumps(
@@ -261,16 +262,17 @@ class VonageService(BaseTelephonyService):
     def _stream_ncco(
         self,
         ws_url: str,
-        custom_params: Dict[str, Any],
+        custom_params: StreamParameters,
     ) -> list[ConnectAction]:
         """Preserve encoded routing parameters without interpreting platform identity."""
+        parameters = custom_params.as_wire()
         # Build WebSocket endpoint
         final_url = ws_url
-        if custom_params:
+        if parameters:
             # Encode params in URL query string
             import urllib.parse
 
-            query_params = urllib.parse.urlencode(custom_params)
+            query_params = urllib.parse.urlencode(parameters)
             separator = "&" if "?" in ws_url else "?"
             final_url = f"{ws_url}{separator}{query_params}"
 
@@ -279,7 +281,7 @@ class VonageService(BaseTelephonyService):
     def build_twiml_response(
         self,
         ws_url: str,
-        custom_params: Dict[str, Any],
+        custom_params: StreamParameters,
     ) -> str:
         """Alias for build_ncco_response to satisfy BaseTelephonyService interface.
 
@@ -298,7 +300,7 @@ class VonageService(BaseTelephonyService):
         to_number: str,
         from_number: str,
         ws_url: str,
-        custom_params: Dict[str, Any],
+        custom_params: StreamParameters,
         authorization: OutboundSendAuthorization,
         status_callback_url: Optional[str] = None,
     ) -> OutboundSendOutcome:

@@ -24,6 +24,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
+from eylo.common.contracts.json_values import JsonObject
 from eylo.common.models import EyloOrganizationModel
 from eylo.modules.agents.models import AgentsModel
 from eylo.modules.telephony.schemas import CallDirection, CallStatus, PhoneNumberStatus
@@ -295,7 +296,7 @@ class TelephonyCallModel(EyloOrganizationModel):
     transferred_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    transfer_metadata: Mapped[dict] = mapped_column(
+    transfer_metadata: Mapped[JsonObject] = mapped_column(
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
 

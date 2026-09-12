@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Literal
+from enum import StrEnum
 from uuid import UUID
 
 import arrow
@@ -24,7 +24,10 @@ from eylo.modules.telephony.lifecycle import (
     record_call_status,
     record_opener_delivery,
 )
-from eylo.modules.telephony.provider_config_domain import ResolvedTelephony
+from eylo.modules.telephony.provider_config_domain import (
+    ResolvedTelephony,
+    TelephonyProvider,
+)
 from eylo.modules.telephony.schemas import (
     CallStatus,
     PhoneNumberInDb,
@@ -52,6 +55,7 @@ from eylo.pipelines.telephony.lifecycle import (
     handle_media_packet,
     tts_producer_task,
 )
+from eylo.pipelines.telephony.outbound_stream import OutboundMediaRouting
 from eylo.pipelines.telephony.sessions import (
     S_CALLS,
     CallSession,
@@ -89,6 +93,32 @@ from eylo.sockets.telephony.manager import TelephonyRealtime
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+SIGNED_STREAM_START_TIMEOUT_SECONDS = 30.0
+MAX_SIGNED_START_FRAME_SIZE = 128 * 1024
+
+
+class MediaRoutingMode(StrEnum):
+    QUERY = "query"
+    SIGNED_TOKEN = "signed_token"
+
+
+def _enrich_metadata_from_signed_token(metadata: CallMetadata, provider: str) -> None:
+    """Only authenticated token claims can populate the query-free outbound route."""
+    routing = OutboundMediaRouting.from_signed_token(
+        metadata.media_stream_token,
+        provider=TelephonyProvider(provider),
+        call_sid=metadata.call_sid,
+    )
+    metadata.organization_id = routing.organization_id
+    metadata.call_id = routing.call_id
+    metadata.agent_id = routing.agent_id
+    metadata.agent_revision = routing.agent_revision
+    metadata.provider_config_id = routing.provider_config_id
+    metadata.provider_config_revision = routing.provider_config_revision
+    metadata.direction = TelephonyCallDirection.OUTBOUND
+    metadata.initial_message = routing.initial_message
+    metadata.stream_token_requirement = StreamTokenRequirement.REQUIRED
 
 
 def validate_call_metadata(
@@ -585,7 +615,27 @@ def _raise_failed_runtime_task(sess: CallSession) -> None:
 @router.websocket("/media/stream")
 async def generic_media_ws(
     ws: WebSocket,
-    provider: Literal["twilio", "plivo", "vonage", "exotel"],
+    provider: SocketTelephonyProvider,
+) -> None:
+    """Retain query-based ingress for existing carrier applet configurations."""
+    await _run_media_ws(ws, provider.value, routing_mode=MediaRoutingMode.QUERY)
+
+
+@router.websocket("/media/stream/twilio")
+async def twilio_media_ws(ws: WebSocket) -> None:
+    """Twilio supplies the signed routing token in its start-frame parameters."""
+    await _run_media_ws(
+        ws,
+        SocketTelephonyProvider.TWILIO.value,
+        routing_mode=MediaRoutingMode.SIGNED_TOKEN,
+    )
+
+
+async def _run_media_ws(
+    ws: WebSocket,
+    provider: str,
+    *,
+    routing_mode: MediaRoutingMode,
 ) -> None:
     """Run one authenticated 1:1 provider media session."""
     verification_enabled = getattr(
@@ -595,11 +645,17 @@ async def generic_media_ws(
     )
     client_ip = ws.client.host if ws.client else None
     client_ip_allowlisted = is_ip_allowlisted(client_ip)
+    if routing_mode is MediaRoutingMode.SIGNED_TOKEN and ws.query_params:
+        await ws.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
     if not verification_enabled and getattr(settings, "ENV", None) != Environment.LOCAL:
         await ws.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
     await ws.accept()
+    start_deadline = (
+        asyncio.get_running_loop().time() + SIGNED_STREAM_START_TIMEOUT_SECONDS
+    )
     sess: CallSession | None = None
     auth_session_token: str | None = None
     manager_closed_ws = False
@@ -611,8 +667,30 @@ async def generic_media_ws(
         while True:
             if sess is not None:
                 _raise_failed_runtime_task(sess)
-            raw = await _receive_provider_message(ws, telephony_manager.provider)
-            carrier_message = await telephony_manager.handle_message(raw)
+            if routing_mode is MediaRoutingMode.SIGNED_TOKEN and sess is None:
+                if asyncio.get_running_loop().time() >= start_deadline:
+                    await ws.close(code=status.WS_1008_POLICY_VIOLATION)
+                    return
+                try:
+                    async with asyncio.timeout_at(start_deadline):
+                        raw = await _receive_provider_message(
+                            ws, telephony_manager.provider
+                        )
+                except TimeoutError:
+                    await ws.close(code=status.WS_1008_POLICY_VIOLATION)
+                    return
+                if len(raw) > MAX_SIGNED_START_FRAME_SIZE:
+                    await ws.close(code=status.WS_1008_POLICY_VIOLATION)
+                    return
+            else:
+                raw = await _receive_provider_message(ws, telephony_manager.provider)
+            try:
+                carrier_message = await telephony_manager.handle_message(raw)
+            except ValueError:
+                if routing_mode is MediaRoutingMode.SIGNED_TOKEN:
+                    await ws.close(code=status.WS_1008_POLICY_VIOLATION)
+                    return
+                raise
             if sess is not None and isinstance(carrier_message, CarrierDtmfMessage):
                 await handle_inbound_dtmf(
                     sess=sess,
@@ -622,7 +700,14 @@ async def generic_media_ws(
                 continue
             if telephony_manager.call_metadata is not None and sess is None:
                 metadata = telephony_manager.call_metadata
-                _enrich_metadata_from_query_params(metadata, ws)
+                if routing_mode is MediaRoutingMode.SIGNED_TOKEN:
+                    try:
+                        _enrich_metadata_from_signed_token(metadata, provider)
+                    except ValueError:
+                        await ws.close(code=status.WS_1008_POLICY_VIOLATION)
+                        return
+                else:
+                    _enrich_metadata_from_query_params(metadata, ws)
                 if metadata.direction is not TelephonyCallDirection.OUTBOUND:
                     await _enrich_inbound_metadata_from_phone_number(
                         metadata,

@@ -5,7 +5,7 @@ import json
 import logging
 import time
 from http import HTTPStatus
-from typing import Any, Dict, Optional
+from typing import Optional
 from uuid import UUID
 
 import aiohttp
@@ -71,6 +71,7 @@ from eylo.sockets.telephony.exotel.stream_contracts import (
 )
 from eylo.sockets.telephony.exotel.stream_contracts import Event as StreamEvent
 from eylo.sockets.telephony.exotel.stream_contracts import Start as StreamStart
+from eylo.sockets.telephony.stream_parameters import StreamParameters
 
 logger = logging.getLogger(__name__)
 MILLISECONDS_PER_SECOND = 1000
@@ -219,7 +220,7 @@ class ExotelService(BaseTelephonyService):
     def build_twiml_response(
         self,
         ws_url: str,
-        custom_params: Dict[str, Any],
+        custom_params: StreamParameters,
     ) -> str:
         """Return JSON bootstrap payload.
 
@@ -227,11 +228,12 @@ class ExotelService(BaseTelephonyService):
         responds with {"url": "wss://..."}. We follow the latter so we can inject
         per-call query params (tokens, org IDs, etc.).
         """
+        parameters = custom_params.as_wire()
         final_url = ws_url
-        if custom_params:
+        if parameters:
             from urllib.parse import urlencode
 
-            query = urlencode(custom_params)
+            query = urlencode(parameters)
             separator = "&" if "?" in final_url else "?"
             final_url = f"{final_url}{separator}{query}"
 
@@ -242,7 +244,7 @@ class ExotelService(BaseTelephonyService):
         to_number: str,
         from_number: str,
         ws_url: str,
-        custom_params: Dict[str, Any],
+        custom_params: StreamParameters,
         authorization: OutboundSendAuthorization,
         status_callback_url: Optional[str] = None,
     ) -> OutboundSendOutcome:
@@ -272,7 +274,7 @@ class ExotelService(BaseTelephonyService):
 
         timeout = aiohttp.ClientTimeout(total=CONNECT_TIMEOUT_SECONDS)
         try:
-            parameters = ConnectParameters.model_validate(custom_params)
+            parameters = ConnectParameters.model_validate(custom_params.as_wire())
             request = ConnectRequest(
                 from_number=to_formatted,
                 caller_id=from_formatted,

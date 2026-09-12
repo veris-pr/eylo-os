@@ -32,6 +32,18 @@ class VoiceRuntimeMode(str, Enum):
     TELEPHONY = "telephony"
 
 
+class VoiceRequestSource(StrEnum):
+    """Platform-owned speech provenance shared by live and persisted voice state."""
+
+    USER = "user"
+    FILLER = "filler"
+    GREETING = "greeting"
+    CONSENT = "consent"
+    SILENCE = "silence"
+    END_CALL = "end_call"
+    MAX_DURATION = "max_duration"
+
+
 class RecordingDisclosureState(StrEnum):
     """Notification delivery and caller feedback; never permission to record.
 
@@ -94,5 +106,6 @@ __all__ = [
     "VOICE_MESSAGE_META_SOURCE_SEQUENCE",
     "VOICE_MESSAGE_META_SPEECH_OUTCOME",
     "VoiceSpeechOutcome",
+    "VoiceRequestSource",
     "VoiceRuntimeMode",
 ]

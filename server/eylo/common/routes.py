@@ -162,6 +162,7 @@ def setup_public_routes():
         public_router as _curated_oauth,
     )
     from eylo.modules.telephony.voice_routes import router as _voice_routes
+    from eylo.pipelines.telephony.bootstrap_routes import router as _carrier_bootstrap
     from eylo.pipelines.telephony.media_stream import router as _generic_telephony_ws
     from eylo.pipelines.telephony.webhook_routes import router as _webhooks
     from eylo.pipelines.websocket.routes import router as _websocket
@@ -182,6 +183,7 @@ def setup_public_routes():
     public_router.include_router(_websocket)
     public_router.include_router(_webhooks)
     public_router.include_router(_generic_telephony_ws)
+    public_router.include_router(_carrier_bootstrap)
     public_router.include_router(_sor_webhooks)
     public_router.include_router(_sor_oauth)
 

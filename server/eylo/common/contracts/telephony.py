@@ -3,6 +3,19 @@
 from enum import Enum
 
 
+class CallStatus(str, Enum):
+    """Status of a telephony call."""
+
+    INITIATED = "initiated"
+    RINGING = "ringing"
+    IN_PROGRESS = "in-progress"
+    COMPLETED = "completed"
+    BUSY = "busy"
+    NO_ANSWER = "no-answer"
+    FAILED = "failed"
+    CANCELED = "canceled"
+
+
 class CallEndedReason(str, Enum):
     """Why a call ended, for events, analytics and retry policy."""
 

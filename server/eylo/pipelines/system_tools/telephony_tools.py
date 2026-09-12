@@ -1,33 +1,56 @@
 """Agent-facing telephony tools gated by call and provider authority."""
 
-import json
 import logging
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
 from uuid import UUID, uuid4
 
+from fastapi import HTTPException
+from pydantic import ValidationError
+
+from eylo.common.contracts.json_values import JsonObject
 from eylo.common.contracts.telephony import CallEndedReason
 from eylo.events.py_events.emitter import emit_ephemeral
 from eylo.events.schema.py_events.call import (
     CallTransferringEvent,
 )
 from eylo.modules.conversations.schemas.conversations import ConversationContext
-from eylo.modules.telephony.constants import CallTransferOutcome, CallTransferStatus
+from eylo.modules.telephony.constants import (
+    CallControlFailureCode,
+    CallTransferOutcome,
+    CallTransferStatus,
+)
 from eylo.modules.telephony.lifecycle import (
+    CallLifecycleConflict,
     record_call_transfer_outcome,
     record_call_transfer_requested,
 )
 from eylo.modules.telephony.provider_config_domain import TelephonyOperation
+from eylo.modules.telephony.schemas import CallControlErrorDetail
+from eylo.pipelines.telephony.agent_tool_contracts import (
+    AgentScheduledCallPayload,
+    CallToolError,
+    CallToolScheduled,
+    CallToolSuccess,
+    CallTransferFailureCode,
+)
 from eylo.pipelines.telephony.call_control import VoiceService
+from eylo.pipelines.telephony.scheduled_actions import TELEPHONY_PLACE_CALL_ACTION
 from eylo.pipelines.telephony.sessions import S_CALLS, CallSession
+from eylo.pipelines.telephony.tool_execution import (
+    PlaceCallFailure,
+    PlaceCallToolFailureCode,
+)
 from eylo.pipelines.telephony.voice import terminate_telephony_voice
 from eylo.pipelines.voice.request_state import VoiceRequestSource
 
 logger = logging.getLogger(__name__)
+_E164_PATTERN = re.compile(r"^\+[1-9]\d{1,14}$")
+_DTMF_PATTERN = re.compile(r"^[0-9*#wW]+$")
+_NO_ACTIVE_CALL = "No active call found for this conversation"
 
 
-def _resolve_active_call(ctx: ConversationContext) -> Optional[CallSession]:
+def _resolve_active_call(ctx: ConversationContext) -> CallSession | None:
     """Resolve the active call session from the conversation context.
 
     Scans S_CALLS for a session matching the conversation's ID.
@@ -50,17 +73,11 @@ def _resolve_active_call(ctx: ConversationContext) -> Optional[CallSession]:
     return matches[0] if matches else None
 
 
-def _resolve_provider(session: CallSession) -> str:
-    """Return the provider already pinned on the active call session."""
-    return session.provider.value
-
-
 def _require_session_authority(session: CallSession) -> tuple[UUID, UUID, int]:
-    if (
-        session.provider_config_id is None
-        or session.provider_config_revision is None
-    ):
-        raise ValueError("Active call is missing pinned telephony authority.")
+    if session.provider_config_id is None or session.provider_config_revision is None:
+        raise CallLifecycleConflict(
+            "Active call is missing pinned telephony authority."
+        )
     return (
         session.organization_id,
         session.provider_config_id,
@@ -68,36 +85,52 @@ def _require_session_authority(session: CallSession) -> tuple[UUID, UUID, int]:
     )
 
 
-def _build_call_event_kwargs(session: CallSession, provider: str) -> dict:
-    """Build common kwargs for call events from a CallSession."""
+def _build_transfer_event(
+    session: CallSession, to_number: str
+) -> CallTransferringEvent:
+    """Project the pinned call identity directly into its transfer event."""
     organization_id, provider_config_id, provider_config_revision = (
         _require_session_authority(session)
     )
-    return {
-        "call_sid": session.call_sid,
-        "session_id": session.auth_session_token
-        or session.stream_sid
-        or session.call_sid,
-        "organization_id": organization_id,
-        "conversation_id": session.conversation_id,
-        "direction": session.direction,
-        "provider": provider,
-        "provider_config_id": provider_config_id,
-        "provider_config_revision": provider_config_revision,
-        "from_number": session.from_number,
-        "to_number": session.to_number,
-        "agent_id": session.agent_id,
-        "agent_revision": session.agent_revision,
-    }
+    return CallTransferringEvent(
+        message=f"Transferring call to {to_number}",
+        transfer_to=to_number,
+        call_sid=session.call_sid,
+        session_id=session.auth_session_token or session.stream_sid or session.call_sid,
+        organization_id=organization_id,
+        conversation_id=session.conversation_id,
+        direction=session.direction,
+        provider=session.provider.value,
+        provider_config_id=provider_config_id,
+        provider_config_revision=provider_config_revision,
+        from_number=session.from_number,
+        to_number=session.to_number,
+        agent_id=session.agent_id,
+        agent_revision=session.agent_revision,
+    )
 
 
-def _transfer_failure_projection(error: Exception) -> tuple[CallTransferOutcome, str]:
+def _transfer_failure_projection(
+    error: Exception,
+) -> tuple[CallTransferOutcome, CallTransferFailureCode]:
     """Map a safe control error onto the durable transfer state machine."""
-    detail = getattr(error, "detail", None)
-    code = detail.get("code") if isinstance(detail, dict) else None
-    if code == "UNKNOWN":
-        return CallTransferStatus.UNKNOWN, "call_transfer_unconfirmed"
-    return CallTransferStatus.FAILED, "call_transfer_rejected"
+    if isinstance(error, HTTPException):
+        try:
+            detail = CallControlErrorDetail.model_validate(error.detail)
+        except ValidationError:
+            pass
+        else:
+            if detail.code is CallControlFailureCode.UNKNOWN:
+                return CallTransferStatus.UNKNOWN, CallTransferFailureCode.UNCONFIRMED
+    return CallTransferStatus.FAILED, CallTransferFailureCode.REJECTED
+
+
+def _error(message: str) -> str:
+    return CallToolError(message=message).model_dump_json()
+
+
+def _success(message: str, call_sid: str) -> str:
+    return CallToolSuccess(message=message, call_sid=call_sid).model_dump_json()
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +138,7 @@ def _transfer_failure_projection(error: Exception) -> tuple[CallTransferOutcome,
 # ---------------------------------------------------------------------------
 
 
-async def end_call(ctx: ConversationContext, *args, **kwargs) -> str:
+async def end_call(ctx: ConversationContext, *args: object, **kwargs: object) -> str:
     """End the exact active voice session after delivering any final response.
 
     Use this after saying goodbye when the conversation is complete, the caller
@@ -126,7 +159,7 @@ async def end_call(ctx: ConversationContext, *args, **kwargs) -> str:
     try:
         session = _resolve_active_call(ctx)
         if not session:
-            return '{"status": "error", "message": "No active call found for this conversation"}'
+            return _error(_NO_ACTIVE_CALL)
 
         call_sid = session.call_sid
         _require_session_authority(session)
@@ -141,13 +174,13 @@ async def end_call(ctx: ConversationContext, *args, **kwargs) -> str:
             source=VoiceRequestSource.END_CALL,
         )
         if not accepted:
-            return '{"status": "error", "message": "Call termination was not accepted."}'
+            return _error("Call termination was not accepted.")
 
         # Note: CallEndedEvent is emitted by media_stream.py cleanup (finally block)
         # when the WebSocket disconnects after end_call. We don't emit here to avoid
         # duplicate events. The ended_reason set above will be picked up by cleanup.
 
-        return f'{{"status": "success", "message": "Call ended", "call_sid": "{call_sid}"}}'
+        return _success("Call ended", call_sid)
 
     except Exception as error:
         logger.error(
@@ -155,7 +188,7 @@ async def end_call(ctx: ConversationContext, *args, **kwargs) -> str:
             call_sid,
             type(error).__name__,
         )
-        return '{"status": "error", "message": "Call could not be ended."}'
+        return _error("Call could not be ended.")
 
 
 # ---------------------------------------------------------------------------
@@ -166,8 +199,8 @@ async def end_call(ctx: ConversationContext, *args, **kwargs) -> str:
 async def transfer_call(
     to_number: str,
     ctx: ConversationContext,
-    *args,
-    **kwargs,
+    *args: object,
+    **kwargs: object,
 ) -> str:
     """Transfer the current active phone call to another number.
 
@@ -187,15 +220,16 @@ async def transfer_call(
     session: CallSession | None = None
     transfer_intent_committed = False
     try:
-        if not to_number or not re.match(r"^\+[1-9]\d{1,14}$", to_number):
-            return '{"status": "error", "message": "Invalid to_number. Must be E.164 format (e.g., +16054440129)"}'
+        if not to_number or not _E164_PATTERN.fullmatch(to_number):
+            return _error(
+                "Invalid to_number. Must be E.164 format (e.g., +16054440129)"
+            )
 
         session = _resolve_active_call(ctx)
         if not session:
-            return '{"status": "error", "message": "No active call found for this conversation"}'
+            return _error(_NO_ACTIVE_CALL)
 
         call_sid = session.call_sid
-        provider = _resolve_provider(session)
         organization_id, _, _ = _require_session_authority(session)
         voice_service = VoiceService()
 
@@ -205,17 +239,13 @@ async def transfer_call(
             operation=TelephonyOperation.TRANSFER_CALL,
         )
 
-        transfer_event = CallTransferringEvent(
-            message=f"Transferring call to {to_number}",
-            transfer_to=to_number,
-            **_build_call_event_kwargs(session, provider),
-        )
+        transfer_event = _build_transfer_event(session, to_number)
         await record_call_transfer_requested(
             organization_id=transfer_event.organization_id,
             call_sid=transfer_event.call_sid,
             transfer_to=transfer_event.transfer_to,
-            reason=transfer_event.data.get("transfer_reason"),
-            metadata=transfer_event.data,
+            reason=None,
+            metadata={},
         )
         transfer_intent_committed = True
         try:
@@ -247,13 +277,7 @@ async def transfer_call(
         session.ended_reason = CallEndedReason.AGENT_FORWARDED_CALL
         session.extra_data.transfer_to = to_number
 
-        return json.dumps(
-            {
-                "status": "success",
-                "message": f"Call transferred to {to_number}",
-                "call_sid": call_sid,
-            }
-        )
+        return _success(f"Call transferred to {to_number}", call_sid)
 
     except Exception as error:
         if transfer_intent_committed and session is not None:
@@ -277,12 +301,7 @@ async def transfer_call(
             call_sid,
             type(error).__name__,
         )
-        return json.dumps(
-            {
-                "status": "error",
-                "message": "Call transfer was not accepted.",
-            }
-        )
+        return _error("Call transfer was not accepted.")
 
 
 # ---------------------------------------------------------------------------
@@ -293,8 +312,8 @@ async def transfer_call(
 async def dial_keypad(
     digits: str,
     ctx: ConversationContext,
-    *args,
-    **kwargs,
+    *args: object,
+    **kwargs: object,
 ) -> str:
     """Send DTMF tones (keypad digits) on the current active phone call.
 
@@ -312,12 +331,12 @@ async def dial_keypad(
     """
     call_sid: str | None = None
     try:
-        if not digits or not re.match(r"^[0-9*#wW]+$", digits):
-            return '{"status": "error", "message": "Invalid digits. Use 0-9, *, #, or w (pause)."}'
+        if not digits or not _DTMF_PATTERN.fullmatch(digits):
+            return _error("Invalid digits. Use 0-9, *, #, or w (pause).")
 
         session = _resolve_active_call(ctx)
         if not session:
-            return '{"status": "error", "message": "No active call found for this conversation"}'
+            return _error(_NO_ACTIVE_CALL)
 
         call_sid = session.call_sid
         organization_id, _, _ = _require_session_authority(session)
@@ -329,13 +348,7 @@ async def dial_keypad(
             organization_id=organization_id,
         )
 
-        return json.dumps(
-            {
-                "status": "success",
-                "message": "DTMF tones sent.",
-                "call_sid": call_sid,
-            }
-        )
+        return _success("DTMF tones sent.", call_sid)
 
     except Exception as error:
         logger.error(
@@ -343,12 +356,7 @@ async def dial_keypad(
             call_sid,
             type(error).__name__,
         )
-        return json.dumps(
-            {
-                "status": "error",
-                "message": "DTMF tones were not accepted.",
-            }
-        )
+        return _error("DTMF tones were not accepted.")
 
 
 # ---------------------------------------------------------------------------
@@ -361,9 +369,9 @@ async def schedule_call(
     initial_message: str,
     call_at: str,
     ctx: ConversationContext,
-    meta: Optional[Dict[str, Any]] = None,
-    *args,
-    **kwargs,
+    meta: JsonObject | None = None,
+    *args: object,
+    **kwargs: object,
 ) -> str:
     """Schedule a future outbound phone call.
 
@@ -379,7 +387,8 @@ async def schedule_call(
                  Must be in the future.
         ctx: Internal conversation context (injected automatically).
         meta: Optional metadata dict for campaign or caller-specific context
-              (e.g., {"campaign_id": "...", "contact_name": "John"}).
+              (e.g., {"campaign_id": "...", "contact_name": "John"}). Cannot
+              override the call arguments or authenticated agent/organization.
 
     Returns:
         JSON string with the scheduling result.
@@ -387,8 +396,8 @@ async def schedule_call(
     """
     try:
         # Validate phone number
-        if not to_number or not re.match(r"^\+[1-9]\d{1,14}$", to_number):
-            return '{"status": "error", "message": "Invalid to_number. Must be E.164 format."}'
+        if not to_number or not _E164_PATTERN.fullmatch(to_number):
+            return _error("Invalid to_number. Must be E.164 format.")
 
         # Validate call_at
         try:
@@ -396,42 +405,31 @@ async def schedule_call(
             if scheduled_time.tzinfo is None:
                 scheduled_time = scheduled_time.replace(tzinfo=timezone.utc)
         except ValueError:
-            return '{"status": "error", "message": "Invalid call_at format. Use ISO 8601 UTC."}'
+            return _error("Invalid call_at format. Use ISO 8601 UTC.")
 
         now = datetime.now(timezone.utc)
         if scheduled_time < now:
-            return (
-                '{"status": "error", "message": "Cannot schedule a call in the past."}'
-            )
+            return _error("Cannot schedule a call in the past.")
 
         # Resolve agent and org
         primary_agent = ctx.get_primary_agent()
         if not primary_agent:
-            return '{"status": "error", "message": "No primary agent found in conversation context."}'
+            return _error("No primary agent found in conversation context.")
 
         agent_id = UUID(primary_agent.entity_id)
         agent_revision = primary_agent.agent_revision
         org_id = ctx.conversation.organization_id
         if agent_revision is None:
-            return (
-                '{"status": "error", "message": "Primary agent has no exact revision."}'
-            )
+            return _error("Primary agent has no exact revision.")
 
-        # The old row carried a sender_participant_id it never used — the call
-        # executor read `meta`, not the column. Dropped rather than carried
-        # forward into a payload nothing reads.
-
-        # Build schedule metadata — generic, no hardcoded use case
-        schedule_meta: Dict[str, Any] = {
-            "kind": "outbound_call",
-            "to_number": to_number,
-            "agent_id": str(agent_id),
-            "org_id": str(org_id),
-            "initial_message": initial_message,
-            "call_at": call_at,
-        }
-        if meta:
-            schedule_meta.update(meta)
+        payload = AgentScheduledCallPayload.for_call(
+            to_number=to_number,
+            agent_id=agent_id,
+            organization_id=org_id,
+            initial_message=initial_message,
+            call_at=call_at,
+            metadata=meta,
+        )
 
         # Through the scheduler, as a one-shot. This used to write to
         # `tool_agent_schedules`, polled by a cron whose only recovery was an
@@ -450,22 +448,24 @@ async def schedule_call(
             # stable key would have the second silently replace the first.
             key=f"call:{agent_id}:{uuid4()}",
             name=f"Outbound call to {to_number}",
-            action="telephony.place_call",
-            payload=schedule_meta,
+            action=TELEPHONY_PLACE_CALL_ACTION,
+            payload=payload.as_payload(),
             recurrence=Recurrence(rule=None, timezone="UTC", starts_at=scheduled_time),
             agent_id=agent_id,
             agent_revision=agent_revision,
         )
 
         logger.info("Call scheduled at=%s agent=%s", call_at, agent_id)
-        return f'{{"status": "scheduled", "scheduled_time": "{call_at}", "to_number": "{to_number}"}}'
+        return CallToolScheduled(
+            scheduled_time=call_at, to_number=to_number
+        ).model_dump_json()
 
     except Exception as error:
         logger.error(
             "schedule_call tool failed error_type=%s",
             type(error).__name__,
         )
-        return '{"status": "error", "message": "Call could not be scheduled."}'
+        return _error("Call could not be scheduled.")
 
 
 # ---------------------------------------------------------------------------
@@ -477,8 +477,8 @@ async def place_call(
     to_number: str,
     initial_message: str,
     ctx: ConversationContext,
-    *args,
-    **kwargs,
+    *args: object,
+    **kwargs: object,
 ) -> str:
     """Immediately initiate an outbound phone call.
 
@@ -496,9 +496,6 @@ async def place_call(
 
     """
     del to_number, initial_message, ctx, args, kwargs
-    return json.dumps(
-        {
-            "kind": "telephony_error",
-            "error": "durable_execution_required",
-        }
-    )
+    return PlaceCallFailure(
+        error=PlaceCallToolFailureCode.DURABLE_EXECUTION_REQUIRED
+    ).model_dump_json()

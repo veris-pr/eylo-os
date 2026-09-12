@@ -9,6 +9,7 @@ from typing import (
 )
 
 from eylo.modules.session_context.schemas import SessionContext
+from eylo.pipelines.websocket.audio_frame import WsBinaryAudioRequest
 from eylo.pipelines.websocket.handlers.contacts import handle_contact_query
 from eylo.pipelines.websocket.handlers.participants import handle_participant_query
 from eylo.pipelines.websocket.schemas import (
@@ -79,11 +80,20 @@ __PRIVATE_ACTIONS: Dict[
 
 
 async def handle_event(
-    request_payload: WsRequestEvent,
+    request_payload: WsRequestEvent | WsBinaryAudioRequest,
     ctx: SessionContext,
 ) -> Optional[WsResponse]:
     """Process WebSocket events based on their kind using a handler map."""
     event = request_payload
+
+    if isinstance(event, WsBinaryAudioRequest):
+        if ctx.contact_id:
+            return await handle_audio_data(event, ctx)
+        logger.warning(
+            "Unauthorized WebSocket event organization_id=%s kind=%s",
+            ctx.organization_id, event.kind,
+        )
+        return None
 
     handler = None
 

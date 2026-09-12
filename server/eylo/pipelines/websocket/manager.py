@@ -6,8 +6,7 @@ import json
 import logging
 from collections import defaultdict
 from collections.abc import AsyncIterator, Mapping
-from datetime import datetime
-from typing import Dict, List, Optional, Set, Tuple, Union
+from typing import Dict, List, Optional, Set, Tuple
 from uuid import UUID
 
 import arrow
@@ -36,6 +35,7 @@ from eylo.pipelines.websocket.schemas import (
     WsRequestEvent,
     WsResponse,
 )
+from eylo.pipelines.websocket.serialization import WsOutboundPayload, serialize_ws_text
 
 logger = logging.getLogger(__name__)
 
@@ -658,7 +658,7 @@ class WsConnectionManager:
 
     async def send_response(
         self,
-        payload: Union[str, dict, BaseModel, bytes],
+        payload: WsOutboundPayload,
         organization_id: UUID,
         session_id: str,
         *,
@@ -718,42 +718,7 @@ class WsConnectionManager:
                     # Browser / default
                     await websocket.send_bytes(payload)
             else:
-                # Prepare text data
-                text_payload = ""  # Initialize to prevent unbound error
-
-                # Use a custom serializer to handle non-standard types like bytes, enums, etc.
-                def custom_serializer(obj: object) -> object:
-                    if isinstance(obj, bytes):
-                        return obj.decode("utf-8", "ignore")
-                    if isinstance(obj, datetime):
-                        return obj.isoformat()
-                    if hasattr(obj, "value"):  # Handle Enums
-                        return obj.value
-                    if isinstance(obj, UUID):
-                        return str(obj)
-                    raise TypeError(
-                        f"Object of type {type(obj).__name__} is not JSON serializable"
-                    )
-
-                if isinstance(payload, BaseModel):
-                    # Dump the model to a dict first, then serialize with custom logic
-                    data_to_serialize = payload.model_dump(
-                        mode="python",
-                        by_alias=True,
-                    )
-                elif isinstance(payload, dict):
-                    data_to_serialize = payload
-                else:
-                    text_payload = str(payload)
-                    data_to_serialize = None
-
-                if data_to_serialize:
-                    text_payload = json.dumps(
-                        data_to_serialize, default=custom_serializer
-                    )
-
-                # Send the text
-                await websocket.send_text(text_payload)
+                await websocket.send_text(serialize_ws_text(payload))
             return True
         except WebSocketDisconnect:
             logger.info(
@@ -777,9 +742,9 @@ class WsConnectionManager:
             )
         except Exception as e:
             kind = None
-            if isinstance(payload, BaseModel):
-                kind = getattr(payload, "kind", None)
-            elif isinstance(payload, dict):
+            if isinstance(payload, WsResponse):
+                kind = payload.kind
+            elif isinstance(payload, Mapping):
                 kind = payload.get("kind")
             logger.error(
                 "Failed to send response org=%s kind=%s category=%s",
@@ -814,7 +779,7 @@ class WsConnectionManager:
 
     async def broadcast(
         self,
-        payload: Union[str, dict, BaseModel, bytes],
+        payload: WsOutboundPayload,
         organization_id: UUID,
         session_ids: List[str] | None = None,
         exclude_session_id: str | None = None,

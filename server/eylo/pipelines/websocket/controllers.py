@@ -16,7 +16,7 @@ from starlette.websockets import WebSocketDisconnect
 from eylo.common.contracts.session_timeline import SessionTimelineEvent
 from eylo.modules.user_sessions.fact_payloads import SessionLifecycleFact
 from eylo.common.contracts.voice import BrowserVoiceTerminationReason
-from eylo.common.contracts.websocket import WsRequestEvent, WsResponse
+from eylo.common.contracts.websocket import WsResponse
 from eylo.common.database import start_transaction
 from eylo.modules.auth.services.session_service import AuthSessionService
 from eylo.modules.user_sessions.domain import (
@@ -28,6 +28,7 @@ from eylo.modules.user_sessions.domain import (
 from eylo.modules.user_sessions.events import file_user_session_fact
 from eylo.modules.user_sessions.service import UserSessionService
 from eylo.pipelines.websocket.handlers import handle_event
+from eylo.pipelines.websocket.audio_frame import WsBinaryAudioRequest
 from eylo.pipelines.websocket.schemas import WebSocketClientInfo, WsEventAction
 from eylo.pipelines.websocket.singleton import S_ws_manager
 
@@ -233,12 +234,8 @@ class WebSocketController:
                             )
                     elif "bytes" in message and message["bytes"] is not None:
                         # Handle binary messages
-                        request_payload = WsRequestEvent(
-                            kind=WsEventAction.AUDIO_DATA,
-                            data={
-                                "audio_data": message["bytes"],
-                                "timestamp": arrow.utcnow().timestamp(),
-                            },
+                        request_payload = WsBinaryAudioRequest(
+                            audio_data=message["bytes"],
                         )
                         response_payload = await handle_event(
                             request_payload=request_payload,

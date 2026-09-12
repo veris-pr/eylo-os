@@ -8,8 +8,7 @@ import base64
 import json
 import logging
 from http import HTTPStatus
-from typing import Any, Dict, Optional
-from urllib.parse import quote
+from typing import Optional
 from uuid import UUID
 
 from fastapi import WebSocket
@@ -49,6 +48,8 @@ from eylo.sockets.telephony.base import (
     classify_provider_failure,
 )
 from eylo.sockets.telephony.config import TwilioSettings
+from eylo.sockets.telephony.stream_parameters import StreamParameters
+from eylo.sockets.telephony.twilio.bootstrap import render_stream_xml
 from eylo.sockets.telephony.twilio.rest_client import TwilioRestClient
 from eylo.sockets.telephony.twilio.rest_contracts import (
     CREATE_FAILURE_OPERATION,
@@ -89,7 +90,8 @@ class TwilioMessageParser(TelephonyMessageParser):
                     agent_id=UUID(custom.agent_id) if custom.agent_id else None,
                     direction=CallMetadata.normalize_direction(custom.direction),
                     initial_message=custom.initial_message,
-                    media_stream_token=custom.stream_token
+                    media_stream_token=custom.fragmented_token
+                    or custom.stream_token
                     or custom.legacy_stream_token,
                     stream_token_requirement=(
                         StreamTokenRequirement.REQUIRED
@@ -197,38 +199,17 @@ class TwilioService(BaseTelephonyService):
     def build_twiml_response(
         self,
         ws_url: str,
-        custom_params: Dict[str, Any],
+        custom_params: StreamParameters,
     ) -> str:
-        """Build TwiML response for Twilio call control.
-
-        Args:
-            ws_url: WebSocket URL for media streaming
-            custom_params: Custom parameters to pass to the stream
-
-        Returns:
-            TwiML XML string
-
-        """
-        params_xml: list[str] = []
-        for k, v in custom_params.items():
-            params_xml.append(f'<Parameter name="{k}" value="{quote(str(v))}" />')
-        params_str = "\n".join(params_xml)
-
-        return f"""<?xml version="1.0" encoding="UTF-8"?>
-    <Response>
-      <Connect>
-        <Stream url="{ws_url}">
-          {params_str}
-        </Stream>
-      </Connect>
-    </Response>"""
+        """Build vendor-constrained XML without changing signed token bytes."""
+        return render_stream_xml(ws_url, custom_params)
 
     async def initiate_outbound_call(
         self,
         to_number: str,
         from_number: str,
         ws_url: str,
-        custom_params: Dict[str, Any],
+        custom_params: StreamParameters,
         authorization: OutboundSendAuthorization,
         status_callback_url: Optional[str] = None,
     ) -> OutboundSendOutcome:

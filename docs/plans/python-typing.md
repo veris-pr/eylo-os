@@ -2,15 +2,17 @@
 
 ## Acceptance board — 2026-09-12
 
-Platform-wide completion remains **open**. The deployed checkpoint has bounded
-native QA; the next local slice covers SOR document reads. Historical checkpoint notes
+Platform-wide completion remains **open**. The deployed checkpoint now includes
+SOR document reads, conversation status/callbacks, carrier bootstrap/status/tools,
+transcript payload contracts, and WebSocket input/output and voice readiness contracts,
+with bounded native text-Agent QA. Historical checkpoint notes
 below are evidence, not a completion percentage; their older deployment labels
 are superseded by the newest deployment record.
 
 | Gate | Current evidence | Remaining acceptance |
 | --- | --- | --- |
 | Static backend contracts | Lint passes; Pyrefly has zero errors and two existing redundant-cast warnings | Static success does not prove native input shapes |
-| Remaining-contract inventory | Refreshed AST inventory identifies 296 signature/broad-annotation flags after typed SOR document shaping, down from 303 at the deployed checkpoint | These are triage candidates, not defects or a completion percentage. Missing route returns, telephony payload boundaries and generic/SDK exceptions still require classification and exact-path verification. Class fields and remaining literals require separate coverage |
+| Remaining-contract inventory | Latest AST inventory identifies 252 signature/broad-annotation flags after transcript payload typing | These are triage candidates, not defects or a completion percentage. Missing route returns and generic/SDK boundaries still require classification and exact-path verification. Class fields and remaining literals require separate coverage |
 | Agent lifecycle delivery | Typed delivery deployed. Function/Redis checks pass; native widget SOR search/detail received lifecycle sequence 1–9 and completed | Broader cancellation/concurrency delivery remains open |
 | DB/session injection and deletion workflow | Typed constructors, deletion task identities/receipts and call-erasure parameters deployed. Native PostgreSQL zero-row cursor check and function compatibility checks pass | These checks do not prove live deletion, scheduler resilience, or remaining platform-wide contracts |
 | WebSocket/voice session contracts | Typed runtime state and carrier media handoffs deployed. Fixed first-live-turn prompt identity; native decomposed and OpenAI realtime calls replied and completed with canonical transcripts | Broader vendor coverage, interruptions, abrupt disconnect and recording upload remain open; these calls do not prove all voice behavior |
@@ -27,7 +29,486 @@ are superseded by the newest deployment record.
 | Direct-objective memory | Fixed conversation-only context assumption; native recall returns four agent-owned facts and releases capacity | Direct-objective writes need run-based provenance; current mutation contract requires a real conversation/message |
 | Sandbox | Typed workspace/checkpoint/tool paths and session/grant API projection deployed; flat policy schema passes 221 checks inside the current image | Native configured sandbox execution/cleanup |
 | MCP management | Typed responses and detached discovery snapshot deployed; real disposable-DB publication, stale-source refusal and rollback tested through the exact image | External MCP transport/native discovery remains unverified |
-| Final handoff | Four app services now run image `cc06bf756535b77105ae59211ae7ef4406734198f24fdebb7771facfce7b1b77`, including the MCP transaction boundary and runner retirement. Earlier work is committed at `2cc746e5`; current batches, docs and regenerated API types remain uncommitted. DB, Redis and provider configs were preserved | Complete remaining contracts, native QA and the full acceptance matrix |
+| Final handoff | Four app services now run `f86cc34473b9b5f45014762932a8f87e7f59b7175d8f0bec63f0c561cf7f691c`, including the uncommitted carrier bootstrap and transcript batch. Exact-image app/schema checks and native text-Agent QA passed within the limits below. Generated console API types are refreshed. DB/Redis retained their containers/start times; Alembic remains `eylo0012` | Complete remaining contracts and the full acceptance matrix; no platform-wide completion claim |
+
+### Latest deployment and native QA — WebSocket batch, 2026-09-12
+
+- Supersedes earlier deployment labels below: all four application services run
+  image `331ef63cafc8151ba81fd31bd4a30d3b7dba5384f81b976d33b41e16c36432c5`,
+  with zero restarts at the post-QA check. PostgreSQL and Redis were not recreated;
+  no migrations, Git commits or history changes were made. The previous image is
+  retained as `eylo-server:typing-rollback-f86cc34473b9`.
+- Exact-image checks passed: 484 voice event checks, 440 ingress checks, 1,400
+  outbound checks, and app import/OpenAPI generation (246 paths). These are
+  substituted boundary checks, not native microphone or vendor acceptance.
+- Native Chrome: console login, widget conversation pagination from five to ten,
+  existing message history and a 66-message console transcript rendered. After
+  requesting older widget messages, the load-more button disappeared; the probe
+  incorrectly waited for it to remain visible. Pagination depth/count acceptance
+  is therefore not claimed from that probe.
+- Fresh QA Core Mixed Agent conversation
+  `01a096df-5ecd-73c0-869d-9bd771956d6b` executed `issue_search` then `issue_get`
+  against stored Jira data and returned `VW-1`. Console rendered 10 of 10 persisted
+  messages, with neither Processing nor Awaiting Tool Results remaining. This
+  proves native LLM/tool/widget delivery, not fresh vendor synchronization.
+- Current Sources screen: Intercom, Jira, Linear, HubSpot and Confluence display
+  Active; Zendesk still displays Reauthorization required despite the user's
+  report of six active sources. Successful Zendesk reads remain unverified.
+- Broader contracts, vendor-native voice, interruptions, abrupt disconnect,
+  recording upload and the outstanding acceptance matrix remain open.
+
+### Local outbound WebSocket projections — 2026-09-12
+
+- `WsResponse` now owns finite object/collection data and a strict integer status.
+  A neutral projection codec explicitly converts supported UUID/datetime/enum
+  values, preserving existing timestamp and alias encoding. It rejects arbitrary
+  model/resource objects, non-string keys, cycles and non-finite numbers instead
+  of introspecting any object with `.value`. Legacy nested-byte text conversion
+  is retained; live binary audio remains on its separate framing path.
+- Sending accepts explicit response/text/projection/binary contracts. Mutable
+  or unchecked-copy responses are revalidated before serialization. WebRTC
+  signaling now returns its actual finite JSON envelope type. Empty object
+  serialization is corrected from an empty text frame to `{}`.
+- 1,400 function checks pass against fixed-revision responses and the actual
+  manager send method: all event actions, object/list/empty data, aliases, rich
+  scalar values, each binary session type, refusal, cancellation and stale socket
+  ownership. Network sends are substituted. A synthetic 1,000-row projection
+  completed in 39 ms locally; this is not a production throughput benchmark.
+- Full typing and lint pass apart from the two existing SOR redundant-cast
+  warnings. Native batch deployment and widget/console validation are next;
+  this record alone does not prove deployed behavior or whole-platform coverage.
+
+### Local voice events and WebSocket ingress — 2026-09-12
+
+- STT, TTS and WebRTC now own separate event state/data contracts. Producer
+  observations stay typed through listeners; WebSocket presentation explicitly
+  separates Eylo `state`, native `provider_state` and realtime `runtime_mode`.
+  Existing enum wire values, omitted optional fields, best-effort observer
+  delivery and cancellation propagation are retained. The voice pre-commit and
+  pre-push typing hook includes the event schema, listeners and presentation.
+- 484 function checks compare fixed-revision event/listener JSON for all 19
+  readiness states, exercise real producer methods and the actual WebSocket
+  serializer with its network send substituted, and cover malformed values,
+  frozen contracts, observer failures and cancellation.
+- Text ingress now accepts finite JSON, while binary microphone frames have
+  their own typed transport request with raw bytes excluded from snapshots and
+  representations. Dispatch retains contact authorization for both paths; no
+  JSON-only restriction is applied to microphone input. Tightened typing exposed
+  a raw-value participant lookup after UUID validation in audio setup; the call
+  now uses the validated UUID. This is a verified contract mismatch, not a
+  reproduced production outage.
+- 440 input checks cover valid text parity for every event action, malformed
+  JSON values, strict binary input, authorization dispatch, realtime/decomposed
+  audio effects, empty/silent/short packets, text rate limiting and the exact
+  participant lookup argument. DB/provider/network effects are substituted.
+- Full backend lint passes; Pyrefly reports zero errors with the same two
+  pre-existing SOR redundant-cast warnings. These slices are local and not yet
+  deployed. Native microphone/interrupt/disconnect acceptance remains open;
+  no database or migration changes were made. Remaining platform contracts and
+  the broader acceptance matrix above are not complete.
+
+### Deployed batch and native product QA — 2026-09-12
+
+- Built the current working tree; isolated image import/OpenAPI checks passed
+  without network access. Recreated only server, durable worker, ordinary worker
+  and scheduler after configuration parity and a no-active-agent-run check.
+  All four use `f86cc34473b9`, with zero restarts during QA. PostgreSQL/Redis
+  start times remain September 4; schema revision remains `eylo0012`. Prior image
+  retained as `eylo-server:typing-rollback-386ef6b78279`. No Git commit or reset.
+- Regenerated the console API from the deployed server: Plivo answer routes,
+  transcript JSON contracts and redaction enum are represented. Console lint,
+  TypeScript and production build pass; widget SDK and Preact builds pass.
+  Console build retains its existing large-chunk warning. Documentation checks
+  pass: 46 pages, 289 links, 1,322 Python modules, 7,167 docstrings, 47 diagrams.
+- Native widget conversation `01a096a9-28f7-7d90-bc7f-ced3600b2678` used the
+  published QA Core Mixed Agent. Jira/Linear search and detail, Confluence search
+  and document body, HubSpot contact search/detail, Intercom ticket/messages and
+  customer history completed with real stored SOR data and real LLM execution.
+  The console rendered 66 persisted messages, with no Processing/Awaiting Tool
+  Results labels left. Widget list pagination expanded 6 to 10 conversations;
+  reopening restored the exchange. Both surfaces fit the 1,440px viewport.
+- Zendesk remains `Reauthorization required` in a fresh console read. An explicit
+  `support_find_ticket` request for that source returns `sor_source_unavailable`.
+  The reconnect action is visible. Five other sources display Active. This
+  validates refusal, not successful Zendesk access or its vendor request shapes.
+- Agent-quality limitations: the model initially searched for the QA checkpoint
+  label, used an issue tool for Zendesk, and supplied a ticket ID to customer
+  history. Corrective prompts obtained the proper calls/results. The empty
+  wrong-entity read is not evidence of absent customer history. The sampled
+  HubSpot contact had no activity relations; activity coverage remains open.
+  The agent also invoked memory writes during earlier turns; no SOR mutation
+  tools were called. Do not describe the entire conversation as mutation-free.
+- Observed log warning: pinned Passlib 1.7.4 inspects bcrypt 4.3.0's removed
+  `__about__` attribute during login. Login succeeds; this is outside the changed
+  transcript path. No validation/serialization exceptions appeared in app logs.
+  Console's optional voice-session request returns 404 for this text-only chat.
+- Next: finish the remaining typed producer/consumer contracts by data flow
+  (shared runtime/events, SOR execution/reads, remaining provider validators,
+  module/API boundaries), then close broader native acceptance. Do not replace
+  these gates with repeated five-source read-only QA or an annotation count.
+
+### Transcript payload contracts and batch acceptance — 2026-09-12
+
+- Segment provenance now has explicit message/source/sequence/redaction fields;
+  shared voice-policy source values are owned by neutral contracts, with the
+  original pipeline import retained as a compatibility re-export. Redaction
+  states use an enum without changing the String column or existing wire values.
+- Transcript metrics, words, tool payloads and vendor extensions use finite JSON.
+  Word objects deliberately retain their historical extensible shape; there is
+  no current word-timing producer to justify inventing a stricter vendor schema.
+  Repository boundaries revalidate copied/mutated write payloads before saving.
+- 650 segment checks pass, alongside the earlier 1,252 session-metadata and 177
+  tool-projection checks. They compare fixed-revision serialization and actual
+  repository/projection branches with DB effects substituted, including malformed
+  payload refusal. Full backend lint passes; typing has zero errors and two
+  existing redundant-cast warnings.
+- Read-only native compatibility check: all 5 QA-org sessions and 31 segments
+  validate against the candidate schemas with unchanged serialized values. No
+  content is exported to logs/files. Existing rows have no word or tool payloads;
+  these rows therefore do not prove native capture of those fields.
+- Batch deployment and fresh six-SOR widget/console QA are the next gate before
+  further refactoring. The user reports Intercom, Jira, Linear, Zendesk, HubSpot
+  CRM and Confluence active; the older Zendesk reauthorization finding must be
+  rechecked, not assumed current. No migration or operator-data reset is needed.
+
+### Local voice-session metadata contract — 2026-09-12
+
+- Browser and telephony producers now build module-owned `VoiceSessionMetadata`
+  rather than naming policy keys in dictionaries. Create/update schemas serialize
+  its existing flat JSON shape, preserving omitted values, explicit nulls and
+  finite extension data. ORM storage stays JSONB; no DDL or migration changes.
+- Historical read metadata is finite JSON. Transcript storage and canonical
+  storage-decision readers use separate explicit models for their owned controls.
+  This deliberately keeps missing/invalid canonical decisions readable long
+  enough to record `STORAGE_DECISION_UNAVAILABLE`, not an unrelated schema-load
+  failure. Existing booleans are retained as persisted predicates, not replaced
+  with a new mode or a wire-format migration. New policy writes reject nonbooleans
+  instead of using truthiness/coercion.
+- Recording filing and durable upload failures merge a typed observation without
+  erasing extensions or revalidating unrelated historical policy. Nested mutable
+  extension values and unchecked model copies are revalidated at serialization;
+  refusal uses hidden-input validation rather than raw-value serializer warnings.
+- 1,252 temporary checks pass against fixed-revision schemas and functions:
+  browser policy combinations, create/update serialization, actual repository
+  JSONB parameters and ORM values, retry identity, compliance/redaction parity,
+  recording annotation merges, malformed inputs and post-call terminal outcomes.
+  The full missing/invalid/no-storage post-call branch ran with real schemas/ORM
+  objects and substituted DB collaborators. The earlier 177 transcript projection
+  checks also pass with their baseline fixtures now using the old schema types.
+- Full backend lint and typing pass (two pre-existing redundant-cast warnings).
+  Local, uncommitted and undeployed. Native carrier calls, operator stored-data
+  inspection and PostgreSQL concurrency are not proved by these checks. Remaining
+  transcript fields include words, metrics and segment extensions; broader
+  platform acceptance and the six-source native Agent QA remain open.
+
+### Local transcript tool projection and retry authority — 2026-09-12
+
+- Added transcript-owned `TranscriptToolFields` using canonical conversation
+  content models and finite JSON inputs/results. Removed the untyped tuple and
+  dynamic `_tool_attr` reader. Kept flat persisted fields, optional names,
+  first-result selection and the empty-result null envelope. Raw tool values
+  remain available for persistence but are omitted from diagnostic repr.
+- Retry validation now takes `VoiceSessionModel` and compares explicit fields;
+  it no longer discovers identity/config attributes from strings. Existing
+  active-only behavior, conflict precedence and all 21 comparison fields remain.
+- 177 temporary checks pass against fixed revision `77b0f2ba`: real message,
+  session and ORM types; every authority-field drift and lifecycle status;
+  scalar/nested/empty/multiple tool results; entire segment projection; and
+  canonical-message orchestration through the compliance and persistence path.
+  DB collaborators are substituted. Finite-JSON refusal checks cover invalid
+  objects, bytes, non-string keys and nonfinite values. This does not establish
+  native voice, live DB concurrency or additional tool-result segment support.
+- Revalidated the carrier bootstrap: 202 checks pass. Full typing found an
+  incompatible class-attribute override in the previously unverified XML
+  response declaration. Using Starlette's text-response subclass preserves raw
+  XML and generated `application/xml` responses without a type suppression.
+  Full backend lint and typing now pass (two existing redundant-cast warnings).
+- Local, uncommitted and undeployed. No operator DB, source config, migration or
+  Git history changes. Remaining transcript work includes session compliance
+  metadata, words/metrics/extensions and their producer/consumer contracts.
+  Platform-wide acceptance and six-source native Agent QA remain open.
+
+### Local carrier bootstrap and authorization repair — 2026-09-12
+
+- Closed the producer/receiver gaps found during outbound parameter typing.
+  Twilio now receives a query-free provider URL and bounded opaque token
+  fragments, each below the documented per-parameter size limit. XML serialization
+  escapes values without URL-encoding their contents. The native start parser
+  reconstructs the token and the pipeline authenticates it before assigning
+  routing identity or resolving any DB/provider authority. Original signed claim
+  bytes and the existing DB-backed one-time media claim are unchanged.
+- Extracted authenticated token decoding into the owning telephony module;
+  existing query-token verification reuses it. This is not an unsigned claims
+  decoder or a new credential store. The new Twilio route rejects query metadata,
+  invalid/expired/wrong-provider/bound-call tokens and malformed envelopes. Its
+  pre-start phase has a 30-second deadline and a 128-KiB frame-size bound; the
+  adapter rejects tokens beyond 128 parts of 480 characters rather than truncating.
+  The part-count cap is an Eylo bound, not verified native vendor capacity.
+- Registered the missing GET/POST Plivo answer endpoint. It accepts only the
+  exact signed outbound URL under the configured server domain, renders XML
+  through the same vendor serializer, and returns `Cache-Control: no-store`.
+  It does not fetch arbitrary URLs, look up credentials, or consume the claim.
+  Plivo answer URL generation now retains an explicitly configured port.
+  The XML requests 8 kHz mu-law explicitly, matching the existing carrier STT
+  and output declarations rather than relying on a vendor default.
+- 202 temporary checks pass across the real codecs, native parser, HTTP ASGI
+  endpoint and WebSocket orchestration. Covered empty/unicode/long openers,
+  fragment boundaries, invalid shapes, secret exclusion, exact signature and
+  identity preservation, tampering/expiry/provider/SID rejection, canonical
+  number projection, malformed/oversized/stalled-start refusal, disconnect and
+  cancellation cleanup. The actual lifecycle claim function was exercised with
+  ORM rows and substituted DB collaborators; repeat claims were refused before
+  config/Agent startup. This is not real PostgreSQL concurrency evidence.
+- Updated outbound function probes for the deliberately changed Twilio transport:
+  352 checks pass, including all four create adapters, outcome classification,
+  unchanged non-XML request fields and cleanup. Existing query-based parser/
+  orchestration checks pass (158); status callback checks pass (835). Full
+  application composition includes the Plivo answer endpoint. No real carrier
+  call, DB mutation, migration, provider config change or deployment occurred.
+- Local and uncommitted; the earlier bootstrap-defect record below is superseded
+  by this implementation, not by native acceptance. Runtime still needs the
+  batched image refresh and generated API refresh. Next: voice-transcript
+  contracts and the remaining platform acceptance matrix; completion remains open.
+
+### Local outbound carrier parameters — 2026-09-12
+
+- Added pipeline-owned `OutboundMediaRouting` for exact resolved UUIDs, positive
+  revisions, provider and sensitive stream data. Query and custom-parameter
+  encoders preserve existing ordering, casing, string/integer distinctions and
+  Exotel's packing before the optional opening message. Signing, durable send
+  ownership and lifecycle writes remain in their existing owners.
+- All four socket interfaces now accept `StreamParameters`, a validated scalar
+  key/value transport contract instead of arbitrary Python objects. It does not
+  interpret platform routing or import module types. Sensitive values are omitted
+  from snapshots/repr; explicit wire export copies and revalidates the map so a
+  nested mutation cannot introduce an object, boolean, bytes or nonfinite number.
+- Reproduced a Plivo SDK type mismatch against the installed and locked 4.59.3:
+  `StreamElement` rejects string `"true"` for boolean arguments. The old builder
+  caught that exception and returned unescaped XML, invalid for a multi-parameter
+  URL. It now passes native booleans to the SDK serializer and propagates
+  serialization errors instead of fabricating a fallback. This proves the builder,
+  not a working live Plivo call or answer callback.
+- 348 temporary function checks pass: fixed-revision old/new routing and adapter
+  output comparisons, query-reader and token verification, foreign identity
+  refusal, secret snapshot exclusion, invalid inputs and nested mutations,
+  actual create-method request parity and outcome comparisons for all four
+  carriers, single sends, and cancellation/client cleanup. Network effects are
+  substituted; no carrier calls, operator writes or deployment were performed.
+  Transfer lifecycle (133) and telephony tool (112) checks also pass.
+- **Open protocol defects, not fixed by typing:** Twilio's current bootstrap has
+  unescaped query separators in XML and uses a query-bearing Stream URL, prohibited
+  by its documented protocol. The shortest representative signed token measured
+  524 characters, already exceeding its custom parameter limit. Removing the
+  query alone would break the current receiver's required provider selection.
+  Repair the producer and authenticated receiver together; preserve signed
+  identity and call claiming. Plivo's create adapter also references
+  `/api/voice/plivo/answer`; source search found no handler and the actual
+  application's generated OpenAPI contains no such endpoint. The answer-path
+  integration must be repaired before claiming usable outbound Plivo calls.
+- Full backend lint, Pyrefly (zero errors; two existing redundant-cast warnings),
+  application import/OpenAPI composition and documentation verification pass
+  (46 pages, 289 links, 1,316 Python modules, 7,137 docstrings, 47 diagrams).
+- Local and uncommitted. Running services remain at the previous `386ef6b78279`
+  checkpoint. Next: close carrier bootstrap/receiver gaps, then voice-transcript
+  contracts; native acceptance and platform-wide completion remain open.
+
+### Local transfer lifecycle metadata — 2026-09-12
+
+- Added module-owned `CallTransferMetadata` for carrier observation time and
+  failure code with validated finite-JSON extensions. Lifecycle and existing
+  service writers now use this contract to merge observations; the in-DB schema
+  exposes the object and explicitly serializes its existing flat wire shape.
+  ORM JSONB type, defaults and constraints are unchanged. Omitted fields, nulls,
+  custom values, timestamp spelling and prior failure context are preserved.
+- Incoming context is validated before opening the lifecycle transaction.
+  Stored context is parsed after the scoped locked lookup and before mutation.
+  Nested mutable extensions are revalidated at serialization. Non-JSON values,
+  nonfinite numbers and invalid known field types fail rather than reaching the
+  DB serializer. This is a deliberately stricter invalid-input contract, not
+  a new transfer policy or a change to valid lifecycle state transitions.
+- Canonical call identity validation now accepts `TelephonyCallModel` and checks
+  its explicit fields instead of dynamic string-key `getattr`. Existing conflict
+  messages, conflict precedence and nullable Agent-reference behavior remain.
+  Call event extensions use the same finite-JSON boundary; vendor schemas are
+  not imported into the telephony domain.
+- 133 function checks pass, covering ORM projection, flat serialization, merge precedence,
+  invalid/mutated context, identity conflicts, transfer state transitions,
+  duplicate completion, and invalid-input refusal before transaction/repository
+  access. Pipeline probes exercise the real session/event models and verify
+  persistence precedes emission, failed persistence does not broadcast, and
+  ordinary call ending does not file a transfer completion. The public call API
+  schema matches `77b0f2ba`, and valid event extension payloads are unchanged.
+  All DB and provider
+  effects in these probes are substituted.
+- The first ORM fixture omitted DB-populated `created_at`/`updated_at`; the
+  fixture now supplies those real schema fields. No product change was made to
+  weaken validation. A separate read-only operator-DB check found zero call
+  rows, so historical stored-data compatibility and native transfer remain
+  unproven. No operator data, schema or running service was changed by this slice.
+- Full typing and backend lint pass. Telephony Agent-tool checks (112) and
+  callback/composition checks (835) also pass with the new types. This slice is
+  local, uncommitted and not deployed; running services remain at the preceding
+  `386ef6b78279` checkpoint. Next: remaining carrier socket request parameters
+  and voice-transcript contracts; the platform-wide acceptance board stays open.
+
+### Deployed callback/tool batch and native reads — 2026-09-12
+
+- Built `386ef6b782796e426418f5a8ec5cdd7a7ff657705978901e411bd53c73c0646f`
+  and ran four temporary probes against image code with networking disabled and
+  no host source mount: 835 carrier callback checks, 112 telephony tool checks,
+  141 conversation callback checks and 3,485 SOR document-read checks. Historical
+  comparison sources were supplied from fixed pre-change revisions, not moving
+  HEAD. Provider/DB effects were substituted in these probes.
+- Verified exact application environment parity, retained the previous image as
+  `eylo-server:typing-rollback-cc06bf756535`, then recreated only the API, durable
+  worker, ordinary worker and scheduler. All four run the candidate; API health
+  passed. PostgreSQL and Redis still have their September 4 start times; Alembic
+  remains `eylo0012`. No provider/source configuration, schema or operator data
+  was reset. Backend lint, Pyrefly, docs verification, console lint/type/build and
+  widget SDK/Preact builds pass; existing Pyrefly casts and console chunk-size
+  warnings remain.
+- Used the real widget's published `QA Core Mixed Agent` revision 3 in the
+  existing Eylo Development org. Conversation
+  `01a09628-be1b-7412-8f68-c9be78ab525d` exercised all six source selections.
+  Jira, Linear, HubSpot and Confluence search/detail returned records. Confluence
+  detail windows returned 1,000 characters at offsets 0 and 1,000, total 4,084,
+  with next offsets 1,000 and 2,000. Actual stored tool JSON in the console
+  confirms those window contracts and omitted raw source body.
+- Intercom search returned a support customer. The Agent initially called the
+  CRM contact tool with that identity; it returned zero items, but the Agent
+  incorrectly described this as successful detail retrieval. A corrective widget
+  message selected `support_get_customer_history`; the actual result contains
+  the support customer and one related ticket. This is a tool-selection/reporting
+  failure observed during QA, not proof of broken profile isolation: the CRM
+  query did not return the support record. Empty customer identity fields remain
+  a coverage limitation and do not establish complete vendor mapping quality.
+- The fresh console still reports Zendesk `Reauthorization required`, and its
+  Agent tool returned `sor_source_unavailable`. The user's active-source list
+  does not override that runtime evidence; credentials were not bypassed or
+  changed. The remaining five sources show Active.
+- Inspected all 37 message articles in the console: each is Completed, including
+  tool results and the background observer; no Processing/Awaiting Tool Results
+  state remains in that conversation. This is native text/read-path evidence,
+  not native carrier, interruption, recording or forced-crash evidence.
+- Bounded stdout/stderr checks since deployment found no ERROR/CRITICAL,
+  validation/type errors, deadlocks or stale-completion markers in app services.
+  The API emitted the already-known trapped bcrypt `__about__` warning during
+  successful login. The console's brief API verification failure during service
+  restart recovered; expired login required reauthentication. Missing optional
+  voice-session data returned 404 for this text conversation.
+- Next contract slice follows the telephony lifecycle: typed transfer metadata
+  and canonical call identity validation, then remaining socket kwargs and
+  voice-transcript boundaries. The fresh signature inventory remains 272
+  candidates; class-field/literal and native acceptance inventories stay open.
+
+### Local telephony Agent tool contracts — 2026-09-12
+
+- Tool results and scheduled-call payloads now use owning Pydantic contracts;
+  transfer events are constructed directly from typed pinned session identity.
+  Call-control HTTP producers and tool consumers share a typed error detail,
+  preserving rejected versus unconfirmed transfer outcomes. Tool names, required
+  arguments, existing result fields and durable-only `place_call` are unchanged.
+- Reproduced a schedule bug against `77b0f2ba`: metadata overwrote the validated
+  destination, opening message and identity fields in the stored payload while
+  the tool reported the original destination. Scheduler organization columns
+  remained authenticated; this was not demonstrated as cross-org access.
+  Explicit call inputs and authenticated context now win over colliding metadata.
+  Custom finite JSON remains supported and is revalidated at the scheduler
+  boundary. Full-match phone/keypad validation also rejects trailing newlines.
+- 112 function checks passed with actual models, tool registry and call-control
+  error producers. Covered old/new input-schema comparisons, result escaping,
+  metadata collisions, malformed/nonfinite metadata, scheduling refusals,
+  org/conversation/session isolation, ambiguous authority, transfer event
+  identity, accepted/rejected/unknown outcomes and direct-call refusal. All
+  carrier, scheduling, persistence and event effects were substituted; no real
+  calls or schedules were created. Native Agent/vendor acceptance stays open.
+- Backend lint, full-project Pyrefly (zero errors, two existing redundant-cast
+  warnings) and whitespace checks passed during implementation. This slice is
+  uncommitted and not deployed. Complete combined checks and deployment before
+  treating it as available to the running widget or Agent workers.
+
+### Local carrier status callback contracts — 2026-09-12
+
+- Vendor-owned Pydantic schemas now parse Twilio, Plivo and Vonage callback
+  identities, statuses and durations. Canonical `CallStatus` moved to the neutral
+  telephony contract and is re-exported from the existing module; values and its
+  schema are unchanged. Unknown native strings remain open observations/no-ops,
+  not guessed canonical states. Exotel retains its unsupported-authentication
+  refusal; its identity schema does not imply callback support.
+- Moved the callback lifecycle orchestrator from `modules/telephony` to
+  `pipelines/telephony/status_callbacks.py`. The module no longer imports the
+  pipeline session registry from this controller. Vendor field names and status
+  tables belong to socket schemas; existing lifecycle transactions, duplicate/
+  stale handling and post-commit event emission remain in their prior authority.
+  The local type hook follows the moved file and covers the new schemas.
+- Found and reproduced a real Plivo mapping defect: all five tested documented
+  native states (`ringing`, `in-progress`, `completed`, `failed`, `no-answer`)
+  were ignored by the old decoder. It recognized event-like names instead.
+  The outbound adapter actually registers this route as `hangup_url`, so normal
+  completion callbacks could be acknowledged without a lifecycle update.
+  Corrected the native vocabulary using current vendor docs, linked in the
+  provider reference. Undocumented old `ring`/`answer`/`hangup`/`cancel`/`machine`
+  spellings are no longer mapped. Twilio's documented `initiated` now also maps
+  to the existing canonical initiated state.
+- Raw fields still reach the existing signature verifier unchanged, including
+  URL query, extra fields and textual seconds. Full status parsing happens after
+  authentication and before reconciliation or lifecycle writes. Malformed
+  IDs/types/durations now return safe 400 responses rather than string coercion,
+  integer truncation or a 500. Zero duration remains zero; empty duration remains
+  absent. Uploaded files are refused and form resources close on exit.
+- 835 function/route checks passed using actual schemas, handler, FastAPI routes,
+  Twilio and Plivo SDK signatures, and Vonage JWT validation. Covered documented
+  statuses, identity/seconds, malformed payloads, unknown-state no-op, exact raw
+  signed fields, pinned config lookup, query-based acceptance reconciliation,
+  wrong-provider/missing-call refusal, terminal/ringing projection, duplicate/
+  stale observations, DB-error propagation and cancellation without broadcasts.
+  Full application import/OpenAPI composition and canonical enum schema parity
+  pass. DB/service/lifecycle collaborators were substituted; these checks do not
+  establish native carrier delivery, real transaction concurrency or paid calls.
+- The first composition probe incorrectly expected a `CallStatus` component in
+  HTTP OpenAPI (the current public call fields are strings). It now compares the
+  real enum schema against `77b0f2ba` separately and checks the actual route.
+  That comparison caught changed description text, restored to preserve parity.
+  Backend lint, full-project Pyrefly (zero errors, two existing redundant-cast
+  warnings), documentation verification (46 pages, 289 links, 47 diagrams) and
+  whitespace checks pass. No UI source changed; browser/provider acceptance
+  was not repeated for this undeployed slice.
+  No operator data, credentials, DB schema or running services changed. This
+  callback slice is uncommitted and not deployed; remaining telephony tools,
+  platform contract inventory and native acceptance stay open.
+
+### Local conversation status and callbacks — 2026-09-12
+
+- Replaced `Any` Redis injection with the concrete async SDK client. Lua reply
+  values stop at an `object` boundary and are validated before interpretation.
+  The owning codec accepts actual bytes/text hashes, restores existing empty-field
+  conventions and requires exact integer ownership/drain codes and four-element
+  claim replies. Unknown codes, incomplete claims, noninteger flags and malformed
+  hashes fail validation rather than producing a truthy owner success. No Lua
+  scripts, Redis keys, durations or valid-wire lifecycle decisions changed.
+- Message metadata producers now return `MessageMeta`, with typed content passed
+  into `MessageCreate`. Removed the unused generic metadata-to-dictionary bridge
+  from pause/resume selection. The existing typed metadata envelope retains producer
+  extensions. Runner entrypoints explicitly return `RunResult`.
+- 286 decoder/native-Redis checks passed: bytes/text codecs, missing/empty fields,
+  invalid replies, first claim, competing wake, foreign-owner update/release
+  refusal, draining, stale takeover with abandoned identities, a new client
+  reading the prior claim, lease expiry and 32 concurrent claimers producing one
+  owner. Same conversation IDs remained isolated across generated org IDs. Only
+  five disposable UUID-scoped keys were written; exact-key cleanup verified zero
+  remaining keys. All probe Redis connections closed. This is not a process-crash
+  test or proof of provider cancellation.
+- 141 callback contract checks passed using real models: model/tool/terminal
+  provenance and resulting `MessageCreate` JSON match the prior implementation;
+  identities, pause filtering and latest matching resume selection are preserved.
+  These are function checks, not a newly deployed widget/LLM run.
+- Backend lint and Pyrefly pass (zero errors, two existing redundant-cast
+  warnings). The signature inventory is 285 candidates. The checkout advanced
+  during QA to `77b0f2ba`, which includes this code and the prior document slice;
+  no commit was issued by this QA pass. Latest documentation remains uncommitted.
+  A fresh Docker inspection confirmed all four services still run `cc06bf756535`.
+  No operator DB, source credentials or running services changed. Next: remaining
+  telephony status/tool contracts; deployment and native acceptance remain open.
 
 ### Local SOR document read contracts — 2026-09-12
 

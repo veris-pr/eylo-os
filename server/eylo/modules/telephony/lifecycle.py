@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from eylo.common.contracts.json_values import JsonObject
 from eylo.common.contracts.session_timeline import SessionTimelineEvent
 from eylo.common.database import start_transaction
 from eylo.common.outbound import OutboundAttemptState, require_failure_code
@@ -36,6 +36,7 @@ from eylo.modules.telephony.schemas import (
     TelephonyCallStatusUpdateResult,
 )
 from eylo.modules.telephony.services import TelephonyCallService
+from eylo.modules.telephony.transfer_metadata import CallTransferMetadata
 from eylo.modules.user_sessions.events import file_user_session_fact
 
 logger = logging.getLogger(__name__)
@@ -670,9 +671,10 @@ async def record_call_transfer_requested(
     call_sid: str,
     transfer_to: str,
     reason: str | None,
-    metadata: dict[str, Any],
+    metadata: JsonObject,
 ) -> TelephonyCallInDb:
     """Commit transfer intent before its local UI delta."""
+    incoming = CallTransferMetadata.model_validate(metadata)
     async with start_transaction() as session:
         call = await TelephonyCallRepository(session).get_by_call_sid_for_update(
             call_sid,
@@ -689,13 +691,13 @@ async def record_call_transfer_requested(
             raise CallTransferNotSendable(
                 f"Transfer cannot begin from {call.transfer_status}."
             )
+        merged = CallTransferMetadata.model_validate(
+            call.transfer_metadata or {}
+        ).merged(incoming)
         call.transfer_status = CallTransferStatus.TRANSFERRING
         call.transfer_to = transfer_to
         call.transfer_reason = reason
-        call.transfer_metadata = {
-            **(call.transfer_metadata or {}),
-            **metadata,
-        }
+        call.transfer_metadata = merged.as_payload()
         await session.flush()
         return TelephonyCallService(session).orm_to_schema(call)
 
@@ -734,12 +736,13 @@ async def record_call_transfer_outcome(
             raise CallTransferNotSendable(
                 f"Transfer outcome cannot apply from {call.transfer_status}."
             )
+        metadata = CallTransferMetadata.model_validate(
+            call.transfer_metadata or {}
+        ).with_outcome(
+            observed_at=datetime.now(timezone.utc), failure_code=failure_code
+        )
         call.transfer_status = outcome
-        metadata = dict(call.transfer_metadata or {})
-        metadata["carrier_outcome_at"] = datetime.now(timezone.utc).isoformat()
-        if failure_code is not None:
-            metadata["failure_code"] = failure_code
-        call.transfer_metadata = metadata
+        call.transfer_metadata = metadata.as_payload()
         await session.flush()
         return TelephonyCallService(session).orm_to_schema(call)
 
@@ -749,9 +752,10 @@ async def record_call_transfer_completed(
     organization_id: UUID,
     call_sid: str,
     transfer_to: str | None,
-    metadata: dict[str, Any],
+    metadata: JsonObject,
 ) -> TelephonyCallInDb:
     """Commit transfer completion before its local UI delta."""
+    incoming = CallTransferMetadata.model_validate(metadata)
     async with start_transaction() as session:
         call = await TelephonyCallRepository(session).get_by_call_sid_for_update(
             call_sid,
@@ -765,13 +769,13 @@ async def record_call_transfer_completed(
             raise CallTransferNotSendable(
                 f"Transfer completion cannot apply from {call.transfer_status}."
             )
+        merged = CallTransferMetadata.model_validate(
+            call.transfer_metadata or {}
+        ).merged(incoming)
         call.transfer_status = CallTransferStatus.TRANSFERRED
         call.transfer_to = transfer_to or call.transfer_to
         call.transferred_at = datetime.now(timezone.utc)
-        call.transfer_metadata = {
-            **(call.transfer_metadata or {}),
-            **metadata,
-        }
+        call.transfer_metadata = merged.as_payload()
         await session.flush()
         result = TelephonyCallService(session).orm_to_schema(call)
         if result.user_session_id is not None:
@@ -843,7 +847,7 @@ def _terminal_envelope(call: TelephonyCallInDb) -> DurableEventEnvelope:
 
 def _validate_existing_call(
     *,
-    existing: Any,
+    existing: TelephonyCallModel,
     provider: str,
     provider_config_id: UUID,
     provider_config_revision: int,
@@ -851,17 +855,18 @@ def _validate_existing_call(
     agent_id: UUID | None,
     agent_revision: int | None,
 ) -> None:
-    expected = {
-        "provider": provider,
-        "provider_config_id": provider_config_id,
-        "provider_config_revision": provider_config_revision,
-        "direction": direction,
-    }
-    for field, value in expected.items():
-        if getattr(existing, field) != value:
-            raise CallLifecycleConflict(
-                f"Call identity conflicts on canonical {field}."
-            )
+    if existing.provider != provider:
+        raise CallLifecycleConflict("Call identity conflicts on canonical provider.")
+    if existing.provider_config_id != provider_config_id:
+        raise CallLifecycleConflict(
+            "Call identity conflicts on canonical provider_config_id."
+        )
+    if existing.provider_config_revision != provider_config_revision:
+        raise CallLifecycleConflict(
+            "Call identity conflicts on canonical provider_config_revision."
+        )
+    if existing.direction != direction:
+        raise CallLifecycleConflict("Call identity conflicts on canonical direction.")
     if agent_id is not None and existing.agent_id not in {None, agent_id}:
         raise CallLifecycleConflict("Call identity conflicts on canonical agent_id.")
     if agent_revision is not None and existing.agent_revision not in {

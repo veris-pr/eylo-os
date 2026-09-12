@@ -8,6 +8,7 @@ from uuid import UUID
 import arrow
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from eylo.common.contracts.json_values import JsonObject
 from eylo.common.outbound import OutboundAttemptState
 from eylo.common.services import EyloBaseService
 from eylo.modules.telephony.constants import CallTransferStatus
@@ -26,6 +27,7 @@ from eylo.modules.telephony.schemas import (
     TelephonyCallInDb,
     TelephonyCallStatusUpdateResult,
 )
+from eylo.modules.telephony.transfer_metadata import CallTransferMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -510,20 +512,23 @@ class TelephonyCallService(EyloBaseService[TelephonyCallInDb, TelephonyCallModel
         call_sid: str,
         transfer_to: str,
         reason: Optional[str] = None,
-        metadata: Optional[dict] = None,
+        metadata: JsonObject | None = None,
     ) -> Optional[TelephonyCallInDb]:
         """Persist transfer request details for an active call."""
+        incoming = CallTransferMetadata.model_validate(
+            metadata if metadata is not None else {}
+        )
         entity = await self.repository.get_by_call_sid(call_sid)
         if not entity:
             logger.warning("Call not found for transfer update: call_sid=%s", call_sid)
             return None
+        merged = CallTransferMetadata.model_validate(
+            entity.transfer_metadata or {}
+        ).merged(incoming)
         entity.transfer_status = CallTransferStatus.TRANSFERRING
         entity.transfer_to = transfer_to
         entity.transfer_reason = reason
-        entity.transfer_metadata = {
-            **(entity.transfer_metadata or {}),
-            **(metadata or {}),
-        }
+        entity.transfer_metadata = merged.as_payload()
         updated = await self.repository.partial_update_(entity)
         return self.orm_to_schema(updated)
 
@@ -531,22 +536,25 @@ class TelephonyCallService(EyloBaseService[TelephonyCallInDb, TelephonyCallModel
         self,
         call_sid: str,
         transfer_to: Optional[str] = None,
-        metadata: Optional[dict] = None,
+        metadata: JsonObject | None = None,
     ) -> Optional[TelephonyCallInDb]:
         """Persist transfer completion details for a call."""
+        incoming = CallTransferMetadata.model_validate(
+            metadata if metadata is not None else {}
+        )
         entity = await self.repository.get_by_call_sid(call_sid)
         if not entity:
             logger.warning(
                 "Call not found for transfer completion: call_sid=%s", call_sid
             )
             return None
+        merged = CallTransferMetadata.model_validate(
+            entity.transfer_metadata or {}
+        ).merged(incoming)
         entity.transfer_status = CallTransferStatus.TRANSFERRED
         entity.transfer_to = transfer_to or entity.transfer_to
         entity.transferred_at = arrow.utcnow().datetime
-        entity.transfer_metadata = {
-            **(entity.transfer_metadata or {}),
-            **(metadata or {}),
-        }
+        entity.transfer_metadata = merged.as_payload()
         updated = await self.repository.partial_update_(entity)
         return self.orm_to_schema(updated)
 

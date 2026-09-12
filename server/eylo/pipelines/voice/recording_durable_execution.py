@@ -37,6 +37,7 @@ from eylo.modules.provider_configs.errors import NotConfiguredError
 from eylo.modules.user_sessions.events import file_user_session_fact
 from eylo.modules.voice.recording.model import VoiceRecordingModel
 from eylo.modules.voice_transcripts.models import VoiceSessionModel
+from eylo.modules.voice_transcripts.session_metadata import VoiceSessionMetadata
 from eylo.pipelines.storage.runtime import (
     StorageRuntime,
     resolve_storage_runtime_pinned,
@@ -550,10 +551,9 @@ async def _handle_failure(
                 .with_for_update()
             )
             if voice_session is not None:
-                voice_session.meta = {
-                    **(voice_session.meta or {}),
-                    "recording_upload_error": summary[:_UPLOAD_ERROR_MAX_LENGTH],
-                }
+                voice_session.meta = VoiceSessionMetadata.merge_upload_error(
+                    voice_session.meta, summary[:_UPLOAD_ERROR_MAX_LENGTH]
+                )
                 if voice_session.user_session_id is not None:
                     await file_user_session_fact(
                         session,

@@ -3,7 +3,9 @@
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from eylo.sockets.telephony.twilio.bootstrap import TokenFragments
 
 
 class Event(StrEnum):
@@ -20,6 +22,16 @@ class _WireValue(BaseModel):
 
 
 class RoutingParameters(_WireValue):
+    fragmented_token: str | None = Field(default=None, repr=False, exclude=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _decode_fragments(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        fragments = TokenFragments.from_wire(value)
+        return {**value, "fragmented_token": fragments.token() if fragments else None}
+
     organization_id: str | None = Field(default=None, alias="OrgId")
     agent_id: str | None = Field(default=None, alias="AgentId")
     call_sid: str = Field(default="", alias="CallSid")
@@ -39,7 +51,9 @@ class RoutingParameters(_WireValue):
     @property
     def requires_stream_token(self) -> bool:
         # Presence, including null/empty routing, must not bypass token verification.
-        return bool(self.model_fields_set & ROUTING_FIELDS)
+        return self.fragmented_token is not None or bool(
+            self.model_fields_set & ROUTING_FIELDS
+        )
 
 
 ROUTING_FIELDS = frozenset(

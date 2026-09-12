@@ -55,6 +55,7 @@ from eylo.modules.voice_transcripts.constants import VoiceRuntimeMode
 from eylo.modules.voice_transcripts.lifecycle import record_voice_session_ended
 from eylo.modules.voice_transcripts.schemas.indb import VoiceSessionCreate
 from eylo.modules.voice_transcripts.services.indb import VoiceTranscriptService
+from eylo.modules.voice_transcripts.session_metadata import VoiceSessionMetadata
 from eylo.pipelines.session_timeline import try_file_runtime_fact
 from eylo.pipelines.voice import consent
 from eylo.pipelines.voice.audio_transport import BROWSER_OUTPUT_AUDIO_FORMAT
@@ -102,6 +103,7 @@ from eylo.pipelines.websocket.session_state import (
     resolve_websocket_state,
 )
 from eylo.pipelines.websocket.singleton import S_ws_manager
+from eylo.pipelines.websocket.voice_lifecycle import VoiceVendorLifecyclePayload
 from eylo.sockets.stt.schemas import STTConfig
 from eylo.sockets.tts.schemas import TTSConfig, normalize_tts_config
 
@@ -245,13 +247,13 @@ async def _send_realtime_ready_signals(
     ctx: SessionContext,
     vendor: str,
 ) -> None:
-    payload = {
-        "message": "Realtime vendor handles STT+TTS",
-        "vendor": vendor,
-        "runtime_mode": VoiceRuntimeMode.BROWSER_REALTIME.value,
-        "timestamp": arrow.utcnow().timestamp(),
-    }
     try:
+        payload = VoiceVendorLifecyclePayload(
+            message="Realtime vendor handles STT+TTS",
+            vendor=vendor,
+            runtime_mode=VoiceRuntimeMode.BROWSER_REALTIME,
+            timestamp=arrow.utcnow().timestamp(),
+        ).to_wire()
         await S_ws_manager.send_response(
             {"kind": WsEventAction.STT_READY, "data": payload},
             ctx.organization_id,
@@ -275,15 +277,18 @@ def _compliance_plan(voice_config: VoiceConfig | None) -> CompliancePlan:
     return voice_config.compliance if voice_config else CompliancePlan()
 
 
-def _compliance_meta(voice_config: VoiceConfig | None) -> dict[str, bool]:
+def _session_metadata(
+    voice_config: VoiceConfig | None, *, canonical_storage_requested: bool
+) -> VoiceSessionMetadata:
     """Compliance decisions post-call projection needs, as content-free meta."""
     plan = _compliance_plan(voice_config)
-    return {
-        "store_raw_vendor_payloads": plan.store_raw_vendor_payloads,
-        "allow_sensitive_metadata": plan.allow_sensitive_metadata,
-        "redact_pii_in_transcripts": plan.redact_pii_in_transcripts,
-        "recording_consent_required": plan.recording_consent_required,
-    }
+    return VoiceSessionMetadata(
+        store_raw_vendor_payloads=plan.store_raw_vendor_payloads,
+        allow_sensitive_metadata=plan.allow_sensitive_metadata,
+        redact_pii_in_transcripts=plan.redact_pii_in_transcripts,
+        recording_consent_required=plan.recording_consent_required,
+        canonical_storage_requested=canonical_storage_requested,
+    )
 
 
 def _artifact_plan(voice_config: VoiceConfig | None) -> ArtifactPlan:
@@ -371,10 +376,10 @@ async def _start_browser_voice_session(
                 recording_enabled=session_state.audio_recorder is not None,
                 audio_format="wav",
                 # Carried on content-free session state for post-call processing.
-                meta={
-                    **_compliance_meta(voice_config),
-                    "canonical_storage_requested": canonical_storage_requested,
-                },
+                meta=_session_metadata(
+                    voice_config,
+                    canonical_storage_requested=canonical_storage_requested,
+                ),
             )
         )
     session_state.voice_session_id = voice_session.id
@@ -1584,7 +1589,7 @@ async def handle_audio_config(
 
         async with start_transaction(ro=True):
             participants = await ConversationParticipantService().list_by_conversation(
-                conversation_id=conversation_id
+                conversation_id=conversation_uuid
             )
 
         if not participants:

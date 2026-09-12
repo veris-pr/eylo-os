@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
 from uuid import UUID as PyUUID
 
 from sqlalchemy import (
@@ -22,10 +21,12 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from eylo.common.contracts.json_values import JsonObject
 from eylo.common.models import EyloBaseModel, EyloOrganizationModel
 from eylo.modules.voice_transcripts.constants import (
     VoiceAudioTrackKind,
     VoiceCanonicalState,
+    VoiceRedactionState,
     VoiceRuntimeMode,
     VoiceSegmentRole,
     VoiceSegmentSource,
@@ -236,8 +237,8 @@ class VoiceSessionModel(EyloOrganizationModel):
     dtmf_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     transfer_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
-    metrics: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
-    meta: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    metrics: Mapped[JsonObject | None] = mapped_column(JSONB, nullable=True)
+    meta: Mapped[JsonObject | None] = mapped_column(JSONB, nullable=True)
 
     segments: Mapped[list["VoiceSegmentModel"]] = relationship(
         back_populates="voice_session", cascade="all, delete-orphan"
@@ -319,7 +320,7 @@ class VoiceSegmentModel(EyloBaseModel):
     is_partial: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     language: Mapped[str | None] = mapped_column(String(32), nullable=True)
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
-    words: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
+    words: Mapped[list[JsonObject] | None] = mapped_column(JSONB, nullable=True)
 
     started_at_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     ended_at_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -334,18 +335,18 @@ class VoiceSegmentModel(EyloBaseModel):
 
     tool_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     tool_call_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    tool_input: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
-    tool_output: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    tool_input: Mapped[JsonObject | None] = mapped_column(JSONB, nullable=True)
+    tool_output: Mapped[JsonObject | None] = mapped_column(JSONB, nullable=True)
 
     dtmf_digits: Mapped[str | None] = mapped_column(String(64), nullable=True)
     transfer_to: Mapped[str | None] = mapped_column(String(255), nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    redaction_state: Mapped[str] = mapped_column(
-        String(32), nullable=False, default="none"
+    redaction_state: Mapped[VoiceRedactionState] = mapped_column(
+        String(32), nullable=False, default=VoiceRedactionState.NONE
     )
-    vendor_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
-    meta: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    vendor_metadata: Mapped[JsonObject | None] = mapped_column(JSONB, nullable=True)
+    meta: Mapped[JsonObject | None] = mapped_column(JSONB, nullable=True)
 
     voice_session: Mapped[VoiceSessionModel] = relationship(back_populates="segments")

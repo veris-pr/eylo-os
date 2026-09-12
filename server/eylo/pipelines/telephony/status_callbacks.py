@@ -1,12 +1,7 @@
-"""Webhook controller for telephony provider status callbacks.
-
-Normalizes provider-specific status formats into unified call events
-and updates the call persistence layer.
-"""
+"""Apply normalized carrier observations through the committed call lifecycle."""
 
 import asyncio
 import logging
-from typing import Any, Dict, Optional
 
 import arrow
 
@@ -17,11 +12,12 @@ from eylo.events.schema.py_events.call import (
     CallEndedEvent,
     CallRingingEvent,
 )
-from eylo.modules.telephony.lifecycle import record_call_status
+from eylo.modules.telephony.lifecycle import CallLifecycleConflict, record_call_status
 from eylo.modules.telephony.provider_config_domain import TelephonyProvider
 from eylo.modules.telephony.schemas import CallStatus
 from eylo.modules.telephony.services import TelephonyCallService
 from eylo.pipelines.telephony.sessions import S_CALLS
+from eylo.sockets.telephony.status_contracts import StatusCallback
 
 logger = logging.getLogger(__name__)
 
@@ -31,49 +27,6 @@ CALL_LOOKUP_RETRY_SECONDS = 0.3
 PROVIDER_CALLBACK_SOURCE = "provider_callback"
 
 
-# Twilio CallStatus -> our CallStatus mapping
-TWILIO_STATUS_MAP: Dict[str, CallStatus] = {
-    "queued": CallStatus.INITIATED,
-    "ringing": CallStatus.RINGING,
-    "in-progress": CallStatus.IN_PROGRESS,
-    "completed": CallStatus.COMPLETED,
-    "busy": CallStatus.BUSY,
-    "no-answer": CallStatus.NO_ANSWER,
-    "failed": CallStatus.FAILED,
-    "canceled": CallStatus.CANCELED,
-}
-
-PLIVO_STATUS_MAP: Dict[str, CallStatus] = {
-    "ring": CallStatus.RINGING,
-    "answer": CallStatus.IN_PROGRESS,
-    "hangup": CallStatus.COMPLETED,
-    "busy": CallStatus.BUSY,
-    "timeout": CallStatus.NO_ANSWER,
-    "cancel": CallStatus.CANCELED,
-    "machine": CallStatus.COMPLETED,
-}
-
-VONAGE_STATUS_MAP: Dict[str, CallStatus] = {
-    "started": CallStatus.INITIATED,
-    "ringing": CallStatus.RINGING,
-    "answered": CallStatus.IN_PROGRESS,
-    "completed": CallStatus.COMPLETED,
-    "busy": CallStatus.BUSY,
-    "timeout": CallStatus.NO_ANSWER,
-    "failed": CallStatus.FAILED,
-    "rejected": CallStatus.FAILED,
-    "cancelled": CallStatus.CANCELED,
-    "unanswered": CallStatus.NO_ANSWER,
-}
-
-EXOTEL_STATUS_MAP: Dict[str, CallStatus] = {
-    "in-progress": CallStatus.IN_PROGRESS,
-    "completed": CallStatus.COMPLETED,
-    "failed": CallStatus.FAILED,
-    "busy": CallStatus.BUSY,
-    "no-answer": CallStatus.NO_ANSWER,
-}
-
 TERMINAL_CALL_STATUSES = (
     CallStatus.COMPLETED,
     CallStatus.BUSY,
@@ -82,7 +35,7 @@ TERMINAL_CALL_STATUSES = (
     CallStatus.CANCELED,
 )
 
-STATUS_TO_ENDED_REASON: Dict[CallStatus, CallEndedReason] = {
+STATUS_TO_ENDED_REASON: dict[CallStatus, CallEndedReason] = {
     CallStatus.BUSY: CallEndedReason.CUSTOMER_BUSY,
     CallStatus.NO_ANSWER: CallEndedReason.CUSTOMER_DID_NOT_ANSWER,
     CallStatus.FAILED: CallEndedReason.ERROR_PROVIDER_DISCONNECTED,
@@ -90,40 +43,29 @@ STATUS_TO_ENDED_REASON: Dict[CallStatus, CallEndedReason] = {
 }
 
 
-class WebhookController:
-    """Handles provider status webhooks and updates call records."""
+class StatusCallbackHandler:
+    """Apply authenticated carrier observations and emit committed lifecycle events."""
 
-    async def _handle_provider_status(
+    async def handle(
         self,
-        payload: Dict[str, Any],
+        callback: StatusCallback,
         provider: TelephonyProvider,
-        call_sid_field: str,
-        status_field: str,
-        status_map: Dict[str, CallStatus],
-        duration_field: str,
     ) -> None:
-        """Normalize a provider callback payload and update the call record."""
-        call_sid = str(payload.get(call_sid_field, ""))
-        raw_status = str(payload.get(status_field, ""))
-        status = status_map.get(raw_status)
-        duration = payload.get(duration_field)
-
-        if not call_sid or not status:
+        """Unknown future provider statuses are acknowledged without lifecycle writes."""
+        if callback.status is None:
             logger.warning(
-                "[%s] Invalid webhook: sid=%s status=%s",
+                "[%s] Ignored unrecognized callback status for call %s",
                 provider,
-                call_sid,
-                raw_status,
+                callback.call_sid,
             )
             return
 
-        logger.info("[%s] Status callback: %s → %s", provider, call_sid, raw_status)
         await self._update_call_status(
-            call_sid=call_sid,
-            status=status,
+            call_sid=callback.call_sid,
+            status=callback.status,
             provider=provider,
-            provider_status=raw_status,
-            duration_seconds=int(duration) if duration else None,
+            provider_status=callback.provider_status,
+            duration_seconds=callback.duration_seconds,
         )
 
     async def _update_call_status(
@@ -131,9 +73,9 @@ class WebhookController:
         call_sid: str,
         status: CallStatus,
         provider: TelephonyProvider,
-        provider_status: Optional[str] = None,
+        provider_status: str | None = None,
         ended_reason: CallEndedReason | None = None,
-        duration_seconds: Optional[int] = None,
+        duration_seconds: int | None = None,
     ) -> None:
         """Update call record from webhook status.
 
@@ -167,7 +109,9 @@ class WebhookController:
             )
             return
         if call.provider != provider:
-            raise ValueError("Call provider does not match callback provider.")
+            raise CallLifecycleConflict(
+                "Call provider does not match callback provider."
+            )
 
         is_terminal = status in TERMINAL_CALL_STATUSES
         terminal_reason: CallEndedReason | None = None
@@ -274,59 +218,3 @@ class WebhookController:
                     else {},
                 ),
             )
-
-    async def handle_twilio_status(self, form: Dict[str, Any]) -> None:
-        """Handle Twilio status callback.
-
-        Twilio sends: CallSid, CallStatus, CallDuration (on completed)
-        """
-        await self._handle_provider_status(
-            payload=form,
-            provider=TelephonyProvider.TWILIO,
-            call_sid_field="CallSid",
-            status_field="CallStatus",
-            status_map=TWILIO_STATUS_MAP,
-            duration_field="CallDuration",
-        )
-
-    async def handle_plivo_status(self, form: Dict[str, Any]) -> None:
-        """Handle Plivo status callback.
-
-        Plivo sends: CallUUID, CallStatus, Duration (on hangup)
-        """
-        await self._handle_provider_status(
-            payload=form,
-            provider=TelephonyProvider.PLIVO,
-            call_sid_field="CallUUID",
-            status_field="CallStatus",
-            status_map=PLIVO_STATUS_MAP,
-            duration_field="Duration",
-        )
-
-    async def handle_vonage_status(self, body: Dict[str, Any]) -> None:
-        """Handle Vonage event callback.
-
-        Vonage sends JSON: uuid, status, duration (on completed)
-        """
-        await self._handle_provider_status(
-            payload=body,
-            provider=TelephonyProvider.VONAGE,
-            call_sid_field="uuid",
-            status_field="status",
-            status_map=VONAGE_STATUS_MAP,
-            duration_field="duration",
-        )
-
-    async def handle_exotel_status(self, form: Dict[str, Any]) -> None:
-        """Handle Exotel status callback.
-
-        Exotel sends: CallSid, Status, Duration
-        """
-        await self._handle_provider_status(
-            payload=form,
-            provider=TelephonyProvider.EXOTEL,
-            call_sid_field="CallSid",
-            status_field="Status",
-            status_map=EXOTEL_STATUS_MAP,
-            duration_field="Duration",
-        )

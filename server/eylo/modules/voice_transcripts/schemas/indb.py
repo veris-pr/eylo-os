@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Self
+from typing import Self
 from uuid import UUID
 
-from pydantic import ConfigDict, Field, model_validator
+from pydantic import ConfigDict, Field, field_serializer, model_validator
 
+from eylo.common.contracts.json_values import JsonObject
 from eylo.common.schemas import (
     EyloBaseModelSchema,
     EyloBaseOrganizationModelSchema,
@@ -17,6 +18,7 @@ from eylo.modules.voice_transcripts.constants import (
     VoiceAudioTrackKind,
     VoiceCanonicalFailureCode,
     VoiceCanonicalState,
+    VoiceRedactionState,
     VoiceRuntimeMode,
     VoiceSegmentRole,
     VoiceSegmentSource,
@@ -24,6 +26,8 @@ from eylo.modules.voice_transcripts.constants import (
     VoiceSessionStatus,
     VoiceSpeechOutcome,
 )
+from eylo.modules.voice_transcripts.segment_metadata import VoiceSegmentMetadata
+from eylo.modules.voice_transcripts.session_metadata import VoiceSessionMetadata
 
 
 class VoiceSessionCreate(EyloBaseSchema):
@@ -51,7 +55,11 @@ class VoiceSessionCreate(EyloBaseSchema):
     recording_enabled: bool = True
     recording_consent: str | None = None
     audio_format: str | None = None
-    meta: dict[str, Any] | None = None
+    meta: VoiceSessionMetadata | None = None
+
+    @field_serializer("meta")
+    def serialize_meta(self, value: VoiceSessionMetadata | None) -> JsonObject | None:
+        return value.as_payload() if value is not None else None
 
     @model_validator(mode="after")
     def exact_agent_ref(self) -> Self:
@@ -88,8 +96,12 @@ class VoiceSessionUpdate(EyloBaseSchema):
     interruption_count: int | None = None
     dtmf_count: int | None = None
     transfer_count: int | None = None
-    metrics: dict[str, Any] | None = None
-    meta: dict[str, Any] | None = None
+    metrics: JsonObject | None = None
+    meta: VoiceSessionMetadata | None = None
+
+    @field_serializer("meta")
+    def serialize_meta(self, value: VoiceSessionMetadata | None) -> JsonObject | None:
+        return value.as_payload() if value is not None else None
 
 
 class VoiceSegmentCreate(EyloBaseSchema):
@@ -109,7 +121,7 @@ class VoiceSegmentCreate(EyloBaseSchema):
     is_partial: bool = False
     language: str | None = None
     confidence: float | None = Field(default=None, ge=0, le=1)
-    words: list[dict[str, Any]] | None = None
+    words: list[JsonObject] | None = None
     started_at_ms: int | None = Field(default=None, ge=0)
     ended_at_ms: int | None = Field(default=None, ge=0)
     duration_ms: int | None = Field(default=None, ge=0)
@@ -120,15 +132,19 @@ class VoiceSegmentCreate(EyloBaseSchema):
     audio_end_byte: int | None = Field(default=None, ge=0)
     tool_name: str | None = None
     tool_call_id: str | None = None
-    tool_input: dict[str, Any] | None = None
-    tool_output: dict[str, Any] | None = None
+    tool_input: JsonObject | None = None
+    tool_output: JsonObject | None = None
     dtmf_digits: str | None = None
     transfer_to: str | None = None
     error_code: str | None = None
     error_message: str | None = None
-    redaction_state: str = "none"
-    vendor_metadata: dict[str, Any] | None = None
-    meta: dict[str, Any] | None = None
+    redaction_state: VoiceRedactionState = VoiceRedactionState.NONE
+    vendor_metadata: JsonObject | None = None
+    meta: VoiceSegmentMetadata | None = None
+
+    @field_serializer("meta")
+    def serialize_meta(self, value: VoiceSegmentMetadata | None) -> JsonObject | None:
+        return value.as_payload() if value is not None else None
 
 
 class VoiceSessionInDb(EyloBaseOrganizationModelSchema):
@@ -181,8 +197,10 @@ class VoiceSessionInDb(EyloBaseOrganizationModelSchema):
     interruption_count: int = 0
     dtmf_count: int = 0
     transfer_count: int = 0
-    metrics: dict[str, Any] | None = None
-    meta: dict[str, Any] | None = None
+    metrics: JsonObject | None = None
+    # Validate historical storage decisions at use so failures retain their
+    # canonical outcome instead of failing to load unrelated session fields.
+    meta: JsonObject | None = None
 
 
 class VoiceSegmentInDb(EyloBaseModelSchema):
@@ -204,7 +222,7 @@ class VoiceSegmentInDb(EyloBaseModelSchema):
     is_partial: bool = False
     language: str | None = None
     confidence: float | None = None
-    words: list[dict[str, Any]] | None = None
+    words: list[JsonObject] | None = None
     started_at_ms: int | None = None
     ended_at_ms: int | None = None
     duration_ms: int | None = None
@@ -215,12 +233,12 @@ class VoiceSegmentInDb(EyloBaseModelSchema):
     audio_end_byte: int | None = None
     tool_name: str | None = None
     tool_call_id: str | None = None
-    tool_input: dict[str, Any] | None = None
-    tool_output: dict[str, Any] | None = None
+    tool_input: JsonObject | None = None
+    tool_output: JsonObject | None = None
     dtmf_digits: str | None = None
     transfer_to: str | None = None
     error_code: str | None = None
     error_message: str | None = None
-    redaction_state: str = "none"
-    vendor_metadata: dict[str, Any] | None = None
-    meta: dict[str, Any] | None = None
+    redaction_state: VoiceRedactionState = VoiceRedactionState.NONE
+    vendor_metadata: JsonObject | None = None
+    meta: JsonObject | None = None

@@ -170,7 +170,9 @@ class VoiceSessionRepository(BaseORMRepository[VoiceSessionModel]):
     async def update(
         self, session_id: UUID, data: VoiceSessionUpdate
     ) -> VoiceSessionModel | None:
-        values = data.model_dump(exclude_unset=True)
+        values = VoiceSessionUpdate.model_validate(
+            data.model_dump(exclude_unset=True, warnings=False)
+        ).model_dump(exclude_unset=True)
         if not values:
             return await self.get_(session_id)
         result = await self.db_session.execute(
@@ -190,7 +192,9 @@ class VoiceSegmentRepository(BaseORMRepository[VoiceSegmentModel]):
         return VoiceSegmentModel
 
     async def create(self, data: VoiceSegmentCreate) -> VoiceSegmentModel:
-        payload = data.model_dump(exclude_none=True)
+        payload = VoiceSegmentCreate.model_validate(
+            data.model_dump(exclude_none=True, warnings=False)
+        ).model_dump(exclude_none=True)
         if payload.get("sequence") is None:
             await self._lock_session_sequence(data.voice_session_id)
             payload["sequence"] = await self.next_sequence(data.voice_session_id)

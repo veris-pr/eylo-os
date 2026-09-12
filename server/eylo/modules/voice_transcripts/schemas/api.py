@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
 from uuid import UUID
 
 from pydantic import ConfigDict, Field
 
+from eylo.common.contracts.json_values import JsonObject
 from eylo.common.schemas import EyloBaseApiSchema
 from eylo.modules.voice_transcripts.constants import (
     VoiceAudioTrackKind,
     VoiceCanonicalFailureCode,
     VoiceCanonicalState,
+    VoiceRedactionState,
     VoiceRuntimeMode,
     VoiceSegmentRole,
     VoiceSegmentSource,
@@ -44,17 +45,17 @@ class VoiceSegmentResponse(EyloBaseApiSchema):
     is_partial: bool = False
     language: str | None = None
     confidence: float | None = None
-    words: list[dict[str, Any]] | None = None
+    words: list[JsonObject] | None = None
     started_at_ms: int | None = None
     ended_at_ms: int | None = None
     duration_ms: int | None = None
     audio_track: VoiceAudioTrackKind | None = None
     tool_name: str | None = None
     tool_call_id: str | None = None
-    tool_input: dict[str, Any] | None = None
-    tool_output: dict[str, Any] | None = None
+    tool_input: JsonObject | None = None
+    tool_output: JsonObject | None = None
     dtmf_digits: str | None = None
-    redaction_state: str
+    redaction_state: VoiceRedactionState
     source_created_at: datetime | None = None
     created_at: datetime
 
@@ -117,8 +118,8 @@ class VoiceSessionDetail(VoiceSessionSummary):
     segment_page: int = 1
     segment_limit: int = 100
     segments_has_more: bool = False
-    metrics: dict[str, Any] | None = None
-    meta: dict[str, Any] | None = None
+    metrics: JsonObject | None = None
+    meta: JsonObject | None = None
 
 
 class VoiceSessionFilter(EyloBaseApiSchema):

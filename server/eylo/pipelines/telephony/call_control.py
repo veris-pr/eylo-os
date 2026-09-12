@@ -21,7 +21,6 @@ from eylo.common.outbound import (
     OutboundSendOutcome,
     fingerprint_outbound_input,
 )
-from eylo.common.utils.dict import to_json_str
 from eylo.modules.telephony.constants import (
     OUTBOUND_CALL_OPERATION,
     CallControlFailureCode,
@@ -39,6 +38,7 @@ from eylo.modules.telephony.provider_config_domain import (
 )
 from eylo.modules.telephony.schemas import (
     CallControlAcceptedResult,
+    CallControlErrorDetail,
     OutboundCallOrigin,
     OutboundCallResult,
 )
@@ -51,6 +51,7 @@ from eylo.pipelines.outbound.durable_execution import (
 )
 from eylo.pipelines.outbound.service import OutboundAttemptService
 from eylo.pipelines.telephony.config import build_telephony_runtime_config
+from eylo.pipelines.telephony.outbound_stream import OutboundMediaRouting
 from eylo.sockets.telephony.base import (
     BaseTelephonyService,
     TelephonyCallDirection,
@@ -173,35 +174,19 @@ class VoiceService:
             direction=TelephonyCallDirection.OUTBOUND.value,
             initial_message=initial_message,
         )
-        query = {
-            "provider": resolved.provider.value,
-            "org_id": str(resolved.organization_id),
-            "agent_id": str(agent_id),
-            "agent_revision": str(executable_agent.ref.revision),
-            "provider_config_id": str(resolved.provider_config_id),
-            "provider_config_revision": str(resolved.provider_config_revision),
-            "call_id": str(call_id),
-            "direction": TelephonyCallDirection.OUTBOUND.value,
-            "stream_token": stream_token,
-        }
-        if initial_message:
-            query["initial_message"] = initial_message
-        ws_url = f"wss://{server_domain}/api/media/stream?{urlencode(query)}"
-
-        custom_params: JsonObject = {
-            "Direction": TelephonyCallDirection.OUTBOUND.value,
-            "agent_id": str(agent_id),
-            "agent_revision": executable_agent.ref.revision,
-            "org_id": str(resolved.organization_id),
-            "provider_config_id": str(resolved.provider_config_id),
-            "provider_config_revision": str(resolved.provider_config_revision),
-            "call_id": str(call_id),
-            "stream_token": stream_token,
-        }
-        if resolved.provider is TelephonyProvider.EXOTEL:
-            custom_params["CustomField"] = to_json_str(custom_params)
-        if initial_message:
-            custom_params["InitialMessage"] = initial_message
+        routing = OutboundMediaRouting(
+            provider=resolved.provider,
+            organization_id=resolved.organization_id,
+            agent_id=agent_id,
+            agent_revision=executable_agent.ref.revision,
+            provider_config_id=resolved.provider_config_id,
+            provider_config_revision=resolved.provider_config_revision,
+            call_id=call_id,
+            stream_token=stream_token,
+            initial_message=initial_message,
+        )
+        ws_url = routing.websocket_url(server_domain)
+        custom_params = routing.custom_parameters()
         logger.info(
             "Initiating %s outbound call: To=%s From=%s Agent=%s config=%s@%d",
             resolved.provider.value,
@@ -260,7 +245,9 @@ class VoiceService:
         # Plivo accepts a request UUID, not the later CallUUID. Keep that receipt
         # evidence without binding it as a live-call identity before the callback.
         provider_call_sid = (
-            None if resolved.provider is TelephonyProvider.PLIVO else receipt.provider_reference
+            None
+            if resolved.provider is TelephonyProvider.PLIVO
+            else receipt.provider_reference
         )
         lifecycle = await apply_outbound_call_outcome(
             call_id=call_id,
@@ -374,26 +361,26 @@ class VoiceService:
         if isinstance(result, TelephonyControlUnsupported):
             raise HTTPException(
                 status_code=501,
-                detail={
-                    "code": CallControlFailureCode.UNSUPPORTED.value,
-                    "operation": operation.value,
-                },
+                detail=CallControlErrorDetail(
+                    code=CallControlFailureCode.UNSUPPORTED,
+                    operation=operation,
+                ).model_dump(mode="json", exclude_none=True),
             )
         if isinstance(result, TelephonyControlRejected):
             raise HTTPException(
                 status_code=502,
-                detail={
-                    "code": CallControlFailureCode.REJECTED.value,
-                    "operation": operation.value,
-                },
+                detail=CallControlErrorDetail(
+                    code=CallControlFailureCode.REJECTED,
+                    operation=operation,
+                ).model_dump(mode="json", exclude_none=True),
             )
         if isinstance(result, TelephonyControlUnknown):
             raise HTTPException(
                 status_code=409,
-                detail={
-                    "code": CallControlFailureCode.UNKNOWN.value,
-                    "operation": operation.value,
-                },
+                detail=CallControlErrorDetail(
+                    code=CallControlFailureCode.UNKNOWN,
+                    operation=operation,
+                ).model_dump(mode="json", exclude_none=True),
             )
         raise TypeError("Carrier returned an invalid call-control result.")
 
@@ -412,11 +399,11 @@ class VoiceService:
             return
         raise HTTPException(
             status_code=501,
-            detail={
-                "code": CallControlFailureCode.UNSUPPORTED.value,
-                "operation": operation.value,
-                "provider": resolved.provider.value,
-            },
+            detail=CallControlErrorDetail(
+                code=CallControlFailureCode.UNSUPPORTED,
+                operation=operation,
+                provider=resolved.provider,
+            ).model_dump(mode="json", exclude_none=True),
         )
 
 

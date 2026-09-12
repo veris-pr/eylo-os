@@ -14,10 +14,12 @@ Two event categories exist in the platform:
 """
 
 from enum import Enum
-from typing import Any, Optional, Self
+from typing import Optional, Self
 from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
+
+from eylo.common.contracts.json_values import JsonObject
 
 
 class CallState(str, Enum):
@@ -76,9 +78,7 @@ class CallStateEvent(BaseModel):
         gt=0,
         description="Exact published agent revision handling the call",
     )
-    data: dict[str, Any] = Field(
-        default_factory=dict, description="Additional event data"
-    )
+    data: JsonObject = Field(default_factory=dict, description="Additional event data")
 
     @model_validator(mode="after")
     def exact_agent_ref(self) -> Self:

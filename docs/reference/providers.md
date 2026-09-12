@@ -39,6 +39,38 @@ Call direction, stream-token requirements, operation support and control failure
 have socket-owned enums. Platform call/event enums are translated at the pipeline
 boundary. These declarations do not change grants or signed-routing enforcement.
 
+Outbound media routing is a pipeline-owned value with explicit identity and
+revision fields. Adapters receive a scalar `StreamParameters` envelope; encoding
+revalidates its values rather than implicitly stringifying arbitrary objects.
+The parameter envelope and routing snapshots omit tokens and opener content.
+Existing custom key casing and Exotel packing are preserved.
+
+The Plivo builder uses native booleans with pinned SDK 4.59.3 and delegates XML
+escaping to the SDK. [Plivo's streaming contract](https://www.plivo.com/docs/voice/xml/audio-streaming)
+defines those boolean attributes. Public GET/POST `/api/voice/plivo/answer`
+accepts only the exact, unexpired, signed outbound URL for the configured server
+domain; it does not fetch the URL, resolve credentials or consume a media claim.
+It returns non-cacheable XML with an explicit 8 kHz mu-law content type matching
+the adapter's STT/output declarations, not an inferred vendor default. The
+subsequent WebSocket owns the one-time DB claim.
+
+[Twilio's Stream contract](https://www.twilio.com/docs/voice/twiml/stream) prohibits
+query parameters and requires each custom parameter's combined name/value length
+to be under 500 characters. Outbound calls therefore use the query-free
+`/api/media/stream/twilio` endpoint. The adapter fragments the opaque signed token
+into at most 128 parts of 480 characters, without truncation; this is Eylo's
+transport bound, not a vendor statement about allowed total parameters. The
+native start-frame parser reassembles those parts; only authenticated claims
+populate platform routing. Missing, extra, malformed or oversized fragments are
+refused. Signatures, expiry, pinned identity, and the existing one-time DB media
+claim still govern access. The unsigned start phase has a 30-second deadline
+and a 128-KiB frame-size bound (text characters for text frames).
+
+The existing query-based `/api/media/stream` route remains available for other
+carrier applets. Function and ASGI checks establish these codecs and authorization
+paths, not live carrier acceptance or simultaneous DB-claim behavior. Carrier
+catalog membership is not evidence of a working outbound call.
+
 Incoming carrier media uses `SpeechTransportFormat`; outbound targets use the
 telephony-owned `CarrierAudioFormat`. The factory and live manager preserve these
 objects through the pipeline. The target is converted to `TTSAudioFormat` at the
@@ -52,6 +84,26 @@ shows string sequence numbers. [Exotel's VoiceBot reference](https://docs.exotel
 shows numeric envelope sequence numbers, while its field table also describes
 strings. The Exotel adapter reads the envelope first and retains the older nested
 sequence fallback. This metadata does not introduce an ordering policy.
+
+Status callbacks retain raw signed fields for signature verification. Vendor-owned
+schemas then translate call references, native status values and optional integer
+seconds into a normalized observation. Lifecycle orchestration lives in
+`pipelines/telephony/status_callbacks.py`; canonical status values remain shared
+with the module's persistence schemas. Unknown status strings are acknowledged
+without a lifecycle update. Malformed IDs, status types or durations receive a
+safe `400`; authentication failures remain `403`, and unsupported authenticated
+Exotel callbacks remain `501`.
+
+[Twilio call-progress callbacks](https://www.twilio.com/docs/voice/api/call-resource)
+use `CallDuration` in seconds, not the separately billed `Duration` in minutes.
+[Plivo v1 callbacks](https://www.plivo.com/docs/voice/api/calls) use `CallStatus`
+values such as `ringing`, `in-progress` and `completed`; those are not the separate
+`Event` values. [Plivo's completed-call fields](https://www.plivo.com/docs/voice/xml/overview)
+provide optional `Duration` in seconds.
+[Vonage Voice callbacks](https://developer.vonage.com/en/voice/voice-api/webhook-reference)
+use `uuid`, `status` and optional `duration` in seconds. The handler applies the
+existing monotonic lifecycle and emits local ringing/ended events only after a
+committed transition, without rebroadcasting duplicate or stale observations.
 
 ### Voice configuration and verification contracts
 
@@ -567,6 +619,23 @@ Current capability-backed system tools include:
 - sandbox: `sandbox_exec`, `sandbox_read`, `sandbox_write`;
 - telephony: `dial_keypad`, `place_call`, `schedule_call`, `transfer_call`;
 - voice session: `end_call` when a voice session is active.
+
+Telephony tool results retain their JSON status/message fields, serialized from
+typed outcomes. Transfer failures preserve the distinction between a provider
+rejection and an unconfirmed result. `schedule_call` accepts finite-JSON custom
+metadata, but explicit call arguments and authenticated Agent/organization
+identity take precedence over colliding metadata keys. Metadata cannot change
+the validated destination, opening message, or scheduled time. Phone and keypad
+inputs must match the complete expected format, including no trailing newline.
+Direct `place_call` remains restricted to the durable execution path.
+
+Transfer lifecycle metadata has typed carrier-outcome time and failure-code
+fields plus finite-JSON custom context. The DB representation remains a flat
+object: omitted fields stay omitted, explicit nulls remain null, and later
+observations replace matching keys without removing unrelated context. Incoming
+metadata is validated before the lifecycle transaction; stored context is
+validated after the scoped lookup and before row mutation. Transfer-completion
+events are broadcast only after persistence succeeds.
 
 Knowledge tools are controlled by knowledgebase grants and conversation scope,
 not by choosing a knowledge vendor as an Agent capability.

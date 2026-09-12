@@ -6,15 +6,7 @@ from uuid import UUID
 import arrow
 from pydantic import BaseModel, Field
 
-
-class VoiceRequestSource(StrEnum):
-    USER = "user"
-    FILLER = "filler"
-    GREETING = "greeting"
-    CONSENT = "consent"
-    SILENCE = "silence"
-    END_CALL = "end_call"
-    MAX_DURATION = "max_duration"
+from eylo.common.contracts.voice import VoiceRequestSource as VoiceRequestSource
 
 
 class VoiceRequestStatus(StrEnum):

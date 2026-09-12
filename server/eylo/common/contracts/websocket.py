@@ -1,12 +1,14 @@
 """Neutral WebSocket envelopes shared by module and transport layers."""
 
 from enum import Enum
-from typing import Optional, Union
+from typing import Optional
 from uuid import UUID
 
 import arrow
-from pydantic import EmailStr, Field, SkipValidation
+from pydantic import ConfigDict, EmailStr, Field, JsonValue, StrictInt, field_validator
 
+from eylo.common.contracts.json_values import JsonObject
+from eylo.common.contracts.websocket_payloads import project_ws_value
 from eylo.common.schemas import EyloBaseApiSchema
 
 WEBRTC_SIGNALING_VERSION = 1
@@ -102,14 +104,16 @@ class WsIdentifyEvent(WsEvent):
 
 
 class WsRequestEvent(WsEvent):
-    """Container for one client WebSocket event."""
+    """Decoded text event; action handlers validate their owned JSON fields."""
+
+    model_config = ConfigDict(hide_input_in_errors=True, allow_inf_nan=False)
 
     kind: WsEventAction
     timestamp: float = Field(default_factory=lambda: arrow.utcnow().timestamp())
-    data: Optional[dict] = None
+    data: JsonObject | None = None
 
     @classmethod
-    def from_dict(cls, data: dict) -> "WsRequestEvent":
+    def from_dict(cls, data: object) -> "WsRequestEvent":
         return cls.model_validate(data)
 
     @classmethod
@@ -118,18 +122,27 @@ class WsRequestEvent(WsEvent):
 
 
 class WsResponse(WsEvent):
-    """Server response envelope for one WebSocket event."""
+    """Finite public projection; callers choose fields before this wire boundary."""
 
-    status: SkipValidation[int] = 200
+    model_config = ConfigDict(
+        hide_input_in_errors=True, revalidate_instances="always", allow_inf_nan=False
+    )
+
+    status: StrictInt = 200
     kind: WsEventAction
     organization_id: UUID
     session_id: str
-    data: Optional[Union[dict, list[dict]]] = None
+    data: JsonObject | list[JsonObject] | None = None
     version: str = "1.0"
+
+    @field_validator("data", mode="before")
+    @classmethod
+    def project_data(cls, value: object) -> JsonValue:
+        return project_ws_value(value)
 
 
 def build_ws_error_response(
-    event: WsRequestEvent | None,
+    event: WsEvent | None,
     *,
     organization_id: UUID,
     session_id: str,

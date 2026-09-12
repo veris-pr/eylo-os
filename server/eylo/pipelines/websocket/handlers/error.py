@@ -2,13 +2,13 @@
 
 from fastapi import status
 
-from eylo.common.contracts.websocket import build_ws_error_response
+from eylo.common.contracts.websocket import WsEvent, build_ws_error_response
 from eylo.modules.session_context.schemas import SessionContext
-from eylo.pipelines.websocket.schemas import WsRequestEvent, WsResponse
+from eylo.pipelines.websocket.schemas import WsResponse
 
 
 async def handle_error(
-    event: WsRequestEvent | None,
+    event: WsEvent | None,
     ctx: SessionContext,
     message: str | None = None,
     status_code: int = status.HTTP_500_INTERNAL_SERVER_ERROR,

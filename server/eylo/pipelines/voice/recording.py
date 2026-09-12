@@ -28,6 +28,7 @@ from eylo.modules.provider_configs.constants import Capability
 from eylo.modules.provider_configs.errors import NotConfiguredError
 from eylo.modules.user_sessions.events import file_user_session_fact
 from eylo.modules.voice_transcripts.models import VoiceSessionModel
+from eylo.modules.voice_transcripts.session_metadata import VoiceSessionMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -478,10 +479,9 @@ class AudioRecorder:
                     )
                 )
                 if session is not None:
-                    session.meta = {
-                        **(session.meta or {}),
-                        "recording_upload_error": reason,
-                    }
+                    session.meta = VoiceSessionMetadata.merge_upload_error(
+                        session.meta, reason
+                    )
         except Exception as error:
             # Recording the failure must not itself become an unhandled
             # failure in a detached task.

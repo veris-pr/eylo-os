@@ -8,7 +8,11 @@ from uuid import UUID
 from pydantic import JsonValue
 
 from eylo.events.py_events.emitter import emit_ephemeral
-from eylo.events.schema.py_events.voice import STTState, STTStateEvent
+from eylo.events.schema.py_events.voice import (
+    STTState,
+    STTStateEvent,
+    VoiceServiceEventData,
+)
 from eylo.pipelines.voice.transcript_inputs import (
     FinalTranscriptBatch,
     VoiceTranscriptInput,
@@ -95,7 +99,7 @@ class STTRealtime:
         self._wait_seconds = self._typed_config.wait_ms / _MILLISECONDS_PER_SECOND
 
     def _emit_stt_state(
-        self, state: STTState, message: str, data: dict[str, JsonValue] | None = None
+        self, state: STTState, message: str, *, error_type: str | None = None
     ) -> None:
         """Observer failure must not interrupt recognition or expose provider errors."""
         try:
@@ -106,7 +110,7 @@ class STTRealtime:
                     vendor=self._stt_vendor,
                     session_id=self._session_id,
                     organization_id=self._organization_id,
-                    data=data or {},
+                    data=VoiceServiceEventData(error_type=error_type),
                 )
             )
             logger.debug(f"Emitted STT state event: {state.value}")
@@ -234,7 +238,7 @@ class STTRealtime:
             self._emit_stt_state(
                 state=STTState.ERROR,
                 message="STT service failed",
-                data={"error_type": type(error).__name__},
+                error_type=type(error).__name__,
             )
             logger.error(
                 "STT service terminated error_type=%s",

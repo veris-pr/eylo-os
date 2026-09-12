@@ -20,6 +20,10 @@ from eylo.events.schema.py_events.voice import (
 )
 from eylo.pipelines.websocket.schemas import WsEventAction
 from eylo.pipelines.websocket.singleton import S_ws_manager
+from eylo.pipelines.websocket.voice_lifecycle import (
+    VoiceVendorLifecyclePayload,
+    WebRTCLifecyclePayload,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,13 +59,8 @@ TTS_STATE_ACTION_MAP = {
 }
 
 
-async def handle_webrtc_state(event: WebRTCStateEvent):
-    """Broadcast WebRTC peer connection state changes to the client.
-
-    Args:
-        event: WebRTC state change event containing state, message, and metadata
-
-    """
+async def handle_webrtc_state(event: WebRTCStateEvent) -> None:
+    """Best-effort peer observation; never overwrite the Eylo lifecycle state."""
     # event.state is WebRTCState in this handler
     webrtc_state = event.state if isinstance(event.state, WebRTCState) else None
     if not webrtc_state:
@@ -73,20 +72,19 @@ async def handle_webrtc_state(event: WebRTCStateEvent):
         logger.warning(f"Unknown WebRTC state: {webrtc_state}")
         return
 
-    event_data = dict(event.data)
-    provider_state = event_data.pop("state", None)
-    payload = {
-        "message": event.message,
-        "state": event.state,
-        "timestamp": arrow.utcnow().timestamp(),
-        **event_data,
-    }
-    if provider_state is not None:
-        payload["provider_state"] = provider_state
-
     try:
+        payload = WebRTCLifecyclePayload(
+            message=event.message,
+            state=event.state,
+            timestamp=arrow.utcnow().timestamp(),
+            provider_state=event.data.state,
+            error=event.data.error,
+            reason=event.data.reason,
+            track_kind=event.data.track_kind,
+            track_id=event.data.track_id,
+        )
         await S_ws_manager.send_response(
-            {"kind": action, "data": payload},
+            {"kind": action, "data": payload.to_wire()},
             event.organization_id,
             event.session_id,
         )
@@ -101,13 +99,8 @@ async def handle_webrtc_state(event: WebRTCStateEvent):
         )
 
 
-async def handle_stt_state(event: STTStateEvent):
-    """Broadcast STT service state changes to the client.
-
-    Args:
-        event: STT state change event containing state, message, and metadata
-
-    """
+async def handle_stt_state(event: STTStateEvent) -> None:
+    """Best-effort readiness projection; observer failure cannot stop recognition."""
     # event.state is STTState in this handler
     stt_state = event.state if isinstance(event.state, STTState) else None
     if not stt_state:
@@ -119,16 +112,15 @@ async def handle_stt_state(event: STTStateEvent):
         logger.warning(f"Unknown STT state: {stt_state}")
         return
 
-    payload = {
-        "message": event.message,
-        "vendor": event.vendor,
-        "timestamp": arrow.utcnow().timestamp(),
-        **event.data,  # Include any additional data from the event
-    }
-
     try:
+        payload = VoiceVendorLifecyclePayload(
+            message=event.message,
+            vendor=event.vendor,
+            timestamp=arrow.utcnow().timestamp(),
+            error_type=event.data.error_type,
+        )
         await S_ws_manager.send_response(
-            {"kind": action, "data": payload},
+            {"kind": action, "data": payload.to_wire()},
             event.organization_id,
             event.session_id,
         )
@@ -143,13 +135,8 @@ async def handle_stt_state(event: STTStateEvent):
         )
 
 
-async def handle_tts_state(event: TTSStateEvent):
-    """Broadcast TTS service state changes to the client.
-
-    Args:
-        event: TTS state change event containing state, message, and metadata
-
-    """
+async def handle_tts_state(event: TTSStateEvent) -> None:
+    """Best-effort readiness projection; observer failure cannot stop synthesis."""
     # event.state is TTSState in this handler
     tts_state = event.state if isinstance(event.state, TTSState) else None
     if not tts_state:
@@ -161,16 +148,15 @@ async def handle_tts_state(event: TTSStateEvent):
         logger.warning(f"Unknown TTS state: {tts_state}")
         return
 
-    payload = {
-        "message": event.message,
-        "vendor": event.vendor,
-        "timestamp": arrow.utcnow().timestamp(),
-        **event.data,  # Include any additional data from the event
-    }
-
     try:
+        payload = VoiceVendorLifecyclePayload(
+            message=event.message,
+            vendor=event.vendor,
+            timestamp=arrow.utcnow().timestamp(),
+            error_type=event.data.error_type,
+        )
         await S_ws_manager.send_response(
-            {"kind": action, "data": payload},
+            {"kind": action, "data": payload.to_wire()},
             event.organization_id,
             event.session_id,
         )

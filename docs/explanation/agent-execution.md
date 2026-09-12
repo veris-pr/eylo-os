@@ -75,6 +75,22 @@ primary Agent's voice configuration still applies throughout swarm handoffs.
 9. Ephemeral events project live changes to connected widget sessions.
 10. The run reaches a terminal outcome or yields on durable input/approval.
 
+WebSocket text ingress validates finite JSON through `WsRequestEvent`; each
+action handler then validates its own fields. Binary microphone frames use the
+transport-owned `WsBinaryAudioRequest`, not a dictionary inside the JSON envelope.
+Raw bytes are excluded from its representation and snapshots. Both paths retain
+the contact gate in event dispatch. Text rate limiting, audio silence/readiness
+checks and realtime/decomposed routing remain separate concerns. Audio setup
+passes the validated conversation UUID to the participant service.
+
+Outbound envelopes use `WsResponse` with finite JSON object/collection data and
+an integer status. Its projection boundary explicitly converts UUIDs, datetimes
+and enum values from already-selected public fields; it does not serialize
+arbitrary ORM/SDK/model objects or trust a `.value` attribute. The transport
+revalidates copied/mutated responses before sending, retaining aliases and the
+existing ISO timestamp representation. An empty object is emitted as `{}`.
+Binary outbound audio still follows the session's carrier/browser framing path.
+
 Conversation and decomposed-voice lifecycle callbacks receive the framework's
 `RunContext`; the realtime hook path retains its platform `HookContext`. That
 mutable Pydantic carrier preserves live conversation/message identity and keeps
@@ -84,6 +100,21 @@ run ID, timestamp and increasing sequence; a new request resets the sequence.
 Only contact identities and correlation metadata reach the widget event, not the
 conversation body. These types do not change hook failure isolation or resource
 cleanup ownership.
+
+Conversation runner entrypoints return `RunResult`. Model, tool-result and terminal
+metadata producers return the platform's validated `MessageMeta` before message
+creation. Producer-owned provenance is serialized once into that persistence
+envelope; pause filtering and resume selection consume the envelope directly.
+The existing stored metadata, message identities and lifecycle transitions remain
+unchanged.
+
+Cross-process conversation draining uses `ConversationRuntimeStatusService` with
+the concrete async Redis client. The conversation module owns the Redis codec:
+flat bytes/text hashes become typed status values, and Lua ownership/drain replies
+must match their declared integer codes and claim tuple shape. Invalid replies
+raise validation errors rather than being interpreted by truthiness. The existing
+Lua scripts, keys, lease/heartbeat durations, wake handling and owner-token checks
+remain authoritative; Redis does not replace durable DB request/run state.
 
 Curated execution keeps its result content and metadata in typed platform
 projections until `PlatformToolExecutor` serializes them for the framework.
