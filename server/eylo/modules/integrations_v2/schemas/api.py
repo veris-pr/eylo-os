@@ -12,14 +12,21 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import Field
 
 from eylo.common.schemas import EyloBaseApiSchema
 from eylo.modules.connections.domain import ExternalConnectionStatus
 from eylo.modules.mappers.enums import ConnectionKind
+from eylo.modules.tools.models import ToolKind
 
-from ..domain.enums import ToolEffect, ToolExecutionMode, VendorAuthKind
+from ..domain.enums import (
+    IntegrationCatalogSource,
+    ToolEffect,
+    ToolExecutionMode,
+    VendorAuthKind,
+)
 
 
 class CuratedToolCatalogSchema(EyloBaseApiSchema):
@@ -227,7 +234,7 @@ class WidgetCuratedToolSchema(EyloBaseApiSchema):
     slug: str
     display_name: str
     description: str
-    kind: str = "CURATED"
+    kind: Literal[ToolKind.CURATED] = ToolKind.CURATED
 
 
 class WidgetCuratedIntegrationSchema(EyloBaseApiSchema):
@@ -239,9 +246,9 @@ class WidgetCuratedIntegrationSchema(EyloBaseApiSchema):
     display_name: str
     description: str
     auth_kind: VendorAuthKind
-    connection_kind: str
+    connection_kind: ConnectionKind
     has_active_connection: bool
-    source: str = "curated"
+    source: IntegrationCatalogSource = IntegrationCatalogSource.CURATED
     vendor: str
 
 

@@ -6,14 +6,16 @@ same pattern as STT and TTS managers.
 """
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Optional
 from uuid import UUID
 
 from fastapi import WebSocket
 
+from eylo.common.contracts.speech_runtime import SpeechTransportFormat
 from eylo.sockets.telephony.base import (
     BaseTelephonyService,
     CallMetadata,
+    CarrierAudioFormat,
     CarrierMediaFailureCode,
     CarrierMediaResult,
     CarrierMediaStatus,
@@ -43,7 +45,7 @@ class TelephonyRealtime:
         self,
         websocket: WebSocket,
         provider: TelephonyProvider,
-    ):
+    ) -> None:
         """Initialize only the untrusted provider parser.
 
         The authenticated adapter is attached after start metadata resolves to
@@ -87,11 +89,11 @@ class TelephonyRealtime:
         """
         return self._provider
 
-    def get_config(self) -> Dict[str, Any]:
+    def get_config(self) -> SpeechTransportFormat:
         """Return the current provider's base configuration."""
         return self._active_service().get_config()
 
-    def get_output_format(self) -> Dict[str, Any]:
+    def get_output_format(self) -> CarrierAudioFormat:
         """Return the provider-specific TTS output format metadata."""
         return self._active_service().get_output_format()
 

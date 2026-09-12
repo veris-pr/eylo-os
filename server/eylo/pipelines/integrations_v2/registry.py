@@ -19,7 +19,12 @@ from pydantic import BaseModel
 
 from eylo.modules.integrations_v2.domain.enums import ToolEffect
 
-from .contracts import CuratedToolCallable, CuratedToolSpec, CuratedVendorSpec
+from .contracts import (
+    BoundCuratedToolHandler,
+    CuratedToolCallable,
+    CuratedToolSpec,
+    CuratedVendorSpec,
+)
 
 _VENDOR_MODULES = (
     "airtable",
@@ -70,7 +75,10 @@ class CuratedRegistry:
 
     def register_tool(self, spec: CuratedToolSpec) -> CuratedToolSpec:
         existing = self._tools.get(spec.wire_id)
-        if existing is not None and existing.handler is not spec.handler:
+        if (
+            existing is not None
+            and existing.handler.implementation is not spec.handler.implementation
+        ):
             raise ValueError(f"Tool '{spec.wire_id}' is already registered.")
         self._tools[spec.wire_id] = spec
         return spec
@@ -96,23 +104,27 @@ class CuratedRegistry:
 registry = CuratedRegistry()
 
 
-def curated_tool(
+def curated_tool[InputModel: BaseModel, Result](
     *,
     vendor: str,
     name: str,
     display_name: str,
     description: str,
-    input_model: type[BaseModel],
+    input_model: type[InputModel],
     effect: ToolEffect = ToolEffect.READ,
     scopes: Iterable[str] = (),
-) -> Callable[[CuratedToolCallable], CuratedToolCallable]:
+) -> Callable[
+    [CuratedToolCallable[InputModel, Result]], CuratedToolCallable[InputModel, Result]
+]:
     """Declare one curated tool and register it under the running process.
 
     The decorated function keeps its identity, so a vendor module may call it
     directly from another curated tool without going back through the registry.
     """
 
-    def decorator(handler: CuratedToolCallable) -> CuratedToolCallable:
+    def decorator(
+        handler: CuratedToolCallable[InputModel, Result],
+    ) -> CuratedToolCallable[InputModel, Result]:
         registry.register_tool(
             CuratedToolSpec(
                 vendor=vendor,
@@ -120,8 +132,10 @@ def curated_tool(
                 display_name=display_name,
                 description=description,
                 effect=effect,
-                input_model=input_model,
-                handler=handler,
+                handler=BoundCuratedToolHandler[InputModel, Result](
+                    input_model=input_model,
+                    implementation=handler,
+                ),
                 scopes=tuple(scopes),
             )
         )

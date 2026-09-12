@@ -11,6 +11,7 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession  # Added for type hint
 
 # First-party/local application imports
+from eylo.common.contracts.voice import VoiceRuntimeMode
 from eylo.modules.agents.domain import (
     InvalidSwarmDefinitionError,
     ResolvedExecutableAgent,
@@ -78,8 +79,14 @@ class ConversationContextService:
         primary_agent_override: Optional[AgentInDb] = None,
         primary_contact_override: Optional[ContactInDb] = None,
         through_message_id: UUID | None = None,
+        *,
+        voice_runtime: VoiceRuntimeMode | None = None,
     ) -> ConversationContext:
-        """Builds a comprehensive ConversationContext for a given conversation."""
+        """Build context from persisted history and caller-owned live voice facts.
+
+        Live voice owners pass their pinned runtime mode: buffered transcripts
+        need not have reached canonical storage when the prompt is constructed.
+        """
         if not conversation:
             # This check might be redundant if type hinting enforces ConversationInDb,
             # but good for robustness if called from less strict contexts.
@@ -193,16 +200,13 @@ class ConversationContextService:
                     for member in topology.members
                 ]
             }
-        # Determine if the conversation is in voice mode.
-        # Read from persisted data (conversation.channel + message metadata),
-        # NOT from in-memory S_ws_manager — that only works on the same
-        # Gunicorn worker that holds the WebSocket connection.
-        is_voice_mode = False
+        # Live transcripts are buffered until post-call processing. Their owner
+        # supplies the runtime identity; other callers retain history inference.
+        # Do not inspect a process-local WebSocket registry from a DB worker.
         is_phone = conversation.channel == ConversationChannels.PHONE
+        is_voice_mode = voice_runtime is not None or is_phone
 
-        if is_phone:
-            is_voice_mode = True
-        elif conversation_messages:
+        if not is_voice_mode and conversation_messages:
             # Check latest user message for browser voice mode
             latest_user_msg = next(
                 (

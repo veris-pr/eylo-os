@@ -312,7 +312,15 @@ class AgentPeerClient:
                 )
                 await self._record_transport_state(state)
                 self._schedule_terminal(_PEER_TERMINATION_REASONS[state])
-            elif state in {PeerConnectionState.FAILED, PeerConnectionState.CLOSED}:
+            elif state is PeerConnectionState.CLOSED:
+                self._emit_webrtc_state(
+                    state=WebRTCState.PEER_DISCONNECTED,
+                    message="WebRTC peer connection closed",
+                    data=WebRTCPeerEventData(state=state),
+                )
+                await self._record_transport_state(PeerConnectionState.DISCONNECTED)
+                self._schedule_terminal(_PEER_TERMINATION_REASONS[state])
+            elif state is PeerConnectionState.FAILED:
                 self._emit_webrtc_state(
                     state=WebRTCState.PEER_FAILED,
                     message="WebRTC peer connection failed",
@@ -320,11 +328,7 @@ class AgentPeerClient:
                         state=state, error="Connection failed to establish"
                     ),
                 )
-                await self._record_transport_state(
-                    PeerConnectionState.DISCONNECTED
-                    if state is PeerConnectionState.CLOSED and self._cleaning_up
-                    else PeerConnectionState.FAILED
-                )
+                await self._record_transport_state(PeerConnectionState.FAILED)
                 self._schedule_terminal(_PEER_TERMINATION_REASONS[state])
 
         @pc.on(PeerEvent.ICE_GATHERING_STATE_CHANGED)

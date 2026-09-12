@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime
 from enum import Enum
 
+from pydantic import JsonValue
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
@@ -132,10 +133,10 @@ class ToolModel(EyloOrganizationModel):
     )
     display_name: Mapped[str | None] = mapped_column(String(256))
     description: Mapped[str | None] = mapped_column(Text)
-    llm_config: Mapped[dict | None] = mapped_column(JSONB)
-    executor_config: Mapped[dict | None] = mapped_column(JSONB)
-    output_schema: Mapped[dict | None] = mapped_column(JSONB)
-    execution_mode: Mapped[ToolExecutionMode] = mapped_column(
+    llm_config: Mapped[dict[str, JsonValue] | None] = mapped_column(JSONB)
+    executor_config: Mapped[dict[str, JsonValue] | None] = mapped_column(JSONB)
+    output_schema: Mapped[dict[str, JsonValue] | None] = mapped_column(JSONB)
+    execution_mode: Mapped[str] = mapped_column(
         String(32),
         nullable=False,
         default=ToolExecutionMode.AUTO.value,
@@ -247,10 +248,10 @@ class ToolRevisionModel(EyloOrganizationModel):
     kind: Mapped[str] = mapped_column(String(50), nullable=False)
     display_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    llm_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    executor_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    output_schema: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    execution_mode: Mapped[ToolExecutionMode] = mapped_column(
+    llm_config: Mapped[dict[str, JsonValue] | None] = mapped_column(JSONB, nullable=True)
+    executor_config: Mapped[dict[str, JsonValue] | None] = mapped_column(JSONB, nullable=True)
+    output_schema: Mapped[dict[str, JsonValue] | None] = mapped_column(JSONB, nullable=True)
+    execution_mode: Mapped[str] = mapped_column(
         String(32),
         nullable=False,
         default=ToolExecutionMode.AUTO.value,

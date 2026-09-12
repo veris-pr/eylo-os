@@ -877,6 +877,38 @@ def _matches_partition(
     )
 
 
+def complete_reconciliation_proposal(
+    batch: MemoryReconciliationBatch,
+    compared: MemoryReconciliationProposal,
+) -> MemoryReconciliationProposal:
+    """Resolve candidate-less facts locally; model decisions must cover every peer comparison.
+
+    This is a pure planning operation. The existing apply boundary still checks
+    ownership, revisions and conflicting effects inside its transaction.
+    """
+    batch = MemoryReconciliationBatch.model_validate(batch)
+    comparison_batch = MemoryReconciliationBatch(
+        inputs=tuple(item for item in batch.inputs if item.candidates),
+        settlements=(),
+    )
+    decisions = _validate_complete_proposal(comparison_batch, compared)
+    by_id = {decision.memory_id: decision for decision in decisions}
+    proposal = MemoryReconciliationProposal(
+        decisions=tuple(
+            by_id[item.memory_id]
+            if item.candidates
+            else MemoryReconciliationDecision(
+                memory_id=item.memory_id,
+                observed_state_revision=item.state_revision,
+                outcome=MemoryReconciliationOutcome.UNRELATED,
+            )
+            for item in batch.inputs
+        )
+    )
+    _validate_complete_proposal(batch, proposal)
+    return proposal
+
+
 def _validate_complete_proposal(
     batch: MemoryReconciliationBatch,
     proposal: MemoryReconciliationProposal,

@@ -52,6 +52,7 @@ from eylo.modules.agents.services.swarm import (
     AgentSwarmService,
 )
 from eylo.modules.auth.schemas import CurrentUserSchema
+from eylo.modules.tools.schemas.indb import ToolInDb
 from eylo.pipelines.deletions.agent_erasure import deactivate_agent_and_erase_memory
 from eylo.pipelines.deletions.memory_erasure import MemoryOwnerGraphChanged
 
@@ -61,7 +62,7 @@ logger = logging.getLogger(__name__)
 class AgentController:
     """Controller for handling agent-related operations."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize the AgentController."""
         self.service = AgentService()
 
@@ -542,7 +543,9 @@ class AgentController:
             except AgentNotFoundError as e:
                 raise HTTPException(status_code=404, detail=str(e))
 
-    async def list_agent_tools(self, agent_id: UUID, organization_id: UUID):
+    async def list_agent_tools(
+        self, agent_id: UUID, organization_id: UUID
+    ) -> list[ToolInDb]:
         """List all tools for a given agent."""
         async with start_transaction(ro=True):
             try:
@@ -562,7 +565,7 @@ class AgentController:
         tool_id: UUID,
         organization_id: UUID,
         expected_draft_version: int,
-    ):
+    ) -> None:
         """Remove a tool from an agent."""
         async with start_transaction():
             try:
@@ -586,20 +589,22 @@ class AgentController:
 class AgentSwarmController:
     """Controller for handling agent swarm-related operations."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize the AgentSwarmController."""
         self.service = AgentSwarmService()
         self.agent_mapping_service = AgentSwarmMappingService()
         self.revision_service = AgentSwarmRevisionService()
 
-    async def list_agent_swarms(self, organization_id: UUID):
+    async def list_agent_swarms(
+        self, organization_id: UUID
+    ) -> list[AgentSwarmResponseSchema]:
         """List all agent swarms for the given organization."""
         swarms = await self.service.list_by_organization(organization_id)
         return [AgentSwarmResponseSchema.model_validate(swarm) for swarm in swarms]
 
     async def create_agent_swarm(
         self, organization_id: UUID, request: AgentSwarmCreateRequestSchema
-    ):
+    ) -> AgentSwarmResponseSchema:
         """Create a new agent swarm based on the provided request data."""
         entity = await self.service.create(
             organization_id=organization_id,
@@ -613,7 +618,7 @@ class AgentSwarmController:
         organization_id: UUID,
         swarm_id: UUID,
         request: AgentSwarmUpdateRequestSchema,
-    ):
+    ) -> AgentSwarmResponseSchema:
         """Update an existing agent swarm based on the provided request data."""
         entity = await self.service.update(
             pk=swarm_id,
@@ -641,7 +646,7 @@ class AgentSwarmController:
         agent_id: UUID,
         agent_description: Optional[str],
         expected_draft_version: int,
-    ):
+    ) -> AgentSwarmMappingResponseSchema:
         """Add an agent to a swarm."""
         entity = await self.agent_mapping_service.create(
             organization_id=organization_id,
@@ -650,13 +655,13 @@ class AgentSwarmController:
             agent_description=agent_description,
             expected_draft_version=expected_draft_version,
         )
-        return entity
+        return AgentSwarmMappingResponseSchema.model_validate(entity)
 
     async def list_agents_in_swarm(
         self,
         organization_id: UUID,
         swarm_id: UUID,
-    ):
+    ) -> list[AgentSwarmMappingResponseSchema]:
         """List all agents in a given swarm."""
         mappings = await self.agent_mapping_service.list_by_swarm_id(
             swarm_id=swarm_id, organization_id=organization_id

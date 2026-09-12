@@ -16,6 +16,10 @@ import aiohttp
 from fastapi import HTTPException, WebSocket
 
 from eylo.common.contracts.phone_numbers import PhoneNumberNormalizationService
+from eylo.common.contracts.speech_runtime import (
+    SpeechTransportEncoding,
+    SpeechTransportFormat,
+)
 from eylo.common.outbound import (
     OutboundSendAuthorization,
     OutboundSendOutcome,
@@ -26,8 +30,11 @@ from eylo.common.outbound import (
     OutboundTransportKind,
 )
 from eylo.sockets.telephony.base import (
+    TELEPHONY_SAMPLE_RATE,
+    AudioEncoding,
     BaseTelephonyService,
     CallMetadata,
+    CarrierAudioFormat,
     CarrierMediaEvent,
     InboundMediaMessage,
     OutboundMediaMessage,
@@ -255,7 +262,9 @@ class ExotelMessageParser(TelephonyMessageParser):
 class ExotelService(BaseTelephonyService):
     """Exotel telephony service implementation (stub)."""
 
-    def __init__(self, config: TelephonyConfig, websocket: Optional[WebSocket] = None):
+    def __init__(
+        self, config: TelephonyConfig, websocket: Optional[WebSocket] = None
+    ) -> None:
         """Initialize Exotel service.
 
         Args:
@@ -278,7 +287,7 @@ class ExotelService(BaseTelephonyService):
         """
         return TelephonyProvider.EXOTEL
 
-    def set_websocket(self, websocket: WebSocket):
+    def set_websocket(self, websocket: WebSocket) -> None:
         """Set the WebSocket connection.
 
         Args:
@@ -467,16 +476,16 @@ class ExotelService(BaseTelephonyService):
         """
         return ExotelMessageParser()
 
-    def get_config(self) -> Dict[str, Any]:
+    def get_config(self) -> SpeechTransportFormat:
         """Return the Exotel baseline STT configuration."""
-        return {"encoding": "linear16", "sample_rate": 8000}
+        return SpeechTransportFormat(
+            encoding=SpeechTransportEncoding.LINEAR16, sample_rate=TELEPHONY_SAMPLE_RATE
+        )
 
-    def get_output_format(self) -> Dict[str, Any]:
-        return {
-            "container": "raw",
-            "encoding": "pcm_s16le",  # LINEAR16
-            "sample_rate": 8000,
-        }
+    def get_output_format(self) -> CarrierAudioFormat:
+        return CarrierAudioFormat(
+            encoding=AudioEncoding.PCM_S16LE, sample_rate=TELEPHONY_SAMPLE_RATE
+        )
 
     async def end_call(self, call_sid: str) -> TelephonyControlResult:
         """Terminate an active Exotel call.

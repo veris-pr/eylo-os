@@ -24,12 +24,17 @@ from eylo.modules.tools.domain import (
     DefinitionNotFoundError,
     InvalidDefinitionDraftError,
 )
-from eylo.modules.tools.models import ToolModel, ToolRevisionModel
+from eylo.modules.tools.models import ToolKind, ToolModel, ToolRevisionModel
 from eylo.modules.tools.repositories import ToolRepository
 from eylo.modules.tools.schemas.executors.mcp import (
     validate_mcp_tool_executor_config,
 )
-from eylo.modules.tools.schemas.indb import ToolCreateSchema, ToolInDb, ToolUpdateSchema
+from eylo.modules.tools.schemas.indb import (
+    ToolCreateSchema,
+    ToolInDb,
+    ToolRevisionPayload,
+    ToolUpdateSchema,
+)
 from eylo.modules.tools.schemas.platform import PlatformTool
 
 logger = logging.getLogger(__name__)
@@ -47,7 +52,7 @@ class ToolService(EyloBaseService[ToolInDb, ToolModel]):
         return self._repository
 
     @repository.setter
-    def repository(self, value: ToolRepository):
+    def repository(self, value: ToolRepository) -> None:
         self._repository = value
 
     def __init__(self, db: Optional[AsyncSession] = None) -> None:
@@ -123,7 +128,7 @@ class ToolService(EyloBaseService[ToolInDb, ToolModel]):
             tool_id=row.id,
             revision=next_revision,
             mcp_server_revision=mcp_server_revision,
-            **_tool_values(row),
+            **ToolRevisionPayload.model_validate(row).model_dump(by_alias=True),
             published_at=datetime.now(timezone.utc),
             published_by=actor_id,
         )
@@ -403,6 +408,7 @@ class ToolService(EyloBaseService[ToolInDb, ToolModel]):
 
 
 def _validate_publishable(row: ToolModel, *, require_executor: bool) -> None:
+    kind = ToolKind(row.kind)
     try:
         llm = PlatformTool.model_validate(row.llm_config)
     except Exception as error:
@@ -417,14 +423,14 @@ def _validate_publishable(row: ToolModel, *, require_executor: bool) -> None:
     if (
         require_executor
         and not row.executor_config
-        and _enum_value(row.kind)
+        and kind
         not in {
-            "LOCAL",
-            "SYSTEM",
+            ToolKind.LOCAL,
+            ToolKind.SYSTEM,
         }
     ):
         raise InvalidDefinitionDraftError("Executable tool requires executor_config.")
-    if require_executor and _enum_value(row.kind) == "MCP":
+    if require_executor and kind is ToolKind.MCP:
         if row.mcp_server_id is None:
             raise InvalidDefinitionDraftError(
                 "MCP tool requires a published MCP server."
@@ -435,10 +441,6 @@ def _validate_publishable(row: ToolModel, *, require_executor: bool) -> None:
             raise InvalidDefinitionDraftError(
                 "Tool executor_config is invalid."
             ) from error
-
-
-def _enum_value(value: object) -> str:
-    return str(value.value) if hasattr(value, "value") else str(value)
 
 
 def _header_state(row: ToolModel) -> DefinitionHeaderState:
@@ -468,41 +470,29 @@ def _revision_state(row: ToolRevisionModel) -> PublishedRevisionState:
     )
 
 
-def _tool_values(row: ToolModel | ToolRevisionModel) -> dict[str, object]:
-    return {
-        "name": row.name,
-        "slug": row.slug,
-        "kind": _enum_value(row.kind),
-        "display_name": row.display_name,
-        "description": row.description,
-        "llm_config": row.llm_config,
-        "executor_config": row.executor_config,
-        "output_schema": row.output_schema,
-        "execution_mode": row.execution_mode,
-        "wire_id": row.wire_id,
-        "mcp_server_id": row.mcp_server_id,
-    }
-
-
-def _executable_tool_values(row: ToolRevisionModel) -> dict[str, object]:
+def _executable_tool_values(row: ToolRevisionModel) -> ToolRevisionPayload:
     """Project runtime-owned tool schemas from the same code that executes them."""
-    values = _tool_values(row)
-    kind = _enum_value(row.kind)
-    if kind not in {"LOCAL", "SYSTEM"}:
-        return values
+    payload = ToolRevisionPayload.model_validate(row)
+    if payload.kind not in {ToolKind.LOCAL, ToolKind.SYSTEM}:
+        return payload
 
     from eylo.modules.tools.services.tool_register import (
         local_tools_registry,
         system_tools_registry,
     )
 
-    registry = system_tools_registry if kind == "SYSTEM" else local_tools_registry
+    registry = (
+        system_tools_registry if payload.kind is ToolKind.SYSTEM else local_tools_registry
+    )
     tool_func = registry.registered_tools.get(row.slug)
     if tool_func is None:
-        raise DefinitionNotFoundError(f"{kind.title()} tool executor not found.")
-    values["description"] = tool_func.__doc__ or row.description
-    values["llm_config"] = registry.get_llm_config(row.slug)
-    return values
+        raise DefinitionNotFoundError(f"{payload.kind.value.title()} tool executor not found.")
+    return payload.model_copy(update={
+        "description": tool_func.__doc__ or payload.description,
+        "llm_config": registry.get_llm_config(row.slug).model_dump(
+            by_alias=True, exclude_none=True
+        ),
+    })
 
 
 def _revision_to_schema(row: ToolRevisionModel) -> ToolInDb:
@@ -513,9 +503,9 @@ def _revision_to_schema(row: ToolRevisionModel) -> ToolInDb:
             "deleted": False,
             "created_at": row.created_at,
             "updated_at": row.updated_at,
-            **_executable_tool_values(row),
+            **_executable_tool_values(row).model_dump(by_alias=True),
             "mcp_server_revision": row.mcp_server_revision,
-            "lifecycle": "published",
+            "lifecycle": DefinitionLifecycle.PUBLISHED,
             "published_revision": row.revision,
             "draft_version": row.revision,
             "draft_dirty": False,

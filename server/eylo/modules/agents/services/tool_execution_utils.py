@@ -2,20 +2,37 @@
 
 import json
 from collections.abc import Sequence
-from typing import Any, TypeVar
+from enum import StrEnum
+from typing import ClassVar, Final, TypeVar
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, JsonValue, TypeAdapter, ValidationError
 
 from eylo.modules.tools.models import ToolExecutionMode, ToolKind
 from eylo.modules.tools.schemas.indb import ToolInDb
 
 ToolContextT = TypeVar("ToolContextT")
+type ToolExecutionResult = str | dict[str, JsonValue] | list[JsonValue]
+
+_JSON_RESULT = TypeAdapter(JsonValue, config=ConfigDict(strict=True, allow_inf_nan=False))
+_MAX_VALIDATION_FIELD_PATHS: Final = 8
+
+
+class ToolDispatchCode(StrEnum):
+    """Stable machine-readable outcomes; messages never include rejected values."""
+
+    FAILED = "tool_dispatch_failed"
+    NOT_FOUND = "tool_not_found"
+    AMBIGUOUS_NAME = "ambiguous_tool_name"
+    EXECUTION_BLOCKED = "tool_execution_blocked"
+    APPROVAL_REQUIRED = "tool_approval_required"
+    EXECUTOR_UNAVAILABLE = "tool_executor_unavailable"
+    INVALID_INPUT = "invalid_tool_input"
 
 
 class ToolDispatchError(RuntimeError):
     """Base failure for exact model-name resolution or stored dispatch policy."""
 
-    code = "tool_dispatch_failed"
+    code: ClassVar[ToolDispatchCode] = ToolDispatchCode.FAILED
     safe_message = "Tool dispatch failed."
 
     def __init__(self) -> None:
@@ -25,42 +42,42 @@ class ToolDispatchError(RuntimeError):
 class ModelToolNotFoundError(ToolDispatchError):
     """The model requested a name absent from its exact filed tool list."""
 
-    code = "tool_not_found"
+    code = ToolDispatchCode.NOT_FOUND
     safe_message = "Requested tool is not available."
 
 
 class AmbiguousModelToolNameError(ToolDispatchError):
     """More than one filed tool advertises the same model-visible name."""
 
-    code = "ambiguous_tool_name"
+    code = ToolDispatchCode.AMBIGUOUS_NAME
     safe_message = "Requested tool identity is ambiguous."
 
 
 class ToolExecutionBlockedError(ToolDispatchError):
     """Stored policy forbids executing this exact tool revision."""
 
-    code = "tool_execution_blocked"
+    code = ToolDispatchCode.EXECUTION_BLOCKED
     safe_message = "Tool execution is disabled by policy."
 
 
 class ToolApprovalRequiredError(ToolDispatchError):
     """Stored policy requires a durable approval before execution."""
 
-    code = "tool_approval_required"
+    code = ToolDispatchCode.APPROVAL_REQUIRED
     safe_message = "Tool execution requires approval."
 
 
 class ToolExecutorNotFoundError(ToolDispatchError):
     """The exact stored tool kind has no matching runtime executor."""
 
-    code = "tool_executor_unavailable"
+    code = ToolDispatchCode.EXECUTOR_UNAVAILABLE
     safe_message = "Tool executor is unavailable."
 
 
 class ToolInputValidationError(ToolDispatchError):
     """Tool input failed schema validation without retaining rejected values."""
 
-    code = "invalid_tool_input"
+    code = ToolDispatchCode.INVALID_INPUT
 
     def __init__(self, field_paths: tuple[str, ...]) -> None:
         self.field_paths = field_paths
@@ -93,9 +110,9 @@ def require_tool_execution_allowed(tool: ToolInDb) -> None:
 
 async def execute_exact_tool(
     tool: ToolInDb,
-    tool_input: dict[str, Any],
+    tool_input: dict[str, JsonValue],
     ctx: ToolContextT,
-) -> str | dict | list:
+) -> ToolExecutionResult:
     """Forward caller-owned context unchanged after enforcing exact tool policy.
 
     Context is opaque to this registry dispatcher; the registered callable owns
@@ -134,10 +151,17 @@ async def execute_exact_tool(
     raise ToolExecutorNotFoundError()
 
 
-def _normalize_tool_result(value: Any) -> str | dict | list:
+def _normalize_tool_result(value: object) -> ToolExecutionResult:
     """Keep the agent-loop boundary stable for every valid JSON result."""
-    if isinstance(value, (str, dict, list)):
+    if isinstance(value, str):
         return value
+    if isinstance(value, (dict, list)):
+        try:
+            result = _JSON_RESULT.validate_python(value)
+        except ValidationError:
+            raise TypeError("Tool returned a result that is not valid JSON.") from None
+        if isinstance(result, (dict, list)):
+            return result
     if value is None or isinstance(value, (bool, int, float)):
         return json.dumps(
             value,
@@ -163,6 +187,6 @@ def _validation_field_paths(
         )
         if safe_field not in paths:
             paths.append(safe_field)
-        if len(paths) == 8:
+        if len(paths) == _MAX_VALIDATION_FIELD_PATHS:
             break
     return tuple(paths)

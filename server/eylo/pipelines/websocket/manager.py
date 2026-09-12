@@ -106,7 +106,7 @@ class WSPubSubManager:
         if isinstance(message, BaseModel):
             serialized = message.model_dump_json(by_alias=True)
         else:
-            serialized = json_serializer(message)
+            serialized = json_serializer(dict(message))
         await self._redis.publish(channel or self.default_channel, serialized)
 
     async def listen(self) -> AsyncIterator[dict[str, object]]:

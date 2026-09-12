@@ -31,6 +31,8 @@ from eylo.modules.conversations.schemas.messages import (
     MessageCreate,
     MessageInDb,
     MessageKind,
+    MessageMeta,
+    MessageUpdate,
     RequestStatus,
 )
 from eylo.modules.conversations.services.messages import MessageService
@@ -197,7 +199,7 @@ async def _mark_processing(task_message_id: UUID) -> None:
     async with start_transaction() as session:
         await MessageService(session).update_(
             task_message_id,
-            {"request_status": RequestStatus.PROCESSING},
+            MessageUpdate(request_status=RequestStatus.PROCESSING),
         )
 
 
@@ -285,7 +287,7 @@ async def _persist_completion(
         )
         await messages.update_(
             origin.id,
-            {"request_status": task_status},
+            MessageUpdate(request_status=task_status),
         )
         projected_result = summary.with_result_message(result_message.id).model_dump(
             mode="json", exclude_none=True
@@ -315,10 +317,10 @@ async def _fail_task(
     async with start_transaction() as session:
         await MessageService(session).update_(
             origin.id,
-            {
-                "request_status": RequestStatus.FAILED,
-                "meta": {**task_meta, "error": summary},
-            },
+            MessageUpdate(
+                request_status=RequestStatus.FAILED,
+                meta=MessageMeta.model_validate({**task_meta, "error": summary}),
+            ),
         )
         await finish_agent_run_in_transaction(
             session,

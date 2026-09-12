@@ -107,6 +107,7 @@ from eylo.modules.conversations.schemas.messages import (
     MessageCreate,
     MessageInDb,
     MessageKind,
+    MessageUpdate,
     RequestStatus,
 )
 from eylo.modules.conversations.services.conversations import ConversationService
@@ -1058,7 +1059,7 @@ class FrameworkConversationRunner:
             if message.agent_run_id is None:
                 message = await self._message_service.update_(
                     message.id,
-                    {"agent_run_id": agent_run_id},
+                    MessageUpdate(agent_run_id=agent_run_id),
                 )
             elif message.agent_run_id != agent_run_id:
                 raise ValueError(

@@ -2,9 +2,10 @@
 
 import inspect
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from types import FunctionType
-from typing import Any, Callable
+from typing import Any
 from uuid import UUID, uuid5
 
 from pydantic import BaseModel, create_model
@@ -13,7 +14,7 @@ from slugify import slugify
 from eylo.common.contracts.provider_config import Capability
 from eylo.common.contracts.tool_availability import ToolRequirements
 from eylo.common.contracts.tool_metadata import ToolCatalogVisibility, get_tool_metadata
-from eylo.common.schemas import CaseInSensitiveEnum
+from eylo.modules.tools.schemas.indb import ToolInDb
 from eylo.modules.tools.schemas.platform import PlatformTool, PlatformToolInputSchema
 
 logger = logging.getLogger(__name__)
@@ -27,46 +28,15 @@ def system_tool_id(tool_name: str, organization_id: UUID) -> UUID:
     return uuid5(SYSTEM_TOOL_NAMESPACE, f"{organization_id}:{tool_name}")
 
 
-class ParamType(CaseInSensitiveEnum):
-    """Optional. The type of the data."""
-
-    TYPE_UNSPECIFIED = "TYPE_UNSPECIFIED"
-    STRING = "STRING"
-    NUMBER = "NUMBER"
-    INTEGER = "INTEGER"
-    BOOLEAN = "BOOLEAN"
-    ARRAY = "ARRAY"
-    OBJECT = "OBJECT"
+type RegisteredTool = Callable[..., Awaitable[object]]
 
 
-_py_type_2_schema_type = {
-    "str": ParamType.STRING,
-    "int": ParamType.INTEGER,
-    "float": ParamType.NUMBER,
-    "bool": ParamType.BOOLEAN,
-    "string": ParamType.STRING,
-    "integer": ParamType.INTEGER,
-    "number": ParamType.NUMBER,
-    "boolean": ParamType.BOOLEAN,
-    "list": ParamType.ARRAY,
-    "array": ParamType.ARRAY,
-    "tuple": ParamType.ARRAY,
-    "object": ParamType.OBJECT,
-    "Dict": ParamType.OBJECT,
-    "List": ParamType.ARRAY,
-    "Tuple": ParamType.ARRAY,
-    "Any": ParamType.TYPE_UNSPECIFIED,
-}
+def _is_function(obj: object) -> bool:
+    """Registry entries are Python functions, not stateful callable instances."""
+    return isinstance(obj, FunctionType)
 
 
-def _is_function(obj: Any) -> bool:
-    """Check if the object is a function or a callable."""
-    return isinstance(obj, FunctionType) or (
-        inspect.isclass(obj) and issubclass(obj, FunctionType)
-    )
-
-
-def build_fn_declaration(func: Callable) -> type[BaseModel]:
+def build_fn_declaration(func: Callable[..., object]) -> type[BaseModel]:
     custom_schema_model = get_tool_metadata(func).input_schema
     if custom_schema_model is not None:
         if inspect.isclass(custom_schema_model) and issubclass(
@@ -97,20 +67,20 @@ def build_fn_declaration(func: Callable) -> type[BaseModel]:
 
 
 class ToolRegistrationService:
-    def __init__(self):
-        self.registered_tools = {}
+    def __init__(self) -> None:
+        self.registered_tools: dict[str, RegisteredTool] = {}
         self.registered_requirements: dict[str, ToolRequirements] = {}
         self.registered_provider_capabilities: dict[str, Capability | None] = {}
 
     # Registry entries are callables, not stateful tool classes.
-    def register_tool(
+    def register_tool[Function: RegisteredTool](
         self,
         tool_name: str,
-        tool_func: Callable,
+        tool_func: Function,
         *,
         requirements: ToolRequirements | None = None,
         provider_capability: Capability | None = None,
-    ):
+    ) -> Function:
         if not _is_function(tool_func):
             raise ValueError(f"Tool class '{tool_func}' is not a valid function.")
         declared_requirements = requirements or ToolRequirements()
@@ -133,7 +103,7 @@ class ToolRegistrationService:
         logger.debug(f"Tool '{tool_name}' registered successfully.")
         return tool_func
 
-    def get_tool(self, tool_name: str):
+    def get_tool(self, tool_name: str) -> RegisteredTool:
         """Retrieve a registered tool by its name."""
         if tool_name not in self.registered_tools:
             raise ValueError(f"Tool '{tool_name}' is not registered.")
@@ -143,7 +113,7 @@ class ToolRegistrationService:
         """Membership checks do not invoke the missing-tool error contract."""
         return tool_name in self.registered_tools
 
-    def unregister_tool(self, tool_name: str):
+    def unregister_tool(self, tool_name: str) -> bool:
         """Unregister a tool by its name."""
         self.get_tool(tool_name)
         del self.registered_tools[tool_name]
@@ -162,7 +132,7 @@ class ToolRegistrationService:
         tool_func = self.get_tool(tool_name)
         return build_fn_declaration(tool_func)
 
-    def get_llm_config(self, tool_name: str) -> dict:
+    def get_llm_config(self, tool_name: str) -> PlatformTool:
         """Get the LLM config of a registered tool in platform-native format."""
         tool_schema = self.get_tool_schema(tool_name).model_json_schema(by_alias=True)
 
@@ -170,29 +140,22 @@ class ToolRegistrationService:
             name=tool_name,
             description=self.get_tool(tool_name).__doc__ or "",
             input_schema=PlatformToolInputSchema.model_validate(tool_schema),
-        ).model_dump(by_alias=True, exclude_none=True)
+        )
 
     def list_catalog(
         self,
         organization_id: UUID,
         *,
-        capabilities: set | None = None,
+        capabilities: set[Capability] | None = None,
         provider_capability: Capability | None = None,
-    ) -> list:
+    ) -> list[ToolInDb]:
         """Return all registered tools as virtual ToolInDb objects for API discovery.
 
         Code-owned tool metadata excludes hidden tools and disabled feature flags.
 
-        Args:
-            organization_id: Org to scope deterministic UUIDs to.
-
-        Returns:
-            List of ToolInDb-shaped objects (built via model_construct).
-
         """
         from eylo.common.config import settings
         from eylo.modules.tools.models import ToolKind
-        from eylo.modules.tools.schemas.indb import ToolInDb
 
         tools = []
         now = datetime.now(timezone.utc)
@@ -229,14 +192,13 @@ class ToolRegistrationService:
                 continue
 
             try:
-                llm_config = self.get_llm_config(tool_name)
-                platform_tool = PlatformTool.model_validate(llm_config)
+                platform_tool = self.get_llm_config(tool_name)
             except Exception:
                 logger.warning("Failed to build schema for system tool '%s'", tool_name)
                 continue
 
             tools.append(
-                ToolInDb.model_construct(
+                ToolInDb(
                     id=system_tool_id(tool_name, organization_id),
                     deleted=False,
                     created_at=now,
@@ -266,13 +228,19 @@ def get_local_tool_config(tool_name: str) -> PlatformTool:
         raise ValueError(f"Tool '{tool_name}' is part of system tools.")
     if not local_tools_registry.has_tool(tool_name):
         raise ValueError(f"Tool '{tool_name}' is not part of local tools.")
-    return PlatformTool.model_validate(local_tools_registry.get_llm_config(tool_name))
+    return local_tools_registry.get_llm_config(tool_name)
 
 
-def register_tool(tool_name: str | None = None) -> Callable:
+def register_tool[**Parameters, Result](
+    tool_name: str | None = None,
+) -> Callable[
+    [Callable[Parameters, Awaitable[Result]]], Callable[Parameters, Awaitable[Result]]
+]:
     """Decorator to register a tool."""
 
-    def decorator(func: Callable):
+    def decorator(
+        func: Callable[Parameters, Awaitable[Result]],
+    ) -> Callable[Parameters, Awaitable[Result]]:
         if not _is_function(func):
             raise ValueError(f"'{func}' is not a valid function.")
         register_name = tool_name or func.__name__
@@ -282,11 +250,11 @@ def register_tool(tool_name: str | None = None) -> Callable:
     return decorator
 
 
-def register_local_tools():
+def register_local_tools() -> None:
     pass  # Add custom local tool registrations here
 
 
-def register_system_tools():
+def register_system_tools() -> None:
     """Register module-owned tools under stable explicit slugs."""
     from eylo.common.contracts.tool_availability import (
         ToolRequirements,

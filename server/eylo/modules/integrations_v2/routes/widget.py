@@ -12,10 +12,12 @@ mint an authorization URL for any vendor the organization installed.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.database import register_ephemeral_event_post_txn, start_transaction
 from eylo.common.revisions import DefinitionRevisionError
@@ -29,6 +31,7 @@ from eylo.modules.agents.services.revisions import AgentRevisionService
 from eylo.modules.auth.dependencies.widget_auth import get_current_contact
 from eylo.modules.auth.schemas.widget import CurrentContactSchema
 from eylo.modules.conversations.exceptions import ConversationNotFound
+from eylo.modules.mappers.enums import ConnectionKind
 from eylo.pipelines.conversation.widget_authority import (
     resolve_widget_conversation_authority,
 )
@@ -47,6 +50,12 @@ from ..schemas.api import (
 )
 from ..services.installations import CuratedIntegrationService
 
+if TYPE_CHECKING:
+    from eylo.modules.connections.schemas.external import ExternalConnectionInDb
+    from eylo.pipelines.integrations_v2.contracts import CuratedVendorSpec
+
+    from ..schemas.indb import CuratedToolInDb, InstallationInDb
+
 widget_router = APIRouter(
     prefix="/widget/{organization_id}/curated-connections",
     tags=[APP_TAG],
@@ -61,7 +70,7 @@ async def widget_list_curated_capabilities(
     organization_id: UUID,
     agent_id: UUID = Query(..., description="Published Agent shown by the widget."),
     contact: CurrentContactSchema = Depends(get_current_contact),
-):
+) -> list[WidgetCuratedToolGroupSchema]:
     """List curated tools pinned to one available published Agent revision."""
     if contact.organization_id != organization_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
@@ -83,7 +92,7 @@ async def widget_list_bulk_curated_capabilities(
     organization_id: UUID,
     payload: WidgetCuratedCapabilitiesRequestSchema,
     contact: CurrentContactSchema = Depends(get_current_contact),
-):
+) -> list[WidgetAgentCuratedCapabilitiesSchema]:
     """List curated capability groups for the visible Agent catalogue."""
     if contact.organization_id != organization_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
@@ -105,7 +114,7 @@ async def widget_list_bulk_curated_capabilities(
 
 async def _capabilities_by_agent(
     *,
-    db,
+    db: AsyncSession,
     organization_id: UUID,
     contact_id: UUID,
     agent_ids: list[UUID],
@@ -132,7 +141,7 @@ async def _capabilities_by_agent(
             )
         )
 
-    all_grants = set().union(*grants_by_agent.values()) if grants_by_agent else set()
+    all_grants = {tool_id for grants in grants_by_agent.values() for tool_id in grants}
     service = CuratedIntegrationService(db)
     offerable_rows = (
         await service.list_offerable_tools(
@@ -153,7 +162,7 @@ async def _capabilities_by_agent(
 
     registry = load_vendors()
     connection_service = CuratedIntegrationService(db)
-    connection_by_installation = {}
+    connection_by_installation: dict[UUID, ExternalConnectionInDb | None] = {}
     used_installation_ids = {
         row.installation_id
         for row in offerable_rows
@@ -170,7 +179,7 @@ async def _capabilities_by_agent(
 
     result: dict[UUID, list[WidgetCuratedToolGroupSchema]] = {}
     for agent_id in requested_ids:
-        grouped_rows: dict[UUID, list] = {}
+        grouped_rows: dict[UUID, list[CuratedToolInDb]] = {}
         for row in offerable_rows:
             if (
                 row.id in grants_by_agent[agent_id]
@@ -197,11 +206,11 @@ async def _capabilities_by_agent(
                         description=vendor.description,
                         auth_kind=installation.auth_kind,
                         connection_kind=(
-                            connection.owner_kind.value
+                            ConnectionKind(connection.owner_kind.value)
                             if connection is not None
-                            else "ORGANIZATION"
+                            else ConnectionKind.ORGANIZATION
                             if no_auth
-                            else "CONTACT"
+                            else ConnectionKind.CONTACT
                         ),
                         has_active_connection=no_auth or connection is not None,
                         vendor=installation.vendor,
@@ -232,7 +241,7 @@ async def widget_initiate_curated_oauth(
     vendor: str = Query(..., min_length=1, description="Curated vendor id."),
     conversation_id: UUID = Query(..., description="Contact-owned conversation."),
     contact: CurrentContactSchema = Depends(get_current_contact),
-):
+) -> AuthorizationRedirectSchema:
     """Return the consent URL for a vendor this contact's agent actually uses."""
     if contact.organization_id != organization_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
@@ -284,7 +293,7 @@ async def widget_connect_curated_credential(
     payload: WidgetConnectCredentialRequestSchema,
     conversation_id: UUID = Query(..., description="Contact-owned conversation."),
     contact: CurrentContactSchema = Depends(get_current_contact),
-):
+) -> ConnectionSchema:
     """Bind a direct credential to the current contact, never a request-supplied id."""
     if contact.organization_id != organization_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
@@ -325,12 +334,12 @@ async def widget_connect_curated_credential(
 
 async def _require_curated_vendor_access(
     *,
-    db,
+    db: AsyncSession,
     organization_id: UUID,
     vendor: str,
     contact: CurrentContactSchema,
     conversation_id: UUID,
-):
+) -> tuple[InstallationInDb, CuratedVendorSpec]:
     """Resolve an installed vendor only for this contact-owned Agent chat."""
     from eylo.pipelines.integrations_v2.registry import load_vendors
 

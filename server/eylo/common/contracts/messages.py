@@ -4,7 +4,7 @@ import datetime
 import logging
 from collections.abc import Mapping
 from enum import Enum
-from typing import Any, List, Optional, Self, TypeAlias, TypeVar, Union
+from typing import List, Optional, Self, TypeAlias, TypeVar, Union
 from uuid import UUID
 from pydantic import (
     BaseModel,
@@ -16,6 +16,7 @@ from pydantic import (
     StrictBool,
     StrictInt,
     TypeAdapter,
+    ValidationInfo,
     field_validator,
     model_serializer,
     model_validator,
@@ -276,7 +277,7 @@ class MessageModelSchema(EyloBaseModelSchema):
 
     @field_validator("content", mode="before")
     @classmethod
-    def validate_content(cls, v, info):
+    def validate_content(cls, v: object, info: ValidationInfo) -> object:
         """Convert dict to typed message content automatically.
 
         This ensures database values (dicts) are always converted to
@@ -344,7 +345,7 @@ class MessageCreate(EyloBaseSchema):
 class MessageInDb(MessageModelSchema):
     model_config = ConfigDict(from_attributes=True)
 
-    def get_parsed_content(self):
+    def get_parsed_content(self) -> MessageContentType:
         """Parse and validate message content based on message kind.
 
         Returns a Pydantic model instance for the content, providing type safety
@@ -386,7 +387,7 @@ class MessageInDb(MessageModelSchema):
         except Exception as error:
             raise ValueError(f"Failed to parse {self.kind} message content.") from error
 
-    def get_tool_use_content(self):
+    def get_tool_use_content(self) -> ToolUseMessageContent:
         """Get parsed tool use content with type safety.
 
         Returns:
@@ -405,7 +406,7 @@ class MessageInDb(MessageModelSchema):
 
         return parsed
 
-    def get_tool_result_content(self):
+    def get_tool_result_content(self) -> ToolResultMessageContent:
         """Get parsed tool result content with type safety.
 
         Returns:

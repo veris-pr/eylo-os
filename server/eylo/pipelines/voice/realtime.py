@@ -499,7 +499,8 @@ class RealtimeManager:
                 self._config.conversation_id
             )
             context = await ConversationContextService().build(
-                conversation=conversation
+                conversation=conversation,
+                voice_runtime=self._live_buffer.identity.runtime_mode,
             )
             from eylo.common.contracts.tool_availability import ToolRuntimeFact
             from eylo.pipelines.system_tools.availability import (

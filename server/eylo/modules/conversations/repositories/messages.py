@@ -20,6 +20,7 @@ from eylo.modules.conversations.models.participants import ParticipantsModel
 from eylo.modules.conversations.schemas.messages import (
     MessageContentKind,
     MessageCreate,
+    MessageUpdate,
     RequestStatus,
 )
 
@@ -80,12 +81,12 @@ class MessageRepository(BaseORMRepository[MessagesModel]):
             )
         )
 
-    async def update_(self, message_id: UUID, data: dict) -> MessagesModel:
+    async def update_(self, message_id: UUID, data: MessageUpdate) -> MessagesModel:
         """Update a message by its ID."""
         entity = await self.get_(message_id)
         if not entity:
             raise ValueError(f"Message with id {message_id} not found")
-        for key, value in data.items():
+        for key, value in data.model_dump(exclude_unset=True).items():
             setattr(entity, key, value)
         return await self.save_(entity)
 
@@ -132,7 +133,7 @@ class MessageRepository(BaseORMRepository[MessagesModel]):
         return result.scalar_one_or_none()
 
     async def update_first_by_request_id(
-        self, request_id: UUID, data: dict
+        self, request_id: UUID, data: MessageUpdate
     ) -> Optional[MessagesModel]:
         """Finds the first message by request_id and updates it."""
         query = (
@@ -145,7 +146,7 @@ class MessageRepository(BaseORMRepository[MessagesModel]):
         entity = result.scalar_one_or_none()
 
         if entity:
-            for key, value in data.items():
+            for key, value in data.model_dump(exclude_unset=True).items():
                 setattr(entity, key, value)
             return await self.save_(entity)
 
@@ -153,7 +154,7 @@ class MessageRepository(BaseORMRepository[MessagesModel]):
         self,
         request_id: UUID,
         organization_id: UUID,
-        data: dict,
+        data: MessageUpdate,
     ) -> Optional[MessagesModel]:
         query = (
             select(self.model)
@@ -174,7 +175,7 @@ class MessageRepository(BaseORMRepository[MessagesModel]):
         entity = (await self.db_session.execute(query)).scalar_one_or_none()
         if not entity:
             return None
-        for key, value in data.items():
+        for key, value in data.model_dump(exclude_unset=True).items():
             setattr(entity, key, value)
         return await self.save_(entity)
 
@@ -184,7 +185,7 @@ class MessageRepository(BaseORMRepository[MessagesModel]):
         organization_id: UUID,
         contact_id: UUID,
         conversation_id: UUID,
-        data: dict,
+        data: MessageUpdate,
     ) -> Optional[MessagesModel]:
         active_contact_participant = exists(
             select(1).where(
@@ -215,7 +216,7 @@ class MessageRepository(BaseORMRepository[MessagesModel]):
         entity = (await self.db_session.execute(query)).scalar_one_or_none()
         if not entity:
             return None
-        for key, value in data.items():
+        for key, value in data.model_dump(exclude_unset=True).items():
             setattr(entity, key, value)
         return await self.save_(entity)
 

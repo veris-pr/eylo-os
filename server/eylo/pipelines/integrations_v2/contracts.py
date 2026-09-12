@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Awaitable, Callable, Mapping
 from enum import StrEnum
-from typing import Annotated, Any, Protocol, Self, runtime_checkable
+from typing import Annotated, Protocol, Self, runtime_checkable
 
 from pydantic import (
     AfterValidator,
@@ -14,10 +14,12 @@ from pydantic import (
     ConfigDict,
     Field,
     InstanceOf,
+    JsonValue,
     model_validator,
 )
 from pydantic.json_schema import SkipJsonSchema
 
+from eylo.common.http_egress import HttpMethod
 from eylo.modules.integrations_v2.domain.enums import (
     CredentialLocation,
     ToolEffect,
@@ -63,6 +65,31 @@ def _json_media_type(value: str) -> str:
 
 
 JsonMediaType = Annotated[str, AfterValidator(_json_media_type)]
+
+# A query is flat. Lists/tuples repeat a key; they are not JSON bodies.
+type VendorQueryScalar = str | int | float | bool | None
+type VendorQueryValue = (
+    VendorQueryScalar | list[VendorQueryScalar] | tuple[VendorQueryScalar, ...]
+)
+type VendorQuery = Mapping[str, VendorQueryValue]
+
+
+class VendorHttpErrorCode(StrEnum):
+    """Transport-owned failures; vendor-specific codes stay in their adapters."""
+
+    BASE_URL_INVALID = "vendor_base_url_invalid"
+    ACCEPT_INVALID = "vendor_accept_invalid"
+    HEADER_RESERVED = "vendor_header_reserved"
+    EGRESS_REJECTED = "vendor_egress_rejected"
+    UNAVAILABLE = "vendor_unavailable"
+    DURABLE_OWNER_REQUIRED = "durable_owner_required"
+    MUTATION_BUDGET_EXHAUSTED = "mutation_budget_exhausted"
+    OUTCOME_UNKNOWN = "vendor_outcome_unknown"
+    REQUEST_INVALID = "vendor_request_invalid"
+    PATH_INVALID = "vendor_path_invalid"
+    QUERY_INVALID = "vendor_query_invalid"
+    MEDIA_UNSUPPORTED = "vendor_media_unsupported"
+    RESPONSE_INVALID = "vendor_response_invalid"
 
 
 class VendorToolError(Exception):
@@ -122,9 +149,9 @@ class VendorHttpClient(Protocol):
         self,
         path: str,
         *,
-        method: str = "GET",
-        query: Mapping[str, Any] | None = None,
-        json: Any = None,
+        method: str = HttpMethod.GET,
+        query: VendorQuery | None = None,
+        json: JsonValue = None,
     ) -> VendorResponse:
         """Perform a non-mutating vendor request. No outbound receipt is written."""
         ...
@@ -133,9 +160,9 @@ class VendorHttpClient(Protocol):
         self,
         path: str,
         *,
-        method: str = "POST",
-        query: Mapping[str, Any] | None = None,
-        json: Any = None,
+        method: str = HttpMethod.POST,
+        query: VendorQuery | None = None,
+        json: JsonValue = None,
     ) -> VendorResponse:
         """Perform a mutating vendor request through the durable outbound owner.
 
@@ -172,9 +199,9 @@ class VendorToolContext(_FrozenContract):
         self,
         path: str,
         *,
-        method: str = "GET",
-        query: Mapping[str, Any] | None = None,
-        json: Any = None,
+        method: str = HttpMethod.GET,
+        query: VendorQuery | None = None,
+        json: JsonValue = None,
     ) -> VendorResponse:
         return await self.http.read(path, method=method, query=query, json=json)
 
@@ -182,13 +209,13 @@ class VendorToolContext(_FrozenContract):
         self,
         path: str,
         *,
-        method: str = "POST",
-        query: Mapping[str, Any] | None = None,
-        json: Any = None,
+        method: str = HttpMethod.POST,
+        query: VendorQuery | None = None,
+        json: JsonValue = None,
     ) -> VendorResponse:
         if self.effect is not ToolEffect.MUTATION:
             raise VendorToolError(
-                "durable_owner_required",
+                VendorHttpErrorCode.DURABLE_OWNER_REQUIRED,
                 "A read-declared curated tool cannot mutate vendor state.",
             )
         return await self.http.mutate(path, method=method, query=query, json=json)
@@ -349,7 +376,44 @@ class CuratedVendorSpec(_FrozenContract):
         return f"{instance_url.rstrip('/')}{suffix}"
 
 
-CuratedToolCallable = Callable[[Any, VendorToolContext], Awaitable[Any]]
+type CuratedToolCallable[InputModel: BaseModel, Result] = Callable[
+    [InputModel, VendorToolContext], Awaitable[Result]
+]
+
+
+@runtime_checkable
+class CuratedToolHandler(Protocol):
+    """Heterogeneous registry port; preserve model and implementation identity."""
+
+    @property
+    def input_model(self) -> type[BaseModel]: ...
+
+    @property
+    def implementation(self) -> object:
+        """Opaque identity for duplicate registration, never an invocation port."""
+        ...
+
+    async def __call__(
+        self, payload: BaseModel, context: VendorToolContext
+    ) -> object:
+        """Narrow the input; the executor validates the returned JSON value."""
+        ...
+
+
+class BoundCuratedToolHandler[InputModel: BaseModel, Result](_FrozenContract):
+    """Retain a concrete handler's types without widening its accepted input."""
+
+    input_model: SkipJsonSchema[type[InputModel]] = Field(repr=False, exclude=True)
+    implementation: SkipJsonSchema[CuratedToolCallable[InputModel, Result]] = Field(
+        repr=False, exclude=True
+    )
+
+    async def __call__(
+        self, payload: BaseModel, context: VendorToolContext
+    ) -> Result:
+        if not isinstance(payload, self.input_model):
+            raise TypeError("Curated tool payload does not match its registered model.")
+        return await self.implementation(payload, context)
 
 
 class CuratedToolSpec(_FrozenContract):
@@ -365,9 +429,15 @@ class CuratedToolSpec(_FrozenContract):
     display_name: str
     description: str
     effect: ToolEffect
-    input_model: SkipJsonSchema[type[BaseModel]] = Field(repr=False, exclude=True)
-    handler: SkipJsonSchema[CuratedToolCallable] = Field(repr=False, exclude=True)
+    handler: SkipJsonSchema[InstanceOf[CuratedToolHandler]] = Field(
+        repr=False, exclude=True
+    )
     scopes: tuple[str, ...] = ()
+
+    @property
+    def input_model(self) -> type[BaseModel]:
+        """The schema belongs to the same binding that invokes the handler."""
+        return self.handler.input_model
 
     @model_validator(mode="after")
     def validate_tool(self) -> Self:
@@ -403,8 +473,10 @@ class CuratedToolSpec(_FrozenContract):
 
 __all__ = [
     "ApiKeyPlacement",
+    "BoundCuratedToolHandler",
     "CredentialLocation",
     "CuratedToolCallable",
+    "CuratedToolHandler",
     "CuratedToolSpec",
     "CuratedVendorSpec",
     "InstanceUrlRequirement",
@@ -416,6 +488,10 @@ __all__ = [
     "VendorAuthKind",
     "VendorOAuthConfig",
     "VendorHttpClient",
+    "VendorHttpErrorCode",
+    "VendorQuery",
+    "VendorQueryScalar",
+    "VendorQueryValue",
     "VendorResponse",
     "VendorToolContext",
     "VendorToolError",

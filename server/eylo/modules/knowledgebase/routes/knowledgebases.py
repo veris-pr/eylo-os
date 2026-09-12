@@ -18,6 +18,11 @@ from eylo.modules.auth.constants import APP_TAG
 from eylo.modules.auth.schemas import CurrentUserSchema
 from eylo.modules.auth.services.auth_service import get_current_user
 from eylo.modules.embedding_configs.domain import InvalidEmbeddingConfig
+from eylo.modules.knowledgebase.jobs import KnowledgeReindexJobModel
+from eylo.modules.knowledgebase.models import (
+    KnowledgebaseGrantModel,
+    KnowledgebaseModel,
+)
 from eylo.modules.knowledgebase.schemas import (
     GrantCreate,
     GrantRead,
@@ -54,7 +59,7 @@ def _authorize(organization_id: UUID, current_user: CurrentUserSchema) -> None:
 async def list_knowledgebases(
     organization_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> list[KnowledgebaseModel]:
     _authorize(organization_id, current_user)
     async with start_transaction(ro=True):
         service = KnowledgebaseService(get_transaction())
@@ -66,7 +71,7 @@ async def create_knowledgebase(
     organization_id: UUID,
     request: KnowledgebaseCreate,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> KnowledgebaseModel:
     """Define a knowledgebase. No vendor is assumed; the caller names one."""
     _authorize(organization_id, current_user)
     async with start_transaction():
@@ -106,7 +111,7 @@ async def get_knowledgebase(
     organization_id: UUID,
     knowledgebase_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> KnowledgebaseModel:
     """Return one organization-owned knowledgebase without disclosing others."""
     _authorize(organization_id, current_user)
     async with start_transaction(ro=True):
@@ -125,7 +130,7 @@ async def update_knowledgebase(
     knowledgebase_id: UUID,
     request: KnowledgebaseUpdate,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> KnowledgebaseModel:
     _authorize(organization_id, current_user)
     async with start_transaction():
         service = KnowledgebaseService(get_transaction())
@@ -148,7 +153,7 @@ async def delete_knowledgebase(
     organization_id: UUID,
     knowledgebase_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> None:
     _authorize(organization_id, current_user)
     try:
         await delete_kb(
@@ -169,7 +174,7 @@ async def reindex_knowledgebase(
     knowledgebase_id: UUID,
     request: KnowledgebaseReindexRequest,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> KnowledgeReindexJobModel:
     _authorize(organization_id, current_user)
     try:
         return await request_knowledgebase_reindex(
@@ -196,7 +201,7 @@ async def get_knowledgebase_reindex_status(
     organization_id: UUID,
     knowledgebase_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> KnowledgeReindexStatusRead:
     _authorize(organization_id, current_user)
     try:
         inspection = await inspect_knowledgebase_reindex(
@@ -249,7 +254,7 @@ async def grant_knowledgebase(
     organization_id: UUID,
     request: GrantCreate,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> KnowledgebaseGrantModel:
     """Give an agent access. Omitting `access` grants READ, never write."""
     _authorize(organization_id, current_user)
     async with start_transaction():
@@ -272,7 +277,7 @@ async def list_grants(
     organization_id: UUID,
     agent_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> list[KnowledgebaseGrantModel]:
     """What this agent may read and write. The whole of its knowledge surface."""
     _authorize(organization_id, current_user)
     async with start_transaction(ro=True):
@@ -291,7 +296,7 @@ async def revoke_knowledgebase(
     agent_id: UUID,
     knowledgebase_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> None:
     _authorize(organization_id, current_user)
     async with start_transaction():
         service = KnowledgebaseService(get_transaction())

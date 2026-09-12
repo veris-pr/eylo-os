@@ -589,9 +589,11 @@ export function useAgents(agentStore?: AgentStore) {
   const store = agentStore || eyloSDK?.store.agentStore;
 
   const { data: agents, loading, error } = useRepositoryList<Agent>(store, "agents");
+  const availableAgentIds = useStoreProperty(store, "availableAgentIds");
+  const availableIds = new Set(availableAgentIds ?? []);
 
   return {
-    agents,
+    agents: agents.filter((agent) => availableIds.has(agent.id)),
     loading,
     error,
     getById: (id: string) => store?.get_(id),

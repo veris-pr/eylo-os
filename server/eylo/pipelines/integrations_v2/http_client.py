@@ -15,7 +15,8 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
-from typing import Any
+from http import HTTPStatus
+from typing import Protocol
 from urllib.parse import urlencode
 from uuid import UUID
 
@@ -24,6 +25,7 @@ from pydantic import (
     ConfigDict,
     Field,
     InstanceOf,
+    JsonValue,
     TypeAdapter,
     ValidationError,
 )
@@ -35,6 +37,7 @@ from eylo.common.http_egress import (
     HttpEgressPolicyError,
     HttpEgressRequest,
     HttpEgressResponse,
+    HttpMethod,
     HttpOrigin,
     HttpRoutePolicy,
     parse_https_target,
@@ -61,19 +64,35 @@ from .contracts import (
     DEFAULT_JSON_MEDIA_TYPE,
     RESERVED_HEADER_NAMES,
     JsonMediaType,
+    VendorHttpErrorCode,
+    VendorQuery,
     VendorResponse,
     VendorToolError,
 )
 from .credentials import VendorWireAuth
 
-_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
-_RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
+_SAFE_METHODS = frozenset({HttpMethod.GET, HttpMethod.HEAD, HttpMethod.OPTIONS})
+_RETRYABLE_STATUS = frozenset(
+    {
+        HTTPStatus.REQUEST_TIMEOUT,
+        HTTPStatus.TOO_EARLY,
+        HTTPStatus.TOO_MANY_REQUESTS,
+        HTTPStatus.INTERNAL_SERVER_ERROR,
+        HTTPStatus.BAD_GATEWAY,
+        HTTPStatus.SERVICE_UNAVAILABLE,
+        HTTPStatus.GATEWAY_TIMEOUT,
+    }
+)
 _MAX_MUTATIONS_PER_CALL = 20
+_DEFAULT_VENDOR_TIMEOUT_SECONDS = 20.0
+
+_QUERY = TypeAdapter(VendorQuery, config=ConfigDict(strict=True, allow_inf_nan=False))
+_JSON_VALUE = TypeAdapter(JsonValue, config=ConfigDict(strict=True, allow_inf_nan=False))
 
 MAX_VENDOR_RESPONSE_BYTES = DEFAULT_RESPONSE_BODY_BYTES
 
 
-class VendorTransport:
+class VendorTransport(Protocol):
     """Structural port for the socket that actually sends."""
 
     async def send(self, request: HttpEgressRequest) -> HttpEgressResponse: ...
@@ -113,13 +132,13 @@ class GuardedVendorClient:
         owner: DurableMutationOwner | None = None,
         static_headers: Mapping[str, str] | None = None,
         accept_media_type: JsonMediaType = DEFAULT_JSON_MEDIA_TYPE,
-        total_timeout_seconds: float = 20.0,
+        total_timeout_seconds: float = _DEFAULT_VENDOR_TIMEOUT_SECONDS,
     ) -> None:
         try:
             origin, base_path = parse_https_target(base_url)
         except HttpEgressPolicyError as error:
             raise VendorToolError(
-                "vendor_base_url_invalid",
+                VendorHttpErrorCode.BASE_URL_INVALID,
                 "Vendor base URL is not a valid HTTPS target.",
             ) from error
         self._origin = origin
@@ -129,7 +148,7 @@ class GuardedVendorClient:
         )
         self._auth = auth
         self._vendor = vendor
-        self._transport = transport or SafeHttpTransport()
+        self._transport: VendorTransport = transport or SafeHttpTransport()
         self._owner = owner
         self._timeout = total_timeout_seconds
         self._mutation_sequence = 0
@@ -140,7 +159,7 @@ class GuardedVendorClient:
             )
         except ValidationError:
             raise VendorToolError(
-                "vendor_accept_invalid",
+                VendorHttpErrorCode.ACCEPT_INVALID,
                 "Curated vendors may negotiate only JSON media types.",
             ) from None
 
@@ -158,7 +177,7 @@ class GuardedVendorClient:
         for name, value in (static_headers or {}).items():
             if name.casefold() in RESERVED_HEADER_NAMES:
                 raise VendorToolError(
-                    "vendor_header_reserved",
+                    VendorHttpErrorCode.HEADER_RESERVED,
                     f"Header '{name}' cannot be set by a vendor.",
                 )
             checked[name] = value
@@ -172,21 +191,21 @@ class GuardedVendorClient:
         self,
         path: str,
         *,
-        method: str = "GET",
-        query: Mapping[str, Any] | None = None,
-        json: Any = None,
+        method: str = HttpMethod.GET,
+        query: VendorQuery | None = None,
+        json: JsonValue = None,
     ) -> VendorResponse:
         request = self._build(path, method=method, query=query, payload=json)
         try:
             response = await self._transport.send(request)
         except HttpEgressPolicyError as error:
             raise VendorToolError(
-                "vendor_egress_rejected",
+                VendorHttpErrorCode.EGRESS_REJECTED,
                 "Vendor request was refused by the egress boundary.",
             ) from error
         except TimeoutError as error:
             raise VendorToolError(
-                "vendor_unavailable",
+                VendorHttpErrorCode.UNAVAILABLE,
                 "Vendor did not answer within the request budget.",
             ) from error
         return _parse(response)
@@ -195,18 +214,18 @@ class GuardedVendorClient:
         self,
         path: str,
         *,
-        method: str = "POST",
-        query: Mapping[str, Any] | None = None,
-        json: Any = None,
+        method: str = HttpMethod.POST,
+        query: VendorQuery | None = None,
+        json: JsonValue = None,
     ) -> VendorResponse:
         if self._owner is None:
             raise VendorToolError(
-                "durable_owner_required",
+                VendorHttpErrorCode.DURABLE_OWNER_REQUIRED,
                 "A vendor mutation requires a committed tool-use owner.",
             )
         if self._mutation_sequence >= _MAX_MUTATIONS_PER_CALL:
             raise VendorToolError(
-                "mutation_budget_exhausted",
+                VendorHttpErrorCode.MUTATION_BUDGET_EXHAUSTED,
                 "One curated tool call may not make this many vendor mutations.",
             )
         sequence = self._mutation_sequence
@@ -258,7 +277,7 @@ class GuardedVendorClient:
         )
         if not replies:
             raise VendorToolError(
-                "vendor_outcome_unknown",
+                VendorHttpErrorCode.OUTCOME_UNKNOWN,
                 "Vendor mutation completed without a readable reply.",
             )
         return replies[-1]
@@ -268,8 +287,8 @@ class GuardedVendorClient:
         path: str,
         *,
         method: str,
-        query: Mapping[str, Any] | None,
-        payload: Any,
+        query: VendorQuery | None,
+        payload: JsonValue,
         idempotency_key: str | None = None,
     ) -> HttpEgressRequest:
         url = self._url(path, query)
@@ -283,11 +302,18 @@ class GuardedVendorClient:
         if payload is not None:
             if method in _SAFE_METHODS:
                 raise VendorToolError(
-                    "vendor_request_invalid",
+                    VendorHttpErrorCode.REQUEST_INVALID,
                     "A safe-method vendor request cannot carry a body.",
                 )
-            body = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode()
-            headers["Content-Type"] = "application/json"
+            try:
+                validated = _JSON_VALUE.validate_python(payload)
+                body = json.dumps(validated, ensure_ascii=False, allow_nan=False).encode()
+            except (ValidationError, ValueError, TypeError):
+                raise VendorToolError(
+                    VendorHttpErrorCode.REQUEST_INVALID,
+                    "Vendor request body must contain only finite JSON values.",
+                ) from None
+            headers["Content-Type"] = DEFAULT_JSON_MEDIA_TYPE
         if idempotency_key is not None:
             headers["Idempotency-Key"] = idempotency_key
         try:
@@ -304,14 +330,14 @@ class GuardedVendorClient:
             )
         except HttpEgressPolicyError as error:
             raise VendorToolError(
-                "vendor_request_invalid",
+                VendorHttpErrorCode.REQUEST_INVALID,
                 "Vendor request was rejected before reaching the network.",
             ) from error
 
-    def _url(self, path: str, query: Mapping[str, Any] | None) -> str:
+    def _url(self, path: str, query: VendorQuery | None) -> str:
         if "://" in path:
             raise VendorToolError(
-                "vendor_path_invalid",
+                VendorHttpErrorCode.PATH_INVALID,
                 "A curated tool must supply a path, never a full URL.",
             )
         suffix = path if path.startswith("/") else f"/{path}"
@@ -320,24 +346,27 @@ class GuardedVendorClient:
         return f"{url}?{urlencode(pairs)}" if pairs else url
 
 
-def _query_pairs(query: Mapping[str, Any] | None) -> list[tuple[str, str]]:
-    if not query:
+def _query_pairs(query: VendorQuery | None) -> list[tuple[str, str]]:
+    """Repeat scalar lists; retain legacy boolean spelling and skip null values."""
+    if query is None:
         return []
+    try:
+        validated = _QUERY.validate_python(query)
+    except ValidationError:
+        raise VendorToolError(
+            VendorHttpErrorCode.QUERY_INVALID,
+            "Vendor query values must be finite scalars or scalar lists.",
+        ) from None
     pairs: list[tuple[str, str]] = []
-    for name, value in query.items():
+    for name, value in validated.items():
         if value is None:
             continue
         if isinstance(value, bool):
-            pairs.append((str(name), "true" if value else "false"))
+            pairs.append((name, "true" if value else "false"))
         elif isinstance(value, (str, int, float)):
-            pairs.append((str(name), str(value)))
+            pairs.append((name, str(value)))
         elif isinstance(value, (list, tuple)):
-            pairs.extend((str(name), str(item)) for item in value if item is not None)
-        else:
-            raise VendorToolError(
-                "vendor_query_invalid",
-                "Vendor query values must be scalars or scalar lists.",
-            )
+            pairs.extend((name, str(item)) for item in value if item is not None)
     return pairs
 
 
@@ -349,18 +378,20 @@ def _parse(response: HttpEgressResponse) -> VendorResponse:
             status_code=response.status_code, data=None, link_headers=link_headers
         )
     media = _media_type(response)
-    if media and media != "application/json" and not media.endswith("+json"):
+    if media and media != DEFAULT_JSON_MEDIA_TYPE and not media.endswith("+json"):
         raise VendorToolError(
-            "vendor_media_unsupported",
+            VendorHttpErrorCode.MEDIA_UNSUPPORTED,
             "Vendor returned a media type curated tools do not accept.",
         )
     try:
-        data = json.loads(response.body)
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        # JsonValue's JSON-mode schema accepts any decoded JSON, including NaN.
+        # Validate the decoded Python value to enforce the finite-number contract.
+        data = _JSON_VALUE.validate_python(json.loads(response.body))
+    except (UnicodeDecodeError, ValueError):
         raise VendorToolError(
-            "vendor_response_invalid",
+            VendorHttpErrorCode.RESPONSE_INVALID,
             "Vendor returned a body that is not valid JSON.",
-        ) from error
+        ) from None
     return VendorResponse(
         status_code=response.status_code, data=data, link_headers=link_headers
     )
@@ -373,12 +404,12 @@ def _media_type(response: HttpEgressResponse) -> str:
     return values[0].split(";", 1)[0].strip().lower()
 
 
-def _outcome(method: str, response: HttpEgressResponse) -> OutboundSendOutcome:
-    if 200 <= response.status_code < 300:
+def _outcome(method: HttpMethod, response: HttpEgressResponse) -> OutboundSendOutcome:
+    if HTTPStatus.OK <= response.status_code < HTTPStatus.MULTIPLE_CHOICES:
         return OutboundSendSucceeded(status_code=response.status_code)
     if response.status_code in _RETRYABLE_STATUS:
         failure = f"vendor_http_{response.status_code}"
-        if method in _SAFE_METHODS or method in {"PUT", "DELETE"}:
+        if method in _SAFE_METHODS or method in {HttpMethod.PUT, HttpMethod.DELETE}:
             return OutboundSendRetryable(failure_code=failure)
         return OutboundSendUnknown(failure_code=failure)
     return OutboundSendTerminal(failure_code=f"vendor_http_{response.status_code}")

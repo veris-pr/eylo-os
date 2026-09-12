@@ -1,5 +1,6 @@
 """Construct the explicitly selected carrier service from resolved settings."""
 
+from eylo.common.contracts.speech_runtime import SpeechTransportFormat
 from eylo.sockets.telephony.base import BaseTelephonyService, TelephonyConfig
 from eylo.sockets.telephony.config import TelephonyProvider
 
@@ -43,7 +44,7 @@ class TelephonyFactory:
     def provider(self) -> TelephonyProvider:
         return self._config.provider
 
-    def get_config(self) -> dict[str, object]:
+    def get_config(self) -> SpeechTransportFormat:
         """Return the service's public media configuration, not its credentials."""
         return self.service.get_config()
 

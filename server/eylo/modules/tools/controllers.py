@@ -14,6 +14,8 @@ from eylo.modules.tools.domain import (
     InvalidDefinitionDraftError,
 )
 from eylo.modules.tools.schemas.api import (
+    ToolActionResponseSchema,
+    ToolActionStatus,
     ToolCreateRequestSchema,
     ToolFilterSchema,
     ToolListResponseSchema,
@@ -198,10 +200,14 @@ class ToolController:
         except (DefinitionRevisionError, DefinitionDomainError) as error:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
 
-    async def delete_tool(self, tool_id: UUID, organization_id: UUID):
+    async def delete_tool(
+        self, tool_id: UUID, organization_id: UUID
+    ) -> ToolActionResponseSchema:
         """Project HTTP deletion onto the domain's non-destructive withdrawal."""
         await self.withdraw_tool(tool_id=tool_id, organization_id=organization_id)
-        return {"status": "success", "message": "Tool withdrawn successfully"}
+        return ToolActionResponseSchema(
+            status=ToolActionStatus.SUCCESS, message="Tool withdrawn successfully"
+        )
 
 
 async def _ready_capabilities(organization_id: UUID) -> set[Capability]:

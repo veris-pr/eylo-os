@@ -10,6 +10,7 @@ from eylo.modules.auth.services.auth_service import get_current_user
 from eylo.modules.tools.constants import APP_TAG
 from eylo.modules.tools.controllers import ToolController
 from eylo.modules.tools.schemas.api import (
+    ToolActionResponseSchema,
     ToolCreateRequestSchema,
     ToolListResponseSchema,
     ToolPublishRequestSchema,
@@ -26,7 +27,7 @@ router = APIRouter(prefix="/{organization_id}/tools", tags=[APP_TAG])
 async def list_system_tools_catalog(
     organization_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> ToolListResponseSchema:
     """List all available system tools from the code registry.
 
     Returns virtual tool objects with deterministic UUIDs scoped to the org.
@@ -41,7 +42,7 @@ async def list_provider_tools_catalog(
     organization_id: UUID,
     capability: Capability,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> ToolListResponseSchema:
     """List Agent tools enabled by one provider capability.
 
     The projection is independent of current configuration readiness so an
@@ -59,7 +60,7 @@ async def list_tools(
     organization_id: UUID,
     mcp_server_id: UUID | None = None,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> ToolListResponseSchema:
     _require_organization(current_user, organization_id)
     return await ToolController().list_tools(organization_id, mcp_server_id)
 
@@ -69,7 +70,7 @@ async def create_tool(
     organization_id: UUID,
     request: ToolCreateRequestSchema,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> ToolResponseSchema:
     _require_organization(current_user, organization_id)
     return await ToolController().create_tool(organization_id, request)
 
@@ -79,7 +80,7 @@ async def get_tool(
     organization_id: UUID,
     tool_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> ToolResponseSchema:
     _require_organization(current_user, organization_id)
     return await ToolController().get_tool(tool_id, current_user)
 
@@ -90,7 +91,7 @@ async def update_tool(
     tool_id: UUID,
     request: ToolUpdateRequestSchema,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> ToolResponseSchema:
     _require_organization(current_user, organization_id)
     return await ToolController().update_tool(tool_id, organization_id, request)
 
@@ -104,7 +105,7 @@ async def publish_tool(
     tool_id: UUID,
     request: ToolPublishRequestSchema,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> ToolRevisionResponseSchema:
     _require_organization(current_user, organization_id)
     return await ToolController().publish_tool(
         tool_id=tool_id,
@@ -119,7 +120,7 @@ async def withdraw_tool(
     organization_id: UUID,
     tool_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> ToolResponseSchema:
     _require_organization(current_user, organization_id)
     return await ToolController().withdraw_tool(
         tool_id=tool_id,
@@ -137,7 +138,7 @@ async def revoke_tool(
     revision: int,
     request: ToolRevokeRequestSchema,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> ToolRevisionResponseSchema:
     _require_organization(current_user, organization_id)
     return await ToolController().revoke_tool(
         tool_id=tool_id,
@@ -153,7 +154,7 @@ async def delete_tool(
     organization_id: UUID,
     tool_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> ToolActionResponseSchema:
     _require_organization(current_user, organization_id)
     return await ToolController().delete_tool(tool_id, organization_id)
 

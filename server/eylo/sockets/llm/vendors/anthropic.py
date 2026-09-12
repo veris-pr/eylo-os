@@ -98,7 +98,7 @@ class AnthropicAdapter(LLMVendorAdapter):
                                     type="tool_use",
                                     id=call.id,
                                     name=call.name,
-                                    input=call.input,
+                                    input=dict(call.input),
                                 )
                             ],
                         )

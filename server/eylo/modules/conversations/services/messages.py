@@ -2,7 +2,7 @@
 
 import json
 from hashlib import sha256
-from typing import TYPE_CHECKING, Any, List, Optional
+from typing import TYPE_CHECKING, List, Optional
 from uuid import UUID, uuid4
 
 import nh3 as bleach
@@ -47,6 +47,7 @@ from eylo.modules.conversations.schemas.messages import (
     MessageInDb,
     MessageKind,
     MessageRequestFeedback,
+    MessageUpdate,
     RequestStatus,
 )
 from eylo.modules.conversations.schemas.request_status import (
@@ -102,7 +103,7 @@ class MessageService(EyloBaseService[MessageInDb, MessagesModel]):
         return self._repository
 
     @repository.setter
-    def repository(self, value: MessageRepository):
+    def repository(self, value: MessageRepository) -> None:
         self._repository = value
 
     def __init__(
@@ -581,7 +582,7 @@ class MessageService(EyloBaseService[MessageInDb, MessagesModel]):
             created=False,
         )
 
-    async def update_(self, message_id: UUID, data: dict) -> MessageInDb:
+    async def update_(self, message_id: UUID, data: MessageUpdate) -> MessageInDb:
         """Update a message by its ID."""
         entity = await self.repository.update_(message_id, data)
         return self.orm_to_schema(entity)
@@ -689,7 +690,7 @@ class MessageService(EyloBaseService[MessageInDb, MessagesModel]):
     ) -> Optional[MessageInDb]:
         """Update the request feedback for the first message matching the request_id."""
         entity = await self.repository.update_first_by_request_id(
-            request_id, {"request_feedback": feedback.value}
+            request_id, MessageUpdate(request_feedback=feedback)
         )
         if not entity:
             return None
@@ -705,7 +706,7 @@ class MessageService(EyloBaseService[MessageInDb, MessagesModel]):
         entity = await self.repository.update_first_by_request_id_and_organization(
             request_id=request_id,
             organization_id=organization_id,
-            data={"request_feedback": feedback.value},
+            data=MessageUpdate(request_feedback=feedback),
         )
         if not entity:
             return None
@@ -725,7 +726,7 @@ class MessageService(EyloBaseService[MessageInDb, MessagesModel]):
                 organization_id=organization_id,
                 contact_id=contact_id,
                 conversation_id=conversation_id,
-                data={"request_feedback": feedback.value},
+                data=MessageUpdate(request_feedback=feedback),
             )
         )
         if not entity:
@@ -871,10 +872,9 @@ def _context_digest(context_manifest: dict[str, JsonValue]) -> str:
     return sha256(encoded).hexdigest()
 
 
-def _json_value(value: Any) -> Any:
-    if isinstance(value, BaseModel):
-        return value.model_dump(mode="json")
-    return value
+def _json_value(value: BaseModel | None) -> dict[str, JsonValue] | None:
+    """Compare a typed filing field with its JSONB representation."""
+    return None if value is None else value.model_dump(mode="json")
 
 
 def _same_filing(

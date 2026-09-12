@@ -22,6 +22,12 @@ class VendorAuthKind(str, Enum):
     OAUTH2 = "oauth2"
 
 
+class IntegrationCatalogSource(str, Enum):
+    """Catalog authority identified by curated capability projections."""
+
+    CURATED = "curated"
+
+
 class ToolEffect(str, Enum):
     """Whether one curated tool may change vendor-side state.
 
@@ -51,6 +57,7 @@ class ToolExecutionMode(str, Enum):
 
 __all__ = [
     "CredentialLocation",
+    "IntegrationCatalogSource",
     "ToolEffect",
     "ToolExecutionMode",
     "VendorAuthKind",

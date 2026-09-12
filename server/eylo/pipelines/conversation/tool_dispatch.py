@@ -22,6 +22,7 @@ from eylo.modules.agents.services.tool_execution_utils import (
     ModelToolNotFoundError,
     ToolApprovalRequiredError,
     ToolExecutionBlockedError,
+    ToolExecutionResult,
     ToolExecutorNotFoundError,
     ToolInputValidationError,
     execute_exact_tool,
@@ -54,7 +55,7 @@ class HandoffInput(BaseModel):
 async def execute_registered_tool(
     context: PlatformExecutionContext,
     tool_call: LLMToolUseBlock,
-) -> str | dict | list:
+) -> ToolExecutionResult:
     """Resolve and execute one exact in-process tool revision."""
     error_map = {
         "tool_not_found": "Error: The requested tool was not found.",

@@ -16,6 +16,12 @@ from eylo.common.contracts.memory_reconciliation import (
     MemoryReconciliationOutcome,
     MemoryReconciliationProposal,
 )
+from eylo.sockets.memory.reconciliation_wire import (
+    ReconciliationPrompt,
+    ReconciliationPromptCandidate,
+    ReconciliationPromptFact,
+    ReconciliationResponse,
+)
 
 RECONCILIATION_PROMPT_REVISION = "memory-reconciliation-v1"
 
@@ -48,21 +54,25 @@ def build_reconciliation_prompt(
 ) -> str:
     if not 1 <= len(inputs) <= MEMORY_RECONCILIATION_MAX_CHANGES:
         raise MemoryError("Memory reconciliation input count is outside its limit.")
-    payload = {
-        "facts": [
-            {
-                "id": index,
-                "content": item.content,
-                "candidates": [
-                    {"id": candidate_index, "content": candidate.content}
+    payload = ReconciliationPrompt(
+        facts=tuple(
+            ReconciliationPromptFact(
+                id=index,
+                content=item.content,
+                candidates=tuple(
+                    ReconciliationPromptCandidate(
+                        id=candidate_index, content=candidate.content
+                    )
                     for candidate_index, candidate in enumerate(item.candidates)
-                ],
-            }
+                ),
+            )
             for index, item in enumerate(inputs)
-        ]
-    }
+        )
+    )
     serialized = html.escape(
-        json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        json.dumps(
+            payload.model_dump(mode="json"), ensure_ascii=False, separators=(",", ":")
+        )
     )
     return (
         '<memory-reconciliation-data trust="untrusted">'
@@ -82,44 +92,24 @@ def parse_reconciliation_proposal(
     if len(raw.encode("utf-8")) > MEMORY_RECONCILIATION_MAX_RESPONSE_BYTES:
         raise MemoryError("Memory reconciliation response exceeds its byte limit.")
     try:
-        payload = json.loads(_json_document(raw))
-    except json.JSONDecodeError:
-        raise MemoryError("Memory reconciliation returned invalid JSON.") from None
-    if not isinstance(payload, dict) or set(payload) != {"decisions"}:
-        raise MemoryError("Memory reconciliation returned an invalid object.")
-    entries = payload["decisions"]
-    if not isinstance(entries, list) or len(entries) != len(inputs):
+        response = ReconciliationResponse.model_validate_json(_json_document(raw))
+    except ValidationError:
+        raise MemoryError(
+            "Memory reconciliation returned an invalid response."
+        ) from None
+    if len(response.decisions) != len(inputs):
         raise MemoryError("Memory reconciliation returned an incomplete decision set.")
 
     decisions: list[MemoryReconciliationDecision] = []
     seen: set[int] = set()
-    for entry in entries:
-        if not isinstance(entry, dict) or set(entry) != {
-            "fact",
-            "outcome",
-            "related",
-        }:
-            raise MemoryError("Memory reconciliation returned an invalid decision.")
-        source_index = entry["fact"]
-        if (
-            isinstance(source_index, bool)
-            or not isinstance(source_index, int)
-            or not 0 <= source_index < len(inputs)
-            or source_index in seen
-        ):
+    for entry in response.decisions:
+        source_index = entry.fact
+        if not 0 <= source_index < len(inputs) or source_index in seen:
             raise MemoryError("Memory reconciliation referenced an invalid fact.")
         seen.add(source_index)
         source = inputs[source_index]
-        try:
-            outcome = MemoryReconciliationOutcome(
-                str(entry["outcome"]).strip().lower()
-            )
-        except ValueError:
-            raise MemoryError(
-                "Memory reconciliation returned an unknown outcome."
-            ) from None
-
-        related_index = entry["related"]
+        outcome = entry.outcome
+        related_index = entry.related
         related = None
         if outcome is MemoryReconciliationOutcome.UNRELATED:
             if related_index is not None:
@@ -127,11 +117,7 @@ def parse_reconciliation_proposal(
                     "Memory reconciliation related an unrelated decision."
                 )
         else:
-            if (
-                isinstance(related_index, bool)
-                or not isinstance(related_index, int)
-                or not 0 <= related_index < len(source.candidates)
-            ):
+            if related_index is None or not 0 <= related_index < len(source.candidates):
                 raise MemoryError(
                     "Memory reconciliation referenced an invalid candidate."
                 )

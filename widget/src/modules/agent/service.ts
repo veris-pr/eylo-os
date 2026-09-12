@@ -108,9 +108,9 @@ class AgentService {
   private _systemMessageHandler = () => {
     const _handler = (message: any) => {
       if (message.data && message.data.agents) {
-        message.data.agents.forEach((agent: any) => {
-          this._agentStore.add_(new Agent(agent));
-        });
+        this._agentStore.replaceAvailableAgents(
+          message.data.agents.map((agent: TAgent) => new Agent(agent))
+        );
       } else {
         logger.warn("Received system message without data.");
       }
@@ -173,7 +173,7 @@ class AgentService {
   }
 
   public listAgents(): TAgent[] {
-    const agents = this._agentStore.list_();
+    const agents = this._agentStore.listAvailableAgents();
     if (!agents || agents.length === 0) {
       logger.warn("No agents found.");
       return [];

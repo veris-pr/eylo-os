@@ -10,8 +10,10 @@ are superseded by the newest deployment record.
 | Gate | Current evidence | Remaining acceptance |
 | --- | --- | --- |
 | Static backend contracts | Lint passes; Pyrefly has zero errors and two existing redundant-cast warnings | Static success does not prove native input shapes |
-| DB/session injection and deletion workflow | Concrete DB-injection constructors and scheduler factory typed; native PostgreSQL zero-row cursor check passes. Deletion task identities/receipts and remaining call-erasure session parameters typed; function compatibility checks pass | Local, not deployed. These checks do not prove live deletion, scheduler resilience, or the remaining platform-wide contracts |
-| WebSocket/voice session contracts | Typed config consumers, resource handles, queues, task names, runtime modes and browser metrics/config handoff implemented locally; real-model function probes pass, including failed-close isolation | Not deployed; native voice/widget acceptance remains open |
+| Remaining-contract inventory | Refreshed AST inventory identifies 410 signature/broad-annotation flags after the Knowledgebase route batch, down from 428 | These are triage candidates, not defects or a completion percentage. Missing route returns, telephony payload boundaries and generic/SDK exceptions still require classification and exact-path verification. Class fields and remaining literals require separate coverage |
+| Agent lifecycle delivery | Typed delivery deployed. Function/Redis checks pass; native widget SOR search/detail received lifecycle sequence 1–9 and completed | Broader cancellation/concurrency delivery remains open |
+| DB/session injection and deletion workflow | Typed constructors, deletion task identities/receipts and call-erasure parameters deployed. Native PostgreSQL zero-row cursor check and function compatibility checks pass | These checks do not prove live deletion, scheduler resilience, or remaining platform-wide contracts |
+| WebSocket/voice session contracts | Typed runtime state and carrier media handoffs deployed. Fixed first-live-turn prompt identity; native decomposed and OpenAI realtime calls replied and completed with canonical transcripts | Broader vendor coverage, interruptions, abrupt disconnect and recording upload remain open; these calls do not prove all voice behavior |
 | SOR vendor wire coverage | Latest Jira, GitHub, Intercom and Notion operation contracts deployed on `6f6dec0fd1f6`, in addition to earlier vendor batches; native Intercom reconciliation completed all seven streams without rejects | Final operation inventory remains open. Intercom has four pending relationships and a parent-child removal reconciliation limitation; no native attachment data was available |
 | App-webhook ingress contracts | Four-vendor batch deployed on image `84b315c2fb99`; 597 contract checks, 28 substituted ingress scenarios and Linear signature/routing checks passed inside the image | Fresh native deliveries remain open; HubSpot raw payloads expired, no Intercom/Notion receipts in QA |
 | Managed webhook contracts | Management and inbound models deployed; 559 inbound adapter comparisons and 24 substituted ingress scenarios passed locally and inside the image | Fresh native deliveries and registration remain open. Latest API check shows Jira active, Zendesk still requires reauthorization; GitHub SOR is not configured |
@@ -20,11 +22,445 @@ are superseded by the newest deployment record.
 | Stored provider compatibility | 25 saved configs inspected; 13 ready voice receipts restored; native Speechmatics connection/cleanup passed | Native conversations across configured providers |
 | Published voice bindings | Public CLI aggregate resolves both existing realtime and decomposed QA agents at revision 1 | Both have no storage binding; recording upload is not covered |
 | Scheduler filing and stranded recovery | Original one-shot recovered once, ran real `issue_search`/`issue_get`, completed/achieved and released capacity | Worker-crash and waiting/resume cases remain separate |
-| Widget and console | Widget opened and sent one fresh read-only message on image `d190e5e81c29`; public console API confirms both SOR tools and final answer completed without tool errors | Browser observation timed out after submission and on recheck; visual response and console rendering remain unverified |
+| Widget and console | Isolated Chrome QA verified SOR search/detail, memory recall, generated-form submission and console transcript rendering. Historical-Agent cache no longer widens the chooser; fresh capability request returns 200 | Native voice, pagination depth and broader product coverage remain separate gates |
 | Durable execution | Native schedule, direct recall, input wait/resume, waiting-run cancellation and controlled worker restart while waiting passed; fresh `c828c03c8f83` Memory recall/input/resume and SOR search/detail runs completed with canonical replay and released reservations | In-flight cancellation, forced worker crash, concurrent execution and broader tool-bearing replay |
 | Direct-objective memory | Fixed conversation-only context assumption; native recall returns four agent-owned facts and releases capacity | Direct-objective writes need run-based provenance; current mutation contract requires a real conversation/message |
 | Sandbox | Typed workspace/checkpoint/tool paths validated with substituted dependencies | Native configured sandbox execution/cleanup |
-| Final handoff | Four app services run image `84ba804d0666`, including typed Agent-run public JSON projections and preceding timeline work. All 158 QA run projections and four input requests validate under deployed code; public readback passes. Latest source work remains uncommitted. DB, Redis and provider configs were preserved | Complete remaining contracts, native QA and the full acceptance matrix |
+| Final handoff | Four app services run image `a583b73561b8e79d06f31d3b4f4d4a5b32f73f1cee29cfdc17dfcbf1c4751d0c`, including typed curated registry bindings and Knowledgebase route returns, on top of earlier integration and Memory changes. Source work remains uncommitted. DB, Redis and provider configs were preserved | Complete remaining contracts, native QA and the full acceptance matrix |
+
+### Curated registry binding and Knowledgebase route outputs — 2026-09-12
+
+- Removed `Any` from the curated callable contract. Generic registration keeps
+  the handler's concrete input and result types. A frozen binding owns the input
+  model and implementation; the heterogeneous registry invokes it through a
+  structural port. A runtime model check prevents a different model from entering
+  the handler, without reconstructing or copying a valid input/context/result.
+  The public input schema comes from that same binding.
+- The decorator still returns the original function; repeated registration of
+  that implementation remains allowed, while a different implementation for the
+  same wire ID remains refused. Functions and input classes stay excluded from
+  snapshots. The executor still validates input before credential resolution and
+  JSON results after execution; exceptions and cancellation propagate unchanged.
+- Static negative probes produce exactly the two intended errors: mismatched
+  registration and wrong direct-call input. A positive `assert_type` confirms
+  the decorated result is retained. Full backend typing passes with the same two
+  existing redundant-cast warnings.
+- 914 registry/executor function checks pass locally and in the network-isolated
+  image, including all 148 tools across 29 vendors, original input-model identity,
+  catalog/schema parity, duplicate handling, payload/result identity, wrong-input
+  refusal, safe error propagation and executor result validation. Auth, grants,
+  transport and persistence were substituted; no live curated account is configured.
+  Existing 267 HTTP and 333 API/widget contract checks also passed locally.
+- Added actual Python return types for 18 Knowledgebase/grant/reindex/ingestion/
+  corpus routes. ORM values are not falsely annotated as Pydantic responses;
+  existing explicit HTTP response models continue to perform serialization.
+  All function bodies and generated OpenAPI remain identical. 94 route checks
+  pass locally and in the isolated image, including all cross-org refusals.
+- Pre-deployment public reads pass for the existing KB and ingestion row: five
+  authenticated requests, no corpus rows. The first probe mistakenly applied an
+  ORM validation alias (`meta`) to the public response (`metadata`); the corrected
+  probe validates public field names without changing production schemas.
+- All four app services now run the final-handoff image after idle-run and exact
+  environment checks. The API is healthy. Post-deployment checks passed for 33
+  authenticated integration reads and the five KB reads; source data and provider
+  credentials were preserved. No migrations, DB/Redis resets or commits. This
+  batch changes no frontend source or public schema; prior browser/build evidence
+  is not claimed as fresh native connected-tool QA.
+- Remaining KB schema dictionary fields, scheduler/service contracts and telephony
+  wire/control boundaries remain open; route annotations do not close those
+  separate contracts. The refreshed signature inventory has 410 candidates;
+  registry generic aliases and model fields are outside that counter's coverage.
+
+### Integration HTTP payload contracts — 2026-09-12
+
+- Replaced query/body `Any` with flat scalar-query and recursive JSON contracts.
+  The transport port is a structural protocol; HTTP methods, retry statuses and
+  transport error codes use their owning enums. Vendor resource schemas remain
+  vendor-owned rather than leaking into the common transport.
+- Query validation now rejects nested objects in repeated values instead of
+  stringifying Python dictionaries. Request and response JSON rejects non-finite
+  numbers. In the installed Pydantic version, `JsonValue` JSON-mode validation
+  bypasses the finite-number configuration; response decoding therefore uses
+  JSON decoding followed by Python-mode validation. This was reproduced with
+  both `NaN` and numeric overflow, not inferred from annotations.
+- All 267 local function checks pass: baseline/current valid query and body
+  encoding, fingerprints, response projection, method/status outcomes, invalid
+  input refusal, cancellation propagation, and actual GitHub search/comment and
+  Google Calendar listing functions. The transport and durable receipt owner
+  were substituted; these checks do not prove live vendor requests or DB-backed
+  receipt recovery. Lint passes; Pyrefly has zero errors and the same two existing
+  redundant-cast warnings.
+- The same 267 checks passed inside the built image with networking disabled.
+  Refreshed only the four application services after checking all persisted
+  Agent runs were terminal and current environment values matched. All four
+  run the final-handoff image above; the API is healthy. No migration, DB/Redis
+  reset, credential change or vendor mutation was performed.
+- Post-deployment: 33 authenticated integration API reads retained exact JSON
+  parity. Native isolated Chrome passed login, the six-source list, the 29-vendor
+  marketplace and widget capability loading for six published Agents, without
+  page errors. This org has no curated installations/connections, so the native
+  smoke check does not prove connected vendor transport. The six SOR sources
+  remain a separate subsystem; Zendesk still requires reauthorization.
+- Documentation validation and whitespace checks pass. Frontend sources and
+  public schemas are unchanged by this HTTP slice; their prior build evidence
+  is not represented as a fresh build.
+- The registry boundary identified here is addressed by the later binding batch
+  above. Remaining module/carrier contracts and the broader platform acceptance
+  matrix remain open.
+
+### Typed reconciliation and candidate-less facts — 2026-09-12
+
+- Reproduced the stored native failure: one fact, zero candidates, an empty model
+  decision array. The parser correctly rejected it. The avoidable mistake was
+  delegating an already-determined no-peer outcome to the model.
+- Added socket-owned typed prompt/response models with strict integer indexes,
+  outcome enums and closed fields. The module completes candidate-less facts as
+  unrelated, while requiring a complete valid model proposal for facts with peers.
+  Existing ownership, revision, lifecycle and conflicting-effect validation remain
+  at the transactional apply boundary.
+- The pipeline returns a typed evaluation method so only model-backed results
+  require model-usage evidence. Existing `propose:v1` checkpoints keep full-batch
+  indexes; new `propose:v2` checkpoints index only peer comparisons. Invalid legacy
+  checkpoints remain failures; no raw response is silently reinterpreted.
+- 101 local function checks pass across prompt shape, response refusal, empty and
+  mixed batches, exact identity/revision mapping, actual SDK step replay, stored
+  proposals, cancellation, transaction boundaries and worker usage-before-apply.
+  Probe corrections matched the SDK's missing-checkpoint sentinel and the existing
+  reservation release function's positional session argument; no production
+  compatibility workaround was added. Backend lint and typing pass. The same 101
+  checks passed inside the built image with networking disabled.
+- Native widget conversation `01a09413-008c-7680-83d3-a408affb510c` saved and
+  recalled conversation facts. Read-only DB verification confirms both background
+  reconciliation paths succeeded: the first job had no candidates and used zero
+  model tokens; the follow-up had one candidate and recorded 445 model tokens.
+  Both applied complete unrelated decisions, advanced reconciled fact revisions
+  and released capacity. The historical failed job was not reset or replayed.
+
+### Integration API and widget contracts — 2026-09-12
+
+- Declared all 20 organization/public/widget route outputs, controller helpers
+  and DB dependencies using existing module contracts. Capability grouping keeps
+  typed tool rows and connections; owner/catalog discriminators use their owning
+  enums. Vendor SDK/wire data remains outside domain schemas.
+- 333 offline function checks passed locally and inside the network-isolated
+  built image: all 29 vendors and 148 tools, previous/current catalog and widget
+  JSON parity, org/contact/no-auth/disconnected cases, missing grants/installations,
+  exact published revision resolution, route auth refusal and OpenAPI compatibility.
+  The only schema changes are the three constrained response discriminators;
+  wire values, paths, request schemas and response status codes remain unchanged.
+- Before and after deployment, 33 authenticated HTTP reads passed local response
+  validation with exact JSON parity. This org has zero curated installations and
+  connections; its six configured SOR sources are a separate subsystem. Connected
+  integration projections therefore have fixture proof, not fresh vendor proof.
+- Native Chrome login, Sources, the 29-vendor marketplace and widget Agent chooser
+  passed with no page errors. The SDK's bulk-capability request returned HTTP 200
+  for six published Agents and zero integration groups, matching configuration.
+- Refreshed only four application services after idle-run and exact environment
+  checks. Regenerated API types from the deployed server. Backend lint/type checks,
+  console lint/TypeScript/build and SDK/Preact builds pass; existing redundant-cast
+  and console chunk-size warnings remain. No migrations, credential changes or
+  DB/Redis reset. Next: integration HTTP request/response contracts, then the
+  remaining module and carrier boundaries in the acceptance inventory.
+
+### Message persistence, content and update contracts — 2026-09-12
+
+- Typed tool-use arguments/results as finite JSON, parser outputs as canonical
+  content unions, ORM fields as their actual SQL string/JSON types, and internal
+  changes as the conversation-owned `MessageUpdate` model. Feedback, runner and
+  background-task callers use that patch rather than arbitrary dictionaries.
+  Omitted fields and explicit null retain their distinct meanings. The Anthropic
+  adapter copies arguments at its SDK-owned `dict[str, object]` boundary.
+- Reused the canonical known-member enum validators: the inherited permissive
+  enum constructor alone accepted invented request statuses. Focused checks now
+  reject unknown statuses/feedback while retaining case-insensitive known values.
+- Local fixture checks passed for text, image, audio, tool, widget and malformed
+  legacy task content, JSON scalar/array/object results, non-finite/nested-object
+  rejection, patch omission/null and all three scoped feedback paths.
+- Read-only baseline/current checks passed against 675 saved messages in 43 QA
+  conversations. API/content/history serialization, Anthropic prompt caching,
+  feedback query SQL, patch mutations and compiled table/index DDL match. History
+  conversion leaves canonical schemas unchanged. No operator rows were updated.
+- Backend Ruff passes; Pyrefly reports zero errors and two existing redundant-cast
+  warnings. Docker briefly stopped responding; a later daemon health check and
+  process inventory confirmed recovery and no earlier QA probe remained running.
+  No daemon restart or DB reset was performed.
+- Deployed the batch to all four app services after checking idle Agent runs and
+  exact environment parity. API health passes; live API types regenerated. Console
+  lint, TypeScript and production build pass, with the existing chunk-size warning.
+  Fresh widget conversation `01a093fc-8136-7fb3-b924-522cc9a54e03` executed
+  `issue_search`, `issue_get` and `memory_recall`; Jira issue relations and Bedrock
+  reranking results appeared in the console transcript. All 13 messages completed;
+  both Agent runs achieved their outcome and released capacity. No browser page
+  errors. The configured background Memory observer also ran; the foreground
+  read-only prompt does not make the entire conversation a no-write operation.
+- Follow-up log diagnosis reproduced failed reconciliation job
+  `01a093fd-8346-74b1-8680-4bf2e938b713` from its stored batch and Absurd checkpoint,
+  without provider calls or writes: one input, zero candidates, model response
+  `{"decisions":[]}` inside a JSON fence. The parser correctly rejects the incomplete
+  set; no proposal was stored/applied. The reconciliation path is unchanged in this
+  batch. Next fix: typed prompt/response contracts and deterministic unrelated
+  decisions for candidate-less facts, preserving complete-batch validation and
+  metering only when semantic model work occurs. Verify empty, all-candidate-less,
+  mixed and candidate-bearing batches plus replay and usage gates. Do not weaken
+  validation or retry the same invalid checkpoint as though it were a new result.
+  Server tracebacks were the known Passlib/bcrypt metadata warning, not message
+  validation failures.
+
+### Tool persistence, JSON contracts and API outputs — 2026-09-12
+
+- Typed JSON Schema, arguments, result metadata/extensions and tool draft JSON
+  fields with recursive JSON values. Unsupported Python values/non-finite
+  numbers fail at validation. Dynamic JSON Schema keywords remain data; no
+  vendor vocabulary is promoted into platform enums.
+- Added an immutable DB-accurate revision payload, preserving authored schema
+  extensions and nullable storage fields. System/local runtime reads still
+  replace obsolete stored schemas before execution. SQL string execution-mode
+  columns are annotated as strings and converted by domain schemas. Replaced
+  tool-kind string branching and dictionary-key snapshot mutation.
+- All ten tool routes have declared outputs, including the unchanged withdrawal
+  acknowledgement. Draft omission/null/partial executor settings remain valid;
+  published MCP execution still requires its existing precise contract.
+- Isolated baseline/current container checks passed: 31 saved definitions,
+  31 saved revisions, 79 visible tools, Groq wire payloads, four real API read
+  paths, withdrawal acknowledgement with an inert sink, cross-org refusal,
+  obsolete stored system schema, draft patch semantics, and invalid JSON cases.
+  Stored/API JSON and SQL table/index DDL fingerprints match the baseline.
+  Backend lint and type checks pass with two existing redundant-cast warnings.
+- Deployed to all four app services; regenerated the console API schema from
+  the live server. Console lint, TypeScript and production build passed; the
+  existing large-chunk build warning remains. The stopped console development
+  server was restarted on 127.0.0.1:5173; the existing widget remains on 5174.
+- Native widget conversation `01a093c5-e496-7d80-9583-e8de9df72339` executed
+  `issue_search` and `memory_recall`, returning Linear data and an existing
+  user memory with Bedrock reranking. Despite the requested detail lookup, the
+  Agent answered from the search result; this run does not prove `issue_get`.
+  The console rendered the persisted exchanges. Nine messages are completed;
+  the conversational and configured background-observer runs both completed /
+  achieved with released reservations. No browser page errors. The server's
+  warning remains the previously identified Passlib/bcrypt metadata lookup;
+  recent worker logs had no warning/error/traceback matches.
+- Browser-probe mistakes were not accepted as product proof: a completion
+  marker initially matched the user prompt, navigation snapshots raced React
+  rendering, and a text locator selected a hidden technical JSON copy. Corrected
+  probes wait for visible response content and destination state; independent
+  read-only persistence checks establish completion. No product fix was inferred
+  from these probe failures.
+
+### Existing six-source QA snapshot — 2026-09-12
+
+The user made Intercom, Jira, Linear, Zendesk, HubSpot CRM and Confluence
+available. Console and public source/operations APIs were checked without
+resetting data, changing credentials or triggering a sync. These are dated
+observations of automatic synchronization, not fresh vendor/webhook proofs.
+
+| Source | Observed state | Latest generation | Pending relationships |
+| --- | --- | --- | --- |
+| Confluence | Active | Running, zero rejected so far | 0 |
+| HubSpot | Active | Succeeded, 4 streams, zero rejected | 0 |
+| Intercom | Active | Succeeded, 7 streams, zero rejected | 4 |
+| Jira | Active | Running, zero rejected so far | 0 |
+| Linear | Active | Succeeded, 9 streams, zero rejected | 0 |
+| Zendesk | Reauthorization required | Failed, 9 streams, zero rejected | 0 |
+
+Zendesk's source error is `CONNECTION_NOT_ACTIVE`; the latest generation reports
+`GENERATION_INCOMPLETE`. Last successful sync was 2026-09-11 15:37 UTC. Its managed
+webhook subscription still reports Active: registration does not prove a usable
+source credential. The underlying credential failure was not re-diagnosed here.
+Intercom's four pending relationships remain a separate known acceptance gap.
+App-webhook vendors returning a null managed-subscription field were not classified
+as having no webhook; their app-owned registration is a separate contract.
+
+### Tool registration and exact execution — 2026-09-12
+
+- Registry entries now declare awaitable results; generic registration/decorators
+  preserve individual callable signatures. Catalog construction validates
+  `ToolInDb`, while `get_llm_config` returns `PlatformTool` without a dict/model
+  round trip. Removed the unused Python-name/schema-type lookup.
+- Exact dispatch carries typed JSON inputs/results through conversation and
+  swarm callers. Named dispatch-error enums preserve existing string codes.
+  Recursive result validation closes the previous dict/list passthrough, which
+  accepted nested Python objects and non-finite numbers. Valid scalars retain
+  their existing JSON text encoding; invalid-result errors omit payload values.
+- Isolated container checks reproduced the old invalid-result passthrough and
+  verified identical schemas for all 80 registered tools, catalog parity across
+  15 capability filters, registration identity/idempotency, conflicting metadata,
+  exact-name lookup, blocked/approval policies, invalid inputs, context identity,
+  real current-time execution and cancellation cleanup. No DB/vendor mutations.
+- Backend lint and type checks pass (two existing redundant-cast warnings).
+  Dynamic Pydantic field
+  construction still owns a localized SDK `Any`; broader tool JSON-schema and
+  persisted executor contracts remain in the platform inventory.
+- Native widget QA on the deployed image used the existing QA Core Mixed Agent:
+  memory recall, issue search/detail, generated radio form, visible-label
+  selection and submission all worked. Conversation
+  `01a092a7-37bd-7f73-bd38-f9e35fe8afc8` has 22 completed messages and six
+  completed/achieved runs with released capacity, checked through the console
+  and read-only ORM/application-service projections. No browser page errors.
+  This does not establish forced-crash, swarm concurrency or all-vendor coverage.
+- The direct radio-input browser probe hit its decorative overlay; selecting
+  the visible label correctly checked the option. An initial login overlapped
+  container recreation (502); login succeeded after readiness. The text
+  conversation's absent voice-session endpoint returned the existing nullable
+  404. Recent worker logs had no warning/error/traceback matches; the server's
+  single warning/traceback was Passlib reading the removed bcrypt `__about__`
+  metadata attribute during successful login. Dependency compatibility remains
+  a separate follow-up; no auth or dependency versions changed in this batch.
+
+### First live voice turn context — 2026-09-12
+
+- Native browser QA using synthetic microphone input reproduced a prompt saying
+  `voice=false` during a working STT/LLM/TTS call. Buffered live transcripts had
+  not reached canonical message storage, so history inference saw a text channel.
+- Live decomposed, handoff refresh and realtime context callers now supply their
+  pinned `VoiceRuntimeMode`. Other callers preserve channel/history inference;
+  no transcript-retention policy or provider selection changed.
+- Read-only function checks used real QA conversation/participant/published-Agent
+  models. The baseline reproduced false voice on empty live history; 12 corrected
+  cases cover normal text, latest-message inference, phone and every live mode.
+  An initial test fixture omitted the required interaction channel; supplying
+  the real `SessionChannel.WEBRTC` contract fixed the fixture, not production.
+- Ruff passes; Pyrefly reports zero errors and two existing redundant casts.
+  Documentation checks pass. All Agent runs were terminal before application
+  recreation; environment parity passed, DB/Redis were not recreated. Native
+  re-test follows this checkpoint and must not be inferred from function checks.
+
+- Native re-test completed through the widget with a synthetic microphone:
+  decomposed conversation `01a09284-c6f3-7e82-ba58-0080907315ac` and OpenAI
+  Realtime conversation `01a09286-4740-74c3-8f11-d9d6cc550ee5` both answered
+  "Voice test ready." Realtime received non-silent audio (peak browser cumulative
+  audio energy 0.8454). Both inputs ended and both peers closed after hangup;
+  neither browser reported page errors. The console shows the realtime voice
+  session Completed / Client Hangup / Clean with two completed canonical messages.
+  No storage binding exists, so this does not cover recording upload.
+- QA also reproduced normal peer closure emitting `peer_failed`: the callback
+  grouped native CLOSED and FAILED states. The corrected translation uses the
+  existing disconnected event for closure, retains failure for FAILED, and keeps
+  terminal reason/callback ownership. Twelve callback cases pass with real typed
+  runtime state and substituted event sinks. No new lifecycle enum was introduced.
+- The event correction is now deployed. Final decomposed conversation
+  `01a0928f-e921-7b50-8ef7-69cb3a3a3bea` replied "Voice test ready", received
+  non-silent audio (peak cumulative energy 0.8747), then emitted
+  `webrtc:peer_disconnected`, STT/TTS disconnected and successful hangup. The
+  input track ended and peer closed; there was no peer-failed event or browser
+  page error. All isolated voice browsers were closed after QA. Candidate 409
+  replies carried `non_public_candidate`: the existing admission policy rejects
+  forbidden non-public targets while other permitted candidates can connect.
+  This is a typed policy refusal, not a failed provider or prompt call; no
+  candidate-policy relaxation was made.
+
+### Agent API result contracts — 2026-09-12
+
+- All 28 Agent, swarm, tool-mapping and background-attachment route functions now
+  declare their return contract. Controller results preserve the service-owned
+  types; API-owned models translate tool lists and swarm membership explicitly.
+- Swarm/membership removals retain the existing `detail` JSON acknowledgements.
+  Their new response model makes those two formerly unspecified OpenAPI responses
+  explicit. Other request/response schemas and empty 204 bodies are unchanged.
+- Four real read paths match the deployed baseline JSON exactly. ASGI function
+  checks cover both removal acknowledgements, tool-removal 204, wrong-org 404,
+  and membership response conversion with all mutation sinks substituted.
+  The probe checks 28 declared outputs and rejects an empty inventory. Initial
+  fixture/import/transaction setup errors were corrected without weakening
+  application contracts; an initial FastAPI-wrapper inventory counted zero and
+  was not accepted as coverage. No operator data was mutated by these checks.
+- Deployed to all four app services. Generated console schema changed only the
+  two removal results and corrected update-route description. Console lint,
+  TypeScript/build, SDK build, Preact lint/TypeScript/build and documentation
+  checks pass. Existing large console chunks remain a build warning.
+  Native console navigation still renders all seven configured QA Agents.
+
+### Deployed browser checkpoint and catalogue correction — 2026-09-12
+
+- Four application services now run image `739e09372f024a596d1f114843b20c15aac8e6a33a293477e9573b147d5cb73d`.
+  Environment parity and all-terminal Agent-run checks passed before recreation.
+  PostgreSQL, Redis, migrations and saved provider configuration were preserved.
+- The standard browser tool again timed out. Bundled Playwright with an isolated
+  local Chrome context works; no user browser profile was accessed. Console login
+  and native widget conversations now have direct browser evidence, not just API
+  substitutes. SOR conversation `01a0926b-3367-7781-887f-984869338c4c` completed
+  search/detail with eight persisted completed messages; lifecycle sequence 1–9
+  arrived through the live WebSocket and cleared to complete. Its persisted run
+  `19e40be1-ea73-4597-aadf-ed03996133ae` completed/achieved and released capacity.
+- Memory conversation `01a0926c-c0e3-7892-a322-91329453f115` executed real recall
+  (zero matching Agent memories); run `5c7c6123-531c-409b-a916-9144339b6754`
+  completed/achieved and released capacity. Generated-form conversation
+  `01a09270-d017-72b1-a7bc-73b1e1c4e5b0` rendered a required radio field, accepted
+  Detailed, persisted the submission and displayed the Agent acknowledgement.
+  Submission run `907aacf5-5f98-4bda-8e1a-1ad4f6498ce8` completed/achieved and
+  released capacity. Console transcript shows all seven messages completed.
+- QA exposed a widget catalogue/cache conflation: hydrated historical Agents,
+  including a background Agent, entered the chooser and caused the whole bulk
+  capability request to be correctly rejected with 404. SDK state now separately
+  owns server-announced available IDs; hydration retains references without
+  granting selectability. Catalogue announcements replace availability and refresh
+  metadata. Seven function cases pass, including empty/replaced catalogues and
+  reactive notifications. Fresh browser QA shows six selectable conversational
+  Agents, a 200 bulk-capabilities response for those six IDs and no page errors.
+- The UI lifecycle correlation ID is intentionally distinct from the persisted
+  message Agent-run ID. An initial QA lookup used the former and returned 404;
+  using the message identity validated the persisted runs. Documentation now
+  explicitly distinguishes them. Console 404 for an absent text-conversation
+  voice session is the existing nullable-result path, not a rendering failure.
+- Backend lint/type checks and documentation validation pass; console lint,
+  TypeScript/build, SDK build and Preact lint/TypeScript/build pass. Existing
+  console large-chunk warnings remain. No formal review per minor correction.
+  Native voice, broader resilience and remaining contract inventory are still open.
+
+### Carrier media-format handoff — 2026-09-12
+
+- Four carrier adapters, their factory and live manager now return owned media
+  models rather than dictionaries: shared `SpeechTransportFormat` on input and
+  telephony-owned `CarrierAudioFormat` on output. WebSocket handles have their
+  actual optional resource type. Carrier codecs and sample rates are unchanged.
+- Voice consumers retain these values through STT assembly, Polly rate selection,
+  TTS consumer-format conversion and recording setup. The TTS target conversion
+  uses model attributes; it does not equate carrier format with vendor output.
+- Verification: four factories/managers, 12 STT/TTS config comparisons against
+  fixed baseline `6a2b440c`, eight real TTS-manager/recorder handoffs, inactive
+  manager refusal, missing voice-config refusal and four invalid sample rates.
+  The probe performs no vendor or DB I/O. Plivo's SDK rejected placeholder auth
+  during construction; media contracts were exercised, not authenticated REST.
+  An initial Polly fixture omitted required model/language fields; correcting the
+  fixture allowed the real resolved-config validation to run. Ruff and Pyrefly
+  pass (zero errors, two existing warnings); documentation validation passes.
+- Raw carrier message parsing and call-control payloads remain in the inventory.
+  This closes the media handoff, not telephony or platform-wide typing. Deploy
+  the accumulated batch and run product QA before another conversion slice.
+
+### Agent lifecycle delivery and remaining inventory — 2026-09-12
+
+- The broad goal remains open. A source AST inventory identified 613 flags for
+  missing function annotations or broad signature types before this batch. It
+  does not establish bugs or cover every class field/literal/vendor operation.
+  Highest-density paths include Agent/API route returns, WebSocket transport and
+  telephony vendor/base payloads. Generic JSON and SDK-owned contracts must be
+  classified rather than mechanically replaced to reduce a count.
+- Replaced lifecycle status literals and ad hoc projection with a frozen model.
+  UUIDs, positive sequence and enums remain typed until serialization. Existing
+  explicit-null message IDs, omitted optional fields and timestamp offset strings
+  are preserved. Listener utilities and contact fan-out accept JSON-value mappings;
+  generic publishing accepts read-only mappings and materializes a dictionary at
+  serialization. The first immutable-mapping probe exposed Pydantic's unsupported
+  mapping-proxy serialization; the boundary conversion fixes that new mismatch.
+- Completed manager return/task annotations and made missing-socket handling
+  explicit. Preserved the native UUID implementation for the manager's private ID.
+  Corrected the broadcast docstring: it returns no count. Resource shutdown policy
+  and conversation routing remain unchanged.
+- Verification: 144 baseline payload comparisons and three invalid contract
+  refusals; six stages through actual handlers, routing and Starlette sends;
+  matching browser/call delivery and other-contact/org/unrelated-call exclusion.
+  A separate native-container probe used a unique real Redis channel and current
+  source contracts to deliver all six stages to an in-process ASGI socket. It
+  cancelled/joined its listener and closed Redis/WebSocket resources afterward.
+  No real user session or saved record was touched. Initial isolated import failed
+  because the running image lacks the new session contract; including the matching
+  local schema/runtime-port sources fixed the probe, without deploying services.
+- During verification, HEAD changed externally to `0eda9296`, including preceding
+  work and the in-progress lifecycle batch. This agent did not create that commit.
+  Comparison probes now pin `6a2b440c`; current HEAD must not be used as the old
+  behavior oracle. The subsequent mapping-serialization correction and evidence
+  updates remain working-tree changes. Deployment and full-goal acceptance remain
+  separate from the checkout's commit state.
 
 ### DB/session injection and deletion workflow — 2026-09-12, local
 

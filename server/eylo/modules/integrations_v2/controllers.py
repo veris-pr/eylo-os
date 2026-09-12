@@ -45,9 +45,16 @@ from .schemas.api import (
 from .services.installations import CuratedIntegrationService
 
 if TYPE_CHECKING:
+    from eylo.modules.agents.services.indb import AgentToolService
     from eylo.modules.connections.schemas.external import ExternalConnectionInDb
     from eylo.modules.contacts.schemas.indb import ContactInDb
-    from eylo.pipelines.integrations_v2.contracts import CuratedToolSpec
+    from eylo.pipelines.integrations_v2.contracts import (
+        CuratedToolSpec,
+        CuratedVendorSpec,
+    )
+    from eylo.pipelines.integrations_v2.registry import CuratedRegistry
+
+    from .schemas.indb import InstallationInDb
 
 _NOT_FOUND_CODES = frozenset(
     {
@@ -822,10 +829,10 @@ class CuratedIntegrationController:
     async def _require_unique_model_name(
         self,
         *,
-        service,
+        service: AgentToolService,
         organization_id: uuid.UUID,
         agent_id: uuid.UUID,
-        registry,
+        registry: CuratedRegistry,
         candidate: str,
         candidate_tool_id: uuid.UUID,
     ) -> None:
@@ -898,7 +905,9 @@ class CuratedIntegrationController:
             vendor=completed.vendor,
         )
 
-    async def _installation(self, organization_id: uuid.UUID, vendor: str):
+    async def _installation(
+        self, organization_id: uuid.UUID, vendor: str
+    ) -> InstallationInDb:
         rows = await CuratedIntegrationService().list_installations(
             organization_id=organization_id
         )
@@ -910,12 +919,12 @@ class CuratedIntegrationController:
             detail="Curated vendor is not installed.",
         )
 
-    def _registry(self):
+    def _registry(self) -> CuratedRegistry:
         from eylo.pipelines.integrations_v2.registry import load_vendors
 
         return load_vendors()
 
-    def _offer(self, vendor: str):
+    def _offer(self, vendor: str) -> tuple[CuratedVendorOffer, CuratedVendorSpec]:
         registry = self._registry()
         spec = registry.vendor(vendor)
         if spec is None:
@@ -936,7 +945,9 @@ class CuratedIntegrationController:
         )
 
     @staticmethod
-    def _vendor_summary(spec, registry, installed: set[str]):
+    def _vendor_summary(
+        spec: CuratedVendorSpec, registry: CuratedRegistry, installed: set[str]
+    ) -> CuratedVendorSummarySchema:
         return CuratedVendorSummarySchema(
             vendor=spec.vendor,
             display_name=spec.display_name,

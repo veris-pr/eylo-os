@@ -42,7 +42,7 @@ async def complete_curated_authorization(
     code: str | None = Query(default=None),
     state: str = Query(min_length=1),
     error: str | None = Query(default=None),
-):
+) -> HTMLResponse:
     """Handle the provider redirect and store the resulting connection."""
     return await CuratedIntegrationController().complete_public_authorization(
         code=code, state=state, error=error
@@ -56,7 +56,7 @@ async def complete_curated_authorization(
 async def list_curated_vendors(
     organization_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> list[CuratedVendorSummarySchema]:
     """Browse the curated vendors this deployment carries."""
     _require_organization(current_user, organization_id)
     return await CuratedIntegrationController().list_vendors(
@@ -72,7 +72,7 @@ async def get_curated_vendor(
     organization_id: UUID,
     vendor: str,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> CuratedVendorDetailSchema:
     """One curated vendor and the tools it offers."""
     _require_organization(current_user, organization_id)
     return await CuratedIntegrationController().get_vendor(
@@ -91,7 +91,7 @@ async def install_curated_vendor(
     vendor: str,
     payload: InstallVendorRequestSchema,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> InstallationSchema:
     """Install one curated vendor for this organization."""
     _require_organization(current_user, organization_id)
     return await CuratedIntegrationController().install_vendor(
@@ -113,7 +113,7 @@ async def install_curated_vendor(
 async def list_curated_installations(
     organization_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> list[InstallationSchema]:
     """Curated vendors this organization has installed."""
     _require_organization(current_user, organization_id)
     return await CuratedIntegrationController().list_installations(
@@ -128,7 +128,7 @@ async def list_curated_installations(
 async def list_curated_connection_aggregates(
     organization_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> list[ConnectionAggregateSchema]:
     """Connections plus resolved owners for operator-facing collection views."""
     _require_organization(current_user, organization_id)
     return await CuratedIntegrationController().list_connection_aggregates(
@@ -143,7 +143,7 @@ async def list_curated_connection_aggregates(
 async def list_curated_connections(
     organization_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> list[ConnectionSchema]:
     """Connections that authorize curated vendors. Credentials are never returned."""
     _require_organization(current_user, organization_id)
     return await CuratedIntegrationController().list_connections(
@@ -159,7 +159,7 @@ async def delete_curated_connection(
     organization_id: UUID,
     connection_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> Response:
     """Clear and remove one curated connection from this organization."""
     _require_organization(current_user, organization_id)
     await CuratedIntegrationController().delete_connection(
@@ -177,7 +177,7 @@ async def list_curated_vendor_tools(
     organization_id: UUID,
     vendor: str,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> list[InstalledToolSchema]:
     """Curated tools for one installed vendor, with their live policy."""
     _require_organization(current_user, organization_id)
     return await CuratedIntegrationController().list_vendor_tools(
@@ -196,7 +196,7 @@ async def set_curated_tool_execution_mode(
     tool_name: str,
     payload: SetExecutionModeRequestSchema,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> InstalledToolSchema:
     """Set operator policy for one curated tool.
 
     Policy is read live at execution, so a change here takes effect on the next
@@ -221,7 +221,7 @@ async def connect_curated_vendor(
     vendor: str,
     payload: ConnectCredentialRequestSchema,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> ConnectionSchema:
     """Store a directly-entered credential for an api_key or basic vendor."""
     _require_organization(current_user, organization_id)
     return await CuratedIntegrationController().connect_with_credential(
@@ -243,7 +243,7 @@ async def begin_curated_authorization(
     vendor: str,
     payload: BeginAuthorizationRequestSchema,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> AuthorizationRedirectSchema:
     """Begin an OAuth flow and return the provider consent URL."""
     _require_organization(current_user, organization_id)
     return await CuratedIntegrationController().begin_authorization(
@@ -261,7 +261,7 @@ async def list_agent_curated_tools(
     organization_id: UUID,
     agent_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> list[InstalledToolSchema]:
     """List curated tools granted to an Agent draft."""
     _require_organization(current_user, organization_id)
     return await CuratedIntegrationController().list_agent_tools(
@@ -279,7 +279,7 @@ async def replace_agent_curated_tools(
     agent_id: UUID,
     payload: ReplaceCuratedToolGrantsRequestSchema,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> list[InstalledToolSchema]:
     """Replace the exact curated-tool selection on an Agent draft."""
     _require_organization(current_user, organization_id)
     return await CuratedIntegrationController().replace_agent_tools(
@@ -301,7 +301,7 @@ async def grant_agent_curated_tool(
     tool_name: str,
     payload: GrantCuratedToolRequestSchema,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> InstalledToolSchema:
     """Grant one installed curated tool to an Agent draft."""
     _require_organization(current_user, organization_id)
     return await CuratedIntegrationController().grant_tool_to_agent(
@@ -324,7 +324,7 @@ async def revoke_agent_curated_tool(
     tool_name: str,
     expected_draft_version: int = Query(gt=0),
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> Response:
     """Remove one curated tool from an Agent draft."""
     _require_organization(current_user, organization_id)
     await CuratedIntegrationController().revoke_tool_from_agent(

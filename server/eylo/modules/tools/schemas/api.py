@@ -1,10 +1,18 @@
 """Data contracts for the `tools` domain."""
 
 from datetime import datetime
-from typing import Annotated, Any, Optional, Self
+from enum import StrEnum
+from typing import Annotated, Optional, Self
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    field_validator,
+    model_validator,
+)
 from pydantic.json_schema import SkipJsonSchema
 
 from eylo.common.revisions import RevisionAvailability
@@ -59,7 +67,7 @@ class ToolCreateRequestSchema(ToolDefinitionFields, EyloBaseApiSchema):
     llm_config: Optional[PlatformToolApiSchema] = Field(
         None, description="LLM schema for the tool"
     )
-    executor_config: Optional[dict[str, Any]] = Field(
+    executor_config: Optional[dict[str, JsonValue]] = Field(
         default_factory=dict, description="Executor schema for the tool"
     )
 
@@ -113,7 +121,7 @@ class ToolUpdateRequestSchema(ToolUpdateFields, EyloBaseApiSchema):
     llm_config: Optional[PlatformToolApiSchema] = Field(
         None, description="LLM schema for the tool"
     )
-    executor_config: Optional[dict[str, Any]] = Field(
+    executor_config: Optional[dict[str, JsonValue]] = Field(
         None, description="Executor schema for the tool"
     )
 
@@ -143,7 +151,7 @@ class ToolResponseSchema(
     llm_config: Optional[PlatformToolApiSchema] = Field(
         None, description="LLM schema for the tool"
     )
-    executor_config: Optional[dict[str, Any]] = Field(
+    executor_config: Optional[dict[str, JsonValue]] = Field(
         None, description="Executor schema for the tool"
     )
 
@@ -159,6 +167,17 @@ class ToolResponseSchema(
 
 class ToolListResponseSchema(EyloBaseApiSchema):
     items: list[ToolResponseSchema]
+
+
+class ToolActionStatus(StrEnum):
+    SUCCESS = "success"
+
+
+class ToolActionResponseSchema(EyloBaseApiSchema):
+    """Existing withdrawal acknowledgement; deleting a tool does not erase it."""
+
+    status: ToolActionStatus
+    message: str
 
 
 class ToolPublishRequestSchema(EyloBaseApiSchema):

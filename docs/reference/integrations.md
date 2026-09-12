@@ -58,6 +58,14 @@ the curated-vendor API and defined under
 - `ToolExecutionMode`: `auto`, `requires_approval`, or `disabled`, read live at
   execution.
 
+Registration binds each input model to its specific Python handler using generic
+types. The decorator returns the original function, preserving direct-call input
+and result types. The registry's invocation adapter refuses a different model
+before entering vendor code; input schema and invocation come from the same
+binding. Duplicate registrations compare original implementation identity.
+Bindings exclude functions and model classes from snapshots. The executor still
+validates results at the JSON boundary rather than trusting a return annotation.
+
 Invocation arguments must be JSON values, then satisfy the registered vendor
 input model. Its existing normalization rules still apply. Handler results must
 also be JSON-safe: non-finite numbers, cycles, or arbitrary Python objects return
@@ -65,6 +73,33 @@ also be JSON-safe: non-finite numbers, cycles, or arbitrary Python objects retur
 Disabled tools return `tool_execution_blocked`; only an approval-policy refusal
 sets the `approval_required` result metadata flag. This flag alone is not a
 durable approval wait.
+
+## HTTP payload contracts
+
+Vendor query parameters are flat scalar values or scalar lists/tuples that
+repeat a key. Null values are omitted. Nested objects, non-string keys and
+non-finite numbers are refused before sending. Existing boolean encoding is
+preserved: a scalar becomes `true`/`false`, while repeated boolean values retain
+their legacy `True`/`False` spelling.
+
+Request bodies and decoded replies must contain finite JSON values. Invalid
+request bodies fail before an outbound receipt or vendor request is created;
+invalid replies fail without echoing their contents. Vendor-owned response
+models still validate the resource shape after this transport-level check.
+Valid request bytes, fingerprints, mutation sequence identities and retry
+classification are unchanged. Transport failures use transport-owned error
+codes; vendor error vocabularies remain in their adapters.
+
+## Console and widget contracts
+
+The API projects registry metadata and module-owned installation/tool values;
+vendor wire objects and encrypted credentials are not part of those responses.
+Widget capability groups are resolved against published Agent grants and the
+authenticated contact. `connectionKind` is `ORGANIZATION` or `CONTACT`; curated
+tools carry `kind: CURATED` and their integration carries `source: curated`.
+These are constrained schema values, not free-form labels. A disconnected group
+does not grant access: starting authorization still requires the contact-owned
+conversation and its pinned Agent's tool grant.
 
 ## Typed tool choices
 

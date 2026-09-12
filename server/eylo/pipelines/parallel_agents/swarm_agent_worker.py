@@ -11,7 +11,7 @@ import logging
 from typing import Final
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, JsonValue, TypeAdapter
+from pydantic import BaseModel, ConfigDict, JsonValue
 
 from eylo.common.contracts.llm_response import LLMStopReason
 from eylo.common.contracts.llm_runtime import LLMInferenceConfig
@@ -21,6 +21,7 @@ from eylo.modules.agent_runs.budgets import meter_current_agent_run_usage
 from eylo.modules.agents.domain import ResolvedExecutableAgent
 from eylo.modules.agents.services.tool_execution_utils import (
     ToolDispatchError,
+    ToolExecutionResult,
     ToolInputValidationError,
     execute_exact_tool,
     resolve_model_tool,
@@ -49,10 +50,6 @@ MODEL_SAFE_TOOL_ERROR: Final = "Error: Tool execution failed."
 
 # Tools that workers must never call
 BLOCKED_TOOL_PREFIXES: Final = ("handoff__", "spawn_task_fnf")
-
-type SwarmToolResult = str | dict[str, JsonValue] | list[JsonValue]
-_TOOL_RESULT = TypeAdapter(SwarmToolResult)
-
 
 class SwarmWorkerRuntime(BaseModel):
     """One exact topology member and its resolved model authority."""
@@ -142,7 +139,7 @@ class SwarmAgentWorker:
                     response=response,
                 )
             )
-            results: list[SwarmToolResult] = []
+            results: list[ToolExecutionResult] = []
             for tool_use in requested_tools:
                 results.append(
                     await self._execute_tool(tool_use.name, tool_use.input, runtime)
@@ -234,7 +231,7 @@ class SwarmAgentWorker:
         tool_name: str,
         tool_input: dict[str, JsonValue],
         runtime: SwarmWorkerRuntime,
-    ) -> SwarmToolResult:
+    ) -> ToolExecutionResult:
         """Resolve the advertised name, then dispatch by the exact stored kind."""
         # Enforce blocklist at execution time — the LLM may hallucinate
         # tool names that were filtered from its tool list
@@ -253,8 +250,7 @@ class SwarmAgentWorker:
 
         try:
             ctx = await self._get_conversation_context(runtime.executable)
-            result = await execute_exact_tool(tool, tool_input, ctx)
-            return _TOOL_RESULT.validate_python(result, strict=True)
+            return await execute_exact_tool(tool, tool_input, ctx)
         except ToolInputValidationError:
             logger.warning(
                 "Tool input rejected tool=%s@%s code=input_invalid",

@@ -7,12 +7,13 @@ The database stores message.content as JSONB, which should conform to these sche
 """
 
 import json
-from typing import Any, Dict, Final, List, Literal, Optional, Union
+from typing import Final, List, Literal, Optional, Union
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    JsonValue,
     TypeAdapter,
     field_validator,
     model_validator,
@@ -40,7 +41,7 @@ TOOL_USE_ROLE: Final = "tool_use"
 SYSTEM_ROLE: Final = "system"
 
 
-def _to_pretty_json(value: Any) -> str:
+def _to_pretty_json(value: JsonValue) -> str:
     """Render structured values as stable pretty JSON for LLM-facing text."""
     return json.dumps(value, indent=2, sort_keys=True, default=str)
 
@@ -86,7 +87,7 @@ TextMessageContentBlock = Annotated[
 TextMessageContentBlocks = List[TextMessageContentBlock]
 
 
-def normalize_text_content_blocks(value: Any) -> TextMessageContentBlocks:
+def normalize_text_content_blocks(value: object) -> TextMessageContentBlocks:
     """Normalize supported text inputs into platform-native content blocks."""
     if isinstance(value, str):
         return [TextContent(text=value)]
@@ -106,12 +107,14 @@ def text_from_content_blocks(blocks: TextMessageContentBlocks) -> str:
     return " ".join(text_parts)
 
 
-def content_block_to_platform_dict(block: TextMessageContentBlock) -> Dict[str, Any]:
+def content_block_to_platform_dict(
+    block: TextMessageContentBlock,
+) -> dict[str, JsonValue]:
     """Serialize a content block to the platform block-array wire shape."""
     return block.model_dump(mode="json", exclude_none=True)
 
 
-def _normalize_text_content_block(value: Any) -> TextMessageContentBlock:
+def _normalize_text_content_block(value: object) -> TextMessageContentBlock:
     if isinstance(value, TextContent | ImageUrlContent):
         return value
 
@@ -147,10 +150,12 @@ class ToolUseContent(BaseModel):
     Database format for TOOL_USE messages.
     """
 
+    model_config = ConfigDict(allow_inf_nan=False)
+
     type: Literal["tool_use"] = TOOL_USE_CONTENT_TYPE
     id: str = Field(..., description="Unique identifier for this tool use")
     name: str = Field(..., description="Name of the tool to execute")
-    input: Dict[str, Any] = Field(
+    input: dict[str, JsonValue] = Field(
         default_factory=dict, description="Input parameters for the tool"
     )
 
@@ -162,12 +167,14 @@ class ToolResultContent(BaseModel):
     Database format for TOOL_RESULT messages.
     """
 
+    model_config = ConfigDict(allow_inf_nan=False)
+
     type: Literal["tool_result"] = TOOL_RESULT_CONTENT_TYPE
     tool_use_id: str = Field(
         ..., description="ID of the tool use this result corresponds to"
     )
-    content: Any = Field(
-        ..., description="Tool execution result - can be string, dict, list, etc."
+    content: JsonValue = Field(
+        ..., description="Tool execution result as a finite JSON value."
     )
     name: Optional[str] = Field(None, description="Name of the tool that was executed")
     is_error: bool = Field(default=False, description="Whether execution failed")
@@ -184,7 +191,7 @@ class UserMessageContent(BaseModel):
 
     @field_validator("content", mode="before")
     @classmethod
-    def validate_content_blocks(cls, value: Any) -> TextMessageContentBlocks:
+    def validate_content_blocks(cls, value: object) -> TextMessageContentBlocks:
         return normalize_text_content_blocks(value)
 
     def get_text_content(self) -> str:
@@ -207,7 +214,7 @@ class AssistantMessageContent(BaseModel):
 
     @field_validator("content", mode="before")
     @classmethod
-    def validate_content_blocks(cls, value: Any) -> TextMessageContentBlocks:
+    def validate_content_blocks(cls, value: object) -> TextMessageContentBlocks:
         return normalize_text_content_blocks(value)
 
     def get_text_content(self) -> str:
@@ -269,7 +276,7 @@ class SystemMessageContent(BaseModel):
 
     @field_validator("content", mode="before")
     @classmethod
-    def validate_content_blocks(cls, value: Any) -> TextMessageContentBlocks:
+    def validate_content_blocks(cls, value: object) -> TextMessageContentBlocks:
         return normalize_text_content_blocks(value)
 
     def get_text_content(self) -> str:

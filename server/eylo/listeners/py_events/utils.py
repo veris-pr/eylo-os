@@ -40,7 +40,9 @@ async def broadcast_to_conversation_contacts(
         )
 
     if event_name:
-        logger.info("%s event broadcast for conversation %s", event_name, conversation_id)
+        logger.info(
+            "%s event broadcast for conversation %s", event_name, conversation_id
+        )
 
 
 async def broadcast_to_contact(

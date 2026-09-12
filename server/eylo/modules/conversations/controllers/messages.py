@@ -1,6 +1,6 @@
 """Controller for handling message-related operations."""
 
-from typing import Annotated, Optional
+from typing import Annotated
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, Query
@@ -23,7 +23,7 @@ from eylo.modules.conversations.services.messages import MessageService
 class MessageController:
     """Controller for handling message-related operations."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize the MessageController."""
         self.service = MessageService()
 
@@ -33,7 +33,7 @@ class MessageController:
         conversation_id: UUID,
         pagination: Annotated[PaginationParams, Depends(get_pagination)],
         current_user: CurrentUserSchema,
-    ) -> Optional[ConversationMessagesPaginated]:
+    ) -> ConversationMessagesPaginated:
         """Get paginated messages for a conversation."""
         if organization_id != current_user.organization_id:
             raise HTTPException(status_code=404)
@@ -72,7 +72,7 @@ class MessageController:
         filters: Annotated[ConversationFilterSchema, Query()],
         pagination: Annotated[PaginationParams, Depends(get_pagination)],
         current_user: CurrentUserSchema,
-    ) -> Optional[ConversationMessagesPaginated]:
+    ) -> ConversationMessagesPaginated:
         """Get paginated messages for a list of conversations."""
         if organization_id != current_user.organization_id:
             raise HTTPException(status_code=404)

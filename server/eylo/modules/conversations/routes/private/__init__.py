@@ -108,7 +108,7 @@ async def get_conversation_messages(
     conversation_id: UUID,
     pagination: Annotated[PaginationParams, Depends(get_pagination)],
     current_user: CurrentUserSchema = Depends(get_current_user),
-) -> Optional[ConversationMessagesPaginated]:
+) -> ConversationMessagesPaginated:
     """Get paginated messages for a conversation.
 
     Args:

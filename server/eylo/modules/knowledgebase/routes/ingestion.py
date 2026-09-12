@@ -24,7 +24,11 @@ from eylo.common.database import get_transaction, start_transaction
 from eylo.modules.auth.constants import APP_TAG
 from eylo.modules.auth.schemas import CurrentUserSchema
 from eylo.modules.auth.services.auth_service import get_current_user
-from eylo.modules.knowledgebase.jobs import IngestionState
+from eylo.modules.knowledgebase.jobs import (
+    IngestionState,
+    KnowledgeCorpusImportModel,
+    KnowledgeIngestionJobModel,
+)
 from eylo.modules.knowledgebase.models import KnowledgebaseModel
 from eylo.modules.knowledgebase.schemas import (
     CorpusImportRead,
@@ -79,7 +83,7 @@ async def submit_ingestion(
     knowledgebase_id: UUID,
     request: IngestRequest,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> IngestionJobRead:
     """Queue a document. 202, because the work has not happened yet.
 
     Idempotent on the document's identity: submitting the same document while
@@ -145,7 +149,7 @@ async def list_ingestions(
     knowledgebase_id: UUID,
     state: IngestionState | None = None,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> list[KnowledgeIngestionJobModel]:
     """Recent jobs for this knowledgebase, newest first."""
     _authorize(organization_id, current_user)
     async with start_transaction(ro=True):
@@ -173,7 +177,7 @@ async def start_corpus_import(
     knowledgebase_id: UUID,
     request: CorpusImportRequest,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> CorpusImportRead:
     """Sweep a storage prefix into this knowledgebase.
 
     Returns immediately with an import to watch. The sweep enumerates the
@@ -225,7 +229,7 @@ async def list_corpus_imports(
     organization_id: UUID,
     knowledgebase_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> list[KnowledgeCorpusImportModel]:
     _authorize(organization_id, current_user)
     async with start_transaction(ro=True):
         session = get_transaction()
@@ -241,7 +245,7 @@ async def get_corpus_import(
     knowledgebase_id: UUID,
     import_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> KnowledgeCorpusImportModel:
     """One import, including what it skipped and why."""
     _authorize(organization_id, current_user)
     async with start_transaction(ro=True):
@@ -261,7 +265,7 @@ async def cancel_corpus_import(
     knowledgebase_id: UUID,
     import_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> KnowledgeCorpusImportModel:
     """Stop a sweep. Jobs it already filed keep running.
 
     Cancelling the sweep does not cancel the documents it found — those are
@@ -303,7 +307,7 @@ async def get_ingestion(
     knowledgebase_id: UUID,
     job_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> KnowledgeIngestionJobModel:
     _authorize(organization_id, current_user)
     async with start_transaction(ro=True):
         try:
@@ -322,7 +326,7 @@ async def cancel_ingestion(
     knowledgebase_id: UUID,
     job_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> KnowledgeIngestionJobModel:
     """Stop a job that has not finished.
 
     A running job may still complete the document it is on — cancelling stops

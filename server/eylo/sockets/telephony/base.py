@@ -9,8 +9,10 @@ from enum import Enum, StrEnum
 from typing import Any, Dict, Literal, Optional, Protocol, Self, TypeAlias
 from uuid import UUID
 
+from fastapi import WebSocket
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from eylo.common.contracts.speech_runtime import SpeechTransportFormat
 from eylo.common.contracts.telephony import CallEndedReason as CallEndedReason
 from eylo.common.outbound import (
     OUTBOUND_STATUS_CODE_MAX,
@@ -44,6 +46,18 @@ class _TelephonyValue(BaseModel):
     model_config = ConfigDict(
         frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
     )
+
+
+class CarrierAudioContainer(StrEnum):
+    RAW = "raw"
+
+
+class CarrierAudioFormat(_TelephonyValue):
+    """Target media for a carrier, not a claim about a TTS vendor's output."""
+
+    container: Literal[CarrierAudioContainer.RAW] = CarrierAudioContainer.RAW
+    encoding: Literal[AudioEncoding.PCM_S16LE, AudioEncoding.PCM_MULAW]
+    sample_rate: int = Field(gt=0)
 
 
 class TelephonyConfig(_TelephonyValue):
@@ -326,7 +340,9 @@ class TelephonyMessageParser(Protocol):
 class BaseTelephonyService(ABC):
     """Abstract base class for telephony service implementations."""
 
-    def __init__(self, config: TelephonyConfig):
+    websocket: WebSocket | None
+
+    def __init__(self, config: TelephonyConfig) -> None:
         """Initialize the telephony service.
 
         Args:
@@ -336,7 +352,7 @@ class BaseTelephonyService(ABC):
         self.config = config
         self._is_connected = False
 
-    def set_websocket(self, websocket: Any) -> None:
+    def set_websocket(self, websocket: WebSocket) -> None:
         """Attach the active provider WebSocket to the service."""
         self.websocket = websocket
         self._is_connected = True
@@ -426,11 +442,11 @@ class BaseTelephonyService(ABC):
         ...
 
     @abstractmethod
-    def get_config(self) -> Dict[str, Any]:
+    def get_config(self) -> SpeechTransportFormat:
         """Return provider-specific base configuration for audio processing."""
 
     @abstractmethod
-    def get_output_format(self) -> Dict[str, Any]:
+    def get_output_format(self) -> CarrierAudioFormat:
         """Return provider-specific TTS output_format metadata."""
 
     async def end_call(self, call_sid: str) -> TelephonyControlResult:

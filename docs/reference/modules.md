@@ -39,6 +39,14 @@ make folder shapes symmetrical.
 | `user_sessions` | an end-user visit/call plus conversations observed during it | lifecycle service, durable fact filing, list query, and timeline projection |
 | `conversations` | conversations, participants, canonical messages, request status, runtime queue state, and member aggregates | private/public/WS controllers and routes, message/participant repositories, prompts, scheduled actions, tasks |
 
+Canonical tool-use arguments and tool results accept finite JSON values, not
+arbitrary Python objects. Message ORM annotations reflect the stored string and
+JSON columns; neutral schemas validate enum and content meaning before history
+conversion. Internal `MessageUpdate` patches allow only run identity, request
+status, feedback and metadata. Omitted fields preserve existing values; explicit
+null remains distinct. This contract does not bypass service authorization,
+request-state transitions or post-commit event ownership.
+
 ## Agents, tools, and execution
 
 | Module | Owns | Important submodules and contracts |
@@ -50,6 +58,29 @@ make folder shapes symmetrical.
 | `mcp_servers` | organization-owned MCP server definitions and immutable revisions | registration, discovery, withdrawal, and revision revocation |
 | `templates` | revisioned authored templates and rendering contracts | Agent-instruction and campaign-message templates; preview/publish/render/revoke |
 | `interfaces` | validated structured interface schemas exposed by Agents | schema validation and interface service boundary |
+
+Agent HTTP handlers declare their result models, including tool lists, swarm
+membership and background attachments. Swarm and membership removal return a
+typed `detail` acknowledgement; tool/attachment removals retain empty 204 bodies.
+These transport contracts do not change draft-version checks or revision policy.
+
+System/local tool registration preserves callable signatures and returns the
+canonical `PlatformTool` model; serialization belongs at persistence or vendor
+boundaries. Catalog entries are validated `ToolInDb` values, not unchecked model
+construction. Exact dispatch owns input validation and the shared conversation/
+swarm result contract: text or recursively validated JSON objects/arrays. Scalar
+JSON results retain their text encoding. Invalid nested values are rejected
+without exposing their contents; cancellation propagates to the callable.
+
+Tool drafts accept partial JSON executor settings; publication applies the
+owning executor's contract (including MCP effect and exact tool identity).
+`ToolRevisionPayload` is an immutable storage snapshot with DB-accurate
+nullability and authored JSON Schema extensions. Runtime reads replace stored
+system/local schemas with their registered schemas. JSON schema fields,
+arguments, result metadata/extensions, and draft settings accept recursive JSON
+values, not arbitrary Python objects or non-finite numbers. ORM string columns
+remain strings until domain schemas resolve their enum values. Tool deletion
+retains its `success` acknowledgement and non-destructive withdrawal behavior.
 
 ## Provider configuration plane
 
@@ -77,6 +108,12 @@ make folder shapes symmetrical.
 
 Knowledge chunks always include knowledgebase identity. Memory ownership is a
 typed level plus owner ID. Both pin embedding configuration ID and revision.
+
+Knowledgebase routes declare their actual Python return types separately from
+the existing HTTP response schemas. ORM-returning routes remain filtered through
+the explicit public schema; ingestion submission and corpus creation return
+validated response models after their job is committed. Typing does not move
+vendor work into these transactions or change post-commit durable dispatch.
 
 ## Automation, lifecycle, and product support
 

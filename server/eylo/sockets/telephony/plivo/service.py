@@ -24,6 +24,12 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
+from fastapi import WebSocket
+
+from eylo.common.contracts.speech_runtime import (
+    SpeechTransportEncoding,
+    SpeechTransportFormat,
+)
 from eylo.common.outbound import (
     OutboundSendAuthorization,
     OutboundSendOutcome,
@@ -33,8 +39,11 @@ from eylo.common.outbound import (
     OutboundTransportKind,
 )
 from eylo.sockets.telephony.base import (
+    TELEPHONY_SAMPLE_RATE,
+    AudioEncoding,
     BaseTelephonyService,
     CallMetadata,
+    CarrierAudioFormat,
     CarrierMediaEvent,
     InboundMediaMessage,
     OutboundMediaMessage,
@@ -204,7 +213,9 @@ class PlivoService(BaseTelephonyService):
     Based on production implementation from bolna-ai.
     """
 
-    def __init__(self, config: TelephonyConfig, websocket: Optional[Any] = None):
+    def __init__(
+        self, config: TelephonyConfig, websocket: Optional[WebSocket] = None
+    ) -> None:
         """Initialize Plivo service with REST client.
 
         Args:
@@ -246,7 +257,7 @@ class PlivoService(BaseTelephonyService):
         """
         return TelephonyProvider.PLIVO
 
-    def set_websocket(self, websocket: Any):
+    def set_websocket(self, websocket: WebSocket) -> None:
         """Set the WebSocket connection.
 
         Args:
@@ -474,17 +485,17 @@ class PlivoService(BaseTelephonyService):
             logger.warning("Plivo clear write failed.")
             raise
 
-    def get_config(self) -> Dict[str, Any]:
+    def get_config(self) -> SpeechTransportFormat:
         """Return the Plivo baseline STT configuration."""
-        return {"encoding": "mulaw", "sample_rate": 8000}
+        return SpeechTransportFormat(
+            encoding=SpeechTransportEncoding.MULAW, sample_rate=TELEPHONY_SAMPLE_RATE
+        )
 
-    def get_output_format(self) -> Dict[str, Any]:
+    def get_output_format(self) -> CarrierAudioFormat:
         """Return the Plivo baseline TTS output format metadata."""
-        return {
-            "container": "raw",
-            "encoding": "pcm_mulaw",
-            "sample_rate": 8000,
-        }
+        return CarrierAudioFormat(
+            encoding=AudioEncoding.PCM_MULAW, sample_rate=TELEPHONY_SAMPLE_RATE
+        )
 
     async def send_checkpoint(self, stream_sid: str, mark_id: str) -> None:
         """Send checkpoint event (Plivo's equivalent of Twilio's mark).

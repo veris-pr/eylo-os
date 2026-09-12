@@ -255,6 +255,11 @@ the committed row as canonical.
 | `fetchAgentIntegrations(agentId)` | Fetch the Agent's granted curated tools grouped by integration |
 | `fetchBulkAgentIntegrations(agentIds)` | Resolve integration groups for several Agents without an N+1 request pattern |
 
+The selectable Agent catalogue is separate from the hydrated entity cache.
+Conversation history can reference background or no-longer-available Agents;
+those references remain resolvable for display but do not make an Agent
+selectable. Each server catalogue announcement replaces the available IDs.
+
 Agent status values are `thinking`, `processing`, `tool_executing`,
 `tool_completed`, `complete`, or `error`. Every accepted lifecycle update
 contains `conversationId`, `requestId`, `runId`, `runStartedAt`, `sequence`, and

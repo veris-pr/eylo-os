@@ -31,6 +31,21 @@ The manifest currently covers:
 
 Knowledge and memory events are intentionally ephemeral in V1.
 
+Agent lifecycle listeners build a frozen `AgentLifecycleDelta` using the six
+`AgentLifecycleStatus` values understood by the widget. The payload retains
+conversation/request/run IDs, run start time, a positive sequence, terminal
+predicate and optional outcome/message. An absent message ID remains explicit
+null; absent optional presentation fields stay omitted. Run timestamps retain
+their existing ISO offset spelling. Tool arguments and results are not included.
+Redis delivery retains explicit organization, contact and conversation authority;
+the receiving process validates `ContactDelivery` before selecting local sockets.
+These contracts do not add ordering, durability or delivery guarantees.
+
+The lifecycle payload's `run_id` identifies an ephemeral presentation stream,
+not the persisted Agent run. Use the message's `agentRunId` (Python
+`agent_run_id`) when querying the Agent-run API; use lifecycle IDs and sequence
+only to correlate UI status updates.
+
 ## Durable events
 
 Durable events are organization-visible facts and required-consumer triggers.

@@ -349,7 +349,10 @@ class LiveVoiceTurnRunner:
             if conversation is None:
                 raise ValueError("Live voice conversation is unavailable.")
             context_service = ConversationContextService(db)
-            context = await context_service.build(conversation=conversation)
+            context = await context_service.build(
+                conversation=conversation,
+                voice_runtime=identity.runtime_mode,
+            )
             from eylo.common.contracts.tool_availability import ToolRuntimeFact
             from eylo.pipelines.system_tools.availability import (
                 refresh_context_tool_availability,
@@ -385,7 +388,8 @@ class LiveVoiceTurnRunner:
                 if not completed_handoffs(tool_results):
                     return current_input
                 refreshed = await context_service.build(
-                    conversation=local_context.conversation_context.conversation
+                    conversation=local_context.conversation_context.conversation,
+                    voice_runtime=identity.runtime_mode,
                 )
                 await refresh_context_tool_availability(
                     refreshed,

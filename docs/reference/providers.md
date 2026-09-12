@@ -39,6 +39,13 @@ Call direction, stream-token requirements, operation support and control failure
 have socket-owned enums. Platform call/event enums are translated at the pipeline
 boundary. These declarations do not change grants or signed-routing enforcement.
 
+Incoming carrier media uses `SpeechTransportFormat`; outbound targets use the
+telephony-owned `CarrierAudioFormat`. The factory and live manager preserve these
+objects through the pipeline. The target is converted to `TTSAudioFormat` at the
+TTS boundary; it is distinct from the format actually emitted by the TTS vendor.
+Twilio and Plivo retain 8 kHz mu-law, Exotel 8 kHz PCM, and Vonage 16 kHz PCM.
+Polly's carrier-rate PCM selection and recorder track formats remain unchanged.
+
 Media sequence values retain carrier string/integer representations rather than
 assuming one wire type. [Twilio's Media Streams reference](https://www.twilio.com/docs/voice/media-streams/websocket-messages)
 shows string sequence numbers. [Exotel's VoiceBot reference](https://docs.exotel.com/exotel-agentstream/voicebot-applet)

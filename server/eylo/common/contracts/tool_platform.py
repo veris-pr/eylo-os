@@ -1,8 +1,19 @@
 """Provider-neutral LLM tool definition contracts."""
 
-from typing import Any, Dict, List, Literal, Optional
+from typing import Literal, Optional, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    TypeAdapter,
+    model_validator,
+)
+
+_RESULT_EXTENSIONS = TypeAdapter(
+    dict[str, JsonValue], config=ConfigDict(allow_inf_nan=False)
+)
 
 
 class PlatformToolInputSchema(BaseModel):
@@ -33,28 +44,28 @@ class PlatformToolInputSchema(BaseModel):
 
     # Existing tool rows may contain Python names from model_dump(). Accept both
     # forms on read; to_json_schema() always emits canonical JSON Schema keywords.
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, allow_inf_nan=False)
 
     type: Literal["object"] = "object"
-    properties: Dict[str, Any] = Field(
+    properties: dict[str, JsonValue] = Field(
         default_factory=dict,
         description="JSON Schema properties for tool inputs",
     )
-    defs: Optional[Dict[str, Any]] = Field(
+    defs: Optional[dict[str, JsonValue]] = Field(
         default=None,
         alias="$defs",
         description="Reusable JSON Schema definitions referenced by $ref.",
     )
-    required: Optional[List[str]] = Field(
+    required: Optional[list[str]] = Field(
         default_factory=list,
         description="Required property names",
     )
-    one_of: Optional[List[Dict[str, Any]]] = Field(
+    one_of: Optional[list[dict[str, JsonValue]]] = Field(
         default=None,
         alias="oneOf",
         description="Alternative component-specific schemas for this tool input.",
     )
-    discriminator: Optional[Dict[str, Any]] = Field(
+    discriminator: Optional[dict[str, JsonValue]] = Field(
         default=None,
         description="JSON Schema discriminator metadata for union-style tool inputs.",
     )
@@ -64,7 +75,7 @@ class PlatformToolInputSchema(BaseModel):
         description="Whether additional properties are allowed",
     )
 
-    def to_json_schema(self) -> Dict[str, Any]:
+    def to_json_schema(self) -> dict[str, JsonValue]:
         """Return a vendor-ready JSON Schema dictionary."""
         return self.model_dump(by_alias=True, exclude_none=True)
 
@@ -122,6 +133,8 @@ class PlatformToolUse(BaseModel):
 
     """
 
+    model_config = ConfigDict(allow_inf_nan=False)
+
     id: str = Field(
         ...,
         description="Unique identifier for this tool use request. Used to match results.",
@@ -130,7 +143,7 @@ class PlatformToolUse(BaseModel):
         ...,
         description="Name of the tool to execute. Must match a registered tool.",
     )
-    input: Dict[str, Any] = Field(
+    input: dict[str, JsonValue] = Field(
         default_factory=dict,
         description="Input parameters for the tool, validated against tool's input_schema",
     )
@@ -165,8 +178,17 @@ class PlatformToolResult(BaseModel):
         default=False,
         description="Whether the tool execution failed",
     )
-    metadata: Optional[Dict[str, Any]] = Field(
+    metadata: Optional[dict[str, JsonValue]] = Field(
         default_factory=dict,
         description="Additional metadata about the execution (timing, retries, etc.)",
     )
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
+    model_config = ConfigDict(extra="allow", populate_by_name=True, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def validate_extensions(self) -> Self:
+        """Validate Pydantic-owned extension storage without changing its SDK type."""
+        if self.__pydantic_extra__ is not None:
+            self.__pydantic_extra__ = _RESULT_EXTENSIONS.validate_python(
+                self.__pydantic_extra__
+            )
+        return self

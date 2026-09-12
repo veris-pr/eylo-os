@@ -452,7 +452,7 @@ def _build_telephony_recorder(
 
     if sess.tts is None or sess.organization_id is None or sess.conversation_id is None:
         raise RuntimeError("Telephony recording requires call identity and TTS media.")
-    input_format = SpeechTransportFormat.model_validate(telephony_manager.get_config())
+    input_format = telephony_manager.get_config()
     output_format = sess.tts.consumer_audio_format
 
     sess.audio_recorder = AudioRecorder(
@@ -595,7 +595,7 @@ def build_stt_config(
     stt_config = build_stt_runtime_config(
         voice_config,
         resolved_stt,
-        transport=SpeechTransportFormat.model_validate(telephony_manager.get_config()),
+        transport=telephony_manager.get_config(),
     )
     return stt_config, resolved_stt.provider.value
 
@@ -611,8 +611,8 @@ def build_tts_config(
     if resolved_tts.provider is TTSProviders.AMAZON_POLLY:
         # Polly can emit carrier-rate PCM directly. The carrier codec remains
         # a separate target and is applied by StreamingAudioTranscoder.
-        carrier_format = TTSAudioFormat.from_mapping(
-            telephony_manager.get_output_format()
+        carrier_format = TTSAudioFormat.model_validate(
+            telephony_manager.get_output_format(), from_attributes=True
         )
         transport_config = SpeechTransportFormat(
             sample_rate=carrier_format.sample_rate,
@@ -676,8 +676,8 @@ async def init_voice_pipeline(
         session_id=call_sid,
         consumer_queue=tts_response_queue,
         tts_config=tts_config,
-        consumer_audio_format=TTSAudioFormat.from_mapping(
-            telephony_manager.get_output_format()
+        consumer_audio_format=TTSAudioFormat.model_validate(
+            telephony_manager.get_output_format(), from_attributes=True
         ),
     )
     # Validate both managers and their media before starting either provider.

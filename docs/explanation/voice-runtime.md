@@ -15,6 +15,16 @@ Browser voice adds WebRTC signalling/media. Telephony adds carrier webhooks and
 a bidirectional media stream. All paths converge on canonical conversation,
 message, user-session, voice-session, and transcript records.
 
+Live voice owners pass their pinned `VoiceRuntimeMode` into conversation-context
+construction, including after handoffs. The first live turn cannot infer voice
+from stored messages: transcripts may still be buffered until post-call
+processing. Callers outside live voice retain channel/message-history inference;
+context construction never depends on a process-local WebSocket registry.
+
+Closing a WebRTC peer projects the existing disconnected event, not a failed
+connection. Genuine native failures still project failure; terminal callbacks
+retain the original reason and are suppressed during owner-initiated cleanup.
+
 ## Voice config is platform policy
 
 A voice config selects provider configs and defines interruption, silence,

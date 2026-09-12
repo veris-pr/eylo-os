@@ -80,6 +80,18 @@ before completion text is accepted; unexpected tool calls and empty text are
 refused. Formation/reconciliation parsers separately validate the proposed
 operations and resolve model-supplied indices to platform-owned identities.
 
+Reconciliation prompt and response fields have socket-owned schemas. Facts with
+no comparison candidates are deterministically unrelated; only candidate-bearing
+facts reach the model. The module recombines both sets into one complete proposal,
+then applies the same ownership, revision and relationship checks. Incomplete or
+invalid model decisions are never replaced with guessed outcomes.
+
+The durable `propose:v2` step indexes only comparison inputs. An existing
+`propose:v1` checkpoint is replayed against its original full batch, never
+reindexed. Both model-backed paths require metering before apply; purely
+deterministic work does not require a model usage receipt. Terminal failures
+remain visible rather than silently reopening an invalid checkpoint.
+
 Extraction prompt evidence is a typed, socket-owned projection of related
 `MemoryResult` values and `MemoryInputMessage` values. Only local indices, roles
 and content reach the model; persistent identities remain outside the prompt.

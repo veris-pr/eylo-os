@@ -3,7 +3,7 @@
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
 
 from eylo.common.revisions import DefinitionLifecycle
 from eylo.common.schemas import EyloBaseOrganizationModelSchema
@@ -14,6 +14,8 @@ from eylo.modules.tools.schemas.platform import PlatformTool, PlatformToolInputS
 class ToolDefinitionFields(BaseModel):
     """Shared definition fields, without transport-specific tool schemas or ownership."""
 
+    model_config = ConfigDict(allow_inf_nan=False)
+
     name: str = Field(..., description="Tool name")
     kind: ToolKind = Field(..., description="Tool execution boundary")
     display_name: str = Field(..., description="Tool display name")
@@ -21,10 +23,10 @@ class ToolDefinitionFields(BaseModel):
     mcp_server_id: Optional[UUID] = Field(None, description="MCP server ID")
     wire_id: Optional[str] = None
     execution_mode: ToolExecutionMode = ToolExecutionMode.AUTO
-    executor_config: Optional[dict] = Field(
+    executor_config: Optional[dict[str, JsonValue]] = Field(
         default_factory=dict, description="Executor schema for the tool"
     )
-    output_schema: Optional[dict] = None
+    output_schema: Optional[dict[str, JsonValue]] = None
 
 
 class ToolHeaderFields(ToolDefinitionFields):
@@ -36,6 +38,28 @@ class ToolHeaderFields(ToolDefinitionFields):
     published_revision: Optional[int] = None
     draft_version: int = 1
     draft_dirty: bool = True
+
+
+class ToolRevisionPayload(BaseModel):
+    """Storage snapshot preserving authored JSON Schema, including extension keywords.
+
+    Code-owned executable schemas replace the stored schema on runtime reads.
+    Do not require an obsolete stored system/local schema to validate first.
+    """
+
+    model_config = ConfigDict(from_attributes=True, frozen=True, allow_inf_nan=False)
+
+    name: str
+    slug: str
+    kind: ToolKind
+    display_name: str | None
+    description: str | None
+    llm_config: dict[str, JsonValue] | None
+    executor_config: dict[str, JsonValue] | None
+    output_schema: dict[str, JsonValue] | None
+    execution_mode: ToolExecutionMode
+    wire_id: str | None
+    mcp_server_id: UUID | None
 
 
 class ToolModelSchema(ToolHeaderFields, EyloBaseOrganizationModelSchema):
@@ -93,15 +117,17 @@ class ToolCreateSchema(ToolDefinitionFields):
 class ToolUpdateFields(BaseModel):
     """Patch metadata; omitted fields must remain distinct from explicit nulls."""
 
+    model_config = ConfigDict(allow_inf_nan=False)
+
     expected_draft_version: int
     name: Optional[str] = Field(None, description="Tool name")
     display_name: Optional[str] = Field(None, description="Tool display name")
     description: Optional[str] = Field(None, description="Tool description")
 
-    executor_config: Optional[dict] = Field(
+    executor_config: Optional[dict[str, JsonValue]] = Field(
         None, description="Executor schema for the tool"
     )
-    output_schema: Optional[dict] = None
+    output_schema: Optional[dict[str, JsonValue]] = None
     execution_mode: Optional[ToolExecutionMode] = None
 
 
@@ -124,7 +150,7 @@ class ToolUpdateSchema(ToolUpdateFields):
 class ToolInDb(ToolModelSchema):
     model_config = ConfigDict(from_attributes=True)
 
-    def get_input_schema(self) -> dict:
+    def get_input_schema(self) -> dict[str, JsonValue]:
         """Get the tool's input schema as a dictionary.
 
         Returns:
@@ -138,7 +164,7 @@ class ToolInDb(ToolModelSchema):
         """
         return self.llm_config.input_schema.to_json_schema()
 
-    def get_llm_tool_dict(self) -> dict:
+    def get_llm_tool_dict(self) -> dict[str, JsonValue]:
         """Get the complete LLM tool configuration as a dictionary.
 
         Useful for token counting and vendor transformations.

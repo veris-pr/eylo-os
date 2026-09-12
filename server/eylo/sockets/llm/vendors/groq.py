@@ -157,7 +157,7 @@ class GroqAdapter(LLMVendorAdapter):
                     "function": {
                         "name": config.name,
                         "description": config.description,
-                        "parameters": schema,
+                        "parameters": dict(schema),
                     },
                 }
             )

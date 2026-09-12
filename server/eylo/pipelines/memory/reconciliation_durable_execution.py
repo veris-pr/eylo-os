@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from enum import StrEnum
 from uuid import UUID
 
 from absurd_sdk import AsyncTaskContext
-from pydantic import JsonValue
+from pydantic import BaseModel, ConfigDict, JsonValue
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -58,6 +59,7 @@ from eylo.modules.memory.reconciliation_service import (
     MemoryReconciliationService,
     MemoryReconciliationStale,
     ReconciliationCounts,
+    complete_reconciliation_proposal,
 )
 from eylo.modules.provider_configs.errors import NotConfiguredError
 from eylo.pipelines.memory.resolver import MemoryRuntime, resolve_memory_runtime
@@ -76,6 +78,20 @@ from eylo.sockets.memory.reconciliation import (
 logger = logging.getLogger(__name__)
 
 MEMORY_RECONCILIATION_WORKFLOW = "eylo.memory.reconcile.v1"
+
+
+class _ReconciliationMethod(StrEnum):
+    DETERMINISTIC = "deterministic"
+    MODEL = "model"
+
+
+class _ReconciliationEvaluation(BaseModel):
+    """Usage is required for model-backed results, including legacy checkpoint replay."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    proposal: MemoryReconciliationProposal
+    method: _ReconciliationMethod
 
 
 def register_memory_reconciliation_workflow(runtime: PlatformDurableRuntime) -> None:
@@ -217,7 +233,7 @@ class MemoryReconciliationWorkflow:
                 raise ExecutionBudgetExceeded(ExecutionBudgetDimension.ACTIVE_TIME)
             try:
                 async with asyncio.timeout(remaining_milliseconds / 1_000):
-                    proposal = await _load_or_propose(
+                    evaluation = await _load_or_propose(
                         job,
                         runtime,
                         batch,
@@ -227,7 +243,7 @@ class MemoryReconciliationWorkflow:
                 raise ExecutionBudgetExceeded(
                     ExecutionBudgetDimension.ACTIVE_TIME
                 ) from None
-            if batch.inputs:
+            if evaluation.method is _ReconciliationMethod.MODEL:
                 await require_memory_reconciliation_usage_reported(
                     organization_id=organization_id,
                     job_id=job_id,
@@ -246,7 +262,7 @@ class MemoryReconciliationWorkflow:
                     organization_id=organization_id,
                     job_id=job_id,
                     batch=batch,
-                    proposal=proposal,
+                    proposal=evaluation.proposal,
                 )
                 receipt = _receipt(row)
         except Exception as error:  # noqa: BLE001 - persisted failure is product state
@@ -357,17 +373,34 @@ async def _load_or_propose(
     runtime: MemoryRuntime,
     batch: MemoryReconciliationBatch,
     task_context: AsyncTaskContext,
-) -> MemoryReconciliationProposal:
+) -> _ReconciliationEvaluation:
+    # V1 checkpoints index the entire batch. V2 indexes only comparison inputs;
+    # never reinterpret an already-paid response against a different input list.
+    legacy = await task_context.begin_step(f"memory-reconciliation:{job.id}:propose:v1")
+    comparison_inputs = tuple(item for item in batch.inputs if item.candidates)
+    method = (
+        _ReconciliationMethod.MODEL
+        if legacy.done or comparison_inputs
+        else _ReconciliationMethod.DETERMINISTIC
+    )
     async with start_transaction(ro=True) as session:
         stored = await MemoryReconciliationService(session).load_proposal(
             organization_id=job.organization_id,
             job_id=job.id,
         )
     if stored is not None:
-        return stored
+        return _ReconciliationEvaluation(proposal=stored, method=method)
 
-    if not batch.inputs:
-        proposal = MemoryReconciliationProposal(decisions=())
+    if legacy.done:
+        if not isinstance(legacy.state, str):
+            raise MemoryProviderError(
+                "Memory reconciliation checkpoint has non-text output."
+            )
+        proposal = parse_reconciliation_proposal(legacy.state, batch.inputs)
+    elif not comparison_inputs:
+        proposal = complete_reconciliation_proposal(
+            batch, MemoryReconciliationProposal(decisions=())
+        )
     else:
 
         async def complete() -> str:
@@ -377,14 +410,15 @@ async def _load_or_propose(
             ):
                 return await runtime.reconciliation_completer(
                     system=RECONCILIATION_SYSTEM_PROMPT,
-                    user=build_reconciliation_prompt(batch.inputs),
+                    user=build_reconciliation_prompt(comparison_inputs),
                 )
 
         raw = await task_context.step(
-            f"memory-reconciliation:{job.id}:propose:v1",
+            f"memory-reconciliation:{job.id}:propose:v2",
             lambda: run_with_durable_heartbeat(task_context, complete),
         )
-        proposal = parse_reconciliation_proposal(raw, batch.inputs)
+        compared = parse_reconciliation_proposal(raw, comparison_inputs)
+        proposal = complete_reconciliation_proposal(batch, compared)
 
     async with start_transaction() as session:
         await MemoryReconciliationService(session).store_proposal(
@@ -392,7 +426,7 @@ async def _load_or_propose(
             job_id=job.id,
             proposal=proposal,
         )
-    return proposal
+    return _ReconciliationEvaluation(proposal=proposal, method=method)
 
 
 async def _handle_failure(

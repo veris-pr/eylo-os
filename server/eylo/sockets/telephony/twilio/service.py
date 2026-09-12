@@ -12,6 +12,10 @@ from urllib.parse import quote
 
 from fastapi import WebSocket
 
+from eylo.common.contracts.speech_runtime import (
+    SpeechTransportEncoding,
+    SpeechTransportFormat,
+)
 from eylo.common.outbound import (
     OutboundSendAuthorization,
     OutboundSendOutcome,
@@ -20,8 +24,11 @@ from eylo.common.outbound import (
     OutboundTransportKind,
 )
 from eylo.sockets.telephony.base import (
+    TELEPHONY_SAMPLE_RATE,
+    AudioEncoding,
     BaseTelephonyService,
     CallMetadata,
+    CarrierAudioFormat,
     CarrierMediaEvent,
     InboundMediaMessage,
     OutboundMediaMessage,
@@ -155,7 +162,9 @@ class TwilioMessageParser(TelephonyMessageParser):
 class TwilioService(BaseTelephonyService):
     """Twilio telephony service implementation."""
 
-    def __init__(self, config: TelephonyConfig, websocket: Optional[WebSocket] = None):
+    def __init__(
+        self, config: TelephonyConfig, websocket: Optional[WebSocket] = None
+    ) -> None:
         """Initialize Twilio service.
 
         Args:
@@ -178,7 +187,7 @@ class TwilioService(BaseTelephonyService):
         """
         return TelephonyProvider.TWILIO
 
-    def set_websocket(self, websocket: WebSocket):
+    def set_websocket(self, websocket: WebSocket) -> None:
         """Set the WebSocket connection.
 
         Args:
@@ -314,17 +323,17 @@ class TwilioService(BaseTelephonyService):
         """
         return self._parser
 
-    def get_config(self) -> Dict[str, Any]:
+    def get_config(self) -> SpeechTransportFormat:
         """Return the Twilio baseline STT configuration."""
-        return {"encoding": "mulaw", "sample_rate": 8000}
+        return SpeechTransportFormat(
+            encoding=SpeechTransportEncoding.MULAW, sample_rate=TELEPHONY_SAMPLE_RATE
+        )
 
-    def get_output_format(self) -> Dict[str, Any]:
+    def get_output_format(self) -> CarrierAudioFormat:
         """Return the Twilio baseline TTS output format metadata."""
-        return {
-            "container": "raw",
-            "encoding": "pcm_mulaw",
-            "sample_rate": 8000,
-        }
+        return CarrierAudioFormat(
+            encoding=AudioEncoding.PCM_MULAW, sample_rate=TELEPHONY_SAMPLE_RATE
+        )
 
     async def disconnect(self) -> None:
         """Disconnect from Twilio service."""

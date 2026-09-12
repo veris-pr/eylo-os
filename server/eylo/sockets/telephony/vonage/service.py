@@ -24,6 +24,10 @@ import aiohttp
 import jwt
 from fastapi import HTTPException, WebSocket
 
+from eylo.common.contracts.speech_runtime import (
+    SpeechTransportEncoding,
+    SpeechTransportFormat,
+)
 from eylo.common.outbound import (
     OutboundSendAuthorization,
     OutboundSendOutcome,
@@ -37,6 +41,7 @@ from eylo.sockets.telephony.base import (
     AudioEncoding,
     BaseTelephonyService,
     CallMetadata,
+    CarrierAudioFormat,
     CarrierMediaEvent,
     InboundMediaMessage,
     OutboundMediaMessage,
@@ -217,7 +222,9 @@ class VonageService(BaseTelephonyService):
     - Content-Type: audio/l16;rate=16000
     """
 
-    def __init__(self, config: TelephonyConfig, websocket: Optional[WebSocket] = None):
+    def __init__(
+        self, config: TelephonyConfig, websocket: Optional[WebSocket] = None
+    ) -> None:
         """Initialize Vonage service with REST client.
 
         Args:
@@ -258,7 +265,7 @@ class VonageService(BaseTelephonyService):
         """
         return TelephonyProvider.VONAGE
 
-    def set_websocket(self, websocket: WebSocket):
+    def set_websocket(self, websocket: WebSocket) -> None:
         """Set the WebSocket connection.
 
         Args:
@@ -676,17 +683,17 @@ class VonageService(BaseTelephonyService):
         self._is_connected = False
         self.websocket = None
 
-    def get_config(self) -> Dict[str, Any]:
+    def get_config(self) -> SpeechTransportFormat:
         """Return provider-specific base configuration for audio processing."""
-        return {"encoding": "linear16", "sample_rate": 16000}
+        return SpeechTransportFormat(
+            encoding=SpeechTransportEncoding.LINEAR16, sample_rate=VONAGE_SAMPLING_RATE
+        )
 
-    def get_output_format(self) -> Dict[str, Any]:
+    def get_output_format(self) -> CarrierAudioFormat:
         """Return provider-specific TTS output format metadata."""
-        return {
-            "container": "raw",
-            "encoding": "pcm_s16le",
-            "sample_rate": 16000,
-        }
+        return CarrierAudioFormat(
+            encoding=AudioEncoding.PCM_S16LE, sample_rate=VONAGE_SAMPLING_RATE
+        )
 
     def outbound_call_profile(self) -> TelephonyOperationProfile:
         return TelephonyOperationProfile(

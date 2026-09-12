@@ -34,6 +34,7 @@ from eylo.modules.agents.schemas.api import (
     AgentPublishRequestSchema,
     AgentResponseSchema,
     AgentRevokeRequestSchema,
+    AgentSwarmActionResponseSchema,
     AgentSwarmCreateRequestSchema,
     AgentSwarmMappingCreateRequestSchema,
     AgentSwarmMappingDeleteRequestSchema,
@@ -60,6 +61,7 @@ from eylo.modules.agents.services.background_agents import (
 from eylo.modules.auth.constants import APP_TAG
 from eylo.modules.auth.schemas import CurrentUserSchema
 from eylo.modules.auth.services.auth_service import get_current_user
+from eylo.modules.tools.schemas.api import ToolResponseSchema
 
 router = APIRouter(prefix="/{organization_id}/agents", tags=[APP_TAG])
 
@@ -84,7 +86,7 @@ async def create_agent(
     organization_id: UUID,
     request: AgentCreateRequestSchema,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> AgentResponseSchema:
     """Create a new agent for the current user's organization."""
     if organization_id != current_user.organization_id:
         raise HTTPException(status_code=404)
@@ -132,8 +134,8 @@ async def update_agent(
     agent_id: UUID,
     request: AgentUpdateRequestSchema,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
-    """Create a new agent for the current user's organization."""
+) -> AgentResponseSchema:
+    """Update an owned Agent draft without changing published revisions."""
     if organization_id != current_user.organization_id:
         raise HTTPException(status_code=404)
     async with start_transaction():
@@ -163,7 +165,7 @@ async def list_agents(
         Query(),
     ] = AgentSortDirection.DESC,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> AgentsPaginated:
     return await AgentController().list_agents(
         organization_id,
         pagination,
@@ -185,7 +187,7 @@ async def update_agent_route(
     agent_id: UUID,
     request: AgentUpdateRequestSchema,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> AgentResponseSchema:
     """Update an existing agent.
 
     Args:
@@ -214,7 +216,7 @@ async def deactivate_agent_route(
     organization_id: UUID,
     agent_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> AgentResponseSchema:
     """Deactivate (soft delete) an agent.
 
     Args:
@@ -246,7 +248,7 @@ async def assign_tool_to_agent(
     agent_id: UUID,
     request: AgentToolRequest,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> AgentToolInDb:
     """Assign a tool to an agent."""
     return await AgentController().assign_tool_to_agent(
         organization_id, agent_id, request, current_user
@@ -258,7 +260,7 @@ async def list_agent_tools(
     organization_id: UUID,
     agent_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> AgentToolsResponseSchema:
     """List all tools assigned to an agent."""
     if organization_id != current_user.organization_id:
         raise HTTPException(status_code=404)
@@ -266,7 +268,9 @@ async def list_agent_tools(
         agent_id,
         organization_id,
     )
-    return {"items": tools}
+    return AgentToolsResponseSchema(
+        items=[ToolResponseSchema.model_validate(tool) for tool in tools]
+    )
 
 
 @router.delete("/{agent_id}/tools/{tool_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -276,7 +280,7 @@ async def remove_tool_from_agent(
     tool_id: UUID,
     expected_draft_version: Annotated[int, Query(gt=0)],
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> None:
     """Remove a tool from an agent."""
     if organization_id != current_user.organization_id:
         raise HTTPException(status_code=404)
@@ -295,7 +299,7 @@ async def publish_agent(
     agent_id: UUID,
     request: AgentPublishRequestSchema,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> AgentResponseSchema:
     """Publish the complete mutable draft as one immutable revision."""
     return await AgentController().publish_agent(
         organization_id=organization_id,
@@ -310,7 +314,7 @@ async def withdraw_agent(
     organization_id: UUID,
     agent_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> AgentResponseSchema:
     """Withdraw the stable alias; already pinned work keeps its exact revision."""
     return await AgentController().withdraw_agent(
         organization_id=organization_id,
@@ -325,7 +329,7 @@ async def revoke_agent_revision(
     agent_id: UUID,
     request: AgentRevokeRequestSchema,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> AgentResponseSchema:
     """Emergency-revoke one exact revision and request run cancellation."""
     return await AgentController().revoke_agent_revision(
         organization_id=organization_id,
@@ -372,7 +376,7 @@ async def create_agent_swarm(
     organization_id: UUID,
     request: AgentSwarmCreateRequestSchema,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> AgentSwarmResponseSchema:
     """Create a new agent swarm for the current user's organization.
 
     Args:
@@ -399,7 +403,7 @@ async def create_agent_swarm(
 async def list_agent_swarms(
     organization_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> list[AgentSwarmResponseSchema]:
     """List all agent swarms for the current user's organization.
 
     Args:
@@ -422,7 +426,7 @@ async def update_agent_swarm(
     swarm_id: UUID,
     request: AgentSwarmUpdateRequestSchema,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> AgentSwarmResponseSchema:
     """Update an existing agent swarm.
 
     Args:
@@ -454,7 +458,7 @@ async def add_agent_to_swarm(
     swarm_id: UUID,
     request: AgentSwarmMappingCreateRequestSchema,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> AgentSwarmMappingResponseSchema:
     """Add an agent to an existing swarm.
 
     Args:
@@ -490,7 +494,7 @@ async def list_agents_in_swarm(
     organization_id: UUID,
     swarm_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> list[AgentSwarmMappingResponseSchema]:
     """List all agents in a specific swarm.
 
     Args:
@@ -522,7 +526,7 @@ async def publish_agent_swarm(
     swarm_id: UUID,
     request: AgentSwarmPublishRequestSchema,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> AgentSwarmRevisionResponseSchema:
     """Publish the complete swarm draft as one immutable topology revision."""
     if organization_id != current_user.organization_id:
         raise HTTPException(status_code=404)
@@ -543,7 +547,7 @@ async def withdraw_agent_swarm(
     organization_id: UUID,
     swarm_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> AgentSwarmResponseSchema:
     """Withdraw the alias while existing exact topology refs remain readable."""
     if organization_id != current_user.organization_id:
         raise HTTPException(status_code=404)
@@ -563,7 +567,7 @@ async def revoke_agent_swarm_revision(
     swarm_id: UUID,
     request: AgentSwarmRevokeRequestSchema,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> AgentSwarmRevisionResponseSchema:
     """Emergency-revoke one exact topology and request run cancellation."""
     if organization_id != current_user.organization_id:
         raise HTTPException(status_code=404)
@@ -582,7 +586,7 @@ async def delete_agent_swarm(
     organization_id: UUID,
     swarm_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> AgentSwarmActionResponseSchema:
     """Delete an existing agent swarm.
 
     Args:
@@ -604,7 +608,7 @@ async def delete_agent_swarm(
             organization_id,
             swarm_id,
         )
-        return {"detail": "Swarm deleted successfully"}
+        return AgentSwarmActionResponseSchema(detail="Swarm deleted successfully")
 
 
 @agent_swarm_router.delete("/{swarm_id}/remove-agent")
@@ -613,7 +617,7 @@ async def remove_agent_from_swarm(
     swarm_id: UUID,
     request: AgentSwarmMappingDeleteRequestSchema,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> AgentSwarmActionResponseSchema:
     """Remove an agent from an existing swarm.
 
     Args:
@@ -638,7 +642,9 @@ async def remove_agent_from_swarm(
             request.agent_id,
             request.expected_draft_version,
         )
-        return {"detail": "Agent removed from swarm successfully"}
+        return AgentSwarmActionResponseSchema(
+            detail="Agent removed from swarm successfully"
+        )
 
 
 background_agent_router = APIRouter(
@@ -651,7 +657,7 @@ async def list_background_agents(
     organization_id: UUID,
     agent_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> list[AgentBackgroundAgentInDb]:
     """List every background agent attached to this agent, enabled or not."""
     if organization_id != current_user.organization_id:
         raise HTTPException(status_code=404)
@@ -670,7 +676,7 @@ async def attach_background_agent(
     agent_id: UUID,
     request: AgentBackgroundAgentCreate,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> AgentBackgroundAgentInDb:
     """Attach a background agent. Always created disabled.
 
     `enabled` on the request body is ignored: attaching and switching on are
@@ -701,7 +707,7 @@ async def set_background_agent_enabled(
     background_agent_id: UUID,
     request: AgentBackgroundAgentUpdate,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> AgentBackgroundAgentInDb:
     """Enable or disable an existing attachment."""
     if organization_id != current_user.organization_id:
         raise HTTPException(status_code=404)
@@ -730,7 +736,7 @@ async def detach_background_agent(
     background_agent_id: UUID,
     expected_draft_version: Annotated[int, Query(gt=0)],
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> None:
     """Remove an attachment. The background agent itself is untouched."""
     if organization_id != current_user.organization_id:
         raise HTTPException(status_code=404)

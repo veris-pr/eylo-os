@@ -34,7 +34,7 @@ export interface paths {
         get: operations["get_agent_api__organization_id__agents__agent_id__get"];
         /**
          * Update Agent
-         * @description Create a new agent for the current user's organization.
+         * @description Update an owned Agent draft without changing published revisions.
          */
         put: operations["update_agent_api__organization_id__agents__agent_id__put"];
         post?: never;
@@ -5681,6 +5681,14 @@ export interface components {
             /** Status */
             status: string;
         };
+        /**
+         * AgentSwarmActionResponseSchema
+         * @description Acknowledgement of a completed swarm or membership removal.
+         */
+        AgentSwarmActionResponseSchema: {
+            /** Detail */
+            detail: string;
+        };
         /** AgentSwarmCreateRequestSchema */
         AgentSwarmCreateRequestSchema: {
             /** Name */
@@ -8649,6 +8657,12 @@ export interface components {
             executionMode: components["schemas"]["eylo__modules__integrations_v2__domain__enums__ToolExecutionMode"];
         };
         /**
+         * IntegrationCatalogSource
+         * @description Catalog authority identified by curated capability projections.
+         * @enum {string}
+         */
+        IntegrationCatalogSource: "curated";
+        /**
          * InterruptionType
          * @enum {string}
          */
@@ -10419,7 +10433,25 @@ export interface components {
          * PlatformToolApiSchema
          * @description Platform-native tool schema for API requests/responses.
          */
-        PlatformToolApiSchema: {
+        "PlatformToolApiSchema-Input": {
+            /**
+             * Name
+             * @description Unique tool name for the LLM to reference
+             */
+            name: string;
+            /**
+             * Description
+             * @description Clear description of what the tool does for the LLM
+             */
+            description: string;
+            /** @description JSON Schema defining the tool's input parameters */
+            inputSchema: components["schemas"]["PlatformToolInputApiSchema"];
+        };
+        /**
+         * PlatformToolApiSchema
+         * @description Platform-native tool schema for API requests/responses.
+         */
+        "PlatformToolApiSchema-Output": {
             /**
              * Name
              * @description Unique tool name for the LLM to reference
@@ -10449,14 +10481,14 @@ export interface components {
              * @description JSON Schema properties for tool inputs
              */
             properties?: {
-                [key: string]: unknown;
+                [key: string]: components["schemas"]["JsonValue"];
             };
             /**
              * $Defs
              * @description Reusable JSON Schema definitions referenced by $ref.
              */
             $defs?: {
-                [key: string]: unknown;
+                [key: string]: components["schemas"]["JsonValue"];
             } | null;
             /**
              * Required
@@ -10468,14 +10500,14 @@ export interface components {
              * @description Alternative component-specific schemas for this tool input.
              */
             oneOf?: {
-                [key: string]: unknown;
+                [key: string]: components["schemas"]["JsonValue"];
             }[] | null;
             /**
              * Discriminator
              * @description JSON Schema discriminator metadata for union-style tool inputs.
              */
             discriminator?: {
-                [key: string]: unknown;
+                [key: string]: components["schemas"]["JsonValue"];
             } | null;
             /**
              * Additionalproperties
@@ -13989,6 +14021,20 @@ export interface components {
              */
             tokenType: string;
         };
+        /**
+         * ToolActionResponseSchema
+         * @description Existing withdrawal acknowledgement; deleting a tool does not erase it.
+         */
+        ToolActionResponseSchema: {
+            status: components["schemas"]["ToolActionStatus"];
+            /** Message */
+            message: string;
+        };
+        /**
+         * ToolActionStatus
+         * @enum {string}
+         */
+        ToolActionStatus: "success";
         /** ToolCreateRequestSchema */
         ToolCreateRequestSchema: {
             /**
@@ -14022,14 +14068,14 @@ export interface components {
              * @description Executor schema for the tool
              */
             executorConfig?: {
-                [key: string]: unknown;
+                [key: string]: components["schemas"]["JsonValue"];
             } | null;
             /** Outputschema */
             outputSchema?: {
-                [key: string]: unknown;
+                [key: string]: components["schemas"]["JsonValue"];
             } | null;
             /** @description LLM schema for the tool */
-            llmConfig?: components["schemas"]["PlatformToolApiSchema"] | null;
+            llmConfig?: components["schemas"]["PlatformToolApiSchema-Input"] | null;
         };
         /**
          * ToolEffect
@@ -14124,11 +14170,11 @@ export interface components {
              * @description Executor schema for the tool
              */
             executorConfig?: {
-                [key: string]: unknown;
+                [key: string]: components["schemas"]["JsonValue"];
             } | null;
             /** Outputschema */
             outputSchema?: {
-                [key: string]: unknown;
+                [key: string]: components["schemas"]["JsonValue"];
             } | null;
             /**
              * Slug
@@ -14152,7 +14198,7 @@ export interface components {
              */
             draftDirty: boolean;
             /** @description LLM schema for the tool */
-            llmConfig?: components["schemas"]["PlatformToolApiSchema"] | null;
+            llmConfig?: components["schemas"]["PlatformToolApiSchema-Output"] | null;
         };
         /**
          * ToolResultContent
@@ -14173,11 +14219,8 @@ export interface components {
              * @description ID of the tool use this result corresponds to
              */
             tool_use_id: string;
-            /**
-             * Content
-             * @description Tool execution result - can be string, dict, list, etc.
-             */
-            content: unknown;
+            /** @description Tool execution result as a finite JSON value. */
+            content: components["schemas"]["JsonValue"];
             /**
              * Name
              * @description Name of the tool that was executed
@@ -14264,15 +14307,15 @@ export interface components {
              * @description Executor schema for the tool
              */
             executorConfig?: {
-                [key: string]: unknown;
+                [key: string]: components["schemas"]["JsonValue"];
             } | null;
             /** Outputschema */
             outputSchema?: {
-                [key: string]: unknown;
+                [key: string]: components["schemas"]["JsonValue"];
             } | null;
             executionMode?: components["schemas"]["eylo__modules__tools__models__ToolExecutionMode"] | null;
             /** @description LLM schema for the tool */
-            llmConfig?: components["schemas"]["PlatformToolApiSchema"] | null;
+            llmConfig?: components["schemas"]["PlatformToolApiSchema-Input"] | null;
         };
         /**
          * ToolUseContent
@@ -14303,7 +14346,7 @@ export interface components {
              * @description Input parameters for the tool
              */
             input?: {
-                [key: string]: unknown;
+                [key: string]: components["schemas"]["JsonValue"];
             };
         };
         /**
@@ -15543,15 +15586,11 @@ export interface components {
             /** Description */
             description: string;
             authKind: components["schemas"]["VendorAuthKind"];
-            /** Connectionkind */
-            connectionKind: string;
+            connectionKind: components["schemas"]["ConnectionKind"];
             /** Hasactiveconnection */
             hasActiveConnection: boolean;
-            /**
-             * Source
-             * @default curated
-             */
-            source: string;
+            /** @default curated */
+            source: components["schemas"]["IntegrationCatalogSource"];
             /** Vendor */
             vendor: string;
         };
@@ -15585,8 +15624,9 @@ export interface components {
             /**
              * Kind
              * @default CURATED
+             * @constant
              */
-            kind: string;
+            kind: "CURATED";
         };
         /**
          * WidgetDateMode
@@ -21745,7 +21785,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ToolActionResponseSchema"];
                 };
             };
             /** @description Validation Error */
@@ -24522,7 +24562,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["AgentSwarmActionResponseSchema"];
                 };
             };
             /** @description Validation Error */
@@ -24748,7 +24788,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["AgentSwarmActionResponseSchema"];
                 };
             };
             /** @description Validation Error */

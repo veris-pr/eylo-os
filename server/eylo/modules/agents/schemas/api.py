@@ -132,6 +132,12 @@ class AgentSwarmResponseSchema(AgentSwarmInDb, EyloBaseResponseSchema):
     pass
 
 
+class AgentSwarmActionResponseSchema(EyloBaseApiSchema):
+    """Acknowledgement of a completed swarm or membership removal."""
+
+    detail: str
+
+
 class AgentSwarmMappingResponseSchema(AgentSwarmMappingInDb, EyloBaseResponseSchema):
     pass
 

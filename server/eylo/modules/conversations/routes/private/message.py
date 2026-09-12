@@ -1,6 +1,6 @@
 """HTTP routes for the `conversations` domain."""
 
-from typing import Annotated, Optional
+from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends
@@ -37,7 +37,7 @@ async def list_conversation_messages(
     ],
     pagination: Annotated[PaginationParams, Depends(get_pagination)],
     current_user: CurrentUserSchema = Depends(get_current_user),
-) -> Optional[ConversationMessagesPaginated]:
+) -> ConversationMessagesPaginated:
     """Get paginated messages for a conversation.
 
     Args:
@@ -64,7 +64,7 @@ async def submit_message_feedback(
     request_id: UUID,
     feedback: MessageRequestFeedback,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> MessageApiResponseSchema:
     """Submit feedback for a message."""
     return await MessageController().submit_message_feedback(
         organization_id=organization_id,

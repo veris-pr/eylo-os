@@ -1,8 +1,9 @@
 """SQLAlchemy model for canonical conversation messages and request state."""
 
 import uuid
-from typing import Any, Dict, Optional
+from typing import Optional
 
+from pydantic import JsonValue
 from sqlalchemy import (
     CheckConstraint,
     ForeignKey,
@@ -60,21 +61,24 @@ class MessagesModel(EyloBaseModel):
         ),
     )
 
-    kind: Mapped[MessageKind] = mapped_column(Text, nullable=False)
-    content_kind: Mapped[MessageContentKind] = mapped_column(Text, nullable=False)
-    content: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    # SQL Text columns return strings; domain schemas own enum validation.
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    content_kind: Mapped[str] = mapped_column(Text, nullable=False)
+    content: Mapped[dict[str, JsonValue]] = mapped_column(JSONB, nullable=False)
     parent_message_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("conversation_messages.id"), nullable=True
     )
     request_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), nullable=True, index=True
     )
-    request_status: Mapped[Optional[RequestStatus]] = mapped_column(Text, nullable=True)
-    request_feedback: Mapped[Optional[MessageRequestFeedback]] = mapped_column(
+    request_status: Mapped[str | None] = mapped_column(Text, nullable=True)
+    request_feedback: Mapped[str | None] = mapped_column(
         Text, nullable=True
     )
-    meta: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
-    external_id = mapped_column(String(320), nullable=True, unique=False, index=True)
+    meta: Mapped[dict[str, JsonValue] | None] = mapped_column(JSONB, nullable=True)
+    external_id: Mapped[str | None] = mapped_column(
+        String(320), nullable=True, unique=False, index=True
+    )
 
     conversation_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
