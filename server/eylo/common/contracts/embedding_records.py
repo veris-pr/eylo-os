@@ -21,11 +21,6 @@ class _EmbeddingRecord(BaseModel):
 
     organization_id: UUID
 
-    def to_columns(self) -> dict[str, object]:
-        """Serialize for ORM construction/update; the caller owns the tenant field."""
-        validated = type(self).model_validate(self)
-        return validated.model_dump(exclude={"organization_id"})
-
 
 class EmbeddingRecord(_EmbeddingRecord):
     """Active identity on a vector owner, formation job or ingestion job."""

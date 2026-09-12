@@ -11,7 +11,12 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationErro
 from sqlalchemy import Select, literal, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from eylo.absurd_work import AbsurdBoundWorkService, DurableState
+from eylo.absurd_work import (
+    AbsurdBoundWorkService,
+    DurableFailureRecovery,
+    DurableState,
+    DurableWorkLock,
+)
 from eylo.common.contracts.embedding import embedding_space_from_record
 from eylo.common.contracts.memory import (
     MemoryError,
@@ -139,6 +144,16 @@ class ReconciliationCounts(BaseModel):
             "unrelated_count": self.unrelated,
             "failed_count": self.failed,
         }
+
+    def project_job(self, job: MemoryReconciliationJobModel) -> None:
+        """Copy validated counts to the locked product job, not its lifecycle."""
+        ReconciliationCounts.model_validate(self)
+        job.considered_count = self.considered
+        job.duplicate_count = self.duplicate
+        job.superseded_count = self.superseded
+        job.conflict_count = self.conflict
+        job.unrelated_count = self.unrelated
+        job.failed_count = self.failed
 
 
 class MemoryReconciliationStale(MemoryError):
@@ -285,7 +300,7 @@ class MemoryReconciliationService:
         ).get(
             work_id=job_id,
             organization_id=organization_id,
-            for_update=True,
+            lock=DurableWorkLock.UPDATE,
         )
         if job.state not in {
             DurableState.RUNNING,
@@ -498,7 +513,7 @@ class MemoryReconciliationService:
         job = await work.get(
             work_id=job_id,
             organization_id=organization_id,
-            for_update=True,
+            lock=DurableWorkLock.UPDATE,
         )
         if job.state is DurableState.SUCCEEDED:
             return job
@@ -619,7 +634,7 @@ class MemoryReconciliationService:
         row = await work.succeed(
             work_id=job_id,
             organization_id=organization_id,
-            values=counts.job_values(),
+            project_result=counts.project_job,
         )
         await self.session.flush()
         register_reconciliation_lifecycle(
@@ -638,20 +653,20 @@ class MemoryReconciliationService:
         organization_id: UUID,
         job_id: UUID,
         error: str,
-        permanent: bool,
+        recovery: DurableFailureRecovery,
     ) -> MemoryReconciliationJobModel:
         work = AbsurdBoundWorkService(MemoryReconciliationJobModel, self.session)
         job = await work.get(
             work_id=job_id,
             organization_id=organization_id,
-            for_update=True,
+            lock=DurableWorkLock.UPDATE,
         )
         was_running = job.state is DurableState.RUNNING
         state = await work.fail(
             work_id=job_id,
             organization_id=organization_id,
             error=error,
-            permanent=permanent,
+            recovery=recovery,
         )
         if state is DurableState.FAILED:
             job.considered_count = 1
@@ -689,19 +704,19 @@ class MemoryReconciliationService:
         current = await work.get(
             work_id=job_id,
             organization_id=organization_id,
-            for_update=True,
+            lock=DurableWorkLock.UPDATE,
         )
         was_running = current.state is DurableState.RUNNING
         await work.fail(
             work_id=job_id,
             organization_id=organization_id,
             error=error,
-            permanent=True,
+            recovery=DurableFailureRecovery.TERMINAL,
         )
         job = await work.get(
             work_id=job_id,
             organization_id=organization_id,
-            for_update=True,
+            lock=DurableWorkLock.UPDATE,
         )
         cursor = await self._locked_cursor(job)
         job.considered_count = 1

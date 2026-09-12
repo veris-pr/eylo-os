@@ -7,7 +7,6 @@ import json
 import logging
 from datetime import datetime, timezone
 from enum import StrEnum
-from typing import Any
 from uuid import UUID
 
 import uuid_utils
@@ -46,6 +45,7 @@ from eylo.sor.runtime.command_payloads import validate_command_payload
 from eylo.sor.runtime.projection import project_source_record
 from eylo.sor.runtime.registry import SorRegistry
 from eylo.sor.runtime.serialization import (
+    SorCommandTaskParams,
     SorStoredCommandResult,
     decode_external_record,
     encode_external_record,
@@ -285,7 +285,6 @@ async def spawn_sor_command(*, organization_id: UUID, command_id: UUID) -> UUID:
         organization_id=organization_id,
         work_id=command_id,
         workflow_name=SOR_COMMAND_WORKFLOW,
-        params_name="command_id",
         idempotency_prefix="sor-command",
         eligible_source_states=SOR_COMMAND_SOURCE_STATES,
     )
@@ -480,10 +479,12 @@ class SorCommandWorkflow:
 
     async def execute(
         self,
-        params: dict[str, Any],
+        params: object,
         task_context: AsyncTaskContext,
-    ) -> dict[str, Any]:
-        organization_id, command_id = _parse_params(params)
+    ) -> dict[str, JsonValue]:
+        request = _parse_params(params)
+        organization_id = request.organization_id
+        command_id = request.command_id
         try:
             receipt = await self._execute(
                 organization_id=organization_id,
@@ -1651,11 +1652,10 @@ def _terminal_event_payload(
     *,
     organization_id: UUID,
     command_id: UUID,
-) -> dict[str, str]:
-    return {
-        "organization_id": str(organization_id),
-        "command_id": str(command_id),
-    }
+) -> dict[str, JsonValue]:
+    return SorCommandTaskParams(
+        organization_id=organization_id, command_id=command_id
+    ).model_dump(mode="json")
 
 
 def _canonical_json(value: object, *, maximum: int) -> bytes:
@@ -1676,12 +1676,15 @@ def _canonical_json(value: object, *, maximum: int) -> bytes:
     return encoded
 
 
-def _parse_params(params: dict[str, Any]) -> tuple[UUID, UUID]:
-    if set(params) != {"organization_id", "command_id"}:
+def _parse_params(params: object) -> SorCommandTaskParams:
+    if (
+        not isinstance(params, dict)
+        or set(params) != SorCommandTaskParams.model_fields.keys()
+    ):
         raise ValueError("SOR command task params must contain IDs only.")
     try:
-        return UUID(str(params["organization_id"])), UUID(str(params["command_id"]))
-    except (TypeError, ValueError) as error:
+        return SorCommandTaskParams.model_validate(params)
+    except ValidationError as error:
         raise ValueError("SOR command task params contain an invalid UUID.") from error
 
 

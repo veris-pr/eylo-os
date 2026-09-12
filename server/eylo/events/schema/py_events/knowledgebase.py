@@ -9,7 +9,7 @@ from uuid import UUID
 from pydantic import ConfigDict, Field
 
 from eylo.common.contracts.knowledgebase import KnowledgeAccess
-from eylo.common.contracts.reranking import RankingState
+from eylo.common.contracts.reranking import RankingReason, RankingState
 from eylo.events.schema.py_events.base import BaseEvent
 
 SafeCode = Annotated[
@@ -75,6 +75,15 @@ class KnowledgeObservationOutcome(StrEnum):
     SUCCEEDED = "succeeded"
     DEGRADED = "degraded"
     FAILED = "failed"
+
+
+class KnowledgeQueryFailure(StrEnum):
+    """Content-free query failures owned by the platform observation contract."""
+
+    RERANKING_NOT_CONFIGURED = "knowledge_reranking_not_configured"
+    INVALID = "knowledge_query_invalid"
+    FAILED = "knowledge_query_failed"
+    UNAVAILABLE = "knowledge_query_unavailable"
 
 
 class _KnowledgeEvent(BaseEvent):
@@ -150,9 +159,9 @@ class KnowledgeQueryObservedEvent(_KnowledgeEvent):
     candidate_count: BoundedCount
     returned_count: BoundedCount
     ranking_state: RankingState
-    ranking_reason: SafeCode | None = None
+    ranking_reason: RankingReason | None = None
     duration_ms: int = Field(ge=0, le=86_400_000)
-    failure_code: SafeCode | None = None
+    failure_code: KnowledgeQueryFailure | None = None
 
 
 KnowledgePostCommitEvent = (

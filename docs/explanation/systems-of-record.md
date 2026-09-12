@@ -126,6 +126,10 @@ contracts grants authority: command execution still rechecks live source, grant,
 published revision and run state at the existing transaction boundaries.
 
 Command receipts remain typed through worker execution and Agent-tool resume.
+Sync, webhook and command producers select their ID-only task model from the
+persisted work type, rather than accepting an arbitrary dictionary key. The same
+models validate worker input; command terminal notifications reuse the command
+identity model. Existing JSON field names and idempotency keys remain unchanged.
 `SorCommandReceipt` carries UUID identity, the command-state enum and finite JSON
 result data. Terminal status comes from the existing command state machine.
 The Absurd return boundary explicitly encodes that receipt as JSON; internal

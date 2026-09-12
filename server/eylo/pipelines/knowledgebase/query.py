@@ -26,6 +26,7 @@ from eylo.common.contracts.reranking import (
 from eylo.common.database import get_transaction, start_transaction
 from eylo.events.schema.py_events.knowledgebase import (
     KnowledgeObservationOutcome,
+    KnowledgeQueryFailure,
     KnowledgeQueryObservedEvent,
 )
 from eylo.modules.agents.schemas.indb import AgentInDb
@@ -38,10 +39,11 @@ from eylo.modules.knowledgebase.services.knowledgebases import (
 from eylo.modules.provider_configs.errors import NotConfiguredError
 from eylo.pipelines.knowledgebase.query_contracts import (
     KnowledgeQueryCandidate,
-    KnowledgeQueryCitation,
     KnowledgeQueryObservation,
     KnowledgeQueryResponse,
     KnowledgeQueryResult,
+    KnowledgeQueryUnavailableReason,
+    UnavailableKnowledgebase,
 )
 from eylo.pipelines.knowledgebase.resolver import resolve_adapter
 from eylo.pipelines.reranking import RerankingRuntime, resolve_reranker
@@ -51,6 +53,7 @@ from eylo.sockets.knowledgebase.base import KnowledgebaseVendorAdapter
 logger = logging.getLogger(__name__)
 
 MAX_RERANK_CANDIDATES_PER_KNOWLEDGEBASE = 32
+MILLISECONDS_PER_SECOND = 1_000
 
 
 class _Search(BaseModel):
@@ -67,12 +70,14 @@ class _Search(BaseModel):
     limit: int = Field(gt=0)
 
 
-def _knowledgebase_unavailable_reason(error: Exception) -> str:
+def _knowledgebase_unavailable_reason(
+    error: Exception,
+) -> KnowledgeQueryUnavailableReason:
     if isinstance(error, NotConfiguredError):
-        return "not configured"
+        return KnowledgeQueryUnavailableReason.NOT_CONFIGURED
     if isinstance(error, KnowledgebaseError):
-        return "configuration unavailable"
-    return "provider unavailable"
+        return KnowledgeQueryUnavailableReason.CONFIGURATION_UNAVAILABLE
+    return KnowledgeQueryUnavailableReason.PROVIDER_UNAVAILABLE
 
 
 async def query_agent_knowledge(
@@ -139,7 +144,11 @@ async def _query_agent_knowledge(
                 f"{MAX_KNOWLEDGE_QUERY_CHARS} characters."
             ),
         )
-    if not isinstance(top_k, int) or isinstance(top_k, bool) or not 1 <= top_k <= MAX_KNOWLEDGE_RESULTS:
+    if (
+        not isinstance(top_k, int)
+        or isinstance(top_k, bool)
+        or not 1 <= top_k <= MAX_KNOWLEDGE_RESULTS
+    ):
         return KnowledgeQueryResponse(
             success=False,
             message=f"top_k must be between 1 and {MAX_KNOWLEDGE_RESULTS}.",
@@ -183,7 +192,7 @@ async def _query_agent_knowledge(
             top_k=top_k,
         )
         searches: list[_Search] = []
-        unavailable: list[tuple[str, str]] = []
+        unavailable: list[UnavailableKnowledgebase] = []
         for grant in grants:
             knowledgebase = grant.knowledgebase
             scope_map = readable_scopes(
@@ -201,7 +210,10 @@ async def _query_agent_knowledge(
                 )
             except (NotConfiguredError, KnowledgebaseError, VendorError) as error:
                 unavailable.append(
-                    (knowledgebase.name, _knowledgebase_unavailable_reason(error))
+                    UnavailableKnowledgebase(
+                        name=knowledgebase.name,
+                        reason=_knowledgebase_unavailable_reason(error),
+                    )
                 )
                 logger.warning(
                     "Knowledgebase unavailable id=%s error_type=%s",
@@ -236,7 +248,12 @@ async def _query_agent_knowledge(
         if isinstance(outcome, BaseException) and not isinstance(outcome, Exception):
             raise outcome
         if isinstance(outcome, Exception):
-            unavailable.append((search.knowledgebase_name, "query failed"))
+            unavailable.append(
+                UnavailableKnowledgebase(
+                    name=search.knowledgebase_name,
+                    reason=KnowledgeQueryUnavailableReason.QUERY_FAILED,
+                )
+            )
             logger.warning(
                 "Knowledgebase query failed id=%s error_type=%s",
                 search.knowledgebase_id,
@@ -259,7 +276,12 @@ async def _query_agent_knowledge(
                 for result in outcome
             ]
         except ValidationError:
-            unavailable.append((search.knowledgebase_name, "query failed"))
+            unavailable.append(
+                UnavailableKnowledgebase(
+                    name=search.knowledgebase_name,
+                    reason=KnowledgeQueryUnavailableReason.QUERY_FAILED,
+                )
+            )
             logger.warning(
                 "Knowledgebase query returned invalid results id=%s",
                 search.knowledgebase_id,
@@ -279,7 +301,7 @@ async def _query_agent_knowledge(
             success=False,
             message=(
                 "No knowledgebase could be searched. "
-                + "; ".join(f"{name}: {reason}" for name, reason in unavailable)
+                + "; ".join(f"{item.name}: {item.reason}" for item in unavailable)
             ),
             ranking=ranking,
             observation=KnowledgeQueryObservation(
@@ -291,7 +313,7 @@ async def _query_agent_knowledge(
                 returned_count=0,
                 ranking_state=ranking.state,
                 ranking_reason=ranking.reason,
-                failure_code="knowledge_query_unavailable",
+                failure_code=KnowledgeQueryFailure.UNAVAILABLE,
             ),
         )
 
@@ -299,7 +321,7 @@ async def _query_agent_knowledge(
     if unavailable:
         message = (
             f"{message} Some knowledgebases could not be searched: "
-            f"{', '.join(name for name, _ in unavailable)}."
+            f"{', '.join(item.name for item in unavailable)}."
         ).strip()
     return KnowledgeQueryResponse(
         success=True,
@@ -341,12 +363,12 @@ def _valid_query_request(
     )
 
 
-def _query_failure_code(error: Exception) -> str:
+def _query_failure_code(error: Exception) -> KnowledgeQueryFailure:
     if isinstance(error, NotConfiguredError):
-        return "knowledge_reranking_not_configured"
+        return KnowledgeQueryFailure.RERANKING_NOT_CONFIGURED
     if isinstance(error, (KnowledgebaseError, VendorError)):
-        return "knowledge_query_invalid"
-    return "knowledge_query_failed"
+        return KnowledgeQueryFailure.INVALID
+    return KnowledgeQueryFailure.FAILED
 
 
 def _publish_query_observation(
@@ -370,7 +392,9 @@ def _publish_query_observation(
                 returned_count=observation.returned_count,
                 ranking_state=observation.ranking_state,
                 ranking_reason=observation.ranking_reason,
-                duration_ms=max(0, int((monotonic() - started_at) * 1000)),
+                duration_ms=max(
+                    0, int((monotonic() - started_at) * MILLISECONDS_PER_SECOND)
+                ),
                 failure_code=observation.failure_code,
             )
         )
@@ -471,17 +495,10 @@ def _annotate(
     for position, result in enumerate(results, start=1):
         label = f"K{position}"
         annotated.append(
-            KnowledgeQueryResult(
-                **result.model_dump(),
-                citation=KnowledgeQueryCitation(
-                    label=label,
-                    knowledgebase_id=result.knowledgebase_id,
-                    document_id=result.document_id,
-                    title=result.title,
-                    source_uri=result.source_uri,
-                ),
-                ranking_state=ranking.state,
-                score_comparable=ranking.comparable,
+            KnowledgeQueryResult.from_candidate(
+                result,
+                label=label,
+                ranking=ranking,
             )
         )
     return annotated

@@ -5436,18 +5436,10 @@ export interface components {
              * @description Registry slug naming first-party code for a background agent. Null means prompt-only.
              */
             implementation?: string | null;
-            /**
-             * Prompt
-             * @description Prompt configuration for the agent.
-             */
-            prompt?: {
-                [key: string]: unknown;
-            } | null;
-            /**
-             * Lifecycle
-             * @default draft
-             */
-            lifecycle: string;
+            /** @description Prompt configuration for the agent. */
+            prompt?: components["schemas"]["JsonObject"] | null;
+            /** @default draft */
+            lifecycle: components["schemas"]["DefinitionLifecycle"];
             /** Publishedrevision */
             publishedRevision?: number | null;
             /**
@@ -5839,11 +5831,8 @@ export interface components {
             slug: string;
             /** Description */
             description?: string | null;
-            /**
-             * Lifecycle
-             * @default draft
-             */
-            lifecycle: string;
+            /** @default draft */
+            lifecycle: components["schemas"]["DefinitionLifecycle"];
             /** Publishedrevision */
             publishedRevision?: number | null;
             /**
@@ -5906,8 +5895,7 @@ export interface components {
             slug: string;
             /** Description */
             description?: string | null;
-            /** Availability */
-            availability: string;
+            availability: components["schemas"]["RevisionAvailability"];
             /**
              * Publishedat
              * Format: date-time

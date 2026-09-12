@@ -29,6 +29,15 @@ class CampaignAttemptParams(BaseModel):
     def decode_uuid(cls, value: object) -> object:
         return UUID(value) if isinstance(value, str) else value
 
+    @property
+    def work_id(self) -> UUID:
+        return self.attempt_id
+
+    def to_task_payload(self) -> dict[str, JsonValue]:
+        return CampaignAttemptParams(
+            organization_id=self.organization_id, attempt_id=self.attempt_id
+        ).model_dump(mode="json")
+
 
 class PreparedCampaignDispatch(BaseModel):
     """Detached validated values plus the same adapter that validated them.

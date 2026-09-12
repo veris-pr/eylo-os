@@ -20,6 +20,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import ENUM, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, validates
 
+from eylo.common.contracts.json_values import JsonObject
 from eylo.common.models import (
     EyloBaseModel,
     EyloOrganizationModel,
@@ -384,7 +385,7 @@ class AgentsModel(EyloOrganizationModel):
         ),
     )
     # behaviour
-    prompt: Mapped[dict] = mapped_column(
+    prompt: Mapped[JsonObject | None] = mapped_column(
         JSONB, nullable=True, doc="Agent's prompt configuration."
     )
     lifecycle: Mapped[str] = mapped_column(

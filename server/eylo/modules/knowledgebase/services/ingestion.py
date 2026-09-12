@@ -129,8 +129,8 @@ class IngestionService:
             meta=document.metadata or None,
             state=IngestionState.PENDING,
             max_attempts=max_attempts,
-            **_embedding_job_fields(embedding_space),
         )
+        _assign_embedding_space(job, embedding_space)
         try:
             # A savepoint, not a plain flush. The partial unique index catches
             # a race the check above cannot — two enqueues can both read
@@ -212,8 +212,8 @@ class IngestionService:
             corpus_import_id=corpus_import_id,
             state=IngestionState.PENDING,
             max_attempts=max_attempts,
-            **_embedding_job_fields(embedding_space),
         )
+        _assign_embedding_space(job, embedding_space)
         try:
             async with self.session.begin_nested():
                 self.session.add(job)
@@ -340,10 +340,21 @@ class IngestionService:
         return embedding_space_from_record(record)
 
 
-def _embedding_job_fields(space: EmbeddingSpace | None) -> dict[str, object]:
+def _assign_embedding_space(
+    job: KnowledgeIngestionJobModel, space: EmbeddingSpace | None
+) -> None:
+    """Pin validated coordinates before filing; FTS has no embedding authority."""
     if space is None:
-        return {}
-    return space.to_active_record().to_columns()
+        return
+    space = EmbeddingSpace.model_validate(space, strict=True)
+    job.embedding_provider_config_id = space.provider_config_id
+    job.embedding_provider_config_revision = space.provider_config_revision
+    job.embedding_provider = space.provider
+    job.embedding_endpoint = space.endpoint
+    job.embedding_model = space.model
+    job.embedding_dimensions = space.dimensions
+    job.embedding_semantic_options = space.semantic_options
+    job.embedding_space_id = space.id
 
 
 def document_from_job(

@@ -188,7 +188,7 @@ def _to_agent(row: AgentRevisionModel) -> AgentInDb:
         instruction_template_id=row.instruction_template_id,
         llm_overrides=LLMOverridesSchema.model_validate(row.llm_overrides),
         prompt=None,
-        lifecycle=DefinitionLifecycle.PUBLISHED.value,
+        lifecycle=DefinitionLifecycle.PUBLISHED,
         published_revision=row.revision,
         draft_version=1,
         draft_dirty=False,

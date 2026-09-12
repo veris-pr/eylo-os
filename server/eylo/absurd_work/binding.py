@@ -3,27 +3,42 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Protocol
 from uuid import UUID
 
+from pydantic import JsonValue
 from sqlalchemy import select
 
-from eylo.absurd_work.model import DurableState
+from eylo.absurd_work.model import BoundWorkRow, DurableState
 from eylo.absurd_work.service import AbsurdBoundWorkService, DurableWorkConflict
 from eylo.common.database import start_transaction
 from eylo.durable_runtime import PlatformDurableRuntime
 
+_UNBOUND_SCAN_BATCH_SIZE = 100
 
-async def spawn_bound_work(
+
+class BoundWorkIdentity(Protocol):
+    """A product-owned identity and its validated, ID-only queue encoding."""
+
+    @property
+    def organization_id(self) -> UUID: ...
+
+    @property
+    def work_id(self) -> UUID: ...
+
+    def to_task_payload(self) -> dict[str, JsonValue]: ...
+
+
+async def spawn_bound_work[WorkRow: BoundWorkRow](
     *,
-    model: type[Any],
-    organization_id: UUID,
-    work_id: UUID,
+    model: type[WorkRow],
+    params: BoundWorkIdentity,
     workflow_name: str,
-    params_name: str,
     idempotency_prefix: str,
 ) -> UUID:
     """Idempotently spawn and bind one already-committed product row."""
+    payload = params.to_task_payload()
+    organization_id, work_id = params.organization_id, params.work_id
     async with start_transaction(ro=True) as session:
         row = await AbsurdBoundWorkService(model, session).get(
             work_id=work_id,
@@ -41,10 +56,7 @@ async def spawn_bound_work(
     try:
         task_id = await runtime.spawn_task(
             name=workflow_name,
-            params={
-                "organization_id": str(organization_id),
-                params_name: str(work_id),
-            },
+            params=payload,
             idempotency_key=f"{idempotency_prefix}:v1:{organization_id}:{work_id}",
             max_attempts=max_attempts,
         )
@@ -64,11 +76,11 @@ async def spawn_bound_work(
         await runtime.close()
 
 
-async def spawn_unbound_work(
+async def spawn_unbound_work[WorkRow: BoundWorkRow](
     *,
-    model: type[Any],
+    model: type[WorkRow],
     spawn: Callable[[UUID, UUID], Awaitable[UUID]],
-    limit: int = 100,
+    limit: int = _UNBOUND_SCAN_BATCH_SIZE,
 ) -> tuple[int, list[tuple[UUID, Exception]]]:
     """Repeat producer spawn from DB outbox rows without executing product work."""
     async with start_transaction(ro=True) as session:
@@ -99,9 +111,9 @@ async def spawn_unbound_work(
     return spawned, failures
 
 
-async def cancel_bound_work(
+async def cancel_bound_work[WorkRow: BoundWorkRow](
     *,
-    model: type[Any],
+    model: type[WorkRow],
     organization_id: UUID,
     work_id: UUID,
 ) -> bool:

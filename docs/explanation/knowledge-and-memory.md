@@ -24,6 +24,12 @@ event publication reads a separate count projection so historical detail fields
 cannot break observation. Invalid observation data remains non-fatal to the
 canonical transaction.
 
+Conversation uploads write a typed metadata object containing the source kind,
+uploader, filename, content type, byte count and digest. Receipt access reads only
+the source-kind/uploader projection: missing unrelated historical metadata does
+not change ownership, and contact identifiers retain their exact stored spelling.
+The current conversation, contact and user-session checks still run separately.
+
 Knowledge metadata and embedding semantic options remain extensible JSON objects,
 not vendor-specific platform schemas. Their shared contract accepts nested JSON
 values with string keys and finite numbers, validating both Python and JSON
@@ -31,6 +37,22 @@ inputs. It refuses Python objects and non-finite numbers instead of coercing or
 silently changing them. Valid metadata, serialized embedding records and vector
 space hashes are unchanged. Corpus-import responses expose the same bounded,
 typed skip summary written by screening.
+
+Embedding identity writes stay typed until persistence: ingestion and reindex
+services assign their own mapped fields from a validated `EmbeddingSpace`, without
+building column names or unpacking a generic field dictionary. Source and target
+identities are validated before either is stamped on a new reindex job. The
+read-side record schemas validate persisted active/source/target columns before
+workers use them. Bulk cursor updates name ORM column objects and retain the
+owning tenant, config and source-space filters.
+
+Retrieved candidates remain typed through reranking and citation assembly;
+dictionary serialization occurs only at the agent-tool output boundary. Citation
+labels are assigned after final ordering, while the knowledgebase/document
+identity and original retrieval score stay attached to the candidate. Unavailable
+knowledgebases carry named safe reasons, not vendor exception messages. Local
+query observations use closed failure-code and ranking-reason enums and remain
+separate from agent-facing content.
 
 ## Memory is experience-owned
 

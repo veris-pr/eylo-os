@@ -10,6 +10,7 @@ from absurd_sdk import AsyncTaskContext, CancelledTask
 from pydantic import JsonValue
 
 from eylo.absurd_work import (
+    DurableFailureRecovery,
     DurableState,
     DurableWorkBindingPending,
     spawn_bound_work,
@@ -57,10 +58,8 @@ async def spawn_memory_reindex(
 ) -> UUID:
     return await spawn_bound_work(
         model=MemoryReindexJobModel,
-        organization_id=organization_id,
-        work_id=job_id,
+        params=MemoryJobParams(organization_id=organization_id, job_id=job_id),
         workflow_name=MEMORY_REINDEX_WORKFLOW,
-        params_name="job_id",
         idempotency_prefix="memory-reindex",
     )
 
@@ -155,7 +154,7 @@ class MemoryReindexWorkflow:
                 organization_id=organization_id,
                 job_id=job_id,
                 error=error,
-                permanent=_is_permanent(error),
+                recovery=_failure_recovery(error),
             )
 
         try:
@@ -219,7 +218,7 @@ class MemoryReindexWorkflow:
                 organization_id=organization_id,
                 job_id=job_id,
                 error=error,
-                permanent=_is_permanent(error),
+                recovery=_failure_recovery(error),
             )
 
 
@@ -228,14 +227,14 @@ async def _handle_failure(
     organization_id: UUID,
     job_id: UUID,
     error: Exception,
-    permanent: bool,
+    recovery: DurableFailureRecovery,
 ) -> dict[str, JsonValue]:
     async with start_transaction() as session:
         state = await MemoryReindexService(session).record_failure(
             organization_id=organization_id,
             job_id=job_id,
             error=error,
-            permanent=permanent,
+            recovery=recovery,
         )
     if state is DurableState.PENDING:
         raise error
@@ -247,16 +246,24 @@ async def _handle_failure(
     return MemoryReindexFailureReceipt(job_id=job_id, state=state).to_payload()
 
 
-def _is_permanent(error: Exception) -> bool:
+def _failure_recovery(error: Exception) -> DurableFailureRecovery:
     if isinstance(error, (InvalidEmbeddingConfig, NotConfiguredError)):
-        return True
+        return DurableFailureRecovery.TERMINAL
     if isinstance(error, EmbeddingError):
-        return not error.retryable
+        return (
+            DurableFailureRecovery.TERMINAL
+            if not error.retryable
+            else DurableFailureRecovery.RETRY
+        )
     if isinstance(error, MemoryReindexCatchUpPending):
-        return False
+        return DurableFailureRecovery.RETRY
     if isinstance(error, MemoryProviderError):
-        return not error.retryable
-    return False
+        return (
+            DurableFailureRecovery.TERMINAL
+            if not error.retryable
+            else DurableFailureRecovery.RETRY
+        )
+    return DurableFailureRecovery.RETRY
 
 
 def _parse_params(params: object) -> tuple[UUID, UUID]:

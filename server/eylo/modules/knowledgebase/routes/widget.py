@@ -10,6 +10,7 @@ from urllib.parse import unquote
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from fastapi import APIRouter, Depends, HTTPException, Header, Request, status
+from pydantic import ValidationError
 
 from eylo.common.contracts.knowledgebase import KnowledgeDocument, KnowledgeScope
 from eylo.common.contracts.session_timeline import SessionTimelineEvent
@@ -41,6 +42,12 @@ from eylo.modules.knowledgebase.services.ingestion import (
 from eylo.modules.knowledgebase.services.knowledgebases import (
     KnowledgebaseError,
     KnowledgebaseService,
+)
+from eylo.modules.knowledgebase.uploads import (
+    MAX_UPLOAD_CONTENT_TYPE_CHARS,
+    MAX_UPLOAD_FILENAME_CHARS,
+    ConversationUploadMetadata,
+    ConversationUploadProvenance,
 )
 from eylo.modules.user_sessions.domain import UserSessionError
 from eylo.modules.user_sessions.events import file_user_session_fact
@@ -108,7 +115,7 @@ async def get_widget_knowledge_file_upload_capability(
     conversation_id: UUID,
     user_session_id: UUID = Header(alias="X-Eylo-User-Session-ID"),
     current_contact: CurrentContactSchema = Depends(get_current_contact),
-):
+) -> WidgetKnowledgeUploadCapabilityRead:
     """Tell the widget whether the exact pinned Agent revision permits files."""
     _authorize_context(organization_id, conversation_id, current_contact)
     async with start_transaction(ro=True):
@@ -153,7 +160,7 @@ async def upload_widget_knowledge_file(
     encoded_filename: str = Header(alias="X-Eylo-Filename"),
     user_session_id: UUID = Header(alias="X-Eylo-User-Session-ID"),
     current_contact: CurrentContactSchema = Depends(get_current_contact),
-):
+) -> WidgetKnowledgeIngestionRead:
     """Extract one bounded file and enqueue ordinary durable ingestion."""
     _authorize_context(organization_id, conversation_id, current_contact)
 
@@ -183,12 +190,16 @@ async def upload_widget_knowledge_file(
             detail="Unsupported Knowledge file type.",
         )
     raw = await _read_bounded_file(request)
-    content_type = (request.headers.get("content-type") or "")[:255]
+    content_type = (request.headers.get("content-type") or "")[
+        :MAX_UPLOAD_CONTENT_TYPE_CHARS
+    ]
 
     try:
         content = await asyncio.to_thread(extract_text, filename, raw)
     except DocumentExtractionError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
+        ) from error
 
     digest = hashlib.sha256(raw).hexdigest()
     source_uri = f"eylo://conversations/{conversation_id}/uploads/{digest}"
@@ -224,14 +235,13 @@ async def upload_widget_knowledge_file(
             scope_id=str(conversation_id),
             title=filename,
             source_uri=source_uri,
-            metadata={
-                "source_kind": "conversation_upload",
-                "filename": filename,
-                "content_type": content_type,
-                "byte_size": len(raw),
-                "sha256": digest,
-                "uploaded_by_contact_id": str(current_contact.contact_id),
-            },
+            metadata=ConversationUploadMetadata(
+                filename=filename,
+                content_type=content_type,
+                byte_size=len(raw),
+                sha256=digest,
+                uploaded_by_contact_id=str(current_contact.contact_id),
+            ).to_metadata(),
         )
         try:
             job = await IngestionService(get_transaction()).enqueue(
@@ -241,7 +251,9 @@ async def upload_widget_knowledge_file(
                 user_session_id=user_session_id,
             )
         except IngestionError as error:
-            raise HTTPException(status_code=400, detail=str(error)) from error
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
+            ) from error
         response = _widget_ingestion_read(job)
         await file_user_session_fact(
             db_session,
@@ -304,7 +316,7 @@ async def get_widget_knowledge_ingestion(
     job_id: UUID,
     user_session_id: UUID = Header(alias="X-Eylo-User-Session-ID"),
     current_contact: CurrentContactSchema = Depends(get_current_contact),
-):
+) -> WidgetKnowledgeIngestionRead:
     """Return the durable state of one upload accepted in this conversation."""
     _authorize_context(organization_id, conversation_id, current_contact)
     async with start_transaction(ro=True):
@@ -356,7 +368,8 @@ async def _read_bounded_file(request: Request) -> bytes:
                 raise _file_too_large()
         except ValueError as error:
             raise HTTPException(
-                status_code=400, detail="Content-Length is invalid."
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Content-Length is invalid.",
             ) from error
 
     raw = bytearray()
@@ -378,7 +391,9 @@ def _decode_filename(encoded_filename: str) -> str:
     try:
         return _safe_filename(unquote(encoded_filename, errors="strict"))
     except UnicodeDecodeError as error:
-        raise HTTPException(status_code=400, detail="File name is invalid.") from error
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="File name is invalid."
+        ) from error
 
 
 def _is_contact_upload(
@@ -386,13 +401,15 @@ def _is_contact_upload(
     current_contact: CurrentContactSchema,
     conversation_id: UUID,
 ) -> bool:
-    metadata = job.meta or {}
-    return (
-        job.scope == KnowledgeScope.CONVERSATION.value
-        and str(job.scope_id) == str(conversation_id)
-        and metadata.get("source_kind") == "conversation_upload"
-        and metadata.get("uploaded_by_contact_id") == str(current_contact.contact_id)
-    )
+    if job.scope != KnowledgeScope.CONVERSATION.value or str(job.scope_id) != str(
+        conversation_id
+    ):
+        return False
+    try:
+        provenance = ConversationUploadProvenance.model_validate(job.meta)
+    except ValidationError:
+        return False
+    return provenance.uploaded_by_contact_id == str(current_contact.contact_id)
 
 
 def _widget_ingestion_read(
@@ -416,6 +433,8 @@ def _widget_ingestion_read(
 
 def _safe_filename(filename: str) -> str:
     normalized = PurePath(filename.replace("\\", "/")).name.strip()
-    if not normalized or len(normalized) > 512:
-        raise HTTPException(status_code=400, detail="File name is invalid.")
+    if not normalized or len(normalized) > MAX_UPLOAD_FILENAME_CHARS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="File name is invalid."
+        )
     return normalized

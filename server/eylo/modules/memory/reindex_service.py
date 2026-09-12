@@ -12,7 +12,12 @@ from sqlalchemy import text as sql
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from eylo.absurd_work import AbsurdBoundWorkService, DurableState
+from eylo.absurd_work import (
+    AbsurdBoundWorkService,
+    DurableFailureRecovery,
+    DurableState,
+    DurableWorkLock,
+)
 from eylo.common.contracts.embedding import (
     EmbeddingError,
     EmbeddingSpace,
@@ -110,8 +115,8 @@ class MemoryReindexService:
             index = MemoryIndexModel(
                 organization_id=organization_id,
                 memory_provider_config_id=memory_provider_config_id,
-                **verified_space.to_active_record().to_columns(),
             )
+            self._assign_active(index, verified_space)
             self.session.add(index)
             await self.session.flush()
             return index
@@ -255,9 +260,8 @@ class MemoryReindexService:
             organization_id=organization_id,
             memory_provider_config_id=memory_provider_config_id,
             max_attempts=max_attempts,
-            **source.to_source_record().to_columns(),
-            **target.to_target_record().to_columns(),
         )
+        _assign_job_spaces(job, source, target)
         self.session.add(job)
         index.reindex_state = MemoryReindexState.REQUIRED
         index.reindex_last_error = None
@@ -308,7 +312,7 @@ class MemoryReindexService:
         ).get(
             work_id=job_id,
             organization_id=organization_id,
-            for_update=True,
+            lock=DurableWorkLock.UPDATE,
         )
         if job.state in {
             DurableState.SUCCEEDED,
@@ -433,7 +437,9 @@ class MemoryReindexService:
                 },
             )
             if not isinstance(result, CursorResult) or result.rowcount not in {0, 1}:
-                raise MemoryError("Memory reindex staging did not report a valid row count.")
+                raise MemoryError(
+                    "Memory reindex staging did not report a valid row count."
+                )
             stored += result.rowcount
         await self.session.flush()
         return stored
@@ -448,7 +454,7 @@ class MemoryReindexService:
         job = await work.get(
             work_id=job_id,
             organization_id=organization_id,
-            for_update=True,
+            lock=DurableWorkLock.UPDATE,
         )
         if job.state is DurableState.SUCCEEDED:
             return True
@@ -564,8 +570,7 @@ class MemoryReindexService:
                       AND fact.embedding_space_id = :source_space_id
                       AND fact.deleted IS FALSE
                     """
-                )
-                .bindparams(
+                ).bindparams(
                     organization_id=organization_id,
                     job_id=job_id,
                     memory_config_id=job.memory_provider_config_id,
@@ -624,6 +629,7 @@ class MemoryReindexService:
         # evidence and already-filed jobs. Active source-space jobs fence this
         # cutover above; move the remaining unfiled cursors with the facts so
         # their backlog can be reconciled against the new active space.
+        cursor_space = EmbeddingSpace.model_validate(target, strict=True)
         await self.session.execute(
             update(MemoryReconciliationCursorModel)
             .where(
@@ -635,8 +641,17 @@ class MemoryReindexService:
                 MemoryReconciliationCursorModel.deleted.is_(False),
             )
             .values(
-                **target.to_active_record().to_columns(),
-                updated_at=func.now(),
+                {
+                    MemoryReconciliationCursorModel.embedding_provider_config_id: cursor_space.provider_config_id,
+                    MemoryReconciliationCursorModel.embedding_provider_config_revision: cursor_space.provider_config_revision,
+                    MemoryReconciliationCursorModel.embedding_provider: cursor_space.provider,
+                    MemoryReconciliationCursorModel.embedding_endpoint: cursor_space.endpoint,
+                    MemoryReconciliationCursorModel.embedding_model: cursor_space.model,
+                    MemoryReconciliationCursorModel.embedding_dimensions: cursor_space.dimensions,
+                    MemoryReconciliationCursorModel.embedding_semantic_options: cursor_space.semantic_options,
+                    MemoryReconciliationCursorModel.embedding_space_id: cursor_space.id,
+                    MemoryReconciliationCursorModel.updated_at: func.now(),
+                }
             )
         )
         self._activate_target(index)
@@ -646,13 +661,15 @@ class MemoryReindexService:
                 MemoryReindexVectorModel.reindex_job_id == job_id,
             )
         )
+
+        def project_result(row: MemoryReindexJobModel) -> None:
+            row.source_fact_count = source_count
+            row.indexed_fact_count = staged_count
+
         completed = await work.succeed(
             work_id=job_id,
             organization_id=organization_id,
-            values={
-                "source_fact_count": source_count,
-                "indexed_fact_count": staged_count,
-            },
+            project_result=project_result,
         )
         register_reindex_lifecycle(
             index,
@@ -667,20 +684,20 @@ class MemoryReindexService:
         organization_id: UUID,
         job_id: UUID,
         error: Exception,
-        permanent: bool,
+        recovery: DurableFailureRecovery,
     ) -> DurableState:
         work = AbsurdBoundWorkService(MemoryReindexJobModel, self.session)
         job = await work.get(
             work_id=job_id,
             organization_id=organization_id,
-            for_update=True,
+            lock=DurableWorkLock.UPDATE,
         )
         was_running = job.state is DurableState.RUNNING
         state = await work.fail(
             work_id=job_id,
             organization_id=organization_id,
             error=_safe_failure_summary(error),
-            permanent=permanent,
+            recovery=recovery,
         )
         if not was_running:
             return state
@@ -836,8 +853,7 @@ class MemoryReindexService:
             raise TypeError("Memory index lock must be an _IndexLock.")
         query = select(MemoryIndexModel).where(
             MemoryIndexModel.organization_id == organization_id,
-            MemoryIndexModel.memory_provider_config_id
-            == memory_provider_config_id,
+            MemoryIndexModel.memory_provider_config_id == memory_provider_config_id,
             MemoryIndexModel.deleted.is_(False),
         )
         if lock is _IndexLock.EXCLUSIVE:
@@ -912,6 +928,30 @@ class MemoryReindexService:
         index.target_embedding_dimensions = space.dimensions
         index.target_embedding_semantic_options = dict(space.semantic_options)
         index.target_embedding_space_id = space.id
+
+
+def _assign_job_spaces(
+    job: MemoryReindexJobModel, source: EmbeddingSpace, target: EmbeddingSpace
+) -> None:
+    """Validate both authorities before stamping immutable reindex-job fields."""
+    source = EmbeddingSpace.model_validate(source, strict=True)
+    target = EmbeddingSpace.model_validate(target, strict=True)
+    job.source_embedding_provider_config_id = source.provider_config_id
+    job.source_embedding_provider_config_revision = source.provider_config_revision
+    job.source_embedding_provider = source.provider
+    job.source_embedding_endpoint = source.endpoint
+    job.source_embedding_model = source.model
+    job.source_embedding_dimensions = source.dimensions
+    job.source_embedding_semantic_options = source.semantic_options
+    job.source_embedding_space_id = source.id
+    job.target_embedding_provider_config_id = target.provider_config_id
+    job.target_embedding_provider_config_revision = target.provider_config_revision
+    job.target_embedding_provider = target.provider
+    job.target_embedding_endpoint = target.endpoint
+    job.target_embedding_model = target.model
+    job.target_embedding_dimensions = target.dimensions
+    job.target_embedding_semantic_options = target.semantic_options
+    job.target_embedding_space_id = target.id
 
 
 def _vector(values: Sequence[float]) -> str:

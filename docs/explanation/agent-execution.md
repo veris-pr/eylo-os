@@ -13,6 +13,16 @@ blocks new selection while emergency revocation also blocks pinned execution.
 The header's `draft_dirty` remains an intrinsic changed-since-publication
 predicate, separate from the lifecycle enum.
 
+Agent and swarm API projections use the same lifecycle/availability enums rather
+than unconstrained strings. Draft patches retain field presence: omitted values
+do not overwrite stored settings, while explicitly null provider/template
+bindings remove those references. The service copies the validated mutable patch
+before resolving binding revisions; the repository assigns typed ORM attributes
+explicitly rather than unpacking a generic dictionary. Existing scalar-null and
+LLM-override replacement semantics remain unchanged. The compatibility `prompt`
+field holds only finite JSON on the draft; executable instructions come from the
+pinned instruction template, not that field.
+
 Publication resolves each explicitly selected provider in the Agent's organization
 and keeps its config ID and positive revision together in a typed binding. Missing
 optional providers stay absent; publication does not select a fallback. The stable

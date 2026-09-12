@@ -1,10 +1,13 @@
 """Data contracts for the `agents` domain."""
 
+from enum import StrEnum
 from typing import Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from eylo.common.contracts.json_values import JsonObject
+from eylo.common.revisions import DefinitionLifecycle
 from eylo.common.schemas import (
     EyloBaseModelSchema,
     EyloBaseSchema,
@@ -50,10 +53,10 @@ class AgentBase(EyloOrganizationModelSchema):
         ),
     )
     organization_id: UUID = Field(..., description="Organization ID for the agent.")
-    prompt: Optional[dict] = Field(
+    prompt: JsonObject | None = Field(
         None, description="Prompt configuration for the agent."
     )
-    lifecycle: str = "draft"
+    lifecycle: DefinitionLifecycle = DefinitionLifecycle.DRAFT
     published_revision: int | None = Field(default=None, gt=0)
     draft_version: int = Field(default=1, gt=0)
     draft_dirty: bool = True
@@ -76,7 +79,40 @@ class AgentCreate(EyloBaseSchema):
     instruction_template_id: UUID | None = None
     name: str = Field(..., max_length=100)
     description: Optional[str] = None
-    prompt: Optional[dict] = None
+    prompt: JsonObject | None = None
+
+
+class AgentUpdateField(StrEnum):
+    """Draft patch presence keys; values remain typed on AgentUpdate itself."""
+
+    ID = "id"
+    ORGANIZATION_ID = "organization_id"
+    NAME = "name"
+    LLM_PROVIDER_CONFIG_ID = "llm_provider_config_id"
+    LLM_PROVIDER_CONFIG_REVISION = "llm_provider_config_revision"
+    EMAIL_PROVIDER_CONFIG_ID = "email_provider_config_id"
+    EMAIL_PROVIDER_CONFIG_REVISION = "email_provider_config_revision"
+    WEBRTC_PROVIDER_CONFIG_ID = "webrtc_provider_config_id"
+    WEBRTC_PROVIDER_CONFIG_REVISION = "webrtc_provider_config_revision"
+    VOICE_CONFIG_ID = "voice_config_id"
+    VOICE_CONFIG_REVISION = "voice_config_revision"
+    LLM_OVERRIDES = "llm_overrides"
+    RERANKING_PROVIDER_CONFIG_ID = "reranking_provider_config_id"
+    RERANKING_PROVIDER_CONFIG_REVISION = "reranking_provider_config_revision"
+    MEMORY_PROVIDER_CONFIG_ID = "memory_provider_config_id"
+    MEMORY_PROVIDER_CONFIG_REVISION = "memory_provider_config_revision"
+    ALLOW_FILE_UPLOADS = "allow_file_uploads"
+    FILE_UPLOAD_EMBEDDING_PROVIDER_CONFIG_ID = (
+        "file_upload_embedding_provider_config_id"
+    )
+    FILE_UPLOAD_EMBEDDING_PROVIDER_CONFIG_REVISION = (
+        "file_upload_embedding_provider_config_revision"
+    )
+    INSTRUCTION_TEMPLATE_ID = "instruction_template_id"
+    DESCRIPTION = "description"
+    IMPLEMENTATION = "implementation"
+    PROMPT = "prompt"
+    EXPECTED_DRAFT_VERSION = "expected_draft_version"
 
 
 class AgentUpdate(EyloBaseSchema):
@@ -108,7 +144,7 @@ class AgentUpdate(EyloBaseSchema):
     # agent, attachments for a background one — and the validation that
     # rejected those combinations runs at write time, not retroactively.
     implementation: Optional[str] = None
-    prompt: Optional[dict] = None
+    prompt: JsonObject | None = None
     expected_draft_version: int | None = Field(default=None, gt=0)
 
 

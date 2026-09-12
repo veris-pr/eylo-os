@@ -14,6 +14,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.database import start_transaction
 from eylo.durable_runtime import PlatformDurableRuntime
+from eylo.sor.runtime.serialization import (
+    SorCommandTaskParams,
+    SorSyncTaskParams,
+    SorWebhookTaskParams,
+)
 from eylo.sor.shared.contracts import (
     SorCommandState,
     SorSourceState,
@@ -105,6 +110,19 @@ def _state_type(model: type[SorWorkRow]) -> type[SorWorkLifecycleState]:
     if issubclass(model, SorCommandModel):
         return SorCommandState
     return SorWebhookReceiptState
+
+
+def _task_params(
+    model: type[SorWorkRow], *, organization_id: UUID, work_id: UUID
+) -> SorSyncTaskParams | SorCommandTaskParams | SorWebhookTaskParams:
+    """Select the durable identity contract from the authoritative work model."""
+    if issubclass(model, SorSyncRunModel):
+        return SorSyncTaskParams(organization_id=organization_id, run_id=work_id)
+    if issubclass(model, SorCommandModel):
+        return SorCommandTaskParams(organization_id=organization_id, command_id=work_id)
+    if issubclass(model, SorWebhookReceiptModel):
+        return SorWebhookTaskParams(organization_id=organization_id, receipt_id=work_id)
+    raise SorWorkConflict("SOR work model has no durable identity contract.")
 
 
 def _set_state(row: SorWorkRow, state: SorWorkLifecycleState) -> None:
@@ -400,11 +418,13 @@ async def spawn_sor_bound_work[WorkModel: SorWorkRow](
     organization_id: UUID,
     work_id: UUID,
     workflow_name: str,
-    params_name: str,
     idempotency_prefix: str,
     eligible_source_states: frozenset[SorSourceState],
 ) -> UUID:
     """Idempotently spawn and bind one already-committed SOR product row."""
+    params = _task_params(
+        contract.model, organization_id=organization_id, work_id=work_id
+    )
     async with start_transaction(ro=True) as session:
         row = await SorBoundWorkService(contract, session).get(
             work_id=work_id,
@@ -425,10 +445,7 @@ async def spawn_sor_bound_work[WorkModel: SorWorkRow](
     try:
         task_id = await runtime.spawn_task(
             name=workflow_name,
-            params={
-                "organization_id": str(organization_id),
-                params_name: str(work_id),
-            },
+            params=params.model_dump(mode="json"),
             idempotency_key=f"{idempotency_prefix}:v1:{organization_id}:{work_id}",
             max_attempts=max_attempts,
         )

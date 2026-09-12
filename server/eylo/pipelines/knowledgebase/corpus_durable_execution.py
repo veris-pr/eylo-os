@@ -10,8 +10,10 @@ from pydantic import JsonValue, ValidationError
 
 from eylo.absurd_work import (
     AbsurdBoundWorkService,
+    DurableFailureRecovery,
     DurableState,
     DurableWorkBindingPending,
+    DurableWorkLock,
     spawn_bound_work,
     spawn_unbound_work,
 )
@@ -65,10 +67,10 @@ async def spawn_knowledge_corpus(
 ) -> UUID:
     return await spawn_bound_work(
         model=KnowledgeCorpusImportModel,
-        organization_id=organization_id,
-        work_id=import_id,
+        params=KnowledgeCorpusParams(
+            organization_id=organization_id, import_id=import_id
+        ),
         workflow_name=KNOWLEDGE_CORPUS_WORKFLOW,
-        params_name="import_id",
         idempotency_prefix="knowledge-corpus",
     )
 
@@ -139,7 +141,7 @@ class KnowledgeCorpusWorkflow:
                 record = await work.get(
                     work_id=import_id,
                     organization_id=organization_id,
-                    for_update=True,
+                    lock=DurableWorkLock.UPDATE,
                 )
                 changed, _task_id = await work.cancel(
                     work_id=import_id,
@@ -194,7 +196,11 @@ class KnowledgeCorpusWorkflow:
                 organization_id=organization_id,
                 import_id=import_id,
                 error=error,
-                permanent=isinstance(error, NotConfiguredError),
+                recovery=(
+                    DurableFailureRecovery.TERMINAL
+                    if isinstance(error, NotConfiguredError)
+                    else DurableFailureRecovery.RETRY
+                ),
             )
 
         async def list_objects() -> list[StoredObject]:
@@ -216,7 +222,11 @@ class KnowledgeCorpusWorkflow:
                 organization_id=organization_id,
                 import_id=import_id,
                 error=error,
-                permanent=isinstance(error, NotConfiguredError),
+                recovery=(
+                    DurableFailureRecovery.TERMINAL
+                    if isinstance(error, NotConfiguredError)
+                    else DurableFailureRecovery.RETRY
+                ),
             )
 
         queued_ids: list[UUID] = []
@@ -225,7 +235,7 @@ class KnowledgeCorpusWorkflow:
             current = await work.get(
                 work_id=import_id,
                 organization_id=organization_id,
-                for_update=True,
+                lock=DurableWorkLock.UPDATE,
             )
             if current.state is not DurableState.RUNNING:
                 return _receipt(current)
@@ -242,14 +252,16 @@ class KnowledgeCorpusWorkflow:
                 if job is not None:
                     queued_ids.append(job.id)
             if current.state is DurableState.RUNNING:
+
+                def project_result(row: KnowledgeCorpusImportModel) -> None:
+                    row.discovered_count = len(objects)
+                    row.queued_count = len(queued_ids)
+                    row.skipped = screened.skipped_summary()
+
                 result = await work.succeed(
                     work_id=import_id,
                     organization_id=organization_id,
-                    values={
-                        "discovered_count": len(objects),
-                        "queued_count": len(queued_ids),
-                        "skipped": screened.skipped_summary(),
-                    },
+                    project_result=project_result,
                 )
                 register_corpus_lifecycle(
                     result,
@@ -295,7 +307,7 @@ async def _handle_failure(
     organization_id: UUID,
     import_id: UUID,
     error: Exception,
-    permanent: bool,
+    recovery: DurableFailureRecovery,
 ) -> dict[str, JsonValue]:
     summary = (
         KnowledgeCorpusFailure.NOT_CONFIGURED
@@ -310,14 +322,14 @@ async def _handle_failure(
         record = await work.get(
             work_id=import_id,
             organization_id=organization_id,
-            for_update=True,
+            lock=DurableWorkLock.UPDATE,
         )
         was_running = record.state is DurableState.RUNNING
         state = await work.fail(
             work_id=import_id,
             organization_id=organization_id,
             error=summary,
-            permanent=permanent,
+            recovery=recovery,
         )
         if was_running:
             register_corpus_lifecycle(

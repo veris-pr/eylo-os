@@ -27,6 +27,15 @@ class KnowledgeJobParams(BaseModel):
     def decode_uuid(cls, value: object) -> object:
         return UUID(value) if isinstance(value, str) else value
 
+    @property
+    def work_id(self) -> UUID:
+        return self.job_id
+
+    def to_task_payload(self) -> dict[str, JsonValue]:
+        return KnowledgeJobParams(
+            organization_id=self.organization_id, job_id=self.job_id
+        ).model_dump(mode="json")
+
 
 class KnowledgeCorpusParams(BaseModel):
     """Corpus imports use their own identity key, not a child ingestion job ID."""
@@ -46,6 +55,15 @@ class KnowledgeCorpusParams(BaseModel):
     @classmethod
     def decode_uuid(cls, value: object) -> object:
         return UUID(value) if isinstance(value, str) else value
+
+    @property
+    def work_id(self) -> UUID:
+        return self.import_id
+
+    def to_task_payload(self) -> dict[str, JsonValue]:
+        return KnowledgeCorpusParams(
+            organization_id=self.organization_id, import_id=self.import_id
+        ).model_dump(mode="json")
 
 
 class KnowledgeReindexReceipt(BaseModel):

@@ -166,7 +166,6 @@ async def spawn_sor_sync_run(*, organization_id: UUID, run_id: UUID) -> UUID:
         organization_id=organization_id,
         work_id=run_id,
         workflow_name=SOR_SYNC_WORKFLOW,
-        params_name="run_id",
         idempotency_prefix="sor-sync",
         eligible_source_states=SOR_SYNC_SOURCE_STATES,
     )
@@ -933,7 +932,10 @@ async def _spawn_ready_runs(
 
 
 def _parse_params(params: object) -> SorSyncTaskParams:
-    if not isinstance(params, dict) or set(params) != {"organization_id", "run_id"}:
+    if (
+        not isinstance(params, dict)
+        or set(params) != SorSyncTaskParams.model_fields.keys()
+    ):
         raise ValueError("SOR sync task params must contain IDs only.")
     try:
         return SorSyncTaskParams.model_validate(params)

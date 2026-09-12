@@ -47,6 +47,15 @@ class MemoryJobParams(BaseModel):
     def decode_uuid(cls, value: object) -> object:
         return UUID(value) if isinstance(value, str) else value
 
+    @property
+    def work_id(self) -> UUID:
+        return self.job_id
+
+    def to_task_payload(self) -> dict[str, JsonValue]:
+        return MemoryJobParams(
+            organization_id=self.organization_id, job_id=self.job_id
+        ).model_dump(mode="json")
+
     @classmethod
     def from_payload(cls, payload: object, *, kind: MemoryTaskKind) -> Self:
         if not isinstance(payload, dict) or payload.keys() != cls.model_fields.keys():

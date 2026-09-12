@@ -28,8 +28,10 @@ from sqlalchemy.orm import aliased
 
 from eylo.absurd_work import (
     AbsurdBoundWorkService,
+    DurableFailureRecovery,
     DurableState,
     DurableWorkBindingPending,
+    DurableWorkLock,
     spawn_bound_work,
     spawn_unbound_work,
 )
@@ -544,10 +546,8 @@ async def spawn_memory_formation(
 ) -> UUID:
     return await spawn_bound_work(
         model=MemoryFormationJobModel,
-        organization_id=organization_id,
-        work_id=job_id,
+        params=MemoryJobParams(organization_id=organization_id, job_id=job_id),
         workflow_name=MEMORY_FORMATION_WORKFLOW,
-        params_name="job_id",
         idempotency_prefix="memory-formation",
     )
 
@@ -604,7 +604,7 @@ async def _commit_memory_cancellation(
         job = await service.get(
             work_id=job_id,
             organization_id=organization_id,
-            for_update=True,
+            lock=DurableWorkLock.UPDATE,
         )
         cancelled, task_id = await service.cancel(
             work_id=job_id,
@@ -697,7 +697,7 @@ class MemoryFormationWorkflow:
                 ).get(
                     work_id=job_id,
                     organization_id=organization_id,
-                    for_update=True,
+                    lock=DurableWorkLock.UPDATE,
                 )
                 if job.state in {
                     DurableState.SUCCEEDED,
@@ -745,7 +745,7 @@ class MemoryFormationWorkflow:
                 organization_id=organization_id,
                 job_id=job_id,
                 error=error,
-                permanent=_is_permanent(error),
+                recovery=_failure_recovery(error),
             )
 
         try:
@@ -755,7 +755,7 @@ class MemoryFormationWorkflow:
                 organization_id=organization_id,
                 job_id=job_id,
                 error=error,
-                permanent=_is_permanent(error),
+                recovery=_failure_recovery(error),
             )
 
         async def form() -> list[dict[str, JsonValue]]:
@@ -801,7 +801,7 @@ class MemoryFormationWorkflow:
                 organization_id=organization_id,
                 job_id=job_id,
                 error=error,
-                permanent=_is_permanent(error),
+                recovery=_failure_recovery(error),
             )
 
         try:
@@ -813,13 +813,13 @@ class MemoryFormationWorkflow:
                 current = await service.get(
                     work_id=job_id,
                     organization_id=organization_id,
-                    for_update=True,
+                    lock=DurableWorkLock.UPDATE,
                 )
                 already_succeeded = current.state is DurableState.SUCCEEDED
                 row = await service.succeed(
                     work_id=job_id,
                     organization_id=organization_id,
-                    values=_outcome_values(outcomes),
+                    project_result=lambda job: _set_job_outcomes(job, outcomes),
                 )
                 if row.state is DurableState.SUCCEEDED and not already_succeeded:
                     cursor = await _locked_job_cursor(session, row)
@@ -849,7 +849,7 @@ class MemoryFormationWorkflow:
                 organization_id=organization_id,
                 job_id=job_id,
                 error=error,
-                permanent=_is_permanent(error),
+                recovery=_failure_recovery(error),
             )
         if row.state is DurableState.SUCCEEDED:
             await _continue_memory_backlog(row)
@@ -883,7 +883,7 @@ async def _handle_failure(
     organization_id: UUID,
     job_id: UUID,
     error: Exception,
-    permanent: bool,
+    recovery: DurableFailureRecovery,
 ) -> dict[str, JsonValue]:
     summary = _safe_failure_summary(error)
     async with start_transaction() as session:
@@ -894,14 +894,14 @@ async def _handle_failure(
         row = await service.get(
             work_id=job_id,
             organization_id=organization_id,
-            for_update=True,
+            lock=DurableWorkLock.UPDATE,
         )
         was_running = row.state is DurableState.RUNNING
         state = await service.fail(
             work_id=job_id,
             organization_id=organization_id,
             error=summary,
-            permanent=permanent,
+            recovery=recovery,
         )
         if state is DurableState.FAILED:
             _set_job_outcomes(row, MemoryOutcomeCounts.one_failure())
@@ -962,8 +962,8 @@ def _safe_failure_summary(error: Exception) -> str:
     return "memory_internal_failure"
 
 
-def _is_permanent(error: Exception) -> bool:
-    return (
+def _failure_recovery(error: Exception) -> DurableFailureRecovery:
+    if (
         isinstance(
             error,
             (
@@ -978,7 +978,9 @@ def _is_permanent(error: Exception) -> bool:
             and not isinstance(error, ExecutionBudgetUnavailable)
         )
         or (isinstance(error, MemoryProviderError) and not error.retryable)
-    )
+    ):
+        return DurableFailureRecovery.TERMINAL
+    return DurableFailureRecovery.RETRY
 
 
 async def _messages_in_job_range(
@@ -1153,17 +1155,6 @@ def _advance_processed_cursor(
 def _discard_requested_backlog(cursor: MemoryFormationCursorModel) -> None:
     cursor.requested_through_created_at = cursor.processed_through_created_at
     cursor.requested_through_message_id = cursor.processed_through_message_id
-
-
-def _outcome_values(outcomes: MemoryOutcomeCounts) -> dict[str, int]:
-    return {
-        "considered_count": outcomes.considered,
-        "added_count": outcomes.added,
-        "updated_count": outcomes.updated,
-        "deleted_count": outcomes.deleted,
-        "noop_count": outcomes.noop,
-        "failed_count": outcomes.failed,
-    }
 
 
 def _set_job_outcomes(

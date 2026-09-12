@@ -13,6 +13,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.absurd_work import (
+    DurableFailureRecovery,
     DurableState,
     spawn_bound_work,
     spawn_unbound_work,
@@ -129,10 +130,8 @@ async def spawn_memory_reconciliation(
 ) -> UUID:
     return await spawn_bound_work(
         model=MemoryReconciliationJobModel,
-        organization_id=organization_id,
-        work_id=job_id,
+        params=MemoryJobParams(organization_id=organization_id, job_id=job_id),
         workflow_name=MEMORY_RECONCILIATION_WORKFLOW,
-        params_name="job_id",
         idempotency_prefix="memory-reconciliation",
     )
 
@@ -456,7 +455,7 @@ async def _handle_failure(
             organization_id=organization_id,
             job_id=job_id,
             error=summary,
-            permanent=_is_permanent(error),
+            recovery=_failure_recovery(error),
         )
         await release_memory_reconciliation_reservation_in_transaction(
             session,
@@ -596,8 +595,8 @@ def _safe_failure_summary(error: Exception) -> str:
     return "memory_reconciliation_internal_failure"
 
 
-def _is_permanent(error: Exception) -> bool:
-    return (
+def _failure_recovery(error: Exception) -> DurableFailureRecovery:
+    if (
         isinstance(
             error,
             (
@@ -612,7 +611,9 @@ def _is_permanent(error: Exception) -> bool:
             and not isinstance(error, ExecutionBudgetUnavailable)
         )
         or (isinstance(error, MemoryProviderError) and not error.retryable)
-    )
+    ):
+        return DurableFailureRecovery.TERMINAL
+    return DurableFailureRecovery.RETRY
 
 
 def _matches_job_scope(

@@ -1,6 +1,6 @@
 # Python typing and literal-removal plan
 
-## Acceptance board — 2026-09-12
+## Acceptance board — 2026-09-13
 
 Platform-wide completion remains **open**. The deployed checkpoint now includes
 SOR document reads, conversation status/callbacks, carrier bootstrap/status/tools,
@@ -12,16 +12,17 @@ are superseded by the newest deployment record.
 | Gate | Current evidence | Remaining acceptance |
 | --- | --- | --- |
 | Static backend contracts | Lint passes; Pyrefly has zero errors and two existing redundant-cast warnings | Static success does not prove native input shapes |
-| Remaining-contract inventory | Latest AST inventory identifies 252 signature/broad-annotation flags after transcript payload typing | These are triage candidates, not defects or a completion percentage. Missing route returns and generic/SDK boundaries still require classification and exact-path verification. Class fields and remaining literals require separate coverage |
+| Remaining-contract inventory | Refreshed AST inventory identifies 224 signature/broad-annotation flags after upload/configuration contract typing | These are triage candidates, not defects or a completion percentage. The scan does not catch every `dict[str, object]` serialization gap. Missing route returns and generic/SDK boundaries still require classification and exact-path verification. Class fields and remaining literals require separate coverage |
 | Agent lifecycle delivery | Typed delivery deployed. Function/Redis checks pass; native widget SOR search/detail received lifecycle sequence 1–9 and completed | Broader cancellation/concurrency delivery remains open |
 | DB/session injection and deletion workflow | Typed constructors, deletion task identities/receipts and call-erasure parameters deployed. Native PostgreSQL zero-row cursor check and function compatibility checks pass | These checks do not prove live deletion, scheduler resilience, or remaining platform-wide contracts |
 | WebSocket/voice session contracts | Typed runtime state and carrier media handoffs deployed. Fixed first-live-turn prompt identity; native decomposed and OpenAI realtime calls replied and completed with canonical transcripts | Broader vendor coverage, interruptions, abrupt disconnect and recording upload remain open; these calls do not prove all voice behavior |
 | SOR vendor wire coverage | Vendor batches deployed; the latest Intercom unassigned-identity correction on `1f296d642b13` passed native seven-stream reconciliation: two tickets updated, zero rejected records, zero pending relationships and four obsolete intents tombstoned | Final operation inventory remains open. Intercom incremental parent-child removal remains a limitation; no native attachment data was available |
 | App-webhook ingress contracts | Four-vendor batch deployed on image `84b315c2fb99`; 597 contract checks, 28 substituted ingress scenarios and Linear signature/routing checks passed inside the image | Fresh native deliveries remain open; HubSpot raw payloads expired, no Intercom/Notion receipts in QA |
-| Managed webhook contracts | Management and inbound models deployed; 559 inbound adapter comparisons and 24 substituted ingress scenarios passed locally and inside the image | Fresh native deliveries and registration remain open. After the user confirmed six sources active, fresh console and explicit Agent checks still found Zendesk requiring reauthorization (`sor_source_unavailable`); the other five sources display Active. GitHub SOR is not configured |
+| Managed webhook contracts | Management and inbound models deployed; 559 inbound adapter comparisons and 24 substituted ingress scenarios passed locally and inside the image. Latest native QA reads five configured sources successfully; Zendesk has returned to `REAUTH_REQUIRED` | Fresh native deliveries and registration remain open. Zendesk reports `refresh_token_rejected`; its state change predates the latest deployment. GitHub SOR is not configured |
 | Webhook receipt codec | Ingestion and replay share the stored-signal model; deployed with 44 compatibility comparisons and read-only validation of all 89 available QA receipts | Real concurrent inserts and worker crash/replay remain separate acceptance gates |
 | CLI typing | CLI-owned Pydantic contracts, independent environment synchronized; explicit CLI typing passes; 102 function checks, 332 live-catalog action parity checks and authenticated collection reads passed | Not proof that every API action or vendor execution succeeds |
 | Stored provider compatibility | 25 saved configs inspected; 13 ready voice receipts restored; native Speechmatics connection/cleanup passed | Native conversations across configured providers |
+| KB upload and retrieval | Image `3876c2040a9f` passed native widget file upload, durable Bedrock embedding/pgvector ingestion, conversation and org KB queries, mixed two-result reranking/citations, Memory recall and new-conversation isolation; persisted results inspected in the console | Live reindex cutover/recovery, cross-contact upload refusal and broader worker/crash/concurrency cases remain separate acceptance |
 | Published voice bindings | Public CLI aggregate resolves both existing realtime and decomposed QA agents at revision 1 | Both have no storage binding; recording upload is not covered |
 | Scheduler filing and stranded recovery | Original one-shot recovered once, ran real `issue_search`/`issue_get`, completed/achieved and released capacity | Worker-crash and waiting/resume cases remain separate |
 | Widget and console | Isolated Chrome QA verified SOR search/detail, memory recall, generated-form submission and console transcript rendering. Historical-Agent cache no longer widens the chooser; fresh capability request returns 200 | Native voice, pagination depth and broader product coverage remain separate gates |
@@ -29,7 +30,405 @@ are superseded by the newest deployment record.
 | Direct-objective memory | Fixed conversation-only context assumption; native recall returns four agent-owned facts and releases capacity | Direct-objective writes need run-based provenance; current mutation contract requires a real conversation/message |
 | Sandbox | Typed workspace/checkpoint/tool paths and session/grant API projection deployed; flat policy schema passes 221 checks inside the current image | Native configured sandbox execution/cleanup |
 | MCP management | Typed responses and detached discovery snapshot deployed; real disposable-DB publication, stale-source refusal and rollback tested through the exact image | External MCP transport/native discovery remains unverified |
-| Final handoff | Four app services now run `f86cc34473b9b5f45014762932a8f87e7f59b7175d8f0bec63f0c561cf7f691c`, including the uncommitted carrier bootstrap and transcript batch. Exact-image app/schema checks and native text-Agent QA passed within the limits below. Generated console API types are refreshed. DB/Redis retained their containers/start times; Alembic remains `eylo0012` | Complete remaining contracts and the full acceptance matrix; no platform-wide completion claim |
+| Final handoff | Four app services now run `3876c2040a9f76c510554ffb7d69f3cafc4b186ac94c39a5859d194e3ef50744`, including typed embedding persistence, upload provenance and retrieval projections. Exact-image smoke checks and bounded native widget/tool QA pass as recorded below. DB/Redis retained their containers/start times; no schema change | Complete remaining contracts and the full acceptance matrix; no platform-wide completion claim |
+
+### Agent draft and lifecycle contracts — local checkpoint, 2026-09-13
+
+- Traced draft create/edit, provider-reference resolution, revision publication
+  and exact runtime projection. Agent edits no longer serialize the full patch
+  into a dictionary and apply it with `setattr`. Named field-presence enums plus
+  explicit typed ORM assignments preserve omission, scalar-null behavior,
+  explicit binding removal and nested LLM-override replacement. The service
+  copies the validated mutable patch before assigning resolved revisions, so
+  callers retain their original values and field-presence set. Publication-owned
+  revision fields are an explicit enum set rather than a string-suffix rule.
+- Agent/swarm response lifecycle and swarm revision availability now reuse the
+  existing shared enums. ORM storage remains the existing constrained strings;
+  no DDL/migration change. The draft-only `prompt` field is finite extensible
+  JSON, not arbitrary Python objects. Publication/runtime still use the pinned
+  instruction template; this change does not make the compatibility field
+  executable or invent a prompt schema.
+- 387 temporary checks pass against the fixed previous implementation: every
+  patch field, omission/null cases, all binding changes, nested override values,
+  caller immutability, scoped lookup, save counts, stale-version/error behavior,
+  lifecycle decoding, invalid JSON refusal and exact revision/provider projection.
+  Actual Pydantic/ORM/repository/service code runs; DB and provider effects are
+  substituted. These checks do not establish native publication or concurrency.
+- Regenerated the console API contract from the current app on a temporary
+  localhost-only schema server, with lifespan/DB/Redis startup disabled. Only
+  intended Agent/swarm prompt/lifecycle/availability declarations changed.
+  Full backend type-check and lint pass; two existing SOR redundant-cast warnings
+  remain. Console lint, TypeScript and Vite build pass; Vite still warns about
+  large chunks. Documentation validation passes. No deployment or operator data
+  changes for this batch; native create/edit/publish/run QA remains pending.
+- User reports Intercom, Jira, Linear, Zendesk, HubSpot CRM and Confluence are
+  now active. This supersedes the earlier user-action blocker for Zendesk, not
+  the historical QA evidence. Recheck all six through the existing org during
+  the next native SOR QA pass; do not recreate sources or request configuration.
+- Next: verify native Agent draft/publication acceptance with this batch, then
+  continue the remaining provider/vendor request-response and service contracts.
+  Platform-wide hardening and the complete acceptance matrix remain open.
+
+### KB/Memory deployment and native retrieval QA — 2026-09-13
+
+This deployment supersedes the local-only labels for the next three checkpoints.
+
+- Rebuilt/recreated only server, durable worker, ordinary-task worker and
+  scheduler on image `3876c2040a9f76c510554ffb7d69f3cafc4b186ac94c39a5859d194e3ef50744`.
+  Verified exact environment parity for all four services, identical complete
+  OpenAPI (SHA-256 `85171e3720ee70a5304e4f42a01ed97ad1420f17c1be1078e001328136e3ec4d`),
+  candidate-image contract smoke checks and no nonterminal Agent runs before
+  recreation. Alembic remains `eylo0012`. PostgreSQL/Redis retained their original
+  September 4 container start times; saved org/provider credentials were untouched.
+  Rollback image tag: `eylo-server:typing-rollback-ae78846266e4`.
+- Native isolated Chrome logged in through the console and used the existing
+  QA Core Mixed Agent, revision 3, in Eylo Development. Conversation
+  `01a09775-4540-70e1-be35-da0da504b546` contains actual `memory_recall` and `kb_query`
+  tool calls/results. Memory recall returned the existing user QA color with
+  Bedrock reranking applied. Org-KB queries requested top-k 1 and 2 and each
+  returned its one available document with the exact source/citation identity,
+  original retrieval score and applied Bedrock ranking.
+- Uploaded `typing-upload-3876.txt` through the widget's upload dialog, with no
+  destination selection. The 202 receipt created ingestion
+  `01a09776-c322-71a1-8088-cd9219ea137a`; the UI changed from indexing to ready.
+  Worker logs confirm real Bedrock embedding and one pgvector chunk for document
+  `47968311-f546-571f-a7fc-90f3ad3e9ba6` in conversation KB
+  `01a09776-c310-7be2-b6f2-51a8a691d89f`, plus ingestion lifecycle delivery.
+- Subsequent agent retrieval returned the fixture phrase from that file with
+  `scope=conversation`, the original conversation ID, citation `K1`, and applied
+  reranking. A mixed org/conversation query returned two candidates/two results,
+  `K1` for the upload and `K2` for the org document, with distinct KB identities.
+  These results were read from persisted tool JSON in the operator console,
+  not inferred from the assistant's narrative.
+- New conversation `01a0977b-e6e3-7872-a606-eeadaec8678b`, same agent/contact,
+  queried only conversation knowledge without uploading a file. Its stored tool
+  result was empty with `no_candidates`; the earlier file was not exposed.
+  The console showed six completed messages for this isolation case.
+- Browser control initially timed out; the isolated Chrome fallback worked.
+  Two mistaken/ambiguous QA selectors and an oversized terminal command were
+  corrected without changing product code or restarting a live product run.
+  No browser page errors were recorded. The console requested the absent voice
+  session for these text conversations and received 404. A bounded app-log scan
+  found no ERROR/traceback lines after recreation; this is not an exhaustive
+  reliability claim. Zendesk still shows reauthorization required; five other
+  SOR sources remain active in the console.
+- Final runtime check found 229 completed, five historical failed and one
+  cancelled Agent runs, with no nonterminal runs. Config/OpenAPI/schema checks
+  still pass. The isolated browser helper was stopped after QA; development
+  application services remain running.
+- Retained the harmless uploaded QA fixture and its conversation as inspectable
+  evidence. No source records were modified, no credentials changed, no history
+  or migrations reset. Live reindex cutover, cross-contact refusal, wider
+  cancellation/crash/concurrency and the remaining contract inventory are open.
+  Next implementation flow: Agent configuration → published revision → runtime
+  inputs, including broad prompt/lifecycle fields and their actual consumers.
+
+### Retrieval projections and observation contracts — local checkpoint, 2026-09-13
+
+- KB candidates now stay typed through reranking and citation assembly rather
+  than being serialized into generic dictionaries and unpacked into new models.
+  Final citation identity, ordering, original retrieval score and optional-field
+  omission remain unchanged. A named unavailable-KB value replaces positional
+  tuples; reasons and query observation failures use separate platform enums.
+  The event owns its failure-code vocabulary; no vendor-specific code crosses
+  that boundary. Ranking reasons reuse the existing common contract.
+- 1,434 temporary function assertions pass, including fixed-commit wire/event
+  comparisons, original-score provenance, citation identity, same-scope grants,
+  conversation filtering, optional reranking, top-k bounds, no-grant/invalid-input
+  behavior, partial/complete provider failures, invalid scores and cancellation.
+  Actual grant/result/adapter-interface models and the real retrieval/reranking
+  orchestration execute; DB/resolver/vendor effects are substituted. Provider I/O
+  remains outside the authorization-resolution transaction. These checks do not
+  establish native provider execution or deployed behavior.
+- Full Pyrefly has zero errors with the same two pre-existing SOR redundant-cast
+  warnings; backend/CLI lint passes. The 835 upload and 633 embedding-persistence
+  checks pass again. No DB schema, migration, dependency or public tool-JSON
+  change. Native widget/console acceptance of the accumulated batch is next.
+
+### Upload provenance and KB configuration — local checkpoint, 2026-09-13
+
+- Widget capability/upload/status functions now declare their existing response
+  models as return types. A typed conversation-upload metadata producer replaces
+  the dictionary literal; a narrow provenance model replaces dictionary-key
+  ownership checks. The source kind is an enum-backed discriminator. Historical
+  unrelated metadata remains ignored, missing/wrong ownership evidence fails
+  closed, and exact textual contact-ID comparison is preserved.
+- The existing filename/content-type bounds now have names; numeric bad-request
+  statuses use FastAPI's HTTP constants. KB settings normalization and service
+  inputs use `KnowledgebaseMetadata`/`JsonObject` instead of `Any` or bare dicts.
+  The internal vendor catalog expresses required/unused embeddings as an enum;
+  the existing `needs_embeddings` predicate and public API remain compatible.
+- 835 temporary function checks passed: prior-commit provenance comparisons over
+  JSON values, missing fields and mismatched scope/contact; producer validation;
+  complete upload OpenAPI equality; metadata configuration/error parity; every
+  ingestion-state safe receipt; actual Request/text extraction/document creation,
+  typed upload/capability/status responses, and exact receipt ownership IDs.
+  Auth, DB and queue effects are substituted. Body reading is observed outside
+  the transaction, ingestion/facts inside it, and spawn after it. This does not
+  establish live auth/DB durability or deployed widget behavior.
+- The preceding 633 embedding-persistence checks still pass. Full-project typing
+  reports zero errors and the same two existing SOR warnings; backend/CLI lint
+  passes. Formatter checks pass for the new upload module, widget routes and
+  vendor catalog. Existing formatting differences in the service file were left
+  alone; only its import and metadata annotations changed.
+- This batch is local, not deployed. Public OpenAPI is unchanged, so no frontend
+  contract regeneration is needed. No migration, provider reconfiguration,
+  external write, Git history change or permanent test suite was introduced.
+  Broader worker/API acceptance and the remaining platform contracts stay open.
+
+### Typed embedding persistence — local checkpoint, 2026-09-13
+
+- Traced verified space → ingestion/reindex producer → ORM persistence → restored
+  worker authority. Removed `dict[str, object]` column projection and constructor
+  unpacking from both inline/storage KB ingestion, new Memory indexes, and both
+  reindex job producers. Each owner now assigns actual mapped fields from a
+  revalidated `EmbeddingSpace`. KB and Memory keep their own job types rather
+  than importing each other's models or creating a generic attribute writer.
+- Memory cursor cutover uses explicit ORM column objects at the SQL boundary.
+  Its tenant/config/source-space, unfiled-cursor and soft-delete predicates,
+  timestamp assignment, transaction and query count are unchanged. Read-side
+  active/source/target record models remain; unused projection/`to_columns`
+  methods were removed after checking all server/CLI consumers.
+- 633 function checks pass: fixed-commit projection parity, actual typed ORM
+  writes/readback, detached nested JSON, nullable FTS behavior, validation of both
+  spaces before any assignment, inline/storage enqueue, Memory index creation,
+  both reindex requests and compilation of the exact cursor SQL statement.
+  Five intentional invalid calls/assignments are rejected by Pyrefly. These
+  probes substitute DB and event effects and do not prove worker execution.
+- Real PostgreSQL adds 15 checks using the actual services and 11 FK-derived
+  tables in `eylo_embedding_persistence_qa_20260913`: active/source/target identity
+  and tenant round-trips for ingestion, Memory index and both reindex jobs.
+  The disposable DB was removed; operator data and credentials were untouched.
+  Vendor execution and lifecycle event delivery were not exercised. Native bulk
+  cursor cutover is not claimed by this DB probe; its SQL contract was checked
+  separately above.
+- The first DB probe failed on a fixture's invented `KnowledgeVendor.FTS` member.
+  Source inspection established `POSTGRES_FTS`; only the fixture was corrected.
+  Both failed and successful attempts removed their disposable DB.
+- Full-project Pyrefly: zero errors, two existing SOR redundant-cast warnings.
+  Backend/CLI lint and 4,528 existing durable-work checks pass; exact registered
+  table/index DDL still matches the fixed baseline. Existing embedding, Knowledge
+  and Memory pre-commit type gates cover the changed files.
+- This batch is local and not deployed. No migration, Git history change, new
+  dependency or provider configuration change. Next: remaining route/service
+  return contracts in the upload/retrieval flow, then accumulated native worker
+  and API acceptance. Platform-wide completion remains open.
+
+### Product-work deployment and native SOR QA — 2026-09-13
+
+This deployment supersedes the local-only labels in the following three
+product-work checkpoint records.
+
+- Rebuilt and recreated only the server, Absurd worker, ordinary-task worker and
+  scheduler with image `ae78846266e4985e08144b5f25ca96a5e66c156a6734725e66931ad6d3d9598e`.
+  Configuration parity and absence of active Agent runs were checked first.
+  PostgreSQL and Redis were not recreated; the configured organization and
+  provider credentials were retained. Schema remains `eylo0012`; startup's
+  migration command required no change. Previous image retained for rollback.
+- Exact-image acceptance: 274 producer/worker identity checks, 246 OpenAPI paths
+  and registration of all 15 worker handlers passed without network execution.
+  All 27 real PostgreSQL checks passed again using image code, not mounted local
+  source. The disposable DB was removed. Queue transport remained substituted;
+  this does not prove forced worker-crash recovery.
+- Native isolated Chrome QA used the existing QA Core Mixed Agent, published
+  revision 3, in Eylo Development. Conversation
+  `01a0973d-5115-75d3-8a04-72100dafa168` contains 30 completed messages after two
+  user turns, including persisted tool uses/results and background-agent system
+  outputs. The operator console renders the exchange. No message remained in
+  processing or awaiting-tool-results state at inspection.
+- Recorded tool results, not the agent's summary, establish successful Jira
+  issue search, Linear issue search/detail with four relationships, HubSpot
+  contact search, Confluence search/detail with all 4,084 characters and one
+  related property, and Intercom ticket search/detail with four related messages.
+  Existing user memory recall succeeded with Bedrock reranking applied.
+- Zendesk source `01a05c78-db65-7cb2-9660-b1d2bafc63b9` is now
+  `REAUTH_REQUIRED`; the UI reports `refresh_token_rejected`, and the source API
+  reports `CONNECTION_NOT_ACTIVE`. Its update at `2026-09-12T19:06:00.979033Z`
+  predates deployment at approximately `20:03Z`. The explicit source-scoped
+  agent read returned `sor_source_unavailable`. Fresh Zendesk reads/sync are not
+  passing and require credential recovery; the upstream rejection cause has not
+  been established by this check.
+- QA found an answer-quality issue: the first unfiltered one-item search led the
+  agent to claim Jira was unavailable and to call excerpts full details. A
+  follow-up elicited a successful scoped Jira search and actual detail tools.
+  Even the corrected summary overstates Jira detail coverage: no Jira
+  `issue_get` was executed. Keep search, detail and freshness evidence separate.
+  Background-agent summaries also claim memory writes; those claims alone are
+  not evidence of a persisted mutation.
+- Remaining: Jira detail acceptance, fresh Zendesk access, native webhook
+  deliveries, in-flight cancellation/crash/concurrency, uploads/recordings and
+  remaining platform contracts. No vendor records were intentionally modified
+  or external messages requested. This is bounded native QA, not completion of
+  the platform-wide goal.
+
+### Local lifecycle policy contracts and milestone review — 2026-09-13
+
+- Replaced shared lifecycle `for_update` and `permanent` policy booleans with
+  `DurableWorkLock` and `DurableFailureRecovery`. All affected knowledge, memory,
+  campaign and recording callers use the named choices. Six product classifiers
+  now return recovery enums; provider-owned error policies remain separate.
+  Intrinsic changed/cancelled results remain predicates. The unrelated campaign
+  contact-lock contract is not implicitly converted to a product-work enum.
+- Named the unchanged failure-summary and unbound-scan limits. No DB enum,
+  column, retry schedule, attempt budget, transaction or vendor behavior changed.
+- 4,528 function checks pass across eight product models: fixed-commit lifecycle
+  parity, all six result projections, explicit lock choices, exhausted attempt
+  boundaries and 67 real-exception classifier comparisons. Exact table/index
+  DDL still matches `b187de9b`. Seven negative type probes reject wrong ORM
+  assignments, a wrong-product completion callback and boolean policy inputs.
+- The eight producer/worker identity paths still pass 274 checks. Real PostgreSQL
+  checks now total 27, including persisted retry-to-exhaustion and terminal
+  failure. The isolated database was removed; no configured-org data was changed.
+  Queue effects remain substituted: these checks do not prove real worker claims,
+  crash recovery, provider mutations or the wider platform acceptance matrix.
+- One expanded probe initially used an invalid `NotConfiguredError.configure_via`
+  fixture. The existing `/api/` validator rejected it before classifier execution.
+  Correcting the fixture, not the product, made the complete probe pass.
+
+Milestone review of the accumulated product-job row, completion, identity and
+lifecycle-policy changes, in order:
+
+1. DDD boundaries: shared work imports no product models or provider exceptions;
+   concrete fields, queue keys, recovery classification and projections remain
+   with their current owners. Knowledge and memory recovery enums are not merged.
+2. Architectural fit: the existing lifecycle service owns transitions; Absurd
+   retains execution authority. No new queue, registry, table or orchestration
+   abstraction was added. Protocols describe existing ORM/identity interfaces.
+3. Data flow: producer model → ID-only payload → owned row lookup → queue spawn
+   outside the transaction → locked binding. Completion assigns typed fields
+   only while running; failure classification retains its terminal/retry meaning.
+   Actual SQL verifies tenant refusal, rollback, contention and cancellation.
+4. Plan adherence: this closes the local product-work contract batch, not the
+   platform-wide goal. Persisted wire compatibility is retained; deployment and
+   native worker verification remain next. The six active SOR configs are kept.
+5. Maintainability, safety and performance: callers cannot pass arbitrary result
+   field names or policy booleans through the typed API. Existing row predicates,
+   query counts, external-I/O boundaries and bounded summaries are retained.
+   No dependency, credential, schema, history or configured data was changed.
+
+No blocking finding in this scoped review. The batch remains **not deployed**;
+native worker/crash/concurrency acceptance is still required, and no broader
+product-readiness claim follows from these function checks.
+
+### Local product-job identity and DB acceptance — 2026-09-13
+
+- All eight generic bound-work producers now pass their existing worker input
+  models: knowledge ingestion/reindex/corpus, memory formation/reconciliation/
+  reindex, campaign attempts and recording upload. A structural identity
+  interface leaves wire-field ownership in each product; the shared binding
+  layer no longer accepts `params_name` or a separate pair of IDs that could
+  disagree with the queued payload. Serialization revalidates the identity and
+  excludes receipt-only fields. Worker wire keys remain compatible.
+- 274 function checks passed across eight producers: concrete ORM/input pairing,
+  worker parsing, supported UUID forms, malformed/extra inputs, frozen identities,
+  exact queue name/payload/idempotency/retry budget, prebound reuse, cancellation
+  refusal and runtime cleanup. DB/queue effects in these checks are substituted.
+- Real PostgreSQL acceptance used the actual knowledge-ingestion model and
+  transaction manager in `eylo_bound_work_qa_20260913`, with its eight required
+  tables derived from real FK metadata. Nineteen checks passed, then passed again
+  after identity changes: enum/result/timestamp persistence, invisible uncommitted
+  writes, rollback after real flush on exception and cancellation, duplicate
+  completion, cross-org refusal, actual row-lock contention, cancellation winning
+  against a waiting completion, and spawn/binding/cancel transaction separation.
+  Queue transport was substituted; this is not live Absurd worker-crash QA.
+- The disposable database was removed after both runs. No configured organization
+  data was read or written by these probes. Full typing and backend/CLI lint pass.
+  The local row/completion and identity batches remain **not deployed**; next are
+  enum-based lifecycle operation contracts, milestone review and native worker
+  verification. These results do not close the platform-wide acceptance matrix.
+
+### Local product-job row and completion contracts — 2026-09-13
+
+- `AbsurdBoundWorkService` and binding helpers preserve the concrete product row
+  through a structural ORM protocol. The shared layer imports no product model
+  and adds no database columns. All six dictionary-based completion callers now
+  assign typed product fields through a synchronous callback under the existing
+  running-state guard and row lock. Knowledge, memory and recording results retain
+  their existing storage shapes; already-terminal rows are not modified.
+- SQLAlchemy 2.0.45 is pinned and installed. Its distributed `declared_attr`
+  setter accepts `Any`, despite typed reads. Fixed lifecycle columns now use
+  `Mapped` directly; the product-named state enum retains dynamic construction
+  with an explicit static mapped contract. Column ordering is preserved.
+  Five negative type probes reject nonexistent fields, incorrect UUID/datetime/
+  state assignments and callbacks targeting the wrong product model.
+- 4,189 function checks pass across all eight product-job models: fixed-commit
+  (`b187de9b`) lifecycle parity, tenant/deleted query predicates, row locking,
+  idempotent transitions, completion guard, projection exceptions/cancellation,
+  and all six result projections. Sessions are substituted; this does not prove
+  database rollback or concurrent execution. Table/index DDL from actual model
+  registration matches the baseline exactly, including column order.
+- Full-project Pyrefly passes with zero errors and the same two SOR redundant-cast
+  warnings; backend/CLI lint passes. A local pre-commit/pre-push gate checks all
+  callers when shared product-work or durable-runtime contracts change.
+- This batch is **not deployed**. Next: real transaction/worker verification,
+  remaining job identity envelopes and enum-based lifecycle operation contracts.
+  No operator DB changes, migration, deployment or Git write occurred for this
+  local batch. The latest running image remains `b821cdb4dc93` below.
+
+### SOR identities and shared durable wire boundary — 2026-09-13
+
+- SOR command params now use a frozen Pydantic identity, matching sync and webhook
+  jobs. All three producers select the exact task model from the work-row type;
+  the free-form `params_name` argument is removed. Workers consume named fields;
+  command terminal notifications reuse the same schema. Wire names, idempotency,
+  source authorization and transaction boundaries are unchanged.
+- 227 function checks pass, including all three producer/consumer pairs, UUID
+  input forms, malformed IDs, safe errors, prebound work, spawn/binding failures,
+  cancellation pending during binding, runtime close, and fixed-revision command
+  result/cancellation/suspension-independent exception parity. DB/provider effects
+  are substituted; these checks do not prove live vendor mutations.
+- The shared durable runtime no longer exposes `Any` for task input/output or
+  heartbeat results. Enqueue, events, handler input and completion validate finite
+  JSON objects. SDK registration and worker-lane replay retain their public
+  signatures. Generic heartbeat typing preserves the operation's result type.
+- 117 shared-runtime checks pass against installed Absurd 0.5.0 registration,
+  with DB effects substituted: valid wire parity, detached data, rejection before
+  SDK I/O, invalid completion, unchanged CancelledTask/SuspendTask/asyncio
+  cancellation propagation, and safe error tracebacks. A review caught outer
+  Pydantic errors exposing invalid values/field paths; the dedicated payload-free
+  `DurablePayloadError` now suppresses that unsafe diagnostic context.
+- Read-only active-DB shape audit: 25,242 task params are JSON objects; 25,217 run
+  results are objects and 410 have SQL NULL results. No scalar/array payloads were
+  observed. This is stored-shape compatibility evidence, not worker-crash QA.
+- Milestone review followed DDD ownership, architectural fit, producer-to-sink
+  flow, plan adherence and clean-code order. Product authority remains in SOR;
+  the shared runtime only validates transport shape. No new DB queries, locks,
+  dependencies, vendor policies or workflow retry rules were introduced.
+- Local lint and full typing pass with the same two existing redundant-cast
+  warnings. Deployment and bounded native acceptance are recorded below;
+  remaining product-job envelopes and module/provider boundaries remain open.
+
+### Latest deployment and native QA — durable boundary, 2026-09-13
+
+- All four application services run image
+  `b821cdb4dc93e0f5d60810b9e204e6ebfa0c8caa40d270d81d9a8e7e466ae185`,
+  with zero restarts at deployment verification. Environment parity was checked
+  and no active Agent runs were present before recreation. PostgreSQL and Redis
+  retained their containers and start times. Rollback image:
+  `eylo-server:typing-rollback-331ef63cafc8`. No migration or Git write was made.
+- Disposable exact-image checks passed: 227 SOR task checks, 117 durable JSON
+  checks, OpenAPI generation with 246 paths and all 15 actual worker handlers
+  registered through the validating wrapper. DB/provider effects in those
+  contract probes are substituted; they do not prove native vendor mutations.
+- Native widget conversation `01a096fa-d6b5-7e30-95ec-bf6d51094079` called
+  `issue_search` and `issue_get`, returning Linear issue `VER-50`. The console
+  rendered all 10 persisted messages without Processing or Awaiting Tool Results
+  remaining. Both the conversational run and its attached background run
+  completed. This proves the configured LLM, stored SOR reads and message delivery,
+  not fresh vendor synchronization.
+- Public objective `bd26b451-3b4f-4ab8-b7f5-9c8c62fa5f21` asked for input and
+  released capacity while waiting. A member response submitted through the
+  console resumed the real worker. The run completed/achieved with output
+  `typing-b821cdb4-resumed`, exactly matching the stored answered request.
+- Fresh Sources UI check: Intercom, Jira, Linear, Zendesk, HubSpot and Confluence
+  all display Active. This supersedes the older Zendesk reauthorization finding;
+  active status alone is not proof of every tool or webhook operation.
+- A text-conversation voice-session request returned 404 during console QA;
+  transcript rendering succeeded. This observation is not classified as a
+  regression without tracing the optional voice-session contract.
+- Remaining gates: generic product-job binding/completion contracts, final
+  vendor operation inventory, fresh webhook delivery, broader cancellation and
+  worker-crash/concurrency QA, and native voice/recording/sandbox coverage.
 
 ### Latest deployment and native QA — WebSocket batch, 2026-09-12
 

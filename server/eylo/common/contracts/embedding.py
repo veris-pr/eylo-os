@@ -137,51 +137,6 @@ class EmbeddingSpace(BaseModel):
         ).encode("utf-8")
         return hashlib.sha256(canonical).hexdigest()
 
-    def to_active_record(self) -> EmbeddingRecord:
-        """Project complete active identity to its explicitly named persistence fields."""
-        space = type(self).model_validate(self, strict=True)
-        return EmbeddingRecord(
-            organization_id=space.organization_id,
-            embedding_provider_config_id=space.provider_config_id,
-            embedding_provider_config_revision=space.provider_config_revision,
-            embedding_provider=space.provider,
-            embedding_endpoint=space.endpoint,
-            embedding_model=space.model,
-            embedding_dimensions=space.dimensions,
-            embedding_semantic_options=space.semantic_options,
-            embedding_space_id=space.id,
-        )
-
-    def to_target_record(self) -> TargetEmbeddingRecord:
-        """Project complete target identity to its explicitly named persistence fields."""
-        space = type(self).model_validate(self, strict=True)
-        return TargetEmbeddingRecord(
-            organization_id=space.organization_id,
-            target_embedding_provider_config_id=space.provider_config_id,
-            target_embedding_provider_config_revision=space.provider_config_revision,
-            target_embedding_provider=space.provider,
-            target_embedding_endpoint=space.endpoint,
-            target_embedding_model=space.model,
-            target_embedding_dimensions=space.dimensions,
-            target_embedding_semantic_options=space.semantic_options,
-            target_embedding_space_id=space.id,
-        )
-
-    def to_source_record(self) -> SourceEmbeddingRecord:
-        """Project complete source identity to its explicitly named persistence fields."""
-        space = type(self).model_validate(self, strict=True)
-        return SourceEmbeddingRecord(
-            organization_id=space.organization_id,
-            source_embedding_provider_config_id=space.provider_config_id,
-            source_embedding_provider_config_revision=space.provider_config_revision,
-            source_embedding_provider=space.provider,
-            source_embedding_endpoint=space.endpoint,
-            source_embedding_model=space.model,
-            source_embedding_dimensions=space.dimensions,
-            source_embedding_semantic_options=space.semantic_options,
-            source_embedding_space_id=space.id,
-        )
-
     def is_compatible_with(self, other: "EmbeddingSpace") -> bool:
         """Return whether vectors from both authorities may be compared."""
         return self.id == other.id

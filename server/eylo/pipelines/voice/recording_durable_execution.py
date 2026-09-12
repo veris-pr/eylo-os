@@ -12,8 +12,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.absurd_work import (
     AbsurdBoundWorkService,
+    DurableFailureRecovery,
     DurableState,
     DurableWorkBindingPending,
+    DurableWorkLock,
     DurableWorkNotFound,
     spawn_bound_work,
     spawn_unbound_work,
@@ -93,10 +95,10 @@ async def spawn_voice_recording_upload(
 ) -> UUID:
     return await spawn_bound_work(
         model=VoiceRecordingModel,
-        organization_id=organization_id,
-        work_id=recording_id,
+        params=RecordingUploadParams(
+            organization_id=organization_id, recording_id=recording_id
+        ),
         workflow_name=VOICE_RECORDING_UPLOAD_WORKFLOW,
-        params_name="recording_id",
         idempotency_prefix="voice-recording-upload",
     )
 
@@ -191,7 +193,7 @@ class VoiceRecordingUploadWorkflow:
                     ).get(
                         work_id=recording_id,
                         organization_id=organization_id,
-                        for_update=True,
+                        lock=DurableWorkLock.UPDATE,
                     )
                 except DurableWorkNotFound:
                     raise cancelled
@@ -231,7 +233,7 @@ class VoiceRecordingUploadWorkflow:
                 organization_id=organization_id,
                 recording_id=recording_id,
                 error=error,
-                permanent=_is_permanent(error),
+                recovery=_failure_recovery(error),
             )
 
         if isinstance(attempt, RecordingUploadFinished):
@@ -252,7 +254,7 @@ class VoiceRecordingUploadWorkflow:
                 error=RecordingUploadContractError(
                     "Recording upload has no exact storage config revision."
                 ),
-                permanent=True,
+                recovery=DurableFailureRecovery.TERMINAL,
             )
         if attempt.user_wav is None and attempt.agent_wav is None:
             return await _handle_failure(
@@ -261,7 +263,7 @@ class VoiceRecordingUploadWorkflow:
                 error=RecordingUploadContractError(
                     "Recording upload has no staged audio."
                 ),
-                permanent=True,
+                recovery=DurableFailureRecovery.TERMINAL,
             )
 
         try:
@@ -279,7 +281,7 @@ class VoiceRecordingUploadWorkflow:
                 organization_id=organization_id,
                 recording_id=recording_id,
                 error=error,
-                permanent=_is_permanent(error),
+                recovery=_failure_recovery(error),
             )
 
         try:
@@ -301,7 +303,7 @@ class VoiceRecordingUploadWorkflow:
                 organization_id=organization_id,
                 recording_id=recording_id,
                 error=error,
-                permanent=_is_permanent(error),
+                recovery=_failure_recovery(error),
                 retention=RecordingAudioRetention.PRESERVE,
             )
 
@@ -418,7 +420,7 @@ async def _project_recording_success(
         current = await service.get(
             work_id=recording_id,
             organization_id=organization_id,
-            for_update=True,
+            lock=DurableWorkLock.UPDATE,
         )
         if current.state is DurableState.SUCCEEDED:
             return _receipt(current), await _file_recording_available_fact(
@@ -427,20 +429,22 @@ async def _project_recording_success(
         meta = {**(current.meta or {}), "upload_state": DurableState.SUCCEEDED.value}
         meta.pop("upload_error", None)
         meta.pop("upload_effect_state", None)
+
+        def project_result(row: VoiceRecordingModel) -> None:
+            row.user_audio_url = None
+            row.agent_audio_url = None
+            row.storage_provider = authority.provider
+            row.storage_authority = dict(authority.location)
+            row.user_storage_key = user_locator.key if user_locator else None
+            row.agent_storage_key = agent_locator.key if agent_locator else None
+            row.staged_user_wav = None
+            row.staged_agent_wav = None
+            row.meta = meta
+
         row = await service.succeed(
             work_id=recording_id,
             organization_id=organization_id,
-            values={
-                "user_audio_url": None,
-                "agent_audio_url": None,
-                "storage_provider": authority.provider,
-                "storage_authority": dict(authority.location),
-                "user_storage_key": user_locator.key if user_locator else None,
-                "agent_storage_key": agent_locator.key if agent_locator else None,
-                "staged_user_wav": None,
-                "staged_agent_wav": None,
-                "meta": meta,
-            },
+            project_result=project_result,
         )
         return _receipt(row), await _file_recording_available_fact(session, row)
 
@@ -507,7 +511,7 @@ async def _handle_failure(
     organization_id: UUID,
     recording_id: UUID,
     error: Exception,
-    permanent: bool,
+    recovery: DurableFailureRecovery,
     retention: RecordingAudioRetention = RecordingAudioRetention.DISCARD,
 ) -> RecordingUploadReceipt:
     summary = _safe_failure_summary(error)
@@ -517,12 +521,12 @@ async def _handle_failure(
             work_id=recording_id,
             organization_id=organization_id,
             error=summary,
-            permanent=permanent,
+            recovery=recovery,
         )
         row = await service.get(
             work_id=recording_id,
             organization_id=organization_id,
-            for_update=True,
+            lock=DurableWorkLock.UPDATE,
         )
         if state is DurableState.FAILED:
             if retention is RecordingAudioRetention.PRESERVE:
@@ -613,15 +617,13 @@ def _preserve_staged_audio(
     row.meta = meta
 
 
-def _is_permanent(error: Exception) -> bool:
-    return isinstance(
+def _failure_recovery(error: Exception) -> DurableFailureRecovery:
+    if isinstance(
         error,
-        (
-            NotConfiguredError,
-            RecordingUploadContractError,
-            RecordingUploadRejected,
-        ),
-    )
+        (NotConfiguredError, RecordingUploadContractError, RecordingUploadRejected),
+    ):
+        return DurableFailureRecovery.TERMINAL
+    return DurableFailureRecovery.RETRY
 
 
 def _safe_failure_summary(error: Exception) -> str:

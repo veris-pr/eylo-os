@@ -66,6 +66,17 @@ class SorWebhookTaskParams(BaseModel):
     receipt_id: TaskId
 
 
+class SorCommandTaskParams(BaseModel):
+    """Resolve a committed command; never persist credentials or mutation input."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    organization_id: TaskId
+    command_id: TaskId
+
+
 class SorSyncWorkReceipt(BaseModel):
     """Exact durable result shape; counters retain their existing flat wire names."""
 

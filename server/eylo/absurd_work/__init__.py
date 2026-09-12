@@ -17,8 +17,10 @@ from eylo.absurd_work.model import (
 )
 from eylo.absurd_work.service import (
     AbsurdBoundWorkService,
+    DurableFailureRecovery,
     DurableWorkBindingPending,
     DurableWorkConflict,
+    DurableWorkLock,
     DurableWorkNotFound,
 )
 
@@ -27,9 +29,11 @@ __all__ = [
     "AbsurdBoundWorkService",
     "DEFAULT_MAX_ATTEMPTS",
     "TERMINAL_STATES",
+    "DurableFailureRecovery",
     "DurableState",
     "DurableWorkBindingPending",
     "DurableWorkConflict",
+    "DurableWorkLock",
     "DurableWorkNotFound",
     "cancel_bound_work",
     "spawn_bound_work",

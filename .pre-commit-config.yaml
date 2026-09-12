@@ -231,6 +231,8 @@ repos:
           eylo/sor/runtime/http.py
           eylo/sor/runtime/sync.py
           eylo/sor/runtime/work.py
+          eylo/sor/runtime/serialization.py
+          eylo/sor/runtime/webhook_processing.py
           eylo/sor/runtime/revocation.py
           eylo/sor/runtime/action_events.py
           eylo/sor/runtime/oauth.py
@@ -240,7 +242,7 @@ repos:
           eylo/events/durable/binding.py
           eylo/jobs/sor.py'
         language: system
-        files: ^server/(pyproject\.toml|eylo/(durable_runtime\.py|events/durable/|common/http_egress\.py|sockets/http/|jobs/sor\.py|sor/(runtime/(http|sync|work|adapters|revocation|action_events|oauth|refresh|api_key_sources|commands)\.py|shared/(contracts|models|sync_services)\.py)))
+        files: ^server/(pyproject\.toml|eylo/(durable_runtime\.py|events/durable/|common/http_egress\.py|sockets/http/|jobs/sor\.py|sor/(runtime/(http|sync|work|serialization|webhook_processing|adapters|revocation|action_events|oauth|refresh|api_key_sources|commands)\.py|shared/(contracts|models|sync_services)\.py)))
         pass_filenames: false
         stages: [pre-commit, pre-push]
 
@@ -697,6 +699,14 @@ repos:
           eylo/pipelines/integrations_v2/vendors/intercom/'
         language: system
         files: ^server/(pyproject\.toml|eylo/(common/contracts/tool_platform\.py|modules/(integrations_v2|tools)/|pipelines/(integrations_v2/|conversation/domain\.py)))
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+
+      - id: python-typed-product-work
+        name: Python shared durable work and caller contracts
+        entry: bash -c 'cd server && .venv/bin/pyrefly check'
+        language: system
+        files: ^server/(pyproject\.toml|eylo/(absurd_work/|durable_runtime\.py))
         pass_filenames: false
         stages: [pre-commit, pre-push]
 

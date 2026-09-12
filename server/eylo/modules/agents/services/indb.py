@@ -42,6 +42,7 @@ from eylo.modules.agents.schemas.indb import (
     AgentToolCreate,
     AgentToolInDb,
     AgentUpdate,
+    AgentUpdateField,
 )
 from eylo.modules.email_configs.domain import InvalidEmailConfig
 from eylo.modules.email_configs.resolver import EmailConfigResolver
@@ -84,6 +85,16 @@ _MEMORY_TOOL_NAMES = (
 )
 _EMAIL_TOOL_NAMES = ("send_email",)
 _KNOWLEDGE_TOOL_NAMES = ("kb_query", "kb_write_destinations", "kb_write")
+_PUBLICATION_OWNED_REVISION_FIELDS = frozenset(
+    {
+        AgentUpdateField.LLM_PROVIDER_CONFIG_REVISION,
+        AgentUpdateField.EMAIL_PROVIDER_CONFIG_REVISION,
+        AgentUpdateField.WEBRTC_PROVIDER_CONFIG_REVISION,
+        AgentUpdateField.RERANKING_PROVIDER_CONFIG_REVISION,
+        AgentUpdateField.MEMORY_PROVIDER_CONFIG_REVISION,
+        AgentUpdateField.FILE_UPLOAD_EMBEDDING_PROVIDER_CONFIG_REVISION,
+    }
+)
 
 
 def _escape_like(value: str) -> str:
@@ -171,7 +182,7 @@ class AgentService(EyloBaseService[AgentInDb, AgentsModel]):
                 orm_object.llm_overrides or {}
             ),
             prompt=orm_object.prompt,
-            lifecycle=orm_object.lifecycle,
+            lifecycle=DefinitionLifecycle(orm_object.lifecycle),
             published_revision=orm_object.published_revision,
             draft_version=orm_object.draft_version,
             draft_dirty=orm_object.draft_dirty,
@@ -297,40 +308,42 @@ class AgentService(EyloBaseService[AgentInDb, AgentsModel]):
             raise InvalidAgentDefinitionError(
                 "expected_draft_version is required to edit an agent draft."
             )
-        if fields == {"expected_draft_version"}:
+        if fields == {AgentUpdateField.EXPECTED_DRAFT_VERSION}:
             raise InvalidAgentDefinitionError("Agent draft update is empty.")
-        forbidden_revision_fields = {
-            field
-            for field in fields
-            if field.endswith("_provider_config_revision")
-        }
+        forbidden_revision_fields = fields & _PUBLICATION_OWNED_REVISION_FIELDS
         if forbidden_revision_fields:
             raise InvalidAgentDefinitionError(
                 "Provider revisions are resolved only when the agent is published."
             )
-        if "implementation" in payload.model_fields_set:
+        if AgentUpdateField.IMPLEMENTATION in payload.model_fields_set:
             assert_implementation_is_valid(existing.kind, payload.implementation)
-        llm_binding_changed = "llm_provider_config_id" in payload.model_fields_set
+        llm_binding_changed = (
+            AgentUpdateField.LLM_PROVIDER_CONFIG_ID in payload.model_fields_set
+        )
         if llm_binding_changed:
             await self._validate_llm_config_reference(
                 organization_id,
                 payload.llm_provider_config_id,
             )
-        email_binding_changed = "email_provider_config_id" in payload.model_fields_set
+        email_binding_changed = (
+            AgentUpdateField.EMAIL_PROVIDER_CONFIG_ID in payload.model_fields_set
+        )
         if email_binding_changed:
             await self._validate_email_config_reference(
                 organization_id,
                 payload.email_provider_config_id,
             )
         webrtc_binding_changed = (
-            "webrtc_provider_config_id" in payload.model_fields_set
+            AgentUpdateField.WEBRTC_PROVIDER_CONFIG_ID in payload.model_fields_set
         )
         if webrtc_binding_changed:
             await self._validate_webrtc_config_reference(
                 organization_id,
                 payload.webrtc_provider_config_id,
             )
-        voice_binding_changed = "voice_config_id" in payload.model_fields_set
+        voice_binding_changed = (
+            AgentUpdateField.VOICE_CONFIG_ID in payload.model_fields_set
+        )
         voice_config_revision = existing.voice_config_revision
         if voice_binding_changed:
             voice_config_revision = await self._validate_voice_config_reference(
@@ -339,7 +352,7 @@ class AgentService(EyloBaseService[AgentInDb, AgentsModel]):
                 config_id=payload.voice_config_id,
             )
         reranking_binding_changed = (
-            "reranking_provider_config_id" in payload.model_fields_set
+            AgentUpdateField.RERANKING_PROVIDER_CONFIG_ID in payload.model_fields_set
         )
         if reranking_binding_changed:
             await self._validate_reranking_config_reference(
@@ -347,7 +360,7 @@ class AgentService(EyloBaseService[AgentInDb, AgentsModel]):
                 payload.reranking_provider_config_id,
             )
         memory_binding_changed = (
-            "memory_provider_config_id" in payload.model_fields_set
+            AgentUpdateField.MEMORY_PROVIDER_CONFIG_ID in payload.model_fields_set
         )
         if memory_binding_changed:
             await self._validate_memory_config_reference(
@@ -355,11 +368,12 @@ class AgentService(EyloBaseService[AgentInDb, AgentsModel]):
                 payload.memory_provider_config_id,
             )
         upload_embedding_binding_changed = (
-            "file_upload_embedding_provider_config_id" in payload.model_fields_set
+            AgentUpdateField.FILE_UPLOAD_EMBEDDING_PROVIDER_CONFIG_ID
+            in payload.model_fields_set
         )
         next_allow_file_uploads = (
             payload.allow_file_uploads
-            if "allow_file_uploads" in payload.model_fields_set
+            if AgentUpdateField.ALLOW_FILE_UPLOADS in payload.model_fields_set
             else existing.allow_file_uploads
         )
         next_upload_embedding_config_id = (
@@ -372,36 +386,29 @@ class AgentService(EyloBaseService[AgentInDb, AgentsModel]):
             allow_file_uploads=bool(next_allow_file_uploads),
             config_id=next_upload_embedding_config_id,
         )
-        if "instruction_template_id" in payload.model_fields_set:
+        if AgentUpdateField.INSTRUCTION_TEMPLATE_ID in payload.model_fields_set:
             await self._validate_instruction_template_reference(
                 organization_id,
                 payload.instruction_template_id,
             )
 
-        update_data = payload.model_dump(
-            exclude_unset=True,
-            exclude={"expected_draft_version"},
-        )
+        # Keep omission and validated nested values intact while resolving bindings.
+        # A detached copy prevents internal revisions from mutating the caller's patch.
+        payload = payload.model_copy(deep=True)
         if llm_binding_changed:
-            update_data["llm_provider_config_revision"] = None
+            payload.llm_provider_config_revision = None
         if email_binding_changed:
-            update_data["email_provider_config_revision"] = None
+            payload.email_provider_config_revision = None
         if webrtc_binding_changed:
-            update_data["webrtc_provider_config_revision"] = None
+            payload.webrtc_provider_config_revision = None
         if voice_binding_changed:
-            update_data["voice_config_revision"] = voice_config_revision
+            payload.voice_config_revision = voice_config_revision
         if reranking_binding_changed:
-            update_data["reranking_provider_config_revision"] = None
+            payload.reranking_provider_config_revision = None
         if memory_binding_changed:
-            update_data["memory_provider_config_revision"] = None
+            payload.memory_provider_config_revision = None
         if upload_embedding_binding_changed:
-            update_data["file_upload_embedding_provider_config_revision"] = None
-        payload = AgentUpdate.model_validate(
-            {
-                **update_data,
-                "expected_draft_version": expected_draft_version,
-            }
-        )
+            payload.file_upload_embedding_provider_config_revision = None
         updated_agent_model = await self.repository.update_(
             agent_id=agent_id, organization_id=organization_id, payload=payload
         )

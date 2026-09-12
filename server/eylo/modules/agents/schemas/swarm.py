@@ -6,6 +6,7 @@ from uuid import UUID
 
 from pydantic import Field
 
+from eylo.common.revisions import DefinitionLifecycle, RevisionAvailability
 from eylo.common.schemas import (
     EyloBaseModelSchema,
     EyloBaseOrganizationModelSchema,
@@ -21,7 +22,7 @@ class AgentSwarmBase(EyloOrganizationModelSchema):
     organization_id: UUID = Field(
         ..., description="Organization ID for the agent swarm."
     )
-    lifecycle: str = "draft"
+    lifecycle: DefinitionLifecycle = DefinitionLifecycle.DRAFT
     published_revision: int | None = Field(default=None, gt=0)
     draft_version: int = Field(default=1, gt=0)
     draft_dirty: bool = True
@@ -77,7 +78,7 @@ class AgentSwarmRevisionInDb(EyloBaseOrganizationModelSchema):
     name: str
     slug: str
     description: str | None = None
-    availability: str
+    availability: RevisionAvailability
     published_at: datetime
     published_by: UUID | None = None
     revoked_at: datetime | None = None

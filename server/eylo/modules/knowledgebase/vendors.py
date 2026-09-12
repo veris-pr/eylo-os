@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from eylo.common.contracts.json_values import JsonObject
 from eylo.common.contracts.knowledgebase import (
     DEFAULT_KNOWLEDGE_CHUNKING,
     DEFAULT_KNOWLEDGE_CHUNK_CHARS,
@@ -24,6 +24,11 @@ class KnowledgeVendor(StrEnum):
     PGVECTOR = "pgvector"
 
 
+class KnowledgeEmbeddingRequirement(StrEnum):
+    UNUSED = "unused"
+    REQUIRED = "required"
+
+
 class VendorSpec(BaseModel):
     """Executable index requirements checked before a KB is created."""
 
@@ -32,7 +37,7 @@ class VendorSpec(BaseModel):
     )
 
     name: KnowledgeVendor
-    needs_embeddings: bool
+    embedding_requirement: KnowledgeEmbeddingRequirement
     description: str
 
 
@@ -74,12 +79,12 @@ class KnowledgebaseMetadata(BaseModel):
 VENDORS: dict[KnowledgeVendor, VendorSpec] = {
     KnowledgeVendor.POSTGRES_FTS: VendorSpec(
         name=KnowledgeVendor.POSTGRES_FTS,
-        needs_embeddings=False,
+        embedding_requirement=KnowledgeEmbeddingRequirement.UNUSED,
         description="Keyword search over Postgres full-text indexes.",
     ),
     KnowledgeVendor.PGVECTOR: VendorSpec(
         name=KnowledgeVendor.PGVECTOR,
-        needs_embeddings=True,
+        embedding_requirement=KnowledgeEmbeddingRequirement.REQUIRED,
         description="Semantic search over pgvector embeddings.",
     ),
 }
@@ -97,12 +102,15 @@ def _vendor_spec(vendor: str) -> VendorSpec | None:
 def needs_embeddings(vendor: str) -> bool:
     """Whether this vendor cannot function without an embedding provider."""
     spec = _vendor_spec(vendor)
-    return bool(spec and spec.needs_embeddings)
+    return (
+        spec is not None
+        and spec.embedding_requirement is KnowledgeEmbeddingRequirement.REQUIRED
+    )
 
 
 def normalize_metadata(
-    metadata: KnowledgebaseMetadata | dict[str, Any] | None,
-) -> dict[str, Any]:
+    metadata: KnowledgebaseMetadata | JsonObject | None,
+) -> JsonObject:
     """Return the full persisted config or one stable operator-facing error."""
     return parse_metadata(metadata).model_dump(mode="json")
 
@@ -124,7 +132,7 @@ def parse_metadata(metadata: object) -> KnowledgebaseMetadata:
 
 def configuration_problem(
     vendor: str,
-    metadata: KnowledgebaseMetadata | dict[str, Any] | None,
+    metadata: KnowledgebaseMetadata | JsonObject | None,
 ) -> str | None:
     """Why this configuration cannot work, or None if it can.
 

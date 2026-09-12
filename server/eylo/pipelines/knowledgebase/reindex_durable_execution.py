@@ -11,6 +11,7 @@ from pydantic import JsonValue, ValidationError
 
 from eylo.absurd_work import (
     AbsurdBoundWorkService,
+    DurableFailureRecovery,
     DurableState,
     DurableWorkBindingPending,
     spawn_bound_work,
@@ -57,10 +58,8 @@ async def spawn_knowledge_reindex(
 ) -> UUID:
     return await spawn_bound_work(
         model=KnowledgeReindexJobModel,
-        organization_id=organization_id,
-        work_id=job_id,
+        params=KnowledgeJobParams(organization_id=organization_id, job_id=job_id),
         workflow_name=KNOWLEDGE_REINDEX_WORKFLOW,
-        params_name="job_id",
         idempotency_prefix="knowledge-reindex",
     )
 
@@ -153,7 +152,7 @@ class KnowledgeReindexWorkflow:
                 organization_id=organization_id,
                 job_id=job_id,
                 error=error,
-                permanent=_is_permanent(error),
+                recovery=_failure_recovery(error),
             )
 
         try:
@@ -220,7 +219,7 @@ class KnowledgeReindexWorkflow:
                 organization_id=organization_id,
                 job_id=job_id,
                 error=error,
-                permanent=_is_permanent(error),
+                recovery=_failure_recovery(error),
             )
 
 
@@ -229,14 +228,14 @@ async def _handle_failure(
     organization_id: UUID,
     job_id: UUID,
     error: Exception,
-    permanent: bool,
+    recovery: DurableFailureRecovery,
 ) -> dict[str, JsonValue]:
     async with start_transaction() as session:
         state = await KnowledgeReindexService(session).record_failure(
             organization_id=organization_id,
             job_id=job_id,
             error=error,
-            permanent=permanent,
+            recovery=recovery,
         )
     if state is DurableState.PENDING:
         raise error
@@ -248,14 +247,22 @@ async def _handle_failure(
     return KnowledgeJobFailureReceipt(job_id=job_id, state=state).to_payload()
 
 
-def _is_permanent(error: Exception) -> bool:
+def _failure_recovery(error: Exception) -> DurableFailureRecovery:
     if isinstance(error, (InvalidEmbeddingConfig, NotConfiguredError)):
-        return True
+        return DurableFailureRecovery.TERMINAL
     if isinstance(error, EmbeddingError):
-        return not error.retryable
+        return (
+            DurableFailureRecovery.TERMINAL
+            if not error.retryable
+            else DurableFailureRecovery.RETRY
+        )
     if isinstance(error, ReindexCatchUpPending):
-        return False
-    return isinstance(error, KnowledgebaseError)
+        return DurableFailureRecovery.RETRY
+    return (
+        DurableFailureRecovery.TERMINAL
+        if isinstance(error, KnowledgebaseError)
+        else DurableFailureRecovery.RETRY
+    )
 
 
 def _parse_params(params: object) -> tuple[UUID, UUID]:

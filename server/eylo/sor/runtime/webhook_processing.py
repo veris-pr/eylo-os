@@ -105,7 +105,6 @@ async def spawn_sor_webhook_receipt(
         organization_id=organization_id,
         work_id=receipt_id,
         workflow_name=SOR_WEBHOOK_WORKFLOW,
-        params_name="receipt_id",
         idempotency_prefix="sor-webhook",
         eligible_source_states=SOR_WEBHOOK_SOURCE_STATES,
     )
@@ -546,7 +545,10 @@ def _decode_signals(value: object) -> tuple[SorWebhookSignal, ...]:
 
 
 def _parse_params(params: object) -> SorWebhookTaskParams:
-    if not isinstance(params, dict) or set(params) != {"organization_id", "receipt_id"}:
+    if (
+        not isinstance(params, dict)
+        or set(params) != SorWebhookTaskParams.model_fields.keys()
+    ):
         raise ValueError("SOR webhook task params must contain IDs only.")
     try:
         return SorWebhookTaskParams.model_validate(params)

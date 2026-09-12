@@ -62,6 +62,31 @@ updates product state through the owning service.
 This makes DB rows explainable even if a queue delivery is duplicated or a
 worker restarts.
 
+The shared product-job service preserves each caller's concrete ORM row type.
+Its structural row protocol defines required fields without registering tables
+or importing product modules. Completion accepts a synchronous, typed product
+projection instead of an arbitrary field-name dictionary. The service locks the
+owned row and invokes that projection only while running; terminal rows remain
+unchanged. Product assignments and the lifecycle transition share the caller's
+transaction. Projections must not perform external I/O or change lifecycle state.
+Exceptions propagate to that transaction rather than committing partial results.
+
+Lifecycle callers select `DurableWorkLock.NONE` or `UPDATE` when reading work.
+Every lifecycle mutation still acquires the update lock. Product error
+classification supplies `DurableFailureRecovery.RETRY` or `TERMINAL`; a retry
+choice cannot exceed the persisted attempt budget. These are internal operation
+contracts, not new database states or vendor recovery policies. Knowledge and
+memory provider errors retain their own recovery vocabulary and are translated
+by their product pipelines. Failure summaries and unbound scan batches retain
+their existing bounds as named constants.
+
+Producer binding accepts the product's typed task identity, not a caller-selected
+JSON key. Knowledge, memory, campaign and recording producers encode the same
+contracts their workers decode. The organization and work-row IDs come from that
+one object; validation precedes the read transaction. Only IDs cross the queue,
+including when a recording receipt is used as an identity. Existing workflow
+names, idempotency keys, retries and post-commit binding remain unchanged.
+
 Schedules carry finite JSON task inputs from request validation through immutable
 definition revisions and occurrence snapshots. These inputs remain extensible:
 the scheduler does not interpret vendor payloads or execute a registered action
@@ -86,6 +111,16 @@ automatic engine deadlines must not terminate an indefinite product-owned wait.
 The SDK boundary translates the validated policy into its native representation.
 Absurd 0.5.0 supports these nulls at runtime although its Python annotation omits
 them; that compatibility cast is local to the policy translation.
+
+The runtime validates finite JSON objects before enqueue and event publication,
+and on both sides of each registered workflow handler. This detaches wire values
+without coercing arbitrary objects or non-finite numbers. Product-specific
+identity and authorization checks still belong to the workflow; a JSON object is
+not proof of authority. `DurablePayloadError` omits payload values and field paths
+because SDK failure diagnostics may be persisted. Cancellation, suspension and
+handler failures propagate unchanged through the registration wrapper. Completion
+validation does not roll back prior effects: each workflow must retain its own
+durable checkpoints and idempotency guarantees.
 
 ## Ordinary tasks
 

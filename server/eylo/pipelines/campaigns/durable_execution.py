@@ -13,8 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.absurd_work import (
     AbsurdBoundWorkService,
+    DurableFailureRecovery,
     DurableState,
     DurableWorkBindingPending,
+    DurableWorkLock,
     spawn_bound_work,
     spawn_unbound_work,
 )
@@ -74,10 +76,10 @@ async def spawn_campaign_attempt(
 ) -> UUID:
     return await spawn_bound_work(
         model=CampaignAttemptModel,
-        organization_id=organization_id,
-        work_id=attempt_id,
+        params=CampaignAttemptParams(
+            organization_id=organization_id, attempt_id=attempt_id
+        ),
         workflow_name=CAMPAIGN_ATTEMPT_WORKFLOW,
-        params_name="attempt_id",
         idempotency_prefix="campaign-attempt",
     )
 
@@ -472,7 +474,7 @@ async def _start_effect(
         attempt = await service.get(
             work_id=attempt_id,
             organization_id=organization_id,
-            for_update=True,
+            lock=DurableWorkLock.UPDATE,
         )
         if attempt.state in {
             DurableState.SUCCEEDED,
@@ -567,7 +569,7 @@ async def _complete_dispatch(
         attempt = await service.get(
             work_id=attempt_id,
             organization_id=organization_id,
-            for_update=True,
+            lock=DurableWorkLock.UPDATE,
         )
         contact = await session.scalar(
             select(CampaignContactModel)
@@ -593,7 +595,7 @@ async def _complete_dispatch(
                 work_id=attempt_id,
                 organization_id=organization_id,
                 error="Campaign projection target is missing after provider acceptance.",
-                permanent=True,
+                recovery=DurableFailureRecovery.TERMINAL,
             )
             return _receipt(attempt)
 
@@ -635,7 +637,7 @@ async def _retry_replay_safe_attempt(
         attempt = await service.get(
             work_id=attempt_id,
             organization_id=organization_id,
-            for_update=True,
+            lock=DurableWorkLock.UPDATE,
         )
         if attempt.state in {
             DurableState.SUCCEEDED,
@@ -647,7 +649,7 @@ async def _retry_replay_safe_attempt(
             work_id=attempt_id,
             organization_id=organization_id,
             error=summary,
-            permanent=False,
+            recovery=DurableFailureRecovery.RETRY,
         )
         if state is DurableState.PENDING:
             should_retry = True
@@ -684,7 +686,7 @@ async def _reject_attempt(
         attempt = await service.get(
             work_id=attempt_id,
             organization_id=organization_id,
-            for_update=True,
+            lock=DurableWorkLock.UPDATE,
         )
         if attempt.state in {
             DurableState.SUCCEEDED,
@@ -701,7 +703,7 @@ async def _reject_attempt(
                 work_id=attempt_id,
                 organization_id=organization_id,
                 error=_campaign_failure_code(error, skipped=skipped),
-                permanent=True,
+                recovery=DurableFailureRecovery.TERMINAL,
             )
             return _receipt(attempt)
         return await _reject_locked_attempt(
@@ -733,7 +735,7 @@ async def _reject_locked_attempt(
         work_id=attempt.id,
         organization_id=attempt.organization_id,
         error=error,
-        permanent=True,
+        recovery=DurableFailureRecovery.TERMINAL,
     )
     await _project_failed_attempt_locked(
         session=session,
@@ -780,7 +782,7 @@ async def _mark_dispatch_unknown(
         ).get(
             work_id=attempt_id,
             organization_id=organization_id,
-            for_update=True,
+            lock=DurableWorkLock.UPDATE,
         )
         return await _mark_dispatch_unknown_locked(
             session=session,
@@ -818,7 +820,7 @@ async def _mark_dispatch_unknown_locked(
             work_id=attempt.id,
             organization_id=attempt.organization_id,
             error=error,
-            permanent=True,
+            recovery=DurableFailureRecovery.TERMINAL,
         )
         attempt.dispatch_unknown = True
         return _receipt(attempt)
@@ -826,7 +828,7 @@ async def _mark_dispatch_unknown_locked(
         work_id=attempt.id,
         organization_id=attempt.organization_id,
         error=error,
-        permanent=True,
+        recovery=DurableFailureRecovery.TERMINAL,
     )
     attempt.dispatch_unknown = True
     contact.status = CampaignContactStatus.FAILED.value

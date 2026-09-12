@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.absurd_work import DurableState
 from eylo.common.contracts.embedding import EmbeddingSpace
+from eylo.common.contracts.json_values import JsonObject
 from eylo.common.contracts.knowledgebase import KnowledgeAccess, KnowledgeScope
 from eylo.common.models import slugify_column
 from eylo.events.schema.py_events.knowledgebase import (
@@ -85,7 +86,7 @@ class KnowledgebaseService:
         scope: KnowledgeScope,
         scope_id: str,
         writable: bool = False,
-        metadata: KnowledgebaseMetadata | dict | None = None,
+        metadata: KnowledgebaseMetadata | JsonObject | None = None,
         embedding_space: EmbeddingSpace | None = None,
     ) -> KnowledgebaseModel:
         """Define a knowledgebase.
@@ -270,7 +271,7 @@ class KnowledgebaseService:
         *,
         name: str | None = None,
         writable: bool | None = None,
-        metadata: KnowledgebaseMetadata | dict | None = None,
+        metadata: KnowledgebaseMetadata | JsonObject | None = None,
     ) -> KnowledgebaseModel:
         knowledgebase = await self.get(knowledgebase_id, organization_id)
         changed_fields: list[KnowledgebaseChangedField] = []

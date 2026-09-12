@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from contextvars import ContextVar
-from typing import Any, Self, TypeVar, cast
+from typing import Self, TypeVar, cast
 from uuid import UUID
 
 from absurd_sdk import (
@@ -15,11 +15,20 @@ from absurd_sdk import (
     RetryStrategy,
     TaskContext,
 )
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    TypeAdapter,
+    ValidationError,
+    model_validator,
+)
 from pydantic.json_schema import SkipJsonSchema
 from sqlalchemy.engine import make_url
 
 from eylo.common.config import settings
+from eylo.common.contracts.json_values import JsonObject
 
 DURABLE_QUEUE = "eylo-agent-runs-v1"
 DURABLE_MAX_ATTEMPTS = 3
@@ -37,9 +46,10 @@ DURABLE_WORKER_CONCURRENCY = 4
 DURABLE_POLL_INTERVAL_SECONDS = 0.25
 
 DurableTaskHandler = Callable[
-    [dict[str, Any], AsyncTaskContext],
-    Awaitable[dict[str, Any]],
+    [dict[str, JsonValue], AsyncTaskContext],
+    Awaitable[Mapping[str, JsonValue]],
 ]
+_DURABLE_JSON_OBJECT = TypeAdapter(JsonObject)
 T = TypeVar("T")
 _HANDLER_HEARTBEAT_ACTIVE: ContextVar[bool] = ContextVar(
     "eylo_durable_handler_heartbeat_active",
@@ -49,6 +59,23 @@ _HANDLER_HEARTBEAT_ACTIVE: ContextVar[bool] = ContextVar(
 
 class DurableRuntimeConfigurationError(Exception):
     """Required PostgreSQL/Absurd wiring is absent or internally inconsistent."""
+
+
+class DurablePayloadError(ValueError):
+    """Invalid durable wire data; safe to record without exposing values or keys."""
+
+
+def _durable_json_object(value: object) -> dict[str, JsonValue]:
+    """Detach finite wire data; domain identity and authorization stay in workflows."""
+    if isinstance(value, Mapping):
+        value = dict(value)
+    try:
+        return _DURABLE_JSON_OBJECT.validate_python(value)
+    except ValidationError:
+        # SDK failure logs persist exception text; even field paths may be private.
+        raise DurablePayloadError(
+            "Durable payload must be a finite JSON object."
+        ) from None
 
 
 class DurableCancellationPolicy(BaseModel):
@@ -164,8 +191,8 @@ class PlatformDurableRuntime:
     async def _execute_with_claim_heartbeat(
         self,
         context: TaskContext | AsyncTaskContext,
-        execute: Callable[[], Awaitable[Any]],
-    ) -> Any:
+        execute: Callable[[], Awaitable[T]],
+    ) -> T:
         """Renew the claim for the full handler, including code between steps."""
         if not isinstance(context, AsyncTaskContext):
             raise DurableRuntimeConfigurationError(
@@ -227,13 +254,20 @@ class PlatformDurableRuntime:
         app: AsyncAbsurd,
         registration: DurableTaskRegistration,
     ) -> None:
+        async def execute(
+            params: object, context: AsyncTaskContext
+        ) -> dict[str, JsonValue]:
+            """Validate persisted input and completion without catching SDK control flow."""
+            result = await registration.handler(_durable_json_object(params), context)
+            return _durable_json_object(result)
+
         decorator = app.register_task(
             registration.name,
             queue=self.config.queue_name,
             default_max_attempts=registration.max_attempts,
             default_cancellation=registration.cancellation.to_sdk(),
         )
-        decorator(registration.handler)
+        decorator(execute)
 
     def is_registered(self, name: str) -> bool:
         return name in self._registered_names
@@ -242,7 +276,7 @@ class PlatformDurableRuntime:
         self,
         *,
         name: str,
-        params: dict[str, Any],
+        params: Mapping[str, JsonValue],
         idempotency_key: str,
         max_attempts: int | None = None,
     ) -> UUID:
@@ -256,9 +290,10 @@ class PlatformDurableRuntime:
             raise DurableRuntimeConfigurationError(
                 "Durable workflow attempts must be positive."
             )
+        task_params = _durable_json_object(params)
         spawn = await self._app.spawn(
             name,
-            params,
+            task_params,
             max_attempts=attempts,
             retry_strategy=self.config.retry_strategy(),
             headers={},
@@ -286,10 +321,12 @@ class PlatformDurableRuntime:
         )
         return None if snapshot is None else snapshot.state
 
-    async def emit_event(self, *, event_name: str, payload: dict) -> None:
+    async def emit_event(
+        self, *, event_name: str, payload: Mapping[str, JsonValue]
+    ) -> None:
         await self._app.emit_event(
             event_name,
-            payload,
+            _durable_json_object(payload),
             queue_name=self.config.queue_name,
         )
 
@@ -422,6 +459,7 @@ __all__ = [
     "DURABLE_QUEUE",
     "DURABLE_RETRY_STRATEGY",
     "DurableCancellationPolicy",
+    "DurablePayloadError",
     "DurableRuntimeConfigurationError",
     "DurableTaskHandler",
     "PlatformDurableRuntime",

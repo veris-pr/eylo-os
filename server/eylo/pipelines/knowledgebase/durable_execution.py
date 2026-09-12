@@ -11,8 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.absurd_work import (
     AbsurdBoundWorkService,
+    DurableFailureRecovery,
     DurableState,
     DurableWorkBindingPending,
+    DurableWorkLock,
     spawn_bound_work,
     spawn_unbound_work,
 )
@@ -80,10 +82,8 @@ async def spawn_knowledge_ingestion(
     """Idempotently spawn and bind one committed product job."""
     return await spawn_bound_work(
         model=KnowledgeIngestionJobModel,
-        organization_id=organization_id,
-        work_id=job_id,
+        params=KnowledgeJobParams(organization_id=organization_id, job_id=job_id),
         workflow_name=KNOWLEDGE_INGESTION_WORKFLOW,
-        params_name="job_id",
         idempotency_prefix="knowledge-ingestion",
     )
 
@@ -165,7 +165,7 @@ class KnowledgeIngestionWorkflow:
                 job = await work.get(
                     work_id=job_id,
                     organization_id=organization_id,
-                    for_update=True,
+                    lock=DurableWorkLock.UPDATE,
                 )
                 changed, _task_id = await work.cancel(
                     work_id=job_id,
@@ -233,7 +233,7 @@ class KnowledgeIngestionWorkflow:
                 organization_id=organization_id,
                 job_id=job_id,
                 error=error,
-                permanent=_is_permanent(error),
+                recovery=_failure_recovery(error),
             )
 
         async def ingest() -> str:
@@ -250,7 +250,7 @@ class KnowledgeIngestionWorkflow:
                 organization_id=organization_id,
                 job_id=job_id,
                 error=error,
-                permanent=_is_permanent(error),
+                recovery=_failure_recovery(error),
             )
 
         if document_id != expected_document_id:
@@ -261,7 +261,7 @@ class KnowledgeIngestionWorkflow:
                     f"Vendor stored document {document_id} but the job was filed "
                     f"under {expected_document_id}; the chunks are unreachable."
                 ),
-                permanent=True,
+                recovery=DurableFailureRecovery.TERMINAL,
             )
 
         async with start_transaction() as session:
@@ -272,7 +272,7 @@ class KnowledgeIngestionWorkflow:
             row = await work.get(
                 work_id=job_id,
                 organization_id=organization_id,
-                for_update=True,
+                lock=DurableWorkLock.UPDATE,
             )
             if row.state is DurableState.RUNNING:
                 row = await work.succeed(
@@ -335,7 +335,7 @@ async def _handle_failure(
     organization_id: UUID,
     job_id: UUID,
     error: Exception,
-    permanent: bool,
+    recovery: DurableFailureRecovery,
 ) -> dict[str, JsonValue]:
     summary = _failure_code(error)
     async with start_transaction() as session:
@@ -346,14 +346,14 @@ async def _handle_failure(
         job = await work.get(
             work_id=job_id,
             organization_id=organization_id,
-            for_update=True,
+            lock=DurableWorkLock.UPDATE,
         )
         was_running = job.state is DurableState.RUNNING
         state = await work.fail(
             work_id=job_id,
             organization_id=organization_id,
             error=summary,
-            permanent=permanent,
+            recovery=recovery,
         )
         if was_running:
             register_ingestion_lifecycle(
@@ -402,12 +402,12 @@ async def _file_ingestion_fact(
     )
 
 
-def _is_permanent(error: Exception) -> bool:
-    return (
-        isinstance(error, (DocumentExtractionError, NotConfiguredError, IngestionError))
-        or isinstance(error, KnowledgebaseError)
-        and not error.retryable
-    )
+def _failure_recovery(error: Exception) -> DurableFailureRecovery:
+    if isinstance(
+        error, (DocumentExtractionError, NotConfiguredError, IngestionError)
+    ) or (isinstance(error, KnowledgebaseError) and not error.retryable):
+        return DurableFailureRecovery.TERMINAL
+    return DurableFailureRecovery.RETRY
 
 
 def _failure_code(error: Exception) -> KnowledgeIngestionFailure:

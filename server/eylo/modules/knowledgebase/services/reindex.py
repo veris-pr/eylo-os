@@ -11,7 +11,12 @@ from sqlalchemy import text as sql
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from eylo.absurd_work import AbsurdBoundWorkService, DurableState
+from eylo.absurd_work import (
+    AbsurdBoundWorkService,
+    DurableFailureRecovery,
+    DurableState,
+    DurableWorkLock,
+)
 from eylo.common.contracts.embedding import (
     EmbeddingError,
     EmbeddingSpace,
@@ -140,9 +145,8 @@ class KnowledgeReindexService:
             organization_id=organization_id,
             knowledgebase_id=knowledgebase_id,
             max_attempts=max_attempts,
-            **source_space.to_source_record().to_columns(),
-            **target_space.to_target_record().to_columns(),
         )
+        _assign_job_spaces(job, source_space, target_space)
         self.session.add(job)
         await self.session.flush()
         register_reindex_lifecycle(
@@ -210,7 +214,7 @@ class KnowledgeReindexService:
         ).get(
             work_id=job_id,
             organization_id=organization_id,
-            for_update=True,
+            lock=DurableWorkLock.UPDATE,
         )
         if job.state in {
             DurableState.SUCCEEDED,
@@ -353,7 +357,7 @@ class KnowledgeReindexService:
         job = await work.get(
             work_id=job_id,
             organization_id=organization_id,
-            for_update=True,
+            lock=DurableWorkLock.UPDATE,
         )
         if job.state is DurableState.SUCCEEDED:
             return True
@@ -451,13 +455,15 @@ class KnowledgeReindexService:
             )
         )
         self._activate_target(knowledgebase)
+
+        def project_result(row: KnowledgeReindexJobModel) -> None:
+            row.source_chunk_count = source_count
+            row.indexed_chunk_count = target_count
+
         completed = await work.succeed(
             work_id=job_id,
             organization_id=organization_id,
-            values={
-                "source_chunk_count": source_count,
-                "indexed_chunk_count": target_count,
-            },
+            project_result=project_result,
         )
         register_reindex_lifecycle(
             completed,
@@ -472,20 +478,20 @@ class KnowledgeReindexService:
         organization_id: UUID,
         job_id: UUID,
         error: Exception,
-        permanent: bool,
+        recovery: DurableFailureRecovery,
     ) -> DurableState:
         work = AbsurdBoundWorkService(KnowledgeReindexJobModel, self.session)
         job = await work.get(
             work_id=job_id,
             organization_id=organization_id,
-            for_update=True,
+            lock=DurableWorkLock.UPDATE,
         )
         was_running = job.state is DurableState.RUNNING
         state = await work.fail(
             work_id=job_id,
             organization_id=organization_id,
             error=_safe_failure_summary(error),
-            permanent=permanent,
+            recovery=recovery,
         )
         if not was_running:
             return state
@@ -700,6 +706,30 @@ class KnowledgeReindexService:
         knowledgebase.target_embedding_space_id = None
         knowledgebase.reindex_state = KnowledgeReindexState.ACTIVE
         knowledgebase.reindex_last_error = None
+
+
+def _assign_job_spaces(
+    job: KnowledgeReindexJobModel, source: EmbeddingSpace, target: EmbeddingSpace
+) -> None:
+    """Validate both authorities before stamping immutable reindex-job fields."""
+    source = EmbeddingSpace.model_validate(source, strict=True)
+    target = EmbeddingSpace.model_validate(target, strict=True)
+    job.source_embedding_provider_config_id = source.provider_config_id
+    job.source_embedding_provider_config_revision = source.provider_config_revision
+    job.source_embedding_provider = source.provider
+    job.source_embedding_endpoint = source.endpoint
+    job.source_embedding_model = source.model
+    job.source_embedding_dimensions = source.dimensions
+    job.source_embedding_semantic_options = source.semantic_options
+    job.source_embedding_space_id = source.id
+    job.target_embedding_provider_config_id = target.provider_config_id
+    job.target_embedding_provider_config_revision = target.provider_config_revision
+    job.target_embedding_provider = target.provider
+    job.target_embedding_endpoint = target.endpoint
+    job.target_embedding_model = target.model
+    job.target_embedding_dimensions = target.dimensions
+    job.target_embedding_semantic_options = target.semantic_options
+    job.target_embedding_space_id = target.id
 
 
 def _vector(values: Sequence[float]) -> str:

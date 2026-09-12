@@ -52,6 +52,16 @@ class RecordingUploadParams(BaseModel):
     def decode_uuid(cls, value: object) -> object:
         return UUID(value) if isinstance(value, str) else value
 
+    @property
+    def work_id(self) -> UUID:
+        return self.recording_id
+
+    def to_task_payload(self) -> dict[str, JsonValue]:
+        """Encode only identity, even when invoked on an upload receipt."""
+        return RecordingUploadParams(
+            organization_id=self.organization_id, recording_id=self.recording_id
+        ).model_dump(mode="json")
+
 
 class RecordingUploadReceipt(RecordingUploadParams):
     """Product state without audio, storage credentials or provider error content."""

@@ -1,5 +1,6 @@
 """Persistence for Agent drafts, swarm membership and background attachments."""
 
+from copy import deepcopy
 from typing import List, Optional, Type
 from uuid import UUID
 
@@ -15,7 +16,7 @@ from eylo.modules.agents.models import (
     AgentToolMappingModal,
     AgentsModel,
 )
-from eylo.modules.agents.schemas.indb import AgentCreate, AgentUpdate
+from eylo.modules.agents.schemas.indb import AgentCreate, AgentUpdate, AgentUpdateField
 
 
 class AgentsRepository(BaseORMRepository[AgentsModel]):
@@ -121,31 +122,83 @@ class AgentsRepository(BaseORMRepository[AgentsModel]):
         if not agent_model:
             return None
 
-        update_data = payload.model_dump(
-            exclude_unset=True,
-            exclude={"expected_draft_version"},
-        )
-        for key, value in update_data.items():
-            if value is not None or key in {
-                "llm_provider_config_id",
-                "llm_provider_config_revision",
-                "email_provider_config_id",
-                "email_provider_config_revision",
-                "webrtc_provider_config_id",
-                "webrtc_provider_config_revision",
-                "voice_config_id",
-                "voice_config_revision",
-                "reranking_provider_config_id",
-                "reranking_provider_config_revision",
-                "memory_provider_config_id",
-                "memory_provider_config_revision",
-                "file_upload_embedding_provider_config_id",
-                "file_upload_embedding_provider_config_revision",
-                "instruction_template_id",
-            }:
-                setattr(agent_model, key, value)
+        fields = payload.model_fields_set
+        if AgentUpdateField.ID in fields and payload.id is not None:
+            agent_model.id = payload.id
+        if (
+            AgentUpdateField.ORGANIZATION_ID in fields
+            and payload.organization_id is not None
+        ):
+            agent_model.organization_id = payload.organization_id
+        if AgentUpdateField.NAME in fields and payload.name is not None:
+            agent_model.name = payload.name
+        if AgentUpdateField.LLM_PROVIDER_CONFIG_ID in fields:
+            agent_model.llm_provider_config_id = payload.llm_provider_config_id
+        if AgentUpdateField.LLM_PROVIDER_CONFIG_REVISION in fields:
+            agent_model.llm_provider_config_revision = (
+                payload.llm_provider_config_revision
+            )
+        if AgentUpdateField.EMAIL_PROVIDER_CONFIG_ID in fields:
+            agent_model.email_provider_config_id = payload.email_provider_config_id
+        if AgentUpdateField.EMAIL_PROVIDER_CONFIG_REVISION in fields:
+            agent_model.email_provider_config_revision = (
+                payload.email_provider_config_revision
+            )
+        if AgentUpdateField.WEBRTC_PROVIDER_CONFIG_ID in fields:
+            agent_model.webrtc_provider_config_id = payload.webrtc_provider_config_id
+        if AgentUpdateField.WEBRTC_PROVIDER_CONFIG_REVISION in fields:
+            agent_model.webrtc_provider_config_revision = (
+                payload.webrtc_provider_config_revision
+            )
+        if AgentUpdateField.VOICE_CONFIG_ID in fields:
+            agent_model.voice_config_id = payload.voice_config_id
+        if AgentUpdateField.VOICE_CONFIG_REVISION in fields:
+            agent_model.voice_config_revision = payload.voice_config_revision
+        if (
+            AgentUpdateField.LLM_OVERRIDES in fields
+            and payload.llm_overrides is not None
+        ):
+            agent_model.llm_overrides = payload.llm_overrides.model_dump(
+                exclude_unset=True
+            )
+        if AgentUpdateField.RERANKING_PROVIDER_CONFIG_ID in fields:
+            agent_model.reranking_provider_config_id = (
+                payload.reranking_provider_config_id
+            )
+        if AgentUpdateField.RERANKING_PROVIDER_CONFIG_REVISION in fields:
+            agent_model.reranking_provider_config_revision = (
+                payload.reranking_provider_config_revision
+            )
+        if AgentUpdateField.MEMORY_PROVIDER_CONFIG_ID in fields:
+            agent_model.memory_provider_config_id = payload.memory_provider_config_id
+        if AgentUpdateField.MEMORY_PROVIDER_CONFIG_REVISION in fields:
+            agent_model.memory_provider_config_revision = (
+                payload.memory_provider_config_revision
+            )
+        if AgentUpdateField.ALLOW_FILE_UPLOADS in fields:
+            agent_model.allow_file_uploads = payload.allow_file_uploads
+        if AgentUpdateField.FILE_UPLOAD_EMBEDDING_PROVIDER_CONFIG_ID in fields:
+            agent_model.file_upload_embedding_provider_config_id = (
+                payload.file_upload_embedding_provider_config_id
+            )
+        if AgentUpdateField.FILE_UPLOAD_EMBEDDING_PROVIDER_CONFIG_REVISION in fields:
+            agent_model.file_upload_embedding_provider_config_revision = (
+                payload.file_upload_embedding_provider_config_revision
+            )
+        if AgentUpdateField.INSTRUCTION_TEMPLATE_ID in fields:
+            agent_model.instruction_template_id = payload.instruction_template_id
+        if AgentUpdateField.DESCRIPTION in fields and payload.description is not None:
+            agent_model.description = payload.description
+        if (
+            AgentUpdateField.IMPLEMENTATION in fields
+            and payload.implementation is not None
+        ):
+            agent_model.implementation = payload.implementation
+        if AgentUpdateField.PROMPT in fields and payload.prompt is not None:
+            agent_model.prompt = deepcopy(payload.prompt)
 
         return await self.save_(agent_model)
+
 
 class AgentToolMappingRepository(BaseORMRepository[AgentToolMappingModal]):
     @property
