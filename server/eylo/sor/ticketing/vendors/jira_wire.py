@@ -352,6 +352,20 @@ class JiraAdfNodeKind(StrEnum):
     DOCUMENT = "doc"
     PARAGRAPH = "paragraph"
     TEXT = "text"
+    HARD_BREAK = "hardBreak"
+    BLOCKQUOTE = "blockquote"
+    BULLET_LIST = "bulletList"
+    HEADING = "heading"
+    LIST_ITEM = "listItem"
+    ORDERED_LIST = "orderedList"
+
+
+class JiraAdfField(StrEnum):
+    """Consumed field names in Atlassian's extensible document format."""
+
+    TYPE = "type"
+    TEXT = "text"
+    CONTENT = "content"
 
 
 class JiraAdfText(JiraRequest):

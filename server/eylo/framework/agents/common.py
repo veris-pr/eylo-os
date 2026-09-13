@@ -2,17 +2,45 @@
 
 from __future__ import annotations
 
-from typing import Any, TypeAlias
+import math
+from collections.abc import Mapping
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    JsonValue,
+    TypeAdapter,
+    model_validator,
+)
 
-JsonObject: TypeAlias = dict[str, object]
+
+def _finite_json(value: JsonValue) -> JsonValue:
+    """Reject non-finite numbers anywhere in a framework JSON payload."""
+    pending = [value]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, float) and not math.isfinite(item):
+            raise ValueError("Framework JSON numbers must be finite.")
+        if isinstance(item, dict):
+            pending.extend(item.values())
+        elif isinstance(item, list):
+            pending.extend(item)
+    return value
+
+
+type FiniteJsonValue = Annotated[JsonValue, AfterValidator(_finite_json)]
+type JsonObject = dict[str, FiniteJsonValue]
+_JSON_OBJECT = TypeAdapter(JsonObject, config=ConfigDict(strict=True))
 
 
 class FrameworkModel(BaseModel):
     """Base model for mutable framework state."""
 
-    model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
+    model_config = ConfigDict(
+        extra="forbid", arbitrary_types_allowed=True, allow_inf_nan=False
+    )
 
 
 class FrozenFrameworkModel(BaseModel):
@@ -22,6 +50,7 @@ class FrozenFrameworkModel(BaseModel):
         extra="forbid",
         frozen=True,
         arbitrary_types_allowed=True,
+        allow_inf_nan=False,
     )
 
 
@@ -42,9 +71,20 @@ class FrameworkMetadata(BaseModel):
         extra="allow",
         frozen=True,
         arbitrary_types_allowed=True,
+        allow_inf_nan=False,
     )
 
-    def get(self, key: str, default: Any = None) -> Any:
+    @model_validator(mode="before")
+    @classmethod
+    def validate_extra_json(cls, value: object) -> object:
+        """Validate only extensible fields; declared subclass fields own their types."""
+        if isinstance(value, cls) or not isinstance(value, Mapping):
+            return value
+        extras = {key: item for key, item in value.items() if key not in cls.model_fields}
+        _JSON_OBJECT.validate_python(extras)
+        return value
+
+    def get(self, key: str, default: object = None) -> object:
         if key in self.__class__.model_fields:
             return getattr(self, key)
         if self.model_extra and key in self.model_extra:
@@ -56,7 +96,7 @@ class FrameworkMetadata(BaseModel):
             self.model_extra and key in self.model_extra
         )
 
-    def __getitem__(self, key: str) -> Any:
+    def __getitem__(self, key: str) -> object:
         if key not in self:
             raise KeyError(key)
         return self.get(key)

@@ -64,9 +64,8 @@ async def get_current_contact(
             detail="Invalid or expired session",
         )
 
-    # Check if session is expired
-    # Type ignore: SQLAlchemy model datetime comparison is valid at runtime
-    if session.expires_at < datetime.now(timezone.utc):  # type: ignore[operator]
+    # Check if session is expired.
+    if session.expires_at < datetime.now(timezone.utc):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Session expired",

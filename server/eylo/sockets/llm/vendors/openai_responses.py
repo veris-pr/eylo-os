@@ -50,7 +50,7 @@ from eylo.sockets.llm.vendors.openai_utils import (
 class OpenAIResponsesAdapter(LLMVendorAdapter):
     """Keep native Responses types at the socket boundary, never in platform callers."""
 
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str) -> None:
         self._api_key = api_key
 
     def get_client(self) -> AsyncOpenAI:

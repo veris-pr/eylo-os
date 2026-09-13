@@ -34,6 +34,21 @@ class CallEnrichmentField(StrEnum):
     CONVERSATION_ID = "conversation_id"
 
 
+class CallEnrichmentAuthority(StrEnum):
+    """Whether a late observation may replace an already populated value."""
+
+    FILL_MISSING = "fill_missing"
+    REPLACE_CURRENT = "replace_current"
+
+
+class CallEnrichmentDisposition(StrEnum):
+    """The result of comparing one late observation with canonical state."""
+
+    UNCHANGED = "unchanged"
+    UPDATED = "updated"
+    CONFLICT = "conflict"
+
+
 class CallMediaClaim(StrEnum):
     """A history receipt records consumption, not a second claim authority."""
 
@@ -42,7 +57,9 @@ class CallMediaClaim(StrEnum):
 
 class _CallObservation(BaseModel):
     model_config = ConfigDict(
-        frozen=True, extra="forbid", hide_input_in_errors=True,
+        frozen=True,
+        extra="forbid",
+        hide_input_in_errors=True,
         revalidate_instances="always",
     )
 

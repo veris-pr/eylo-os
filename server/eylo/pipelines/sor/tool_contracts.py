@@ -29,6 +29,7 @@ class SorToolErrorCode(StrEnum):
     RUN_CONFLICT = "agent_run_conflict"
     RESOURCE_UNAVAILABLE = "sor_resource_unavailable"
     REQUEST_INVALID = "sor_request_invalid"
+    RESULT_TOO_LARGE = "sor_result_too_large"
 
 
 class _SorToolValue(BaseModel):

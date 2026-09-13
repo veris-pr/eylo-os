@@ -404,9 +404,12 @@ Time utilities accept the dispatcher context explicitly without inspecting it.
 Their model-visible input schemas and descriptions are unchanged.
 
 The due-job path persists an occurrence and creates a scheduled AgentRun from its
-action and payload. It does not directly invoke the registry's older action
-handler dispatcher. Registration and tool-input checks alone do not prove that
-the agent completed the scheduled action or delivered a later message.
+action and payload. The model-visible goal includes the immutable scheduled
+occurrence and any coalesced misfire count. Relative windows use that occurrence
+as their cutoff rather than the worker's current time, so delayed or recovered
+runs retain the same meaning. The path does not directly invoke the registry's
+older action handler dispatcher. Registration and tool-input checks alone do not
+prove that the agent completed the scheduled action or delivered a later message.
 
 ## Durable waits
 

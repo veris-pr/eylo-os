@@ -39,7 +39,7 @@ class MemberService(EyloBaseService[MemberInDb, MemberModel]):
         return self._repository
 
     @repository.setter
-    def repository(self, value: MemberRepository):
+    def repository(self, value: MemberRepository) -> None:
         self._repository = value
 
     def __init__(self, db: Optional[AsyncSession] = None) -> None:

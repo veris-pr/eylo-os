@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from datetime import datetime, timezone
 from enum import Enum
 from functools import lru_cache
-from typing import Annotated, Any, Dict, List, Literal, Optional, Self, Tuple
+from typing import Annotated, Dict, List, Literal, Optional, Self, Tuple
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator

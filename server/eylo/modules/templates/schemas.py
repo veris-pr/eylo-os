@@ -3,10 +3,19 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
+    field_validator,
+    model_validator,
+)
 
 from eylo.common.revisions import DefinitionLifecycle, RevisionAvailability
 from eylo.modules.templates.domain import (
@@ -77,12 +86,12 @@ class TemplatePublishRequest(StrictSchema):
 
 class TemplatePreviewRequest(StrictSchema):
     consumer_kind: TemplateConsumerKind
-    variables: dict[str, Any]
+    variables: dict[str, StrictStr | StrictInt | StrictFloat | StrictBool]
 
 
 class TemplateRenderRequest(StrictSchema):
     consumer_kind: TemplateConsumerKind
-    variables: dict[str, Any]
+    variables: dict[str, StrictStr | StrictInt | StrictFloat | StrictBool]
 
 
 class TemplateRevokeRequest(StrictSchema):

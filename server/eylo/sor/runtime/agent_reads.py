@@ -83,6 +83,8 @@ class _AgentReadQueryIdentity(BaseModel):
     source_ids: tuple[UUID, ...]
     record_id: UUID | None
     external_key: str | None
+    source_updated_from: AwareDatetime | None
+    source_updated_before: AwareDatetime | None
     sort_by: SorAgentSortField
     sort_direction: SorSortDirection
 
@@ -121,6 +123,8 @@ async def read_agent_view(
     source_ids: Sequence[UUID] = (),
     record_id: UUID | None = None,
     external_key: str | None = None,
+    source_updated_from: datetime | None = None,
+    source_updated_before: datetime | None = None,
     required_tool: str | None = None,
     limit: int = _DEFAULT_READ_LIMIT,
     cursor: str | None = None,
@@ -147,6 +151,20 @@ async def read_agent_view(
         raise SorAgentReadError("Agent view external key is too long.")
     if record_id is not None and normalized_external_key is not None:
         raise SorAgentReadError("Select a record by ID or external key, not both.")
+    for label, value in (
+        ("source_updated_from", source_updated_from),
+        ("source_updated_before", source_updated_before),
+    ):
+        if value is not None and value.utcoffset() is None:
+            raise SorAgentReadError(f"Agent view {label} must include a timezone.")
+    if (
+        source_updated_from is not None
+        and source_updated_before is not None
+        and source_updated_from >= source_updated_before
+    ):
+        raise SorAgentReadError(
+            "Agent view source_updated_from must precede source_updated_before."
+        )
     requested_sources = tuple(dict.fromkeys(source_ids))
     resolved_registry = registry or get_sor_registry()
     tools, sources = await _resolve_view_sources(
@@ -176,6 +194,8 @@ async def read_agent_view(
         source_ids=tuple(source_map),
         record_id=record_id,
         external_key=normalized_external_key,
+        source_updated_from=source_updated_from,
+        source_updated_before=source_updated_before,
         sort_by=sort_by,
         sort_direction=sort_direction,
     )
@@ -211,6 +231,10 @@ async def read_agent_view(
         predicates.append(SorRecordModel.id == record_id)
     if normalized_external_key is not None:
         predicates.append(SorRecordModel.human_external_key == normalized_external_key)
+    if source_updated_from is not None:
+        predicates.append(SorRecordModel.source_updated_at >= source_updated_from)
+    if source_updated_before is not None:
+        predicates.append(SorRecordModel.source_updated_at < source_updated_before)
     sort_column = (
         SorRecordModel.source_updated_at
         if sort_by is SorAgentSortField.SOURCE_UPDATED_AT
@@ -701,6 +725,8 @@ def _fingerprint(
     source_ids: Sequence[UUID],
     record_id: UUID | None,
     external_key: str | None,
+    source_updated_from: datetime | None,
+    source_updated_before: datetime | None,
     sort_by: SorAgentSortField,
     sort_direction: SorSortDirection,
 ) -> str:
@@ -714,6 +740,8 @@ def _fingerprint(
             source_ids=tuple(sorted(source_ids, key=str)),
             record_id=record_id,
             external_key=external_key,
+            source_updated_from=source_updated_from,
+            source_updated_before=source_updated_before,
             sort_by=sort_by,
             sort_direction=sort_direction,
         ).model_dump(mode="json"),

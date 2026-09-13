@@ -1,13 +1,16 @@
-"""Common types for voice AI vendors.
+"""Typed optional-value sentinel retained for voice adapter compatibility."""
 
-These types are copied from LiveKit Agents to maintain compatibility.
-"""
 
-from typing import Any, TypeVar
+class _NotGiven:
+    """Identity-only marker distinct from both an omitted value and ``None``."""
 
-# Sentinel value for optional parameters
-NOT_GIVEN = TypeVar("NOT_GIVEN")
-NOT_GIVEN = object()  # type: ignore
+    __slots__ = ()
 
-# Type alias for optional parameters
-NotGivenOr = Any  # Simplified - full implementation would use TypeVar
+    def __repr__(self) -> str:
+        return "NOT_GIVEN"
+
+
+NOT_GIVEN = _NotGiven()
+type NotGivenOr[Value] = Value | _NotGiven
+
+__all__ = ["NOT_GIVEN", "NotGivenOr"]

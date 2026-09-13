@@ -272,7 +272,7 @@ class NumberManagementController:
                     organization_id=organization_id,
                     number=request.phone_number,
                     label=request.label,
-                    provider=resolved.provider.value,
+                    provider=resolved.provider,
                     provider_config_id=resolved.provider_config_id,
                     provider_config_revision=resolved.provider_config_revision,
                 )
@@ -294,7 +294,7 @@ class NumberManagementController:
                 organization_id=organization_id,
                 number=request.phone_number,
                 label=request.label,
-                provider=resolved.provider.value,
+                provider=resolved.provider,
                 provider_config_id=resolved.provider_config_id,
                 provider_config_revision=resolved.provider_config_revision,
             )

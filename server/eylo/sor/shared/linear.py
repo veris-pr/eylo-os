@@ -5,6 +5,7 @@ from http import HTTPStatus
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from eylo.common.contracts.json_values import JsonObject
 from eylo.sor.runtime.http import SorJsonResponse
 from eylo.sor.shared.contracts import (
     SorRecoveryPolicy,
@@ -59,7 +60,7 @@ class LinearGraphQLResponse(BaseModel):
 
     model_config = ConfigDict(extra="ignore", strict=True, hide_input_in_errors=True)
 
-    data: dict[str, object] | None = Field(default=None, repr=False)
+    data: JsonObject | None = Field(default=None, repr=False)
     errors: list[LinearGraphQLError] | None = None
 
 
@@ -67,7 +68,7 @@ def linear_graphql_data(
     response: SorJsonResponse,
     *,
     operation: str,
-) -> dict[str, object]:
+) -> JsonObject:
     """Reject partial results and classify Linear's HTTP-400 rate-limit envelope.
 
     HTTP authorization/server failures retain precedence. The first GraphQL error

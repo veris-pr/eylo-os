@@ -127,7 +127,7 @@ class VendorResponse(_FrozenContract):
     """
 
     status_code: int
-    data: object = Field(repr=False, exclude=True)
+    data: JsonValue = Field(repr=False, exclude=True)
     link_headers: tuple[str, ...] = Field(default=(), repr=False, exclude=True)
 
     @property

@@ -4,7 +4,7 @@
 class EntityNotFound(Exception):
     """EntityNotFound behavior for the "common" platform."""
 
-    def __init__(self, message: str):
+    def __init__(self, message: str) -> None:
         """Init for the "common" platform."""
         super().__init__(message)
         self.message = message

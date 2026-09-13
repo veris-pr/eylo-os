@@ -1,16 +1,16 @@
 """Data contracts for the `tools` domain."""
 
-from typing import Any, Iterable, Literal, Optional, TypeAlias, Union
+from typing import Iterable, Literal, Optional, TypeAlias, Union
 
 from anthropic.types import Message
 from anthropic.types.content_block import ContentBlock
 from anthropic.types.text_block import TextBlock
 from anthropic.types.tool_use_block import ToolUseBlock
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, JsonValue
 
 from eylo.common.schemas import CaseInSensitiveEnum
 
-ObjectJsonSchema: TypeAlias = dict[str, Any]
+ObjectJsonSchema: TypeAlias = dict[str, JsonValue]
 
 ClaudeContentBlock: TypeAlias = ContentBlock
 ClaudeToolUseBlock: TypeAlias = ToolUseBlock
@@ -76,7 +76,7 @@ class ClaudeToolUsage(BaseModel):
 class ClaudeToolCallResponse(BaseModel):
     id: str
     type: str
-    cache_control: Optional[Any]
+    cache_control: Optional[dict[str, JsonValue]]
     content: Union[str, Iterable[ClaudeTextBlock]]
     is_error: bool
     model: str

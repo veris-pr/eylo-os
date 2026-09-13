@@ -97,7 +97,7 @@ class ContactService(EyloBaseService[ContactInDb, ContactsModel]):
         return self._repository
 
     @repository.setter
-    def repository(self, value: ContactsRepository):
+    def repository(self, value: ContactsRepository) -> None:
         """Repository for the "contacts" domain."""
         self._repository = value
 

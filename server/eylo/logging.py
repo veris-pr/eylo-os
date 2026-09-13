@@ -10,7 +10,7 @@ from eylo.common.config import settings
 from eylo.common.redaction import RedactingLogFilter, redact_log_text
 
 
-def init_logging():
+def init_logging() -> None:
     """Initialize Application Logging."""
     # Loguru's default sink enables ``diagnose`` for exceptions, which prints
     # frame locals. Request schemas can contain passwords, tokens, and raw user

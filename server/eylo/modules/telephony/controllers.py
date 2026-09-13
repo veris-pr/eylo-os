@@ -6,9 +6,11 @@ from fastapi import HTTPException
 
 from eylo.common.exceptions import EntityNotFound
 from eylo.common.schemas import PaginationParams
+from eylo.modules.telephony.provider_config_domain import TelephonyProvider
 from eylo.modules.telephony.schemas import (
     PhoneNumberApiResponseSchema,
     PhoneNumberCreateSchema,
+    PhoneNumberInDb,
     PhoneNumberUpdateSchema,
     PhoneNumbersPaginated,
 )
@@ -16,10 +18,14 @@ from eylo.modules.telephony.services import PhoneNumberService
 
 
 class PhoneNumberController:
-    def __init__(self):
+    def __init__(self) -> None:
         self.service = PhoneNumberService()
 
-    def _verify_ownership(self, entity, organization_id: UUID) -> None:
+    def _verify_ownership(
+        self,
+        entity: PhoneNumberInDb,
+        organization_id: UUID,
+    ) -> None:
         """Ensure the fetched entity belongs to the requesting organization."""
         if entity.organization_id != organization_id:
             raise HTTPException(status_code=404, detail="Not found.")
@@ -41,7 +47,7 @@ class PhoneNumberController:
         self,
         organization_id: UUID,
         pagination: PaginationParams,
-        provider: str | None = None,
+        provider: TelephonyProvider | None = None,
     ) -> PhoneNumbersPaginated:
         phone_numbers = await self.service.list_by_organization(
             organization_id=organization_id,

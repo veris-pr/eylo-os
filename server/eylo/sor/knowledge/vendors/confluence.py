@@ -13,7 +13,7 @@ from html.parser import HTMLParser
 from http import HTTPMethod, HTTPStatus
 from urllib.parse import parse_qs, urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from eylo.modules.connections.domain import ConnectionAuthKind
 from eylo.sor.knowledge.contracts import (
@@ -47,6 +47,7 @@ from eylo.sor.knowledge.vendors.confluence_wire import (
     ConfluenceBodyFormat,
     ConfluenceCollection,
     ConfluenceCreatePage,
+    ConfluenceErrorResponse,
     ConfluenceLinks,
     ConfluencePage,
     ConfluencePageIdentity,
@@ -106,6 +107,7 @@ from eylo.sor.shared.json_values import SorJsonValue
 CONFLUENCE_API_ORIGIN = ATLASSIAN_API_ORIGIN
 CONFLUENCE_API_VERSION = "confluence-cloud-rest-v2"
 CONFLUENCE_CURSOR_VERSION = 1
+CONFLUENCE_CURSOR_QUERY_PARAMETER = "cursor"
 MAX_CANONICAL_TEXT_CHARS = 1_000_000
 MAX_CANONICAL_BODY_BYTES = 1_048_576
 
@@ -401,6 +403,21 @@ class _NestedCursor(BaseModel):
     current_page_id: str | None
     current_page_is_last: bool
     child_cursor: str | None
+
+
+class _NestedCursorWire(BaseModel):
+    """Exact versioned JSON contract persisted between Confluence child pages."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    child_cursor: str | None
+    current_page_id: str | None
+    current_page_is_last: bool
+    page_cursor: str | None
+    stream: str
+    v: int
 
 
 class _ConfluencePageSnapshot(BaseModel):
@@ -1686,7 +1703,9 @@ def _next_cursor(response: SorJsonResponse, links: ConfluenceLinks) -> str | Non
                 break
     if candidate is None:
         return None
-    values = parse_qs(urlsplit(candidate).query).get("cursor", [])
+    values = parse_qs(urlsplit(candidate).query).get(
+        CONFLUENCE_CURSOR_QUERY_PARAMETER, []
+    )
     if len(values) != 1 or not values[0] or len(values[0]) > 4_096:
         raise _invalid_cursor("collection")
     return values[0]
@@ -1701,30 +1720,18 @@ def _decode_nested_cursor(value: str | None, *, stream_key: str) -> _NestedCurso
             child_cursor=None,
         )
     try:
-        payload = json.loads(value)
-    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        payload = _NestedCursorWire.model_validate_json(value)
+    except ValidationError as error:
         raise _invalid_cursor(stream_key) from error
     if (
-        not isinstance(payload, dict)
-        or set(payload)
-        != {
-            "child_cursor",
-            "current_page_id",
-            "current_page_is_last",
-            "page_cursor",
-            "stream",
-            "v",
-        }
-        or payload.get("v") != CONFLUENCE_CURSOR_VERSION
-        or payload.get("stream") != stream_key
+        payload.v != CONFLUENCE_CURSOR_VERSION
+        or payload.stream != stream_key
     ):
         raise _invalid_cursor(stream_key)
-    page_cursor = _optional_cursor(payload.get("page_cursor"), stream_key=stream_key)
-    child_cursor = _optional_cursor(payload.get("child_cursor"), stream_key=stream_key)
-    page_id = _optional_string(payload.get("current_page_id"))
-    is_last = payload.get("current_page_is_last")
-    if not isinstance(is_last, bool):
-        raise _invalid_cursor(stream_key)
+    page_cursor = _optional_cursor(payload.page_cursor, stream_key=stream_key)
+    child_cursor = _optional_cursor(payload.child_cursor, stream_key=stream_key)
+    page_id = _optional_string(payload.current_page_id)
+    is_last = payload.current_page_is_last
     if page_id is None:
         if child_cursor is not None or is_last:
             raise _invalid_cursor(stream_key)
@@ -1741,15 +1748,16 @@ def _decode_nested_cursor(value: str | None, *, stream_key: str) -> _NestedCurso
 
 
 def _encode_nested_cursor(cursor: _NestedCursor, *, stream_key: str) -> str:
+    payload = _NestedCursorWire(
+        child_cursor=cursor.child_cursor,
+        current_page_id=cursor.current_page_id,
+        current_page_is_last=cursor.current_page_is_last,
+        page_cursor=cursor.page_cursor,
+        stream=stream_key,
+        v=CONFLUENCE_CURSOR_VERSION,
+    )
     return json.dumps(
-        {
-            "child_cursor": cursor.child_cursor,
-            "current_page_id": cursor.current_page_id,
-            "current_page_is_last": cursor.current_page_is_last,
-            "page_cursor": cursor.page_cursor,
-            "stream": stream_key,
-            "v": CONFLUENCE_CURSOR_VERSION,
-        },
+        payload.model_dump(mode="json"),
         separators=(",", ":"),
         sort_keys=True,
     )
@@ -1868,12 +1876,16 @@ def _expect_binary(status_code: int, *, operation: str) -> None:
 
 
 def _is_scope_mismatch(response: SorJsonResponse) -> bool:
-    if response.status_code != HTTPStatus.UNAUTHORIZED or not isinstance(
-        response.data, Mapping
-    ):
+    if response.status_code != HTTPStatus.UNAUTHORIZED:
         return False
-    message = response.data.get("message")
-    return isinstance(message, str) and "scope does not match" in message.casefold()
+    try:
+        envelope = ConfluenceErrorResponse.model_validate(response.data)
+    except ValidationError:
+        return False
+    return (
+        envelope.message is not None
+        and "scope does not match" in envelope.message.casefold()
+    )
 
 
 def _expect_mutation(response: SorJsonResponse, *, operation: str) -> object:

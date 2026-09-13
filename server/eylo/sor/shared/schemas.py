@@ -7,6 +7,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
+from eylo.common.contracts.json_values import JsonObject
 from eylo.modules.connections.domain import (
     ConnectionAuthKind,
     ExternalConnectionStatus,
@@ -56,7 +57,7 @@ class SorSourceCreateRequest(SorApiModel):
     profile: SorProfile
     vendor_key: str = Field(min_length=1, max_length=64)
     external_connection_id: UUID
-    configuration: dict[str, object] = Field(default_factory=dict)
+    configuration: JsonObject = Field(default_factory=dict)
     selected_objects: tuple[str, ...] = Field(min_length=1)
     freshness_target_seconds: int = Field(default=900, gt=0)
     required_sync_interval_seconds: int = Field(default=900, gt=0)
@@ -71,7 +72,7 @@ class SorApiKeySourceCreateRequest(SorApiModel):
     vendor_key: str = Field(min_length=1, max_length=64)
     api_key: str = Field(min_length=1, max_length=4096, repr=False)
     instance_origin: str | None = Field(default=None, min_length=1, max_length=512)
-    configuration: dict[str, object] = Field(default_factory=dict)
+    configuration: JsonObject = Field(default_factory=dict)
     selected_objects: tuple[str, ...] = Field(min_length=1)
     freshness_target_seconds: int = Field(default=900, gt=0)
     required_sync_interval_seconds: int = Field(default=900, gt=0)
@@ -190,7 +191,7 @@ class SorSourceResponse(SorApiModel):
     profile: SorProfile
     vendor_key: str
     external_connection_id: UUID
-    configuration: dict[str, object]
+    configuration: JsonObject
     selected_objects: list[str]
     config_revision: int
     state: SorSourceState
@@ -643,7 +644,7 @@ class SorFieldMappingResponse(SorApiModel):
     canonical_target_path: str | None
     custom_field_definition_id: UUID | None
     transform_kind: SorTransformKind
-    transform_config: dict[str, object]
+    transform_config: JsonObject
     direction: SorFieldMappingDirection
     agent_visible: bool
     ui_default_column: bool

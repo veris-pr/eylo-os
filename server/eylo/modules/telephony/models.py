@@ -302,12 +302,12 @@ class TelephonyCallModel(EyloOrganizationModel):
 
     cost_amount: Mapped[Optional[float]] = mapped_column(Numeric(12, 4), nullable=True)
     cost_currency: Mapped[Optional[str]] = mapped_column(String(3), nullable=True)
-    latency_metrics: Mapped[dict] = mapped_column(
+    latency_metrics: Mapped[JsonObject] = mapped_column(
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
-    provider_metadata: Mapped[dict] = mapped_column(
+    provider_metadata: Mapped[JsonObject] = mapped_column(
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
-    analysis_metadata: Mapped[dict] = mapped_column(
+    analysis_metadata: Mapped[JsonObject] = mapped_column(
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )

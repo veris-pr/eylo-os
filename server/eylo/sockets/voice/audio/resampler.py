@@ -66,7 +66,7 @@ class AudioResampler:
         *,
         num_channels: int = 1,
         quality: AudioResamplerQuality = AudioResamplerQuality.MEDIUM,
-    ):
+    ) -> None:
         """Initialize audio resampler.
 
         Args:

@@ -2291,18 +2291,7 @@ export interface paths {
         };
         /**
          * List Conversations
-         * @description List conversations with pagination for a specific user.
-         *
-         *     Args:
-         *     ----
-         *         organization_id (UUID): The ID of the organization
-         *         user_id (UUID): The ID of the user
-         *         pagination (PaginationParams): Pagination parameters
-         *         sort (str, optional): Sort order, either 'asc' or 'desc'. Defaults to 'desc'.
-         *
-         *     Returns:
-         *     -------
-         *         ConversationsPaginated: The paginated conversations response
+         * @description Return an organization-scoped page; refuse foreign organizations as 404.
          */
         get: operations["list_conversations_api__organization_id__conversations_get"];
         put?: never;
@@ -6327,7 +6316,7 @@ export interface components {
             country?: string | null;
             /** Capabilities */
             capabilities?: {
-                [key: string]: unknown;
+                [key: string]: boolean;
             };
         };
         /**
@@ -6404,11 +6393,29 @@ export interface components {
             contactId?: string | null;
         };
         /**
+         * CallDirection
+         * @description Direction of a telephony call.
+         * @enum {string}
+         */
+        CallDirection: "inbound" | "outbound";
+        /**
+         * CallEndedReason
+         * @description Why a call ended, for events, analytics and retry policy.
+         * @enum {string}
+         */
+        CallEndedReason: "agent_ended_call" | "agent_ended_call_after_message" | "agent_said_end_call_phrase" | "agent_forwarded_call" | "customer_ended_call" | "customer_busy" | "customer_did_not_answer" | "exceeded_max_duration" | "silence_timed_out" | "error_system" | "error_stt_failed" | "error_llm_failed" | "error_tts_failed" | "error_provider_disconnected" | "voicemail_detected" | "manually_canceled" | "unknown";
+        /**
          * CallOpenerDeliveryStatus
          * @description Delivery of the configured opener, independent of carrier call status.
          * @enum {string}
          */
         CallOpenerDeliveryStatus: "not_requested" | "pending" | "accepted" | "failed";
+        /**
+         * CallStatus
+         * @description Status of a telephony call.
+         * @enum {string}
+         */
+        CallStatus: "initiated" | "ringing" | "in-progress" | "completed" | "busy" | "no-answer" | "failed" | "canceled";
         /**
          * CallTransferStatus
          * @description Platform transfer intent and observed outcome, not vendor-native status.
@@ -8131,10 +8138,7 @@ export interface components {
             provider: string;
             /** Name */
             name: string;
-            /** Config */
-            config: {
-                [key: string]: unknown;
-            };
+            config: components["schemas"]["JsonObject"];
             /** Secrets */
             secrets?: {
                 [key: string]: string;
@@ -8163,10 +8167,7 @@ export interface components {
             ready: boolean;
             /** Verifiedat */
             verifiedAt: string | null;
-            /** Config */
-            config: {
-                [key: string]: unknown;
-            };
+            config: components["schemas"]["JsonObject"];
             /** Secrets */
             secrets: {
                 [key: string]: string;
@@ -8176,10 +8177,7 @@ export interface components {
         EmailConfigUpdate: {
             /** Name */
             name?: string | null;
-            /** Config */
-            config?: {
-                [key: string]: unknown;
-            } | null;
+            config?: components["schemas"]["JsonObject"] | null;
             /** Secrets */
             secrets?: {
                 [key: string]: string | null;
@@ -9151,10 +9149,7 @@ export interface components {
             provider: string;
             /** Name */
             name: string;
-            /** Config */
-            config: {
-                [key: string]: unknown;
-            };
+            config: components["schemas"]["JsonObject"];
             /** Secrets */
             secrets?: {
                 [key: string]: string;
@@ -9183,10 +9178,7 @@ export interface components {
             ready: boolean;
             /** Verifiedat */
             verifiedAt: string | null;
-            /** Config */
-            config: {
-                [key: string]: unknown;
-            };
+            config: components["schemas"]["JsonObject"];
             /** Secrets */
             secrets: {
                 [key: string]: string;
@@ -9196,10 +9188,7 @@ export interface components {
         LLMConfigUpdate: {
             /** Name */
             name?: string | null;
-            /** Config */
-            config?: {
-                [key: string]: unknown;
-            } | null;
+            config?: components["schemas"]["JsonObject"] | null;
             /** Secrets */
             secrets?: {
                 [key: string]: string | null;
@@ -10528,8 +10517,7 @@ export interface components {
             /** Label */
             label?: string | null;
             status: components["schemas"]["PhoneNumberStatus"];
-            /** Provider */
-            provider: string;
+            provider: components["schemas"]["TelephonyProvider"];
             /**
              * Providerconfigid
              * Format: uuid
@@ -10555,8 +10543,7 @@ export interface components {
             number: string;
             /** Label */
             label?: string | null;
-            /** Provider */
-            provider: string;
+            provider: components["schemas"]["TelephonyProvider"];
             /**
              * Providerconfigid
              * Format: uuid
@@ -10714,8 +10701,7 @@ export interface components {
              * Format: uuid
              */
             id: string;
-            /** Provider */
-            provider: string;
+            provider: components["schemas"]["TelephonyProvider"];
             /** Name */
             name: string;
             /** Revision */
@@ -12019,10 +12005,7 @@ export interface components {
             api_key: string;
             /** Instance Origin */
             instance_origin?: string | null;
-            /** Configuration */
-            configuration?: {
-                [key: string]: unknown;
-            };
+            configuration?: components["schemas"]["JsonObject"];
             /** Selected Objects */
             selected_objects: string[];
             /**
@@ -12543,10 +12526,7 @@ export interface components {
             /** Custom Field Definition Id */
             custom_field_definition_id: string | null;
             transform_kind: components["schemas"]["SorTransformKind"];
-            /** Transform Config */
-            transform_config: {
-                [key: string]: unknown;
-            };
+            transform_config: components["schemas"]["JsonObject"];
             direction: components["schemas"]["SorFieldMappingDirection"];
             /** Agent Visible */
             agent_visible: boolean;
@@ -13032,10 +13012,7 @@ export interface components {
              * Format: uuid
              */
             external_connection_id: string;
-            /** Configuration */
-            configuration?: {
-                [key: string]: unknown;
-            };
+            configuration?: components["schemas"]["JsonObject"];
             /** Selected Objects */
             selected_objects: string[];
             /**
@@ -13183,10 +13160,7 @@ export interface components {
              * Format: uuid
              */
             external_connection_id: string;
-            /** Configuration */
-            configuration: {
-                [key: string]: unknown;
-            };
+            configuration: components["schemas"]["JsonObject"];
             /** Selected Objects */
             selected_objects: string[];
             /** Config Revision */
@@ -13921,8 +13895,7 @@ export interface components {
             organizationId: string;
             /** Callsid */
             callSid?: string | null;
-            /** Provider */
-            provider: string;
+            provider: components["schemas"]["TelephonyProvider"];
             /**
              * Providerconfigid
              * Format: uuid
@@ -13930,16 +13903,13 @@ export interface components {
             providerConfigId: string;
             /** Providerconfigrevision */
             providerConfigRevision: number;
-            /** Direction */
-            direction: string;
-            /** Status */
-            status: string;
+            direction: components["schemas"]["CallDirection"];
+            status: components["schemas"]["CallStatus"];
             /** Fromnumber */
             fromNumber?: string | null;
             /** Tonumber */
             toNumber?: string | null;
-            /** Endedreason */
-            endedReason?: string | null;
+            endedReason?: components["schemas"]["CallEndedReason"] | null;
             /** Agentid */
             agentId?: string | null;
             /** Agentrevision */
@@ -14050,7 +14020,7 @@ export interface components {
             consumer_kind: components["schemas"]["TemplateConsumerKind"];
             /** Variables */
             variables: {
-                [key: string]: unknown;
+                [key: string]: string | number | boolean;
             };
         };
         /** TemplatePublishRequest */
@@ -14063,7 +14033,7 @@ export interface components {
             consumer_kind: components["schemas"]["TemplateConsumerKind"];
             /** Variables */
             variables: {
-                [key: string]: unknown;
+                [key: string]: string | number | boolean;
             };
         };
         /** TemplateRenderResponse */
@@ -15536,10 +15506,7 @@ export interface components {
             provider: string;
             /** Name */
             name: string;
-            /** Config */
-            config: {
-                [key: string]: unknown;
-            };
+            config: components["schemas"]["JsonObject"];
             /** Secrets */
             secrets?: {
                 [key: string]: string;
@@ -15568,10 +15535,7 @@ export interface components {
             ready: boolean;
             /** Verifiedat */
             verifiedAt: string | null;
-            /** Config */
-            config: {
-                [key: string]: unknown;
-            };
+            config: components["schemas"]["JsonObject"];
             /** Secrets */
             secrets: {
                 [key: string]: string;
@@ -15581,10 +15545,7 @@ export interface components {
         WebRTCConfigUpdate: {
             /** Name */
             name?: string | null;
-            /** Config */
-            config?: {
-                [key: string]: unknown;
-            } | null;
+            config?: components["schemas"]["JsonObject"] | null;
             /** Secrets */
             secrets?: {
                 [key: string]: string | null;
@@ -19798,7 +19759,7 @@ export interface operations {
     list_phone_numbers_api_phone_numbers_get: {
         parameters: {
             query?: {
-                provider?: string | null;
+                provider?: components["schemas"]["TelephonyProvider"] | null;
                 /** @description Page number */
                 page?: number;
                 /** @description Items per page */
@@ -19979,9 +19940,9 @@ export interface operations {
         parameters: {
             query?: {
                 /** @description Filter by call status */
-                status?: string | null;
+                status?: components["schemas"]["CallStatus"] | null;
                 /** @description Filter by call direction */
-                direction?: string | null;
+                direction?: components["schemas"]["CallDirection"] | null;
                 /** @description Filter by campaign ID */
                 campaignId?: string | null;
                 /** @description Filter by conversation ID */

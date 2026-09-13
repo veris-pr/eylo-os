@@ -5,10 +5,20 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from enum import Enum
-from typing import Any
+from math import isfinite
 from urllib.parse import parse_qsl, urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    StrictBool,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
+    ValidationError,
+)
 
 from eylo.common.http_egress import (
     DEFAULT_RESPONSE_BODY_BYTES,
@@ -58,6 +68,11 @@ _CONFIG_FIELDS = frozenset(
     }
 )
 
+type RestQueryScalar = StrictStr | StrictInt | StrictFloat | StrictBool | None
+type RestQueryValue = (
+    RestQueryScalar | list[RestQueryScalar] | tuple[RestQueryScalar, ...]
+)
+
 
 class RestExecutorConfigError(ValueError):
     """Coded safe failure for one unpublishable REST executor config."""
@@ -83,8 +98,8 @@ class JsonAPIExecutorParamsSchema(BaseModel):
     url: str = Field(min_length=1)
     method: JsonAPIMethod = JsonAPIMethod.GET
     headers: dict[str, str] = Field(default_factory=dict)
-    payload: Any = Field(default_factory=dict)
-    params: dict[str, Any] = Field(default_factory=dict)
+    payload: JsonValue = Field(default_factory=dict)
+    params: dict[str, RestQueryValue] = Field(default_factory=dict)
     path_params: list[str] = Field(default_factory=list, alias="pathParams")
     query_params: list[str] = Field(default_factory=list, alias="queryParams")
     body_params: list[str] = Field(default_factory=list, alias="bodyParams")
@@ -110,6 +125,7 @@ class JsonAPIExecutorParamsSchema(BaseModel):
         extra="forbid",
         populate_by_name=True,
         use_enum_values=True,
+        allow_inf_nan=False,
     )
 
 
@@ -129,6 +145,9 @@ def validate_json_api_executor_config(
             "config_field_unsupported",
             "REST operation contains unsupported config fields.",
         )
+    raw_params = config.get("params", {})
+    if isinstance(raw_params, Mapping):
+        _validate_static_query_params(raw_params)
     try:
         operation = JsonAPIExecutorParamsSchema.model_validate(config)
     except ValidationError:
@@ -256,7 +275,7 @@ def _validated_header_name(value: object) -> str:
 def _validate_query_authority(
     *,
     configured_query: str,
-    static_params: dict[str, Any],
+    static_params: dict[str, RestQueryValue],
     dynamic_names: list[str],
 ) -> None:
     configured_names = {
@@ -269,15 +288,22 @@ def _validate_query_authority(
             "query_authority_conflict",
             "REST query names must have one configured authority.",
         )
+
+
+def _validate_static_query_params(static_params: Mapping[object, object]) -> None:
+    """Reject non-wire query values without changing the coded public error."""
     for name, value in static_params.items():
-        if not _NAME.fullmatch(name):
+        if not isinstance(name, str) or not _NAME.fullmatch(name):
             raise _error("query_invalid", "REST query name is invalid.")
         values = value if isinstance(value, list | tuple) else (value,)
-        if not all(
-            item is None or isinstance(item, str | int | float | bool)
-            for item in values
-        ):
+        if not all(_is_query_scalar(item) for item in values):
             raise _error("query_invalid", "REST query value is invalid.")
+
+
+def _is_query_scalar(value: object) -> bool:
+    if value is None or isinstance(value, str | bool | int):
+        return True
+    return isinstance(value, float) and isfinite(value)
 
 
 def _require_unique_names(names: list[str]) -> None:

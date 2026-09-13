@@ -15,6 +15,7 @@ from eylo.events.schema.py_events.call import (
     CallEventData,
     CallRingingEvent,
 )
+from eylo.modules.telephony.call_history import CallObservationSource
 from eylo.modules.telephony.lifecycle import CallLifecycleConflict, record_call_status
 from eylo.modules.telephony.provider_config_domain import TelephonyProvider
 from eylo.modules.telephony.schemas import CallStatus
@@ -27,8 +28,6 @@ logger = logging.getLogger(__name__)
 
 CALL_LOOKUP_ATTEMPTS = 3
 CALL_LOOKUP_RETRY_SECONDS = 0.3
-PROVIDER_CALLBACK_SOURCE = "provider_callback"
-
 
 TERMINAL_CALL_STATUSES = (
     CallStatus.COMPLETED,
@@ -124,12 +123,12 @@ class StatusCallbackHandler:
         lifecycle_result = await record_call_status(
             organization_id=call.organization_id,
             call_sid=call_sid,
-            status=status.value,
+            status=status,
             provider_status=provider_status,
             ended_reason=terminal_reason.value if terminal_reason is not None else None,
             ended_at=arrow.utcnow().datetime if is_terminal else None,
             duration_seconds=duration_seconds if is_terminal else None,
-            source=PROVIDER_CALLBACK_SOURCE,
+            source=CallObservationSource.PROVIDER_CALLBACK,
         )
         update_result = lifecycle_result.update
         updated_call = update_result.call

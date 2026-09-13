@@ -19,7 +19,7 @@ class ContactsRepository(BaseORMRepository[ContactsModel]):
     """ContactsRepository behavior for the "contacts" domain."""
 
     @property
-    def model(self):
+    def model(self) -> type[ContactsModel]:
         """Model for the "contacts" domain."""
         return ContactsModel
 

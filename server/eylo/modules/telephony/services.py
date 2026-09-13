@@ -2,7 +2,7 @@
 
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Optional, TypeVar
 from uuid import UUID
 
 import arrow
@@ -11,8 +11,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from eylo.common.contracts.json_values import JsonObject
 from eylo.common.outbound import OutboundAttemptState
 from eylo.common.services import EyloBaseService
+from eylo.modules.telephony.call_history import (
+    CallEnrichmentAuthority,
+    CallEnrichmentDisposition,
+    CallEnrichmentField,
+    CallEnrichmentObservation,
+    CallObservationSource,
+    CallStatusObservation,
+)
 from eylo.modules.telephony.constants import CallTransferStatus
 from eylo.modules.telephony.models import PhoneNumberModel, TelephonyCallModel
+from eylo.modules.telephony.provider_config_domain import TelephonyProvider
 from eylo.modules.telephony.repositories import (
     PhoneNumberRepository,
     TelephonyCallRepository,
@@ -31,25 +40,59 @@ from eylo.modules.telephony.transfer_metadata import CallTransferMetadata
 
 logger = logging.getLogger(__name__)
 
-_TERMINAL_CALL_STATUSES = frozenset(
+_TERMINAL_CALL_STATUSES: frozenset[CallStatus] = frozenset(
     {
-        CallStatus.COMPLETED.value,
-        CallStatus.BUSY.value,
-        CallStatus.NO_ANSWER.value,
-        CallStatus.FAILED.value,
-        CallStatus.CANCELED.value,
+        CallStatus.COMPLETED,
+        CallStatus.BUSY,
+        CallStatus.NO_ANSWER,
+        CallStatus.FAILED,
+        CallStatus.CANCELED,
     }
 )
-_CALL_STATUS_ORDER = {
-    CallStatus.INITIATED.value: 10,
-    CallStatus.RINGING.value: 20,
-    CallStatus.IN_PROGRESS.value: 30,
-    CallStatus.COMPLETED.value: 40,
-    CallStatus.BUSY.value: 40,
-    CallStatus.NO_ANSWER.value: 40,
-    CallStatus.FAILED.value: 40,
-    CallStatus.CANCELED.value: 40,
+_CALL_STATUS_ORDER: dict[CallStatus, int] = {
+    CallStatus.INITIATED: 10,
+    CallStatus.RINGING: 20,
+    CallStatus.IN_PROGRESS: 30,
+    CallStatus.COMPLETED: 40,
+    CallStatus.BUSY: 40,
+    CallStatus.NO_ANSWER: 40,
+    CallStatus.FAILED: 40,
+    CallStatus.CANCELED: 40,
 }
+
+_CallField = TypeVar("_CallField")
+
+
+def _merge_terminal_field(
+    *,
+    current: _CallField | None,
+    incoming: _CallField | None,
+    authority: CallEnrichmentAuthority,
+) -> tuple[_CallField | None, CallEnrichmentDisposition]:
+    """Apply one late observation without hiding which ORM field it belongs to."""
+    if incoming is None:
+        return current, CallEnrichmentDisposition.UNCHANGED
+    if current is None or (
+        authority is CallEnrichmentAuthority.REPLACE_CURRENT and current != incoming
+    ):
+        return incoming, CallEnrichmentDisposition.UPDATED
+    if current != incoming:
+        return current, CallEnrichmentDisposition.CONFLICT
+    return current, CallEnrichmentDisposition.UNCHANGED
+
+
+def _record_enrichment_disposition(
+    *,
+    field: CallEnrichmentField,
+    disposition: CallEnrichmentDisposition,
+    changed_fields: list[CallEnrichmentField],
+    conflicts: list[CallEnrichmentField],
+) -> None:
+    """Project a field comparison into the append-only audit observation."""
+    if disposition is CallEnrichmentDisposition.UPDATED:
+        changed_fields.append(field)
+    elif disposition is CallEnrichmentDisposition.CONFLICT:
+        conflicts.append(field)
 
 
 class PhoneNumberProvisioningConflict(Exception):
@@ -85,7 +128,7 @@ class PhoneNumberService(EyloBaseService[PhoneNumberInDb, PhoneNumberModel]):
         organization_id: UUID,
         number: str,
         label: str | None,
-        provider: str,
+        provider: TelephonyProvider,
         provider_config_id: UUID,
         provider_config_revision: int,
     ) -> PhoneNumberInDb:
@@ -104,7 +147,7 @@ class PhoneNumberService(EyloBaseService[PhoneNumberInDb, PhoneNumberModel]):
             organization_id,
             number,
             label,
-            provider,
+            provider.value,
             provider_config_id,
             provider_config_revision,
         )
@@ -195,12 +238,12 @@ class PhoneNumberService(EyloBaseService[PhoneNumberInDb, PhoneNumberModel]):
         organization_id: UUID,
         limit: int = 100,
         offset: int = 0,
-        provider: str | None = None,
+        provider: TelephonyProvider | None = None,
     ) -> list[PhoneNumberInDb]:
         filters = [self.repository.model.organization_id == organization_id]
         filters.append(self.repository.model.deleted.is_(False))
         if provider:
-            filters.append(self.repository.model.provider == provider)
+            filters.append(self.repository.model.provider == provider.value)
         return self.orm_to_schema_list(
             await self.repository.filter_(
                 filters=filters,
@@ -211,12 +254,12 @@ class PhoneNumberService(EyloBaseService[PhoneNumberInDb, PhoneNumberModel]):
         )
 
     async def count_by_organization(
-        self, organization_id: UUID, provider: str | None = None
+        self, organization_id: UUID, provider: TelephonyProvider | None = None
     ) -> int:
         filters = [self.repository.model.organization_id == organization_id]
         filters.append(self.repository.model.deleted.is_(False))
         if provider:
-            filters.append(self.repository.model.provider == provider)
+            filters.append(self.repository.model.provider == provider.value)
         return await self.repository.count_(filters=filters)
 
     async def get_by_number(self, number: str) -> PhoneNumberInDb | None:
@@ -338,14 +381,14 @@ class TelephonyCallService(EyloBaseService[TelephonyCallInDb, TelephonyCallModel
     async def update_status(
         self,
         call_sid: str,
-        status: str,
+        status: CallStatus,
         provider_status: Optional[str] = None,
         ended_reason: Optional[str] = None,
         ended_at: Optional[datetime] = None,
         connected_at: Optional[datetime] = None,
         duration_seconds: Optional[int] = None,
         conversation_id: Optional[UUID] = None,
-        source: str = "runtime",
+        source: CallObservationSource = CallObservationSource.RUNTIME,
     ) -> Optional[TelephonyCallInDb]:
         """Update call status and optional fields by call_sid."""
         result = await self.update_status_with_result(
@@ -364,7 +407,7 @@ class TelephonyCallService(EyloBaseService[TelephonyCallInDb, TelephonyCallModel
     async def update_status_with_result(
         self,
         call_sid: str,
-        status: str,
+        status: CallStatus,
         organization_id: UUID | None = None,
         provider_status: Optional[str] = None,
         ended_reason: Optional[str] = None,
@@ -372,10 +415,10 @@ class TelephonyCallService(EyloBaseService[TelephonyCallInDb, TelephonyCallModel
         connected_at: Optional[datetime] = None,
         duration_seconds: Optional[int] = None,
         conversation_id: Optional[UUID] = None,
-        source: str = "runtime",
+        source: CallObservationSource = CallObservationSource.RUNTIME,
     ) -> TelephonyCallStatusUpdateResult:
         """Update call status and report whether the update changed lifecycle state."""
-        status_value = status.value if isinstance(status, CallStatus) else str(status)
+        status_value = status.value
         entity = await self.repository.get_by_call_sid_for_update(
             call_sid,
             organization_id,
@@ -388,63 +431,96 @@ class TelephonyCallService(EyloBaseService[TelephonyCallInDb, TelephonyCallModel
                 ignored=True,
             )
 
-        previous_status = entity.status
-        previous_status_value = (
-            previous_status.value
-            if isinstance(previous_status, CallStatus)
-            else str(previous_status)
-        )
-        if previous_status_value in _TERMINAL_CALL_STATUSES:
-            changed_fields: list[str] = []
-            conflicts: list[str] = []
+        previous_status = CallStatus(entity.status)
+        previous_status_value = previous_status.value
+        if previous_status in _TERMINAL_CALL_STATUSES:
+            changed_fields: list[CallEnrichmentField] = []
+            conflicts: list[CallEnrichmentField] = []
+            provider_authority = (
+                CallEnrichmentAuthority.REPLACE_CURRENT
+                if source is CallObservationSource.PROVIDER_CALLBACK
+                else CallEnrichmentAuthority.FILL_MISSING
+            )
 
-            def enrich(
-                field: str,
-                value,
-                *,
-                authoritative: bool = False,
-            ) -> None:
-                if value is None:
-                    return
-                current = getattr(entity, field)
-                if current is None or (authoritative and current != value):
-                    setattr(entity, field, value)
-                    changed_fields.append(field)
-                elif current != value:
-                    conflicts.append(field)
-
-            provider_authoritative = source == "provider_callback"
-            enrich(
-                "provider_status",
-                provider_status,
-                authoritative=provider_authoritative,
+            entity.provider_status, disposition = _merge_terminal_field(
+                current=entity.provider_status,
+                incoming=provider_status,
+                authority=provider_authority,
             )
-            enrich(
-                "ended_reason",
-                ended_reason,
-                authoritative=provider_authoritative,
+            _record_enrichment_disposition(
+                field=CallEnrichmentField.PROVIDER_STATUS,
+                disposition=disposition,
+                changed_fields=changed_fields,
+                conflicts=conflicts,
             )
-            enrich("ended_at", ended_at)
-            enrich("connected_at", connected_at)
-            enrich(
-                "duration_seconds",
-                duration_seconds,
-                authoritative=provider_authoritative,
+            entity.ended_reason, disposition = _merge_terminal_field(
+                current=entity.ended_reason,
+                incoming=ended_reason,
+                authority=provider_authority,
             )
-            enrich("conversation_id", conversation_id)
-            if status_value != previous_status_value:
-                conflicts.append("status")
+            _record_enrichment_disposition(
+                field=CallEnrichmentField.ENDED_REASON,
+                disposition=disposition,
+                changed_fields=changed_fields,
+                conflicts=conflicts,
+            )
+            entity.ended_at, disposition = _merge_terminal_field(
+                current=entity.ended_at,
+                incoming=ended_at,
+                authority=CallEnrichmentAuthority.FILL_MISSING,
+            )
+            _record_enrichment_disposition(
+                field=CallEnrichmentField.ENDED_AT,
+                disposition=disposition,
+                changed_fields=changed_fields,
+                conflicts=conflicts,
+            )
+            entity.connected_at, disposition = _merge_terminal_field(
+                current=entity.connected_at,
+                incoming=connected_at,
+                authority=CallEnrichmentAuthority.FILL_MISSING,
+            )
+            _record_enrichment_disposition(
+                field=CallEnrichmentField.CONNECTED_AT,
+                disposition=disposition,
+                changed_fields=changed_fields,
+                conflicts=conflicts,
+            )
+            entity.duration_seconds, disposition = _merge_terminal_field(
+                current=entity.duration_seconds,
+                incoming=duration_seconds,
+                authority=provider_authority,
+            )
+            _record_enrichment_disposition(
+                field=CallEnrichmentField.DURATION_SECONDS,
+                disposition=disposition,
+                changed_fields=changed_fields,
+                conflicts=conflicts,
+            )
+            entity.conversation_id, disposition = _merge_terminal_field(
+                current=entity.conversation_id,
+                incoming=conversation_id,
+                authority=CallEnrichmentAuthority.FILL_MISSING,
+            )
+            _record_enrichment_disposition(
+                field=CallEnrichmentField.CONVERSATION_ID,
+                disposition=disposition,
+                changed_fields=changed_fields,
+                conflicts=conflicts,
+            )
+            if status is not previous_status:
+                conflicts.append(CallEnrichmentField.STATUS)
             if changed_fields or conflicts:
                 entity.status_history = [
                     *(entity.status_history or []),
-                    {
-                        "status": previous_status_value,
-                        "incoming_status": status_value,
-                        "source": source,
-                        "enriched_fields": changed_fields,
-                        "conflicts": conflicts,
-                        "observed_at": arrow.utcnow().isoformat(),
-                    },
+                    CallEnrichmentObservation(
+                        status=previous_status,
+                        incoming_status=status,
+                        source=source,
+                        enriched_fields=tuple(changed_fields),
+                        conflicts=tuple(conflicts),
+                        observed_at=arrow.utcnow().datetime,
+                    ).as_payload(),
                 ]
             if changed_fields or conflicts:
                 entity = await self.repository.partial_update_(entity)
@@ -461,9 +537,7 @@ class TelephonyCallService(EyloBaseService[TelephonyCallInDb, TelephonyCallModel
                 incoming_status=status_value,
                 ignored=not changed_fields,
             )
-        if _CALL_STATUS_ORDER.get(status_value, 0) < _CALL_STATUS_ORDER.get(
-            previous_status_value, 0
-        ):
+        if _CALL_STATUS_ORDER[status] < _CALL_STATUS_ORDER[previous_status]:
             logger.info(
                 "Ignoring stale call status update: call_sid=%s previous=%s incoming=%s",
                 call_sid,
@@ -479,13 +553,13 @@ class TelephonyCallService(EyloBaseService[TelephonyCallInDb, TelephonyCallModel
 
         entity.status = status_value
         entity.provider_status = provider_status or entity.provider_status
-        history_entry = {
-            "status": status_value,
-            "provider_status": provider_status,
-            "previous_status": previous_status_value,
-            "source": source,
-            "observed_at": arrow.utcnow().isoformat(),
-        }
+        history_entry = CallStatusObservation(
+            status=status,
+            provider_status=provider_status,
+            previous_status=previous_status,
+            source=source,
+            observed_at=arrow.utcnow().datetime,
+        ).as_payload()
         entity.status_history = [*(entity.status_history or []), history_entry]
         if ended_reason is not None:
             entity.ended_reason = ended_reason
@@ -504,7 +578,7 @@ class TelephonyCallService(EyloBaseService[TelephonyCallInDb, TelephonyCallModel
             previous_status=previous_status_value,
             incoming_status=status_value,
             status_changed=previous_status_value != status_value,
-            entered_terminal_status=status_value in _TERMINAL_CALL_STATUSES,
+            entered_terminal_status=status in _TERMINAL_CALL_STATUSES,
         )
 
     async def mark_transfer_requested(
@@ -585,8 +659,8 @@ class TelephonyCallService(EyloBaseService[TelephonyCallInDb, TelephonyCallModel
         organization_id: UUID,
         limit: int = 20,
         offset: int = 0,
-        status: Optional[str] = None,
-        direction: Optional[str] = None,
+        status: CallStatus | None = None,
+        direction: CallDirection | None = None,
         campaign_id: Optional[UUID] = None,
         conversation_id: Optional[UUID] = None,
     ) -> list[TelephonyCallInDb]:
@@ -605,8 +679,8 @@ class TelephonyCallService(EyloBaseService[TelephonyCallInDb, TelephonyCallModel
     async def count_by_organization(
         self,
         organization_id: UUID,
-        status: Optional[str] = None,
-        direction: Optional[str] = None,
+        status: CallStatus | None = None,
+        direction: CallDirection | None = None,
         campaign_id: Optional[UUID] = None,
         conversation_id: Optional[UUID] = None,
     ) -> int:

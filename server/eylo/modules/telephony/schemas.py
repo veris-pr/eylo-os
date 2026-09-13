@@ -18,7 +18,12 @@ from pydantic import (
 )
 
 from eylo.common.contracts.json_values import JsonObject
-from eylo.common.contracts.telephony import CallStatus as CallStatus
+from eylo.common.contracts.telephony import (
+    CallEndedReason,
+)
+from eylo.common.contracts.telephony import (
+    CallStatus as CallStatus,
+)
 from eylo.common.outbound import (
     OUTBOUND_STATUS_CODE_MAX,
     OUTBOUND_STATUS_CODE_MIN,
@@ -149,7 +154,7 @@ class PhoneNumberInDb(EyloBaseOrganizationModelSchema):
     number: str
     label: Optional[str] = None
     status: PhoneNumberStatus
-    provider: str
+    provider: TelephonyProvider
     provider_config_id: UUID
     provider_config_revision: int = Field(gt=0)
     provider_reference: Optional[str] = None
@@ -175,17 +180,18 @@ class PhoneNumberCreateSchema(EyloBaseRequestSchema):
 
     number: str
     label: Optional[str] = None
-    provider: str
+    provider: TelephonyProvider
     provider_config_id: UUID
     provider_config_revision: int = Field(gt=0)
     inbound_agent_id: Optional[UUID] = None
     outbound_agent_id: Optional[UUID] = None
 
     @field_validator("number")
-    def validate_phone_number(cls, v):
-        if not re.match(r"^\+[1-9]\d{1,14}$", v):
+    @classmethod
+    def validate_phone_number(cls, value: str) -> str:
+        if not re.match(r"^\+[1-9]\d{1,14}$", value):
             raise ValueError("Invalid phone number format")
-        return v
+        return value
 
 
 class PhoneNumberUpdateSchema(EyloBaseRequestSchema):
@@ -219,14 +225,14 @@ class TelephonyCallInDb(EyloOrganizationModelSchema):
 
     call_sid: Optional[str] = None
     stream_sid: Optional[str] = None
-    provider: str
+    provider: TelephonyProvider
     provider_config_id: UUID
     provider_config_revision: int = Field(gt=0)
-    direction: str
-    status: str
+    direction: CallDirection
+    status: CallStatus
     from_number: Optional[str] = None
     to_number: Optional[str] = None
-    ended_reason: Optional[str] = None
+    ended_reason: Optional[CallEndedReason] = None
     agent_id: Optional[UUID] = None
     agent_revision: Optional[int] = Field(default=None, gt=0)
     conversation_id: Optional[UUID] = None
@@ -260,9 +266,9 @@ class TelephonyCallInDb(EyloOrganizationModelSchema):
     )
     cost_amount: Optional[float] = None
     cost_currency: Optional[str] = None
-    latency_metrics: dict = Field(default_factory=dict)
-    provider_metadata: dict = Field(default_factory=dict)
-    analysis_metadata: dict = Field(default_factory=dict)
+    latency_metrics: JsonObject = Field(default_factory=dict)
+    provider_metadata: JsonObject = Field(default_factory=dict)
+    analysis_metadata: JsonObject = Field(default_factory=dict)
 
     @field_serializer("transfer_metadata")
     def serialize_transfer_metadata(self, value: CallTransferMetadata) -> JsonObject:
@@ -281,8 +287,8 @@ class TelephonyCallStatusUpdateResult(EyloBaseSchema):
     """Result of applying a provider call-status update."""
 
     call: Optional[SkipValidation[TelephonyCallInDb]] = None
-    previous_status: Optional[str] = None
-    incoming_status: str
+    previous_status: Optional[CallStatus] = None
+    incoming_status: CallStatus
     status_changed: bool = False
     ignored: bool = False
     entered_terminal_status: bool = False
@@ -295,14 +301,14 @@ class TelephonyCallApiResponseSchema(EyloBaseResponseSchema):
 
     organization_id: UUID
     call_sid: Optional[str] = None
-    provider: str
+    provider: TelephonyProvider
     provider_config_id: UUID
     provider_config_revision: int
-    direction: str
-    status: str
+    direction: CallDirection
+    status: CallStatus
     from_number: Optional[str] = None
     to_number: Optional[str] = None
-    ended_reason: Optional[str] = None
+    ended_reason: Optional[CallEndedReason] = None
     agent_id: Optional[UUID] = None
     agent_revision: Optional[int] = None
     conversation_id: Optional[UUID] = None
@@ -342,7 +348,7 @@ class ProviderConfigApiResponseSchema(EyloBaseApiSchema):
     model_config = ConfigDict(extra="forbid")
 
     id: UUID
-    provider: str
+    provider: TelephonyProvider
     name: str
     revision: int = Field(gt=0)
     enabled: bool
@@ -430,7 +436,7 @@ class AvailableNumberSchema(EyloBaseRequestSchema):
     locality: Optional[str] = None
     region: Optional[str] = None
     country: Optional[str] = None
-    capabilities: dict = Field(default_factory=dict)
+    capabilities: dict[str, bool] = Field(default_factory=dict)
 
 
 class AvailableNumbersResponseSchema(EyloBaseRequestSchema):

@@ -79,7 +79,6 @@ from eylo.sor.support.contracts import (
     SupportQueuePayload,
     SupportSlaMetric,
     SupportSlaMetricPayload,
-    SupportSlaState,
     SupportTag,
     SupportTagCommandPayload,
     SupportTagPayload,
@@ -356,6 +355,13 @@ class IntercomWebhookItemType(StrEnum):
     CONVERSATION = "conversation"
 
 
+class IntercomWebhookItemField(StrEnum):
+    """Fields whose precedence is resolved before webhook model validation."""
+
+    CONVERSATION_ID = "conversation_id"
+    CONVERSATION = "conversation"
+
+
 class IntercomWebhookModel(BaseModel):
     """Retain only consumed webhook metadata, never customer message content."""
 
@@ -399,9 +405,10 @@ class IntercomWebhookConversationItem(IntercomWebhookItem):
         # precedence rather than newly rejecting unrelated nested fields.
         if (
             isinstance(value, Mapping)
-            and _optional_id(value.get("conversation_id")) is not None
+            and _optional_id(value.get(IntercomWebhookItemField.CONVERSATION_ID))
+            is not None
         ):
-            return {**value, "conversation": None}
+            return {**value, IntercomWebhookItemField.CONVERSATION: None}
         return value
 
 

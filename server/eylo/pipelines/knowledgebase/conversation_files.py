@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.modules.agents.services.revisions import AgentRevisionService
 from eylo.modules.embedding_configs.domain import InvalidEmbeddingConfig
+from eylo.modules.knowledgebase.models import KnowledgebaseModel
 from eylo.modules.knowledgebase.services.knowledgebases import (
     KnowledgebaseError,
     KnowledgebaseService,
@@ -75,7 +76,7 @@ async def ensure_conversation_file_knowledgebase(
     authority: ConversationFileUploadAuthority,
     *,
     session: AsyncSession,
-):
+) -> KnowledgebaseModel:
     try:
         runtime = await resolve_pinned_embedding_runtime(
             authority.organization_id,

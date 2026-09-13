@@ -18,7 +18,7 @@ from eylo.modules.auth.services.api_key_service import ApiKeyService
 class ApiKeyController:
     """Controller for API Key management endpoints."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.db_session = get_transaction()
         self.service = ApiKeyService(self.db_session)
 

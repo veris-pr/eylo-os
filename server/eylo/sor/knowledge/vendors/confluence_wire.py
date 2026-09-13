@@ -92,6 +92,12 @@ class ConfluenceLinks(ConfluenceResponse):
     download: OptionalText = Field(default=None, repr=False)
 
 
+class ConfluenceErrorResponse(ConfluenceResponse):
+    """Consumed error envelope used for Atlassian scope-mismatch recovery."""
+
+    message: OptionalText = None
+
+
 class ConfluenceCollection[T: ConfluenceResponse](ConfluenceResponse):
     results: list[T]
     links: ConfluenceLinks = Field(default_factory=ConfluenceLinks, alias="_links")

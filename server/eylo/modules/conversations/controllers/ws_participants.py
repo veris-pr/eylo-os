@@ -50,7 +50,7 @@ class ParticipantWsController:
         event: WsRequestEvent,
         ctx: SessionContext,
         contact_id: UUID | None,
-    ):
+    ) -> WsResponse:
         try:
             request = WsParticipantQueryEvent.model_validate(event.data or {})
             if not request.filters.conversation_ids:

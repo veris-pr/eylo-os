@@ -4,6 +4,7 @@ Prevents the same background agent from processing a conversation twice
 concurrently when multiple events arrive in rapid succession.
 """
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from uuid import UUID
 
@@ -15,7 +16,12 @@ class LockNotAcquired(Exception):
 
 
 class ConversationLock:
-    def __init__(self, conversation_id: UUID, key_prefix: str, timeout: int = 60):
+    def __init__(
+        self,
+        conversation_id: UUID,
+        key_prefix: str,
+        timeout: int = 60,
+    ) -> None:
         self.redis_client = get_redis_client()
         self.lock_key = f"eylo::bg_agents::{key_prefix}::{conversation_id}"
         self.timeout = timeout
@@ -34,7 +40,11 @@ class ConversationLock:
 
 
 @asynccontextmanager
-async def lock_conversation(conversation_id: UUID, key_prefix: str, timeout: int = 60):
+async def lock_conversation(
+    conversation_id: UUID,
+    key_prefix: str,
+    timeout: int = 60,
+) -> AsyncIterator[None]:
     """Async context manager that acquires a per-conversation Redis lock.
 
     Raises LockNotAcquired if the lock is already held.

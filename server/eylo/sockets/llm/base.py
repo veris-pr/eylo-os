@@ -11,7 +11,7 @@ transformation methods to convert between Eylo's internal formats and vendor-spe
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from typing import Any, AsyncGenerator, Dict, List
+from typing import AsyncGenerator, Dict, List
 from uuid import UUID
 
 import arrow

@@ -67,7 +67,7 @@ class TaskDispatcher:
     message and one AgentRun, then returns after the durable spawn attempt.
     """
 
-    def __init__(self, ctx: ConversationContext):
+    def __init__(self, ctx: ConversationContext) -> None:
         self.ctx = ctx
 
     async def dispatch(

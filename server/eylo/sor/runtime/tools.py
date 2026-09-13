@@ -7,7 +7,15 @@ from functools import lru_cache
 from typing import Never
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    create_model,
+    field_validator,
+    model_validator,
+)
 from pydantic.json_schema import SkipJsonSchema
 
 from eylo.common.contracts.tool_metadata import ToolFunctionMetadata, set_tool_metadata
@@ -50,7 +58,24 @@ class SorReadSelectionInput(BaseModel):
     search: str = Field(
         default="",
         max_length=1_000,
-        description="Optional lexical search over Agent-visible mapped fields.",
+        description=(
+            "Optional lexical search over Agent-visible mapped fields. Omit it or "
+            "send an empty string to list records; a lone '*' has the same meaning."
+        ),
+    )
+    source_updated_from: AwareDatetime | None = Field(
+        default=None,
+        description=(
+            "Optional inclusive lower bound for the source system's update time. "
+            "Use it with source_updated_before for an exact reporting window."
+        ),
+    )
+    source_updated_before: AwareDatetime | None = Field(
+        default=None,
+        description=(
+            "Optional exclusive upper bound for the source system's update time. "
+            "Use the schedule occurrence here instead of the worker's current time."
+        ),
     )
     limit: int = Field(default=25, ge=1, le=100)
     cursor: str | None = Field(default=None, min_length=1, max_length=2_048)
@@ -65,10 +90,25 @@ class SorReadSelectionInput(BaseModel):
         description="Sort ascending or descending; null timestamps remain last.",
     )
 
+    @field_validator("search")
+    @classmethod
+    def normalize_list_search(cls, value: str) -> str:
+        """Accept the model's conventional wildcard without making FTS match it."""
+        normalized = value.strip()
+        return "" if normalized == "*" else normalized
+
     @model_validator(mode="after")
     def validate_identity(self) -> "SorReadSelectionInput":
         if self.record_id is not None and self.external_key is not None:
             raise ValueError("Select a record by ID or external key, not both.")
+        if (
+            self.source_updated_from is not None
+            and self.source_updated_before is not None
+            and self.source_updated_from >= self.source_updated_before
+        ):
+            raise ValueError(
+                "source_updated_from must be earlier than source_updated_before."
+            )
         return self
 
 

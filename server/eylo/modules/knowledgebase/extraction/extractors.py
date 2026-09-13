@@ -277,7 +277,7 @@ def extract_xls(raw: bytes, *, key: str) -> str:
             "Legacy Excel workbook is not readable."
         ) from error
 
-    def sheets():
+    def sheets() -> Iterator[tuple[str, Iterable[Iterable[object]]]]:
         for sheet in book.sheets():
             yield sheet.name, (sheet.row_values(index) for index in range(sheet.nrows))
 

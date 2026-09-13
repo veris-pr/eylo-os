@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
 from pydantic import ValidationError
@@ -27,7 +27,10 @@ from eylo.pipelines.sor.tool_contracts import (
     SorToolMetadata,
 )
 from eylo.sor.knowledge.agent_reads import shape_knowledge_tool_response
-from eylo.sor.knowledge.read_contracts import KNOWLEDGE_CONTENT_DEFAULT_CHARS
+from eylo.sor.knowledge.read_contracts import (
+    KNOWLEDGE_CONTENT_DEFAULT_CHARS,
+    KnowledgeWindowViewResponse,
+)
 from eylo.sor.runtime.agent_reads import SorAgentReadError, read_agent_view
 from eylo.sor.runtime.authority import (
     AuthorizedSorSource,
@@ -56,6 +59,7 @@ from eylo.sor.shared.contracts import (
     SorToolEffect,
     SorToolSpec,
 )
+from eylo.sor.shared.schemas import SorAgentViewResponse
 from eylo.sor.shared.secrets import SorSecretEnvelopeError
 from eylo.sor.shared.services import (
     SorConfigurationError,
@@ -66,6 +70,11 @@ from eylo.sor.shared.services import (
 
 if TYPE_CHECKING:
     from eylo.pipelines.agent_execution_context import PlatformExecutionContext
+
+
+# AgentRun transcript rows have a 65,536-byte storage ceiling. Keep enough room
+# for the framework ToolResult and transcript envelopes added after SOR dispatch.
+_MAX_READ_TOOL_RESULT_BYTES: Final = 56_000
 
 
 async def execute_sor_read_tool(
@@ -86,30 +95,62 @@ async def execute_sor_read_tool(
         agent_id, agent_revision = _agent_identity(conversation_context)
         organization_id = UUID(str(conversation_context.conversation.organization_id))
         async with start_transaction(ro=True) as session:
-            projection = await read_agent_view(
-                session,
-                organization_id=organization_id,
-                agent_id=agent_id,
-                agent_revision=agent_revision,
-                profile=profile,
-                entity=entity,
-                search=command.search,
-                source_ids=command.source_ids,
-                record_id=command.record_id,
-                external_key=command.external_key,
-                required_tool=tool_name,
-                limit=command.limit,
-                cursor=command.cursor,
-                sort_by=command.sort_by,
-                sort_direction=command.sort_direction,
-                include_relations="relation" in spec.entities,
-            )
+            page_limit = command.limit
+            while True:
+                projection = await read_agent_view(
+                    session,
+                    organization_id=organization_id,
+                    agent_id=agent_id,
+                    agent_revision=agent_revision,
+                    profile=profile,
+                    entity=entity,
+                    search=command.search,
+                    source_ids=command.source_ids,
+                    record_id=command.record_id,
+                    external_key=command.external_key,
+                    source_updated_from=command.source_updated_from,
+                    source_updated_before=command.source_updated_before,
+                    required_tool=tool_name,
+                    limit=page_limit,
+                    cursor=command.cursor,
+                    sort_by=command.sort_by,
+                    sort_direction=command.sort_direction,
+                    include_relations="relation" in spec.entities,
+                )
+                data = _shape_read_result(
+                    projection=projection,
+                    profile=profile,
+                    tool_name=tool_name,
+                    command=command,
+                )
+                result = SorReadToolResult(data=data)
+                if _read_result_size(result) <= _MAX_READ_TOOL_RESULT_BYTES:
+                    break
+                if page_limit == 1:
+                    return _error_outcome(SorToolErrorCode.RESULT_TOO_LARGE)
+                page_limit = max(1, page_limit // 2)
     except ValidationError:
         return _error_outcome(SorToolErrorCode.INPUT_INVALID)
     except (SorAgentReadError, SorAuthorityError, ValueError) as error:
         return _error_outcome(_safe_error_code(error))
 
-    data = (
+    return SorToolExecutionOutcome(
+        content=result,
+        metadata=SorToolMetadata(
+            profile=profile, tool=tool_name, effect=SorToolEffect.READ
+        ),
+    )
+
+
+def _shape_read_result(
+    *,
+    projection: SorAgentViewResponse,
+    profile: SorProfile,
+    tool_name: str,
+    command: SorReadSelectionInput,
+) -> KnowledgeWindowViewResponse | SorAgentViewResponse:
+    """Apply the tool-specific view before enforcing its durable byte budget."""
+    data: KnowledgeWindowViewResponse | SorAgentViewResponse = (
         shape_knowledge_tool_response(
             projection,
             tool_name=tool_name,
@@ -129,16 +170,15 @@ async def execute_sor_read_tool(
         else projection
     )
     if "describe" in tool_name:
-        data = data.model_copy()
-        data.items = ()
-        data.next_cursor = None
-        data.has_more = False
-    return SorToolExecutionOutcome(
-        content=SorReadToolResult(data=data),
-        metadata=SorToolMetadata(
-            profile=profile, tool=tool_name, effect=SorToolEffect.READ
-        ),
-    )
+        data = data.model_copy(
+            update={"items": (), "next_cursor": None, "has_more": False}
+        )
+    return data
+
+
+def _read_result_size(result: SorReadToolResult) -> int:
+    """Measure the exact JSON bytes passed into the framework ToolResult."""
+    return len(result.model_dump_json().encode("utf-8"))
 
 
 async def execute_sor_mutation_tool(

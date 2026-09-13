@@ -27,7 +27,7 @@ __all__ = [
 
 
 from datetime import datetime
-from typing import Any, Dict, Literal, Optional
+from typing import Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, EmailStr, Field
@@ -128,7 +128,7 @@ class SessionInitiateRequest(EyloBaseRequestSchema):
         None, description="Contact's primary email."
     )
     primary_phone: Optional[str] = Field(None, description="Contact's primary phone.")
-    preferences: Optional[Dict[str, Any]] = Field(
+    preferences: Optional[dict[str, str]] = Field(
         None, description="Contact's preferences."
     )
     user_agent: Optional[str] = Field(None, description="Client's user agent.")

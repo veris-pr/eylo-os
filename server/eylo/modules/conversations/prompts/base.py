@@ -286,7 +286,7 @@ class Prompt(BaseModel):
 class ConversationPrompt(Prompt):
     """A pre-configured prompt for conversational agents with tool selection capabilities."""
 
-    def __init__(self, sections: Optional[List[PromptSection]] = None):
+    def __init__(self, sections: Optional[List[PromptSection]] = None) -> None:
         """Initializes the ConversationPrompt with default sections."""
         if sections is None:
             sections = self._list_default_sections()

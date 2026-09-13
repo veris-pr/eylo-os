@@ -1,6 +1,6 @@
 """API routes for telephony call history."""
 
-from typing import Annotated, Optional
+from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -14,6 +14,8 @@ from eylo.modules.deletions.domain import DeletionTargetNotFound
 from eylo.modules.deletions.schemas import DeletionJobApiResponse
 from eylo.modules.telephony.call_controllers import TelephonyCallController
 from eylo.modules.telephony.schemas import (
+    CallDirection,
+    CallStatus,
     TelephonyCallApiResponseSchema,
     TelephonyCallsPaginated,
 )
@@ -28,12 +30,12 @@ router = APIRouter(prefix="/calls", tags=[APP_TAG])
 async def list_calls(
     pagination: Annotated[PaginationParams, Depends(get_pagination)],
     current_user: CurrentUserSchema = Depends(get_current_user),
-    status: Optional[str] = Query(None, description="Filter by call status"),
-    direction: Optional[str] = Query(None, description="Filter by call direction"),
-    campaign_id: Optional[UUID] = Query(
+    status: CallStatus | None = Query(None, description="Filter by call status"),
+    direction: CallDirection | None = Query(None, description="Filter by call direction"),
+    campaign_id: UUID | None = Query(
         None, alias="campaignId", description="Filter by campaign ID"
     ),
-    conversation_id: Optional[UUID] = Query(
+    conversation_id: UUID | None = Query(
         None, alias="conversationId", description="Filter by conversation ID"
     ),
 ) -> TelephonyCallsPaginated:

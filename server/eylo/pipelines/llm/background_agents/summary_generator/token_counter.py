@@ -182,7 +182,7 @@ class TokenCounter(ABC):
 class OpenAITokenCounter(TokenCounter):
     """Token counter for OpenAI models using tiktoken."""
 
-    def __init__(self, model: LLMModels):
+    def __init__(self, model: LLMModels) -> None:
         """Initialize with model name for correct tokenizer.
 
         Args:
@@ -282,7 +282,7 @@ class OpenAITokenCounter(TokenCounter):
 class AnthropicTokenCounter(TokenCounter):
     """Token counter for Anthropic/Claude models."""
 
-    def __init__(self, model: LLMModels):
+    def __init__(self, model: LLMModels) -> None:
         """Initialize with model name.
 
         Args:
@@ -336,7 +336,7 @@ class AnthropicTokenCounter(TokenCounter):
 class GeminiTokenCounter(TokenCounter):
     """Token counter for Google Gemini models."""
 
-    def __init__(self, model: LLMModels):
+    def __init__(self, model: LLMModels) -> None:
         """Initialize with model name.
 
         Args:

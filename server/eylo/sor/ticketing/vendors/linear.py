@@ -12,6 +12,7 @@ from typing import Literal, overload
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, ValidationError
 
+from eylo.common.contracts.json_values import JsonObject
 from eylo.modules.connections.domain import ConnectionAuthKind
 from eylo.sor.runtime.http import SorHttpTransport, SorJsonHttpClient, SorJsonResponse
 from eylo.sor.shared.contracts import (
@@ -602,6 +603,18 @@ class _LinearCursor(BaseModel):
     started_at: AwareDatetime
 
 
+class _LinearCursorWire(BaseModel):
+    """Exact versioned JSON contract persisted between Linear issue pages."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    after: str | None
+    floor: str | None
+    high: str | None
+    started_at: str
+    v: int
+
+
 class LinearTicketingAdapter:
     """Translate Linear GraphQL records into Eylo's ticketing contract."""
 
@@ -1177,7 +1190,7 @@ class LinearTicketingAdapter:
         *,
         operation: str,
         idempotency_key: str | None = None,
-    ) -> tuple[dict[str, object], SorJsonResponse]:
+    ) -> tuple[JsonObject, SorJsonResponse]:
         response = await self._client.request(
             LINEAR_GRAPHQL_PATH,
             method="POST",
@@ -1678,25 +1691,17 @@ def _decode_cursor(value: str | None) -> _LinearCursor:
     if value is None:
         return _LinearCursor(floor=None, after=None, high=None, started_at=now)
     try:
-        payload = json.loads(value)
-    except (json.JSONDecodeError, TypeError, ValueError) as error:
+        payload = _LinearCursorWire.model_validate_json(value)
+    except ValidationError as error:
         raise _invalid_cursor() from error
-    if not isinstance(payload, dict) or set(payload) != {
-        "after",
-        "floor",
-        "high",
-        "started_at",
-        "v",
-    }:
-        raise _invalid_cursor()
-    if payload.get("v") != LINEAR_CURSOR_VERSION:
+    if payload.v != LINEAR_CURSOR_VERSION:
         raise _invalid_cursor()
     try:
-        floor = _optional_datetime(payload.get("floor"))
-        after = _optional_string(payload.get("after"))
-        high = _optional_datetime(payload.get("high"))
+        floor = _optional_datetime(payload.floor)
+        after = _optional_string(payload.after)
+        high = _optional_datetime(payload.high)
         started_at = _required_datetime(
-            payload.get("started_at"),
+            payload.started_at,
             field="Linear cursor start time",
         )
     except SorVendorOperationError as error:
@@ -1719,14 +1724,15 @@ def _decode_cursor(value: str | None) -> _LinearCursor:
 
 
 def _encode_cursor(cursor: _LinearCursor) -> str:
+    payload = _LinearCursorWire(
+        after=cursor.after,
+        floor=_datetime_value(cursor.floor),
+        high=_datetime_value(cursor.high),
+        started_at=_datetime_value(cursor.started_at),
+        v=LINEAR_CURSOR_VERSION,
+    )
     return json.dumps(
-        {
-            "after": cursor.after,
-            "floor": _datetime_value(cursor.floor),
-            "high": _datetime_value(cursor.high),
-            "started_at": _datetime_value(cursor.started_at),
-            "v": LINEAR_CURSOR_VERSION,
-        },
+        payload.model_dump(mode="json"),
         separators=(",", ":"),
         sort_keys=True,
     )
@@ -1872,10 +1878,6 @@ def parse_linear_app_webhook(
     )
 
 
-def _connection_nodes(value: object, *, field: str) -> list[dict[str, object]]:
-    return _object_list(_object(value, field=field).get("nodes"), field=field)
-
-
 def _require_stream(value: str, *, selected: tuple[str, ...]) -> LinearTicketingStream:
     if value not in _STREAM_ENTITY or value not in selected:
         raise SorVendorOperationError(
@@ -2002,6 +2004,14 @@ def _linear_datetime(value: datetime) -> str:
     )
 
 
+@overload
+def _datetime_value(value: None) -> None: ...
+
+
+@overload
+def _datetime_value(value: datetime) -> str: ...
+
+
 def _datetime_value(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
 
@@ -2017,20 +2027,8 @@ def _credential(credentials: Mapping[str, object], key: str) -> str:
     return value
 
 
-def _object(value: object, *, field: str) -> dict[str, object]:
-    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
-        raise _invalid_response(f"{field} is not an object.")
-    return value
-
-
 def _optional_object(value: object) -> dict[str, object]:
     return value if isinstance(value, dict) else {}
-
-
-def _object_list(value: object, *, field: str) -> list[dict[str, object]]:
-    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
-        raise _invalid_response(f"{field} is not a list of objects.")
-    return value
 
 
 def _sequence(value: object, *, field: str) -> tuple[object, ...]:

@@ -1,7 +1,7 @@
 """Vendor-neutral LLM provider and model catalog contracts."""
 
 from enum import Enum
-from typing import List, Optional
+from typing import List, Optional, Self
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -417,7 +417,7 @@ class LLMConfigSchema(BaseModel):
     )
 
     @model_validator(mode="after")
-    def validate_model_vendor(self):
+    def validate_model_vendor(self) -> Self:
         if not is_model_supported(self.vendor, self.model):
             raise ValueError(
                 f"Model {self.model} is not valid for vendor {self.vendor}."

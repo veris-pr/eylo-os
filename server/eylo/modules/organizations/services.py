@@ -29,7 +29,7 @@ class OrganizationService(EyloBaseService[OrganizationModelSchema, OrganizationM
         return self._repository
 
     @repository.setter
-    def repository(self, value: OrganizationRepository):
+    def repository(self, value: OrganizationRepository) -> None:
         """Repository for the "organizations" domain."""
         self._repository = value
 

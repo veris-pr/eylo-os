@@ -48,7 +48,7 @@ class AuthController:
     - TokenSchema validation
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         db_session = get_transaction()
         self.auth_service = AuthService(db=db_session)
         self.member_service = MemberService(db=db_session)

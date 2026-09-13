@@ -59,7 +59,7 @@ async def list_recordings(
     conversation_id: UUID,
     request: Request,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> RecordingListResponse:
     """List all voice recordings for a conversation.
 
     Returns recording metadata with authenticated application download URLs.

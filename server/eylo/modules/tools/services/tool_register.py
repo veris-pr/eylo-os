@@ -50,14 +50,17 @@ def build_fn_declaration(func: Callable[..., object]) -> type[BaseModel]:
     signature = inspect.signature(func)
     # ctx: conversation context should be ignored
     ignore_params = ["self", "cls", "args", "kwargs", "ctx"]
-    # Pydantic field definitions contain runtime annotations and defaults; their
-    # validity is checked by create_model, not a platform-owned payload schema.
+    # `create_model` deliberately accepts arbitrary runtime annotation objects
+    # and its public stub requires Any for these keyword values. This bag exists
+    # only for that call; no tool input or output crosses the boundary unvalidated.
     fields: dict[str, Any] = {}
     for name, param in signature.parameters.items():
         if name in ignore_params:
             continue
 
-        annotation = param.annotation if param.annotation is not inspect._empty else Any
+        annotation = (
+            param.annotation if param.annotation is not inspect._empty else object
+        )
         default = param.default if param.default is not inspect._empty else ...
         fields[name] = (annotation, default)
 

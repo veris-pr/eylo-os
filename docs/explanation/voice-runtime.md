@@ -356,8 +356,12 @@ retained separately from the documented `200`. See the
 [Plivo PhoneNumber API](https://www.plivo.com/docs/numbers/phone-numbers),
 [Vonage Numbers API](https://developer.vonage.com/en/api/numbers) and
 [Exotel available-number API](https://developer.exotel.com/docs/exophones/api-reference/available-numbers).
-This typed search coverage does not establish Exotel purchase-response coverage;
-that operation still uses the existing compatibility parser.
+Exotel provisioning sends the documented `PhoneNumber` form and requires a flat,
+textual `sid` plus the same `phone_number` requested by Eylo. Empty, wrapped,
+malformed or mismatched success responses remain unconfirmed and cannot activate
+the number or trigger an automatic resend. See Exotel's
+[Get an ExoPhone contract](https://developer.exotel.com/api/get-an-exophone).
+The adapter contract has substituted-transport coverage; no ExoPhone was purchased.
 
 Outbound telephony preparation compares an immutable call-intent projection
 under the existing transaction lock before creating a row. Replaying the same
@@ -379,6 +383,19 @@ Only terminal observations supply terminal timestamps, duration and ended reason
 Persisted transition results decide whether to emit a ringing/ended event;
 duplicate or stale observations cannot emit another terminal transition. Vendor
 signature validation remains ahead of this processing in the public route.
+
+The public telephony contract exposes provider, direction, status and terminal
+reason as their owning enums rather than unconstrained strings. Provider and call
+metadata remain bounded JSON objects. These types narrow validation and generated
+clients while retaining the existing lowercase wire values and database columns;
+they do not introduce a vendor default or a schema migration.
+
+Call history is an append-only union of five typed observations: outbound effect,
+media claim, opener delivery, accepted status, and late terminal enrichment. The
+JSON keys and values remain compatible with earlier writers. A terminal call can
+never reopen. Provider callbacks may replace provider-owned status, ended reason
+and duration, while timestamps and conversation identity are fill-only. Conflicts
+are recorded by a closed field enum rather than dynamic attribute names.
 
 The platform can close an active voice session from silence/max-duration policy,
 an end-call phrase, user hangup, transport failure, or the `end_call` system

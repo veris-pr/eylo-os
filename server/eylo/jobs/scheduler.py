@@ -196,7 +196,12 @@ async def _dispatch_one(
                         principal=principal,
                         agent_id=agent_id,
                         agent_revision=agent_revision,
-                        goal=_schedule_goal(action, payload),
+                        goal=_schedule_goal(
+                            action,
+                            payload,
+                            scheduled_for=run.scheduled_for,
+                            misfired_count=run.misfired_count,
+                        ),
                         context_manifest=_schedule_context_manifest(run),
                     )
                 created += 1
@@ -304,7 +309,13 @@ async def recover_stranded_schedules() -> dict[str, int]:
     }
 
 
-def _schedule_goal(action: str, payload: JsonObject) -> str:
+def _schedule_goal(
+    action: str,
+    payload: JsonObject,
+    *,
+    scheduled_for: datetime,
+    misfired_count: int,
+) -> str:
     encoded_payload = json.dumps(
         payload,
         ensure_ascii=False,
@@ -314,6 +325,10 @@ def _schedule_goal(action: str, payload: JsonObject) -> str:
     return (
         "Execute this scheduled task using your allowed capabilities. "
         "Decide which tools or sandbox steps are needed.\n"
+        f"Scheduled occurrence: {scheduled_for.isoformat()}\n"
+        "Treat that occurrence as the authoritative cutoff for every relative "
+        "time window; do not use the worker's current time.\n"
+        f"Coalesced earlier occurrences: {misfired_count}\n"
         f"Task: {action}\nInputs: {encoded_payload}"
     )
 

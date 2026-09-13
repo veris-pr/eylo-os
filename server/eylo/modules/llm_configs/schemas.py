@@ -6,6 +6,7 @@ from uuid import UUID
 
 from pydantic import ConfigDict, Field, model_validator
 
+from eylo.common.contracts.json_values import JsonObject
 from eylo.common.schemas import EyloBaseApiSchema
 from eylo.modules.llm_configs.catalog import LLMModels
 
@@ -28,7 +29,7 @@ class LLMConfigCreate(EyloBaseApiSchema):
 
     provider: str = Field(min_length=1)
     name: str = Field(min_length=1)
-    config: dict[str, object]
+    config: JsonObject
     secrets: dict[str, str] = Field(default_factory=dict)
 
 
@@ -36,7 +37,7 @@ class LLMConfigUpdate(EyloBaseApiSchema):
     model_config = ConfigDict(extra="forbid")
 
     name: str | None = Field(default=None, min_length=1)
-    config: dict[str, object] | None = None
+    config: JsonObject | None = None
     secrets: dict[str, str | None] | None = None
     enabled: bool | None = None
 
@@ -72,5 +73,5 @@ class LLMConfigResponse(EyloBaseApiSchema):
     verified: bool
     ready: bool
     verified_at: datetime | None
-    config: dict[str, object]
+    config: JsonObject
     secrets: dict[str, str]

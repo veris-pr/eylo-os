@@ -61,7 +61,7 @@ class ConversationContextService:
     given conversation.
     """
 
-    def __init__(self, db: Optional[AsyncSession] = None):
+    def __init__(self, db: Optional[AsyncSession] = None) -> None:
         """Initializes the ConversationContextService with its dependent services.
 
         Args:

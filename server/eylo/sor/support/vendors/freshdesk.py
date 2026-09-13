@@ -101,6 +101,15 @@ FRESHDESK_MAX_CONVERSATION_PAGES = 5
 FRESHDESK_MAX_EMPTY_EXPANSIONS = 30
 
 
+class FreshdeskCursorKind(StrEnum):
+    """Freshdesk adapter cursor layouts persisted by the platform."""
+
+    UPDATED = "updated"
+    EXPANDED = "expanded"
+    PAGE = "page"
+    CUSTOM = "custom"
+
+
 class FreshdeskTicketSourceCode(IntEnum):
     """Freshdesk's documented numeric ticket source codes."""
 
@@ -525,6 +534,35 @@ class _ExpansionCursor(BaseModel):
 
     scan: _UpdatedCursor
     offset: int
+
+
+class _FreshdeskCursorWire(BaseModel):
+    """Fields common to every versioned Freshdesk cursor envelope."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    version: int
+    kind: FreshdeskCursorKind
+    stream: str
+
+
+class _FreshdeskUpdatedCursorWire(_FreshdeskCursorWire):
+    since: str
+    page: int
+
+
+class _FreshdeskExpansionCursorWire(_FreshdeskUpdatedCursorWire):
+    offset: int
+
+
+class _FreshdeskPageCursorWire(_FreshdeskCursorWire):
+    page: int
+
+
+class _FreshdeskCustomCursorWire(_FreshdeskCursorWire):
+    path: str
 
 
 class FreshdeskSupportAdapter:
@@ -2219,33 +2257,38 @@ def _page_limit(limit: int) -> int:
 
 def _encode_updated_cursor(cursor: _UpdatedCursor, *, stream_key: str) -> str:
     return _encode_cursor(
-        {
-            "version": FRESHDESK_CURSOR_VERSION,
-            "kind": "updated",
-            "stream": stream_key,
-            "since": _timestamp(cursor.since),
-            "page": cursor.page,
-        }
+        _FreshdeskUpdatedCursorWire(
+            version=FRESHDESK_CURSOR_VERSION,
+            kind=FreshdeskCursorKind.UPDATED,
+            stream=stream_key,
+            since=_timestamp(cursor.since),
+            page=cursor.page,
+        )
     )
 
 
 def _decode_updated_cursor(cursor: str | None, *, stream_key: str) -> _UpdatedCursor:
     if cursor is None:
         return _UpdatedCursor(since=FRESHDESK_INITIAL_SINCE, page=1)
-    data = _decode_cursor(cursor, stream_key=stream_key, kind="updated")
+    data = _decode_cursor(
+        cursor,
+        stream_key=stream_key,
+        kind=FreshdeskCursorKind.UPDATED,
+        model=_FreshdeskUpdatedCursorWire,
+    )
     return _updated_cursor_values(data)
 
 
 def _encode_expansion_cursor(cursor: _ExpansionCursor, *, stream_key: str) -> str:
     return _encode_cursor(
-        {
-            "version": FRESHDESK_CURSOR_VERSION,
-            "kind": "expanded",
-            "stream": stream_key,
-            "since": _timestamp(cursor.scan.since),
-            "page": cursor.scan.page,
-            "offset": cursor.offset,
-        }
+        _FreshdeskExpansionCursorWire(
+            version=FRESHDESK_CURSOR_VERSION,
+            kind=FreshdeskCursorKind.EXPANDED,
+            stream=stream_key,
+            since=_timestamp(cursor.scan.since),
+            page=cursor.scan.page,
+            offset=cursor.offset,
+        )
     )
 
 
@@ -2256,54 +2299,59 @@ def _decode_expansion_cursor(
         return _ExpansionCursor(
             scan=_UpdatedCursor(since=FRESHDESK_INITIAL_SINCE, page=1), offset=0
         )
-    data = _decode_cursor(cursor, stream_key=stream_key, kind="expanded")
-    offset = data.get("offset")
-    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+    data = _decode_cursor(
+        cursor,
+        stream_key=stream_key,
+        kind=FreshdeskCursorKind.EXPANDED,
+        model=_FreshdeskExpansionCursorWire,
+    )
+    if data.offset < 0:
         raise _invalid_cursor("Freshdesk expansion cursor offset is invalid.")
-    return _ExpansionCursor(scan=_updated_cursor_values(data), offset=offset)
+    return _ExpansionCursor(scan=_updated_cursor_values(data), offset=data.offset)
 
 
-def _updated_cursor_values(data: Mapping[str, object]) -> _UpdatedCursor:
-    since = _required_datetime(data.get("since"), field="Freshdesk cursor timestamp")
-    page = data.get("page")
-    if (
-        isinstance(page, bool)
-        or not isinstance(page, int)
-        or not 1 <= page <= FRESHDESK_MAX_PAGES
-    ):
+def _updated_cursor_values(
+    data: _FreshdeskUpdatedCursorWire | _FreshdeskExpansionCursorWire,
+) -> _UpdatedCursor:
+    since = _required_datetime(data.since, field="Freshdesk cursor timestamp")
+    if not 1 <= data.page <= FRESHDESK_MAX_PAGES:
         raise _invalid_cursor("Freshdesk cursor page is invalid.")
-    return _UpdatedCursor(since=since, page=page)
+    return _UpdatedCursor(since=since, page=data.page)
 
 
 def _encode_page_cursor(page: int, *, stream_key: str) -> str:
     return _encode_cursor(
-        {
-            "version": FRESHDESK_CURSOR_VERSION,
-            "kind": "page",
-            "stream": stream_key,
-            "page": page,
-        }
+        _FreshdeskPageCursorWire(
+            version=FRESHDESK_CURSOR_VERSION,
+            kind=FreshdeskCursorKind.PAGE,
+            stream=stream_key,
+            page=page,
+        )
     )
 
 
 def _decode_page_cursor(cursor: str | None, *, stream_key: str) -> int:
     if cursor is None:
         return 1
-    data = _decode_cursor(cursor, stream_key=stream_key, kind="page")
-    page = data.get("page")
-    if isinstance(page, bool) or not isinstance(page, int) or page < 1:
+    data = _decode_cursor(
+        cursor,
+        stream_key=stream_key,
+        kind=FreshdeskCursorKind.PAGE,
+        model=_FreshdeskPageCursorWire,
+    )
+    if data.page < 1:
         raise _invalid_cursor("Freshdesk page cursor is invalid.")
-    return page
+    return data.page
 
 
 def _encode_custom_cursor(path: str, *, stream_key: str) -> str:
     return _encode_cursor(
-        {
-            "version": FRESHDESK_CURSOR_VERSION,
-            "kind": "custom",
-            "stream": stream_key,
-            "path": path,
-        }
+        _FreshdeskCustomCursorWire(
+            version=FRESHDESK_CURSOR_VERSION,
+            kind=FreshdeskCursorKind.CUSTOM,
+            stream=stream_key,
+            path=path,
+        )
     )
 
 
@@ -2315,16 +2363,18 @@ def _decode_custom_cursor(
 ) -> str | None:
     if cursor is None:
         return None
-    data = _decode_cursor(cursor, stream_key=stream_key, kind="custom")
-    path = data.get("path")
-    if not isinstance(path, str):
-        raise _invalid_cursor("Freshdesk custom cursor path is invalid.")
-    return _validate_custom_path(path, schema_id=schema_id)
+    data = _decode_cursor(
+        cursor,
+        stream_key=stream_key,
+        kind=FreshdeskCursorKind.CUSTOM,
+        model=_FreshdeskCustomCursorWire,
+    )
+    return _validate_custom_path(data.path, schema_id=schema_id)
 
 
-def _encode_cursor(payload: Mapping[str, object]) -> str:
+def _encode_cursor(payload: _FreshdeskCursorWire) -> str:
     raw = json.dumps(
-        payload,
+        payload.model_dump(mode="json"),
         ensure_ascii=True,
         allow_nan=False,
         separators=(",", ":"),
@@ -2333,22 +2383,26 @@ def _encode_cursor(payload: Mapping[str, object]) -> str:
     return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
 
-def _decode_cursor(cursor: str, *, stream_key: str, kind: str) -> dict[str, object]:
+def _decode_cursor[CursorWire: _FreshdeskCursorWire](
+    cursor: str,
+    *,
+    stream_key: str,
+    kind: FreshdeskCursorKind,
+    model: type[CursorWire],
+) -> CursorWire:
     if not cursor or len(cursor) > 8_192:
         raise _invalid_cursor("Freshdesk cursor is invalid.")
     try:
         padding = "=" * (-len(cursor) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(cursor + padding))
-    except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        payload = model.model_validate_json(
+            base64.urlsafe_b64decode(cursor + padding)
+        )
+    except (ValueError, ValidationError) as error:
         raise _invalid_cursor("Freshdesk cursor is invalid.") from error
-    if not isinstance(payload, dict) or any(
-        not isinstance(key, str) for key in payload
-    ):
-        raise _invalid_cursor("Freshdesk cursor payload is invalid.")
     if (
-        payload.get("version") != FRESHDESK_CURSOR_VERSION
-        or payload.get("kind") != kind
-        or payload.get("stream") != stream_key
+        payload.version != FRESHDESK_CURSOR_VERSION
+        or payload.kind is not kind
+        or payload.stream != stream_key
     ):
         raise _invalid_cursor("Freshdesk cursor does not match this stream.")
     return payload

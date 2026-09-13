@@ -10,10 +10,12 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from http import HTTPStatus
+from typing import overload
 from urllib.parse import parse_qsl, unquote, urlsplit
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError
 
+from eylo.common.contracts.json_values import JsonObject
 from eylo.modules.connections.domain import ConnectionAuthKind
 from eylo.sor.knowledge.contracts import (
     KnowledgeAttachment,
@@ -309,6 +311,18 @@ class _LinearCursor(BaseModel):
     started_at: AwareDatetime
 
 
+class _LinearCursorWire(BaseModel):
+    """Versioned JSON contract persisted between Linear document pages."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    version: int
+    floor: str | None = None
+    after: str | None = None
+    high: str | None = None
+    started_at: str
+
+
 class _LinearAttachmentCursor(BaseModel):
     """Resume within one document's attachments without losing page progress."""
 
@@ -320,6 +334,20 @@ class _LinearAttachmentCursor(BaseModel):
     attachment_index: int = Field(ge=0)
     high: AwareDatetime | None
     started_at: AwareDatetime
+
+
+class _LinearAttachmentCursorWire(BaseModel):
+    """Versioned JSON contract persisted within one attachment page."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    version: int
+    floor: str | None = None
+    page_after: str | None = None
+    document_index: int = Field(ge=0)
+    attachment_index: int = Field(ge=0)
+    high: str | None = None
+    started_at: str
 
 
 class _LinearAttachment(BaseModel):
@@ -963,7 +991,7 @@ class LinearKnowledgeAdapter:
         variables: LinearPageVariables | LinearRecordVariables | None = None,
         *,
         operation: str,
-    ) -> tuple[dict[str, object], SorJsonResponse]:
+    ) -> tuple[JsonObject, SorJsonResponse]:
         response = await self._client.request(
             LINEAR_GRAPHQL_PATH,
             method="POST",
@@ -1069,38 +1097,39 @@ def _decode_cursor(value: str | None) -> _LinearCursor:
     if value is None:
         return _LinearCursor(floor=None, after=None, high=None, started_at=now)
     try:
-        payload = json.loads(value)
-    except (TypeError, ValueError) as error:
+        payload = _LinearCursorWire.model_validate_json(value)
+    except ValidationError as error:
         raise SorVendorOperationError(
             SorVendorErrorCode.VENDOR_CURSOR_INVALID,
             "Linear cursor is invalid.",
             recovery=SorRecoveryPolicy.TERMINAL,
         ) from error
-    if not isinstance(payload, dict) or payload.get("version") != LINEAR_CURSOR_VERSION:
+    if payload.version != LINEAR_CURSOR_VERSION:
         raise SorVendorOperationError(
             SorVendorErrorCode.VENDOR_CURSOR_INVALID,
             "Linear cursor version is invalid.",
             recovery=SorRecoveryPolicy.TERMINAL,
         )
     return _LinearCursor(
-        floor=_optional_datetime(payload.get("floor")),
-        after=_optional_string(payload.get("after")),
-        high=_optional_datetime(payload.get("high")),
+        floor=_optional_datetime(payload.floor),
+        after=_optional_string(payload.after),
+        high=_optional_datetime(payload.high),
         started_at=_required_datetime(
-            payload.get("started_at"), field="Linear cursor start"
+            payload.started_at, field="Linear cursor start"
         ),
     )
 
 
 def _encode_cursor(cursor: _LinearCursor) -> str:
+    payload = _LinearCursorWire(
+        version=LINEAR_CURSOR_VERSION,
+        floor=_linear_datetime(cursor.floor),
+        after=cursor.after,
+        high=_linear_datetime(cursor.high),
+        started_at=_linear_datetime(cursor.started_at),
+    )
     return json.dumps(
-        {
-            "version": LINEAR_CURSOR_VERSION,
-            "floor": _linear_datetime(cursor.floor),
-            "after": cursor.after,
-            "high": _linear_datetime(cursor.high),
-            "started_at": _linear_datetime(cursor.started_at),
-        },
+        payload.model_dump(mode="json"),
         separators=(",", ":"),
         sort_keys=True,
     )
@@ -1118,57 +1147,43 @@ def _decode_attachment_cursor(value: str | None) -> _LinearAttachmentCursor:
             started_at=now,
         )
     try:
-        payload = json.loads(value)
-    except (TypeError, ValueError) as error:
+        payload = _LinearAttachmentCursorWire.model_validate_json(value)
+    except ValidationError as error:
         raise SorVendorOperationError(
             SorVendorErrorCode.VENDOR_CURSOR_INVALID,
             "Linear attachment cursor is invalid.",
             recovery=SorRecoveryPolicy.TERMINAL,
         ) from error
-    if not isinstance(payload, dict) or payload.get("version") != LINEAR_CURSOR_VERSION:
+    if payload.version != LINEAR_CURSOR_VERSION:
         raise SorVendorOperationError(
             SorVendorErrorCode.VENDOR_CURSOR_INVALID,
             "Linear attachment cursor version is invalid.",
             recovery=SorRecoveryPolicy.TERMINAL,
         )
-    document_index = payload.get("document_index")
-    attachment_index = payload.get("attachment_index")
-    if (
-        isinstance(document_index, bool)
-        or not isinstance(document_index, int)
-        or document_index < 0
-        or isinstance(attachment_index, bool)
-        or not isinstance(attachment_index, int)
-        or attachment_index < 0
-    ):
-        raise SorVendorOperationError(
-            SorVendorErrorCode.VENDOR_CURSOR_INVALID,
-            "Linear attachment cursor position is invalid.",
-            recovery=SorRecoveryPolicy.TERMINAL,
-        )
     return _LinearAttachmentCursor(
-        floor=_optional_datetime(payload.get("floor")),
-        page_after=_optional_string(payload.get("page_after")),
-        document_index=document_index,
-        attachment_index=attachment_index,
-        high=_optional_datetime(payload.get("high")),
+        floor=_optional_datetime(payload.floor),
+        page_after=_optional_string(payload.page_after),
+        document_index=payload.document_index,
+        attachment_index=payload.attachment_index,
+        high=_optional_datetime(payload.high),
         started_at=_required_datetime(
-            payload.get("started_at"), field="Linear attachment cursor start"
+            payload.started_at, field="Linear attachment cursor start"
         ),
     )
 
 
 def _encode_attachment_cursor(cursor: _LinearAttachmentCursor) -> str:
+    payload = _LinearAttachmentCursorWire(
+        version=LINEAR_CURSOR_VERSION,
+        floor=_linear_datetime(cursor.floor),
+        page_after=cursor.page_after,
+        document_index=cursor.document_index,
+        attachment_index=cursor.attachment_index,
+        high=_linear_datetime(cursor.high),
+        started_at=_linear_datetime(cursor.started_at),
+    )
     return json.dumps(
-        {
-            "version": LINEAR_CURSOR_VERSION,
-            "floor": _linear_datetime(cursor.floor),
-            "page_after": cursor.page_after,
-            "document_index": cursor.document_index,
-            "attachment_index": cursor.attachment_index,
-            "high": _linear_datetime(cursor.high),
-            "started_at": _linear_datetime(cursor.started_at),
-        },
+        payload.model_dump(mode="json"),
         separators=(",", ":"),
         sort_keys=True,
     )
@@ -1220,6 +1235,14 @@ def _maximum_updated_at(
         if result is None or value > result:
             result = value
     return result
+
+
+@overload
+def _linear_datetime(value: None) -> None: ...
+
+
+@overload
+def _linear_datetime(value: datetime) -> str: ...
 
 
 def _linear_datetime(value: datetime | None) -> str | None:

@@ -25,6 +25,7 @@ from eylo.modules.templates.domain import (
     TemplateError,
     TemplateNotFoundError,
 )
+from eylo.modules.templates.models import TemplateModel
 from eylo.modules.templates.schemas import (
     TemplateCreateRequest,
     TemplateDraftUpdateRequest,
@@ -94,7 +95,7 @@ async def create_template(
     request: TemplateCreateRequest,
     current_user: Annotated[CurrentUserSchema, Depends(get_current_user)],
 ) -> TemplateResponse:
-    async def create(service: TemplateService):
+    async def create(service: TemplateService) -> TemplateModel:
         return await service.create(
             organization_id=current_user.organization_id,
             name=request.name,

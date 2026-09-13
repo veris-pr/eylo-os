@@ -56,7 +56,7 @@ class OpenAIAdapter(LLMVendorAdapter):
 
     vendor_name = "openai"
 
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str) -> None:
         self._api_key = api_key
 
     def get_client(self) -> AsyncOpenAI:

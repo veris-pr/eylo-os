@@ -1,12 +1,13 @@
 """Controller for telephony call history operations."""
 
-from typing import Optional
 from uuid import UUID
 
 from fastapi import HTTPException
 
 from eylo.common.schemas import PaginationParams
 from eylo.modules.telephony.schemas import (
+    CallDirection,
+    CallStatus,
     TelephonyCallApiResponseSchema,
     TelephonyCallsPaginated,
 )
@@ -14,7 +15,7 @@ from eylo.modules.telephony.services import TelephonyCallService
 
 
 class TelephonyCallController:
-    def __init__(self):
+    def __init__(self) -> None:
         self.service = TelephonyCallService()
 
     async def get(
@@ -31,10 +32,10 @@ class TelephonyCallController:
         self,
         organization_id: UUID,
         pagination: PaginationParams,
-        status: Optional[str] = None,
-        direction: Optional[str] = None,
-        campaign_id: Optional[UUID] = None,
-        conversation_id: Optional[UUID] = None,
+        status: CallStatus | None = None,
+        direction: CallDirection | None = None,
+        campaign_id: UUID | None = None,
+        conversation_id: UUID | None = None,
     ) -> TelephonyCallsPaginated:
         calls = await self.service.list_by_organization(
             organization_id=organization_id,

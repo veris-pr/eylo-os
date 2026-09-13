@@ -3435,35 +3435,40 @@ def _adf_document_or_none(value: object) -> native.JiraAdfDocument | None:
     )
 
 
-def _adf_text(value: object) -> str | None:
+_ADF_BLOCK_NODES = frozenset(
+    {
+        native.JiraAdfNodeKind.BLOCKQUOTE,
+        native.JiraAdfNodeKind.BULLET_LIST,
+        native.JiraAdfNodeKind.HEADING,
+        native.JiraAdfNodeKind.LIST_ITEM,
+        native.JiraAdfNodeKind.ORDERED_LIST,
+        native.JiraAdfNodeKind.PARAGRAPH,
+    }
+)
+
+
+def _adf_text(value: SorJsonValue) -> str | None:
     if value is None:
         return None
     if isinstance(value, str):
         return value.strip() or None
     parts: list[str] = []
 
-    def walk(node: object) -> None:
+    def walk(node: SorJsonValue) -> None:
         if isinstance(node, list):
             for item in node:
                 walk(item)
             return
         if not isinstance(node, Mapping):
             return
-        node_type = node.get("type")
-        text = node.get("text")
+        node_type = node.get(native.JiraAdfField.TYPE)
+        text = node.get(native.JiraAdfField.TEXT)
         if isinstance(text, str):
             parts.append(text)
-        if node_type == "hardBreak":
+        if node_type == native.JiraAdfNodeKind.HARD_BREAK:
             parts.append("\n")
-        walk(node.get("content"))
-        if node_type in {
-            "blockquote",
-            "bulletList",
-            "heading",
-            "listItem",
-            "orderedList",
-            "paragraph",
-        }:
+        walk(node.get(native.JiraAdfField.CONTENT))
+        if node_type in _ADF_BLOCK_NODES:
             parts.append("\n")
 
     walk(value)

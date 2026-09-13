@@ -11,7 +11,10 @@ from eylo.modules.telephony.models import (
     PhoneNumberModel,
     TelephonyCallModel,
 )
+from eylo.modules.telephony.provider_config_domain import TelephonyProvider
 from eylo.modules.telephony.schemas import (
+    CallDirection,
+    CallStatus,
     PhoneNumberCreateSchema,
     PhoneNumberStatus,
     PhoneNumberUpdateSchema,
@@ -39,7 +42,7 @@ class PhoneNumberRepository(BaseORMRepository[PhoneNumberModel]):
         organization_id: UUID,
         number: str,
         label: str | None,
-        provider: str,
+        provider: TelephonyProvider,
         provider_config_id: UUID,
         provider_config_revision: int,
     ) -> PhoneNumberModel | None:
@@ -52,7 +55,7 @@ class PhoneNumberRepository(BaseORMRepository[PhoneNumberModel]):
                 number=number,
                 label=label,
                 status=PhoneNumberStatus.PROVISIONING,
-                provider=provider,
+                provider=provider.value,
                 provider_config_id=provider_config_id,
                 provider_config_revision=provider_config_revision,
             )
@@ -112,7 +115,7 @@ class PhoneNumberRepository(BaseORMRepository[PhoneNumberModel]):
         query = select(self.model).where(
             self.model.organization_id == organization_id,
             self.model.outbound_agent_id == outbound_agent_id,
-            self.model.status == "ACTIVE",
+            self.model.status == PhoneNumberStatus.ACTIVE.value,
             self.model.deleted.is_(False),
         )
         result = await self.db_session.execute(query.limit(2))
@@ -160,16 +163,16 @@ class TelephonyCallRepository(BaseORMRepository[TelephonyCallModel]):
         organization_id: UUID,
         limit: int = 20,
         offset: int = 0,
-        status: Optional[str] = None,
-        direction: Optional[str] = None,
+        status: CallStatus | None = None,
+        direction: CallDirection | None = None,
         campaign_id: Optional[UUID] = None,
         conversation_id: Optional[UUID] = None,
     ) -> List[TelephonyCallModel]:
         filters = [self.model.organization_id == organization_id]
         if status:
-            filters.append(self.model.status == status)
+            filters.append(self.model.status == status.value)
         if direction:
-            filters.append(self.model.direction == direction)
+            filters.append(self.model.direction == direction.value)
         if campaign_id:
             filters.append(self.model.campaign_id == campaign_id)
         if conversation_id:
@@ -184,16 +187,16 @@ class TelephonyCallRepository(BaseORMRepository[TelephonyCallModel]):
     async def count_by_organization(
         self,
         organization_id: UUID,
-        status: Optional[str] = None,
-        direction: Optional[str] = None,
+        status: CallStatus | None = None,
+        direction: CallDirection | None = None,
         campaign_id: Optional[UUID] = None,
         conversation_id: Optional[UUID] = None,
     ) -> int:
         filters = [self.model.organization_id == organization_id]
         if status:
-            filters.append(self.model.status == status)
+            filters.append(self.model.status == status.value)
         if direction:
-            filters.append(self.model.direction == direction)
+            filters.append(self.model.direction == direction.value)
         if campaign_id:
             filters.append(self.model.campaign_id == campaign_id)
         if conversation_id:

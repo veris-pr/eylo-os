@@ -219,6 +219,15 @@ For example, `issue_get` targets only an issue even though the response can
 include related records. A related comment or relation cannot be supplied as
 the direct target by exploiting that response scope.
 
+SOR search tools accept optional `source_updated_from` and
+`source_updated_before` timestamps. The lower bound is inclusive and the upper
+bound is exclusive, so scheduled reports can ask PostgreSQL for an exact source
+update window instead of trusting the model to classify returned dates. Both
+timestamps must include a timezone and the lower bound must precede the upper
+bound. Search responses may reduce the requested page size when needed to keep
+one durable tool result within the AgentRun transcript storage limit; callers
+must follow `next_cursor` while `has_more` is true.
+
 ## Executable Documents tools
 
 Confluence Cloud and Notion implement these reads:

@@ -20,7 +20,7 @@ from eylo.modules.members.services import MemberService
 class MemberController:
     """MemberController behavior for the "members" domain."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize Member Controller."""
         self.member_service = MemberService()
 

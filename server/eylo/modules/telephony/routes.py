@@ -11,6 +11,7 @@ from eylo.common.utils.get_pagination import get_pagination
 from eylo.modules.auth.schemas import CurrentUserSchema
 from eylo.modules.auth.services.auth_service import get_current_user
 from eylo.modules.telephony.controllers import PhoneNumberController
+from eylo.modules.telephony.provider_config_domain import TelephonyProvider
 from eylo.modules.telephony.schemas import (
     PhoneNumberApiResponseSchema,
     PhoneNumberCreateSchema,
@@ -28,7 +29,7 @@ router = APIRouter(prefix="/phone-numbers", tags=[APP_TAG])
 async def list_phone_numbers(
     pagination: Annotated[PaginationParams, Depends(get_pagination)],
     current_user: CurrentUserSchema = Depends(get_current_user),
-    provider: str | None = None,
+    provider: TelephonyProvider | None = None,
 ) -> PhoneNumbersPaginated:
     async with start_transaction(ro=True):
         return await PhoneNumberController().list(
@@ -49,7 +50,7 @@ async def create_phone_number(
             provider_config_id=request.provider_config_id,
         )
         if (
-            request.provider != resolved.provider.value
+            request.provider != resolved.provider
             or request.provider_config_revision != resolved.provider_config_revision
         ):
             raise HTTPException(

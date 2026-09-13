@@ -24,6 +24,7 @@ from eylo.events.schema.py_events.call import (
     CallStartedEvent,
     CallTransferredEvent,
 )
+from eylo.modules.telephony.call_history import CallObservationSource
 from eylo.modules.telephony.constants import CallOpenerDeliveryStatus
 from eylo.modules.telephony.lifecycle import (
     record_call_started,
@@ -401,7 +402,7 @@ async def _finalize_call_session_once(
                 if duration_seconds is not None
                 else None,
                 conversation_id=ended_event.context.conversation_id,
-                source="media_runtime",
+                source=CallObservationSource.MEDIA_RUNTIME,
             )
         except Exception as error:
             terminal_error = error

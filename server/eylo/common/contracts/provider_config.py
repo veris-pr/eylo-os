@@ -35,7 +35,7 @@ class NotConfiguredError(ProviderConfigError):
         capability: Capability | str,
         missing: Iterable[str],
         configure_via: str,
-    ):
+    ) -> None:
         self.capability = _validate_capability(capability)
         self.missing = _validate_missing(missing)
         self.configure_via = _validate_configure_path(configure_via)

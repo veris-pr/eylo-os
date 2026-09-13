@@ -13,7 +13,9 @@ router = APIRouter(prefix="/public", tags=["Public Session"])
 
 
 @router.post("/session/validate", response_model=SessionValidationResponse)
-async def validate_session(payload: SessionValidationRequest):
+async def validate_session(
+    payload: SessionValidationRequest,
+) -> SessionValidationResponse:
     """Validate a session using auth session token and verify all relationships."""
     async with start_transaction() as db:
         controller = PublicSessionController(db)
