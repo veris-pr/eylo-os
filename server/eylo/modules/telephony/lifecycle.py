@@ -18,6 +18,12 @@ from eylo.common.schemas import EyloBaseSchema
 from eylo.events.durable.binding import spawn_event_deliveries
 from eylo.events.durable.domain import DurableEventEnvelope
 from eylo.events.durable.service import DurableEventService
+from eylo.modules.telephony.call_history import (
+    CallMediaObservation,
+    CallObservationSource,
+    CallOpenerObservation,
+    CallOutboundObservation,
+)
 from eylo.modules.telephony.constants import (
     OUTBOUND_CALL_REJECTED,
     CallInitiationMarker,
@@ -226,10 +232,9 @@ async def apply_outbound_call_outcome(
             )
 
         observed_at = datetime.now(timezone.utc)
-        history_entry = {
-            "effect_state": state.value,
-            "observed_at": observed_at.isoformat(),
-        }
+        history_entry = CallOutboundObservation(
+            effect_state=state, observed_at=observed_at,
+        ).as_payload()
         call.status_history = [*(call.status_history or []), history_entry]
         if state is OutboundAttemptState.SUCCEEDED:
             if call.status not in _TERMINAL_STATUSES:
@@ -373,10 +378,7 @@ async def claim_outbound_media_session(
         )
         call.status_history = [
             *(call.status_history or []),
-            {
-                "media_claim": "consumed",
-                "observed_at": observed_at.isoformat(),
-            },
+            CallMediaObservation(observed_at=observed_at).as_payload(),
         ]
         await session.flush()
         return TelephonyCallService(session).orm_to_schema(call)
@@ -434,10 +436,9 @@ async def _record_opener_delivery(
         call.opener_delivered_at = observed_at
     call.status_history = [
         *(call.status_history or []),
-        {
-            "opener_delivery": outcome.value,
-            "observed_at": observed_at.isoformat(),
-        },
+        CallOpenerObservation(
+            opener_delivery=outcome, observed_at=observed_at,
+        ).as_payload(),
     ]
     await db.flush()
     return TelephonyCallService(db).orm_to_schema(call)
@@ -585,17 +586,17 @@ async def record_call_status(
     *,
     organization_id: UUID,
     call_sid: str,
-    status: str,
+    status: CallStatus,
     provider_status: str | None = None,
     ended_reason: str | None = None,
     ended_at: datetime | None = None,
     connected_at: datetime | None = None,
     duration_seconds: int | None = None,
     conversation_id: UUID | None = None,
-    source: str = "runtime",
+    source: CallObservationSource = CallObservationSource.RUNTIME,
 ) -> CallLifecycleStatusResult:
     """Commit one monotonic status transition and terminal fact atomically."""
-    status_value = status.value if isinstance(status, CallStatus) else str(status)
+    status_value = status.value
     terminal = is_terminal_call_status(status_value)
     if terminal and ended_at is None:
         ended_at = datetime.now(timezone.utc)
@@ -605,7 +606,7 @@ async def record_call_status(
         update = await TelephonyCallService(session).update_status_with_result(
             call_sid=call_sid,
             organization_id=organization_id,
-            status=status_value,
+            status=status,
             provider_status=provider_status,
             ended_reason=ended_reason,
             ended_at=ended_at,

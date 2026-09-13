@@ -269,7 +269,7 @@ class TelephonyCallModel(EyloOrganizationModel):
     opener_delivered_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    status_history: Mapped[list] = mapped_column(
+    status_history: Mapped[list[JsonObject]] = mapped_column(
         JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
     )
 

@@ -33,6 +33,7 @@ from eylo.common.schemas import (
     EyloOrganizationModelSchema,
     PaginatedResponseSchema,
 )
+from eylo.modules.telephony.call_history import CallHistoryEntry
 from eylo.modules.telephony.constants import (
     CallControlFailureCode,
     CallControlStatus,
@@ -245,7 +246,7 @@ class TelephonyCallInDb(EyloOrganizationModelSchema):
         CallOpenerDeliveryStatus.NOT_REQUESTED
     )
     opener_delivered_at: Optional[datetime] = None
-    status_history: list[dict] = Field(default_factory=list)
+    status_history: list[CallHistoryEntry] = Field(default_factory=list)
     recording_id: Optional[UUID] = None
     recording_url: Optional[str] = None
     transcript_id: Optional[UUID] = None
