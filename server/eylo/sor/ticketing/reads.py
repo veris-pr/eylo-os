@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
 
 from sqlalchemy.orm import QueryableAttribute
 
@@ -45,7 +44,7 @@ def _field(
     label: str,
     kind: SorGridColumnKind,
     importance: SorGridColumnImportance,
-    expression: QueryableAttribute[Any],
+    expression: QueryableAttribute[object],
     attribute: str,
     default_visible: bool = True,
     filterable: bool = True,

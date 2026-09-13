@@ -41,21 +41,8 @@ async def list_conversations(
     ],
     pagination: Annotated[PaginationParams, Depends(get_pagination)],
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
-    """List conversations with pagination for a specific user.
-
-    Args:
-    ----
-        organization_id (UUID): The ID of the organization
-        user_id (UUID): The ID of the user
-        pagination (PaginationParams): Pagination parameters
-        sort (str, optional): Sort order, either 'asc' or 'desc'. Defaults to 'desc'.
-
-    Returns:
-    -------
-        ConversationsPaginated: The paginated conversations response
-
-    """
+) -> ConversationsPaginated:
+    """Return an organization-scoped page; refuse foreign organizations as 404."""
     if organization_id != current_user.organization_id:
         raise HTTPException(status_code=404)
     async with start_transaction(ro=True) as db:

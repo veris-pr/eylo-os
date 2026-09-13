@@ -17,6 +17,7 @@ from pydantic import (
     field_validator,
 )
 
+from eylo.common.contracts.json_values import JsonObject
 from eylo.sor.shared.contracts import (
     SorChangeStrategy,
     SorCommandResult,
@@ -28,6 +29,7 @@ from eylo.sor.shared.contracts import (
     SorWorkState,
 )
 from eylo.sor.shared.json_values import SorJsonValue, SorJsonValueError, to_json_value
+from eylo.sor.shared.secrets import SorSecretEnvelopeError
 from eylo.sor.shared.services import SorProjectionError
 from eylo.sor.shared.sync_services import SorSyncCounts
 
@@ -75,6 +77,49 @@ class SorCommandTaskParams(BaseModel):
 
     organization_id: TaskId
     command_id: TaskId
+
+
+class SorCommandIntent(BaseModel):
+    """Existing hash input, not execution authority or a public agent payload."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    organization_id: UUID
+    source_id: UUID
+    profile_tool: str
+    agent_id: UUID
+    agent_revision: int
+    agent_run_id: UUID
+    tool_call_id: str
+    target_record_id: UUID | None
+    enforce_target_revision: bool
+    payload: JsonObject = Field(repr=False)
+
+
+class SorStoredCommandRequest(BaseModel):
+    """Encrypted request wire shape; profile/tool validation follows decoding.
+
+    Nullable targets may be absent in older envelopes. Raw mutation data is
+    serialized only for encryption, never as an ordinary runtime snapshot.
+    """
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    payload: JsonObject = Field(repr=False)
+    target_vendor_object_key: str | None = None
+    target_external_id: str | None = None
+
+
+def decode_command_request(value: object) -> SorStoredCommandRequest:
+    """Reject malformed decrypted requests without exposing their private content."""
+    try:
+        return SorStoredCommandRequest.model_validate(value)
+    except ValidationError:
+        raise SorSecretEnvelopeError("SOR command request is malformed.") from None
 
 
 class SorSyncWorkReceipt(BaseModel):

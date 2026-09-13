@@ -27,8 +27,7 @@ logger = logging.getLogger(__name__)
 class ContactWsController:
     """Controller for handling contact-related operations."""
 
-    def __init__(self):
-        """Initialize the ContactController."""
+    def __init__(self) -> None:
         self.service = ContactService()
 
     async def _get_session_contact(self, ctx: SessionContext) -> ContactInDb | None:
@@ -42,7 +41,9 @@ class ContactWsController:
                 )
             )
 
-    async def handle_contact_query(self, event: WsRequestEvent, ctx: SessionContext):
+    async def handle_contact_query(
+        self, event: WsRequestEvent, ctx: SessionContext
+    ) -> WsResponse:
         try:
             request = WsContactQueryEvent.model_validate(event.data or {})
             if (

@@ -17,7 +17,7 @@ from eylo.pipelines.websocket.singleton import S_ws_manager
 logger = logging.getLogger(__name__)
 
 
-async def broadcast_created_conversation(event: ConversationCreatedEvent):
+async def broadcast_created_conversation(event: ConversationCreatedEvent) -> None:
     """Broadcast conversation:created to all contact participants.
 
     Without this, widget clients never learn about server-initiated
@@ -51,7 +51,7 @@ async def broadcast_created_conversation(event: ConversationCreatedEvent):
         )
 
 
-async def broadcast_updated_conversation(event: ConversationUpdatedEvent):
+async def broadcast_updated_conversation(event: ConversationUpdatedEvent) -> None:
     async with start_transaction(ro=True):
         participants_indb = await ConversationParticipantService().list_by_conversation(
             conversation_id=event.conversation.id

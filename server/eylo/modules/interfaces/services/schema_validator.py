@@ -4,10 +4,21 @@ import hashlib
 import json
 import logging
 from collections.abc import Mapping
-from typing import Any, Dict, List
+from typing import List
 
 from pydantic import ValidationError
 
+from eylo.common.contracts.tool_platform import PlatformToolInputSchema
+from eylo.common.contracts.widgets import (
+    CompoundComponentKind,
+    WidgetAlertSeverity,
+    WidgetButtonLayout,
+    WidgetButtonVariant,
+    WidgetDateMode,
+    WidgetFieldKind,
+    WidgetPattern,
+    WidgetSelectionMode,
+)
 from eylo.modules.interfaces.schemas.api import (
     ALL_COMPOUND_COMPONENT_TYPES,
     COMPOUND_MAX_COMPONENTS,
@@ -19,10 +30,13 @@ from eylo.modules.interfaces.schemas.api import (
     WidgetButtonGroupPayload,
     WidgetCardListPayload,
     WidgetCatalogEntry,
+    WidgetCatalogStatus,
     WidgetDatePickerPayload,
     WidgetFormPayload,
     WidgetImagePayload,
     WidgetProgressPayload,
+    WidgetPropertySchema,
+    WidgetSchemaType,
     WidgetTextPayload,
 )
 
@@ -35,6 +49,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _VALIDATION_CACHE_MAX = 64
+_CATALOG_VERSION = "1"
 _validation_cache: dict[str, CompoundWidgetPayload] = {}
 
 
@@ -83,139 +98,133 @@ class CompoundWidgetSchemaValidatorService:
     def __init__(self) -> None:
         self._catalog = self._build_catalog()
         self._content_schema_map = {
-            "form": WidgetFormPayload,
-            "button_group": WidgetButtonGroupPayload,
-            "card_list": WidgetCardListPayload,
-            "date_picker": WidgetDatePickerPayload,
-            "alert": WidgetAlertPayload,
-            "text": WidgetTextPayload,
-            "image": WidgetImagePayload,
-            "progress": WidgetProgressPayload,
+            CompoundComponentKind.FORM: WidgetFormPayload,
+            CompoundComponentKind.BUTTON_GROUP: WidgetButtonGroupPayload,
+            CompoundComponentKind.CARD_LIST: WidgetCardListPayload,
+            CompoundComponentKind.DATE_PICKER: WidgetDatePickerPayload,
+            CompoundComponentKind.ALERT: WidgetAlertPayload,
+            CompoundComponentKind.TEXT: WidgetTextPayload,
+            CompoundComponentKind.IMAGE: WidgetImagePayload,
+            CompoundComponentKind.PROGRESS: WidgetProgressPayload,
         }
 
-    def _build_catalog(self) -> Dict[str, WidgetCatalogEntry]:
-        """Build the form catalog entry for LLM tool descriptions."""
+    def _build_catalog(self) -> dict[CompoundComponentKind, WidgetCatalogEntry]:
+        """Describe content controls using the shared widget vocabulary."""
 
-        def string_schema(optional: bool = False) -> Dict[str, Any]:
-            return {"type": "string", "optional": optional}
+        def string_schema(optional: bool = False) -> WidgetPropertySchema:
+            return WidgetPropertySchema(type=WidgetSchemaType.STRING, optional=optional)
 
-        def number_schema(optional: bool = False) -> Dict[str, Any]:
-            return {"type": "number", "optional": optional}
+        def number_schema(optional: bool = False) -> WidgetPropertySchema:
+            return WidgetPropertySchema(type=WidgetSchemaType.NUMBER, optional=optional)
 
-        def boolean_schema(optional: bool = False) -> Dict[str, Any]:
-            return {"type": "boolean", "optional": optional}
+        def boolean_schema(optional: bool = False) -> WidgetPropertySchema:
+            return WidgetPropertySchema(
+                type=WidgetSchemaType.BOOLEAN, optional=optional
+            )
 
-        def any_schema(optional: bool = False) -> Dict[str, Any]:
-            return {"type": "any", "optional": optional}
+        def any_schema(optional: bool = False) -> WidgetPropertySchema:
+            return WidgetPropertySchema(type=WidgetSchemaType.ANY, optional=optional)
 
-        option_schema = {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["value", "label"],
-            "properties": {
+        option_schema = WidgetPropertySchema(
+            type=WidgetSchemaType.OBJECT,
+            additionalProperties=False,
+            required=["value", "label"],
+            properties={
                 "value": string_schema(),
                 "label": string_schema(),
                 "description": string_schema(True),
             },
-        }
+        )
 
-        field_validation_schema = {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
+        field_validation_schema = WidgetPropertySchema(
+            type=WidgetSchemaType.OBJECT,
+            additionalProperties=False,
+            properties={
                 "minLength": number_schema(True),
                 "maxLength": number_schema(True),
                 "min": number_schema(True),
                 "max": number_schema(True),
-                "pattern": {
-                    "type": "string",
-                    "enum": ["email", "phone", "url"],
-                    "optional": True,
-                },
+                "pattern": WidgetPropertySchema(
+                    type=WidgetSchemaType.STRING,
+                    enum=[item.value for item in WidgetPattern],
+                    optional=True,
+                ),
                 "message": string_schema(True),
                 "minDate": string_schema(True),
                 "maxDate": string_schema(True),
             },
-        }
+        )
 
-        date_validation_schema = {
-            "type": "object",
-            "additionalProperties": False,
-            "optional": True,
-            "properties": {
+        date_validation_schema = WidgetPropertySchema(
+            type=WidgetSchemaType.OBJECT,
+            additionalProperties=False,
+            optional=True,
+            properties={
                 "minDate": string_schema(True),
                 "maxDate": string_schema(True),
                 "message": string_schema(True),
             },
-        }
+        )
 
-        form_payload_schema = {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["component", "props"],
-            "properties": {
-                "component": {"type": "string", "enum": ["form"]},
-                "props": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": ["title", "fields"],
-                    "properties": {
+        form_payload_schema = WidgetPropertySchema(
+            type=WidgetSchemaType.OBJECT,
+            additionalProperties=False,
+            required=["component", "props"],
+            properties={
+                "component": WidgetPropertySchema(
+                    type=WidgetSchemaType.STRING, enum=[CompoundComponentKind.FORM]
+                ),
+                "props": WidgetPropertySchema(
+                    type=WidgetSchemaType.OBJECT,
+                    additionalProperties=False,
+                    required=["title", "fields"],
+                    properties={
                         "title": string_schema(),
                         "description": string_schema(True),
-                        "fields": {
-                            "type": "array",
-                            "minItems": 1,
-                            "items": {
-                                "type": "object",
-                                "additionalProperties": False,
-                                "required": ["type", "name", "label"],
-                                "properties": {
-                                    "type": {
-                                        "type": "string",
-                                        "enum": [
-                                            "text",
-                                            "email",
-                                            "phone",
-                                            "number",
-                                            "textarea",
-                                            "select",
-                                            "radio",
-                                            "checkbox",
-                                            "date",
-                                            "time",
-                                            "datetime",
-                                        ],
-                                    },
+                        "fields": WidgetPropertySchema(
+                            type=WidgetSchemaType.ARRAY,
+                            minItems=1,
+                            items=WidgetPropertySchema(
+                                type=WidgetSchemaType.OBJECT,
+                                additionalProperties=False,
+                                required=["type", "name", "label"],
+                                properties={
+                                    "type": WidgetPropertySchema(
+                                        type=WidgetSchemaType.STRING,
+                                        enum=[item.value for item in WidgetFieldKind],
+                                    ),
                                     "name": string_schema(),
                                     "label": string_schema(),
                                     "placeholder": string_schema(True),
                                     "required": boolean_schema(True),
                                     "defaultValue": any_schema(True),
-                                    "options": {
-                                        "type": "array",
-                                        "optional": True,
-                                        "items": option_schema,
-                                        "minItems": 1,
-                                    },
-                                    "validation": {
-                                        **field_validation_schema,
-                                        "optional": True,
-                                    },
+                                    "options": WidgetPropertySchema(
+                                        type=WidgetSchemaType.ARRAY,
+                                        optional=True,
+                                        items=option_schema,
+                                        minItems=1,
+                                    ),
+                                    "validation": WidgetPropertySchema(
+                                        type=field_validation_schema.type,
+                                        additionalProperties=field_validation_schema.additional_properties,
+                                        properties=field_validation_schema.properties,
+                                        optional=True,
+                                    ),
                                 },
-                            },
-                        },
+                            ),
+                        ),
                         "submitLabel": string_schema(True),
                         "cancelLabel": string_schema(True),
                     },
-                },
+                ),
             },
-        }
+        )
 
         return {
-            "form": WidgetCatalogEntry(
-                component="form",
-                version="1",
-                status="active",
+            CompoundComponentKind.FORM: WidgetCatalogEntry(
+                component=CompoundComponentKind.FORM,
+                version=_CATALOG_VERSION,
+                status=WidgetCatalogStatus.ACTIVE,
                 description="Multi-field form for collecting structured input.",
                 schema=form_payload_schema,
                 when_to_use=[
@@ -277,55 +286,54 @@ class CompoundWidgetSchemaValidatorService:
                     }
                 ).model_dump(exclude_none=True, by_alias=True),
             ),
-            "button_group": WidgetCatalogEntry(
-                component="button_group",
-                version="1",
-                status="active",
+            CompoundComponentKind.BUTTON_GROUP: WidgetCatalogEntry(
+                component=CompoundComponentKind.BUTTON_GROUP,
+                version=_CATALOG_VERSION,
+                status=WidgetCatalogStatus.ACTIVE,
                 description="Quick-choice buttons for single-select decisions.",
-                schema={
-                    "type": "object",
-                    "required": ["component", "props"],
-                    "properties": {
-                        "component": {"type": "string", "enum": ["button_group"]},
-                        "props": {
-                            "type": "object",
-                            "required": ["buttons"],
-                            "properties": {
+                schema=WidgetPropertySchema(
+                    type=WidgetSchemaType.OBJECT,
+                    required=["component", "props"],
+                    properties={
+                        "component": WidgetPropertySchema(
+                            type=WidgetSchemaType.STRING,
+                            enum=[CompoundComponentKind.BUTTON_GROUP],
+                        ),
+                        "props": WidgetPropertySchema(
+                            type=WidgetSchemaType.OBJECT,
+                            required=["buttons"],
+                            properties={
                                 "question": string_schema(True),
-                                "buttons": {
-                                    "type": "array",
-                                    "minItems": 1,
-                                    "items": {
-                                        "type": "object",
-                                        "required": ["value", "label"],
-                                        "properties": {
+                                "buttons": WidgetPropertySchema(
+                                    type=WidgetSchemaType.ARRAY,
+                                    minItems=1,
+                                    items=WidgetPropertySchema(
+                                        type=WidgetSchemaType.OBJECT,
+                                        required=["value", "label"],
+                                        properties={
                                             "value": string_schema(),
                                             "label": string_schema(),
-                                            "variant": {
-                                                "type": "string",
-                                                "optional": True,
-                                                "enum": [
-                                                    "primary",
-                                                    "secondary",
-                                                    "destructive",
-                                                    "ghost",
-                                                    "outline",
-                                                    "link",
+                                            "variant": WidgetPropertySchema(
+                                                type=WidgetSchemaType.STRING,
+                                                optional=True,
+                                                enum=[
+                                                    item.value
+                                                    for item in WidgetButtonVariant
                                                 ],
-                                            },
+                                            ),
                                             "icon": string_schema(True),
                                         },
-                                    },
-                                },
-                                "layout": {
-                                    "type": "string",
-                                    "optional": True,
-                                    "enum": ["horizontal", "vertical"],
-                                },
+                                    ),
+                                ),
+                                "layout": WidgetPropertySchema(
+                                    type=WidgetSchemaType.STRING,
+                                    optional=True,
+                                    enum=[item.value for item in WidgetButtonLayout],
+                                ),
                             },
-                        },
+                        ),
                     },
-                },
+                ),
                 when_to_use=[
                     "yes/no or multiple-choice questions",
                     "quick-select from a small set of options",
@@ -359,53 +367,56 @@ class CompoundWidgetSchemaValidatorService:
                     }
                 ).model_dump(exclude_none=True, by_alias=True),
             ),
-            "card_list": WidgetCatalogEntry(
-                component="card_list",
-                version="1",
-                status="active",
+            CompoundComponentKind.CARD_LIST: WidgetCatalogEntry(
+                component=CompoundComponentKind.CARD_LIST,
+                version=_CATALOG_VERSION,
+                status=WidgetCatalogStatus.ACTIVE,
                 description="Selectable list of rich cards for browsing and choosing items.",
-                schema={
-                    "type": "object",
-                    "required": ["component", "props"],
-                    "properties": {
-                        "component": {"type": "string", "enum": ["card_list"]},
-                        "props": {
-                            "type": "object",
-                            "required": ["cards"],
-                            "properties": {
+                schema=WidgetPropertySchema(
+                    type=WidgetSchemaType.OBJECT,
+                    required=["component", "props"],
+                    properties={
+                        "component": WidgetPropertySchema(
+                            type=WidgetSchemaType.STRING,
+                            enum=[CompoundComponentKind.CARD_LIST],
+                        ),
+                        "props": WidgetPropertySchema(
+                            type=WidgetSchemaType.OBJECT,
+                            required=["cards"],
+                            properties={
                                 "title": string_schema(True),
                                 "description": string_schema(True),
-                                "cards": {
-                                    "type": "array",
-                                    "minItems": 1,
-                                    "items": {
-                                        "type": "object",
-                                        "required": ["id", "title"],
-                                        "properties": {
+                                "cards": WidgetPropertySchema(
+                                    type=WidgetSchemaType.ARRAY,
+                                    minItems=1,
+                                    items=WidgetPropertySchema(
+                                        type=WidgetSchemaType.OBJECT,
+                                        required=["id", "title"],
+                                        properties={
                                             "id": string_schema(),
                                             "title": string_schema(),
                                             "description": string_schema(True),
                                             "image": string_schema(True),
                                             "price": string_schema(True),
                                             "badge": string_schema(True),
-                                            "features": {
-                                                "type": "array",
-                                                "optional": True,
-                                                "items": string_schema(),
-                                            },
+                                            "features": WidgetPropertySchema(
+                                                type=WidgetSchemaType.ARRAY,
+                                                optional=True,
+                                                items=string_schema(),
+                                            ),
                                         },
-                                    },
-                                },
-                                "selectionMode": {
-                                    "type": "string",
-                                    "optional": True,
-                                    "enum": ["single", "multiple"],
-                                },
+                                    ),
+                                ),
+                                "selectionMode": WidgetPropertySchema(
+                                    type=WidgetSchemaType.STRING,
+                                    optional=True,
+                                    enum=[item.value for item in WidgetSelectionMode],
+                                ),
                                 "submitLabel": string_schema(True),
                             },
-                        },
+                        ),
                     },
-                },
+                ),
                 when_to_use=[
                     "product or plan selection",
                     "browsable lists with rich detail per item",
@@ -448,37 +459,40 @@ class CompoundWidgetSchemaValidatorService:
                     }
                 ).model_dump(exclude_none=True, by_alias=True),
             ),
-            "date_picker": WidgetCatalogEntry(
-                component="date_picker",
-                version="1",
-                status="active",
+            CompoundComponentKind.DATE_PICKER: WidgetCatalogEntry(
+                component=CompoundComponentKind.DATE_PICKER,
+                version=_CATALOG_VERSION,
+                status=WidgetCatalogStatus.ACTIVE,
                 description="Single date, time, or datetime picker.",
-                schema={
-                    "type": "object",
-                    "required": ["component", "props"],
-                    "properties": {
-                        "component": {"type": "string", "enum": ["date_picker"]},
-                        "props": {
-                            "type": "object",
-                            "required": ["label", "name"],
-                            "properties": {
+                schema=WidgetPropertySchema(
+                    type=WidgetSchemaType.OBJECT,
+                    required=["component", "props"],
+                    properties={
+                        "component": WidgetPropertySchema(
+                            type=WidgetSchemaType.STRING,
+                            enum=[CompoundComponentKind.DATE_PICKER],
+                        ),
+                        "props": WidgetPropertySchema(
+                            type=WidgetSchemaType.OBJECT,
+                            required=["label", "name"],
+                            properties={
                                 "label": string_schema(),
                                 "name": string_schema(),
                                 "description": string_schema(True),
-                                "mode": {
-                                    "type": "string",
-                                    "optional": True,
-                                    "enum": ["date", "time", "datetime"],
-                                },
+                                "mode": WidgetPropertySchema(
+                                    type=WidgetSchemaType.STRING,
+                                    optional=True,
+                                    enum=[item.value for item in WidgetDateMode],
+                                ),
                                 "placeholder": string_schema(True),
                                 "required": boolean_schema(True),
                                 "defaultValue": string_schema(True),
                                 "submitLabel": string_schema(True),
                                 "validation": date_validation_schema,
                             },
-                        },
+                        ),
                     },
-                },
+                ),
                 when_to_use=[
                     "scheduling appointments or meetings",
                     "collecting a single date or time value",
@@ -508,32 +522,35 @@ class CompoundWidgetSchemaValidatorService:
                     }
                 ).model_dump(exclude_none=True, by_alias=True),
             ),
-            "alert": WidgetCatalogEntry(
-                component="alert",
-                version="1",
-                status="active",
+            CompoundComponentKind.ALERT: WidgetCatalogEntry(
+                component=CompoundComponentKind.ALERT,
+                version=_CATALOG_VERSION,
+                status=WidgetCatalogStatus.ACTIVE,
                 description="Informational or warning banner for contextual messages.",
-                schema={
-                    "type": "object",
-                    "required": ["component", "props"],
-                    "properties": {
-                        "component": {"type": "string", "enum": ["alert"]},
-                        "props": {
-                            "type": "object",
-                            "required": ["message"],
-                            "properties": {
+                schema=WidgetPropertySchema(
+                    type=WidgetSchemaType.OBJECT,
+                    required=["component", "props"],
+                    properties={
+                        "component": WidgetPropertySchema(
+                            type=WidgetSchemaType.STRING,
+                            enum=[CompoundComponentKind.ALERT],
+                        ),
+                        "props": WidgetPropertySchema(
+                            type=WidgetSchemaType.OBJECT,
+                            required=["message"],
+                            properties={
                                 "title": string_schema(True),
                                 "message": string_schema(),
                                 "dismissible": boolean_schema(True),
-                                "severity": {
-                                    "type": "string",
-                                    "optional": True,
-                                    "enum": ["info", "success", "warning", "error"],
-                                },
+                                "severity": WidgetPropertySchema(
+                                    type=WidgetSchemaType.STRING,
+                                    optional=True,
+                                    enum=[item.value for item in WidgetAlertSeverity],
+                                ),
                             },
-                        },
+                        ),
                     },
-                },
+                ),
                 when_to_use=[
                     "showing important notices before or after forms",
                     "success/error feedback after an action",
@@ -611,7 +628,7 @@ class CompoundWidgetSchemaValidatorService:
     def _format_component_section(
         self,
         entry: WidgetCatalogEntry,
-        props_schema: Dict[str, Any],
+        props_schema: WidgetPropertySchema,
     ) -> str:
         """Format a single component's documentation for the tool description.
 
@@ -622,8 +639,8 @@ class CompoundWidgetSchemaValidatorService:
         lines: List[str] = []
         lines.append(f"**{entry.component}** — {entry.description}")
 
-        required_props = props_schema.get("required", [])
-        prop_defs = props_schema.get("properties", {})
+        required_props = props_schema.required
+        prop_defs = props_schema.properties or {}
 
         prop_parts: List[str] = []
         for prop_name, prop_def in prop_defs.items():
@@ -635,7 +652,7 @@ class CompoundWidgetSchemaValidatorService:
                 detail_lines[0] = f"{detail_lines[0]}{req_marker}"
                 prop_parts.append("\n".join(detail_lines))
             else:
-                p_type = prop_def.get("type", "any")
+                p_type = prop_def.type or WidgetSchemaType.ANY
                 prop_parts.append(f"- {prop_name}: {p_type}{req_marker}")
 
         if prop_parts:
@@ -648,31 +665,34 @@ class CompoundWidgetSchemaValidatorService:
         return "\n".join(lines)
 
     @staticmethod
-    def _format_prop_detail(prop_name: str, prop_def: Dict[str, Any]) -> str:
+    def _format_prop_detail(prop_name: str, prop_def: WidgetPropertySchema) -> str:
         """Return a human-readable one-liner for a prop schema, or empty string."""
-        p_type = prop_def.get("type", "")
+        p_type = prop_def.type
 
-        if "enum" in prop_def:
-            return f"- {prop_name}: one of {prop_def['enum']}"
+        if prop_def.enum is not None:
+            return f"- {prop_name}: one of {prop_def.enum}"
 
-        if p_type == "array" and "items" in prop_def:
-            items = prop_def["items"]
-            if items.get("type") == "object" and "properties" in items:
-                field_keys = list(items["properties"].keys())
-                required_keys = items.get("required", [])
+        if p_type == WidgetSchemaType.ARRAY and prop_def.items is not None:
+            items = prop_def.items
+            if items.type == WidgetSchemaType.OBJECT and items.properties is not None:
+                field_keys = list(items.properties)
+                required_keys = items.required
                 optional_keys = [k for k in field_keys if k not in required_keys]
                 parts = [f"- {prop_name}: array of objects."]
                 if required_keys:
                     parts.append(f"  Required keys: {', '.join(required_keys)}.")
                 if optional_keys:
                     parts.append(f"  Optional keys: {', '.join(optional_keys)}.")
-                for fk, fv in items["properties"].items():
-                    if "enum" in fv:
-                        parts.append(f"  {fk}: one of {fv['enum']}")
-                    if fv.get("type") == "array" and "items" in fv:
-                        nested = fv["items"]
-                        if nested.get("type") == "object" and "properties" in nested:
-                            nested_keys = list(nested["properties"].keys())
+                for fk, fv in items.properties.items():
+                    if fv.enum is not None:
+                        parts.append(f"  {fk}: one of {fv.enum}")
+                    if fv.type == WidgetSchemaType.ARRAY and fv.items is not None:
+                        nested = fv.items
+                        if (
+                            nested.type == WidgetSchemaType.OBJECT
+                            and nested.properties is not None
+                        ):
+                            nested_keys = list(nested.properties)
                             parts.append(
                                 f"  {fk}: array of objects with keys {nested_keys}"
                             )
@@ -1278,7 +1298,7 @@ Produce a valid, complete UI tree that can be rendered without errors. Keep ordi
     def _format_component_section_verbose(
         self,
         entry: WidgetCatalogEntry,
-        props_schema: Dict[str, Any],
+        props_schema: WidgetPropertySchema,
     ) -> str:
         """Original verbose component section format used by v2.
 
@@ -1291,8 +1311,8 @@ Produce a valid, complete UI tree that can be rendered without errors. Keep ordi
         lines.append(f"When to use: {'; '.join(entry.when_to_use)}.")
         lines.append(f"Rules: {'; '.join(entry.rules)}.")
 
-        required_props = props_schema.get("required", [])
-        prop_defs = props_schema.get("properties", {})
+        required_props = props_schema.required
+        prop_defs = props_schema.properties or {}
 
         if required_props:
             lines.append(f"Required props: {', '.join(required_props)}.")
@@ -1309,63 +1329,64 @@ Produce a valid, complete UI tree that can be rendered without errors. Keep ordi
         lines.append(f"Example: {json.dumps(entry.example_payload, sort_keys=True)}")
         return "\n".join(lines)
 
-    def build_tool_input_schema(self) -> Dict[str, Any]:
+    def build_tool_input_schema(self) -> PlatformToolInputSchema:
         """Build Anthropic-compatible input schema for compound_render_widget.
 
         Uses a flat object with `components` array and `root` string —
         no top-level oneOf/allOf/anyOf.
         """
-        return {
-            "type": "object",
-            "required": ["components", "root"],
-            "additionalProperties": False,
-            "properties": {
-                "components": {
-                    "type": "array",
-                    "description": (
+        return PlatformToolInputSchema(
+            required=["components", "root"],
+            additional_properties=False,
+            properties={
+                "components": WidgetPropertySchema(
+                    type=WidgetSchemaType.ARRAY,
+                    description=(
                         "Flat list of component nodes. "
                         "Each node has an id, component type, props, "
                         "and optional children (for layout components only)."
                     ),
-                    "minItems": 1,
-                    "maxItems": COMPOUND_MAX_COMPONENTS,
-                    "items": {
-                        "type": "object",
-                        "required": ["id", "component", "props", "children"],
-                        "additionalProperties": False,
-                        "properties": {
-                            "id": {
-                                "type": "string",
-                                "description": "Unique identifier for this component.",
-                            },
-                            "component": {
-                                "type": "string",
-                                "enum": ALL_COMPOUND_COMPONENT_TYPES,
-                                "description": "Component type.",
-                            },
-                            "props": {
-                                "type": "string",
-                                "description": (
+                    minItems=1,
+                    maxItems=COMPOUND_MAX_COMPONENTS,
+                    items=WidgetPropertySchema(
+                        type=WidgetSchemaType.OBJECT,
+                        required=["id", "component", "props", "children"],
+                        additionalProperties=False,
+                        properties={
+                            "id": WidgetPropertySchema(
+                                type=WidgetSchemaType.STRING,
+                                description="Unique identifier for this component.",
+                            ),
+                            "component": WidgetPropertySchema(
+                                type=WidgetSchemaType.STRING,
+                                enum=ALL_COMPOUND_COMPONENT_TYPES,
+                                description="Component type.",
+                            ),
+                            "props": WidgetPropertySchema(
+                                type=WidgetSchemaType.STRING,
+                                description=(
                                     "JSON-serialized object of component-specific "
                                     "properties. Must be a valid JSON object string. "
                                     "See the tool description for each component's schema."
                                 ),
-                            },
-                            "children": {
-                                "type": ["array", "null"],
-                                "items": {"type": "string"},
-                                "description": (
+                            ),
+                            "children": WidgetPropertySchema(
+                                type=[WidgetSchemaType.ARRAY, WidgetSchemaType.NULL],
+                                items=WidgetPropertySchema(
+                                    type=WidgetSchemaType.STRING
+                                ),
+                                description=(
                                     "Ordered child component IDs. "
                                     "Only layout components (stack, row, section) may have children. "
                                     "Use null for leaf components."
                                 ),
-                            },
+                            ),
                         },
-                    },
-                },
-                "root": {
-                    "type": "string",
-                    "description": "ID of the root component.",
-                },
+                    ),
+                ).to_json_schema(),
+                "root": WidgetPropertySchema(
+                    type=WidgetSchemaType.STRING,
+                    description="ID of the root component.",
+                ).to_json_schema(),
             },
-        }
+        )

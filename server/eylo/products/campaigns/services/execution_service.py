@@ -54,11 +54,11 @@ class CampaignExecutionService:
         )
         active = await self._contact_repo.count_by_campaign(
             campaign_id,
-            status=CampaignContactStatus.IN_PROGRESS.value,
+            status=CampaignContactStatus.IN_PROGRESS,
         )
         queued = await self._contact_repo.count_by_campaign(
             campaign_id,
-            status=CampaignContactStatus.QUEUED.value,
+            status=CampaignContactStatus.QUEUED,
         )
         slots_available = definition.concurrency_limit - active - queued
         if slots_available <= 0:
@@ -104,7 +104,7 @@ class CampaignExecutionService:
     async def _complete_if_terminal(self, campaign_id: UUID) -> None:
         status_counts = await self._contact_repo.count_by_status(campaign_id)
         non_terminal = sum(
-            status_counts.get(state.value, 0)
+            status_counts.get(state, 0)
             for state in (
                 CampaignContactStatus.PENDING,
                 CampaignContactStatus.QUEUED,

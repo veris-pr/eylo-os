@@ -35,7 +35,12 @@ from eylo.sockets.tts.adapters.hume_wire import (
 )
 from eylo.sockets.tts.base import TTSVendorAdapter
 from eylo.sockets.tts.exceptions import TTSConnectionClosed, TTSConnectionFailed
-from eylo.sockets.tts.schemas import TTSCapabilities, TTSConfig, TTSProvider
+from eylo.sockets.tts.schemas import (
+    TTSCapabilities,
+    TTSCapabilitySupport,
+    TTSConfig,
+    TTSProvider,
+)
 
 logger = logging.getLogger(__name__)
 _DEFAULT_SPEED = 1.0
@@ -350,13 +355,13 @@ class HumeTTSAdapter(TTSVendorAdapter):
     @property
     def capabilities(self) -> TTSCapabilities:
         return TTSCapabilities(
-            streaming=True,
-            batch_synthesize=False,
-            native_interruption=False,
-            aligned_transcript=False,
-            emotion_control=True,
-            speed_control=True,
-            voice_cloning=False,
-            context_continuity=False,
+            streaming=TTSCapabilitySupport.SUPPORTED,
+            batch_synthesize=TTSCapabilitySupport.UNSUPPORTED,
+            native_interruption=TTSCapabilitySupport.UNSUPPORTED,
+            aligned_transcript=TTSCapabilitySupport.UNSUPPORTED,
+            emotion_control=TTSCapabilitySupport.SUPPORTED,
+            speed_control=TTSCapabilitySupport.SUPPORTED,
+            voice_cloning=TTSCapabilitySupport.UNSUPPORTED,
+            context_continuity=TTSCapabilitySupport.UNSUPPORTED,
             sample_rates=(HUME_SAMPLE_RATE,),
         )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from eylo.modules.provider_configs.domain import ProviderConfig
 from eylo.modules.provider_configs.masking import mask_secrets
 from eylo.modules.telephony.provider_config_domain import (
     telephony_operation_matrix,
@@ -81,7 +82,7 @@ class ProviderConfigController:
         )
 
     @staticmethod
-    def _to_response(config) -> ProviderConfigApiResponseSchema:
+    def _to_response(config: ProviderConfig) -> ProviderConfigApiResponseSchema:
         return ProviderConfigApiResponseSchema(
             id=config.id,
             provider=config.provider,

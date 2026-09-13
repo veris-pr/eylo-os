@@ -3,7 +3,8 @@
 import datetime
 import logging
 from enum import Enum
-from typing import Generic, List, Optional, TypeVar
+from types import NotImplementedType
+from typing import Generic, List, Optional, Self, TypeVar
 from uuid import UUID
 
 import arrow
@@ -22,7 +23,7 @@ class EyloBaseSchema(BaseModel):
 
     @field_validator("*", mode="before")
     @classmethod
-    def normalize_uuid_fields(cls, value):
+    def normalize_uuid_fields(cls, value: object) -> object:
         return normalize_uuid_like(value)
 
 
@@ -31,7 +32,7 @@ class EyloBaseApiSchema(CamelModel):
 
     @field_validator("*", mode="before")
     @classmethod
-    def normalize_uuid_fields(cls, value):
+    def normalize_uuid_fields(cls, value: object) -> object:
         return normalize_uuid_like(value)
 
 
@@ -46,7 +47,7 @@ class EyloBaseModelSchema(BaseModel):
 
     @field_validator("*", mode="before")
     @classmethod
-    def normalize_uuid_fields(cls, value):
+    def normalize_uuid_fields(cls, value: object) -> object:
         return normalize_uuid_like(value)
 
     id: UUID = Field(..., description="Auto-generated unique identifier")
@@ -138,7 +139,7 @@ class CaseInSensitiveEnum(str, Enum):
     """CaseInSensitiveEnum behavior for the "common" platform."""
 
     @classmethod
-    def _missing_(cls, value):
+    def _missing_(cls, value: object) -> Self | None:
         """Missing for the "common" platform."""
         # Handle case where value is already an enum member
         if isinstance(value, cls):
@@ -175,7 +176,7 @@ class CaseInSensitiveEnum(str, Enum):
                     )
                     return None
 
-    def __eq__(self, other):
+    def __eq__(self, other: object) -> bool | NotImplementedType:
         """Enable case-insensitive string comparison."""
         if isinstance(other, str):
             return str(self.value).lower() == other.lower()

@@ -1,6 +1,8 @@
 """Shared SQLAlchemy model bases and tenant-scoping constraints."""
 
 import uuid
+from datetime import datetime
+from typing import Protocol
 
 import arrow
 import uuid_utils
@@ -16,7 +18,7 @@ def _uuid7() -> uuid.UUID:
     return uuid.UUID(str(uuid_utils.uuid7()))
 
 
-def register_models():
+def register_models() -> None:
     """Register all SQLAlchemy models from different modules.
 
     This function imports models from various Eylo modules to ensure
@@ -91,23 +93,13 @@ def register_models():
     )
 
 
-def server_now():
-    """Get the current UTC time.
-
-    Returns:
-        datetime: Current UTC time as a datetime object.
-
-    """
+def server_now() -> datetime:
+    """Return a timezone-aware UTC timestamp for application-side updates."""
     return arrow.utcnow().datetime
 
 
-def get_uuid_to_str():
-    """Generate a new UUID and return it as a string.
-
-    Returns:
-        str: A new UUID as a string.
-
-    """
+def get_uuid_to_str() -> str:
+    """Generate a UUID7 string for the external-identity default."""
     return str(uuid_utils.uuid7())
 
 
@@ -124,8 +116,14 @@ def slugify_column(value: str) -> str:
     return slugify(value, separator="_")
 
 
-def validate_name_and_generate_slug(instance, key, name):
-    """Validate a name and generate a slug for it."""
+class _SlugOwner(Protocol):
+    """Structural contract for ORM models with a name-derived slug."""
+
+    slug: Mapped[str]
+
+
+def validate_name_and_generate_slug(instance: _SlugOwner, key: str, name: str) -> str:
+    """Regenerate the slug for nonempty names; retain it for an empty name."""
     if name:
         instance.slug = slugify_column(name)
     return name
@@ -146,8 +144,8 @@ class EyloBaseModel(Base):
         UUID(as_uuid=True), default=_uuid7, primary_key=True
     )
 
-    deleted = mapped_column(Boolean, nullable=False, server_default="false")
-    created_at = mapped_column(
+    deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(
             timezone=True,
         ),
@@ -155,7 +153,7 @@ class EyloBaseModel(Base):
         nullable=False,
         index=True,
     )
-    updated_at = mapped_column(
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime(
             timezone=True,
         ),
@@ -178,14 +176,14 @@ class EyloOrganizationModel(EyloBaseModel):
         default=uuid_utils.uuid7,
     )
 
-    external_id = mapped_column(
+    external_id: Mapped[str | None] = mapped_column(
         String(320),
         default=get_uuid_to_str,
         unique=False,
     )
 
     @staticmethod
-    def get_organization_constraints(tablename: str):
+    def get_organization_constraints(tablename: str) -> list[Index]:
         """Return constraints that should be included in all organization models."""
         return [
             Index(

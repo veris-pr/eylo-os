@@ -4,13 +4,15 @@ import json
 
 import nh3 as bleach
 from fastapi import Request
-from starlette.middleware.base import BaseHTTPMiddleware
+from pydantic import JsonValue
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.responses import Response
 
 _SIGNED_WEBHOOK_PATH_PREFIX = "/api/sor/webhooks/"
 
 
 class BleachSanitizeBodyMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         preserves_signed_body = request.url.path.startswith(
             _SIGNED_WEBHOOK_PATH_PREFIX
         )
@@ -19,7 +21,7 @@ class BleachSanitizeBodyMiddleware(BaseHTTPMiddleware):
             and not preserves_signed_body
         ):
             try:
-                body = await request.json()
+                body: JsonValue = await request.json()
                 sanitized = self._sanitize_dict(body)
                 # Set sanitized body for downstream usage
                 request._body = json.dumps(sanitized).encode("utf-8")
@@ -29,7 +31,7 @@ class BleachSanitizeBodyMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         return response
 
-    def _sanitize_dict(self, data):
+    def _sanitize_dict(self, data: JsonValue) -> JsonValue:
         if isinstance(data, dict):
             return {k: self._sanitize_dict(v) for k, v in data.items()}
         elif isinstance(data, list):

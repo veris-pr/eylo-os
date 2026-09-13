@@ -14,6 +14,7 @@ from eylo.modules.contacts.schemas.indb import (
     ContactInDb,
     ContactRef,
 )
+from eylo.modules.conversations.constants import DELETED_CONTACT_ENTITY_ID
 from eylo.modules.conversations.models.participants import ParticipantsModel
 from eylo.modules.conversations.repositories.participants import (
     ConversationParticipantRepository,
@@ -41,7 +42,7 @@ class ConversationParticipantService(
         return self._repository
 
     @repository.setter
-    def repository(self, value: ConversationParticipantRepository):
+    def repository(self, value: ConversationParticipantRepository) -> None:
         self._repository = value
 
     @staticmethod
@@ -66,18 +67,25 @@ class ConversationParticipantService(
     def filter_contact_participants(
         participants: List[ParticipantInDb],
     ) -> List[ParticipantInDb]:
-        """Filter participants to only include contacts."""
-        return [p for p in participants if p.entity_kind == ParticipantKind.CONTACT]
+        """Select contact identities, excluding erased historical placeholders."""
+        return [
+            p
+            for p in participants
+            if p.entity_kind == ParticipantKind.CONTACT
+            and p.entity_id != DELETED_CONTACT_ENTITY_ID
+        ]
 
     @staticmethod
     def filter_primary_contact_participant(
         participants: List[ParticipantInDb],
     ) -> List[ParticipantInDb]:
-        """Filter participants to only include primary contacts."""
+        """Select primary contact identities without erased placeholders."""
         return [
             p
             for p in participants
-            if p.entity_kind == ParticipantKind.CONTACT and p.is_primary
+            if p.entity_kind == ParticipantKind.CONTACT
+            and p.is_primary
+            and p.entity_id != DELETED_CONTACT_ENTITY_ID
         ]
 
     def __init__(self, db: Optional[AsyncSession] = None) -> None:

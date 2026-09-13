@@ -125,6 +125,15 @@ vendor failures keep their adapter-owned classification. None of these value
 contracts grants authority: command execution still rechecks live source, grant,
 published revision and run state at the existing transaction boundaries.
 
+`SorCommandIntent` defines the existing idempotency-hash input; its JSON encoding
+preserves the previous field names, UUID strings, explicit null target and revision
+policy value. `SorStoredCommandRequest` defines the encrypted mutation wrapper.
+Filing serializes it for encryption; claim loading validates it before resolving
+the profile-owned command payload. Missing legacy nullable target fields remain
+supported. Unknown fields, invalid target types and non-finite payload values are
+refused with a safe command-payload error. Encryption remains bound to the same
+organization, command ID and purpose; neither contract can supply new authority.
+
 Command receipts remain typed through worker execution and Agent-tool resume.
 Sync, webhook and command producers select their ID-only task model from the
 persisted work type, rather than accepting an arbitrary dictionary key. The same
@@ -782,6 +791,22 @@ are excluded from snapshots and generated schemas. Only the explicit grid and
 row response projections go to the API. A custom dataset has no profile
 extension and may use a computed field such as its coalesced record label;
 canonical entity specs reject such fields before selective ORM loading.
+
+Pagination envelopes and tagged scalar values are validated Pydantic objects.
+Decimal, date, offset-aware datetime and UUID tags retain the existing token
+encoding. A token remains bound to its query; organization/source authority is
+resolved separately. Boolean cursor comparisons use typed SQL bind values so
+PostgreSQL can page grouped boolean fields, including nulls. The SQLAlchemy
+`ColumnElement` value parameter remains heterogeneous at the query-builder
+boundary; mapped attributes and JSON result conversions have explicit contracts.
+
+Agent pagination has its own frozen query identity and version-two cursor model.
+It preserves existing query fingerprints and timestamp offsets. Both initial and
+subsequent pages resolve live Agent/source grants; a cursor cannot grant access.
+Unknown cursor fields, invalid versions and timezone-naive boundaries are refused.
+Source purge helpers accept only source-owned models; work selection pairs each
+model with its own lifecycle enum. Their organization/source predicates and FK-safe
+purge order remain unchanged, including removal of soft-deleted source-owned rows.
 
 The console grid is an audit surface for the same projection Agents use. Eylo
 owns the renderer-independent `sor-grid-v1` contract:

@@ -18,6 +18,7 @@ from eylo.modules.user_sessions.fact_payloads import SessionLifecycleFact
 from eylo.common.contracts.voice import BrowserVoiceTerminationReason
 from eylo.common.contracts.websocket import WsResponse
 from eylo.common.database import start_transaction
+from eylo.common.identifiers import as_stdlib_uuid
 from eylo.modules.auth.services.session_service import AuthSessionService
 from eylo.modules.user_sessions.domain import (
     UserSessionEntryChannel,
@@ -27,6 +28,7 @@ from eylo.modules.user_sessions.domain import (
 )
 from eylo.modules.user_sessions.events import file_user_session_fact
 from eylo.modules.user_sessions.service import UserSessionService
+from eylo.modules.user_sessions.schemas import UserSessionInitialized
 from eylo.pipelines.websocket.handlers import handle_event
 from eylo.pipelines.websocket.audio_frame import WsBinaryAudioRequest
 from eylo.pipelines.websocket.schemas import WebSocketClientInfo, WsEventAction
@@ -59,7 +61,7 @@ class WebSocketController:
         session_id: str,
         requested_user_session_id: UUID | None = None,
         request: Optional[HTTPConnection] = None,
-    ):
+    ) -> None:
         """Handles the entire lifecycle of a WebSocket connection."""
         async with start_transaction() as db:
             auth_session = await AuthSessionService(db).validate_session_token(
@@ -180,12 +182,11 @@ class WebSocketController:
                 kind=WsEventAction.SESSION_INITIALIZED,
                 organization_id=organization_id,
                 session_id=transport_session_id,
-                data={
-                    "user_session_id": str(user_session_id),
-                    "connection_sequence": connection_sequence,
-                    "created": started.created,
-                    "reconnected": started.reconnected,
-                },
+                data=UserSessionInitialized(
+                    user_session_id=as_stdlib_uuid(user_session_id),
+                    connection_sequence=connection_sequence,
+                    outcome=started.outcome,
+                ).model_dump(mode="json"),
             ),
             organization_id,
             transport_session_id,

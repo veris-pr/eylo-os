@@ -674,20 +674,27 @@ def _detach_conversation(
     campaign_contact_ids: set[UUID],
     attempt_ids: set[UUID],
 ) -> None:
+    meta = dict(conversation.meta or {})
+    stored_context = meta.get("context") or {}
+    if not isinstance(stored_context, dict):
+        # Do not silently skip potentially identifying data during erasure.
+        raise ValueError("Conversation context must be a JSON object for detachment.")
+    context = stored_context.copy()
+    contact_value = context.get("campaign_contact_id")
+    attempt_value = context.get("campaign_attempt_id")
+    if isinstance(contact_value, (dict, list)) or isinstance(attempt_value, (dict, list)):
+        raise ValueError("Campaign references must be scalar JSON values for detachment.")
+
     if conversation.external_id in {
         f"campaign-attempt:{attempt_id}" for attempt_id in attempt_ids
     }:
         conversation.external_id = None
 
-    meta = dict(conversation.meta or {})
-    context = dict(meta.get("context") or {})
-    contact_value = context.get("campaign_contact_id")
-    attempt_value = context.get("campaign_attempt_id")
     if contact_value in {str(value) for value in campaign_contact_ids}:
         context.pop("campaign_contact_id", None)
     if attempt_value in {str(value) for value in attempt_ids}:
         context.pop("campaign_attempt_id", None)
-    if context != (meta.get("context") or {}):
+    if context != stored_context:
         if context:
             meta["context"] = context
         else:

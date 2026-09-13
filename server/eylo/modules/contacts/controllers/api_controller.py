@@ -38,8 +38,7 @@ from eylo.pipelines.deletions.request import DeletionRequestUseCase
 class ContactController:
     """Controller for handling contact-related operations."""
 
-    def __init__(self):
-        """Initialize the ContactController."""
+    def __init__(self) -> None:
         self.service = ContactService()
 
     @staticmethod
@@ -154,7 +153,7 @@ class ContactController:
         organization_id: UUID,
         request: ContactCreateRequestSchema,
         current_user: CurrentUserSchema,
-    ):
+    ) -> ContactApiResponseSchema:
         """Create a new contact."""
         organization_id = self._member_organization(organization_id, current_user)
         contact = None

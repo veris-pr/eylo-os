@@ -11,7 +11,11 @@ from eylo.products.campaigns.channel_config import (
     CampaignChannelConfig,
     CampaignChannelFields,
 )
-from eylo.products.campaigns.constants import CampaignChannel
+from eylo.products.campaigns.constants import (
+    CampaignChannel,
+    CampaignContactStatus,
+    CampaignStatus,
+)
 from eylo.products.campaigns.domain import (
     CampaignRetryPolicy,
     CampaignScheduleConfig,
@@ -22,7 +26,7 @@ from eylo.products.campaigns.domain import (
 class CampaignModelSchema(EyloOrganizationModelSchema, CampaignChannelFields):
     name: str
     description: Optional[str] = None
-    status: str = "draft"
+    status: CampaignStatus = CampaignStatus.DRAFT
     agent_id: UUID
     agent_revision: int
     published_revision: int
@@ -94,7 +98,7 @@ class CampaignContactModelSchema(EyloOrganizationModelSchema):
     campaign_revision: Optional[int] = None
     contact_id: Optional[UUID] = None
     contact_address: str
-    status: str = "pending"
+    status: CampaignContactStatus = CampaignContactStatus.PENDING
     attempt_count: int = 0
     last_attempt_at: Optional[datetime.datetime] = None
     next_retry_at: Optional[datetime.datetime] = None

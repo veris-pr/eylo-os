@@ -6,6 +6,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.database import get_transaction
 from eylo.modules.memory_configs.resolver import MemoryConfigResolver
+from eylo.modules.memory_configs.service import (
+    MemoryConfigReferences,
+    MemoryConfigService,
+)
 from eylo.modules.provider_configs.crypto import get_secret_cipher
 from eylo.modules.provider_configs.repository import ProviderConfigRepository
 from eylo.modules.provider_configs.service import ProviderConfigService
@@ -25,10 +29,8 @@ def build_memory_config_resolver(
 def build_memory_config_service(
     db: AsyncSession | None = None,
     *,
-    references=None,
-):
-    from eylo.modules.memory_configs.service import MemoryConfigService
-
+    references: MemoryConfigReferences | None = None,
+) -> MemoryConfigService:
     return MemoryConfigService(
         _provider_config_service(db),
         references=references,

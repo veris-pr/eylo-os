@@ -87,7 +87,7 @@ class TTSFactory:
             if key in known or key == "options" or value is None:
                 continue
             options[key] = value
-        return config.model_copy(update={"options": options})
+        return TTSConfig.model_validate(config.model_copy(update={"options": options}))
 
     def create_tts(self) -> TTSVendorAdapter:
         if self._tts_vendor is TTSProvider.AMAZON_POLLY:

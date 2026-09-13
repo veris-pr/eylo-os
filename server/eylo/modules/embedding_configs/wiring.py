@@ -8,6 +8,10 @@ from eylo.common.config import settings
 from eylo.common.database import get_transaction
 from eylo.modules.embedding_configs.domain import EmbeddingEndpointPolicy
 from eylo.modules.embedding_configs.resolver import EmbeddingConfigResolver
+from eylo.modules.embedding_configs.service import (
+    EmbeddingConfigReferences,
+    EmbeddingConfigService,
+)
 from eylo.modules.provider_configs.crypto import get_secret_cipher
 from eylo.modules.provider_configs.repository import ProviderConfigRepository
 from eylo.modules.provider_configs.service import ProviderConfigService
@@ -27,10 +31,8 @@ def build_embedding_config_resolver(
 def build_embedding_config_service(
     db: AsyncSession | None = None,
     *,
-    references=None,
-):
-    from eylo.modules.embedding_configs.service import EmbeddingConfigService
-
+    references: EmbeddingConfigReferences | None = None,
+) -> EmbeddingConfigService:
     return EmbeddingConfigService(
         _provider_config_service(db),
         endpoint_policy=build_embedding_endpoint_policy(),

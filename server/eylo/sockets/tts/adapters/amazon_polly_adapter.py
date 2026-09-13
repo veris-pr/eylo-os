@@ -24,7 +24,12 @@ from eylo.sockets.tts.adapters.polly_wire import (
 )
 from eylo.sockets.tts.base import TTSVendorAdapter
 from eylo.sockets.tts.exceptions import TTSConnectionClosed, TTSConnectionFailed
-from eylo.sockets.tts.schemas import TTSCapabilities, TTSConfig, TTSProvider
+from eylo.sockets.tts.schemas import (
+    TTSCapabilities,
+    TTSCapabilitySupport,
+    TTSConfig,
+    TTSProvider,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -185,15 +190,15 @@ class AmazonPollyTTSAdapter(TTSVendorAdapter):
     @property
     def capabilities(self) -> TTSCapabilities:
         return TTSCapabilities(
-            streaming=True,
-            batch_synthesize=True,
-            native_interruption=False,
-            aligned_transcript=False,
-            emotion_control=False,
-            speed_control=False,
-            voice_cloning=False,
-            context_continuity=False,
-            word_timestamps=False,
+            streaming=TTSCapabilitySupport.SUPPORTED,
+            batch_synthesize=TTSCapabilitySupport.SUPPORTED,
+            native_interruption=TTSCapabilitySupport.UNSUPPORTED,
+            aligned_transcript=TTSCapabilitySupport.UNSUPPORTED,
+            emotion_control=TTSCapabilitySupport.UNSUPPORTED,
+            speed_control=TTSCapabilitySupport.UNSUPPORTED,
+            voice_cloning=TTSCapabilitySupport.UNSUPPORTED,
+            context_continuity=TTSCapabilitySupport.UNSUPPORTED,
+            word_timestamps=TTSCapabilitySupport.UNSUPPORTED,
             sample_rates=POLLY_PCM_SAMPLE_RATES,
             languages_count=1,
         )

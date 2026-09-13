@@ -70,7 +70,7 @@ async def get_contact(
     organization_id: UUID,
     contact_id: UUID,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> ContactApiResponseSchema:
     return await ContactController().get_contact(
         organization_id, contact_id, current_user
     )
@@ -86,7 +86,7 @@ async def create_contact(
     organization_id: UUID,
     request: ContactCreateRequestSchema,
     current_user: CurrentUserSchema = Depends(get_current_user),
-):
+) -> ContactApiResponseSchema:
     return await ContactController().create_contact(
         organization_id,
         request,

@@ -8,7 +8,7 @@ from typing import Optional
 from uuid import UUID
 
 import arrow
-from sqlalchemy import exists, select, update
+from sqlalchemy import Exists, exists, select, update
 
 from eylo.common.repositories import BaseORMRepository, map_schema_to_model
 from eylo.modules.conversations.models.conversations import (
@@ -17,6 +17,7 @@ from eylo.modules.conversations.models.conversations import (
 )
 from eylo.modules.conversations.models.participants import ParticipantsModel
 from eylo.modules.conversations.schemas.conversations import ConversationCreate
+from eylo.modules.conversations.schemas.participants import ParticipantKind
 
 
 class ConversationRepository(BaseORMRepository[ConversationsModel]):
@@ -46,12 +47,12 @@ class ConversationRepository(BaseORMRepository[ConversationsModel]):
 
         return (await self.db_session.execute(query)).scalar_one_or_none()
 
-    def _has_active_contact_participant(self, contact_id: UUID):
+    def _has_active_contact_participant(self, contact_id: UUID) -> Exists:
         return exists(
             select(1).where(
                 ParticipantsModel.conversation_id == ConversationsModel.id,
                 ParticipantsModel.entity_id == str(contact_id),
-                ParticipantsModel.entity_kind == "CONTACT",
+                ParticipantsModel.entity_kind == ParticipantKind.CONTACT,
                 ParticipantsModel.is_active.is_(True),
             )
         )

@@ -218,15 +218,15 @@ def _stt_capabilities(native: STTCapabilities) -> STTNativeCapabilitiesRead:
 def _tts_capabilities(native: TTSCapabilities) -> TTSNativeCapabilitiesRead:
     """Synthesis capabilities are observations, not platform policy switches."""
     return TTSNativeCapabilitiesRead(
-        streaming=VoiceFeatureSupport(native.streaming),
-        batch_synthesize=VoiceFeatureSupport(native.batch_synthesize),
-        native_interruption=VoiceFeatureSupport(native.native_interruption),
-        aligned_transcript=VoiceFeatureSupport(native.aligned_transcript),
-        emotion_control=VoiceFeatureSupport(native.emotion_control),
-        speed_control=VoiceFeatureSupport(native.speed_control),
-        voice_cloning=VoiceFeatureSupport(native.voice_cloning),
-        context_continuity=VoiceFeatureSupport(native.context_continuity),
-        word_timestamps=VoiceFeatureSupport(native.word_timestamps),
+        streaming=VoiceFeatureSupport(native.streaming.value),
+        batch_synthesize=VoiceFeatureSupport(native.batch_synthesize.value),
+        native_interruption=VoiceFeatureSupport(native.native_interruption.value),
+        aligned_transcript=VoiceFeatureSupport(native.aligned_transcript.value),
+        emotion_control=VoiceFeatureSupport(native.emotion_control.value),
+        speed_control=VoiceFeatureSupport(native.speed_control.value),
+        voice_cloning=VoiceFeatureSupport(native.voice_cloning.value),
+        context_continuity=VoiceFeatureSupport(native.context_continuity.value),
+        word_timestamps=VoiceFeatureSupport(native.word_timestamps.value),
         sample_rates=native.sample_rates,
         languages_count=native.languages_count,
     )

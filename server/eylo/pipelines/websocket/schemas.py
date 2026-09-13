@@ -279,6 +279,11 @@ class WSSessionState(BaseModel):
     ] = Field(default=None, exclude=True, repr=False)
 
     @property
+    def has_audio_recorder(self) -> bool:
+        """Report recorder presence, not whether it is capturing or uploading."""
+        return self.audio_recorder is not None
+
+    @property
     def current_voice_request(self) -> VoiceRequestState | None:
         if self.current_voice_request_id is None:
             return None

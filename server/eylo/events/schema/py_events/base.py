@@ -10,6 +10,7 @@ from eylo.common.contracts.messages import MessageKind
 from eylo.common.identifiers import normalize_uuid_like
 from eylo.modules.conversations.schemas.conversations import ConversationInDb
 from eylo.modules.conversations.schemas.participants import ParticipantInDb
+from eylo.modules.integrations_v2.domain.enums import VendorAuthKind
 
 
 class BaseEvent(BaseModel):
@@ -80,7 +81,7 @@ class AuthRequiredEvent(BaseEvent):
     organization_id: UUID
     integration_id: UUID
     vendor: str
-    auth_kind: str | None = None
+    auth_kind: VendorAuthKind | None = None
     integration_name: str
     reason: str
     contact_id: UUID | None

@@ -349,7 +349,7 @@ class ProviderConfigApiResponseSchema(EyloBaseApiSchema):
     verified: bool
     ready: bool
     verified_at: datetime | None
-    config: dict[str, object]
+    config: JsonObject
     secrets: dict[str, str]
     operations: dict[TelephonyOperation, bool]
 
@@ -359,7 +359,7 @@ class ProviderConfigCreateSchema(EyloBaseApiSchema):
 
     provider: TelephonyProvider
     name: str = Field(min_length=1)
-    config: dict[str, object]
+    config: JsonObject
     secrets: dict[str, str]
 
 
@@ -367,7 +367,7 @@ class ProviderConfigUpdateSchema(EyloBaseApiSchema):
     model_config = ConfigDict(extra="forbid")
 
     name: str | None = Field(default=None, min_length=1)
-    config: dict[str, object] | None = None
+    config: JsonObject | None = None
     secrets: dict[str, str | None] | None = None
     enabled: bool | None = None
 

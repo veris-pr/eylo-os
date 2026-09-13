@@ -267,6 +267,20 @@ agent and config identities. Malformed bodies and non-ASCII signatures return an
 invalid-token result. Claim serialization includes caller text for signature
 binding and must not be used as a log snapshot.
 
+Carrier UI events carry an immutable `CallEventContext`: organization/session
+routing, pinned config and Agent revisions, call direction and typed product
+references. Producers explicitly translate live-session or committed-call values;
+there is no default direction or arbitrary keyword dictionary. Campaign UUIDs
+remain UUIDs until the WebSocket projection serializes them as strings.
+
+The six event classes pin their lifecycle state. The listener produces a flat
+`CallLifecyclePayload`, retaining the existing `call:*` actions while excluding
+routing tokens and configuration authority from client data. Optional observations
+are omitted when absent. Product metadata cannot overwrite state, provider or
+identity fields. Payload/send failures are best effort; cancellation propagates.
+These ephemeral observations do not replace durable call outcomes or alter the
+canonical status transition rules.
+
 ## Call termination
 
 The outbound-call HTTP route declares its request and result schemas. Organization
@@ -432,6 +446,19 @@ preserves the original object;
 serializing or rebuilding it would detach cleanup from the actual tasks and
 queues. Missing state is allowed during teardown, but startup requires it.
 An incompatible holder is a wiring error rather than an unchecked cast.
+
+Recording consent reads only the session port's recorder-presence predicate.
+That predicate does not expose the recorder, claim capture is active, or control
+recording. It is not an additional serialized session field.
+
+Realtime policy speech retains its request-local completion future across vendor
+awaits. Turn reset clears captured content, not the pending completion: a successful
+turn settles generation, after which the waiting caller still waits for playback
+to become idle; teardown settles it as unsuccessful before releasing the session
+reference. This keeps fast provider callbacks from erasing
+the caller's wait target and prevents disconnect from leaving a speech waiter
+until its timeout. Provider-first close and the shared, shielded teardown task
+remain responsible for resource cleanup.
 
 The WebSocket session validates resource assignments without copying their
 instances. STT queues carry audio bytes or transcript inputs; TTS queues carry

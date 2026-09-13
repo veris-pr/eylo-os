@@ -22,6 +22,7 @@ from pydantic import (
 from pydantic.json_schema import SkipJsonSchema
 from sqlalchemy import and_, or_, select
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.database import start_transaction
 from eylo.common.revisions import RevisionAvailability
@@ -45,8 +46,11 @@ from eylo.sor.runtime.command_payloads import validate_command_payload
 from eylo.sor.runtime.projection import project_source_record
 from eylo.sor.runtime.registry import SorRegistry
 from eylo.sor.runtime.serialization import (
+    SorCommandIntent,
     SorCommandTaskParams,
+    SorStoredCommandRequest,
     SorStoredCommandResult,
+    decode_command_request,
     decode_external_record,
     encode_external_record,
 )
@@ -104,6 +108,9 @@ SOR_COMMAND_WORKFLOW = "eylo.sor.execute-command.v1"
 SOR_COMMAND_WAIT_OWNER_KIND = "sor_command"
 SOR_COMMAND_MAX_PAYLOAD_BYTES = 524_288
 SOR_COMMAND_MAX_SAFE_RESULT_BYTES = 65_536
+SOR_COMMAND_MAX_TOOL_CALL_ID_LENGTH = 320
+SOR_COMMAND_MAX_ATTEMPTS = 3
+SOR_COMMAND_REQUEST_PURPOSE = "command-request"
 SOR_COMMAND_SOURCE_STATES = frozenset({SorSourceState.ACTIVE, SorSourceState.DEGRADED})
 
 SOR_COMMAND_WORK = SorWorkContract[SorCommandModel](
@@ -628,7 +635,7 @@ class SorCommandWorkflow:
 
 async def _create_command(
     *,
-    session,
+    session: AsyncSession,
     organization_id: UUID,
     source_id: UUID,
     profile_tool: str,
@@ -642,25 +649,30 @@ async def _create_command(
     registry: SorRegistry,
 ) -> tuple[SorCommandModel, bool]:
     normalized_tool_call_id = tool_call_id.strip()
-    if not 1 <= len(normalized_tool_call_id) <= 320:
+    if not 1 <= len(normalized_tool_call_id) <= SOR_COMMAND_MAX_TOOL_CALL_ID_LENGTH:
         raise SorConfigurationError("SOR tool call ID is invalid.")
     wire_payload = payload.to_wire()
     _canonical_json(wire_payload, maximum=SOR_COMMAND_MAX_PAYLOAD_BYTES)
     idempotency_key = f"sor-command:v1:{agent_run_id}:{normalized_tool_call_id}"
-    stable_intent = {
-        "organization_id": str(organization_id),
-        "source_id": str(source_id),
-        "profile_tool": profile_tool,
-        "agent_id": str(agent_id),
-        "agent_revision": agent_revision,
-        "agent_run_id": str(agent_run_id),
-        "tool_call_id": normalized_tool_call_id,
-        "target_record_id": str(target_record_id) if target_record_id else None,
-        "enforce_target_revision": enforce_target_revision,
-        "payload": wire_payload,
-    }
+    stable_intent = SorCommandIntent.model_validate(
+        {
+            "organization_id": organization_id,
+            "source_id": source_id,
+            "profile_tool": profile_tool,
+            "agent_id": agent_id,
+            "agent_revision": agent_revision,
+            "agent_run_id": agent_run_id,
+            "tool_call_id": normalized_tool_call_id,
+            "target_record_id": target_record_id,
+            "enforce_target_revision": enforce_target_revision,
+            "payload": wire_payload,
+        }
+    )
     request_hash = hashlib.sha256(
-        _canonical_json(stable_intent, maximum=SOR_COMMAND_MAX_PAYLOAD_BYTES)
+        _canonical_json(
+            stable_intent.model_dump(mode="json"),
+            maximum=SOR_COMMAND_MAX_PAYLOAD_BYTES,
+        )
     ).hexdigest()
     existing = await SorRepository(session).get_command_by_idempotency(
         organization_id=organization_id,
@@ -787,17 +799,20 @@ async def _create_command(
     expected_revision = _record_version(target) if enforce_target_revision else None
     target_external_id = target.vendor_external_id if target is not None else None
     command_id = UUID(str(uuid_utils.uuid7()))
-    request_payload = encrypt_json_payload(
+    request = SorStoredCommandRequest.model_validate(
         {
             "payload": wire_payload,
             "target_vendor_object_key": (
                 target.vendor_object_key if target is not None else None
             ),
             "target_external_id": target_external_id,
-        },
+        }
+    )
+    request_payload = encrypt_json_payload(
+        request.model_dump(mode="json"),
         organization_id=organization_id,
         resource_id=command_id,
-        purpose="command-request",
+        purpose=SOR_COMMAND_REQUEST_PURPOSE,
         maximum_bytes=SOR_COMMAND_MAX_PAYLOAD_BYTES,
     )
     inserted_id = await session.scalar(
@@ -821,7 +836,7 @@ async def _create_command(
             expected_source_revision=expected_revision,
             state=SorCommandState.PENDING,
             attempts=0,
-            max_attempts=3,
+            max_attempts=SOR_COMMAND_MAX_ATTEMPTS,
             deleted=False,
         )
         .on_conflict_do_nothing()
@@ -848,7 +863,7 @@ async def _create_command(
 
 async def _require_agent_authority(
     *,
-    session,
+    session: AsyncSession,
     organization_id: UUID,
     source_id: UUID,
     agent_id: UUID,
@@ -1034,29 +1049,19 @@ async def _load_claim(
                 grant=grant,
                 command_id=command_id,
             )
-        request = decrypt_json_payload(
+        request_wire = decrypt_json_payload(
             row.request_payload,
             organization_id=organization_id,
             resource_id=command_id,
-            purpose="command-request",
+            purpose=SOR_COMMAND_REQUEST_PURPOSE,
             maximum_bytes=SOR_COMMAND_MAX_PAYLOAD_BYTES,
         )
-        payload_wire = request.get("payload")
-        if not isinstance(payload_wire, dict) or not all(
-            isinstance(key, str) for key in payload_wire
-        ):
-            raise SorSecretEnvelopeError("SOR command payload is malformed.")
+        request = decode_command_request(request_wire)
         payload = validate_command_payload(
             profile=row.profile,
             tool_name=row.profile_tool,
-            value=payload_wire,
+            value=request.payload,
         )
-        object_key = request.get("target_vendor_object_key")
-        external_id = request.get("target_external_id")
-        if object_key is not None and not isinstance(object_key, str):
-            raise SorSecretEnvelopeError("SOR command target object is malformed.")
-        if external_id is not None and not isinstance(external_id, str):
-            raise SorSecretEnvelopeError("SOR command target identity is malformed.")
         target_selected_payload = None
         if row.target_record_id is not None:
             target = await session.scalar(
@@ -1070,8 +1075,8 @@ async def _load_claim(
             if target is None:
                 raise SorNotFoundError("SOR command target record not found.")
             if (
-                object_key != target.vendor_object_key
-                or external_id != target.vendor_external_id
+                request.target_vendor_object_key != target.vendor_object_key
+                or request.target_external_id != target.vendor_external_id
             ):
                 raise SorSecretEnvelopeError(
                     "SOR command target does not match its canonical record."
@@ -1093,8 +1098,8 @@ async def _load_claim(
             profile_tool=row.profile_tool,
             idempotency_key=row.idempotency_key,
             payload=payload,
-            target_vendor_object_key=object_key,
-            target_external_id=external_id,
+            target_vendor_object_key=request.target_vendor_object_key,
+            target_external_id=request.target_external_id,
             expected_source_revision=row.expected_source_revision,
             target_selected_payload=target_selected_payload,
             result_vendor_object_key=result_vendor_object_key,

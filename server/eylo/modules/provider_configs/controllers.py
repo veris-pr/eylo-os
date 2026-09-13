@@ -12,7 +12,7 @@ from eylo.modules.provider_configs.schemas import (
 class CapabilityController:
     """Map capability read-model results to the transport response."""
 
-    def __init__(self, registry: CapabilityRegistry):
+    def __init__(self, registry: CapabilityRegistry) -> None:
         self._registry = registry
 
     async def get_for_organization(

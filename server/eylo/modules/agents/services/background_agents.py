@@ -11,7 +11,7 @@ from eylo.common.services import EyloBaseService
 from eylo.modules.agents.kinds import assert_attachment_is_valid
 from eylo.modules.agents.models import AgentBackgroundAgentModel
 from eylo.modules.agents.repositories import AgentBackgroundAgentRepository
-from eylo.modules.agents.schemas.indb import AgentBackgroundAgentInDb
+from eylo.modules.agents.schemas.indb import AgentBackgroundAgentInDb, AgentInDb
 
 
 class AgentBackgroundAgentService(
@@ -26,7 +26,7 @@ class AgentBackgroundAgentService(
         return self._repository
 
     @repository.setter
-    def repository(self, repo: AgentBackgroundAgentRepository):
+    def repository(self, repo: AgentBackgroundAgentRepository) -> None:
         self._repository = repo
 
     def __init__(self, db: Optional[AsyncSession] = None) -> None:
@@ -159,7 +159,7 @@ class AgentBackgroundAgentService(
             expected_draft_version=expected_draft_version,
         )
 
-    async def _get_agent(self, agent_id: UUID, organization_id: UUID):
+    async def _get_agent(self, agent_id: UUID, organization_id: UUID) -> AgentInDb:
         from eylo.modules.agents.services.indb import AgentService
 
         return await AgentService().get_by_organization_and_id(

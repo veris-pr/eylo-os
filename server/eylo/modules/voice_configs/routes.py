@@ -287,7 +287,7 @@ async def _verify_config(
         ) from None
     return VoiceConfigVerificationResponse(
         provider=result.provider.value,
-        kind=result.kind.value,
+        kind=result.kind,
         revision=result.revision,
         verified_at=result.verified_at,
     )

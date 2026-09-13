@@ -36,6 +36,7 @@ from eylo.modules.conversations.schemas.participants import ParticipantKind
 from eylo.modules.conversations.schemas.timeline import (
     ConversationParticipationTimelineFact,
 )
+from eylo.modules.conversations.schemas.websocket import WsConversationReadReceipt
 from eylo.modules.conversations.services.aggregates import (
     ConversationAggregateService,
 )
@@ -266,11 +267,11 @@ class ConversationWsController:
             return WsResponse(
                 status=status.HTTP_200_OK,
                 kind=WsEventAction.CONVERSATION_READ,
-                data={
-                    "conversation_id": str(request.conversation_id),
-                    "last_read_at": read_at.isoformat(),
-                    "unread_count": 0,
-                },
+                data=WsConversationReadReceipt(
+                    conversation_id=request.conversation_id,
+                    last_read_at=read_at,
+                    unread_count=0,
+                ).model_dump(),
                 organization_id=ctx.organization_id,
                 session_id=ctx.session_id,
                 request_id=event.request_id,

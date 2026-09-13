@@ -5,7 +5,8 @@ __all__ = ["settings"]
 import enum
 import logging
 import os
-from typing import Any
+from types import ModuleType
+from typing import Self
 from urllib.parse import quote
 from uuid import UUID
 
@@ -30,30 +31,28 @@ HOSTING_MODE = ge("HOSTING_MODE", "local").lower()
 logger = logging.getLogger(__name__)
 
 
-def get_variables(module_name):
-    module = globals().get(module_name, None)
-    book = {}
-    if module:
-        book = {
-            key: value
-            for key, value in module.__dict__.items()
-            if not key.startswith("_")
-        }
-    return book
+def get_variables(module: ModuleType) -> dict[str, object]:
+    """Read explicit module defaults; settings validation owns usable field names."""
+    return {
+        key: value for key, value in vars(module).items() if not key.startswith("_")
+    }
 
 
-_config = get_variables("common")
-_config.update({"ENV": ENV})
+_config: dict[str, object] = {"ENV": ENV}
 if ENV == Environment.LOCAL.value:
-    from eylo.common.config.local import *
+    from eylo.common.config import local
+
+    _config.update(get_variables(local))
 elif ENV == Environment.PROD.value:
-    from eylo.common.config.prod import *
+    from eylo.common.config import prod
+
+    _config.update(get_variables(prod))
 
 
 _base_path = os.path.dirname(os.path.realpath(__file__))
 
 
-def _read_env_config(env_file: str):
+def _read_env_config(env_file: str) -> None:
     if not os.path.isfile(env_file):
         return
     _env_conf = EnvConfig(env_file)
@@ -65,8 +64,6 @@ env_file = None
 
 # Use the actual ENV value, not hardcoded "local"
 _env_base = ENV  # Use current environment (local or prod)
-_env_conf = get_variables(_env_base)
-_config.update(_env_conf)
 env_file = f"{_base_path}/.env.{_env_base}"
 
 if env_file:
@@ -177,11 +174,11 @@ class EyloSettings(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def env_to_py(cls, data: Any) -> Any:
+    def env_to_py(cls, data: object) -> object:
         if not isinstance(data, dict):
             return data
 
-        normalized_data = dict(data)
+        normalized_data: dict[object, object] = dict(data)
         for field_name, field_info in cls.model_fields.items():
             if field_name not in normalized_data:
                 continue
@@ -193,7 +190,7 @@ class EyloSettings(BaseModel):
         return normalized_data
 
     @model_validator(mode="after")
-    def update_database_url(self):
+    def update_database_url(self) -> Self:
         self.DATABASE_URL = f"postgresql+asyncpg://{self.DB_USER}:{self.DB_PASSWORD}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
         if self.REDIS_PASSWORD:
             encoded_password = quote(self.REDIS_PASSWORD, safe="")
@@ -210,7 +207,7 @@ class EyloSettings(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def validate_widget_development_identity(self):
+    def validate_widget_development_identity(self) -> Self:
         organization_id = self.WIDGET_DEVELOPMENT_ORGANIZATION_ID
         contact_id = self.WIDGET_DEVELOPMENT_CONTACT_ID
         if (organization_id is None) != (contact_id is None):
@@ -230,5 +227,5 @@ _env_overrides = {
     for field_name in EyloSettings.model_fields
     if field_name in os.environ
 }
-settings = EyloSettings(**(_config | _env_overrides))
+settings = EyloSettings.model_validate(_config | _env_overrides)
 logger.debug("Settings loaded for ENV=%s", settings.ENV)

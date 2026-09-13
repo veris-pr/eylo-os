@@ -1,4 +1,4 @@
-"""Private API projections for user sessions and their safe timelines."""
+"""User-session projections for operator timelines and widget initialization."""
 
 from __future__ import annotations
 
@@ -6,13 +6,34 @@ from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
-from pydantic import Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, StrictInt, computed_field
 
 from eylo.common.schemas import EyloBaseApiSchema
 from eylo.modules.user_sessions.domain import (
     UserSessionEntryChannel,
+    UserSessionStartOutcome,
     UserSessionState,
 )
+
+
+class UserSessionInitialized(BaseModel):
+    """One start outcome, retaining the widget's two existing wire predicates."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
+
+    user_session_id: UUID
+    connection_sequence: StrictInt = Field(gt=0)
+    outcome: UserSessionStartOutcome = Field(exclude=True)
+
+    @computed_field
+    @property
+    def created(self) -> bool:
+        return self.outcome is UserSessionStartOutcome.CREATED
+
+    @computed_field
+    @property
+    def reconnected(self) -> bool:
+        return self.outcome is UserSessionStartOutcome.RECONNECTED
 
 
 class TimelineCategory(StrEnum):
@@ -99,6 +120,7 @@ __all__ = [
     "TimelineSeverity",
     "UserSessionContactRead",
     "UserSessionCountsRead",
+    "UserSessionInitialized",
     "UserSessionPage",
     "UserSessionRead",
     "UserSessionTimelineEventRead",

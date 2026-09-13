@@ -6516,8 +6516,7 @@ export interface components {
             contactId?: string | null;
             /** Contactaddress */
             contactAddress: string;
-            /** Status */
-            status: string;
+            status: components["schemas"]["CampaignContactStatus"];
             /**
              * Attemptcount
              * @default 0
@@ -6537,6 +6536,26 @@ export interface components {
             };
             /** Organizationid */
             organizationId?: string | null;
+        };
+        /**
+         * CampaignContactStatus
+         * @description Per-contact status within a campaign.
+         *
+         *     PENDING → QUEUED → IN_PROGRESS → COMPLETED
+         *                             ↓
+         *                           FAILED → RETRY → QUEUED
+         *                             ↓
+         *                           SKIPPED
+         * @enum {string}
+         */
+        CampaignContactStatus: "pending" | "queued" | "in_progress" | "completed" | "failed" | "retry" | "skipped" | "cancelled";
+        /**
+         * CampaignContactsAddedResponse
+         * @description Number of audience rows inserted by the completed request.
+         */
+        CampaignContactsAddedResponse: {
+            /** Added */
+            added: number;
         };
         /** CampaignContactsPaginated */
         CampaignContactsPaginated: {
@@ -6678,8 +6697,7 @@ export interface components {
             name: string;
             /** Description */
             description?: string | null;
-            /** Status */
-            status: string;
+            status: components["schemas"]["CampaignStatus"];
             /**
              * Agentid
              * Format: uuid
@@ -6763,6 +6781,18 @@ export interface components {
             /** Timezone */
             timezone?: string | null;
         };
+        /**
+         * CampaignStatus
+         * @description Campaign lifecycle states.
+         *
+         *     DRAFT → RUNNING → COMPLETED
+         *       ↓        ↓
+         *       ↓      PAUSED → RUNNING (resume)
+         *       ↓        ↓
+         *     CANCELED  CANCELED
+         * @enum {string}
+         */
+        CampaignStatus: "draft" | "scheduled" | "running" | "paused" | "completed" | "canceled";
         /** CampaignUpdateRequest */
         CampaignUpdateRequest: {
             /** Expectedrevision */
@@ -7523,10 +7553,7 @@ export interface components {
             swarmId?: string | null;
             /** Swarmrevision */
             swarmRevision?: number | null;
-            /** Meta */
-            meta?: {
-                [key: string]: unknown;
-            } | null;
+            meta?: components["schemas"]["JsonObject"] | null;
             /**
              * Createdat
              * Format: date-time
@@ -7608,10 +7635,7 @@ export interface components {
             swarmId?: string | null;
             /** Swarmrevision */
             swarmRevision?: number | null;
-            /** Meta */
-            meta?: {
-                [key: string]: unknown;
-            } | null;
+            meta?: components["schemas"]["JsonObject"] | null;
         };
         /**
          * ConversationChannels
@@ -10706,10 +10730,7 @@ export interface components {
             ready: boolean;
             /** Verifiedat */
             verifiedAt: string | null;
-            /** Config */
-            config: {
-                [key: string]: unknown;
-            };
+            config: components["schemas"]["JsonObject"];
             /** Secrets */
             secrets: {
                 [key: string]: string;
@@ -10724,10 +10745,7 @@ export interface components {
             provider: components["schemas"]["TelephonyProvider"];
             /** Name */
             name: string;
-            /** Config */
-            config: {
-                [key: string]: unknown;
-            };
+            config: components["schemas"]["JsonObject"];
             /** Secrets */
             secrets: {
                 [key: string]: string;
@@ -10737,10 +10755,7 @@ export interface components {
         ProviderConfigUpdateSchema: {
             /** Name */
             name?: string | null;
-            /** Config */
-            config?: {
-                [key: string]: unknown;
-            } | null;
+            config?: components["schemas"]["JsonObject"] | null;
             /** Secrets */
             secrets?: {
                 [key: string]: string | null;
@@ -14976,10 +14991,7 @@ export interface components {
             provider: string;
             /** Name */
             name: string;
-            /** Config */
-            config: {
-                [key: string]: unknown;
-            };
+            config: components["schemas"]["JsonObject"];
             /** Secrets */
             secrets?: {
                 [key: string]: string;
@@ -15027,8 +15039,7 @@ export interface components {
             id: string;
             /** Provider */
             provider: string;
-            /** Kind */
-            kind: string;
+            kind: components["schemas"]["VoiceKind"];
             /** Name */
             name: string;
             /** Revision */
@@ -15043,10 +15054,7 @@ export interface components {
             ready: boolean;
             /** Verifiedat */
             verifiedAt: string | null;
-            /** Config */
-            config: {
-                [key: string]: unknown;
-            };
+            config: components["schemas"]["JsonObject"];
             /** Secrets */
             secrets: {
                 [key: string]: string;
@@ -15062,10 +15070,7 @@ export interface components {
         VoiceConfigUpdate: {
             /** Name */
             name?: string | null;
-            /** Config */
-            config?: {
-                [key: string]: unknown;
-            } | null;
+            config?: components["schemas"]["JsonObject"] | null;
             /** Secrets */
             secrets?: {
                 [key: string]: string | null;
@@ -15082,8 +15087,7 @@ export interface components {
             verified: boolean;
             /** Provider */
             provider: string;
-            /** Kind */
-            kind: string;
+            kind: components["schemas"]["VoiceKind"];
             /** Revision */
             revision: number;
             /**
@@ -15098,6 +15102,11 @@ export interface components {
          * @enum {boolean}
          */
         VoiceFeatureSupport: false | true;
+        /**
+         * VoiceKind
+         * @enum {string}
+         */
+        VoiceKind: "stt" | "tts" | "realtime";
         /**
          * VoiceNativeEncoding
          * @description Recognition encodings exposed by the console contract.
@@ -25040,7 +25049,7 @@ export interface operations {
     list_campaigns_api__organization_id__campaigns_get: {
         parameters: {
             query?: {
-                status?: string | null;
+                status?: components["schemas"]["CampaignStatus"] | null;
                 /** @description Page number */
                 page?: number;
                 /** @description Items per page */
@@ -25403,7 +25412,7 @@ export interface operations {
     list_contacts_api__organization_id__campaigns__campaign_id__contacts_get: {
         parameters: {
             query?: {
-                status?: string | null;
+                status?: components["schemas"]["CampaignContactStatus"] | null;
                 /** @description Page number */
                 page?: number;
                 /** @description Items per page */
@@ -25466,9 +25475,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["CampaignContactsAddedResponse"];
                 };
             };
             /** @description Validation Error */
@@ -25507,9 +25514,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["CampaignContactsAddedResponse"];
                 };
             };
             /** @description Validation Error */
@@ -28469,7 +28474,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": number;
                 };
             };
         };

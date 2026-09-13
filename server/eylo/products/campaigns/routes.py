@@ -1,6 +1,6 @@
 """REST API routes for campaigns."""
 
-from typing import Annotated, Optional
+from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -10,9 +10,15 @@ from eylo.common.schemas import PaginationParams
 from eylo.common.utils.get_pagination import get_pagination
 from eylo.modules.auth.schemas import CurrentUserSchema
 from eylo.modules.auth.services.auth_service import get_current_user
+from eylo.products.campaigns.constants import (
+    APP_TAG,
+    CampaignContactStatus,
+    CampaignStatus,
+)
 from eylo.products.campaigns.controllers import CampaignController
 from eylo.products.campaigns.schemas.api import (
     CampaignAnalyticsResponse,
+    CampaignContactsAddedResponse,
     CampaignContactsPaginated,
     CampaignContactsSelectRequest,
     CampaignContactsUploadRequest,
@@ -23,8 +29,6 @@ from eylo.products.campaigns.schemas.api import (
     CampaignUpdateRequest,
     CampaignsPaginated,
 )
-
-APP_TAG = "Campaigns"
 
 router = APIRouter(prefix="/{organization_id}/campaigns", tags=[APP_TAG])
 
@@ -62,7 +66,7 @@ async def list_campaigns(
     organization_id: UUID,
     pagination: Annotated[PaginationParams, Depends(get_pagination)],
     current_user: CurrentUserSchema = Depends(get_current_user),
-    status_filter: Optional[str] = Query(None, alias="status"),
+    status_filter: CampaignStatus | None = Query(None, alias="status"),
 ) -> CampaignsPaginated:
     return await CampaignController().list_campaigns(
         organization_id, pagination, current_user, status_filter
@@ -213,7 +217,7 @@ async def upload_contacts(
     campaign_id: UUID,
     request: CampaignContactsUploadRequest,
     current_user: CurrentUserSchema = Depends(get_current_user),
-) -> dict:
+) -> CampaignContactsAddedResponse:
     return await CampaignController().upload_contacts(
         organization_id, campaign_id, request, current_user
     )
@@ -228,7 +232,7 @@ async def select_contacts(
     campaign_id: UUID,
     request: CampaignContactsSelectRequest,
     current_user: CurrentUserSchema = Depends(get_current_user),
-) -> dict:
+) -> CampaignContactsAddedResponse:
     return await CampaignController().select_contacts(
         organization_id, campaign_id, request, current_user
     )
@@ -244,7 +248,7 @@ async def list_contacts(
     campaign_id: UUID,
     pagination: Annotated[PaginationParams, Depends(get_pagination)],
     current_user: CurrentUserSchema = Depends(get_current_user),
-    status_filter: Optional[str] = Query(None, alias="status"),
+    status_filter: CampaignContactStatus | None = Query(None, alias="status"),
 ) -> CampaignContactsPaginated:
     return await CampaignController().list_contacts(
         organization_id, campaign_id, pagination, current_user, status_filter

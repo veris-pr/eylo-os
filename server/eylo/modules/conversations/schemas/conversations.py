@@ -1,6 +1,7 @@
 """Data contracts for the `conversations` domain."""
 
 import logging
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from enum import Enum
 from functools import lru_cache
@@ -9,6 +10,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
+from eylo.common.contracts.json_values import JsonObject
 from eylo.common.contracts.tool_availability import (
     ToolAvailabilityFacts,
     missing_tool_requirements,
@@ -61,10 +63,9 @@ class ConversationBase(EyloOrganizationModelSchema):
     ended_at: Optional[datetime] = None
     swarm_id: UUID | None = None
     swarm_revision: int | None = Field(default=None, gt=0)
-    # Conversation meta is intentionally integrator-owned: public/integration
-    # clients can attach arbitrary context when starting a conversation, so this
-    # cannot be narrowed to a closed schema without breaking valid integrations.
-    meta: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    # Integrators own the keys; the platform requires finite JSON for storage,
+    # public projection and runtime context. This is not a closed property schema.
+    meta: JsonObject | None = Field(default_factory=dict)
 
 
 class ConversationCreate(EyloBaseSchema):
@@ -76,7 +77,7 @@ class ConversationCreate(EyloBaseSchema):
     swarm_id: UUID | None = None
     swarm_revision: int | None = Field(default=None, gt=0)
     # Integrator-owned context; see ConversationBase.meta.
-    meta: Optional[Dict[str, Any]] = None
+    meta: JsonObject | None = None
 
 
 class ConversationUpdate(EyloBaseSchema):
@@ -86,7 +87,7 @@ class ConversationUpdate(EyloBaseSchema):
     status: Optional[ConversationStatus] = Field(None)
     end_time: Optional[datetime] = None
     # Integrator-owned context; see ConversationBase.meta.
-    meta: Optional[Dict[str, Any]] = None
+    meta: JsonObject | None = None
     title: Optional[str] = Field(None)
 
 
@@ -207,14 +208,10 @@ class ConversationContext(BaseModel):
     )
 
     def filter_messages(
-        self, kind: list[MessageKind] = [MessageKind.USER, MessageKind.ASSISTANT]
-    ):
-        return list(
-            filter(
-                lambda x: x.kind in kind,
-                (self.messages or []),
-            )
-        )
+        self,
+        kind: Sequence[MessageKind] = (MessageKind.USER, MessageKind.ASSISTANT),
+    ) -> list[MessageInDb]:
+        return [message for message in self.messages or [] if message.kind in kind]
 
     def get_primary_agent(self) -> Optional[ParticipantInDb]:
         participants: List[ParticipantInDb] = self.participants
@@ -238,14 +235,11 @@ class ConversationContext(BaseModel):
             None,
         )
 
-    def _json_to_md(self, data) -> str:
-        return toon_encode(data)
-
     def contact_to_llm_context(self) -> str:
         prep_contact: Optional[ContactInDb] = self.primary_contact
         if not prep_contact:
             return ""
-        return self._json_to_md(prep_contact.model_dump())
+        return toon_encode(prep_contact)
 
     def get_recent_handoff_tools(
         self, messages: Optional[List[MessageInDb]] = None
@@ -445,7 +439,7 @@ class ConversationContext(BaseModel):
 
         """
 
-        def __hash(tool_id: UUID):
+        def __hash(tool_id: UUID) -> str:
             return tool_id.hex[:8]
 
         def __compile_tool_name(tool: ToolInDb) -> str:
@@ -560,9 +554,7 @@ class ConversationContext(BaseModel):
 
         if isinstance(tool.llm_config, PlatformTool):
             tool.llm_config.description = catalog_description
-            tool.llm_config.input_schema = PlatformToolInputSchema.model_validate(
-                rich_input_schema
-            )
+            tool.llm_config.input_schema = rich_input_schema.model_copy(deep=True)
         tool.description = catalog_description
 
         return tool
@@ -700,7 +692,9 @@ class ConversationContext(BaseModel):
 
 
 @lru_cache(maxsize=4)
-def _get_widget_catalog_schema(version: int = 0) -> tuple:
+def _get_widget_catalog_schema(
+    version: int = 0,
+) -> tuple[str, PlatformToolInputSchema]:
     """Build and cache the compound widget tool description and input schema.
 
     The widget catalog is 100% code-derived (no DB or runtime state),

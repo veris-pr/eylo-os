@@ -10,10 +10,18 @@ from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
-from typing import Any, Self, cast
+from enum import Enum
+from typing import Any, Self
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, InstanceOf, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    InstanceOf,
+    JsonValue,
+    model_validator,
+)
 from pydantic.json_schema import SkipJsonSchema
 from sqlalchemy import (
     String,
@@ -21,6 +29,7 @@ from sqlalchemy import (
     asc,
     desc,
     func,
+    literal,
     not_,
     or_,
     select,
@@ -55,13 +64,16 @@ from eylo.sor.shared.query import (
     SorCollectionQuery,
     SorFilterCondition,
     SorFilterGroup,
+    SorFilterGroupOperator,
     SorFilterOperator,
+    SorFilterValue,
     SorGridColumn,
     SorGridColumnImportance,
     SorGridColumnKind,
     SorGridContract,
     SorNullPlacement,
     SorSortDirection,
+    SorSortTerm,
 )
 from eylo.sor.shared.schemas import (
     SorCollectionPageResponse,
@@ -302,7 +314,12 @@ def _truncate_grid_label(value: str, limit: int) -> str:
 
 
 class SorReadFieldSpec(BaseModel):
-    """One canonical field exposed to filters, grids, and response values."""
+    """One canonical field exposed to filters, grids, and response values.
+
+    SQLAlchemy's invariant ColumnElement value parameter stays heterogeneous:
+    fields include scalars, arrays and computed JSON. Only SQL construction uses
+    that Any; row values cross the explicit JSON conversion boundary below.
+    """
 
     model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
@@ -311,7 +328,7 @@ class SorReadFieldSpec(BaseModel):
     kind: SorGridColumnKind
     importance: SorGridColumnImportance
     expression: SkipJsonSchema[
-        InstanceOf[QueryableAttribute[Any]] | InstanceOf[ColumnElement[Any]]
+        InstanceOf[QueryableAttribute[object]] | InstanceOf[ColumnElement[Any]]
     ] = Field(exclude=True, repr=False)
     read_value: SkipJsonSchema[
         Callable[[SorRecordModel, SorProfileRecordModel | None, SorSourceModel], object]
@@ -343,7 +360,7 @@ class SorReadFieldSpec(BaseModel):
         return self
 
     @property
-    def orm_attribute(self) -> QueryableAttribute[Any]:
+    def orm_attribute(self) -> QueryableAttribute[object]:
         """Selective ORM loading accepts mapped attributes, never computed SQL."""
         if not isinstance(self.expression, QueryableAttribute):
             raise ValueError(f"SOR field '{self.key}' is not a mapped ORM attribute.")
@@ -430,9 +447,9 @@ class _FieldContract(BaseModel):
         exclude=True, repr=False
     )
     grid_column: SorGridColumn
-    custom_definition: SkipJsonSchema[InstanceOf[SorCustomFieldDefinitionModel] | None] = (
-        Field(default=None, exclude=True, repr=False)
-    )
+    custom_definition: SkipJsonSchema[
+        InstanceOf[SorCustomFieldDefinitionModel] | None
+    ] = Field(default=None, exclude=True, repr=False)
     reference_entity: str | None = None
 
 
@@ -449,6 +466,41 @@ class _OrderTerm(BaseModel):
 
 
 type _CursorScalar = str | int | float | bool | Decimal | datetime | date | UUID | None
+type _FilterScalar = str | bool | Decimal | datetime | date | None
+
+
+class _CursorValueKind(str, Enum):
+    DECIMAL = "decimal"
+    DATETIME = "datetime"
+    DATE = "date"
+    UUID = "uuid"
+
+
+class _TaggedCursorValue(BaseModel):
+    """Lossless wire representation for values outside JSON scalar types."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    type: _CursorValueKind
+    value: str = Field(repr=False)
+
+
+type _CursorWireValue = str | int | float | bool | None | _TaggedCursorValue
+
+
+class _CursorEnvelope(BaseModel):
+    """Query-bound pagination token; never an authority for tenant or source access."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    v: int = Field(ge=_CURSOR_VERSION, le=_CURSOR_VERSION)
+    values: tuple[_CursorWireValue, ...] = Field(repr=False)
+    record_id: UUID
+    query: str
 
 
 class _Cursor(BaseModel):
@@ -662,7 +714,12 @@ class SorCollectionReadService:
         order_terms = _compile_order_terms(query, field_contract=field_contract)
         if cursor is not None:
             predicates.append(_seek_after(cursor, order_terms=order_terms))
-        selected: list[Any] = [SorRecordModel]
+        selected: list[
+            type[SorRecordModel]
+            | type[SorProfileRecordModel]
+            | type[SorSourceModel]
+            | ColumnElement[Any]
+        ] = [SorRecordModel]
         if spec.model is not None:
             selected.append(spec.model)
         selected.extend([SorSourceModel, *(term.expression for term in order_terms)])
@@ -778,7 +835,9 @@ class SorCollectionReadService:
         spec: SorEntityReadSpec,
         record_id: UUID,
     ) -> SorRecordDetailResponse:
-        selected: list[Any] = [SorRecordModel]
+        selected: list[
+            type[SorRecordModel] | type[SorProfileRecordModel] | type[SorSourceModel]
+        ] = [SorRecordModel]
         if spec.model is not None:
             selected.append(spec.model)
         selected.append(SorSourceModel)
@@ -1518,7 +1577,7 @@ def _compile_filter_group(
             expressions.append(_compile_condition(child, field_contract=field_contract))
     if not expressions:
         return None
-    if group.op.value == "and":
+    if group.op is SorFilterGroupOperator.AND:
         return and_(*expressions)
     return or_(*expressions)
 
@@ -1592,7 +1651,7 @@ def _compile_custom_condition(
     *,
     definition: SorCustomFieldDefinitionModel,
     operator: SorFilterOperator,
-    values: Sequence[object],
+    values: Sequence[_FilterScalar],
 ) -> ColumnElement[bool]:
     """Filter custom fields set-wise while preserving missing-value semantics."""
     value_column = _custom_value_column(definition)
@@ -1686,7 +1745,7 @@ def _compile_order_terms(
             continue
         seen.add(term.field)
         expression = field_contract[term.field].expression
-        nulls = getattr(term, "nulls", SorNullPlacement.LAST)
+        nulls = term.nulls if isinstance(term, SorSortTerm) else SorNullPlacement.LAST
         ordering.append(
             _OrderTerm(
                 expression=expression,
@@ -1741,16 +1800,19 @@ def _seek_after(
 
 def _term_after(
     term: _OrderTerm,
-    value: object,
+    value: _CursorScalar,
 ) -> ColumnElement[bool] | None:
     if value is None:
         if term.nulls is SorNullPlacement.FIRST:
             return term.expression.is_not(None)
         return None
+    # Python booleans select SQLAlchemy's restricted constant comparator.
+    # A bound boolean retains PostgreSQL ordering without changing null policy.
+    comparison_value = literal(value) if isinstance(value, bool) else value
     comparison = (
-        term.expression > value
+        term.expression > comparison_value
         if term.direction is SorSortDirection.ASC
-        else term.expression < value
+        else term.expression < comparison_value
     )
     if term.nulls is SorNullPlacement.LAST:
         return or_(comparison, term.expression.is_(None))
@@ -1758,7 +1820,7 @@ def _term_after(
 
 
 def _reject_null_filter_values(
-    values: Sequence[object],
+    values: Sequence[_FilterScalar],
     *,
     operator: SorFilterOperator,
 ) -> None:
@@ -1798,7 +1860,9 @@ def _allowed_operators(kind: SorGridColumnKind) -> frozenset[SorFilterOperator]:
     return frozenset(equality)
 
 
-def _coerce_filter_value(value: object, *, kind: SorGridColumnKind) -> object:
+def _coerce_filter_value(
+    value: SorFilterValue, *, kind: SorGridColumnKind
+) -> _FilterScalar:
     if value is None:
         return None
     if kind is SorGridColumnKind.BOOLEAN:
@@ -1858,24 +1922,18 @@ def _custom_scalar_expression(
 
 def _custom_value_column(
     definition: SorCustomFieldDefinitionModel,
-) -> ColumnElement[Any]:
-    return cast(
-        ColumnElement[Any],
-        {
-            SorCustomFieldType.TEXT: SorCustomFieldValueModel.text_value,
-            SorCustomFieldType.DECIMAL: SorCustomFieldValueModel.decimal_value,
-            SorCustomFieldType.BOOLEAN: SorCustomFieldValueModel.boolean_value,
-            SorCustomFieldType.DATE: SorCustomFieldValueModel.date_value,
-            SorCustomFieldType.TIMESTAMP: SorCustomFieldValueModel.timestamp_value,
-            SorCustomFieldType.STRING_ARRAY: (
-                SorCustomFieldValueModel.string_array_value
-            ),
-            SorCustomFieldType.REFERENCE: (
-                SorCustomFieldValueModel.reference_record_id
-            ),
-            SorCustomFieldType.BOUNDED_JSON: SorCustomFieldValueModel.json_value,
-        }[definition.data_type],
-    )
+) -> QueryableAttribute[object]:
+    columns: dict[SorCustomFieldType, QueryableAttribute[object]] = {
+        SorCustomFieldType.TEXT: SorCustomFieldValueModel.text_value,
+        SorCustomFieldType.DECIMAL: SorCustomFieldValueModel.decimal_value,
+        SorCustomFieldType.BOOLEAN: SorCustomFieldValueModel.boolean_value,
+        SorCustomFieldType.DATE: SorCustomFieldValueModel.date_value,
+        SorCustomFieldType.TIMESTAMP: SorCustomFieldValueModel.timestamp_value,
+        SorCustomFieldType.STRING_ARRAY: (SorCustomFieldValueModel.string_array_value),
+        SorCustomFieldType.REFERENCE: (SorCustomFieldValueModel.reference_record_id),
+        SorCustomFieldType.BOUNDED_JSON: SorCustomFieldValueModel.json_value,
+    }
+    return columns[definition.data_type]
 
 
 def _custom_grid_kind(value_type: SorCustomFieldType) -> SorGridColumnKind:
@@ -1891,7 +1949,7 @@ def _custom_grid_kind(value_type: SorCustomFieldType) -> SorGridColumnKind:
     }[value_type]
 
 
-def _typed_custom_value(value: SorCustomFieldValueModel) -> object:
+def _typed_custom_value(value: SorCustomFieldValueModel) -> JsonValue:
     result = {
         SorCustomFieldType.TEXT: value.text_value,
         SorCustomFieldType.DECIMAL: value.decimal_value,
@@ -1911,7 +1969,7 @@ def _json_mapping(value: Mapping[str, object]) -> dict[str, object]:
     return {key: _json_value(item) for key, item in value.items()}
 
 
-def _json_value(value: object) -> Any:
+def _json_value(value: object) -> JsonValue:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     if isinstance(value, Decimal):
@@ -1940,12 +1998,12 @@ def _encode_cursor(
     fingerprint: str,
 ) -> str:
     payload = json.dumps(
-        {
-            "v": _CURSOR_VERSION,
-            "values": [_cursor_value(value) for value in values],
-            "record_id": str(record_id),
-            "query": fingerprint,
-        },
+        _CursorEnvelope(
+            v=_CURSOR_VERSION,
+            values=tuple(_cursor_value(value) for value in values),
+            record_id=record_id,
+            query=fingerprint,
+        ).model_dump(mode="json"),
         sort_keys=True,
         separators=(",", ":"),
     ).encode()
@@ -1957,59 +2015,53 @@ def _decode_cursor(cursor: str | None, *, fingerprint: str) -> _Cursor | None:
         return None
     try:
         padding = "=" * (-len(cursor) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(cursor + padding))
+        payload = _CursorEnvelope.model_validate_json(
+            base64.urlsafe_b64decode(cursor + padding)
+        )
     except (binascii.Error, ValueError, TypeError, json.JSONDecodeError) as error:
         raise SorReadQueryError("SOR cursor is invalid.") from error
-    if (
-        not isinstance(payload, dict)
-        or set(payload) != {"v", "values", "record_id", "query"}
-        or payload["v"] != _CURSOR_VERSION
-        or not isinstance(payload["values"], list)
-        or payload["query"] != fingerprint
-    ):
+    if payload.query != fingerprint:
         raise SorReadQueryError("SOR cursor does not match this query.")
     try:
         return _Cursor(
-            values=tuple(_restore_cursor_value(value) for value in payload["values"]),
-            record_id=UUID(payload["record_id"]),
+            values=tuple(_restore_cursor_value(value) for value in payload.values),
+            record_id=payload.record_id,
         )
     except (InvalidOperation, KeyError, TypeError, ValueError) as error:
         raise SorReadQueryError("SOR cursor is invalid.") from error
 
 
-def _cursor_value(value: object) -> object:
+def _cursor_value(value: object) -> _CursorWireValue:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     if isinstance(value, Decimal):
-        return {"type": "decimal", "value": str(value)}
+        return _TaggedCursorValue(type=_CursorValueKind.DECIMAL, value=str(value))
     if isinstance(value, datetime):
-        return {"type": "datetime", "value": value.isoformat()}
+        return _TaggedCursorValue(
+            type=_CursorValueKind.DATETIME, value=value.isoformat()
+        )
     if isinstance(value, date):
-        return {"type": "date", "value": value.isoformat()}
+        return _TaggedCursorValue(type=_CursorValueKind.DATE, value=value.isoformat())
     if isinstance(value, UUID):
-        return {"type": "uuid", "value": str(value)}
+        return _TaggedCursorValue(type=_CursorValueKind.UUID, value=str(value))
     raise SorReadInvariantError("SOR ordering produced an unsupported cursor value.")
 
 
-def _restore_cursor_value(value: object) -> _CursorScalar:
+def _restore_cursor_value(value: _CursorWireValue) -> _CursorScalar:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
-    if not isinstance(value, dict) or set(value) != {"type", "value"}:
-        raise ValueError("Cursor value tag is invalid.")
-    tag = value["type"]
-    raw = value["value"]
-    if not isinstance(tag, str) or not isinstance(raw, str):
-        raise ValueError("Cursor value tag is invalid.")
-    if tag == "decimal":
+    tag = value.type
+    raw = value.value
+    if tag is _CursorValueKind.DECIMAL:
         return Decimal(raw)
-    if tag == "datetime":
+    if tag is _CursorValueKind.DATETIME:
         parsed = datetime.fromisoformat(raw)
         if parsed.tzinfo is None or parsed.utcoffset() is None:
             raise ValueError("Cursor datetime lacks an offset.")
         return parsed
-    if tag == "date":
+    if tag is _CursorValueKind.DATE:
         return date.fromisoformat(raw)
-    if tag == "uuid":
+    if tag is _CursorValueKind.UUID:
         return UUID(raw)
     raise ValueError("Cursor value tag is unsupported.")
 

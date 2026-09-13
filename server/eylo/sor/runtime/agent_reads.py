@@ -8,11 +8,13 @@ import hashlib
 import json
 from collections.abc import Sequence
 from datetime import datetime, timezone
-from typing import cast
 from uuid import UUID
 
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_serializer
 from sqlalchemy import and_, asc, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import QueryableAttribute
+from sqlalchemy.sql.elements import ColumnElement
 
 from eylo.sor.knowledge.agent_reads import (
     knowledge_related_entities,
@@ -62,6 +64,45 @@ from eylo.sor.support.agent_reads import read_support_related_records
 _CURSOR_VERSION = 2
 _MAX_SEARCH_CHARS = 1_000
 _MAX_CURSOR_CHARS = 2_048
+_FINGERPRINT_HEX_CHARS = 24
+_MAX_EXTERNAL_KEY_CHARS = 320
+_DEFAULT_READ_LIMIT = 50
+_MAX_READ_LIMIT = 100
+
+
+class _AgentReadQueryIdentity(BaseModel):
+    """Stable query binding; runtime grant resolution remains the read authority."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+    agent_id: UUID
+    agent_revision: int
+    profile: SorProfile
+    entity: str
+    search: str = Field(repr=False)
+    source_ids: tuple[UUID, ...]
+    record_id: UUID | None
+    external_key: str | None
+    sort_by: SorAgentSortField
+    sort_direction: SorSortDirection
+
+
+class _AgentCursorEnvelope(BaseModel):
+    """Versioned Agent pagination value, not a source or tenant grant."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    v: int = Field(ge=_CURSOR_VERSION, le=_CURSOR_VERSION)
+    f: str
+    sort_value: AwareDatetime | None
+    record_id: UUID
+
+    @field_serializer("sort_value")
+    def serialize_sort_value(self, value: datetime | None) -> str | None:
+        """Retain version-two isoformat bytes, including UTC's +00:00 offset."""
+        return value.isoformat() if value is not None else None
 
 
 class SorAgentReadError(Exception):
@@ -81,7 +122,7 @@ async def read_agent_view(
     record_id: UUID | None = None,
     external_key: str | None = None,
     required_tool: str | None = None,
-    limit: int = 50,
+    limit: int = _DEFAULT_READ_LIMIT,
     cursor: str | None = None,
     sort_by: SorAgentSortField = SorAgentSortField.PROJECTED_AT,
     sort_direction: SorSortDirection = SorSortDirection.DESC,
@@ -89,15 +130,20 @@ async def read_agent_view(
     registry: SorRegistry | None = None,
 ) -> SorAgentViewResponse:
     """Read only fields exposed by mappings and sources authorized at runtime."""
-    if not 1 <= limit <= 100:
-        raise SorAgentReadError("Agent view limit must be between 1 and 100.")
+    if not 1 <= limit <= _MAX_READ_LIMIT:
+        raise SorAgentReadError(
+            f"Agent view limit must be between 1 and {_MAX_READ_LIMIT}."
+        )
     normalized_search = search.strip()
     if len(normalized_search) > _MAX_SEARCH_CHARS:
         raise SorAgentReadError("Agent view search is too long.")
     normalized_external_key = external_key.strip() if external_key is not None else None
     if normalized_external_key is not None and not normalized_external_key:
         raise SorAgentReadError("Agent view external key cannot be empty.")
-    if normalized_external_key is not None and len(normalized_external_key) > 320:
+    if (
+        normalized_external_key is not None
+        and len(normalized_external_key) > _MAX_EXTERNAL_KEY_CHARS
+    ):
         raise SorAgentReadError("Agent view external key is too long.")
     if record_id is not None and normalized_external_key is not None:
         raise SorAgentReadError("Select a record by ID or external key, not both.")
@@ -233,7 +279,11 @@ async def read_agent_view(
     )
     next_cursor = (
         _encode_cursor(
-            sort_value=getattr(page[-1], sort_by.value),
+            sort_value=(
+                page[-1].source_updated_at
+                if sort_by is SorAgentSortField.SOURCE_UPDATED_AT
+                else page[-1].projected_at
+            ),
             record_id=page[-1].id,
             fingerprint=fingerprint,
         )
@@ -599,8 +649,8 @@ async def _reference_display_values(
         return {}
     references = tuple(
         (
-            cast(str, field.value_key),
-            cast(str, field.reference_entity),
+            field.value_key,
+            field.reference_entity,
         )
         for field in spec.fields
         if field.reference_entity is not None and field.value_key is not None
@@ -655,22 +705,22 @@ def _fingerprint(
     sort_direction: SorSortDirection,
 ) -> str:
     payload = json.dumps(
-        {
-            "agent_id": str(agent_id),
-            "agent_revision": agent_revision,
-            "profile": profile.value,
-            "entity": entity,
-            "search": search,
-            "source_ids": sorted(str(source_id) for source_id in source_ids),
-            "record_id": str(record_id) if record_id is not None else None,
-            "external_key": external_key,
-            "sort_by": sort_by.value,
-            "sort_direction": sort_direction.value,
-        },
+        _AgentReadQueryIdentity(
+            agent_id=agent_id,
+            agent_revision=agent_revision,
+            profile=profile,
+            entity=entity,
+            search=search,
+            source_ids=tuple(sorted(source_ids, key=str)),
+            record_id=record_id,
+            external_key=external_key,
+            sort_by=sort_by,
+            sort_direction=sort_direction,
+        ).model_dump(mode="json"),
         separators=(",", ":"),
         sort_keys=True,
     ).encode()
-    return hashlib.sha256(payload).hexdigest()[:24]
+    return hashlib.sha256(payload).hexdigest()[:_FINGERPRINT_HEX_CHARS]
 
 
 def _encode_cursor(
@@ -680,12 +730,12 @@ def _encode_cursor(
     fingerprint: str,
 ) -> str:
     payload = json.dumps(
-        {
-            "v": _CURSOR_VERSION,
-            "f": fingerprint,
-            "sort_value": sort_value.isoformat() if sort_value is not None else None,
-            "record_id": str(record_id),
-        },
+        _AgentCursorEnvelope(
+            v=_CURSOR_VERSION,
+            f=fingerprint,
+            sort_value=sort_value,
+            record_id=record_id,
+        ).model_dump(mode="json"),
         separators=(",", ":"),
         sort_keys=True,
     ).encode()
@@ -703,22 +753,11 @@ def _decode_cursor(
         raise SorAgentReadError("Agent view cursor is invalid.")
     try:
         padded = cursor + "=" * (-len(cursor) % 4)
-        value = json.loads(base64.urlsafe_b64decode(padded).decode())
-        if (
-            not isinstance(value, dict)
-            or value.get("v") != _CURSOR_VERSION
-            or value.get("f") != fingerprint
-        ):
-            raise ValueError
-        raw_sort_value = value["sort_value"]
-        sort_value = (
-            datetime.fromisoformat(raw_sort_value)
-            if isinstance(raw_sort_value, str)
-            else None
+        value = _AgentCursorEnvelope.model_validate_json(
+            base64.urlsafe_b64decode(padded)
         )
-        if raw_sort_value is not None and sort_value is None:
+        if value.f != fingerprint:
             raise ValueError
-        record_id = UUID(value["record_id"])
     except (
         binascii.Error,
         UnicodeDecodeError,
@@ -728,20 +767,16 @@ def _decode_cursor(
         ValueError,
     ):
         raise SorAgentReadError("Agent view cursor is invalid.") from None
-    if sort_value is not None and (
-        sort_value.tzinfo is None or sort_value.utcoffset() is None
-    ):
-        raise SorAgentReadError("Agent view cursor is invalid.")
-    return sort_value, record_id
+    return value.sort_value, value.record_id
 
 
 def _cursor_predicate(
     *,
-    sort_column,
+    sort_column: QueryableAttribute[datetime | None],
     sort_value: datetime | None,
     record_id: UUID,
     direction: SorSortDirection,
-):
+) -> ColumnElement[bool]:
     """Select rows after one nulls-last, ID-stabilized cursor boundary."""
     id_after = (
         SorRecordModel.id > record_id

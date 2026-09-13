@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from eylo.modules.provider_configs.constants import Capability
 from eylo.modules.provider_configs.errors import NotConfiguredError
 from eylo.modules.sandbox_configs.catalog import SandboxProviders
@@ -36,7 +38,7 @@ async def resolve_sandbox_adapter(
     organization_id: UUID,
     *,
     provider_config_id: UUID,
-    db=None,
+    db: AsyncSession | None = None,
 ) -> tuple[SandboxVendorAdapter, ResolvedSandbox]:
     """Build an adapter for one explicit ready config revision."""
     resolved = await build_sandbox_config_resolver(db).resolve(
@@ -51,7 +53,7 @@ async def resolve_pinned_sandbox_adapter(
     *,
     provider_config_id: UUID,
     provider_config_revision: int,
-    db=None,
+    db: AsyncSession | None = None,
 ) -> tuple[SandboxVendorAdapter, ResolvedSandbox]:
     """Build an adapter from immutable authority held by existing work."""
     resolved = await build_sandbox_config_resolver(db).resolve_pinned(

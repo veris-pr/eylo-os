@@ -1,6 +1,6 @@
 """Interface catalog contracts and exports of the shared widget schema."""
 
-from typing import Literal
+from enum import StrEnum
 
 from pydantic import Field, JsonValue
 
@@ -123,23 +123,64 @@ from eylo.common.contracts.widgets import (
 )
 
 
+class WidgetCatalogStatus(StrEnum):
+    ACTIVE = "active"
+    DEFERRED = "deferred"
+
+
+class WidgetSchemaType(StrEnum):
+    """Types used by the widget catalog, not the general JSON Schema dialect."""
+
+    STRING = "string"
+    NUMBER = "number"
+    BOOLEAN = "boolean"
+    OBJECT = "object"
+    ARRAY = "array"
+    NULL = "null"
+    ANY = "any"
+
+
+class WidgetPropertySchema(WidgetSchemaModel):
+    """Code-authored widget property description, including its nested fields.
+
+    This is the catalog's existing subset of schema keywords. `any` and
+    `optional` are documentation hints, not vendor JSON Schema extensions.
+    General tool schemas remain owned by PlatformToolInputSchema.
+    """
+
+    type: WidgetSchemaType | list[WidgetSchemaType] | None = None
+    optional: bool = False
+    enum: list[str] | None = None
+    description: str | None = None
+    required: list[str] = Field(default_factory=list)
+    properties: dict[str, "WidgetPropertySchema"] | None = None
+    items: "WidgetPropertySchema | None" = None
+    additional_properties: bool | None = Field(
+        default=None, alias="additionalProperties"
+    )
+    min_items: int | None = Field(default=None, alias="minItems")
+    max_items: int | None = Field(default=None, alias="maxItems")
+
+    def to_json_schema(self) -> dict[str, JsonValue]:
+        """Preserve authored keywords and omission when crossing to tool JSON."""
+        return self.model_dump(mode="json", by_alias=True, exclude_unset=True)
+
+
 class WidgetCatalogEntry(WidgetSchemaModel):
-    component: str
+    component: CompoundComponentKind
     version: str
-    status: Literal["active", "deferred"]
+    status: WidgetCatalogStatus
     description: str
-    json_schema: dict[str, JsonValue] = Field(alias="schema")
+    json_schema: WidgetPropertySchema = Field(alias="schema")
     when_to_use: list[str]
     required_props: list[str]
     rules: list[str]
     example_payload: dict[str, JsonValue]
 
     @property
-    def props_schema(self) -> dict[str, JsonValue]:
-        """Resolve the catalog's object-shaped props schema without loose chaining."""
-        properties = self.json_schema.get("properties")
-        if isinstance(properties, dict):
-            props = properties.get("props")
-            if isinstance(props, dict):
-                return props
+    def props_schema(self) -> WidgetPropertySchema:
+        """Resolve the catalog-owned props descriptor without JSON reparsing."""
+        props = (self.json_schema.properties or {}).get("props")
+        if props is not None:
+            return props
         raise ValueError("Widget catalog requires an object props schema.")

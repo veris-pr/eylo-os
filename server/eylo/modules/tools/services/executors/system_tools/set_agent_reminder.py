@@ -1,12 +1,17 @@
 """Registered Agent-reminder system tool."""
 
-from typing import Any, Dict
 from uuid import UUID, uuid4
 
 import arrow
 
+from eylo.common.contracts.json_values import JsonObject
 from eylo.modules.conversations.constants import CONVERSATION_REENGAGE_ACTION
 from eylo.modules.conversations.schemas.conversations import ConversationContext
+from eylo.modules.tools.schemas.reminders import (
+    ReminderAction,
+    ReminderRejected,
+    ReminderScheduled,
+)
 from eylo.modules.tools.services.executors.system_tools import logger
 from eylo.modules.tools.services.executors.system_tools.schedule_tools import (
     AgentScheduleContext,
@@ -15,7 +20,7 @@ from eylo.modules.tools.services.executors.system_tools.schedule_tools import (
 
 async def set_agent_reminder(
     datetime_str: str, message: str, ctx: AgentScheduleContext
-) -> Dict[str, Any]:
+) -> JsonObject:
     """Schedule one user-requested conversation re-engagement.
 
     Use only when the user explicitly asks to be reminded or contacted later.
@@ -37,22 +42,20 @@ async def set_agent_reminder(
         now = arrow.utcnow()
 
         if dt <= now:
-            return {
-                "success": False,
-                "message": f"Time must be in the future. Current UTC: {now.isoformat()}",
-                "action_required": "ask_user_for_new_time",
-            }
+            return ReminderRejected(
+                message=f"Time must be in the future. Current UTC: {now.isoformat()}",
+                action_required=ReminderAction.NEW_TIME,
+            ).model_dump(mode="json")
 
         if (
             not isinstance(ctx, ConversationContext)
             or ctx.primary_agent is None
             or ctx.get_primary_contact() is None
         ):
-            return {
-                "success": False,
-                "message": "System error: Missing conversation context",
-                "action_required": "apologize_and_ask_to_retry",
-            }
+            return ReminderRejected(
+                message="System error: Missing conversation context",
+                action_required=ReminderAction.RETRY_CONTEXT,
+            ).model_dump(mode="json")
         agent_indb = ctx.primary_agent
         conversation_id: UUID = ctx.conversation.id
 
@@ -66,6 +69,7 @@ async def set_agent_reminder(
         # so there is no wall-clock intent to preserve. A recurring reminder
         # would need the user's timezone, which is why this stays one-shot.
         from eylo.common.contracts.scheduler import Recurrence
+        from eylo.modules.conversations.scheduled_actions import ReengagePayload
         from eylo.modules.scheduler.service import create_schedule
 
         await create_schedule(
@@ -76,10 +80,9 @@ async def set_agent_reminder(
             key=f"reminder:{conversation_id}:{uuid4()}",
             name=f"Reminder for conversation {conversation_id}",
             action=CONVERSATION_REENGAGE_ACTION,
-            payload={
-                "conversation_id": str(conversation_id),
-                "message": message,
-            },
+            payload=ReengagePayload(
+                conversation_id=conversation_id, message=message
+            ).model_dump(mode="json"),
             recurrence=Recurrence(rule=None, timezone="UTC", starts_at=dt.datetime),
             agent_id=agent_indb.id,
             agent_revision=agent_indb.published_revision,
@@ -87,29 +90,23 @@ async def set_agent_reminder(
 
         friendly_time = dt.to("UTC").format("YYYY-MM-DD at HH:mm") + " UTC"
 
-        return {
-            "success": True,
-            "scheduled_time_utc": dt.to("UTC").isoformat(),
-            "message": f"Reminder successfully scheduled for {friendly_time}. The system will automatically re-engage the conversation at that time.",
-            "action_required": "end_scheduling_task",
-            "reminder_context": message,
-            # Add this critical flag:
-            "_meta": {"conversation_complete": True, "no_further_actions_needed": True},
-        }
+        return ReminderScheduled(
+            scheduled_time_utc=dt.to("UTC").isoformat(),
+            message=f"Reminder successfully scheduled for {friendly_time}. The system will automatically re-engage the conversation at that time.",
+            reminder_context=message,
+        ).model_dump(mode="json", by_alias=True)
 
     except arrow.parser.ParserError:
-        return {
-            "success": False,
-            "message": f"Invalid datetime format. Use ISO 8601 UTC (e.g., '2025-10-11T14:30:00Z'). Current time: {arrow.utcnow().isoformat()}",
-            "action_required": "ask_user_for_correct_format",
-        }
+        return ReminderRejected(
+            message=f"Invalid datetime format. Use ISO 8601 UTC (e.g., '2025-10-11T14:30:00Z'). Current time: {arrow.utcnow().isoformat()}",
+            action_required=ReminderAction.CORRECT_FORMAT,
+        ).model_dump(mode="json")
     except Exception as error:
         logger.error(
             "set_agent_reminder failed error_type=%s",
             type(error).__name__,
         )
-        return {
-            "success": False,
-            "message": "System error setting reminder. Please try again.",
-            "action_required": "apologize_and_offer_retry",
-        }
+        return ReminderRejected(
+            message="System error setting reminder. Please try again.",
+            action_required=ReminderAction.RETRY_SCHEDULE,
+        ).model_dump(mode="json")

@@ -5,7 +5,7 @@ It uses SQLAlchemy ORM to map the ConversationModel class to the conversation_co
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Optional
 from uuid import UUID
 
 from sqlalchemy import (
@@ -21,6 +21,7 @@ from sqlalchemy.dialects.postgresql import ENUM, JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
+from eylo.common.contracts.json_values import JsonObject
 from eylo.common.models import EyloOrganizationModel
 
 
@@ -101,7 +102,7 @@ class ConversationsModel(EyloOrganizationModel):
     has_triggered_title_generation: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=True
     )
-    meta: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    meta: Mapped[JsonObject | None] = mapped_column(JSONB, nullable=True)
     swarm_id: Mapped[Optional[UUID]] = mapped_column(
         PGUUID(as_uuid=True), nullable=True
     )

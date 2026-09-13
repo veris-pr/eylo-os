@@ -15,6 +15,8 @@ from uuid import uuid4
 
 from eylo.common.contracts.session_state import RecordingDisclosureStatePort
 from eylo.common.contracts.voice import RecordingDisclosureState
+from eylo.common.contracts.websocket import WsRequestEvent, WsResponse
+from eylo.modules.session_context.schemas import SessionContext
 from eylo.pipelines.voice.tts_payloads import TTSFinalizeRequest, TTSTextRequest
 
 if TYPE_CHECKING:
@@ -23,7 +25,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-async def handle_recording_consent_event(event, ctx):
+async def handle_recording_consent_event(event: WsRequestEvent, ctx: SessionContext) -> WsResponse:
     """Apply a caller's recording decision to the live session.
 
     The body lives here rather than in `sockets/websocket/handlers/` because it
@@ -35,7 +37,7 @@ async def handle_recording_consent_event(event, ctx):
     from fastapi import status
 
     from eylo.pipelines.websocket.handlers.error import handle_error
-    from eylo.pipelines.websocket.schemas import WsEventAction, WsResponse
+    from eylo.pipelines.websocket.schemas import WsEventAction
 
     try:
         if ctx.ws is None:
@@ -51,7 +53,7 @@ async def handle_recording_consent_event(event, ctx):
             kind=WsEventAction.RECORDING_CONSENT_STATE,
             data={
                 "state": ctx.ws.recording_consent_state.value,
-                "recording": ctx.ws.audio_recorder is not None,
+                "recording": ctx.ws.has_audio_recorder,
                 "_event": event.model_dump(),
             },
             organization_id=ctx.organization_id,

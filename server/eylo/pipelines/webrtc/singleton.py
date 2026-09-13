@@ -7,12 +7,12 @@ S_webrtc_signaling = WebRTCSignalingManager()
 
 
 # Lifecycle functions
-async def start_webrtc_signaling():
+async def start_webrtc_signaling() -> None:
     """Start the WebRTC signaling service."""
     await S_webrtc_signaling.start()
 
 
-async def stop_webrtc_signaling():
+async def stop_webrtc_signaling() -> None:
     """Stop the WebRTC signaling service."""
     await S_webrtc_signaling.stop()
 

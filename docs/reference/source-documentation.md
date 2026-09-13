@@ -52,6 +52,12 @@ state machines. Explain what the abstraction owns and what it deliberately
 does not own. Pydantic and SQLAlchemy field comments belong only where the
 field has non-obvious domain meaning.
 
+Shared SQLAlchemy fields use `Mapped[T]` with the DB's actual nullability;
+annotations must not silently change inferred column constraints. ORM callback
+protocols describe mapped descriptors rather than pretending they are plain
+attributes. Pydantic before-validators accept `object` at the untrusted input
+boundary and let the declared field schema validate the normalized value.
+
 ## TypeScript and TSX
 
 Use JSDoc for exported headless contracts, stores/services with non-obvious

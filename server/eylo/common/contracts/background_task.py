@@ -4,7 +4,7 @@ from enum import Enum
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class BackgroundTaskOutcome(str, Enum):
@@ -120,11 +120,26 @@ class TaskContent(BaseModel):
         return cls.model_validate_json(raw)
 
 
+class TaskResultMetadata(BaseModel):
+    """Worker-owned execution facts stored with a completed task result."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    model_used: str
+    iterations_used: int = Field(ge=0)
+
+
 class TaskResultContent(BaseModel):
     """Content stored inside a SYSTEM/TASK_RESULT message."""
 
-    result: str = Field(..., description="Worker output text")
-    meta: Optional[dict] = Field(
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    result: str = Field(..., description="Worker output text", repr=False)
+    meta: TaskResultMetadata | None = Field(
         None,
         description="Worker metadata (iterations_used, model_used)",
     )

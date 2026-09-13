@@ -3,7 +3,7 @@
 from typing import List, Optional
 from uuid import UUID
 
-from sqlalchemy import ColumnElement, or_
+from sqlalchemy import ColumnElement, SQLColumnExpression, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.revisions import DefinitionHeaderState, DefinitionLifecycle
@@ -116,7 +116,7 @@ class AgentService(EyloBaseService[AgentInDb, AgentsModel]):
         return self._repository
 
     @repository.setter
-    def repository(self, value: AgentsRepository):
+    def repository(self, value: AgentsRepository) -> None:
         """Repository for the "agents" domain."""
         self._repository = value
 
@@ -502,7 +502,7 @@ class AgentService(EyloBaseService[AgentInDb, AgentsModel]):
     def _agent_list_order(
         self,
         filters: AgentListQuery | None,
-    ) -> list:
+    ) -> list[SQLColumnExpression[object]]:
         model = self.repository.model
         sort_by = filters.sort_by if filters else AgentSortField.UPDATED_AT
         direction = filters.sort_direction if filters else AgentSortDirection.DESC
@@ -893,7 +893,7 @@ class AgentToolService(EyloBaseService[AgentToolInDb, AgentToolMappingModal]):
         return self._repository
 
     @repository.setter
-    def repository(self, value: AgentToolMappingRepository):
+    def repository(self, value: AgentToolMappingRepository) -> None:
         """Repository for the "agents" domain."""
         self._repository = value
 

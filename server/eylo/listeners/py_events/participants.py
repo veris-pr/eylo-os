@@ -15,11 +15,8 @@ from eylo.pipelines.websocket.singleton import S_ws_manager
 logger = logging.getLogger(__name__)
 
 
-async def handle_participant_created(event: ParticipantCreatedEvent):
-    """Broadcast participant created event to all participants in the conversation.
-
-    This ensures real-time updates when new participants (e.g., agents during handoff) are added.
-    """
+async def handle_participant_created(event: ParticipantCreatedEvent) -> None:
+    """Read recipient snapshots in a short transaction; publish after it closes."""
     async with start_transaction(ro=True):
         participant_indb = event.participant
         if participant_indb is None:
@@ -44,22 +41,21 @@ async def handle_participant_created(event: ParticipantCreatedEvent):
             participants_indb
         )
 
-        logger.debug(
-            f"Broadcasting participant created to {len(contacts)} contacts in conversation {event.conversation_id}"
+    logger.debug(
+        f"Broadcasting participant created to {len(contacts)} contacts in conversation {event.conversation_id}"
+    )
+
+    for contact in contacts:
+        await S_ws_manager.reply_to_conversation_contact(
+            contact_id=contact.entity_id,
+            organization_id=conversation_indb.organization_id,
+            conversation_id=event.conversation_id,
+            kind=WsEventAction.PARTICIPANT_CREATED,
+            payload=ParticipantApiResponseSchema.model_validate(
+                participant_indb
+            ).model_dump(by_alias=True),
         )
 
-        # Broadcast to all contacts in the conversation
-        for contact in contacts:
-            await S_ws_manager.reply_to_conversation_contact(
-                contact_id=contact.entity_id,
-                organization_id=conversation_indb.organization_id,
-                conversation_id=event.conversation_id,
-                kind=WsEventAction.PARTICIPANT_CREATED,
-                payload=ParticipantApiResponseSchema.model_validate(
-                    participant_indb
-                ).model_dump(by_alias=True),
-            )
-
-        logger.info(
-            f"Participant {participant_indb.id} created and broadcast for conversation {event.conversation_id}"
-        )
+    logger.info(
+        f"Participant {participant_indb.id} created and broadcast for conversation {event.conversation_id}"
+    )

@@ -6,5 +6,5 @@ from eylo.pipelines.websocket.schemas import (
 )
 
 
-async def handle_noop(event: WsRequestEvent, ctx: SessionContext):
+async def handle_noop(event: WsRequestEvent, ctx: SessionContext) -> None:
     return

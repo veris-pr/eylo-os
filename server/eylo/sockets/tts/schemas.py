@@ -2,22 +2,27 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from enum import Enum
-from typing import Any, Literal
+from typing import Annotated, Literal, Self
 
 from pydantic import (
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     StrictFloat,
     StrictInt,
     StrictStr,
+    TypeAdapter,
     ValidationError,
     model_validator,
 )
 
+from eylo.common.contracts.json_values import JsonObject
 from eylo.sockets.tts.exceptions import TTSConfigurationError
 
+_JSON_OBJECT = TypeAdapter(JsonObject)
 DEFAULT_TTS_SAMPLE_RATE = 24000
 DEFAULT_TTS_ENCODING = "pcm_s16le"
 
@@ -67,22 +72,49 @@ class RetryOptions(BaseModel):
     retry_interval_seconds: StrictFloat = Field(default=1.0, ge=0)
 
 
+class TTSCapabilitySupport(Enum):
+    """Socket-owned capability claim; preserve the existing boolean JSON value."""
+
+    UNSUPPORTED = False
+    SUPPORTED = True
+
+    def __bool__(self) -> bool:
+        raise TypeError("Compare TTS support with its explicit enum member.")
+
+
+def _capability_support(value: object) -> TTSCapabilitySupport:
+    if isinstance(value, TTSCapabilitySupport):
+        return value
+    if value is True:
+        return TTSCapabilitySupport.SUPPORTED
+    if value is False:
+        return TTSCapabilitySupport.UNSUPPORTED
+    raise ValueError("TTS capability requires explicit support or a boolean.")
+
+
+TTSSupport = Annotated[TTSCapabilitySupport, BeforeValidator(_capability_support)]
+
+
 class TTSCapabilities(BaseModel):
-    """Static vendor capabilities used by the manager and transports."""
+    """Adapter-owned executable features, not platform policy switches."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", revalidate_instances="always"
+    )
 
-    streaming: bool = True
-    batch_synthesize: bool = False
-    native_interruption: bool = False
-    aligned_transcript: bool = False
-    emotion_control: bool = False
-    speed_control: bool = False
-    voice_cloning: bool = False
-    context_continuity: bool = False
-    word_timestamps: bool = False
-    sample_rates: tuple[int, ...] = (DEFAULT_TTS_SAMPLE_RATE,)
-    languages_count: int = 1
+    streaming: TTSSupport = TTSCapabilitySupport.SUPPORTED
+    batch_synthesize: TTSSupport = TTSCapabilitySupport.UNSUPPORTED
+    native_interruption: TTSSupport = TTSCapabilitySupport.UNSUPPORTED
+    aligned_transcript: TTSSupport = TTSCapabilitySupport.UNSUPPORTED
+    emotion_control: TTSSupport = TTSCapabilitySupport.UNSUPPORTED
+    speed_control: TTSSupport = TTSCapabilitySupport.UNSUPPORTED
+    voice_cloning: TTSSupport = TTSCapabilitySupport.UNSUPPORTED
+    context_continuity: TTSSupport = TTSCapabilitySupport.UNSUPPORTED
+    word_timestamps: TTSSupport = TTSCapabilitySupport.UNSUPPORTED
+    sample_rates: tuple[Annotated[StrictInt, Field(gt=0)], ...] = (
+        DEFAULT_TTS_SAMPLE_RATE,
+    )
+    languages_count: StrictInt = Field(default=1, ge=0)
 
 
 class TTSAudioFormat(BaseModel):
@@ -103,7 +135,7 @@ class TTSAudioFormat(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def normalize_aliases(cls, data: Any) -> Any:
+    def normalize_aliases(cls, data: object) -> object:
         if isinstance(data, cls):
             return data
         if not isinstance(data, dict):
@@ -125,7 +157,7 @@ class TTSAudioFormat(BaseModel):
         return normalized
 
     @classmethod
-    def from_mapping(cls, value: dict[str, Any]) -> "TTSAudioFormat":
+    def from_mapping(cls, value: Mapping[str, object]) -> "TTSAudioFormat":
         """Validate a complete provider or transport media contract."""
         return cls.model_validate(value)
 
@@ -134,7 +166,10 @@ class TTSConfig(BaseModel):
     """Canonical TTS runtime configuration plus provider-specific options."""
 
     model_config = ConfigDict(
-        extra="allow", revalidate_instances="always", hide_input_in_errors=True
+        extra="allow",
+        revalidate_instances="always",
+        hide_input_in_errors=True,
+        allow_inf_nan=False,
     )
 
     vendor: TTSProvider
@@ -143,13 +178,13 @@ class TTSConfig(BaseModel):
     language: StrictStr | None = None
     sample_rate: StrictInt = Field(default=DEFAULT_TTS_SAMPLE_RATE, gt=0)
     encoding: StrictStr = DEFAULT_TTS_ENCODING
-    output_format: dict[str, Any] | None = None
-    options: dict[str, Any] = Field(default_factory=dict)
+    output_format: JsonObject | None = None
+    options: JsonObject = Field(default_factory=dict)
     retry: RetryOptions = Field(default_factory=RetryOptions)
 
     @model_validator(mode="before")
     @classmethod
-    def normalize_transport_format(cls, data: Any) -> Any:
+    def normalize_transport_format(cls, data: object) -> object:
         if isinstance(data, TTSConfig):
             return data
         if data is None:
@@ -168,6 +203,12 @@ class TTSConfig(BaseModel):
                 normalized["encoding"] = encoding
 
         return normalized
+
+    @model_validator(mode="after")
+    def validate_vendor_extensions(self) -> Self:
+        """Extra fields obey the same finite-JSON boundary as nested options."""
+        _JSON_OBJECT.validate_python(self.model_extra)
+        return self
 
     def to_adapter_config(self) -> dict[str, object]:
         """One unambiguous adapter payload; nested options cannot shadow fields."""
@@ -196,7 +237,7 @@ class TTSAudioChunk(BaseModel):
     delta_text: str | None = None
     sample_rate: int | None = None
     encoding: str | None = None
-    vendor_metadata: dict[str, Any] = Field(default_factory=dict)
+    vendor_metadata: JsonObject = Field(default_factory=dict)
 
     @classmethod
     def from_response(
@@ -208,16 +249,22 @@ class TTSAudioChunk(BaseModel):
         request_id: str | None = None,
     ) -> "TTSAudioChunk":
         if isinstance(response, cls):
-            updates: dict[str, Any] = {}
-            if response.sample_rate is None and sample_rate is not None:
-                updates["sample_rate"] = sample_rate
-            if response.encoding is None and encoding is not None:
-                updates["encoding"] = encoding
-            if response.request_id is None and request_id is not None:
-                updates["request_id"] = request_id
-            if updates:
-                return response.model_copy(update=updates)
-            return response
+            if not (
+                (response.sample_rate is None and sample_rate is not None)
+                or (response.encoding is None and encoding is not None)
+                or (response.request_id is None and request_id is not None)
+            ):
+                return response
+            # Preserve shallow-copy semantics and provider-owned values. Typed
+            # assignments cannot silently misspell a model_copy update key.
+            enriched = response.model_copy()
+            if enriched.sample_rate is None and sample_rate is not None:
+                enriched.sample_rate = sample_rate
+            if enriched.encoding is None and encoding is not None:
+                enriched.encoding = encoding
+            if enriched.request_id is None and request_id is not None:
+                enriched.request_id = request_id
+            return enriched
         return cls(
             data=bytes(response),
             sample_rate=sample_rate,
@@ -234,7 +281,7 @@ class TTSEvent(BaseModel):
     request_id: str | None = None
     chunk: TTSAudioChunk | None = None
     message: str | None = None
-    vendor_metadata: dict[str, Any] = Field(default_factory=dict)
+    vendor_metadata: JsonObject = Field(default_factory=dict)
 
 
 class TTSMetricsSnapshot(BaseModel):

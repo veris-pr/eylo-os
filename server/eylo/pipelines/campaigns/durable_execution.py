@@ -874,7 +874,7 @@ async def _complete_campaign_if_terminal(
         return
     counts = await CampaignContactRepository(session).count_by_status(campaign.id)
     non_terminal = sum(
-        counts.get(state.value, 0)
+        counts.get(state, 0)
         for state in (
             CampaignContactStatus.PENDING,
             CampaignContactStatus.QUEUED,

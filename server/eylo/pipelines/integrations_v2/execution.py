@@ -140,7 +140,7 @@ async def execute_curated_tool(
                     organization_id=organization_id,
                     integration_id=grant.installation_id,
                     vendor=grant.vendor,
-                    auth_kind=grant.auth_kind.value,
+                    auth_kind=grant.auth_kind,
                     integration_name=resolved_vendor_name(registry, grant.vendor),
                     reason="authorization_required",
                     contact_id=contact_id,

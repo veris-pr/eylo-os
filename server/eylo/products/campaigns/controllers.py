@@ -15,10 +15,12 @@ from eylo.modules.contacts.domain import (
     ContactDeletionPending,
     ContactNotFound,
 )
+from eylo.products.campaigns.constants import CampaignContactStatus, CampaignStatus
 from eylo.products.campaigns.domain import CampaignNotFoundError
 from eylo.products.campaigns.schemas.api import (
     CampaignAnalyticsResponse,
     CampaignContactResponse,
+    CampaignContactsAddedResponse,
     CampaignContactsPaginated,
     CampaignContactsSelectRequest,
     CampaignContactsUploadRequest,
@@ -29,7 +31,7 @@ from eylo.products.campaigns.schemas.api import (
     CampaignUpdateRequest,
     CampaignsPaginated,
 )
-from eylo.products.campaigns.schemas.indb import CampaignUpdateSchema
+from eylo.products.campaigns.schemas.indb import CampaignInDb, CampaignUpdateSchema
 from eylo.products.campaigns.services.campaign_service import CampaignService
 
 logger = logging.getLogger(__name__)
@@ -59,7 +61,7 @@ class CampaignController:
         self,
         organization_id: UUID,
         campaign_id: UUID,
-    ):
+    ) -> CampaignInDb:
         try:
             return await self.service.get_campaign(
                 campaign_id,
@@ -115,7 +117,7 @@ class CampaignController:
         organization_id: UUID,
         pagination: PaginationParams,
         current_user: CurrentUserSchema,
-        status_filter: str | None = None,
+        status_filter: CampaignStatus | None = None,
     ) -> CampaignsPaginated:
         self._check_org_access(organization_id, current_user)
         async with start_transaction(ro=True):
@@ -332,7 +334,7 @@ class CampaignController:
         campaign_id: UUID,
         request: CampaignContactsUploadRequest,
         current_user: CurrentUserSchema,
-    ) -> dict:
+    ) -> CampaignContactsAddedResponse:
         self._check_org_access(organization_id, current_user)
         try:
             async with start_transaction():
@@ -348,7 +350,7 @@ class CampaignController:
                     count,
                     organization_id,
                 )
-                return {"added": count}
+                return CampaignContactsAddedResponse(added=count)
         except ContactNotFound as error:
             raise HTTPException(status_code=404, detail="Contact not found") from error
         except ContactDeletionPending as error:
@@ -370,7 +372,7 @@ class CampaignController:
         campaign_id: UUID,
         request: CampaignContactsSelectRequest,
         current_user: CurrentUserSchema,
-    ) -> dict:
+    ) -> CampaignContactsAddedResponse:
         self._check_org_access(organization_id, current_user)
         try:
             async with start_transaction():
@@ -386,7 +388,7 @@ class CampaignController:
                     count,
                     organization_id,
                 )
-                return {"added": count}
+                return CampaignContactsAddedResponse(added=count)
         except ContactNotFound as error:
             raise HTTPException(status_code=404, detail="Contact not found") from error
         except ContactDeletionPending as error:
@@ -403,7 +405,7 @@ class CampaignController:
         campaign_id: UUID,
         pagination: PaginationParams,
         current_user: CurrentUserSchema,
-        status_filter: str | None = None,
+        status_filter: CampaignContactStatus | None = None,
     ) -> CampaignContactsPaginated:
         self._check_org_access(organization_id, current_user)
         async with start_transaction(ro=True):
@@ -439,20 +441,22 @@ class CampaignController:
             return CampaignAnalyticsResponse(
                 campaign_id=campaign_id,
                 total_contacts=campaign.total_contacts or 0,
-                completed=status_summary.get("completed", 0),
-                failed=status_summary.get("failed", 0),
-                pending=status_summary.get("pending", 0),
-                retry=status_summary.get("retry", 0),
-                skipped=status_summary.get("skipped", 0),
+                completed=status_summary.get(CampaignContactStatus.COMPLETED, 0),
+                failed=status_summary.get(CampaignContactStatus.FAILED, 0),
+                pending=status_summary.get(CampaignContactStatus.PENDING, 0),
+                retry=status_summary.get(CampaignContactStatus.RETRY, 0),
+                skipped=status_summary.get(CampaignContactStatus.SKIPPED, 0),
                 connect_rate=self._compute_connect_rate(status_summary),
                 outcome_distribution=outcome_dist,
             )
 
     @staticmethod
-    def _compute_connect_rate(status_summary: dict[str, int]) -> float:
+    def _compute_connect_rate(
+        status_summary: dict[CampaignContactStatus, int],
+    ) -> float:
         """Compute connect rate from status breakdown."""
-        completed = status_summary.get("completed", 0)
-        failed = status_summary.get("failed", 0)
+        completed = status_summary.get(CampaignContactStatus.COMPLETED, 0)
+        failed = status_summary.get(CampaignContactStatus.FAILED, 0)
         total_attempted = completed + failed
         if total_attempted == 0:
             return 0.0

@@ -4,7 +4,9 @@ import logging
 from typing import Optional
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from eylo.common.database import start_transaction
 from eylo.modules.conversations.models.conversations import ConversationsModel
@@ -18,6 +20,30 @@ from eylo.products.campaigns.constants import CampaignChannel
 from eylo.products.campaigns.schemas.indb import CampaignContactInDb, CampaignInDb
 
 logger = logging.getLogger(__name__)
+
+_DISPATCH_CONFLICT_MESSAGE = (
+    "Campaign attempt conversation conflicts with its canonical input."
+)
+
+
+class WidgetCampaignIdentity(BaseModel):
+    """Replay identity uses exact textual IDs, never display metadata.
+
+    Extra integrator context is ignored on replay; missing or non-string IDs
+    cannot authorize reuse. UUID normalization would widen the existing check.
+    """
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="ignore")
+
+    campaign_id: str
+    campaign_contact_id: str
+    campaign_attempt_id: str
+
+
+class WidgetCampaignContext(WidgetCampaignIdentity):
+    """Campaign-owned context written when starting its conversation."""
+
+    campaign_name: str | None = None
 
 
 class WidgetDispatchConflict(Exception):
@@ -114,12 +140,12 @@ class WidgetChannelAdapter:
                         )
                     ]
                 ),
-                "context": {
-                    "campaign_id": str(campaign.id),
-                    "campaign_name": campaign.name,
-                    "campaign_contact_id": str(contact.id),
-                    "campaign_attempt_id": str(attempt_id),
-                },
+                "context": WidgetCampaignContext(
+                    campaign_id=str(campaign.id),
+                    campaign_name=campaign.name,
+                    campaign_contact_id=str(contact.id),
+                    campaign_attempt_id=str(attempt_id),
+                ).model_dump(mode="json", exclude_none=True),
                 "external_id": external_id,
             }
         )
@@ -196,7 +222,7 @@ def _attempt_external_id(attempt_id: UUID) -> str:
 
 
 async def _find_attempt_conversation(
-    session,
+    session: AsyncSession,
     *,
     organization_id: UUID,
     attempt_id: UUID,
@@ -216,16 +242,18 @@ def _require_matching_conversation(
     contact_id: UUID,
     attempt_id: UUID,
 ) -> None:
-    context = (conversation.meta or {}).get("context") or {}
-    expected = {
-        "campaign_id": str(campaign_id),
-        "campaign_contact_id": str(contact_id),
-        "campaign_attempt_id": str(attempt_id),
-    }
-    if any(context.get(key) != value for key, value in expected.items()):
-        raise WidgetDispatchConflict(
-            "Campaign attempt conversation conflicts with its canonical input."
+    try:
+        context = WidgetCampaignIdentity.model_validate(
+            (conversation.meta or {}).get("context")
         )
+    except ValidationError:
+        raise WidgetDispatchConflict(_DISPATCH_CONFLICT_MESSAGE) from None
+    if (
+        context.campaign_id != str(campaign_id)
+        or context.campaign_contact_id != str(contact_id)
+        or context.campaign_attempt_id != str(attempt_id)
+    ):
+        raise WidgetDispatchConflict(_DISPATCH_CONFLICT_MESSAGE)
 
 
 # Type check

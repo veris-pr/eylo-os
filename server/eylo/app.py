@@ -2,6 +2,7 @@
 
 import logging
 import os
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -9,6 +10,8 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import RequestResponseEndpoint
+from starlette.responses import Response
 
 from eylo.common.config import settings
 from eylo.common.contracts.provider_config import ProviderConfigError
@@ -45,7 +48,7 @@ setup_listeners(process_role=ListenerProcessRole.API)
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Enhanced lifespan manager with reliable service startup and shutdown.
 
     This context manager ensures graceful initialization and cleanup
@@ -120,7 +123,7 @@ app.add_exception_handler(SecretCipherError, handle_secret_cipher_error)
 
 
 @app.middleware("http")
-async def log_requests(request: Request, call_next):
+async def log_requests(request: Request, call_next: RequestResponseEndpoint) -> Response:
     logger.debug(
         f"Incoming request: {request.method} {request.url.path}"
     )  # Log the path
@@ -166,12 +169,12 @@ else:
         logger.warning("Widget directory not found in either location")
 
 @app.get("/")
-def read_root():
+def read_root() -> FileResponse:
     """Root endpoint for the Eylo Server."""
     return FileResponse(str(server_dir / "static" / "index.html"))
 
 
 @app.get("/health")
-async def health_check():
+async def health_check() -> int:
     """Health check endpoint for the Eylo Server."""
     return status.HTTP_200_OK

@@ -22,6 +22,7 @@ from eylo.common.config import settings
 from eylo.common.contracts.sandbox import SandboxError
 from eylo.common.contracts.tool_availability import ToolRuntimeFact
 from eylo.common.database import get_transaction, start_transaction
+from eylo.framework.agents.agent import AgentSpec
 from eylo.framework.agents.config import RunConfig, RunPromptCaching, RunStreaming
 from eylo.framework.agents.context import RunContext, RunInput, RunMessage
 from eylo.framework.agents.durable import InputRequestDetails
@@ -414,7 +415,7 @@ class ObjectiveFrameworkRunner:
         claim: AgentRunExecutionClaim,
         wait: AgentRunWaitState,
         run_input: RunInput,
-        agent,
+        agent: AgentSpec,
         execution_context: AgentExecutionContext,
         config: RunConfig,
         workflow_context: AgentRunWorkflowContext,
@@ -637,7 +638,11 @@ async def _build_execution_context(
     )
 
 
-def _initial_run_input(claim, execution_context, tools) -> RunInput:
+def _initial_run_input(
+    claim: AgentRunExecutionClaim,
+    execution_context: AgentExecutionContext,
+    tools: tuple[ToolSpec, ...],
+) -> RunInput:
     instructions = f"{execution_context.system_prompt}\n\n{_CONTROL_INSTRUCTIONS}"
     return RunInput(
         instructions=instructions,

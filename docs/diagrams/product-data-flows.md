@@ -18,6 +18,17 @@ revision pins the Agent, template, channel config, scheduling policy, retry
 policy, and concurrency limit. Campaign contacts reference organization
 contacts; they do not take ownership of those contacts.
 
+Audience upload and selection return `{"added": <inserted row count>}`. Campaign
+and audience status filters use their respective lifecycle enums; unsupported
+filter values return HTTP 422. The same enums flow through persisted-state
+decoding, analytics and worker completion checks. Lifecycle updates accept
+explicit start/completion timestamps, not arbitrary model fields.
+
+Upload deduplicates trimmed addresses within that request only. Selection and
+repeated uploads do not currently provide idempotent insertion: an existing
+campaign/address pair can fail the DB uniqueness constraint. This is a known
+audience-import limitation, not a successful zero-add result.
+
 Sources: [`campaign_service.py`](../../server/eylo/products/campaigns/services/campaign_service.py),
 [`preparation.py`](../../server/eylo/products/campaigns/preparation.py), and
 [`controllers.py`](../../server/eylo/products/campaigns/controllers.py).

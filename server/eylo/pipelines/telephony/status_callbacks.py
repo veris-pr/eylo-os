@@ -9,7 +9,10 @@ from eylo.common.contracts.telephony import CallEndedReason
 from eylo.common.database import start_transaction
 from eylo.events.py_events.emitter import emit_ephemeral
 from eylo.events.schema.py_events.call import (
+    CallDirection,
     CallEndedEvent,
+    CallEventContext,
+    CallEventData,
     CallRingingEvent,
 )
 from eylo.modules.telephony.lifecycle import CallLifecycleConflict, record_call_status
@@ -159,6 +162,25 @@ class StatusCallbackHandler:
             call_sid,
             call_for_event.organization_id,
         ) or str(call_for_event.id)
+        context = CallEventContext(
+            session_id=session_id,
+            organization_id=call_for_event.organization_id,
+            call_sid=call_sid,
+            conversation_id=call_for_event.conversation_id,
+            direction=CallDirection(call_for_event.direction),
+            provider=provider.value,
+            provider_config_id=call_for_event.provider_config_id,
+            provider_config_revision=call_for_event.provider_config_revision,
+            from_number=call_for_event.from_number,
+            to_number=call_for_event.to_number,
+            agent_id=call_for_event.agent_id,
+            agent_revision=call_for_event.agent_revision,
+            data=CallEventData(
+                campaign_id=call_for_event.campaign_id,
+                campaign_contact_id=call_for_event.campaign_contact_id,
+                campaign_attempt_id=call_for_event.campaign_attempt_id,
+            ) if is_terminal and call_for_event.campaign_id else CallEventData(),
+        )
 
         # Emit ringing event for outbound calls
         if (
@@ -169,17 +191,7 @@ class StatusCallbackHandler:
             emit_ephemeral(
                 CallRingingEvent(
                     message=f"Call ringing ({provider})",
-                    session_id=session_id,
-                    organization_id=call_for_event.organization_id,
-                    call_sid=call_sid,
-                    conversation_id=call_for_event.conversation_id,
-                    provider=provider,
-                    provider_config_id=call_for_event.provider_config_id,
-                    provider_config_revision=(call_for_event.provider_config_revision),
-                    from_number=call_for_event.from_number,
-                    to_number=call_for_event.to_number,
-                    agent_id=call_for_event.agent_id,
-                    agent_revision=call_for_event.agent_revision,
+                    context=context,
                 ),
             )
 
@@ -195,26 +207,9 @@ class StatusCallbackHandler:
             emit_ephemeral(
                 CallEndedEvent(
                     message=f"Call ended ({provider}): {reason}",
-                    session_id=session_id,
-                    organization_id=call_for_event.organization_id,
-                    call_sid=call_sid,
-                    conversation_id=call_for_event.conversation_id,
-                    provider=provider,
-                    provider_config_id=call_for_event.provider_config_id,
-                    provider_config_revision=(call_for_event.provider_config_revision),
-                    from_number=call_for_event.from_number,
-                    to_number=call_for_event.to_number,
-                    agent_id=call_for_event.agent_id,
-                    agent_revision=call_for_event.agent_revision,
+                    context=context,
                     ended_reason=reason,
                     duration_seconds=duration_seconds,
                     terminal_status=status,
-                    data={
-                        "campaign_id": call_for_event.campaign_id,
-                        "campaign_contact_id": (call_for_event.campaign_contact_id),
-                        "campaign_attempt_id": call_for_event.campaign_attempt_id,
-                    }
-                    if call_for_event.campaign_id
-                    else {},
                 ),
             )

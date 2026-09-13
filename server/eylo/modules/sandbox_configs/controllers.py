@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from eylo.modules.provider_configs.domain import ProviderConfig
 from eylo.modules.provider_configs.masking import mask_secrets
 from eylo.modules.sandbox_configs.schemas import (
     SandboxConfigCreate,
@@ -79,7 +80,7 @@ class SandboxConfigController:
         )
 
     @staticmethod
-    def _to_response(config) -> SandboxConfigResponse:
+    def _to_response(config: ProviderConfig) -> SandboxConfigResponse:
         return SandboxConfigResponse(
             id=config.id,
             provider=config.provider,

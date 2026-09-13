@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from eylo.modules.provider_configs.domain import ProviderConfig
 from eylo.modules.provider_configs.masking import mask_secrets
 from eylo.modules.voice_configs.catalog import VoiceKind
 from eylo.modules.voice_configs.schemas import (
@@ -87,12 +88,11 @@ class VoiceConfigController:
             kind=self._kind,
         )
 
-    def _to_response(self, config) -> VoiceConfigResponse:
-        kind_value = self._kind.value
+    def _to_response(self, config: ProviderConfig) -> VoiceConfigResponse:
         return VoiceConfigResponse(
             id=config.id,
             provider=config.provider,
-            kind=kind_value,
+            kind=self._kind,
             name=config.name,
             revision=config.revision,
             enabled=config.enabled,

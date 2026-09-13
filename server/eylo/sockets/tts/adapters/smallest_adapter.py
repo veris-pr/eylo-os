@@ -1,25 +1,18 @@
-"""Smallest AI TTS adapter for the production TTS manager.
+"""Lightning-v2 synthesis with typed frames and explicit request ownership.
 
-Bridges Smallest AI's Lightning-v2 WebSocket streaming to the interface
-expected by TTSRealtime/TTSFactory.
-
-Smallest AI provides ultra-low latency TTS (~50-80ms) via persistent
-WebSocket connection. Audio is delivered as binary frames or base64 JSON.
-
-Connection lifecycle:
-- connect() establishes WebSocket to wss://waves-api.smallest.ai
-- Background receiver loop pushes audio to response queue
-- handle_interruption() drains the queue
+Each native request owns its connection, as in the vendor's v2 example. The
+manager streams successive text chunks without accumulating an audio queue.
+Completion closes the native request; interruption invalidates it before close.
 """
 
 import asyncio
-import base64
-import json
 import logging
-from typing import Optional
+from collections.abc import AsyncIterator
+from functools import partial
+from typing import Self
 
 import websockets
-from pydantic import Field, StrictInt
+from pydantic import Field, StrictInt, model_validator
 from websockets.asyncio.client import ClientConnection
 
 from eylo.common.contracts.speech_runtime import (
@@ -28,25 +21,48 @@ from eylo.common.contracts.speech_runtime import (
     SpeechText,
 )
 from eylo.sockets.tts.adapters.config import TTSAdapterConfig
+from eylo.sockets.tts.adapters.smallest_wire import (
+    SMALLEST_PCM_ENCODING,
+    SMALLEST_SAMPLE_RATE,
+    SMALLEST_WEBSOCKET_URL,
+    SmallestChunk,
+    SmallestError,
+    SmallestModel,
+    SmallestOutputError,
+    SmallestSpeechRequest,
+    SmallestStreamState,
+    parse_response,
+)
 from eylo.sockets.tts.base import TTSVendorAdapter
-from eylo.sockets.tts.exceptions import TTSConnectionClosed, TTSConnectionFailed
-from eylo.sockets.tts.schemas import TTSCapabilities, TTSConfig, TTSProvider
+from eylo.sockets.tts.exceptions import TTSConnectionFailed
+from eylo.sockets.tts.schemas import (
+    TTSCapabilities,
+    TTSCapabilitySupport,
+    TTSConfig,
+    TTSProvider,
+)
 
 logger = logging.getLogger(__name__)
-
-_DEFAULT_SAMPLE_RATE = 24000
-_WS_URL = "wss://waves-api.smallest.ai/api/v1/lightning-v2/get_speech/stream?timeout=60"
+_NATIVE_TIMEOUT_SECONDS = 10.0
 
 
 class SmallestTTSConfig(TTSAdapterConfig):
-    """Configuration for Smallest AI TTS adapter."""
+    """Only the configured v2 endpoint; raw PCM is required by the voice path."""
 
     provider = TTSProvider.SMALLEST
     voice: SpeechText
-    model: SpeechText
+    model: SmallestModel
     language: SpeechText
-    sample_rate: StrictInt = Field(default=_DEFAULT_SAMPLE_RATE, gt=0)
+    sample_rate: StrictInt = Field(default=SMALLEST_SAMPLE_RATE, gt=0)
     add_wav_header: SpeechOption = SpeechOptionState.DISABLED
+
+    @model_validator(mode="after")
+    def require_raw_audio(self) -> Self:
+        if self.add_wav_header is SpeechOptionState.ENABLED:
+            raise ValueError(
+                "Smallest TTS add_wav_header must be false for realtime voice."
+            )
+        return self
 
     @property
     def voice_id(self) -> str:
@@ -54,178 +70,236 @@ class SmallestTTSConfig(TTSAdapterConfig):
 
 
 class SmallestTTSAdapter(TTSVendorAdapter):
-    """Adapter bridging Smallest AI WebSocket TTS to the TTSFactory interface.
+    """One logical session, serialized native requests, cancellation-safe reads."""
 
-    Maintains a persistent WebSocket connection to Smallest's streaming endpoint.
-    Text is sent as JSON with voice/language config per message.
-    Audio arrives as binary frames or base64-encoded JSON.
-    """
-
-    def __init__(self, config: SmallestTTSConfig):
-        config = SmallestTTSConfig.model_validate(config)
-        if config.add_wav_header is SpeechOptionState.ENABLED:
-            raise ValueError(
-                "Smallest TTS add_wav_header must be false for realtime voice."
-            )
+    def __init__(self, config: SmallestTTSConfig) -> None:
+        self._config = SmallestTTSConfig.model_validate(config)
         super().__init__(
             TTSConfig(
                 vendor=TTSProvider.SMALLEST,
-                model=config.model,
-                voice=config.voice,
-                sample_rate=config.sample_rate,
-                encoding="pcm_s16le",
+                model=self._config.model.value,
+                voice=self._config.voice,
+                sample_rate=self._config.sample_rate,
+                encoding=SMALLEST_PCM_ENCODING,
             )
         )
-        self._config = config
-        self._response_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=500)
-        self._ws: Optional[ClientConnection] = None
-        self._connected = False
-        self._recv_task: asyncio.Task[None] | None = None
-        self._consecutive_errors = 0
+        self._ws: ClientConnection | None = None
+        self._state = SmallestStreamState.DISCONNECTED
+        self._native_request_id: str | None = None
+        self._completion_error: TTSConnectionFailed | None = None
+        self._lifecycle_lock = asyncio.Lock()
+        self._request_done = asyncio.Event()
+        self._request_done.set()
+        self._request_available = asyncio.Event()
+        self._epoch = 0
+        self._closing: dict[ClientConnection, asyncio.Task[None]] = {}
 
-    async def connect(self):
-        """Connect to Smallest AI TTS WebSocket.
-
-        Raises TTSConnectionFailed if connection cannot be established.
-        """
+    async def _open(self) -> ClientConnection:
         try:
-            connection = await asyncio.wait_for(
-                websockets.connect(
-                    _WS_URL,
-                    additional_headers={
-                        "Authorization": f"Bearer {self._config.api_key}",
-                    },
-                ),
-                timeout=10.0,
+            return await websockets.connect(
+                SMALLEST_WEBSOCKET_URL,
+                additional_headers={"Authorization": f"Bearer {self._config.api_key}"},
+                open_timeout=_NATIVE_TIMEOUT_SECONDS,
+                close_timeout=_NATIVE_TIMEOUT_SECONDS,
             )
-            self._ws = connection
-            self._connected = True
-            self._recv_task = asyncio.create_task(self._receive_loop(connection))
-            logger.info(
-                "Smallest TTS adapter connected (voice=%s, lang=%s)",
-                self._config.voice_id,
-                self._config.language,
-            )
-            return self
-        except asyncio.TimeoutError:
-            raise TTSConnectionFailed("Smallest TTS: Connection timed out.")
-        except Exception as error:
-            raise TTSConnectionFailed("Smallest TTS: Failed to connect.") from error
-
-    async def _receive_loop(self, connection: ClientConnection) -> None:
-        """Read audio from the connection captured by this connect operation."""
-        try:
-            async for message in connection:
-                if not self._connected:
-                    break
-
-                try:
-                    if isinstance(message, bytes):
-                        # Raw audio binary frame
-                        self._response_queue.put_nowait(message)
-                    elif isinstance(message, str):
-                        data = json.loads(message)
-                        if "audio" in data:
-                            audio_bytes = base64.b64decode(data["audio"])
-                            self._response_queue.put_nowait(audio_bytes)
-                        elif "error" in data:
-                            logger.error("Smallest TTS provider error")
-                            self._consecutive_errors += 1
-                            if self._consecutive_errors >= 3:
-                                raise TTSConnectionClosed(
-                                    f"Smallest TTS: {self._consecutive_errors} errors"
-                                )
-                except asyncio.QueueFull:
-                    logger.warning("Smallest TTS response queue full, dropping chunk")
-                except json.JSONDecodeError:
-                    continue
-
-        except websockets.exceptions.ConnectionClosed:
-            logger.info("Smallest TTS WebSocket closed")
-        except TTSConnectionClosed:
-            raise
         except asyncio.CancelledError:
             raise
-        except Exception as error:
-            logger.error(
-                "Smallest TTS receive loop failed error_type=%s",
-                type(error).__name__,
-            )
+        except Exception:
+            raise TTSConnectionFailed("Smallest TTS connection failed.") from None
 
-    async def disconnect(self):
-        """Close WebSocket connection."""
-        self._connected = False
+    async def connect(self) -> Self:
+        async with self._lifecycle_lock:
+            if self.is_connected:
+                return self
+            await self._drain_closes()
+            self._ws = await self._open()
+            self._completion_error = None
+            self._state = SmallestStreamState.READY
+            self._request_done.set()
+            return self
 
-        if self._recv_task and not self._recv_task.done():
-            self._recv_task.cancel()
+    def _start_close(self, connection: ClientConnection) -> None:
+        if connection in self._closing:
+            return
+        task = asyncio.create_task(connection.close())
+        self._closing[connection] = task
+        task.add_done_callback(partial(self._closed, connection))
+
+    def _closed(self, connection: ClientConnection, task: asyncio.Task[None]) -> None:
+        self._closing.pop(connection, None)
+        if not task.cancelled() and task.exception() is not None:
+            logger.warning("Smallest TTS connection cleanup failed")
+
+    async def _drain_closes(self) -> None:
+        for task in tuple(self._closing.values()):
             try:
-                await self._recv_task
-            except asyncio.CancelledError:
+                await asyncio.shield(task)
+            except Exception:
+                # The owner callback consumes and records the native failure.
                 pass
 
-        if self._ws:
-            await self._ws.close()
-            self._ws = None
+    def _detach(self) -> None:
+        connection, self._ws = self._ws, None
+        self._native_request_id = None
+        self._request_done.set()
+        self._request_available.set()
+        if connection is not None:
+            self._start_close(connection)
 
-        logger.info("Smallest TTS adapter disconnected")
+    def _fail(self, error: TTSConnectionFailed) -> None:
+        self._completion_error = error
+        self._state = SmallestStreamState.FAILED
+        self._detach()
+
+    async def disconnect(self) -> None:
+        async with self._lifecycle_lock:
+            self._epoch += 1
+            self._state = SmallestStreamState.DISCONNECTED
+            self._detach()
+        await self._drain_closes()
 
     async def send_text(self, text: str) -> None:
-        """Send text for synthesis via WebSocket."""
-        if not self._connected or not self._ws:
-            raise TTSConnectionFailed("Not connected. Call connect() first.")
-        if not text or not text.strip():
+        if not text.strip():
             return
-
-        try:
-            message = json.dumps(
-                {
-                    "text": text,
-                    "voice_id": self._config.voice_id,
-                    "language": self._config.language,
-                    "sample_rate": self._config.sample_rate,
-                    "add_wav_header": self._config.add_wav_header.value,
-                }
-            )
-            await self._ws.send(message)
-            self._consecutive_errors = 0
-        except Exception as error:
-            logger.error(
-                "Smallest TTS send failed error_type=%s",
-                type(error).__name__,
-            )
-            self._consecutive_errors += 1
-            if self._consecutive_errors >= 3:
-                raise TTSConnectionClosed(
-                    f"Smallest TTS: {self._consecutive_errors} send failures"
-                )
-
-    async def receive_audio(self) -> Optional[bytes]:
-        """Get next audio chunk from the response queue."""
-        try:
-            chunk = await asyncio.wait_for(self._response_queue.get(), timeout=0.1)
-            return chunk
-        except asyncio.TimeoutError:
-            return None
+        request = SmallestSpeechRequest(
+            text=text,
+            voice_id=self._config.voice_id,
+            language=self._config.language,
+            sample_rate=self.sample_rate,
+        )
+        epoch = self._epoch
+        # Wait outside the lifecycle lock so interruption can retire an active
+        # request even while the manager is forwarding the next text chunk.
+        while True:
+            await self._request_done.wait()
+            async with self._lifecycle_lock:
+                if epoch != self._epoch:
+                    return
+                if not self.is_connected:
+                    raise self._completion_error or TTSConnectionFailed(
+                        "Smallest TTS is not connected."
+                    )
+                if self._state is SmallestStreamState.DRAINING:
+                    raise TTSConnectionFailed(
+                        "Smallest TTS input is already finalized."
+                    )
+                if not self._request_done.is_set():
+                    continue
+                try:
+                    await self._drain_closes()
+                    if self._ws is None:
+                        self._ws = await self._open()
+                    self._state = SmallestStreamState.STREAMING
+                    self._native_request_id = None
+                    self._request_done.clear()
+                    async with asyncio.timeout(_NATIVE_TIMEOUT_SECONDS):
+                        await self._ws.send(request.model_dump_json())
+                    self._request_available.set()
+                    return
+                except asyncio.CancelledError:
+                    self._fail(TTSConnectionFailed("Smallest TTS send cancelled."))
+                    raise
+                except Exception:
+                    error = TTSConnectionFailed("Smallest TTS send failed.")
+                    self._fail(error)
+                    raise error from None
 
     async def flush(self) -> None:
-        """No explicit flush protocol for Smallest."""
-        pass
+        """Every text is a one-shot request; only its native final can drain it."""
+        async with self._lifecycle_lock:
+            if not self.is_connected:
+                raise self._completion_error or TTSConnectionFailed(
+                    "Smallest TTS is not connected."
+                )
+            self._state = (
+                SmallestStreamState.COMPLETE
+                if self._request_done.is_set()
+                else SmallestStreamState.DRAINING
+            )
+            self._request_available.set()
 
-    async def handle_interruption(self):
-        """Drain response queue to stop playback."""
-        while not self._response_queue.empty():
-            try:
-                self._response_queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
+    async def receive_audio(self) -> bytes | None:
+        """Validate before playback; native recv polling cancellation loses no frame."""
+        await self._request_available.wait()
+        self._request_available.clear()
+        if self._completion_error is not None:
+            raise self._completion_error
+        connection = self._ws
+        if connection is None or self._request_done.is_set():
+            return None
+        self._request_available.set()
+        try:
+            raw = await connection.recv()
+            if self._ws is not connection:
+                return None
+            if not isinstance(raw, str):
+                raise SmallestOutputError("Smallest returned non-JSON synthesis data.")
+            message = parse_response(raw)
+            if isinstance(message, SmallestError):
+                raise SmallestOutputError("Smallest rejected the synthesis request.")
+            if self._native_request_id is None:
+                self._native_request_id = message.request_id
+            elif self._native_request_id != message.request_id:
+                raise SmallestOutputError(
+                    "Smallest synthesis request identity changed."
+                )
+            audio = message.data.audio_bytes() if message.data is not None else None
+            if not isinstance(message, SmallestChunk):
+                self._state = (
+                    SmallestStreamState.COMPLETE
+                    if self._state is SmallestStreamState.DRAINING
+                    else SmallestStreamState.READY
+                )
+                self._detach()
+            return audio
+        except asyncio.CancelledError:
+            raise
+        except Exception as native_error:
+            if self._ws is not connection:
+                return None
+            error = (
+                native_error
+                if isinstance(native_error, SmallestOutputError)
+                else TTSConnectionFailed("Smallest TTS audio stream failed.")
+            )
+            self._fail(error)
+            raise error from None
 
-    async def keepalive(self):
-        """Send a ping to keep the WebSocket alive."""
-        if self._ws:
+    async def handle_interruption(self) -> None:
+        async with self._lifecycle_lock:
+            if not self.is_connected:
+                return
+            self._epoch += 1
+            self._state = SmallestStreamState.READY
+            self._detach()
+        await self._drain_closes()
+
+    async def keepalive(self) -> None:
+        async with self._lifecycle_lock:
+            connection = self._ws
+            if connection is None:
+                if self._completion_error is not None:
+                    raise self._completion_error
+                return
             try:
-                await self._ws.ping()
+                async with asyncio.timeout(_NATIVE_TIMEOUT_SECONDS):
+                    await connection.ping()
+            except asyncio.CancelledError:
+                raise
             except Exception:
-                pass
+                error = TTSConnectionFailed("Smallest TTS keepalive failed.")
+                self._fail(error)
+                raise error from None
+
+    async def synthesize(self, text: str) -> AsyncIterator[bytes]:
+        if not text.strip():
+            return
+        await self.send_text(text)
+        await self.flush()
+        while not self.is_turn_complete:
+            audio = await self.receive_audio()
+            if audio:
+                yield audio
 
     @property
     def sample_rate(self) -> int:
@@ -233,30 +307,30 @@ class SmallestTTSAdapter(TTSVendorAdapter):
 
     @property
     def provider(self) -> str:
-        return "smallest"
+        return TTSProvider.SMALLEST.value
 
     @property
     def is_connected(self) -> bool:
-        return bool(getattr(self, "_connected", False))
+        return self._state not in (
+            SmallestStreamState.DISCONNECTED,
+            SmallestStreamState.FAILED,
+        )
+
+    @property
+    def is_turn_complete(self) -> bool:
+        return self._state is SmallestStreamState.COMPLETE
+
+    @property
+    def turn_completion_error(self) -> TTSConnectionFailed | None:
+        return self._completion_error
 
     @property
     def model(self) -> str:
-        return str(getattr(self._config, "model", "") or "")
+        return self._config.model.value
 
     @property
     def capabilities(self) -> TTSCapabilities:
-        """Derived from this adapter's own behaviour, not from memory.
-
-        Confirm a False against vendor documentation before relying on it —
-        under-claiming makes a caller skip a feature, over-claiming breaks it.
-        """
+        # The vendor supports speed, but this adapter does not yet expose it.
         return TTSCapabilities(
-            streaming=True,
-            batch_synthesize=False,
-            native_interruption=False,
-            aligned_transcript=False,
-            emotion_control=False,
-            speed_control=True,
-            voice_cloning=False,
-            context_continuity=False,
+            streaming=TTSCapabilitySupport.SUPPORTED, sample_rates=(self.sample_rate,)
         )

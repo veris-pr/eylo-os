@@ -10,7 +10,11 @@ from uuid import UUID
 
 from pydantic import JsonValue
 
-from eylo.common.contracts.background_task import BackgroundTaskOutcome, TaskContent
+from eylo.common.contracts.background_task import (
+    BackgroundTaskOutcome,
+    TaskContent,
+    TaskResultMetadata,
+)
 from eylo.common.database import start_transaction
 from eylo.framework.agents.errors import ModelOutputLimitError
 from eylo.modules.agent_runs.domain import (
@@ -38,6 +42,7 @@ from eylo.modules.conversations.schemas.messages import (
 from eylo.modules.conversations.services.messages import MessageService
 from eylo.modules.parallel_agents.schemas import (
     ParallelTaskManifest,
+    ParallelTaskResultMetadata,
     TaskResultContent,
     WorkerResult,
 )
@@ -240,7 +245,6 @@ async def _persist_completion(
     task_content: TaskContent,
     worker_result: WorkerResult,
 ) -> None:
-    worker_type = task_content.task_kind.value
     task_status = (
         RequestStatus.SKIPPED
         if worker_result.outcome is BackgroundTaskOutcome.SKIPPED
@@ -248,10 +252,10 @@ async def _persist_completion(
     )
     result_content = TaskResultContent(
         result=worker_result.text,
-        meta={
-            "model_used": worker_result.model_used,
-            "iterations_used": worker_result.iterations_used,
-        },
+        meta=TaskResultMetadata(
+            model_used=worker_result.model_used,
+            iterations_used=worker_result.iterations_used,
+        ),
     )
     summary = ParallelTaskRunSummary(
         task_message_id=origin.id,
@@ -278,11 +282,13 @@ async def _persist_completion(
                 request_id=None,
                 request_status=task_status,
                 agent_run_id=claim.run_id,
-                meta={
-                    "worker_type": worker_type,
-                    "model_used": worker_result.model_used,
-                    "iterations_used": worker_result.iterations_used,
-                },
+                meta=MessageMeta.model_validate(
+                    ParallelTaskResultMetadata(
+                        worker_type=task_content.task_kind,
+                        model_used=worker_result.model_used,
+                        iterations_used=worker_result.iterations_used,
+                    ).model_dump(mode="json")
+                ),
             )
         )
         await messages.update_(

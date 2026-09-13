@@ -9,12 +9,18 @@ from eylo.events.schema.py_events.connections import (
     ConnectionSuccessEvent,
 )
 from eylo.listeners.py_events.utils import broadcast_to_contact
+from eylo.modules.integrations_v2.schemas.websocket import (
+    WsConnectionExpired,
+    WsConnectionFailed,
+    WsConnectionStarted,
+    WsConnectionSuccess,
+)
 from eylo.pipelines.websocket.schemas import WsEventAction
 
 logger = logging.getLogger(__name__)
 
 
-async def broadcast_connection_started(event: ConnectionStartedEvent):
+async def broadcast_connection_started(event: ConnectionStartedEvent) -> None:
     """Broadcast CONNECTION_STARTED event to the contact who initiated OAuth flow.
 
     This sends a WebSocket event to notify the widget that OAuth flow has begun.
@@ -30,16 +36,16 @@ async def broadcast_connection_started(event: ConnectionStartedEvent):
         contact_id=event.contact_id,
         organization_id=event.organization_id,
         kind=WsEventAction.CONNECTION_STARTED,
-        payload={
-            "integration_id": str(event.integration_id),
-            "vendor": event.vendor,
-            "contact_id": str(event.contact_id),
-        },
-        event_name="CONNECTION_STARTED",
+        payload=WsConnectionStarted(
+            integration_id=event.integration_id,
+            vendor=event.vendor,
+            contact_id=event.contact_id,
+        ).model_dump(mode="json"),
+        event_name=WsEventAction.CONNECTION_STARTED.name,
     )
 
 
-async def broadcast_connection_success(event: ConnectionSuccessEvent):
+async def broadcast_connection_success(event: ConnectionSuccessEvent) -> None:
     """Broadcast CONNECTION_SUCCESS event to the contact who completed OAuth flow.
 
     This sends a WebSocket event to notify the widget that connection succeeded.
@@ -49,49 +55,49 @@ async def broadcast_connection_success(event: ConnectionSuccessEvent):
         f"for {event.integration_name} (contact={event.contact_id})"
     )
 
-    payload = {
-        "connection_id": str(event.connection_id),
-        "integration_id": str(event.integration_id),
-        "integration_name": event.integration_name,
-        "vendor": event.vendor,
-    }
+    payload = WsConnectionSuccess(
+        connection_id=event.connection_id,
+        integration_id=event.integration_id,
+        integration_name=event.integration_name,
+        vendor=event.vendor,
+    )
 
     await broadcast_to_contact(
         contact_id=event.contact_id,
         organization_id=event.organization_id,
         kind=WsEventAction.CONNECTION_SUCCESS,
-        payload=payload,
-        event_name="CONNECTION_SUCCESS",
+        payload=payload.model_dump(mode="json"),
+        event_name=WsEventAction.CONNECTION_SUCCESS.name,
     )
 
 
-async def broadcast_connection_failed(event: ConnectionFailedEvent):
+async def broadcast_connection_failed(event: ConnectionFailedEvent) -> None:
     """Broadcast CONNECTION_FAILED event to the contact whose OAuth flow failed.
 
     This sends a WebSocket event to notify the widget that connection failed.
     """
     logger.info(
         f"[broadcast_connection_failed] Connection failed for {event.integration_name} "
-        f"(contact={event.contact_id}): {event.error}"
+        f"(contact={event.contact_id})"
     )
 
-    payload = {
-        "error": event.error,
-        "integration_id": str(event.integration_id),
-        "integration_name": event.integration_name,
-        "vendor": event.vendor,
-    }
+    payload = WsConnectionFailed(
+        error=event.error,
+        integration_id=event.integration_id,
+        integration_name=event.integration_name,
+        vendor=event.vendor,
+    )
 
     await broadcast_to_contact(
         contact_id=event.contact_id,
         organization_id=event.organization_id,
         kind=WsEventAction.CONNECTION_FAILED,
-        payload=payload,
-        event_name="CONNECTION_FAILED",
+        payload=payload.model_dump(mode="json"),
+        event_name=WsEventAction.CONNECTION_FAILED.name,
     )
 
 
-async def broadcast_connection_expired(event: ConnectionExpiredEvent):
+async def broadcast_connection_expired(event: ConnectionExpiredEvent) -> None:
     """Broadcast connection expired notification to the user.
 
     When token refresh is exhausted, emit AUTH_REQUIRED to show
@@ -106,17 +112,6 @@ async def broadcast_connection_expired(event: ConnectionExpiredEvent):
         f"reason={event.reason}. Broadcasting AUTH_REQUIRED to contact."
     )
 
-    # Prepare AUTH_REQUIRED payload
-    auth_required_payload = {
-        "connection_id": str(event.connection_id),
-        "integration_id": str(event.integration_id),
-        "vendor": event.vendor,
-        "integration_name": event.vendor,
-        "reason": event.reason,
-        "message": "Reconnect this service so the Agent can continue using it.",
-        "action": "reconnect",
-    }
-
     # Broadcast to the user who needs to reconnect (org-level connections have no contact)
     if not event.contact_id:
         logger.warning(
@@ -125,12 +120,20 @@ async def broadcast_connection_expired(event: ConnectionExpiredEvent):
         )
         return
 
+    auth_required_payload = WsConnectionExpired(
+        connection_id=event.connection_id,
+        integration_id=event.integration_id,
+        vendor=event.vendor,
+        integration_name=event.vendor,
+        reason=event.reason,
+    )
+
     await broadcast_to_contact(
         contact_id=event.contact_id,
         organization_id=event.organization_id,
         kind=WsEventAction.AUTH_REQUIRED,
-        payload=auth_required_payload,
-        event_name="AUTH_REQUIRED",
+        payload=auth_required_payload.model_dump(mode="json"),
+        event_name=WsEventAction.AUTH_REQUIRED.name,
     )
 
     logger.info(

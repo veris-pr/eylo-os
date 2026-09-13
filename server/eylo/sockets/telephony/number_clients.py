@@ -24,9 +24,7 @@ from eylo.sockets.telephony.exotel import number_contracts as exotel_wire
 from eylo.sockets.telephony.number_purchase import (
     NumberPurchaseFailureCode,
     classify_number_purchase_status,
-    decode_number_purchase_response,
     number_purchase_profile,
-    number_purchase_success,
     number_purchase_transport_unknown,
 )
 from eylo.sockets.telephony.plivo import number_contracts as plivo_wire
@@ -401,11 +399,14 @@ class ExotelNumberClient:
 
         """
         del authorization, country
-        async with httpx.AsyncClient(timeout=20) as client:
+        request = exotel_wire.PurchaseRequest(phone_number=phone_number)
+        async with httpx.AsyncClient(
+            timeout=exotel_wire.PURCHASE_TIMEOUT_SECONDS
+        ) as client:
             try:
                 resp = await client.post(
                     f"{self.base_url}/IncomingPhoneNumbers",
-                    data={"PhoneNumber": phone_number},
+                    data=request.model_dump(mode="json", by_alias=True),
                     headers={
                         "Authorization": self._auth_header,
                         "Content-Type": "application/x-www-form-urlencoded",
@@ -413,17 +414,23 @@ class ExotelNumberClient:
                 )
                 if resp.status_code >= 300:
                     return classify_number_purchase_status(resp.status_code)
-                data = decode_number_purchase_response(resp)
-                if data is None:
+                try:
+                    purchased = exotel_wire.PurchasedNumber.model_validate_json(
+                        resp.content
+                    )
+                except ValidationError:
                     return OutboundSendUnknown(
-                        failure_code="number_purchase_response_invalid",
+                        failure_code=NumberPurchaseFailureCode.RESPONSE_INVALID,
                         status_code=resp.status_code,
                     )
-                return number_purchase_success(
-                    requested_number=phone_number,
-                    response_data=data,
+                if purchased.phone_number.strip().removeprefix("+") != phone_number.removeprefix("+"):
+                    return OutboundSendUnknown(
+                        failure_code=NumberPurchaseFailureCode.IDENTITY_MISMATCH,
+                        status_code=resp.status_code,
+                    )
+                return OutboundSendSucceeded(
+                    provider_reference=purchased.sid.strip(),
                     status_code=resp.status_code,
-                    reference_keys=frozenset({"sid", "Sid", "id"}),
                 )
             except httpx.RequestError:
                 return number_purchase_transport_unknown("Exotel")

@@ -22,7 +22,7 @@ async def websocket_endpoint(
     session_id: str,
     user_session_id: UUID | None = Query(default=None),
     controller: WebSocketController = Depends(get_websocket_controller),
-):
+) -> None:
     """WebSocket endpoint that delegates connection handling to a controller."""
     await controller.handle_connection(
         websocket=websocket,

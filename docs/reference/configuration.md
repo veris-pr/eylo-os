@@ -17,6 +17,14 @@ authority planes.
 
 `DATABASE_URL` and `REDIS_URL` are derived by `EyloSettings`.
 
+Settings load in this precedence order: explicit local/prod Python module
+defaults, the matching `.env.<ENV>` file (with `.docker` appended for Docker
+hosting), then process environment values for declared settings fields. Files
+are resolved relative to `server/eylo/common/config/`; absent files are skipped.
+`EyloSettings` validates the merged values. Container-valued environment fields
+such as `CORS_ORIGINS` use JSON; an empty optional field becomes `None`.
+Dynamic annotation parsing stays inside the loader, not in provider adapters.
+
 The Docker deployment has one shared service definition and two explicit
 overlays. `docker-compose.dev.yml` supplies disposable local values;
 `docker-compose.prod.yml` requires deployment values from the ignored
@@ -64,3 +72,13 @@ LLM, voice, WebRTC, telephony, email, storage, embedding, reranking, memory, and
 sandbox credentials belong in provider config rows. They must not be added as
 process-wide vendor keys. This preserves organization ownership and allows
 multiple explicit configurations per capability.
+
+Voice and telephony config API envelopes contain finite JSON objects; arbitrary
+Python objects and non-finite numbers are rejected before service execution.
+Each capability still owns its vendor-specific config validation. Voice response
+`kind` uses the same `stt`, `tts`, and `realtime` values as the capability catalog.
+Responses expose masked secrets, not executable credentials.
+
+Service builders preserve the explicit or caller-owned transaction and accept
+the owning capability's reference-check protocol. Omitting that dependency does
+not authorize deletion: services refuse deletion without a reference check.

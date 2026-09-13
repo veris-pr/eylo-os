@@ -75,6 +75,7 @@ from eylo.sor.shared.operational_reads import (
 from eylo.sor.shared.query import SorCollectionQuery, SorGridContract
 from eylo.sor.shared.reads import (
     SorCollectionReadService,
+    SorEntityReadSpec,
     SorReadNotFoundError,
     SorReadQueryError,
     SorSourceReadService,
@@ -320,7 +321,7 @@ async def authorize_sor_connector(
     )
 
 
-def _read_spec(profile: SorProfile, entity: str):
+def _read_spec(profile: SorProfile, entity: str) -> SorEntityReadSpec:
     try:
         return get_sor_read_spec(profile=profile, entity=entity)
     except KeyError:

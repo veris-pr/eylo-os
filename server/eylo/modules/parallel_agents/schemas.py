@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from eylo.common.contracts.background_task import (
     BackgroundTaskOutcome,
     ParallelTaskKind,
+    TaskResultMetadata,
 )
 from eylo.common.contracts.background_task import TaskContent as TaskContent
 from eylo.common.contracts.background_task import (
@@ -28,9 +29,13 @@ class WorkerResult(BaseModel):
     Carries the result text alongside metadata about the execution.
     """
 
-    text: str
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    text: str = Field(repr=False)
     model_used: str
-    iterations_used: int = 1
+    iterations_used: int = Field(default=1, ge=0)
     outcome: BackgroundTaskOutcome = Field(
         BackgroundTaskOutcome.COMPLETED,
         description=(
@@ -102,6 +107,12 @@ class ParallelTaskMetadata(BaseModel):
     triggering_request_id: UUID | None = None
     background_agent_id: UUID | None = None
     background_agent_revision: int | None = Field(default=None, gt=0)
+
+
+class ParallelTaskResultMetadata(TaskResultMetadata):
+    """Result-message provenance added by the orchestrator, not the vendor."""
+
+    worker_type: ParallelTaskKind
 
 
 class SpawnTaskFnfResult(BaseModel):

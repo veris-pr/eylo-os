@@ -1,11 +1,12 @@
 """Data contracts for the `conversations` domain."""
 
 from datetime import datetime
-from typing import Any, Optional, Self
+from typing import Optional, Self
 from uuid import UUID
 
 from pydantic import Field, model_validator
 
+from eylo.common.contracts.json_values import JsonObject
 from eylo.common.schemas import EyloBaseApiSchema, PaginatedResponseSchema
 from eylo.modules.conversations.models.conversations import (
     ConversationChannels,
@@ -97,7 +98,7 @@ class ConversationAggregateResponse(EyloBaseApiSchema):
     ended_at: Optional[datetime] = None
     swarm_id: UUID | None = None
     swarm_revision: int | None = None
-    meta: Optional[dict[str, Any]] = None
+    meta: JsonObject | None = None
     created_at: datetime
     updated_at: datetime
 

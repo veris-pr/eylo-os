@@ -24,7 +24,12 @@ from eylo.sockets.tts.adapters.rime_tts_wire import (
 )
 from eylo.sockets.tts.base import TTSVendorAdapter
 from eylo.sockets.tts.exceptions import TTSConnectionClosed, TTSConnectionFailed
-from eylo.sockets.tts.schemas import TTSCapabilities, TTSConfig, TTSProvider
+from eylo.sockets.tts.schemas import (
+    TTSCapabilities,
+    TTSCapabilitySupport,
+    TTSConfig,
+    TTSProvider,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -297,4 +302,6 @@ class RimeTTSAdapter(TTSVendorAdapter):
     @property
     def capabilities(self) -> TTSCapabilities:
         """Expose implemented behavior, not unused vendor-native features."""
-        return TTSCapabilities(streaming=True, sample_rates=(self.sample_rate,))
+        return TTSCapabilities(
+            streaming=TTSCapabilitySupport.SUPPORTED, sample_rates=(self.sample_rate,)
+        )

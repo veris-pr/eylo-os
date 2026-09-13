@@ -88,6 +88,7 @@ class TTSRealtime:
 
         self._active_turn: TTSRequestRef | None = None
         self._queued_turn: TTSRequestRef | None = None
+        self._input_generation = 0
         self._text_buffer = SpeakableTextBuffer()
 
         # Playback completion signaling
@@ -501,14 +502,24 @@ class TTSRealtime:
                             try:
                                 if isinstance(data, TTSTextRequest):
                                     await self._begin_turn(data)
+                                    generation = self._input_generation
                                     for chunk in self._text_buffer.add(data.text):
-                                        await self._process_text_chunk(chunk)
+                                        await self._process_text_chunk(
+                                            chunk, request=data, generation=generation
+                                        )
 
                                 elif isinstance(data, TTSFinalizeRequest):
                                     if self._same_turn(self._active_turn, data):
+                                        generation = self._input_generation
                                         self._awaiting_playback_completion = True
                                         for chunk in self._text_buffer.flush():
-                                            await self._process_text_chunk(chunk)
+                                            await self._process_text_chunk(
+                                                chunk,
+                                                request=data,
+                                                generation=generation,
+                                            )
+                                        if not self._current_input(data, generation):
+                                            continue
                                         if self._sent_text_for_turn:
                                             logger.debug(
                                                 "[TTS_PIPELINE] request_queue → vendor.flush (turn_id=%s)",
@@ -697,6 +708,9 @@ class TTSRealtime:
 
     async def _interrupt_playback(self) -> None:
         """Stop current synthesis; a turn switch must retain queued future input."""
+        # Invalidate work before vendor cleanup yields. A send already awaiting
+        # the provider must not re-enable bookkeeping or forward old fragments.
+        self._input_generation += 1
         self._metrics.interruptions += 1
         while not self._response_queue.empty():
             try:
@@ -727,7 +741,17 @@ class TTSRealtime:
             self._mark_playback_done(outcome=VoiceSpeechOutcome.INTERRUPTED)
         logger.info("TTS interrupted successfully.")
 
-    async def _process_text_chunk(self, text: str) -> None:
+    def _current_input(self, request: TTSRequestRef, generation: int) -> bool:
+        return generation == self._input_generation and self._same_turn(
+            self._active_turn, request
+        )
+
+    async def _process_text_chunk(
+        self, text: str, *, request: TTSRequestRef, generation: int
+    ) -> None:
+        """An awaited send cannot revive an interrupted or replaced turn."""
+        if not self._current_input(request, generation):
+            return
         logger.debug(
             "[TTS_PIPELINE] request_queue → vendor.send_text chars=%d",
             len(text),
@@ -735,7 +759,8 @@ class TTSRealtime:
         if self._first_text_sent_at is None:
             self._first_text_sent_at = time.monotonic()
         await self._tts_factory.service.send_text(text)
-        self._sent_text_for_turn = True
+        if self._current_input(request, generation):
+            self._sent_text_for_turn = True
 
     async def wait_until_done(self, timeout: float = 10.0) -> bool:
         """Wait until TTS playback finishes or timeout expires.

@@ -21,7 +21,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from enum import Enum
-from typing import Any, assert_never
+from typing import assert_never
 from uuid import UUID, uuid4
 
 import arrow
@@ -360,10 +360,11 @@ class RealtimeManager:
                     return False
 
             self._current_request_id = request_id
-            self._policy_completion = asyncio.get_running_loop().create_future()
+            completion: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+            self._policy_completion = completion
             self._response_done.clear()
             if self._audio_output_state is _AudioOutputState.CLOSED:
-                self._policy_completion.set_result(False)
+                completion.set_result(False)
                 self._response_done.set()
                 return False
             self._audio_output_state = _AudioOutputState.ACCEPTING
@@ -372,11 +373,9 @@ class RealtimeManager:
                 await self._adapter.request_speech(text)
             except Exception:
                 self._response_done.set()
-                if not self._policy_completion.done():
-                    self._policy_completion.set_result(False)
+                if not completion.done():
+                    completion.set_result(False)
                 raise
-
-            completion = self._policy_completion
 
         if not wait_until_played:
             return True
@@ -683,7 +682,7 @@ class RealtimeManager:
         speech_outcome: VoiceSpeechOutcome,
         notify_owner: bool,
         reason: BrowserVoiceTerminationReason,
-        initiator_task: asyncio.Task[Any] | None,
+        initiator_task: asyncio.Task[object] | None,
     ) -> None:
         """Close the provider, stop owned work, then finalize session state."""
         try:
@@ -733,6 +732,7 @@ class RealtimeManager:
             self._mark_agent_activity_finished()
             if self._policy_completion and not self._policy_completion.done():
                 self._policy_completion.set_result(False)
+            self._policy_completion = None
             self._teardown_complete = True
 
         if notify_owner and self._on_teardown:
@@ -1022,6 +1022,8 @@ class RealtimeManager:
         self._schedule_agent_activity_finished()
         if policy_completion and not policy_completion.done():
             policy_completion.set_result(True)
+        if self._policy_completion is policy_completion:
+            self._policy_completion = None
         if end_call_pending:
             self._schedule_end_call(request_id)
 
@@ -1410,7 +1412,7 @@ class RealtimeManager:
                     tool_name=interaction.tool_name,
                 )
             )
-            result_payload: str | dict[str, Any] = interaction.result
+            result_payload: str | dict[str, JsonValue] = interaction.result
             if interaction.meta is not None:
                 result_payload = {
                     "content": interaction.result,
@@ -1443,6 +1445,7 @@ class RealtimeManager:
         return drafts
 
     def _reset_turn_state(self) -> None:
+        """Reset captured content; turn completion or teardown settles policy speech."""
         self._input_transcript = ""
         self._output_transcript = ""
         self._tool_interactions = []
@@ -1450,5 +1453,4 @@ class RealtimeManager:
         self._speech_outcome = VoiceSpeechOutcome.DRAINED
         self._current_request_id = None
         self._hook_ctx = None
-        self._policy_completion = None
         self._end_call_pending = False

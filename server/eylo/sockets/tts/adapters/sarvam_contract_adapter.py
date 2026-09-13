@@ -28,6 +28,7 @@ from eylo.sockets.tts.exceptions import TTSConnectionClosed, TTSConnectionFailed
 from eylo.sockets.tts.schemas import (
     RetryOptions,
     TTSCapabilities,
+    TTSCapabilitySupport,
     TTSConfig,
     TTSProvider,
 )
@@ -79,14 +80,14 @@ class SarvamContractAdapter(TTSVendorAdapter):
     @property
     def capabilities(self) -> TTSCapabilities:
         return TTSCapabilities(
-            streaming=True,
-            batch_synthesize=False,
-            native_interruption=False,
-            aligned_transcript=False,
-            emotion_control=False,
-            speed_control=True,
-            voice_cloning=False,
-            context_continuity=False,
+            streaming=TTSCapabilitySupport.SUPPORTED,
+            batch_synthesize=TTSCapabilitySupport.UNSUPPORTED,
+            native_interruption=TTSCapabilitySupport.UNSUPPORTED,
+            aligned_transcript=TTSCapabilitySupport.UNSUPPORTED,
+            emotion_control=TTSCapabilitySupport.UNSUPPORTED,
+            speed_control=TTSCapabilitySupport.SUPPORTED,
+            voice_cloning=TTSCapabilitySupport.UNSUPPORTED,
+            context_continuity=TTSCapabilitySupport.UNSUPPORTED,
         )
 
     @property

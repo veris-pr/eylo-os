@@ -105,7 +105,7 @@ def build_recording_base_path(
     *,
     conversation_id: UUID,
     session_id: str,
-    started_at,
+    started_at: arrow.Arrow,
     recording_id: UUID,
 ) -> str:
     """Build one collision-safe, inspectable key prefix for a recording row."""
@@ -135,7 +135,7 @@ class AudioRecorder:
         user_encoding: str = "pcm_s16le",
         agent_encoding: str = "pcm_s16le",
         channels: int = 1,
-    ):
+    ) -> None:
         self._organization_id = organization_id
         self._conversation_id = conversation_id
         self._session_id = session_id

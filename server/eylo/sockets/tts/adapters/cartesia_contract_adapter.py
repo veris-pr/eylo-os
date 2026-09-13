@@ -32,6 +32,7 @@ from eylo.sockets.tts.schemas import (
     RetryOptions,
     TTSAudioFormat,
     TTSCapabilities,
+    TTSCapabilitySupport,
     TTSConfig,
     TTSProvider,
 )
@@ -86,14 +87,14 @@ class CartesiaContractAdapter(TTSVendorAdapter):
     def capabilities(self) -> TTSCapabilities:
         """Native cancel stops queued work; local filtering stops late playback."""
         return TTSCapabilities(
-            streaming=True,
-            batch_synthesize=False,
-            native_interruption=True,
-            aligned_transcript=False,
-            emotion_control=False,
-            speed_control=True,
-            voice_cloning=False,
-            context_continuity=True,
+            streaming=TTSCapabilitySupport.SUPPORTED,
+            batch_synthesize=TTSCapabilitySupport.UNSUPPORTED,
+            native_interruption=TTSCapabilitySupport.SUPPORTED,
+            aligned_transcript=TTSCapabilitySupport.UNSUPPORTED,
+            emotion_control=TTSCapabilitySupport.UNSUPPORTED,
+            speed_control=TTSCapabilitySupport.SUPPORTED,
+            voice_cloning=TTSCapabilitySupport.UNSUPPORTED,
+            context_continuity=TTSCapabilitySupport.SUPPORTED,
         )
 
     @property

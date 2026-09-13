@@ -34,12 +34,18 @@ from eylo.modules.conversations.schemas.conversations import (
 from eylo.modules.conversations.schemas.message_content import (
     IMAGE_URL_CONTENT_TYPE,
     TEXT_CONTENT_TYPE,
+    AssistantMessageContent,
+    ImageUrlContent,
+    TextContent,
+    TextMessageContentBlocks,
+    UserMessageContent,
 )
 from eylo.modules.conversations.schemas.messages import (
     MessageContentKind,
     MessageCreate,
     MessageInDb,
     MessageKind,
+    MessageMeta,
 )
 from eylo.modules.conversations.schemas.participants import (
     ParticipantCreateSchema,
@@ -80,7 +86,7 @@ class ConversationBaseService(EyloBaseService[ConversationInDb, ConversationsMod
         return self._repository
 
     @repository.setter
-    def repository(self, value: ConversationRepository):
+    def repository(self, value: ConversationRepository) -> None:
         """Sets the repository instance for conversation data access.
         This setter allows dependency injection for testing and flexibility.
         """
@@ -294,7 +300,7 @@ class ConversationBaseService(EyloBaseService[ConversationInDb, ConversationsMod
 
     async def handle_user_message(
         self, conversation_id: UUID, request: ConversationMessageRequest
-    ):
+    ) -> ConversationInDb:
         conversation = await self.get_(conversation_id)
         if not conversation:
             raise ValueError(f"Conversation Not Found: {conversation_id=}")
@@ -342,49 +348,35 @@ class ConversationBaseService(EyloBaseService[ConversationInDb, ConversationsMod
         conversation: ConversationInDb,
         participant: ParticipantInDb,
         request: ConversationMessageRequest,
-    ):
-        _messages = []
-        if request.message and request.message.content:
-            content_blocks = []
-            for m in request.message.content:
-                if m.type == TEXT_CONTENT_TYPE and m.text:
-                    content_blocks.append({"type": TEXT_CONTENT_TYPE, "text": m.text})
-                elif m.type == IMAGE_URL_CONTENT_TYPE and m.image_url:
-                    content_blocks.append(
-                        {
-                            "type": IMAGE_URL_CONTENT_TYPE,
-                            "image_url": m.image_url.model_dump(mode="json"),
-                        }
-                    )
+    ) -> None:
+        """Persist one typed message, isolated from the caller's mutable input.
 
-            if participant.entity_kind == ParticipantKind.CONTACT:
-                _messages.append(
-                    {
-                        "role": MessageKind.USER.value.lower(),
-                        "content": content_blocks,
-                    }
-                )
-            elif participant.entity_kind == ParticipantKind.AGENT:
-                _messages.append(
-                    {
-                        "role": MessageKind.ASSISTANT.value.lower(),
-                        "content": content_blocks,
-                    }
-                )
-            else:
-                raise ValueError(
-                    f"Unsupported participant kind for initial message: {participant.entity_kind}"
-                )
-        elif request.message and request.message.content:
-            raise ValueError("Only TEXT conversation content is currently supported")
+        Starting without a message is handled by start_conversation; this write
+        path requires content. Empty text blocks retain their existing omission
+        semantics, including a nonempty request whose blocks all become empty.
+        """
+        if request.message is None or not request.message.content:
+            raise ValueError("Message persistence requires initial message content.")
 
+        content_blocks: TextMessageContentBlocks = []
+        for block in request.message.content:
+            if block.type == TEXT_CONTENT_TYPE and block.text:
+                content_blocks.append(TextContent(text=block.text))
+            elif block.type == IMAGE_URL_CONTENT_TYPE and block.image_url is not None:
+                content_blocks.append(
+                    ImageUrlContent(image_url=block.image_url.model_copy(deep=True))
+                )
+
+        content: UserMessageContent | AssistantMessageContent
         if participant.entity_kind == ParticipantKind.CONTACT:
             message_kind = MessageKind.USER
+            content = UserMessageContent(content=content_blocks)
         elif participant.entity_kind == ParticipantKind.AGENT:
             message_kind = MessageKind.ASSISTANT
+            content = AssistantMessageContent(content=content_blocks)
         else:
             raise ValueError(
-                f"Unsupported participant kind for message persistence: {participant.entity_kind}"
+                f"Unsupported participant kind for initial message: {participant.entity_kind}"
             )
 
         await self.message_service.create_(
@@ -393,8 +385,8 @@ class ConversationBaseService(EyloBaseService[ConversationInDb, ConversationsMod
                 sender_participant_id=participant.id,
                 kind=message_kind,
                 content_kind=MessageContentKind.TEXT,
-                content=_messages[0],
-                meta=request.model_dump(),
+                content=content,
+                meta=MessageMeta.model_validate(request.model_dump()),
                 created_at=arrow.utcnow().datetime,
             )
         )
@@ -405,7 +397,7 @@ class ConversationBaseService(EyloBaseService[ConversationInDb, ConversationsMod
         contact_id: UUID,
         limit: int = 100,
         offset: int = 0,
-    ):
+    ) -> list[ConversationInDb]:
         conversations = await self.repository.filter_by_contact_organization(
             organization_id=organization_id,
             contact_id=contact_id,

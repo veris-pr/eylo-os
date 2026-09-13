@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import overload
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
@@ -35,6 +35,25 @@ from .models import (
     SorWebhookReceiptModel,
 )
 from .services import SorConflictError, SorNotFoundError, SorSourceService
+
+type _SourceOwnedRow = (
+    SorCommandModel
+    | SorAgentRevisionSourceGrantModel
+    | SorSourceGrantModel
+    | SorWebhookReceiptModel
+    | SorCustomFieldValueModel
+    | SorRecordRelationModel
+    | SorRelationIntentModel
+    | SorRecordModel
+    | SorSyncRunModel
+    | SorSyncGenerationModel
+    | SorSourceStreamModel
+    | SorFieldMappingModel
+    | SorCustomFieldDefinitionModel
+    | SorCustomDatasetModel
+    | SorMappingRevisionModel
+    | SorSchemaRevisionModel
+)
 
 
 class SorSourceDeletionPlan(BaseModel):
@@ -240,13 +259,43 @@ class SorSourceDeletionService:
         await self.session.delete(source)
         await self.session.flush()
 
+    @overload
     async def _active_ids(
         self,
-        model: Any,
+        model: type[SorSyncRunModel],
         *,
         organization_id: UUID,
         source_id: UUID,
-        states: tuple[object, ...],
+        states: tuple[SorWorkState, ...],
+    ) -> tuple[UUID, ...]: ...
+
+    @overload
+    async def _active_ids(
+        self,
+        model: type[SorWebhookReceiptModel],
+        *,
+        organization_id: UUID,
+        source_id: UUID,
+        states: tuple[SorWebhookReceiptState, ...],
+    ) -> tuple[UUID, ...]: ...
+
+    @overload
+    async def _active_ids(
+        self,
+        model: type[SorCommandModel],
+        *,
+        organization_id: UUID,
+        source_id: UUID,
+        states: tuple[SorCommandState, ...],
+    ) -> tuple[UUID, ...]: ...
+
+    async def _active_ids(
+        self,
+        model: type[SorSyncRunModel | SorWebhookReceiptModel | SorCommandModel],
+        *,
+        organization_id: UUID,
+        source_id: UUID,
+        states: tuple[SorWorkState | SorWebhookReceiptState | SorCommandState, ...],
     ) -> tuple[UUID, ...]:
         rows = await self.session.scalars(
             select(model.id)
@@ -262,7 +311,7 @@ class SorSourceDeletionService:
 
     async def _delete_source_rows(
         self,
-        model: Any,
+        model: type[_SourceOwnedRow],
         *,
         organization_id: UUID,
         source_id: UUID,

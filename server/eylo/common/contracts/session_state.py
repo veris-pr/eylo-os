@@ -44,6 +44,11 @@ class WebSocketSessionStatePort(RecordingDisclosureStatePort, Protocol):
     voice_termination_complete: bool
     voice_terminal_callback: Callable[[BrowserVoiceTerminationReason], Awaitable[None]] | None
 
+    @property
+    def has_audio_recorder(self) -> bool:
+        """Report recorder presence without exposing its resources or controlling it."""
+        ...
+
 
 @runtime_checkable
 class WebRTCSessionStatePort(Protocol):

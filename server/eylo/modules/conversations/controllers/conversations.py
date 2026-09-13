@@ -9,11 +9,10 @@ from eylo.modules.conversations.exceptions import ConversationNotFound
 from eylo.modules.conversations.schemas.conversations import (
     ConversationApiResponseSchema,
     ConversationFilterSchema,
-    ConversationMessageRequest,
+    ConversationInDb,
     ConversationStartRequest,
 )
 from eylo.modules.conversations.services.conversations import ConversationService
-from eylo.modules.conversations.services.messages import MessageService
 from eylo.pipelines.conversation.start import start_conversation_for_new_work
 
 
@@ -23,7 +22,6 @@ class ConversationController:
     def __init__(self, db: AsyncSession | None = None) -> None:
         """Init for the "conversations" domain."""
         self.conversation_service = ConversationService(db)
-        self.message_service = MessageService(db)
         self.db = db
 
     async def list_conversations(
@@ -91,7 +89,7 @@ class ConversationController:
 
     async def start_conversation(
         self, organization_id: UUID, request: ConversationStartRequest
-    ):
+    ) -> ConversationInDb:
         """Start New Conversation."""
         return await start_conversation_for_new_work(
             service=self.conversation_service,
@@ -99,8 +97,3 @@ class ConversationController:
             request=request,
             db=self.db,
         )
-
-    async def send_message(
-        self, conversation_id: UUID, request: ConversationMessageRequest
-    ):
-        pass

@@ -9,8 +9,8 @@ async def convert_to_utc(
     datetime_str: str,
     timezone_name: str = "UTC",
     datetime_format: str | None = None,
-    *args,
-    **kwargs,
+    *,
+    ctx: object = None,
 ) -> str:
     """Convert a datetime string from a named timezone to UTC ISO 8601.
 

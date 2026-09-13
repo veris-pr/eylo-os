@@ -12,6 +12,7 @@ from eylo.common.contracts.json_values import JsonObject
 from eylo.common.contracts.telephony import CallEndedReason
 from eylo.events.py_events.emitter import emit_ephemeral
 from eylo.events.schema.py_events.call import (
+    CallEventContext,
     CallTransferringEvent,
 )
 from eylo.modules.conversations.schemas.conversations import ConversationContext
@@ -95,18 +96,20 @@ def _build_transfer_event(
     return CallTransferringEvent(
         message=f"Transferring call to {to_number}",
         transfer_to=to_number,
-        call_sid=session.call_sid,
-        session_id=session.auth_session_token or session.stream_sid or session.call_sid,
-        organization_id=organization_id,
-        conversation_id=session.conversation_id,
-        direction=session.direction,
-        provider=session.provider.value,
-        provider_config_id=provider_config_id,
-        provider_config_revision=provider_config_revision,
-        from_number=session.from_number,
-        to_number=session.to_number,
-        agent_id=session.agent_id,
-        agent_revision=session.agent_revision,
+        context=CallEventContext(
+            call_sid=session.call_sid,
+            session_id=session.auth_session_token or session.stream_sid or session.call_sid,
+            organization_id=organization_id,
+            conversation_id=session.conversation_id,
+            direction=session.direction,
+            provider=session.provider.value,
+            provider_config_id=provider_config_id,
+            provider_config_revision=provider_config_revision,
+            from_number=session.from_number,
+            to_number=session.to_number,
+            agent_id=session.agent_id,
+            agent_revision=session.agent_revision,
+        ),
     )
 
 
@@ -241,8 +244,8 @@ async def transfer_call(
 
         transfer_event = _build_transfer_event(session, to_number)
         await record_call_transfer_requested(
-            organization_id=transfer_event.organization_id,
-            call_sid=transfer_event.call_sid,
+            organization_id=transfer_event.context.organization_id,
+            call_sid=transfer_event.context.call_sid,
             transfer_to=transfer_event.transfer_to,
             reason=None,
             metadata={},
@@ -253,7 +256,7 @@ async def transfer_call(
         except Exception as emit_error:
             logger.error(
                 "Could not emit local transfer delta call_sid=%s error_type=%s",
-                transfer_event.call_sid,
+                transfer_event.context.call_sid,
                 type(emit_error).__name__,
             )
 

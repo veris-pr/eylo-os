@@ -9,6 +9,7 @@ from eylo.modules.provider_configs.crypto import get_secret_cipher
 from eylo.modules.provider_configs.repository import ProviderConfigRepository
 from eylo.modules.provider_configs.service import ProviderConfigService
 from eylo.modules.telephony.provider_config_service import (
+    TelephonyConfigReferences,
     TelephonyConfigResolver,
     TelephonyConfigService,
 )
@@ -24,7 +25,7 @@ def _build_provider_config_service(db: AsyncSession | None) -> ProviderConfigSer
 def build_telephony_config_service(
     db: AsyncSession | None = None,
     *,
-    references=None,
+    references: TelephonyConfigReferences | None = None,
 ) -> TelephonyConfigService:
     return TelephonyConfigService(
         _build_provider_config_service(db),

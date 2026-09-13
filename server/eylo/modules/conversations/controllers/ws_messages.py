@@ -2,7 +2,6 @@
 
 import logging
 from hashlib import sha256
-from typing import Optional
 from uuid import UUID
 
 import arrow
@@ -171,7 +170,7 @@ class MessageWsController:
         event: WsRequestEvent,
         ctx: SessionContext,
         contact_id: UUID | None,
-    ):
+    ) -> WsResponse:
         try:
             request = WsMessageQueryEvent.model_validate(event.data or {})
             if not request.filters.conversation_ids:
@@ -228,7 +227,7 @@ class MessageWsController:
         event: WsRequestEvent,
         ctx: SessionContext,
         contact_id: UUID | None,
-    ) -> Optional[WsResponse]:
+    ) -> WsResponse:
         """Handle text and structured widget response message events."""
         try:
             try:
@@ -459,7 +458,7 @@ class MessageWsController:
         event: WsRequestEvent,
         ctx: SessionContext,
         contact_id: UUID | None,
-    ):
+    ) -> WsResponse:
         try:
             request = WsMessageFeedbackEvent.model_validate(event.data or {})
             if not contact_id:

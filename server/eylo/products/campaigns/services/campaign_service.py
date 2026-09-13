@@ -4,10 +4,10 @@ import logging
 import re
 from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import List, Optional, assert_never
 from uuid import UUID
 
-from pydantic import JsonValue
+from pydantic import EmailStr, JsonValue, TypeAdapter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,7 +21,11 @@ from eylo.common.revisions import (
 from eylo.common.services import EyloBaseService
 from eylo.modules.agents.services.revisions import AgentRevisionService
 from eylo.modules.contacts.domain import ContactActorKind, ContactDeletionPending
-from eylo.modules.contacts.schemas.indb import ContactCreateSchema, ContactRef
+from eylo.modules.contacts.schemas.indb import (
+    ContactCreateSchema,
+    ContactInDb,
+    ContactRef,
+)
 from eylo.modules.contacts.service import ContactService
 from eylo.modules.email_configs.wiring import build_email_config_resolver
 from eylo.modules.templates.domain import TemplateKind, compile_template
@@ -68,6 +72,7 @@ from eylo.products.campaigns.schemas.indb import (
 )
 
 logger = logging.getLogger(__name__)
+_CONTACT_EMAIL = TypeAdapter(EmailStr)
 
 
 class CampaignService(EyloBaseService[CampaignInDb, CampaignModel]):
@@ -303,7 +308,7 @@ class CampaignService(EyloBaseService[CampaignInDb, CampaignModel]):
     async def list_campaigns(
         self,
         organization_id: UUID,
-        status: Optional[str] = None,
+        status: CampaignStatus | None = None,
         offset: int = 0,
         limit: int = 20,
     ) -> tuple[List[CampaignInDb], int]:
@@ -338,14 +343,15 @@ class CampaignService(EyloBaseService[CampaignInDb, CampaignModel]):
                 f"Allowed: {[s.value for s in allowed]}"
             )
 
-        extra_fields: Dict[str, Any] = {}
+        started_at: datetime | None = None
+        completed_at: datetime | None = None
         if target == CampaignStatus.RUNNING and not campaign.started_at:
-            extra_fields["started_at"] = datetime.now(timezone.utc)
+            started_at = datetime.now(timezone.utc)
         elif target in (CampaignStatus.COMPLETED, CampaignStatus.CANCELED):
-            extra_fields["completed_at"] = datetime.now(timezone.utc)
+            completed_at = datetime.now(timezone.utc)
 
         updated = await self._campaign_repo.update_status(
-            campaign_id, target, **extra_fields
+            campaign_id, target, started_at=started_at, completed_at=completed_at
         )
         logger.info(
             "Campaign %s transitioned: %s → %s",
@@ -669,7 +675,7 @@ class CampaignService(EyloBaseService[CampaignInDb, CampaignModel]):
             seen_addresses.add(address)
 
             # Find or create the org-level contact using channel-appropriate field
-            channel = campaign.channel or CampaignChannel.VOICE.value
+            channel = campaign.channel
             contact_id = await self._resolve_org_contact(
                 organization_id, channel, address, row.name
             )
@@ -705,49 +711,48 @@ class CampaignService(EyloBaseService[CampaignInDb, CampaignModel]):
     async def _resolve_org_contact(
         self,
         organization_id: UUID,
-        channel: str,
+        channel: CampaignChannel,
         address: str,
         name: Optional[str] = None,
     ) -> UUID:
         """Resolve one active contact or create it through canonical identity."""
-        create_kwargs: Dict[str, Any] = {
-            "organization_id": organization_id,
-            "name": name,
-        }
-        if channel == CampaignChannel.VOICE.value:
-            create_kwargs["primary_phone"] = address
-        elif channel == CampaignChannel.EMAIL.value:
-            create_kwargs["primary_email"] = address
+        if channel is CampaignChannel.VOICE:
+            contact = ContactCreateSchema(
+                organization_id=organization_id, name=name, primary_phone=address
+            )
+        elif channel is CampaignChannel.EMAIL or channel is CampaignChannel.WIDGET:
+            contact = ContactCreateSchema(
+                organization_id=organization_id,
+                name=name,
+                primary_email=_CONTACT_EMAIL.validate_python(address),
+            )
         else:
-            create_kwargs["primary_email"] = address
+            return assert_never(channel)
 
         resolution = await self._org_contact_service.resolve_or_create(
-            ContactCreateSchema(**create_kwargs),
+            contact,
             actor_kind=ContactActorKind.SYSTEM,
         )
         assert resolution.contact is not None
         return resolution.contact.id
 
     @staticmethod
-    def _extract_contact_address(contact: Any, channel: str) -> str:
+    def _extract_contact_address(contact: ContactInDb, channel: CampaignChannel) -> str:
         """Best-effort address extraction for the given channel.
 
         Returns whatever identifiers are available. The campaign does NOT
         gate on address presence — the channel adapter validates at dispatch
         time and records a reason if the contact lacks required fields.
         """
-        if channel == CampaignChannel.VOICE.value:
-            return getattr(contact, "primary_phone", None) or ""
-        elif channel == CampaignChannel.EMAIL.value:
-            return getattr(contact, "primary_email", None) or ""
-        else:
+        if channel is CampaignChannel.VOICE:
+            return contact.primary_phone or ""
+        if channel is CampaignChannel.EMAIL:
+            return str(contact.primary_email) if contact.primary_email else ""
+        if channel is CampaignChannel.WIDGET:
             # Widget: any identifier works
-            return (
-                getattr(contact, "external_id", None)
-                or getattr(contact, "primary_email", None)
-                or getattr(contact, "primary_phone", None)
-                or ""
-            )
+            address = contact.external_id or contact.primary_email or contact.primary_phone
+            return str(address) if address else ""
+        assert_never(channel)
 
     # ── Select Existing Contacts ──────────────────────────────
 
@@ -757,9 +762,7 @@ class CampaignService(EyloBaseService[CampaignInDb, CampaignModel]):
         organization_id: UUID,
         contact_ids: List[UUID],
     ) -> int:
-        """Add existing org contacts to a campaign by their IDs.
-        Returns the number of contacts added (skips duplicates).
-        """
+        """Add active org contacts by ID and return the inserted audience count."""
         campaign = await self.get_(campaign_id)
         if campaign.status not in (
             CampaignStatus.DRAFT.value,
@@ -767,7 +770,7 @@ class CampaignService(EyloBaseService[CampaignInDb, CampaignModel]):
         ):
             raise ValueError("Can only add contacts to DRAFT or PAUSED campaigns.")
 
-        channel = campaign.channel or CampaignChannel.VOICE.value
+        channel = campaign.channel
 
         create_schemas = await self._build_selected_contacts(
             organization_id=organization_id,
@@ -795,7 +798,7 @@ class CampaignService(EyloBaseService[CampaignInDb, CampaignModel]):
         *,
         organization_id: UUID,
         contact_ids: List[UUID],
-        channel: str,
+        channel: CampaignChannel,
     ) -> List[CampaignContactCreateSchema]:
         """Build rows only after every selected contact passes the active fence."""
         selected: List[CampaignContactCreateSchema] = []
@@ -989,7 +992,9 @@ class CampaignService(EyloBaseService[CampaignInDb, CampaignModel]):
 
     # ── Analytics Helpers ───────────────────────────────────
 
-    async def get_contact_status_summary(self, campaign_id: UUID) -> dict[str, int]:
+    async def get_contact_status_summary(
+        self, campaign_id: UUID
+    ) -> dict[CampaignContactStatus, int]:
         """Get a {status: count} breakdown for all contacts in a campaign."""
         return await self._contact_repo.count_by_status(campaign_id)
 
@@ -1002,7 +1007,7 @@ class CampaignService(EyloBaseService[CampaignInDb, CampaignModel]):
     async def list_contacts(
         self,
         campaign_id: UUID,
-        status: Optional[str] = None,
+        status: CampaignContactStatus | None = None,
         offset: int = 0,
         limit: int = 50,
     ) -> tuple[List[CampaignContactInDb], int]:

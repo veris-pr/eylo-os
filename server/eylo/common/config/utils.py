@@ -2,7 +2,7 @@
 
 import os
 from types import UnionType
-from typing import Any, Union, get_args, get_origin, overload
+from typing import Union, get_args, get_origin, overload
 
 from pydantic import TypeAdapter
 
@@ -20,7 +20,7 @@ def ge[Default](var: str, default: Default | None = None) -> str | Default | Non
     return os.getenv(var) or default
 
 
-def _annotation_contains_json_container(target_type: Any) -> bool:
+def _annotation_contains_json_container(target_type: object) -> bool:
     origin = get_origin(target_type)
     if origin in (list, dict):
         return True
@@ -32,7 +32,12 @@ def _annotation_contains_json_container(target_type: Any) -> bool:
     return False
 
 
-def env_to_pydantic_type(value: Any, target_type: Any):
+def env_to_pydantic_type(value: object, target_type: object) -> object:
+    """Parse a runtime annotation; the owning settings model validates its field.
+
+    An annotation may be a union or parameterized container, not just a class.
+    Its result stays unknown to callers until the complete settings model parses it.
+    """
     if value is None:
         return None
 
@@ -47,10 +52,10 @@ def env_to_pydantic_type(value: Any, target_type: Any):
             return None
 
         if expects_json_container:
-            adapter = TypeAdapter(target_type)
+            adapter = TypeAdapter[object](target_type)
             return adapter.validate_json(stripped_value)
 
         value = stripped_value
 
-    adapter = TypeAdapter(target_type)
+    adapter = TypeAdapter[object](target_type)
     return adapter.validate_python(value)

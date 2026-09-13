@@ -125,23 +125,30 @@ class CampaignRepository(BaseORMRepository[CampaignModel]):
         return await self.db_session.scalar(stmt)
 
     async def update_status(
-        self, campaign_id: UUID, status: CampaignStatus, **kwargs
+        self,
+        campaign_id: UUID,
+        status: CampaignStatus,
+        *,
+        started_at: datetime | None = None,
+        completed_at: datetime | None = None,
     ) -> CampaignModel:
-        """Update campaign status with optional extra fields (started_at, completed_at)."""
+        """Write lifecycle status and supplied timestamps; omission preserves them."""
         campaign = await self.get_(campaign_id)
         if not campaign:
             raise ValueError("Campaign not found")
 
         campaign.status = status.value
-        for key, value in kwargs.items():
-            setattr(campaign, key, value)
+        if started_at is not None:
+            campaign.started_at = started_at
+        if completed_at is not None:
+            campaign.completed_at = completed_at
 
         return await self.partial_update_(entity=campaign)
 
     async def list_by_organization(
         self,
         organization_id: UUID,
-        status: Optional[str] = None,
+        status: CampaignStatus | None = None,
         offset: int = 0,
         limit: int = 20,
     ) -> List[CampaignModel]:
@@ -162,7 +169,7 @@ class CampaignRepository(BaseORMRepository[CampaignModel]):
         return list(result.scalars().all())
 
     async def count_by_organization(
-        self, organization_id: UUID, status: Optional[str] = None
+        self, organization_id: UUID, status: CampaignStatus | None = None
     ) -> int:
         stmt = select(func.count(self.model.id)).where(
             self.model.organization_id == organization_id,
@@ -255,7 +262,7 @@ class CampaignContactRepository(BaseORMRepository[CampaignContactModel]):
     async def list_by_campaign(
         self,
         campaign_id: UUID,
-        status: Optional[str] = None,
+        status: CampaignContactStatus | None = None,
         offset: int = 0,
         limit: int = 50,
     ) -> List[CampaignContactModel]:
@@ -298,7 +305,7 @@ class CampaignContactRepository(BaseORMRepository[CampaignContactModel]):
         return list(result.all())
 
     async def count_by_campaign(
-        self, campaign_id: UUID, status: Optional[str] = None
+        self, campaign_id: UUID, status: CampaignContactStatus | None = None
     ) -> int:
         stmt = select(func.count(self.model.id)).where(
             self.model.campaign_id == campaign_id,
@@ -310,8 +317,10 @@ class CampaignContactRepository(BaseORMRepository[CampaignContactModel]):
         result = await self.db_session.execute(stmt)
         return result.scalar_one()
 
-    async def count_by_status(self, campaign_id: UUID) -> dict[str, int]:
-        """Return {status: count} for all contacts in a campaign."""
+    async def count_by_status(
+        self, campaign_id: UUID
+    ) -> dict[CampaignContactStatus, int]:
+        """Decode persisted lifecycle values before analytics or completion checks."""
         stmt = (
             select(self.model.status, func.count(self.model.id))
             .where(
@@ -321,7 +330,10 @@ class CampaignContactRepository(BaseORMRepository[CampaignContactModel]):
             .group_by(self.model.status)
         )
         result = await self.db_session.execute(stmt)
-        return dict(result.tuples().all())
+        return {
+            CampaignContactStatus(state): count
+            for state, count in result.tuples().all()
+        }
 
     async def get_next_batch(
         self, campaign_id: UUID, now: datetime, limit: int
@@ -350,23 +362,6 @@ class CampaignContactRepository(BaseORMRepository[CampaignContactModel]):
         )
         result = await self.db_session.execute(stmt)
         return list(result.scalars().all())
-
-    async def update_contact_status(
-        self,
-        contact_id: UUID,
-        status: CampaignContactStatus,
-        **kwargs,
-    ) -> CampaignContactModel:
-        """Update a campaign contact's status with optional extra fields."""
-        contact = await self.get_(contact_id)
-        if not contact:
-            raise ValueError("Campaign contact not found")
-
-        contact.status = status.value
-        for key, value in kwargs.items():
-            setattr(contact, key, value)
-
-        return await self.partial_update_(entity=contact)
 
     async def find_by_tracking_id(
         self, campaign_id: UUID, tracking_id: str

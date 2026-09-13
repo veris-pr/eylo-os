@@ -9,6 +9,10 @@ from eylo.modules.provider_configs.crypto import get_secret_cipher
 from eylo.modules.provider_configs.repository import ProviderConfigRepository
 from eylo.modules.provider_configs.service import ProviderConfigService
 from eylo.modules.sandbox_configs.resolver import SandboxConfigResolver
+from eylo.modules.sandbox_configs.service import (
+    SandboxConfigReferences,
+    SandboxConfigService,
+)
 
 
 def _provider_config_service(db: AsyncSession | None = None) -> ProviderConfigService:
@@ -25,10 +29,8 @@ def build_sandbox_config_resolver(
 def build_sandbox_config_service(
     db: AsyncSession | None = None,
     *,
-    references=None,
-):
-    from eylo.modules.sandbox_configs.service import SandboxConfigService
-
+    references: SandboxConfigReferences | None = None,
+) -> SandboxConfigService:
     return SandboxConfigService(
         _provider_config_service(db),
         references=references,

@@ -918,7 +918,9 @@ class SorProfileRecordModel(EyloOrganizationModel):
         *,
         profile: SorProfile,
         entity_kind: str,
-    ) -> tuple:
+    ) -> tuple[
+        UniqueConstraint, ForeignKeyConstraint, CheckConstraint, CheckConstraint
+    ]:
         """Bind an extension row to the same tenant, source, profile, and entity."""
         return (
             UniqueConstraint(

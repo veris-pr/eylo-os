@@ -83,6 +83,14 @@ authority values; bearer URLs/tokens and live ORM rows are excluded from
 incidental internal snapshots and representations. The public exchange response
 still includes the session token explicitly for SDK initialization.
 
+The `issue_chat_link` agent tool explicitly projects the invitation into its
+existing success/refusal result. It uses the same 24-hour issuance ceiling,
+retains the exact primary Agent revision, and accepts typed conversational or
+background execution context. Expiry remains timezone-aware internally and uses
+the existing ISO offset string in the tool result. Internal exception details
+and bearer URLs are not included in diagnostic representations; the successful
+tool result intentionally contains the shareable URL.
+
 Identify-time contact resolution also uses frozen validated values. It selects
 one contact by priority (explicit contact ID, external ID, email, phone), reports
 conflicting identifier kinds as warnings, and does not merge contacts. Internal

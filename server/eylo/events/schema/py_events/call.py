@@ -1,25 +1,16 @@
-"""Call Lifecycle Event Schemas
+"""Ephemeral carrier observations with pinned identity and typed product references.
 
-Events emitted during telephony call lifecycle to broadcast state changes
-to WebSocket clients. Follows the same pattern as voice.py (STT/TTS/WebRTC events).
-
-Architecture:
-- Telephony services emit these events when call state changes occur
-- Listener (call_lifecycle.py) catches events and broadcasts via WebSocket
-- This decouples telephony logic from WebSocket broadcasting
-
-Two event categories exist in the platform:
-- **Call events (this file)**: py_events for real-time data flow (no DB dependency)
-- **Campaign events (future)**: py_events for DB-dependent cross-process coordination
+These UI deltas follow committed call lifecycle writes. Durable call outcomes
+remain owned by the telephony module, not by these best-effort observations.
 """
 
 from enum import Enum
-from typing import Optional, Self
+from typing import Literal, Self
 from uuid import UUID
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from eylo.common.contracts.json_values import JsonObject
+from eylo.common.contracts.telephony import CallEndedReason, CallStatus
 
 
 class CallState(str, Enum):
@@ -40,51 +31,53 @@ class CallDirection(str, Enum):
     OUTBOUND = "outbound"
 
 
-class CallStateEvent(BaseModel):
-    """Base event for all call lifecycle state changes.
+class _CallEventValue(BaseModel):
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", revalidate_instances="always",
+        hide_input_in_errors=True, allow_inf_nan=False,
+    )
 
-    Carries enough context for listeners to route and broadcast
-    without needing to look up additional data.
-    """
 
-    state: CallState = Field(..., description="Current call state")
-    message: str = Field(..., description="Human-readable status message")
-    session_id: str = Field(..., description="Session ID for WebSocket routing")
-    organization_id: UUID = Field(
-        ..., description="Organization ID for WebSocket routing"
-    )
-    call_sid: str = Field(..., description="Provider-specific call identifier")
-    conversation_id: Optional[UUID] = Field(
-        None, description="Eylo conversation ID (set after session init)"
-    )
-    direction: CallDirection = Field(
-        default=CallDirection.INBOUND, description="Call direction"
-    )
-    provider: str = Field(..., description="Telephony provider name")
-    provider_config_id: UUID = Field(
-        ...,
-        description="Pinned telephony provider config ID",
-    )
-    provider_config_revision: int = Field(
-        ...,
-        gt=0,
-        description="Pinned telephony provider config revision",
-    )
-    from_number: Optional[str] = Field(None, description="Caller phone number (E.164)")
-    to_number: Optional[str] = Field(None, description="Callee phone number (E.164)")
-    agent_id: Optional[UUID] = Field(None, description="Agent ID handling the call")
-    agent_revision: Optional[int] = Field(
-        None,
-        gt=0,
-        description="Exact published agent revision handling the call",
-    )
-    data: JsonObject = Field(default_factory=dict, description="Additional event data")
+class CallEventData(_CallEventValue):
+    """Known product references and control outcomes, never a vendor payload."""
+
+    campaign_id: UUID | None = None
+    campaign_contact_id: UUID | None = None
+    campaign_attempt_id: UUID | None = None
+    transfer_to: str | None = Field(default=None, repr=False)
+    termination_failure_code: str | None = None
+
+
+class CallEventContext(_CallEventValue):
+    """Identity is resolved by the producer; listeners never infer authority."""
+
+    session_id: str = Field(min_length=1, repr=False)
+    organization_id: UUID
+    call_sid: str = Field(min_length=1)
+    conversation_id: UUID | None = None
+    direction: CallDirection
+    # Config and socket catalogs have separate owners. The producer translates
+    # its validated provider to a name; events do not own a third catalog.
+    provider: str = Field(min_length=1)
+    provider_config_id: UUID
+    provider_config_revision: int = Field(gt=0, strict=True)
+    from_number: str | None = Field(default=None, repr=False)
+    to_number: str | None = Field(default=None, repr=False)
+    agent_id: UUID | None = None
+    agent_revision: int | None = Field(default=None, gt=0, strict=True)
+    data: CallEventData = Field(default_factory=CallEventData)
 
     @model_validator(mode="after")
     def exact_agent_ref(self) -> Self:
         if (self.agent_id is None) != (self.agent_revision is None):
             raise ValueError("Call events require a complete exact agent reference.")
         return self
+
+
+class CallStateEvent(_CallEventValue):
+    context: CallEventContext
+    state: CallState
+    message: str
 
 
 class CallStartedEvent(CallStateEvent):
@@ -94,7 +87,7 @@ class CallStartedEvent(CallStateEvent):
     For inbound: emitted when media_stream accepts the WebSocket connection.
     """
 
-    state: CallState = CallState.STARTED
+    state: Literal[CallState.STARTED] = CallState.STARTED
 
 
 class CallRingingEvent(CallStateEvent):
@@ -103,7 +96,7 @@ class CallRingingEvent(CallStateEvent):
     Primarily relevant for outbound calls. Set via provider status webhooks.
     """
 
-    state: CallState = CallState.RINGING
+    state: Literal[CallState.RINGING] = CallState.RINGING
 
 
 class CallConnectedEvent(CallStateEvent):
@@ -113,7 +106,7 @@ class CallConnectedEvent(CallStateEvent):
     or when the call session is fully initialized.
     """
 
-    state: CallState = CallState.CONNECTED
+    state: Literal[CallState.CONNECTED] = CallState.CONNECTED
 
 
 class CallEndedEvent(CallStateEvent):
@@ -123,30 +116,26 @@ class CallEndedEvent(CallStateEvent):
     and agent performance tracking.
     """
 
-    state: CallState = CallState.ENDED
-    ended_reason: str = Field(
-        ..., description="CallEndedReason value explaining why the call ended"
-    )
-    duration_seconds: Optional[float] = Field(
+    state: Literal[CallState.ENDED] = CallState.ENDED
+    ended_reason: CallEndedReason
+    duration_seconds: float | None = Field(
         None, description="Call duration in seconds (if available)"
     )
-    terminal_status: Optional[str] = Field(
-        None,
-        description="Terminal CallStatus value (completed, busy, no-answer, failed, canceled)",
-    )
+    terminal_status: Literal[
+        CallStatus.COMPLETED, CallStatus.BUSY, CallStatus.NO_ANSWER,
+        CallStatus.FAILED, CallStatus.CANCELED,
+    ] | None = None
 
 
 class CallTransferringEvent(CallStateEvent):
     """Event emitted when a call transfer is initiated via transfer_call tool."""
 
-    state: CallState = CallState.TRANSFERRING
-    transfer_to: str = Field(..., description="Target phone number for transfer")
+    state: Literal[CallState.TRANSFERRING] = CallState.TRANSFERRING
+    transfer_to: str = Field(repr=False)
 
 
 class CallTransferredEvent(CallStateEvent):
     """Event emitted when a call transfer completes successfully."""
 
-    state: CallState = CallState.TRANSFERRED
-    transfer_to: str = Field(
-        ..., description="Target phone number that was transferred to"
-    )
+    state: Literal[CallState.TRANSFERRED] = CallState.TRANSFERRED
+    transfer_to: str = Field(repr=False)

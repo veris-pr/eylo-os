@@ -14,7 +14,7 @@ public_router = APIRouter()
 widget_router = APIRouter(dependencies=[Depends(get_current_contact)])
 
 
-def setup_private_routes():
+def setup_private_routes() -> None:
     """Set up private routes for authenticated access."""
     from eylo.modules.agent_runs.routes import router as _agent_runs
     from eylo.modules.agents.routes import agent_stats_router as _agent_stats
@@ -148,7 +148,7 @@ def setup_private_routes():
     private_router.include_router(_sor_support)
     private_router.include_router(_sor)
 
-def setup_public_routes():
+def setup_public_routes() -> None:
     """Set up public routes that don't require authentication."""
     from eylo.modules.auth.routes.public import router as _auth
     from eylo.modules.auth.routes.public_session import (
@@ -190,7 +190,7 @@ def setup_public_routes():
     # voice_routes mounted on private_router — outbound calls require auth
     private_router.include_router(_voice_routes)
 
-def setup_widget_routes():
+def setup_widget_routes() -> None:
     """Set up widget routes with session-based authentication.
 
     Widget routes are for end users (contacts) interacting through the widget.

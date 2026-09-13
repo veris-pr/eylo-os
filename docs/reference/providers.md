@@ -141,6 +141,54 @@ clearing the tail, rather than padding or discarding it. Deepgram/Speechmatics
 adapters keep frame-validation failures inside their existing send-failure
 boundary. Buffer/resampler resource owners remain ordinary classes.
 
+### TTS runtime envelope
+
+The shared TTS envelope accepts finite JSON for nested options, transport-format
+metadata and flat vendor extensions. Native SDK objects stay inside adapters;
+each adapter still owns the named vendor settings and rejects unsupported fields.
+Config revalidation also checks copied or mutated extensions before factory use.
+This uses Pydantic's [extra-field boundary](https://docs.pydantic.dev/2.11/api/config/#pydantic.config.ConfigDict.extra)
+without exporting framework-internal attributes in the adapter payload.
+
+Explicit envelope values cannot conflict with nested options. Re-normalization
+preserves which values were explicit, so it cannot replace a native vendor
+default with an implicit envelope value. Requested output metadata is not proof
+of the bytes emitted: adapters declare the actual `TTSAudioFormat`, which the
+pipeline converts to the consumer format. Audio chunks carry finite JSON metadata;
+enrichment fills only missing identity/format values and preserves existing values.
+
+Capability claims use the socket-owned `TTSCapabilitySupport` enum. Adapters
+declare supported/unsupported explicitly; the pipeline translates to the console's
+separate enum without changing its boolean JSON representation. Numeric/string
+lookalikes are refused, sample rates must be positive integers and language counts
+nonnegative integers. Capability values cannot be used as implicit truth tests.
+
+### Smallest Lightning-v2 contracts
+
+The adapter retains the configured Lightning-v2 endpoint. Its private request
+and discriminated response models follow the vendor's
+[v2 example](https://github.com/smallest-inc/waves-examples/blob/main/lightning_v2/ws_streaming/ws_streaming_api.py):
+audio is nested under `data.audio`; `complete` ends a native request. The
+[v2 guide](https://waves-docs.smallest.ai/v2.2.0/content/api-references/websocket)
+also documents `comp` with `done: true`. Unknown or malformed frames, invalid
+base64, changed request identity and provider errors fail synthesis rather than
+becoming successful silence. Raw audio and vendor error details are not included
+in contract snapshots.
+
+Each text chunk owns a native connection. Requests are serialized and final
+audio is delivered before the manager declares playback drained. Interruption
+detaches the old connection before closing it; queued old input and late old
+audio cannot be reused for the next request. The manager independently checks
+turn identity and input generation around awaited sends, so a retired send cannot
+restore playback bookkeeping. Native close tasks remain owned and drain on
+disconnect; polling cancellation does not cancel connection cleanup.
+
+Speed control is not advertised because this adapter does not expose it.
+Lightning-v2 availability and per-request handshake latency require native QA;
+local protocol probes do not establish either. A newer model or endpoint is not
+selected implicitly. Deployment and live acceptance are tracked in the
+[typing plan](../plans/python-typing.md).
+
 ### Murf WebSocket contracts
 
 Murf's adapter uses private typed handshake, voice, buffering, text and clear

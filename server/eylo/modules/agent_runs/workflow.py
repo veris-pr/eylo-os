@@ -178,7 +178,7 @@ class AgentRunWorkflowContext:
         organization_id: UUID,
         run_id: UUID,
         task_context: AsyncTaskContext,
-    ):
+    ) -> None:
         self._organization_id = organization_id
         self._run_id = run_id
         self._task_context = task_context
@@ -276,7 +276,9 @@ class UnwiredAgentRunExecutor:
 class AgentRunExecutorRouter:
     """Dispatch one claimed run by its immutable origin kind."""
 
-    def __init__(self, executors: Mapping[AgentRunOriginKind, AgentRunExecutor]):
+    def __init__(
+        self, executors: Mapping[AgentRunOriginKind, AgentRunExecutor]
+    ) -> None:
         self._executors = dict(executors)
 
     async def execute(
@@ -301,7 +303,7 @@ class AgentRunWorkflow:
         *,
         compute_cleanup: AgentRunComputeCleanup | None = None,
         failure_handler: AgentRunFailureHandler | None = None,
-    ):
+    ) -> None:
         self._executor = executor
         self._compute_cleanup = compute_cleanup
         self._failure_handler = failure_handler

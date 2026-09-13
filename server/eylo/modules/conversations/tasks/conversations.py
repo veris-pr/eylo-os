@@ -2,13 +2,28 @@
 
 import logging
 
+from pydantic import BaseModel, ConfigDict, Field
+
+from eylo.common.contracts.maintenance import MaintenanceFailure
 from eylo.common.database import start_transaction
 from eylo.modules.conversations.services.conversations import ConversationService
 
 logger = logging.getLogger(__name__)
 
+CONVERSATION_EXPIRATION_FAILURE = "Conversation expiration failed."
 
-async def expire_old_conversations() -> dict:
+
+class ConversationExpirationCompleted(BaseModel):
+    """Committed expiry count; expiry does not create or remove Agent memories."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+
+    expired_count: int = Field(ge=0)
+
+
+async def expire_old_conversations() -> (
+    ConversationExpirationCompleted | MaintenanceFailure
+):
     """Expire inactive conversations.
 
     Fact extraction used to happen here, once, when a conversation died. Memory
@@ -22,7 +37,7 @@ async def expire_old_conversations() -> dict:
         logger.info(
             f"[ExpireOldConversationsTask] Expired {len(expired)} conversations"
         )
-        return {"expired_count": len(expired)}
+        return ConversationExpirationCompleted(expired_count=len(expired))
     # The NotConfiguredError re-raise that used to sit here existed for fact
     # extraction, which needed an LLM. Expiring a conversation needs no
     # provider, so there is nothing left to propagate.
@@ -31,4 +46,4 @@ async def expire_old_conversations() -> dict:
             "[ExpireOldConversationsTask] Failed error_type=%s",
             type(error).__name__,
         )
-        return {"status": "error", "error": "Conversation expiration failed."}
+        return MaintenanceFailure(error=CONVERSATION_EXPIRATION_FAILURE)

@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from eylo.common.database import current_transaction, get_transaction, start_transaction
 from eylo.modules.llm_configs.domain import LLMOverrides, ResolvedLLM
 from eylo.modules.llm_configs.resolver import LLMConfigResolver
-from eylo.modules.llm_configs.service import LLMConfigService
+from eylo.modules.llm_configs.service import LLMConfigReferences, LLMConfigService
 from eylo.modules.provider_configs.crypto import get_secret_cipher
 from eylo.modules.provider_configs.repository import ProviderConfigRepository
 from eylo.modules.provider_configs.service import ProviderConfigService
@@ -16,7 +16,7 @@ from eylo.modules.provider_configs.service import ProviderConfigService
 def build_llm_config_service(
     db: AsyncSession | None = None,
     *,
-    references=None,
+    references: LLMConfigReferences | None = None,
 ) -> LLMConfigService:
     """Build an LLM config service for an explicit or active transaction."""
     session = db if db is not None else get_transaction()

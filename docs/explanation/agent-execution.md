@@ -85,6 +85,21 @@ primary Agent's voice configuration still applies throughout swarm handoffs.
 9. Ephemeral events project live changes to connected widget sessions.
 10. The run reaches a terminal outcome or yields on durable input/approval.
 
+Conversation metadata remains an integrator-owned, extensible JSON object.
+The create/read/update schemas, ORM annotation and aggregate API share its finite
+JSON contract; they do not impose a closed set of custom keys. Conversation start
+still sanitizes context before storage. Initial text/image messages use the
+canonical message-content models and independent copies of nested image values;
+the caller cannot mutate already-prepared persistence input. Starting without an
+initial message is valid, but invoking the message-write path without content
+fails explicitly before persistence.
+
+Widget campaign context has a typed producer. Replay validates only its exact
+textual campaign, campaign-contact and attempt IDs; a display name or unrelated
+integrator field cannot change replay identity. Contact erasure detaches only
+matching campaign references. Invalid nonempty context or collection-valued
+reference IDs fail before detachment rather than being silently skipped.
+
 WebSocket text ingress validates finite JSON through `WsRequestEvent`; each
 action handler then validates its own fields. Binary microphone frames use the
 transport-owned `WsBinaryAudioRequest`, not a dictionary inside the JSON envelope.
@@ -100,6 +115,46 @@ arbitrary ORM/SDK/model objects or trust a `.value` attribute. The transport
 revalidates copied/mutated responses before sending, retaining aliases and the
 existing ISO timestamp representation. An empty object is emitted as `{}`.
 Binary outbound audio still follows the session's carrier/browser framing path.
+
+Conversation handlers decode small typed routing projections from successful
+creation responses; they do not regenerate message HTML to recover an owner ID.
+Contact read receipts are constructed after commit and retain the existing
+snake-case fields and ISO timestamp format. Malformed references cannot trigger
+session association or read broadcasts. Controller contact/conversation checks
+remain the authorization boundary; a response reference does not grant access.
+
+Redis contact delivery uses the same `ContactDelivery` contract on publication
+and consumption. Its payload is finite JSON; conversation-scoped events require
+a conversation ID before publication. Selected public fields retain the existing
+Redis UUID/date/enum encoding. Unscoped contact events may carry a null conversation
+ID in this internal envelope; the widget's public event shape is unchanged.
+
+Curated connection notifications use integration-owned Pydantic projections
+before Redis publication. Connection status and expiry notices remain contact-wide;
+a tool's authorization request retains its conversation identity. Auth modes use
+the integration domain enum, while vendor IDs remain registry identifiers. The
+existing snake-case fields, nullable values and widget actions are unchanged.
+These notifications describe connection state; they do not grant tool access.
+
+WebSocket initialization projects one user-session start outcome into the existing
+`created` and `reconnected` wire predicates. The positive connection sequence and
+session UUID come from the authoritative session result. The connection controller
+owns setup and teardown; process startup/shutdown only starts and stops the shared
+manager. There is no separate session-context wrapper or implicit STT startup.
+
+Conversation, message and participant presentation listeners finish their DB reads
+before publishing to Redis. Erased contact placeholders remain in participant
+history but are excluded from contact selection; they are not deliverable UUIDs.
+Agent participant creation validates the complete ID/revision pair even when
+optional fields are omitted, rather than relying on a field validator that only
+runs when the revision is supplied.
+
+LLM context uses an explicit TOON value projection. UUIDs become strings and enums
+become their values before encoding; dates and existing finite JSON formatting
+are preserved. Unsupported objects, nonfinite numbers and cyclic collections are
+refused instead of silently becoming `null`. Pydantic models are recognized by
+their actual base class, not an arbitrary `model_dump` attribute or a vendor SDK
+import. This is a presentation contract, not a replacement for context authority.
 
 Conversation and decomposed-voice lifecycle callbacks receive the framework's
 `RunContext`; the realtime hook path retains its platform `HookContext`. That
@@ -159,11 +214,30 @@ exhausts its bounds before a framework turn exists stores the existing minimal
 result, without inventing a framework ID or usage. Parallel results bind their
 newly persisted task-result message through validated reconstruction.
 
+Parallel workers return immutable `WorkerResult` values. Their persisted
+`TASK_RESULT` content uses `TaskResultMetadata` for the model name and nonnegative
+iteration count; absent metadata remains valid for historical results. The
+orchestrator adds the worker-kind enum to the message's provenance, then projects
+it into the generic message metadata envelope. LLM history reads the same result
+content model. Result creation, origin completion and AgentRun completion remain
+one transaction; no second completion or retry authority is introduced.
+
+Ordinary connection cleanup and conversation expiry return typed completion or
+`MaintenanceFailure` values, not arbitrary dictionaries. Their historical JSON
+fields are unchanged. The periodic runner awaits these actions but does not
+interpret their result as durable job state. Existing task-local error handling
+and cancellation propagation remain unchanged; these contracts do not add retries.
+
 Scheduled/objective resume checkpoints contain a typed recorded/error receipt,
 not tool output. Both fresh execution and checkpoint replay still reload the
 canonical tool result from the transcript. A malformed receipt or missing
 transcript result refuses continuation; cancellation before a completed write
 does not produce a receipt. These contracts do not add another retry authority.
+
+Direct objectives pass the resolved framework `AgentSpec`, typed execution claim
+and tool tuple into initial input and resume construction. The workflow context
+retains the same native task owner; neither checkpoint replay nor dependency
+wiring reconstructs provider authority from an arbitrary dictionary.
 
 Conversation transcript writes belong to the typed framework-runner callbacks;
 there is no parallel legacy `MessageStore` implementation. Terminal fallback
@@ -189,6 +263,10 @@ Operator responses validate that policy, then serialize its existing flat shape
 through a named response model so generated clients retain typed fields. Session
 responses omit the vendor container identity. Non-durable sandbox tool entrypoints
 return typed refusal envelopes; they do not execute commands outside AgentRun.
+Sandbox config wiring accepts an explicit DB session or the caller's transaction
+and the module-owned reference-check interface. The pipeline resolves current or
+pinned config material before creating an adapter; console config projections
+consume `ProviderConfig` and mask secrets before serialization.
 Step intents and execution evidence are action-specific typed values. Their JSON
 projections retain hashes, byte counts and outcome facts without command/file
 bodies; optional facts remain absent unless the action actually establishes them.
@@ -204,6 +282,16 @@ Terminal persistence loads that exact message through the message service and
 checks its conversation/request ownership and content kind before associating
 it with the AgentRun. It does not search the older model-input history: that
 snapshot deliberately excludes artifacts created during tool execution.
+
+The interfaces module owns typed, recursive widget catalog descriptors. Content
+controls reuse the shared widget enums; formatters read descriptor attributes
+rather than traversing arbitrary dictionaries. Catalog hints such as `optional`
+and `any` describe props to the model; they are not injected into the vendor's
+input schema. The final tool definition uses `PlatformToolInputSchema`, preserving
+the flat component list and JSON-encoded props wire format. Conversation
+enrichment takes a deep copy of the cached schema for each tool, so one Agent's
+tool processing cannot change another Agent's catalog. Runtime widget payload
+and tree validation still use the separate shared component contracts.
 
 ## Conversation compaction
 
@@ -305,6 +393,15 @@ conversation ID can obtain it only from a real `ConversationContext`; the scope
 ID of a durable/background run is not a conversation. Submitted scope IDs never
 override context-owned values. Conversation reminders additionally require the
 contact participant to be present.
+
+Reminder responses are built from frozen `ReminderRejected` or
+`ReminderScheduled` values. `ReminderAction` names the existing recovery and
+completion hints; serialization preserves the tool's `success`, `action_required`
+and `_meta` JSON fields. Those hints are model-facing, not a second runtime state
+machine. The scheduled payload uses the conversation-owned `ReengagePayload`;
+organization, conversation and published Agent revision still come from context.
+Time utilities accept the dispatcher context explicitly without inspecting it.
+Their model-visible input schemas and descriptions are unchanged.
 
 The due-job path persists an occurrence and creates a scheduled AgentRun from its
 action and payload. It does not directly invoke the registry's older action

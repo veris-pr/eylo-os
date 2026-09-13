@@ -5,8 +5,8 @@ import datetime
 
 async def is_iso_datetime(
     datetime_str: str,
-    *args,
-    **kwargs,
+    *,
+    ctx: object = None,
 ) -> bool:
     """Return whether a string contains an ISO 8601 datetime with a timezone.
 

@@ -19,6 +19,8 @@ from eylo.events.py_events.emitter import emit_ephemeral
 from eylo.events.schema.py_events.call import (
     CallConnectedEvent,
     CallEndedEvent,
+    CallEventContext,
+    CallEventData,
     CallStartedEvent,
     CallTransferredEvent,
 )
@@ -60,27 +62,33 @@ from eylo.sockets.telephony.manager import TelephonyRealtime
 logger = logging.getLogger(__name__)
 
 
-def call_event_kwargs(sess: CallSession, provider: str) -> dict:
-    """Build common kwargs for call lifecycle events from a call session."""
+def call_event_context(sess: CallSession, provider: str) -> CallEventContext:
+    """Snapshot pinned identity without retaining mutable session data or resources."""
     if not sess.provider_config_id or not sess.provider_config_revision:
         raise ValueError("Call session is missing pinned telephony authority.")
     if sess.provider.value != provider:
         raise ValueError("Call session provider does not match runtime provider.")
-    return {
-        "call_sid": sess.call_sid,
-        "session_id": sess.auth_session_token or sess.stream_sid or sess.call_sid,
-        "organization_id": sess.organization_id,
-        "conversation_id": sess.conversation_id,
-        "direction": sess.direction,
-        "provider": provider,
-        "provider_config_id": sess.provider_config_id,
-        "provider_config_revision": sess.provider_config_revision,
-        "from_number": sess.from_number,
-        "to_number": sess.to_number,
-        "agent_id": sess.agent_id,
-        "agent_revision": sess.agent_revision,
-        "data": sess.extra_data.model_dump(mode="json", exclude_none=True),
-    }
+    return CallEventContext(
+        call_sid=sess.call_sid,
+        session_id=sess.auth_session_token or sess.stream_sid or sess.call_sid,
+        organization_id=sess.organization_id,
+        conversation_id=sess.conversation_id,
+        direction=sess.direction,
+        provider=provider,
+        provider_config_id=sess.provider_config_id,
+        provider_config_revision=sess.provider_config_revision,
+        from_number=sess.from_number,
+        to_number=sess.to_number,
+        agent_id=sess.agent_id,
+        agent_revision=sess.agent_revision,
+        data=CallEventData(
+            campaign_id=sess.extra_data.campaign_id,
+            campaign_contact_id=sess.extra_data.campaign_contact_id,
+            campaign_attempt_id=sess.extra_data.campaign_attempt_id,
+            transfer_to=sess.extra_data.transfer_to,
+            termination_failure_code=sess.extra_data.termination_failure_code,
+        ),
+    )
 
 
 async def emit_call_started(sess: CallSession, provider: str) -> bool:
@@ -88,21 +96,21 @@ async def emit_call_started(sess: CallSession, provider: str) -> bool:
         return False
     event = CallStartedEvent(
         message="Call started",
-        **call_event_kwargs(sess, provider),
+        context=call_event_context(sess, provider),
     )
     try:
         call = await record_call_started(
-            organization_id=event.organization_id,
-            call_sid=event.call_sid,
-            provider=event.provider,
-            provider_config_id=event.provider_config_id,
-            provider_config_revision=event.provider_config_revision,
-            direction=event.direction.value,
-            from_number=event.from_number,
-            to_number=event.to_number,
-            agent_id=event.agent_id,
-            agent_revision=event.agent_revision,
-            conversation_id=event.conversation_id,
+            organization_id=event.context.organization_id,
+            call_sid=event.context.call_sid,
+            provider=event.context.provider,
+            provider_config_id=event.context.provider_config_id,
+            provider_config_revision=event.context.provider_config_revision,
+            direction=event.context.direction.value,
+            from_number=event.context.from_number,
+            to_number=event.context.to_number,
+            agent_id=event.context.agent_id,
+            agent_revision=event.context.agent_revision,
+            conversation_id=event.context.conversation_id,
             user_session_id=sess.user_session_id,
             campaign_id=sess.extra_data.campaign_id,
             campaign_contact_id=sess.extra_data.campaign_contact_id,
@@ -110,7 +118,7 @@ async def emit_call_started(sess: CallSession, provider: str) -> bool:
         )
         sess.call_id = call.id
     except Exception:
-        logger.error("Could not persist call start for %s.", event.call_sid)
+        logger.error("Could not persist call start for %s.", event.context.call_sid)
         return False
     emit_ephemeral(event)
     return True
@@ -184,18 +192,18 @@ async def handle_media_packet(
         if sess.organization_id:
             event = CallConnectedEvent(
                 message="Call connected, media active",
-                **call_event_kwargs(sess, provider),
+                context=call_event_context(sess, provider),
             )
             try:
                 update = await record_call_status(
-                    organization_id=event.organization_id,
-                    call_sid=event.call_sid,
+                    organization_id=event.context.organization_id,
+                    call_sid=event.context.call_sid,
                     status=CallStatus.IN_PROGRESS,
                     connected_at=sess.connected_at,
-                    conversation_id=event.conversation_id,
+                    conversation_id=event.context.conversation_id,
                 )
             except Exception:
-                logger.error("Could not persist connected call %s.", event.call_sid)
+                logger.error("Could not persist connected call %s.", event.context.call_sid)
             else:
                 if not update.update.ignored:
                     emit_ephemeral(event)
@@ -377,27 +385,27 @@ async def _finalize_call_session_once(
         call_audio_metrics.termination_reason = ended_reason
         ended_event = CallEndedEvent(
             message=f"Call ended: {ended_reason.value}",
-            ended_reason=ended_reason.value,
+            ended_reason=ended_reason,
             terminal_status=terminal_status,
             duration_seconds=duration_seconds,
-            **call_event_kwargs(sess, provider),
+            context=call_event_context(sess, provider),
         )
         try:
             update = await record_call_status(
-                organization_id=ended_event.organization_id,
-                call_sid=ended_event.call_sid,
+                organization_id=ended_event.context.organization_id,
+                call_sid=ended_event.context.call_sid,
                 status=terminal_status,
                 ended_reason=ended_event.ended_reason,
                 ended_at=arrow.utcnow().datetime,
                 duration_seconds=int(duration_seconds)
                 if duration_seconds is not None
                 else None,
-                conversation_id=ended_event.conversation_id,
+                conversation_id=ended_event.context.conversation_id,
                 source="media_runtime",
             )
         except Exception as error:
             terminal_error = error
-            logger.error("Could not persist ended call %s.", ended_event.call_sid)
+            logger.error("Could not persist ended call %s.", ended_event.context.call_sid)
         else:
             canonical_status = (
                 (
@@ -538,19 +546,19 @@ async def _persist_transfer_completion(sess: CallSession, provider: str) -> None
     event = CallTransferredEvent(
         message="Call transfer completed",
         transfer_to=sess.extra_data.transfer_to or "",
-        **call_event_kwargs(sess, provider),
+        context=call_event_context(sess, provider),
     )
     try:
         await record_call_transfer_completed(
-            organization_id=event.organization_id,
-            call_sid=event.call_sid,
+            organization_id=event.context.organization_id,
+            call_sid=event.context.call_sid,
             transfer_to=event.transfer_to or None,
-            metadata=event.data,
+            metadata=event.context.data.model_dump(mode="json", exclude_none=True),
         )
     except Exception:
         logger.error(
             "Could not persist call transfer completion for %s.",
-            event.call_sid,
+            event.context.call_sid,
         )
     else:
         emit_ephemeral(event)

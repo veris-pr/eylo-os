@@ -2,11 +2,11 @@
 
 import datetime
 from enum import Enum
-from typing import List, Optional
+from typing import List, Optional, Self
 from uuid import UUID
 
 import arrow
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from eylo.common.schemas import (
     EyloBaseApiSchema,
@@ -66,16 +66,17 @@ class ParticipantCreateSchema(EyloBaseSchema):
             return str(entity_id)
         return entity_id
 
-    @field_validator("agent_revision", mode="after")
-    @classmethod
-    def exact_agent_ref(cls, agent_revision: int | None, info):
-        is_agent = info.data.get("entity_kind") == ParticipantKind.AGENT
-        agent_id = info.data.get("agent_id")
-        if is_agent and (agent_id is None or agent_revision is None):
+    @model_validator(mode="after")
+    def exact_agent_ref(self) -> Self:
+        """Validate the complete reference, including omitted optional fields."""
+        is_agent = self.entity_kind == ParticipantKind.AGENT
+        if is_agent and (self.agent_id is None or self.agent_revision is None):
             raise ValueError("Agent participants require an exact agent revision.")
-        if not is_agent and (agent_id is not None or agent_revision is not None):
+        if not is_agent and (
+            self.agent_id is not None or self.agent_revision is not None
+        ):
             raise ValueError("Only agent participants can reference an agent revision.")
-        return agent_revision
+        return self
 
 
 class ParticipantUpdateSchema(EyloBaseSchema):

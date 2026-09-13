@@ -13,10 +13,13 @@ import arrow
 from fastapi import APIRouter, WebSocket, status
 from fastapi.websockets import WebSocketState
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic_core import to_jsonable_python
 from starlette.websockets import WebSocketDisconnect
 from uuid_utils import UUID as NativeUUID
 from uuid_utils import uuid7
 
+from eylo.common.contracts.json_values import JsonObject
+from eylo.common.contracts.websocket_payloads import WsProjectionValue
 from eylo.common.database import json_serializer, start_transaction
 from eylo.common.redis import get_redis_client
 from eylo.modules.agents.models import AgentStatus
@@ -65,13 +68,15 @@ _CONVERSATION_SCOPED_PUBSUB_EVENTS = frozenset(
 class ContactDelivery(BaseModel):
     """Decoded pubsub event with explicit contact and conversation authority."""
 
-    model_config = ConfigDict(frozen=True, hide_input_in_errors=True)
+    model_config = ConfigDict(
+        frozen=True, hide_input_in_errors=True, revalidate_instances="always"
+    )
 
     contact_id: UUID
     organization_id: UUID
     conversation_id: UUID | None = None
     kind: WsEventAction
-    payload: dict[str, JsonValue] = Field(repr=False)
+    payload: JsonObject = Field(repr=False)
 
     @model_validator(mode="after")
     def require_conversation_authority(self) -> "ContactDelivery":
@@ -922,7 +927,7 @@ class WsConnectionManager:
         self,
         contact_id: ContactUUID | str,
         organization_id: OrganizationUUID,
-        payload: Mapping[str, JsonValue],
+        payload: Mapping[str, WsProjectionValue],
         kind: WsEventAction,
     ) -> None:
         if kind in _CONVERSATION_SCOPED_PUBSUB_EVENTS:
@@ -943,7 +948,7 @@ class WsConnectionManager:
         contact_id: ContactUUID | str,
         organization_id: OrganizationUUID,
         conversation_id: ConversationUUID,
-        payload: Mapping[str, JsonValue],
+        payload: Mapping[str, WsProjectionValue],
         kind: WsEventAction,
     ) -> None:
         """Publish a conversation delta only to sessions bound to that chat."""
@@ -961,17 +966,19 @@ class WsConnectionManager:
         contact_id: ContactUUID | str,
         organization_id: OrganizationUUID,
         conversation_id: ConversationUUID | None,
-        payload: Mapping[str, JsonValue],
+        payload: Mapping[str, WsProjectionValue],
         kind: WsEventAction,
     ) -> None:
-        message = {
-            "contact_id": str(contact_id),
-            "organization_id": str(organization_id),
-            "payload": payload,
-            "kind": kind.value,
-        }
-        if conversation_id is not None:
-            message["conversation_id"] = str(conversation_id)
+        # Preserve the existing Redis serializer's UUID/date/enum representation.
+        # Validate the selected public fields and routing authority before publish,
+        # using the same contract as the subscriber.
+        message = ContactDelivery(
+            contact_id=str(contact_id),
+            organization_id=str(organization_id),
+            conversation_id=str(conversation_id) if conversation_id is not None else None,
+            payload=to_jsonable_python(dict(payload)),
+            kind=kind,
+        )
         await self._pubsub_manager.publish(message=message)
 
     async def _send_response_to_contact(

@@ -1,9 +1,18 @@
-"""Conversation-domain inputs received through the WebSocket adapter."""
+"""Conversation WebSocket inputs, read receipts, and response routing projections."""
 
 from typing import Optional
 from uuid import UUID
 
-from pydantic import ConfigDict, Field, JsonValue, field_validator, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    StrictInt,
+    field_validator,
+    model_validator,
+)
 
 from eylo.common.contracts.message_content import (
     WidgetResponseMessageContent,
@@ -14,6 +23,32 @@ from eylo.modules.conversations.schemas.messages import (
     MessageContentKind,
     MessageRequestFeedback,
 )
+
+
+class WsConversationCreatedRef(BaseModel):
+    """Read only routing identity; do not revalidate the full conversation view."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore", hide_input_in_errors=True)
+
+    id: UUID
+
+
+class WsMessageConversationRef(BaseModel):
+    """Read the public message's owner without rebuilding its content or HTML."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore", hide_input_in_errors=True)
+
+    conversation_id: UUID = Field(alias="conversationId")
+
+
+class WsConversationReadReceipt(BaseModel):
+    """Committed contact read state; snake-case keys are the existing wire contract."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
+
+    conversation_id: UUID
+    last_read_at: AwareDatetime
+    unread_count: StrictInt = Field(ge=0)
 
 
 class WsMessageEvent(WsEvent):

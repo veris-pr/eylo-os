@@ -2,14 +2,15 @@
 
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from typing import Any
 from uuid import UUID
 
 
-def traced_agent(agent_name: str):
+def traced_agent[**Params, Result](
+    agent_name: str,
+) -> Callable[[Callable[Params, Result]], Callable[Params, Result]]:
     """Return a decorator that leaves the wrapped callable unchanged."""
 
-    def decorator(function: Callable) -> Callable:
+    def decorator(function: Callable[Params, Result]) -> Callable[Params, Result]:
         return function
 
     return decorator
@@ -38,5 +39,5 @@ def tool_span(
 class NullSpan:
     """Minimal span-like object that accepts data without retaining it."""
 
-    def set_data(self, key: str, value: Any) -> None:
+    def set_data(self, key: str, value: object) -> None:
         pass

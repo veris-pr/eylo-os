@@ -12,7 +12,6 @@ Follows the same pattern as voice_lifecycle.py (STT/TTS/WebRTC state broadcastin
 """
 
 import logging
-from typing import Any
 
 import arrow
 
@@ -26,6 +25,7 @@ from eylo.events.schema.py_events.call import (
     CallTransferredEvent,
     CallTransferringEvent,
 )
+from eylo.pipelines.websocket.call_lifecycle import CallLifecyclePayload
 from eylo.pipelines.websocket.schemas import WsEventAction
 from eylo.pipelines.websocket.singleton import S_ws_manager
 
@@ -41,50 +41,24 @@ CALL_STATE_ACTION_MAP = {
 }
 
 
-async def _broadcast_call_event(
-    event: CallStateEvent, extra: dict[str, Any] | None = None
-) -> None:
-    """Shared broadcaster for all call state events.
-
-    Args:
-        event: The call lifecycle event to broadcast.
-        extra: Additional payload fields (avoids mutating the shared event.data).
-
-    """
+async def _broadcast_call_event(event: CallStateEvent) -> None:
+    """Best-effort UI delivery; serialization or send failure cannot stop the call."""
     action = CALL_STATE_ACTION_MAP.get(event.state)
     if not action:
         logger.warning(f"Unknown call state: {event.state}")
         return
 
-    payload: dict[str, Any] = {
-        "message": event.message,
-        "state": event.state.value,
-        "call_sid": event.call_sid,
-        "direction": event.direction.value,
-        "provider": event.provider,
-        "timestamp": arrow.utcnow().timestamp(),
-        **event.data,
-    }
-    if extra:
-        payload.update(extra)
-
-    if event.agent_id:
-        payload["agent_id"] = str(event.agent_id)
-    if event.conversation_id:
-        payload["conversation_id"] = str(event.conversation_id)
-    if event.from_number:
-        payload["from_number"] = event.from_number
-    if event.to_number:
-        payload["to_number"] = event.to_number
-
     try:
+        payload = CallLifecyclePayload.from_event(
+            event, timestamp=arrow.utcnow().timestamp()
+        )
         await S_ws_manager.send_response(
-            {"kind": action, "data": payload},
-            event.organization_id,
-            event.session_id,
+            {"kind": action, "data": payload.to_wire()},
+            event.context.organization_id,
+            event.context.session_id,
         )
         logger.debug(
-            f"Broadcast call {event.state.value} event for session {event.session_id}"
+            "Broadcast call %s event", event.state.value
         )
     except Exception as error:
         logger.error(
@@ -111,17 +85,14 @@ async def handle_call_connected(event: CallConnectedEvent) -> None:
 
 async def handle_call_ended(event: CallEndedEvent) -> None:
     """Broadcast when call terminates, including ended_reason for analytics."""
-    extra: dict[str, Any] = {"ended_reason": event.ended_reason}
-    if event.duration_seconds is not None:
-        extra["duration_seconds"] = event.duration_seconds
-    await _broadcast_call_event(event, extra=extra)
+    await _broadcast_call_event(event)
 
 
 async def handle_call_transferring(event: CallTransferringEvent) -> None:
     """Broadcast when a call transfer is initiated."""
-    await _broadcast_call_event(event, extra={"transfer_to": event.transfer_to})
+    await _broadcast_call_event(event)
 
 
 async def handle_call_transferred(event: CallTransferredEvent) -> None:
     """Broadcast when a call transfer completes."""
-    await _broadcast_call_event(event, extra={"transfer_to": event.transfer_to})
+    await _broadcast_call_event(event)

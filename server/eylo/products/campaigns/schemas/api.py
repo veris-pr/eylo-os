@@ -18,7 +18,11 @@ from eylo.products.campaigns.channel_config import (
     CampaignChannelConfig,
     CampaignChannelFields,
 )
-from eylo.products.campaigns.constants import CampaignChannel
+from eylo.products.campaigns.constants import (
+    CampaignChannel,
+    CampaignContactStatus,
+    CampaignStatus,
+)
 from eylo.products.campaigns.domain import (
     CampaignPreparation,
     CampaignPreparationIssueCode,
@@ -103,7 +107,7 @@ class CampaignResponse(EyloBaseResponseSchema, CampaignChannelFields):
     channel_config: CampaignChannelConfig
     name: str
     description: Optional[str] = None
-    status: str
+    status: CampaignStatus
     agent_id: UUID
     agent_revision: int
     published_revision: int
@@ -198,6 +202,12 @@ class CampaignContactsSelectRequest(EyloBaseRequestSchema):
 # --- Campaign contact response schemas ---
 
 
+class CampaignContactsAddedResponse(EyloBaseApiSchema):
+    """Number of audience rows inserted by the completed request."""
+
+    added: int = Field(ge=0, strict=True)
+
+
 class CampaignContactResponse(EyloBaseResponseSchema):
     model_config = ConfigDict(from_attributes=True)
 
@@ -205,7 +215,7 @@ class CampaignContactResponse(EyloBaseResponseSchema):
     campaign_revision: Optional[int] = None
     contact_id: Optional[UUID] = None
     contact_address: str
-    status: str
+    status: CampaignContactStatus
     attempt_count: int = 0
     last_attempt_at: Optional[datetime.datetime] = None
     next_retry_at: Optional[datetime.datetime] = None
@@ -239,4 +249,4 @@ class CampaignAnalyticsResponse(EyloBaseApiSchema):
 
 
 class CampaignFilterSchema(EyloBaseApiSchema):
-    status: Optional[str] = None
+    status: CampaignStatus | None = None
