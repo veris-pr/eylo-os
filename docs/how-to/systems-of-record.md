@@ -1,0 +1,276 @@
+# Configure a System of Record
+
+Use this procedure to connect an available external source, select what Eylo
+may synchronize, and grant the resulting source to an Agent.
+
+Current executable adapters are HubSpot, Salesforce, Jira Cloud, Linear Issues,
+GitHub Issues, Zendesk, Intercom, Freshdesk, Confluence Cloud, Notion, and Linear
+Documents. Catalog-only vendors cannot be configured.
+
+## Before you start
+
+You need:
+
+- an organization member session;
+- permission to create an OAuth application for an OAuth vendor, a Freshdesk
+  site URL and account API key, or a Notion internal integration token;
+- the source objects and access level the organization intends to expose;
+- an Agent draft if the source will be used by an Agent.
+
+### Jira OAuth scope families
+
+Jira uses three separate scope groups. Do not treat them as one interchangeable
+list:
+
+- **OAuth lifecycle scope:** `offline_access` is not a Jira API scope. It asks
+  Atlassian for a refresh token so Eylo can keep the connection active.
+- **Classic Jira Cloud platform scopes:** `read:jira-work` and
+  `read:jira-user`; add `write:jira-work` for read/write sources. Atlassian
+  recommends classic scopes where they cover the operation.
+- **Jira Software Sprint scope:** selecting Sprints requires classic
+  `read:jira-work` for the issue Sprint field plus granular
+  `read:sprint:jira-software` for an authoritative direct-read fallback.
+  These are different scope families; adding one does not add the other.
+
+The console requests only the groups required by the selected objects and
+access level. See Atlassian's
+[Jira Cloud platform scope reference][jira-platform-scopes],
+[Jira Software scope reference][jira-software-scopes], and
+[refresh-token guide][atlassian-refresh-tokens].
+
+### Confluence OAuth scope families
+
+Confluence REST v2 uses granular OAuth scopes. Configure the Atlassian app
+with the scopes shown for the selected objects:
+
+- **OAuth lifecycle scope:** `offline_access` requests a rotating refresh token.
+- **Spaces:** `read:space:confluence`.
+- **Pages, page bodies, versions, and properties:** `read:page:confluence`.
+- **Page and version authors:** `read:user:confluence`.
+- **Attachments:** `read:attachment:confluence`.
+- **Page mutations:** `write:page:confluence` for read/write sources.
+
+The classic scopes `read:confluence-space.summary`,
+`read:confluence-content.all`, `read:confluence-props`, and
+`write:confluence-content` do not authorize the REST v2 endpoints used by this
+adapter. Do not mix the classic and granular lists. See Atlassian's REST v2
+[space][confluence-spaces], [page][confluence-pages], and
+[user][confluence-users], and [attachment][confluence-attachments] contracts.
+
+## Configure the source
+
+1. Open **Systems of Record → Overview**.
+2. Choose an available vendor and select **Configure**.
+3. In **System**, confirm the domain profile and vendor.
+4. In **Connection**, follow the authentication path shown by the vendor:
+   - For OAuth, copy the exact callback URL and register it in the vendor's
+     OAuth application.
+   - For Freshdesk, enter the exact `https://<site>.freshdesk.com` site URL and
+     the API key from the account profile.
+   - For Notion, create a public OAuth integration and register the exact callback
+     shown by Eylo. Add Eylo's app webhook URL in the Creator dashboard, save it,
+     then load the verification token in Eylo and paste it back into Notion.
+     Enable read/update content and the comment capabilities required by the
+     selected Agent tools. Share only the intended pages or data sources.
+   - For Jira or Confluence, create an Atlassian OAuth 2.0 (3LO) app, register
+     the exact callback shown by Eylo, and enter the exact
+     `https://<site>.atlassian.net` origin. The authorizing account must be able
+     to open that site. For Jira, configure the separate lifecycle, classic,
+     and granular scope groups described above. The exact scopes appear beside
+     every selectable source object before authorization. For Confluence,
+     configure the lifecycle and granular scope groups described above.
+   - For Linear, create an OAuth 2.0 app and register the exact callback. Eylo
+     uses a Linear app actor; grant that app access only to the intended public
+     or selected teams. Save the OAuth app in Eylo, copy the connector webhook
+     URL back into the Linear app, enable Comments, Cycles, Documents, Issue
+     Labels, Issues, Projects, and Users, then save the Linear signing secret in Eylo
+     before authorizing the workspace. The webhook requires a public HTTPS
+     `API_BASE_URL`.
+   - For GitHub, create an OAuth App and register the exact callback. Enter each
+     repository explicitly as `owner/repository`. The authorizing account must
+     administer webhooks on those repositories. Eylo creates its exact signed
+     hooks after activation; scheduled reconciliation remains the recovery path.
+   - For Zendesk, create a confidential OAuth client, register the exact callback,
+     and enter the exact `https://<subdomain>.zendesk.com` site origin. Authorize
+     both `read` and `write`: Eylo uses write access for Agent mutations and to
+     create the source-owned signed webhook after activation. No manual Zendesk
+     trigger or signing-secret copy is required.
+5. Complete any vendor-specific, non-secret source settings. GitHub requires
+   one or more explicit `owner/repository` entries and will not infer every
+   repository visible to the OAuth token. Intercom requires the workspace data
+   region; choose US, EU, or AU rather than typing an arbitrary API URL.
+   Confluence uses the site selected during Atlassian consent. Share only the
+   required Notion pages or data sources with the chosen integration.
+6. Select only the objects and read or read-write access the source needs.
+7. For OAuth, enter the client ID and secret, save the app, authorize the
+   vendor account, and return to Eylo. For Freshdesk API-key auth,
+   select **Connect and verify**; Eylo makes one bounded authenticated request
+   before storing the encrypted credential and source draft.
+   The callback commits the provider connection before notifying the browser.
+   If popup messaging is unavailable, the console checks the committed
+   connection state after the window closes instead of treating the missing
+   browser message as a failed authorization. If a resumable, unactivated
+   source still references an older connection, the console rebinds it to the
+   newly authorized connection before verification. An active source never
+   changes accounts implicitly.
+   When adding **Linear Documents**, choose the existing active Linear OAuth
+   app in the connection list and select **Use connection and verify**. Eylo
+   creates a separate Documents source over the same organization-owned
+   connection without another consent flow. Start a new source only when the
+   operator intentionally wants a separate source configuration.
+8. Verify the OAuth source. API-key sources perform this step as part of
+   **Connect and verify**. Eylo persists the returned account identity and one
+   immutable schema discovery.
+9. In **Objects**, select the standard or discovered custom objects to sync.
+   Each card repeats the provider scope required by that object; custom objects
+   with no additional scope say so explicitly. Selecting an object also selects
+   its transitive dependencies. The card lists those required objects so the
+   sync graph cannot be activated with a missing relationship target.
+10. In **Field mapping**, map each selected field to one canonical field,
+    one typed custom field, or ignore it.
+11. In **Sync**, choose the freshness target and reconciliation interval.
+12. In **Review**, resolve every blocker and activate the source.
+
+Activation persists the published mapping, streams, and bootstrap work before
+the durable worker starts. Closing the page after activation does not erase the
+committed work.
+
+The same public contract is available from the configured, authenticated CLI:
+
+```bash
+eylo sor actions
+eylo sor get-catalog
+eylo sor list-sources
+```
+
+Use the identifiers and body flags shown by `eylo sor actions` for source,
+mapping, stream, grant, collection, and audit operations. The CLI calls the
+public API and never bypasses source lifecycle or tenant checks.
+
+OAuth client fields and API keys are held only in the open form and clear after
+successful connection or **Start new**. Non-secret onboarding progress is
+resumable; secret fields are never stored in the browser draft. **Start new**
+deletes the unfinished source or OAuth configuration, clears its locally stored
+credentials and OAuth states, then creates a new onboarding-attempt ID.
+Retrying the same saved flow reuses its own source; it does not create another
+source for a duplicate submit or repeated OAuth return. A saved OAuth config is
+never selectable for a different source.
+
+For Intercom, select only the permissions listed by the chosen streams and
+tools in Developer Hub. Intercom permissions are app configuration, not an
+OAuth URL `scope` parameter. Register Eylo's exact HTTPS callback URL in the
+app. A US, EU, or AU workspace must use its matching consent and API region.
+
+Freshdesk companies and native custom objects appear after verification as
+audit-only custom datasets. Agents cannot read or mutate them through the
+canonical Support tools in v1.
+
+## Grant Agent access
+
+1. Open the Agent draft and its **Relationships** section.
+2. Grant the active source as read or read-write.
+3. Add only the profile tools that Agent should use.
+4. Publish the Agent.
+
+Source configuration does not grant implicit Agent access. A running Agent uses
+the tool and source-grant snapshot from its published revision.
+
+For mutation tools, select the stream that owns the mutation result before
+publishing the Agent:
+
+- issue actions generally require the issue stream;
+- `issue_comment` requires the comment stream and an active comment mapping;
+- `issue_link` requires the issue-relation stream and an active relation mapping;
+- `support_reply` and `support_add_note` require the comment stream and an
+  active comment mapping;
+- Documents create/update/append/comment actions require the page/document
+  stream and its active mapping.
+
+Eylo refuses the command before the vendor write if the declared result cannot
+be projected. Related streams used for lookups do not replace this requirement.
+
+## Audit the result
+
+1. Open **Systems of Record → Sources** and open a source drawer. Check:
+   - relationship integrity totals: pending, resolved, and tombstoned;
+   - recent source-level sync generations and their stream-run states;
+   - each stream's declared dependencies and relationship targets.
+     A dependent stream should start only after its selected parents succeed.
+     `DEPENDENCY_FAILED` means it never ran because a parent failed.
+2. Open the profile collection, such as **CRM contacts**.
+3. Search, filter, group, order, and choose visible columns.
+4. Open a row to inspect canonical values, custom fields, source identity,
+   mapping revision, freshness, and relationships.
+5. For a Ticketing issue, inspect chronological comments in the detail drawer.
+   **Not selected** means the source can provide the data but the stream is not
+   enabled. **Unsupported** means the adapter does not provide that capability.
+6. For a Document, inspect current normalized text, page hierarchy, current
+   source raster images, unsupported source blocks, properties, attachments,
+   space, author, and original source links. A version badge indicates when
+   source history is available; use the source document to inspect old
+   revisions. An unsupported block was retained for audit, not understood as
+   normalized document content. Confluence folder hierarchy remains in the
+   source until the folder object and its granular read scope are supported.
+7. Copy the URL to share the same audit view with another organization member.
+
+Custom datasets are audit-only in v1. They show selected vendor-defined objects
+that do not have canonical Agent semantics.
+
+## Reauthorize or change a mapping
+
+- Reauthorize when the source enters `REAUTH_REQUIRED`.
+- Rediscover when the vendor schema changes.
+- Publish a new mapping revision before expecting new fields in the projection.
+  Publication persists a source-wide bootstrap generation automatically; no
+  separate manual sync is required.
+- Wait for the source to return from `BOOTSTRAPPING` to `ACTIVE` before treating
+  the new mapping as fully projected.
+
+The last known projection remains visible while a source is degraded or a new
+schema awaits mapping. Check its freshness before relying on it.
+
+## Delete a source and its Eylo data
+
+1. Open **Systems of Record → Sources**.
+2. Choose **Delete** from the source row or source detail drawer.
+3. Read the ownership boundary, then type the exact source name to confirm.
+
+Eylo first disables the source so new sync, webhook, and Agent command work
+cannot use it. Eylo then stops active durable work and permanently deletes the
+source-owned local projection: synchronized records and relations, custom
+fields and datasets, schema and mapping revisions, streams and sync history,
+webhook and command receipts, and Agent source grants.
+
+The reusable external connection remains available for another source. Eylo
+does not delete, modify, or revoke data or credentials in the vendor account.
+PII-safe durable action events already emitted by the source remain part of the
+organization's event history.
+
+The equivalent public API operation is:
+
+```http
+DELETE /api/{organization_id}/sor/sources/{source_id}
+```
+
+Success returns `204`. A missing source, another organization's source, or a
+second delete returns `404`.
+
+## Revoke access
+
+- Delete an external connection to clear its stored credential and fence every
+  dependent source.
+- Remove an Agent source grant to stop that Agent's active source commands
+  without changing another Agent's grant.
+
+Both actions commit their authority change before asking the durable runtime to
+stop exact tasks. Periodic SOR recovery closes a process-crash gap. A fenced
+source keeps its last synchronized projection for audit, but no new or resumed
+sync, webhook, or Agent command may use it.
+
+[atlassian-refresh-tokens]: https://developer.atlassian.com/cloud/oauth/getting-started/refresh-tokens/
+[confluence-spaces]: https://developer.atlassian.com/cloud/confluence/rest/v2/api-group-space/
+[confluence-pages]: https://developer.atlassian.com/cloud/confluence/rest/v2/api-group-page/
+[confluence-users]: https://developer.atlassian.com/cloud/confluence/rest/v2/api-group-user/
+[confluence-attachments]: https://developer.atlassian.com/cloud/confluence/rest/v2/api-group-attachment/
+[jira-platform-scopes]: https://developer.atlassian.com/cloud/jira/platform/scopes-for-oauth-2-3LO-and-forge-apps/
+[jira-software-scopes]: https://developer.atlassian.com/cloud/jira/software/scopes-for-oauth-2-3LO-and-forge-apps/

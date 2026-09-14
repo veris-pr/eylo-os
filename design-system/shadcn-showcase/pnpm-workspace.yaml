@@ -1,0 +1,16 @@
+minimumReleaseAge: 10080
+minimumReleaseAgeStrict: true
+minimumReleaseAgeIgnoreMissingTime: false
+trustPolicy: no-downgrade
+trustLockfile: false
+blockExoticSubdeps: true
+trustPolicyExclude:
+  # Mature signed dependencies without the strongest current publisher trust.
+  - semver@6.3.1
+  - tailwind-merge@2.6.1
+
+overrides:
+  "nanoid@": 3.3.18
+
+allowBuilds:
+  esbuild: true

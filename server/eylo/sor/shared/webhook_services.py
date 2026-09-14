@@ -1,0 +1,969 @@
+"""Public webhook identity, deduplication, and transient-body retention policy."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import secrets
+import uuid
+from collections.abc import Sequence
+from datetime import datetime, timedelta, timezone
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field, InstanceOf
+from pydantic.json_schema import SkipJsonSchema
+from sqlalchemy import case, update
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.engine import CursorResult
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from eylo.modules.connections.domain import ExternalConnectionStatus
+from eylo.sor.runtime.catalog import get_sor_registry
+from eylo.sor.runtime.registry import SorRegistry
+
+from .contracts import (
+    SorChangeMode,
+    SorSourceState,
+    SorWebhookReceiptState,
+    SorWebhookSignal,
+    SorWebhookSubscription,
+    SorWebhookSubscriptionState,
+)
+from .models import SorSourceModel, SorWebhookReceiptModel
+from .repositories import SorRepository
+from .secrets import (
+    SorSecretEnvelopeError,
+    decrypt_connector_client_secret,
+    decrypt_connector_webhook_signing_secret,
+    encrypt_bytes,
+    encrypt_connector_webhook_signing_secret,
+    encrypt_source_webhook_signing_secret,
+)
+from .services import SorConfigurationError, SorConflictError, SorNotFoundError
+from .webhook_contracts import (
+    SOR_WEBHOOK_EVENT_TYPE_MAX_LENGTH,
+    SOR_WEBHOOK_IDENTIFIER_MAX_LENGTH,
+    SOR_WEBHOOK_OBJECT_KEY_MAX_LENGTH,
+    SOR_WEBHOOK_SIGNAL_SET_MAX_BYTES,
+    SorStoredWebhookSignal,
+)
+
+SOR_WEBHOOK_MAX_BODY_BYTES = 1_048_576
+SOR_WEBHOOK_RAW_RETENTION_HOURS = 24
+SOR_WEBHOOK_OPERATION_LEASE = timedelta(minutes=5)
+SOR_WEBHOOK_RENEWAL_MARGIN = timedelta(days=7)
+SOR_WEBHOOK_SUBSCRIPTION_ID_MAX_BYTES = 32_768
+
+
+class SorWebhookSubscriptionPlan(BaseModel):
+    """One claimed vendor operation whose network I/O must run after commit."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    operation: SorWebhookSubscriptionState
+    vendor_key: str
+    expected_config_revision: int
+    current: SorWebhookSubscription | None = None
+    endpoint_token: str | None = Field(default=None, repr=False, exclude=True)
+
+
+class SorAppWebhookAuthority(BaseModel):
+    """Current connector authority for one signed app-level delivery."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    organization_id: UUID
+    connector_id: UUID
+    vendor_key: str
+    vendor_account_external_id: str | None
+    signing_secret: str = Field(repr=False, exclude=True)
+    signing_secret_revision: int
+    sources: SkipJsonSchema[tuple[InstanceOf[SorSourceModel], ...]] = Field(
+        repr=False, exclude=True
+    )
+
+
+class SorWebhookService:
+    """Resolve opaque endpoints and persist one receipt per verified delivery."""
+
+    def __init__(
+        self,
+        session: AsyncSession,
+        *,
+        registry: SorRegistry | None = None,
+    ) -> None:
+        self.session = session
+        self.repository = SorRepository(session)
+        self.registry = registry or get_sor_registry()
+
+    async def issue_endpoint_token(
+        self,
+        *,
+        organization_id: UUID,
+        source_id: UUID,
+    ) -> str:
+        """Rotate the public endpoint secret and return its plaintext exactly once."""
+        source = await self.repository.get_source(
+            organization_id=organization_id,
+            source_id=source_id,
+            for_update=True,
+        )
+        if source is None:
+            raise SorNotFoundError("SOR source not found.")
+        manifest = self.registry.get_manifest(
+            profile=source.profile,
+            vendor_key=source.vendor_key,
+        )
+        if manifest.change_mode is SorChangeMode.MANAGED_WEBHOOK:
+            raise SorConfigurationError(
+                "Managed webhook endpoints are owned by the subscription lifecycle."
+            )
+        if manifest.change_mode is SorChangeMode.APP_WEBHOOK:
+            raise SorConfigurationError(
+                "App webhook endpoints are owned by the OAuth connector."
+            )
+        if not manifest.change_mode.accepts_webhooks:
+            raise SorConfigurationError("Source adapter does not support webhooks.")
+        token = secrets.token_urlsafe(32)
+        source.webhook_endpoint_token_hash = _sha256_bytes(token.encode("utf-8"))
+        source.config_revision += 1
+        await self.session.flush()
+        return token
+
+    async def resolve_app_endpoint(
+        self,
+        *,
+        vendor_key: str,
+        endpoint_key: UUID,
+        expected_secret_revision: int | None = None,
+    ) -> SorAppWebhookAuthority:
+        """Resolve connector authority from an opaque route before payload parsing."""
+        connector = await self.repository.get_connector_by_webhook_endpoint_key(
+            endpoint_key=endpoint_key,
+        )
+        if connector is None or connector.vendor_key != vendor_key:
+            raise SorNotFoundError("SOR webhook endpoint not found.")
+        manifest = self.registry.get_manifest(
+            profile=connector.profile,
+            vendor_key=connector.vendor_key,
+        )
+        if manifest.change_mode is not SorChangeMode.APP_WEBHOOK:
+            raise SorNotFoundError("SOR webhook endpoint not found.")
+        if connector.external_connection_id is None:
+            raise SorNotFoundError("SOR webhook endpoint not found.")
+        try:
+            if connector.vendor_key in {"linear", "notion"}:
+                if connector.webhook_signing_secret is None:
+                    raise SorNotFoundError("SOR webhook endpoint not found.")
+                signing_secret = decrypt_connector_webhook_signing_secret(
+                    connector.webhook_signing_secret,
+                    organization_id=connector.organization_id,
+                    connector_id=connector.id,
+                    secret_revision=connector.webhook_signing_secret_revision,
+                )
+                secret_revision = connector.webhook_signing_secret_revision
+            elif connector.vendor_key in {"hubspot", "intercom"}:
+                if connector.oauth_client_secret is None:
+                    raise SorNotFoundError("SOR webhook endpoint not found.")
+                signing_secret = decrypt_connector_client_secret(
+                    connector.oauth_client_secret,
+                    organization_id=connector.organization_id,
+                    connector_id=connector.id,
+                    config_revision=connector.config_revision,
+                )
+                secret_revision = connector.config_revision
+            else:
+                raise SorNotFoundError("SOR webhook endpoint not found.")
+        except SorSecretEnvelopeError as error:
+            raise SorConfigurationError(
+                "SOR webhook authority could not be authenticated."
+            ) from error
+        if (
+            expected_secret_revision is not None
+            and secret_revision != expected_secret_revision
+        ):
+            raise SorConflictError("Webhook authority changed during delivery.")
+        connection = await self.repository.get_connection(
+            organization_id=connector.organization_id,
+            connection_id=connector.external_connection_id,
+            vendor_key=connector.vendor_key,
+        )
+        if (
+            connection is None
+            or connection.status is not ExternalConnectionStatus.ACTIVE
+            or connector.webhook_authorized_connection_revision != connection.revision
+        ):
+            raise SorNotFoundError("SOR webhook endpoint not found.")
+        sources = tuple(
+            source
+            for source in await self.repository.list_sources_for_connection(
+                organization_id=connector.organization_id,
+                connection_id=connection.id,
+            )
+            if source.state
+            in {
+                SorSourceState.BOOTSTRAPPING,
+                SorSourceState.ACTIVE,
+                SorSourceState.DEGRADED,
+            }
+        )
+        return SorAppWebhookAuthority(
+            organization_id=connector.organization_id,
+            connector_id=connector.id,
+            vendor_key=connector.vendor_key,
+            vendor_account_external_id=connector.vendor_account_external_id,
+            signing_secret=signing_secret,
+            signing_secret_revision=secret_revision,
+            sources=sources,
+        )
+
+    async def require_app_endpoint(
+        self,
+        *,
+        vendor_key: str,
+        endpoint_key: UUID,
+    ) -> None:
+        """Confirm one opaque app endpoint without opening connection authority."""
+        connector = await self.repository.get_connector_by_webhook_endpoint_key(
+            endpoint_key=endpoint_key,
+        )
+        if connector is None or connector.vendor_key != vendor_key:
+            raise SorNotFoundError("SOR webhook endpoint not found.")
+        manifest = self.registry.get_manifest(
+            profile=connector.profile,
+            vendor_key=connector.vendor_key,
+        )
+        if manifest.change_mode is not SorChangeMode.APP_WEBHOOK:
+            raise SorNotFoundError("SOR webhook endpoint not found.")
+
+    async def record_notion_verification_token(
+        self,
+        *,
+        endpoint_key: UUID,
+        verification_token: str,
+    ) -> None:
+        """Persist Notion's one-time endpoint challenge before OAuth consent."""
+        connector = await self.repository.get_connector_by_webhook_endpoint_key(
+            endpoint_key=endpoint_key,
+            for_update=True,
+        )
+        if connector is None or connector.vendor_key != "notion":
+            raise SorNotFoundError("SOR webhook endpoint not found.")
+        manifest = self.registry.get_manifest(
+            profile=connector.profile,
+            vendor_key=connector.vendor_key,
+        )
+        if manifest.change_mode is not SorChangeMode.APP_WEBHOOK:
+            raise SorNotFoundError("SOR webhook endpoint not found.")
+        if connector.webhook_signing_secret is not None:
+            try:
+                current = decrypt_connector_webhook_signing_secret(
+                    connector.webhook_signing_secret,
+                    organization_id=connector.organization_id,
+                    connector_id=connector.id,
+                    secret_revision=connector.webhook_signing_secret_revision,
+                )
+            except SorSecretEnvelopeError as error:
+                raise SorConfigurationError(
+                    "SOR webhook verification token could not be authenticated."
+                ) from error
+            if secrets.compare_digest(current, verification_token):
+                return
+            raise SorConflictError(
+                "Notion webhook verification is already bound to this connector."
+            )
+        secret_revision = connector.webhook_signing_secret_revision + 1
+        connector.webhook_signing_secret = encrypt_connector_webhook_signing_secret(
+            verification_token,
+            organization_id=connector.organization_id,
+            connector_id=connector.id,
+            secret_revision=secret_revision,
+        )
+        connector.webhook_signing_secret_revision = secret_revision
+        connector.webhook_authorized_connection_revision = None
+        await self.session.flush()
+
+    async def reveal_notion_verification_token(
+        self,
+        *,
+        organization_id: UUID,
+        connector_id: UUID,
+    ) -> str:
+        """Reveal the Notion challenge only through an authenticated org route."""
+        connector = await self.repository.get_connector(
+            organization_id=organization_id,
+            connector_id=connector_id,
+        )
+        if (
+            connector is None
+            or connector.vendor_key != "notion"
+            or connector.webhook_signing_secret is None
+        ):
+            raise SorNotFoundError("Notion webhook verification token not found.")
+        try:
+            return decrypt_connector_webhook_signing_secret(
+                connector.webhook_signing_secret,
+                organization_id=connector.organization_id,
+                connector_id=connector.id,
+                secret_revision=connector.webhook_signing_secret_revision,
+            )
+        except SorSecretEnvelopeError as error:
+            raise SorConfigurationError(
+                "Notion webhook verification token could not be authenticated."
+            ) from error
+
+    async def bind_app_webhook_account(
+        self,
+        *,
+        endpoint_key: UUID,
+        organization_external_id: str,
+    ) -> None:
+        """Pin an unbound connector to the workspace proven by its HMAC event."""
+        normalized = organization_external_id.strip()
+        if not 1 <= len(normalized) <= 512:
+            raise SorConfigurationError("Webhook workspace identity is invalid.")
+        connector = await self.repository.get_connector_by_webhook_endpoint_key(
+            endpoint_key=endpoint_key,
+            for_update=True,
+        )
+        if connector is None:
+            raise SorNotFoundError("SOR webhook endpoint not found.")
+        if connector.vendor_account_external_id is None:
+            connector.vendor_account_external_id = normalized
+            await self.session.flush()
+            return
+        if connector.vendor_account_external_id != normalized:
+            raise SorConfigurationError(
+                "Webhook workspace does not match the authorized connector."
+            )
+
+    async def prepare_subscription(
+        self,
+        *,
+        organization_id: UUID,
+        source_id: UUID,
+        endpoint_token: str,
+        now: datetime | None = None,
+    ) -> SorWebhookSubscriptionPlan | None:
+        """Claim a due managed-subscription operation without vendor I/O."""
+        claimed_at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        if not 32 <= len(endpoint_token) <= 256:
+            raise SorConfigurationError("Managed webhook endpoint token is invalid.")
+        source = await self.repository.get_source(
+            organization_id=organization_id,
+            source_id=source_id,
+            for_update=True,
+        )
+        if source is None:
+            raise SorNotFoundError("SOR source not found.")
+        manifest = self.registry.get_manifest(
+            profile=source.profile,
+            vendor_key=source.vendor_key,
+        )
+        if manifest.change_mode is not SorChangeMode.MANAGED_WEBHOOK:
+            raise SorConfigurationError(
+                "Source adapter does not manage vendor webhook subscriptions."
+            )
+        if source.state not in {SorSourceState.ACTIVE, SorSourceState.DEGRADED}:
+            raise SorConfigurationError(
+                "Source must be active before a webhook subscription is managed."
+            )
+
+        status = _subscription_state(source.webhook_subscription_status)
+        operation_is_live = status in {
+            SorWebhookSubscriptionState.REGISTERING,
+            SorWebhookSubscriptionState.RENEWING,
+            SorWebhookSubscriptionState.REMOVING,
+        }
+        if (
+            operation_is_live
+            and source.updated_at > claimed_at - SOR_WEBHOOK_OPERATION_LEASE
+        ):
+            raise SorConflictError("A webhook subscription operation is in progress.")
+
+        token_hash = _sha256_bytes(endpoint_token.encode("utf-8"))
+        endpoint_changed = source.webhook_endpoint_token_hash != token_hash
+        configuration_changed = endpoint_changed
+
+        # GitHub creates one hook per selected repository. The platform owns one
+        # source-bound secret shared by those hooks so every delivery can be
+        # authenticated before its payload is accepted.
+        if source.vendor_key == "github" and source.webhook_signing_secret is None:
+            secret_revision = source.webhook_signing_secret_revision + 1
+            source.webhook_signing_secret = encrypt_source_webhook_signing_secret(
+                secrets.token_urlsafe(32),
+                organization_id=organization_id,
+                source_id=source_id,
+                secret_revision=secret_revision,
+            )
+            source.webhook_signing_secret_revision = secret_revision
+            configuration_changed = True
+
+        if endpoint_changed:
+            source.webhook_endpoint_token_hash = token_hash
+        if configuration_changed:
+            source.config_revision += 1
+
+        if source.webhook_subscription_id is not None:
+            expires_at = source.webhook_subscription_expires_at
+            if (
+                status is SorWebhookSubscriptionState.ACTIVE
+                and not endpoint_changed
+                and (
+                    expires_at is None
+                    or expires_at > claimed_at + SOR_WEBHOOK_RENEWAL_MARGIN
+                )
+            ):
+                return None
+            source.webhook_subscription_status = (
+                SorWebhookSubscriptionState.RENEWING.value
+            )
+            source.updated_at = claimed_at
+            await self.session.flush()
+            return SorWebhookSubscriptionPlan(
+                operation=SorWebhookSubscriptionState.RENEWING,
+                vendor_key=source.vendor_key,
+                expected_config_revision=source.config_revision,
+                current=SorWebhookSubscription(
+                    external_id=source.webhook_subscription_id,
+                    expires_at=expires_at,
+                ),
+                endpoint_token=endpoint_token,
+            )
+
+        source.webhook_subscription_status = (
+            SorWebhookSubscriptionState.REGISTERING.value
+        )
+        source.webhook_subscription_expires_at = None
+        # Reclaiming a stale REGISTERING operation must refresh the lease even
+        # though its enum state is unchanged.
+        source.updated_at = claimed_at
+        await self.session.flush()
+        return SorWebhookSubscriptionPlan(
+            operation=SorWebhookSubscriptionState.REGISTERING,
+            vendor_key=source.vendor_key,
+            expected_config_revision=source.config_revision,
+            endpoint_token=endpoint_token,
+        )
+
+    async def complete_subscription(
+        self,
+        *,
+        organization_id: UUID,
+        source_id: UUID,
+        plan: SorWebhookSubscriptionPlan,
+        subscription: SorWebhookSubscription,
+    ) -> SorSourceModel:
+        """Commit the exact vendor subscription returned by a claimed operation."""
+        if (
+            not 1
+            <= len(subscription.external_id.encode("utf-8"))
+            <= (SOR_WEBHOOK_SUBSCRIPTION_ID_MAX_BYTES)
+        ):
+            raise SorConfigurationError("Vendor webhook subscription ID is invalid.")
+        expires_at = subscription.expires_at
+        if expires_at is not None:
+            if expires_at.tzinfo is None or expires_at.utcoffset() is None:
+                raise SorConfigurationError(
+                    "Vendor webhook subscription expiry must include a timezone."
+                )
+            expires_at = expires_at.astimezone(timezone.utc)
+
+        source = await self.repository.get_source(
+            organization_id=organization_id,
+            source_id=source_id,
+            for_update=True,
+        )
+        if source is None:
+            raise SorNotFoundError("SOR source not found.")
+        self._require_claim(source=source, plan=plan)
+        if subscription.signing_secret is not None:
+            secret_revision = source.webhook_signing_secret_revision + 1
+            try:
+                source.webhook_signing_secret = encrypt_source_webhook_signing_secret(
+                    subscription.signing_secret,
+                    organization_id=organization_id,
+                    source_id=source_id,
+                    secret_revision=secret_revision,
+                )
+            except SorSecretEnvelopeError as error:
+                raise SorConfigurationError(
+                    "Vendor webhook signing secret is invalid."
+                ) from error
+            source.webhook_signing_secret_revision = secret_revision
+            source.config_revision += 1
+        source.webhook_subscription_id = subscription.external_id
+        source.webhook_subscription_status = SorWebhookSubscriptionState.ACTIVE.value
+        source.webhook_subscription_expires_at = expires_at
+        await self.session.flush()
+        return source
+
+    async def complete_not_applicable(
+        self,
+        *,
+        organization_id: UUID,
+        source_id: UUID,
+        plan: SorWebhookSubscriptionPlan,
+    ) -> SorSourceModel:
+        """Record that selected objects have no vendor webhook event surface."""
+        source = await self.repository.get_source(
+            organization_id=organization_id,
+            source_id=source_id,
+            for_update=True,
+        )
+        if source is None:
+            raise SorNotFoundError("SOR source not found.")
+        self._require_claim(source=source, plan=plan)
+        source.webhook_endpoint_token_hash = None
+        source.webhook_subscription_id = None
+        source.webhook_subscription_status = (
+            SorWebhookSubscriptionState.NOT_APPLICABLE.value
+        )
+        source.webhook_subscription_expires_at = None
+        await self.session.flush()
+        return source
+
+    async def fail_subscription(
+        self,
+        *,
+        organization_id: UUID,
+        source_id: UUID,
+        plan: SorWebhookSubscriptionPlan,
+    ) -> None:
+        """Release a matching claim so scheduled or manual recovery can retry."""
+        source = await self.repository.get_source(
+            organization_id=organization_id,
+            source_id=source_id,
+            for_update=True,
+        )
+        if source is None:
+            return
+        if (
+            source.config_revision == plan.expected_config_revision
+            and _subscription_state(source.webhook_subscription_status)
+            is plan.operation
+        ):
+            failure_state = {
+                SorWebhookSubscriptionState.REGISTERING: (
+                    SorWebhookSubscriptionState.REGISTRATION_FAILED
+                ),
+                SorWebhookSubscriptionState.RENEWING: (
+                    SorWebhookSubscriptionState.RENEWAL_FAILED
+                ),
+                SorWebhookSubscriptionState.REMOVING: (
+                    SorWebhookSubscriptionState.REMOVAL_FAILED
+                ),
+            }.get(plan.operation)
+            if failure_state is None:
+                raise SorConfigurationError(
+                    "Webhook subscription operation cannot fail."
+                )
+            source.webhook_subscription_status = failure_state.value
+            await self.session.flush()
+
+    async def prepare_removal(
+        self,
+        *,
+        organization_id: UUID,
+        source_id: UUID,
+    ) -> SorWebhookSubscriptionPlan | None:
+        """Claim removal while retaining vendor identity until it succeeds."""
+        source = await self.repository.get_source(
+            organization_id=organization_id,
+            source_id=source_id,
+            for_update=True,
+        )
+        if source is None:
+            raise SorNotFoundError("SOR source not found.")
+        subscription_id = source.webhook_subscription_id
+        if subscription_id is None:
+            source.webhook_endpoint_token_hash = None
+            source.webhook_subscription_status = None
+            source.webhook_subscription_expires_at = None
+            await self.session.flush()
+            return None
+        source.webhook_subscription_status = SorWebhookSubscriptionState.REMOVING.value
+        await self.session.flush()
+        return SorWebhookSubscriptionPlan(
+            operation=SorWebhookSubscriptionState.REMOVING,
+            vendor_key=source.vendor_key,
+            expected_config_revision=source.config_revision,
+            current=SorWebhookSubscription(
+                external_id=subscription_id,
+                expires_at=source.webhook_subscription_expires_at,
+            ),
+        )
+
+    async def complete_removal(
+        self,
+        *,
+        organization_id: UUID,
+        source_id: UUID,
+        plan: SorWebhookSubscriptionPlan,
+    ) -> SorSourceModel:
+        """Remove local ingress authority only after vendor removal succeeds."""
+        source = await self.repository.get_source(
+            organization_id=organization_id,
+            source_id=source_id,
+            for_update=True,
+        )
+        if source is None:
+            raise SorNotFoundError("SOR source not found.")
+        self._require_claim(source=source, plan=plan)
+        source.webhook_endpoint_token_hash = None
+        source.webhook_subscription_id = None
+        source.webhook_subscription_status = None
+        source.webhook_subscription_expires_at = None
+        source.config_revision += 1
+        await self.session.flush()
+        return source
+
+    @staticmethod
+    def _require_claim(
+        *,
+        source: SorSourceModel,
+        plan: SorWebhookSubscriptionPlan,
+    ) -> None:
+        if (
+            source.config_revision != plan.expected_config_revision
+            or _subscription_state(source.webhook_subscription_status)
+            is not plan.operation
+        ):
+            raise SorConflictError(
+                "Webhook subscription authority changed during vendor I/O."
+            )
+
+    async def set_signing_secret(
+        self,
+        *,
+        organization_id: UUID,
+        source_id: UUID,
+        signing_secret: str,
+        expected_config_revision: int,
+    ) -> SorSourceModel:
+        """Rotate a tenant-bound signing secret under optimistic config authority."""
+        source = await self.repository.get_source(
+            organization_id=organization_id,
+            source_id=source_id,
+            for_update=True,
+        )
+        if source is None:
+            raise SorNotFoundError("SOR source not found.")
+        if source.config_revision != expected_config_revision:
+            raise SorConflictError("SOR source configuration changed.")
+        manifest = self.registry.get_manifest(
+            profile=source.profile,
+            vendor_key=source.vendor_key,
+        )
+        if not manifest.change_mode.accepts_webhooks:
+            raise SorConfigurationError("Source adapter does not support webhooks.")
+        secret_revision = source.webhook_signing_secret_revision + 1
+        source.webhook_signing_secret = encrypt_source_webhook_signing_secret(
+            signing_secret,
+            organization_id=organization_id,
+            source_id=source_id,
+            secret_revision=secret_revision,
+        )
+        source.webhook_signing_secret_revision = secret_revision
+        source.config_revision += 1
+        await self.session.flush()
+        return source
+
+    async def resolve_endpoint(
+        self,
+        *,
+        vendor_key: str,
+        endpoint_token: str,
+    ) -> SorSourceModel:
+        """Resolve source authority from the URL secret, never request payload data."""
+        if not 32 <= len(endpoint_token) <= 256:
+            raise SorNotFoundError("SOR webhook endpoint not found.")
+        source = await self.repository.get_source_by_webhook_token_hash(
+            token_hash=_sha256_bytes(endpoint_token.encode("utf-8")),
+        )
+        if source is None or source.vendor_key != vendor_key:
+            raise SorNotFoundError("SOR webhook endpoint not found.")
+        if source.state not in {
+            SorSourceState.BOOTSTRAPPING,
+            SorSourceState.ACTIVE,
+            SorSourceState.DEGRADED,
+        }:
+            raise SorNotFoundError("SOR webhook endpoint not found.")
+        manifest = self.registry.get_manifest(
+            profile=source.profile,
+            vendor_key=source.vendor_key,
+        )
+        if not manifest.change_mode.accepts_webhooks:
+            raise SorNotFoundError("SOR webhook endpoint not found.")
+        return source
+
+    async def record_verified_delivery(
+        self,
+        *,
+        source: SorSourceModel,
+        body: bytes,
+        signals: Sequence[SorWebhookSignal],
+        now: datetime | None = None,
+    ) -> tuple[SorWebhookReceiptModel, bool]:
+        """Deduplicate a verified delivery while retaining every normalized signal."""
+        if not signals:
+            raise SorConfigurationError("Verified webhook contains no source signals.")
+        if len(body) > SOR_WEBHOOK_MAX_BODY_BYTES:
+            raise SorConfigurationError("SOR webhook body is too large.")
+        normalized = _normalize_signals(signals)
+        delivery_ids = {
+            signal.delivery_id
+            for signal in normalized
+            if signal.delivery_id is not None
+        }
+        if len(delivery_ids) > 1:
+            raise SorConfigurationError(
+                "Webhook signals disagree on their vendor delivery ID."
+            )
+        delivery_id = next(iter(delivery_ids), None)
+        payload_hash = _sha256_bytes(body)
+        fingerprint = _fingerprint(
+            source_id=source.id,
+            payload_hash=payload_hash,
+            signals=normalized,
+        )
+        existing = await self.repository.get_webhook_receipt_by_identity(
+            source_id=source.id,
+            vendor_delivery_id=delivery_id,
+            fingerprint=fingerprint,
+            for_update=True,
+        )
+        if existing is not None:
+            _require_same_delivery(
+                existing,
+                payload_hash=payload_hash,
+                signals=normalized,
+            )
+            existing.replay_detected = True
+            await self.session.flush()
+            return existing, False
+
+        receipt_id = uuid.uuid4()
+        received_at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        first = normalized[0]
+        encrypted_body = encrypt_bytes(
+            body,
+            organization_id=source.organization_id,
+            resource_id=receipt_id,
+            purpose="webhook-body",
+            maximum_bytes=SOR_WEBHOOK_MAX_BODY_BYTES,
+        )
+        statement = (
+            insert(SorWebhookReceiptModel)
+            .values(
+                id=receipt_id,
+                organization_id=source.organization_id,
+                source_id=source.id,
+                vendor_delivery_id=delivery_id,
+                fingerprint=fingerprint,
+                event_type=(first.event_type if len(normalized) == 1 else "batch"),
+                vendor_object_key=first.vendor_object_key,
+                vendor_external_id=first.external_id,
+                vendor_event_at=(
+                    datetime.fromisoformat(first.occurred_at)
+                    if first.occurred_at is not None
+                    else None
+                ),
+                payload_hash=payload_hash,
+                signature_verified=True,
+                replay_detected=False,
+                signals=[signal.model_dump(mode="json") for signal in normalized],
+                state=SorWebhookReceiptState.PENDING,
+                encrypted_raw_body=encrypted_body,
+                raw_body_expires_at=received_at
+                + timedelta(hours=SOR_WEBHOOK_RAW_RETENTION_HOURS),
+                attempts=0,
+                max_attempts=3,
+                deleted=False,
+            )
+            .on_conflict_do_nothing()
+            .returning(SorWebhookReceiptModel.id)
+        )
+        inserted_id = await self.session.scalar(statement)
+        if inserted_id is not None:
+            row = await self.repository.get_webhook_receipt(
+                organization_id=source.organization_id,
+                receipt_id=inserted_id,
+            )
+            if row is None:
+                raise SorConflictError("Webhook receipt insert was not readable.")
+            return row, True
+
+        existing = await self.repository.get_webhook_receipt_by_identity(
+            source_id=source.id,
+            vendor_delivery_id=delivery_id,
+            fingerprint=fingerprint,
+            for_update=True,
+        )
+        if existing is None:
+            raise SorConflictError("Webhook delivery identity conflicted.")
+        _require_same_delivery(
+            existing,
+            payload_hash=payload_hash,
+            signals=normalized,
+        )
+        existing.replay_detected = True
+        await self.session.flush()
+        return existing, False
+
+    async def prune_expired_raw_bodies(
+        self,
+        *,
+        now: datetime | None = None,
+    ) -> int:
+        """Erase transient payloads; preserve successful/failed receipt status."""
+        cutoff = now or datetime.now(timezone.utc)
+        result = await self.session.execute(
+            update(SorWebhookReceiptModel)
+            .where(
+                SorWebhookReceiptModel.raw_body_expires_at.is_not(None),
+                SorWebhookReceiptModel.raw_body_expires_at <= cutoff,
+                SorWebhookReceiptModel.deleted.is_(False),
+            )
+            .values(
+                encrypted_raw_body=None,
+                raw_body_expires_at=None,
+                state=case(
+                    (
+                        SorWebhookReceiptModel.state.in_(
+                            (
+                                SorWebhookReceiptState.PENDING,
+                                SorWebhookReceiptState.PROCESSING,
+                            )
+                        ),
+                        SorWebhookReceiptState.EXPIRED,
+                    ),
+                    else_=SorWebhookReceiptModel.state,
+                ),
+                finished_at=case(
+                    (
+                        SorWebhookReceiptModel.state.in_(
+                            (
+                                SorWebhookReceiptState.PENDING,
+                                SorWebhookReceiptState.PROCESSING,
+                            )
+                        ),
+                        cutoff,
+                    ),
+                    else_=SorWebhookReceiptModel.finished_at,
+                ),
+            )
+        )
+        if not isinstance(result, CursorResult):
+            raise SorConflictError("Webhook receipt pruning returned no row count.")
+        return int(result.rowcount or 0)
+
+
+def _normalize_signals(
+    signals: Sequence[SorWebhookSignal],
+) -> tuple[SorStoredWebhookSignal, ...]:
+    normalized: list[SorStoredWebhookSignal] = []
+    for signal in signals:
+        event_type = signal.event_type.strip()
+        if not 1 <= len(event_type) <= SOR_WEBHOOK_EVENT_TYPE_MAX_LENGTH:
+            raise SorConfigurationError("Webhook event type is invalid.")
+        if (
+            signal.delivery_id is not None
+            and not 1 <= len(signal.delivery_id) <= SOR_WEBHOOK_IDENTIFIER_MAX_LENGTH
+        ):
+            raise SorConfigurationError("Webhook delivery ID is invalid.")
+        if (
+            signal.vendor_object_key is not None
+            and not 1
+            <= len(signal.vendor_object_key)
+            <= SOR_WEBHOOK_OBJECT_KEY_MAX_LENGTH
+        ):
+            raise SorConfigurationError("Webhook object key is invalid.")
+        if (
+            signal.external_id is not None
+            and not 1 <= len(signal.external_id) <= SOR_WEBHOOK_IDENTIFIER_MAX_LENGTH
+        ):
+            raise SorConfigurationError("Webhook external ID is invalid.")
+        occurred_at = signal.occurred_at
+        if occurred_at is not None:
+            if occurred_at.tzinfo is None or occurred_at.utcoffset() is None:
+                raise SorConfigurationError(
+                    "Webhook event timestamp must include a timezone."
+                )
+            occurred_at = occurred_at.astimezone(timezone.utc)
+        normalized.append(
+            SorStoredWebhookSignal(
+                delivery_id=signal.delivery_id,
+                event_type=event_type,
+                vendor_object_key=signal.vendor_object_key,
+                external_id=signal.external_id,
+                occurred_at=occurred_at.isoformat() if occurred_at else None,
+            )
+        )
+    encoded = json.dumps(
+        [signal.model_dump(mode="json") for signal in normalized],
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if len(encoded) > SOR_WEBHOOK_SIGNAL_SET_MAX_BYTES:
+        raise SorConfigurationError("Webhook signal set is too large.")
+    return tuple(normalized)
+
+
+def _subscription_state(value: str | None) -> SorWebhookSubscriptionState | None:
+    if value is None:
+        return None
+    try:
+        return SorWebhookSubscriptionState(value)
+    except ValueError as error:
+        raise SorConfigurationError(
+            "Source webhook subscription state is invalid."
+        ) from error
+
+
+def _fingerprint(
+    *,
+    source_id: UUID,
+    payload_hash: str,
+    signals: Sequence[SorStoredWebhookSignal],
+) -> str:
+    encoded = json.dumps(
+        {
+            "source_id": str(source_id),
+            "payload_hash": payload_hash,
+            "signals": [signal.model_dump(mode="json") for signal in signals],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return _sha256_bytes(encoded)
+
+
+def _require_same_delivery(
+    existing: SorWebhookReceiptModel,
+    *,
+    payload_hash: str,
+    signals: Sequence[SorStoredWebhookSignal],
+) -> None:
+    if existing.payload_hash != payload_hash or existing.signals != [
+        signal.model_dump(mode="json") for signal in signals
+    ]:
+        raise SorConflictError("Webhook delivery ID was reused for different content.")
+
+
+def _sha256_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+__all__ = [
+    "SOR_WEBHOOK_MAX_BODY_BYTES",
+    "SOR_WEBHOOK_OPERATION_LEASE",
+    "SOR_WEBHOOK_RAW_RETENTION_HOURS",
+    "SOR_WEBHOOK_RENEWAL_MARGIN",
+    "SorWebhookService",
+    "SorWebhookSubscriptionPlan",
+]

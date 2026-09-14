@@ -1,0 +1,9 @@
+.verticalButton {
+  width: 100%;
+}
+
+.selectedButton:disabled {
+  border-color: oklch(var(--ew-foreground));
+  background: oklch(var(--ew-foreground));
+  color: oklch(var(--ew-background));
+}

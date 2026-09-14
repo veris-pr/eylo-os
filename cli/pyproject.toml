@@ -1,0 +1,35 @@
+[project]
+name = "cli"
+version = "0.1.0"
+description = "Eylo Cli"
+requires-python = ">=3.13"
+dependencies = [
+    "boto3==1.40.64",
+    "pydantic==2.11.10",
+    "rich==13.9.4",
+    "typer==0.27.1",
+]
+
+[tool.uv]
+constraint-dependencies = [
+    "annotated-types==0.7.0",
+    "pygments==2.20.0",
+    "typing-extensions==4.15.0",
+    "typing-inspection==0.4.2",
+    "urllib3==2.7.0",
+]
+
+[project.scripts]
+eylo = "main:app"
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = [
+    "api_cli",
+    "api_contracts",
+    "deploy_frontend",
+    "main",
+]

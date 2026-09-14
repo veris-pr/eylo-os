@@ -1,0 +1,354 @@
+"""Execute one immutable SYSTEM/TASK origin through the AgentRun workflow."""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Awaitable, Callable
+from datetime import datetime, timezone
+from enum import StrEnum
+from uuid import UUID
+
+from pydantic import JsonValue
+
+from eylo.common.contracts.background_task import (
+    BackgroundTaskOutcome,
+    TaskContent,
+    TaskResultMetadata,
+)
+from eylo.common.database import start_transaction
+from eylo.framework.agents.errors import ModelOutputLimitError
+from eylo.modules.agent_runs.domain import (
+    AgentRunLifecycle,
+    AgentRunOriginKind,
+    AgentRunOutcome,
+    InitiatingPrincipalKind,
+)
+from eylo.modules.agent_runs.service import finish_agent_run_in_transaction
+from eylo.modules.agent_runs.workflow import (
+    AgentRunExecutionClaim,
+    AgentRunWorkflowContext,
+)
+from eylo.modules.conversations.repositories.messages import MessageAgentRunRepository
+from eylo.modules.conversations.schemas.message_content import SystemMessageContent
+from eylo.modules.conversations.schemas.messages import (
+    MessageContentKind,
+    MessageCreate,
+    MessageInDb,
+    MessageKind,
+    MessageMeta,
+    MessageUpdate,
+    RequestStatus,
+)
+from eylo.modules.conversations.services.messages import MessageService
+from eylo.modules.parallel_agents.schemas import (
+    ParallelTaskManifest,
+    ParallelTaskResultMetadata,
+    TaskResultContent,
+    WorkerResult,
+)
+from eylo.modules.provider_configs.errors import NotConfiguredError
+from eylo.pipelines.agent_run_heartbeat import run_with_agent_heartbeat
+from eylo.pipelines.agent_run_results import ParallelTaskRunSummary
+from eylo.pipelines.parallel_agents.background_agent_worker import (
+    BackgroundAgentWorker,
+)
+from eylo.pipelines.parallel_agents.llm_task_worker import LLMTaskWorker
+from eylo.pipelines.parallel_agents.swarm_agent_worker import SwarmAgentWorker
+
+_RESULT_LIMIT_BYTES = 65536
+
+TaskRunner = Callable[
+    [TaskContent, UUID, MessageInDb, UUID, AgentRunWorkflowContext],
+    Awaitable[WorkerResult],
+]
+
+
+class ParallelAgentRunInvalid(Exception):
+    """A persisted task no longer agrees with its immutable run authority."""
+
+
+class ParallelTaskFailureCode(StrEnum):
+    """Terminal parallel-task summaries persisted by this executor."""
+
+    INVALID = "parallel_task_invalid"
+    PROVIDER_NOT_CONFIGURED = "parallel_task_provider_not_configured"
+    MODEL_OUTPUT_LIMIT = "parallel_task_model_output_limit"
+    RESULT_INVALID = "parallel_task_result_invalid"
+
+
+class ParallelTaskAgentRunExecutor:
+    """Run one task message and atomically publish its canonical result."""
+
+    def __init__(self, *, task_runner: TaskRunner | None = None) -> None:
+        self._task_runner = task_runner or _run_task
+
+    async def execute_origin(
+        self,
+        claim: AgentRunExecutionClaim,
+        context: AgentRunWorkflowContext,
+        origin: MessageInDb,
+    ) -> None:
+        try:
+            task_content = await _validate_task_origin(claim, origin)
+        except ParallelAgentRunInvalid:
+            await _fail_task(claim, origin, ParallelTaskFailureCode.INVALID)
+            return
+
+        await _mark_processing(origin.id)
+        result_holder: list[WorkerResult] = []
+
+        async def execute_task() -> None:
+            result_holder.append(
+                await self._task_runner(
+                    task_content,
+                    claim.organization_id,
+                    origin,
+                    claim.run_id,
+                    context,
+                )
+            )
+
+        try:
+            await run_with_agent_heartbeat(context, execute_task)
+        except NotConfiguredError:
+            await _fail_task(
+                claim, origin, ParallelTaskFailureCode.PROVIDER_NOT_CONFIGURED
+            )
+            return
+        except ModelOutputLimitError:
+            await _fail_task(claim, origin, ParallelTaskFailureCode.MODEL_OUTPUT_LIMIT)
+            return
+        try:
+            await _persist_completion(
+                claim=claim,
+                origin=origin,
+                task_content=task_content,
+                worker_result=result_holder[0],
+            )
+        except ParallelAgentRunInvalid:
+            await _fail_task(claim, origin, ParallelTaskFailureCode.RESULT_INVALID)
+
+
+async def _validate_task_origin(
+    claim: AgentRunExecutionClaim,
+    origin: MessageInDb,
+) -> TaskContent:
+    if (
+        claim.origin_kind is not AgentRunOriginKind.MESSAGE
+        or claim.origin_message_id != origin.id
+        or origin.kind != MessageKind.SYSTEM
+        or origin.content_kind != MessageContentKind.TASK
+        or origin.agent_run_id is not None
+    ):
+        raise ParallelAgentRunInvalid(
+            "Parallel execution requires an unlinked system task origin."
+        )
+    if claim.principal.kind is not InitiatingPrincipalKind.WORKER:
+        raise ParallelAgentRunInvalid(
+            "Parallel execution requires an initiating agent."
+        )
+    raw_task = origin.get_text_content()
+    if raw_task is None:
+        raise ParallelAgentRunInvalid("Parallel task content is invalid.")
+    try:
+        task_content = TaskContent.from_json(raw_task)
+    except ValueError as error:
+        raise ParallelAgentRunInvalid("Parallel task content is invalid.") from error
+    if task_content.source_agent_id != claim.principal.principal_id:
+        raise ParallelAgentRunInvalid(
+            "Parallel task source does not match its initiating agent."
+        )
+    try:
+        task_content.require_execution_agent_ref(
+            agent_id=claim.agent_id,
+            agent_revision=claim.agent_revision,
+        )
+    except ValueError as error:
+        raise ParallelAgentRunInvalid(
+            "Parallel task target does not match its AgentRun authority."
+        ) from error
+    try:
+        manifest = ParallelTaskManifest.model_validate_json(
+            json.dumps(claim.context_manifest, allow_nan=False)
+        )
+    except ValueError as error:
+        raise ParallelAgentRunInvalid("Parallel task context is invalid.") from error
+    if (
+        manifest.conversation_id != origin.conversation_id
+        or manifest.task_type is not task_content.task_kind
+        or manifest.source_agent_id != task_content.source_agent_id
+        or manifest.source_agent_revision != task_content.source_agent_revision
+    ):
+        raise ParallelAgentRunInvalid(
+            "Parallel task context does not match its task origin."
+        )
+
+    async with start_transaction(ro=True) as session:
+        source_is_current = await MessageAgentRunRepository(
+            session
+        ).has_active_agent_sender_revision(
+            conversation_id=origin.conversation_id,
+            organization_id=claim.organization_id,
+            sender_participant_id=origin.sender_participant_id,
+            agent_id=task_content.source_agent_id,
+            agent_revision=task_content.source_agent_revision,
+        )
+    if not source_is_current:
+        raise ParallelAgentRunInvalid(
+            "Parallel task source participant is no longer executable."
+        )
+    return task_content
+
+
+async def _mark_processing(task_message_id: UUID) -> None:
+    async with start_transaction() as session:
+        await MessageService(session).update_(
+            task_message_id,
+            MessageUpdate(request_status=RequestStatus.PROCESSING),
+        )
+
+
+async def _run_task(
+    task_content: TaskContent,
+    organization_id: UUID,
+    origin: MessageInDb,
+    agent_run_id: UUID,
+    durable_context: AgentRunWorkflowContext,
+) -> WorkerResult:
+    if task_content.background_agent_id is not None:
+        return await BackgroundAgentWorker(
+            task_content=task_content,
+            organization_id=organization_id,
+            conversation_id=origin.conversation_id,
+            task_message_id=origin.id,
+            agent_run_id=agent_run_id,
+            durable_context=durable_context,
+        ).run()
+    if task_content.swarm_id is not None:
+        return await SwarmAgentWorker(
+            task_content=task_content,
+            organization_id=organization_id,
+            conversation_id=origin.conversation_id,
+        ).run()
+    return await LLMTaskWorker(
+        task_content=task_content,
+        organization_id=organization_id,
+        conversation_id=origin.conversation_id,
+        sender_id=origin.sender_participant_id,
+    ).run()
+
+
+async def _persist_completion(
+    *,
+    claim: AgentRunExecutionClaim,
+    origin: MessageInDb,
+    task_content: TaskContent,
+    worker_result: WorkerResult,
+) -> None:
+    task_status = (
+        RequestStatus.SKIPPED
+        if worker_result.outcome is BackgroundTaskOutcome.SKIPPED
+        else RequestStatus.COMPLETED
+    )
+    result_content = TaskResultContent(
+        result=worker_result.text,
+        meta=TaskResultMetadata(
+            model_used=worker_result.model_used,
+            iterations_used=worker_result.iterations_used,
+        ),
+    )
+    summary = ParallelTaskRunSummary(
+        task_message_id=origin.id,
+        task_status=task_status,
+        worker_type=task_content.task_kind,
+        model_used=worker_result.model_used,
+        iterations_used=worker_result.iterations_used,
+        output=worker_result.text,
+    )
+    projected_result = summary.model_dump(mode="json", exclude_none=True)
+    _require_bounded_result(projected_result)
+
+    async with start_transaction() as session:
+        messages = MessageService(session)
+        result_message = await messages.create_(
+            MessageCreate(
+                conversation_id=origin.conversation_id,
+                sender_participant_id=origin.sender_participant_id,
+                created_at=datetime.now(timezone.utc),
+                kind=MessageKind.SYSTEM,
+                content_kind=MessageContentKind.TASK_RESULT,
+                content=SystemMessageContent(content=result_content.to_json()),
+                parent_message_id=origin.id,
+                request_id=None,
+                request_status=task_status,
+                agent_run_id=claim.run_id,
+                meta=MessageMeta.model_validate(
+                    ParallelTaskResultMetadata(
+                        worker_type=task_content.task_kind,
+                        model_used=worker_result.model_used,
+                        iterations_used=worker_result.iterations_used,
+                    ).model_dump(mode="json")
+                ),
+            )
+        )
+        await messages.update_(
+            origin.id,
+            MessageUpdate(request_status=task_status),
+        )
+        projected_result = summary.with_result_message(result_message.id).model_dump(
+            mode="json", exclude_none=True
+        )
+        _require_bounded_result(projected_result)
+        await finish_agent_run_in_transaction(
+            session,
+            organization_id=claim.organization_id,
+            run_id=claim.run_id,
+            lifecycle=AgentRunLifecycle.COMPLETED,
+            outcome=AgentRunOutcome.ACHIEVED,
+            result=projected_result,
+            outcome_reason=(
+                "No work was required."
+                if worker_result.outcome is BackgroundTaskOutcome.SKIPPED
+                else None
+            ),
+        )
+
+
+async def _fail_task(
+    claim: AgentRunExecutionClaim,
+    origin: MessageInDb,
+    summary: ParallelTaskFailureCode,
+) -> None:
+    task_meta = origin.meta.model_dump(mode="json") if origin.meta else {}
+    async with start_transaction() as session:
+        await MessageService(session).update_(
+            origin.id,
+            MessageUpdate(
+                request_status=RequestStatus.FAILED,
+                meta=MessageMeta.model_validate({**task_meta, "error": summary}),
+            ),
+        )
+        await finish_agent_run_in_transaction(
+            session,
+            organization_id=claim.organization_id,
+            run_id=claim.run_id,
+            lifecycle=AgentRunLifecycle.FAILED,
+            outcome=AgentRunOutcome.FAILED,
+            failure_summary=summary,
+        )
+
+
+def _require_bounded_result(result: dict[str, JsonValue]) -> None:
+    encoded = json.dumps(
+        result,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    if len(encoded) > _RESULT_LIMIT_BYTES:
+        raise ParallelAgentRunInvalid(
+            "Parallel task result exceeds the canonical 65536-byte limit."
+        )
+
+
+__all__ = ["ParallelAgentRunInvalid", "ParallelTaskAgentRunExecutor"]

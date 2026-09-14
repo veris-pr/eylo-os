@@ -1,0 +1,97 @@
+minimum_pre_commit_version: "4.5.1"
+default_install_hook_types:
+  - pre-commit
+  - pre-push
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+      - id: check-case-conflict
+      - id: check-json
+        exclude: (^|/)tsconfig[^/]*\.json$
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+      - id: detect-private-key
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.10
+    hooks:
+      - id: ruff-check
+        name: Python lint
+        args:
+          - --config=server/pyproject.toml
+          - --extend-ignore=F401,F403,F811,E712
+        files: ^(server/(eylo|scripts)/|cli/)
+
+  - repo: local
+    hooks:
+      - id: markdown-format
+        name: Markdown format
+        entry: web/node_modules/.bin/prettier --check --ignore-unknown
+        language: system
+        files: \.(md|mdx)$
+
+      - id: console-format
+        name: TypeScript format (console)
+        entry: web/node_modules/.bin/prettier --check --ignore-unknown
+        language: system
+        files: ^web/
+        exclude: ^web/src/api/generated/
+
+      - id: widget-sdk-format
+        name: TypeScript format (widget SDK)
+        entry: >-
+          bash -c 'cd widget && node_modules/.bin/prettier
+          --check --ignore-unknown "${@#widget/}"' --
+        language: system
+        files: ^widget/(?!preact-ui/)
+
+      - id: widget-ui-format
+        name: TypeScript format (widget UI)
+        entry: >-
+          bash -c 'cd widget/preact-ui && node_modules/.bin/prettier
+          --check --ignore-unknown "${@#widget/preact-ui/}"' --
+        language: system
+        files: ^widget/preact-ui/
+
+      - id: python-typecheck
+        name: Python typecheck
+        entry: bash -c 'cd server && .venv/bin/pyrefly check'
+        language: system
+        files: ^server/(eylo/|pyproject\.toml$)
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: console-check
+        name: TypeScript lint and typecheck (console)
+        entry: bash -c 'cd web && pnpm lint && pnpm exec tsc -b --pretty false'
+        language: system
+        files: ^web/
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: widget-sdk-check
+        name: TypeScript typecheck (widget SDK)
+        entry: bash -c 'cd widget && pnpm exec tsc --pretty false'
+        language: system
+        files: ^widget/(?!preact-ui/)
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: widget-ui-check
+        name: TypeScript lint and typecheck (widget UI)
+        entry: >-
+          bash -c 'cd widget/preact-ui && pnpm lint &&
+          pnpm exec tsc -b --pretty false'
+        language: system
+        files: ^widget/preact-ui/
+        pass_filenames: false
+        stages: [pre-push]

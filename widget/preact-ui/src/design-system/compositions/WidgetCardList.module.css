@@ -1,0 +1,56 @@
+.cardButton {
+  width: 100%;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+  border-radius: var(--ew-radius-lg);
+}
+
+.cardButton:focus-visible {
+  outline: 2px solid oklch(var(--ew-ring));
+  outline-offset: 2px;
+}
+
+.cardButton:disabled {
+  cursor: default;
+}
+
+.optionList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ew-spacing-xs);
+  width: 100%;
+}
+
+.cardOption {
+  padding: var(--ew-spacing-sm);
+  border: 1px solid oklch(var(--ew-border));
+  border-radius: var(--ew-radius-lg);
+  background: oklch(var(--ew-background));
+  transition: var(--ew-transition-default);
+}
+
+.cardButton:not(:disabled):hover .cardOption {
+  background: oklch(var(--ew-muted) / 0.6);
+}
+
+.cardSelected {
+  border-color: oklch(var(--ew-ring));
+  background: oklch(var(--ew-muted) / 0.6);
+}
+
+.cardMedia {
+  width: 100%;
+  max-height: 10rem;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: var(--ew-radius-md);
+}
+
+.featureList {
+  margin: 0;
+  padding-left: 1rem;
+}
